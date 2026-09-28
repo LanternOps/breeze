@@ -321,8 +321,6 @@ describe('items and income accounts (Xero W03)', () => {
 
 describe('methods behind later waves', () => {
   it.each([
-    ['pushInvoice', () => xeroProvider.pushInvoice(conn(), {} as any, [])],
-    ['voidInvoice', () => xeroProvider.voidInvoice(conn(), {} as any, {} as any)],
     ['createPayment', () => xeroProvider.createPayment(conn(), {} as any)],
     ['deletePayment', () => xeroProvider.deletePayment(conn(), {} as any)],
     ['reconcileChanges', () => xeroProvider.reconcileChanges(conn(), null)],
@@ -335,5 +333,52 @@ describe('methods behind later waves', () => {
   it('paymentMarker throws until W05; verifyWebhook fails closed until W05', () => {
     expect(() => xeroProvider.paymentMarker.embed(null, 'm')).toThrow(/W05/);
     expect(xeroProvider.verifyWebhook('sig', '{}', 'key')).toBe(false);
+  });
+});
+
+describe('invoice push and void (Xero W04)', () => {
+  const settings = { defaultIncomeAccountRef: '200', defaultTaxCodeRef: 'OUTPUT2', defaultExemptTaxCodeRef: 'EXEMPTOUTPUT' };
+  const payload = {
+    invoiceId: 'inv-1', docNumber: 'INV-1', txnDate: '2026-09-01', dueDate: null, customerRef: { id: 'xc-1' }, currencyCode: 'GBP',
+    subtotal: '100.00', taxTotal: '20.00', total: '120.00', mapping: null,
+    lines: [{ invoiceLineId: 'l1', description: 'Support', quantity: '1.00', unitPrice: '100.00', lineTotal: '100.00', taxable: true }],
+  };
+
+  it('pushInvoice runs the Xero flow against the connection\'s tenant', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Invoices: [] }))
+      .mockResolvedValueOnce(json({ Invoices: [{ InvoiceID: 'xi-1', InvoiceNumber: 'INV-1', TotalTax: 20, Total: 120 }] }));
+    const c = conn(settings);
+    await expect(xeroProvider.pushInvoice(c, payload, [])).resolves.toMatchObject({ id: 'xi-1', remoteTotal: '120.00' });
+    for (const [, init] of fetchMock.mock.calls) {
+      expect((init as RequestInit).headers).toMatchObject({ 'xero-tenant-id': c.realmId });
+    }
+  });
+
+  it('voidInvoice reads, then voids by the mapping\'s remote id', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Invoices: [{ InvoiceID: 'xi-1', Status: 'AUTHORISED' }] }))
+      .mockResolvedValueOnce(json({ Invoices: [{ InvoiceID: 'xi-1', Status: 'VOIDED' }] }));
+    await xeroProvider.voidInvoice(conn(settings), { invoiceId: 'inv-1', docNumber: 'INV-1', currencyCode: 'GBP' }, { remoteEntityId: 'xi-1', remoteSyncToken: null });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.xero.com/api.xro/2.0/Invoices/xi-1?unitdp=4',
+      'https://api.xero.com/api.xro/2.0/Invoices/xi-1?unitdp=4&summarizeErrors=true',
+    ]);
+  });
+
+  it('invoicePushPreflight is the Xero pre-flight', () => {
+    expect(xeroProvider.invoicePushPreflight(conn({ ...settings, defaultTaxCodeRef: null }), payload)).toEqual({
+      reason: 'settings', message: 'Choose a tax rate for taxable lines in Integrations → Accounting → Xero, then push again',
+    });
+  });
+
+  it('findRemoteInvoice looks the invoice up by its Breeze reference', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Invoices: [{ InvoiceID: 'xi-1', Type: 'ACCREC', Reference: 'breeze:inv-1', Status: 'AUTHORISED' }] }));
+    await expect(xeroProvider.findRemoteInvoice(conn(settings), 'inv-1')).resolves.toEqual({ id: 'xi-1' });
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://api.xero.com/api.xro/2.0/Invoices?where=Reference%3D%3D%22breeze%3Ainv-1%22&unitdp=4');
+  });
+
+  it('still does not declare invoicePush through W04a', () => {
+    expect(xeroProvider.capabilities.invoicePush).toBe(false);
   });
 });

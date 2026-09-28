@@ -218,8 +218,11 @@ export function providerPermissionMessage(label: string): string {
  *                         A bare not_found without this code keeps its old meaning.
  *  - insufficient_scope — the grant does not cover this call; reconnecting (or a
  *                         scope change) is the only fix. Surfaced; never retried.
+ *  - remote_locked      — the remote record exists but the provider will not change
+ *                         it (Xero: an invoice with a payment or credit applied whose
+ *                         content differs). Surfaced; never retried.
  */
-export const ACCOUNTING_REFUSAL_CODES = ['duplicate_name', 'duplicate_key', 'remote_archived', 'remote_missing', 'insufficient_scope'] as const;
+export const ACCOUNTING_REFUSAL_CODES = ['duplicate_name', 'duplicate_key', 'remote_archived', 'remote_missing', 'insufficient_scope', 'remote_locked'] as const;
 export type AccountingRefusalCode = typeof ACCOUNTING_REFUSAL_CODES[number];
 
 /** The code when `err` is a provider error of kind `validation` or `not_found` carrying one; else null. */

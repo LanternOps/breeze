@@ -12,9 +12,10 @@ vi.mock('./accountingRateLimit', () => ({
 }));
 
 import {
-  classifyXeroValidation, decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections, parseXeroDate,
-  requestXeroTokens, requireXeroBody, xeroApiError, xeroApiGet, xeroApiWrite, xeroArray, xeroIdempotencyKey,
-  xeroQuery, xeroTokenError, XERO_CONNECTIONS_URL, XERO_REFRESH_TOKEN_LIFETIME_MS, XERO_SCOPES, XERO_TOKEN_URL,
+  classifyXeroInvoiceKind, classifyXeroValidation, decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections,
+  parseXeroDate, requestXeroTokens, requireXeroBody, xeroApiError, xeroApiGet, xeroApiWrite, xeroArray,
+  xeroIdempotencyKey, xeroQuery, xeroTokenError, XERO_CONNECTIONS_URL, XERO_REFRESH_TOKEN_LIFETIME_MS, XERO_SCOPES,
+  XERO_TOKEN_URL,
 } from './xeroHttp';
 import { AccountingProviderError, DEFAULT_RATE_LIMIT_DELAY_MS } from './accountingProviderError';
 
@@ -535,5 +536,54 @@ describe('requireXeroBody / xeroArray (moved from xeroProvider, Xero W03)', () =
     expect(xeroArray(rows)).toBe(rows);
     expect(xeroArray(undefined)).toEqual([]);
     expect(xeroArray({ 0: 'x' })).toEqual([]);
+  });
+});
+
+describe('classifyXeroInvoiceKind (Xero W04)', () => {
+  const body = (...messages: string[]) => JSON.stringify({
+    ErrorNumber: 10, Type: 'ValidationException', Message: 'A validation exception occurred',
+    Elements: [{ ValidationErrors: messages.map((Message) => ({ Message })) }],
+  });
+  it.each([
+    ['Invoice # must be unique.', 'duplicate_doc_number'],
+    ['The status VOIDED cannot be applied to the invoice because it has payments or credit notes allocated to it.', 'payment_linked'],
+    ['This document cannot be edited as it has a payment or credit note allocated to it.', 'payment_linked'],
+    ['Idempotency Key: breeze-inv-abc is used with a different request.', 'transient'],
+    ["Account code '999' is not a valid code for this document.", undefined],
+  ] as const)('%s → %s', (message, expected) => {
+    expect(classifyXeroInvoiceKind(body(message))).toBe(expected);
+  });
+  it('also reads a top-level Message (Xero may report key reuse outside Elements)', () => {
+    expect(classifyXeroInvoiceKind(JSON.stringify({ Message: 'Idempotency Key: k is used with a different request.' }))).toBe('transient');
+  });
+  it('finds the verdict in any message', () => {
+    expect(classifyXeroInvoiceKind(body('Email address must be valid.', 'Invoice # must be unique.'))).toBe('duplicate_doc_number');
+  });
+  it('is undefined for a non-JSON body', () => {
+    expect(classifyXeroInvoiceKind('<html>')).toBeUndefined();
+  });
+});
+
+describe('invoice refusals through the write helper (Xero W04)', () => {
+  const ctx = { connectionId: 'c1', tenantId: 'ten-A', accessToken: 'at', rate: SPEC };
+  const failing = (message: string) => json({ Elements: [{ ValidationErrors: [{ Message: message }] }] }, 400);
+
+  it('a duplicate invoice number is kind duplicate_doc_number', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(failing('Invoice # must be unique.'));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Invoices', {}, 'Xero invoice create'))
+      .rejects.toMatchObject({ kind: 'duplicate_doc_number', httpStatus: 400, providerCode: undefined });
+  });
+  it('a void refused for an allocated payment is kind payment_linked', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(failing('The status VOIDED cannot be applied to the invoice because it has payments or credit notes allocated to it.'));
+    await expect(xeroApiWrite(ctx, 'POST', 'Invoices/x', {}, 'Xero invoice void')).rejects.toMatchObject({ kind: 'payment_linked', httpStatus: 400 });
+  });
+  it('a reused key with a different body is an uncertain (transient) outcome, never a validation refusal (refinement 2)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(failing('Idempotency Key: breeze-inv-abc is used with a different request.'));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Invoices', {}, 'Xero invoice create', { idempotencyKey: 'breeze-inv-abc' }))
+      .rejects.toMatchObject({ kind: 'transient', httpStatus: 400 });
+  });
+  it('W03 classifications are unchanged (a duplicate contact name stays validation + duplicate_name)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(failing('The contact name Acme is already assigned to another contact.'));
+    await expect(xeroApiWrite(ctx, 'PUT', 'Contacts', {}, 'op')).rejects.toMatchObject({ kind: 'validation', providerCode: 'duplicate_name' });
   });
 });

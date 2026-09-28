@@ -29,7 +29,11 @@
  *     (409 — the pushed lines do not sum to the invoice subtotal, #7161) PLUS `record_failed` (502 — the remote
  *     QuickBooks write already landed; only the local persist failed, so
  *     retrying would create a duplicate invoice in QuickBooks, not fix
- *     anything). Retrying any of these can never succeed: the mapping row
+ *     anything), PLUS the five Xero W04 terminal refusals: `push_settings_incomplete`,
+ *     `remote_missing`, `remote_ambiguous`, `remote_locked`, `provider_permission`
+ *     (each 409 — an operator must act in Xero or in Breeze's settings; see
+ *     `INVOICE_USER_RESOLVABLE_CODES` below for which of these skip Sentry).
+ *     Retrying any of these can never succeed: the mapping row
  *     already carries the error for an operator/route to see and act on.
  *   - RETRYABLE (rethrown so BullMQ's attempts/backoff fires): `provider_error`
  *     (502 — a genuine provider/network failure; the never-thrown pre-W01
@@ -157,6 +161,26 @@ const TERMINAL_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
   'record_failed',
   'void_blocked_by_payments',
   'invoice_totals_mismatch',
+  'push_settings_incomplete',
+  'remote_missing',
+  'remote_ambiguous',
+  'remote_locked',
+  'provider_permission',
+]);
+
+/**
+ * Terminal invoice codes an operator resolves in Xero or in Breeze's settings
+ * (Xero W04). Each is already persisted on the invoice's mapping row with the
+ * remedy, so a Sentry event per job would only be noise. `remote_ambiguous`
+ * is deliberately absent: two remote invoices for one Breeze invoice should be
+ * impossible and deserves an alert. The pre-W04 terminal codes keep their
+ * capture, so QuickBooks telemetry is unchanged.
+ */
+const INVOICE_USER_RESOLVABLE_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
+  'push_settings_incomplete',
+  'remote_missing',
+  'remote_locked',
+  'provider_permission',
 ]);
 
 /**
@@ -347,12 +371,14 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData, ctx?
           '[AccountingSyncWorker] terminal failure, not retrying',
           `type=${data.type}`, `invoiceId=${data.invoiceId}`, `code=${err.code}`, err.message,
         );
-        captureException(err, undefined, {
-          service: 'accountingSyncWorker',
-          accounting_job_type: data.type,
-          invoice_id: data.invoiceId,
-          accounting_error_code: err.code,
-        });
+        if (!INVOICE_USER_RESOLVABLE_CODES.has(err.code)) {
+          captureException(err, undefined, {
+            service: 'accountingSyncWorker',
+            accounting_job_type: data.type,
+            invoice_id: data.invoiceId,
+            accounting_error_code: err.code,
+          });
+        }
         return;
       }
       // provider_error or its legacy alias quickbooks_error (502),

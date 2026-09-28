@@ -11,7 +11,7 @@ vi.mock('./accountingRateLimit', async (orig) => ({
 
 import { createHash } from 'node:crypto';
 import { AccountingProviderError } from './accountingProviderError';
-import { getXeroItem, listXeroItems, toRemoteItem, upsertXeroItem, xeroItemCode, xeroItemName, xeroItemSuffix } from './xeroItems';
+import { getXeroItem, listXeroItems, readXeroItemRefs, toRemoteItem, upsertXeroItem, xeroItemCode, xeroItemName, xeroItemSuffix } from './xeroItems';
 import type { AccountingItemPayload } from './types';
 
 const ctx = {
@@ -279,5 +279,23 @@ describe('upsertXeroItem', () => {
     const refusal = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'slot', retryAfterMs: 1000, throttleSource: 'local' });
     slotMock.mockImplementationOnce(async () => { throw refusal; });
     await expect(call()).rejects.toBe(refusal);
+  });
+});
+
+describe('readXeroItemRefs (Xero W04)', () => {
+  it('maps ItemID to Code and the sales account, in one unpaged call', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ Items: [
+      { ItemID: 'xi-1', Code: 'fw-100-3fa9c1b2d4', SalesDetails: { AccountCode: '200' } },
+      { ItemID: 'xi-2', Code: 'MSP-OWN' },
+      { ItemID: 'xi-3' },
+      { Code: 'NO-ID' },
+    ] }));
+    const refs = await readXeroItemRefs(ctx);
+    expect([...refs.entries()]).toEqual([
+      ['xi-1', { code: 'fw-100-3fa9c1b2d4', accountCode: '200' }],
+      ['xi-2', { code: 'MSP-OWN', accountCode: null }],
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(urlOf(fetchMock, 0)).toBe('https://api.xero.com/api.xro/2.0/Items?unitdp=4');
   });
 });

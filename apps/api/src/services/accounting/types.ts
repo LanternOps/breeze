@@ -406,6 +406,18 @@ export interface ChangeSet {
  *    (`AccountingPaymentPayload.reference`), before `embed` runs.
  * 5. `connectEnvironment()` is only valid once `configError()` returns null.
  */
+/**
+ * A provider's local refusal to push an invoice, decided without any I/O
+ * (Xero W04). `settings` → the connection lacks a setting this provider needs
+ * (coordinator code `push_settings_incomplete`); `totals` → Breeze's own
+ * figures cannot be expressed to this provider (`invoice_totals_mismatch`).
+ * `message` is operator-facing and persisted as the mapping's last_error.
+ */
+export interface AccountingInvoicePreflightRefusal {
+  reason: 'settings' | 'totals';
+  message: string;
+}
+
 export interface AccountingProvider {
   readonly provider: AccountingProviderId;
   /** Brand name used in operator-visible text ("QuickBooks", "Xero"). Never translated. */
@@ -448,6 +460,23 @@ export interface AccountingProvider {
     invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
   ): Promise<InvoiceVoidResult>;
+  /**
+   * OPTIONAL, synchronous, no I/O (Xero W04). Called by the invoice coordinator
+   * in Phase 1 — after the currency and totals guards, before any dependency
+   * sync, token refresh or provider call — with the exact line payloads it will
+   * push. Null means "no objection". QuickBooks declares none.
+   */
+  invoicePushPreflight?(
+    conn: AccountingConnection,
+    invoice: Pick<AccountingInvoicePayload, 'currencyCode' | 'taxTotal' | 'lines'>,
+  ): AccountingInvoicePreflightRefusal | null;
+  /**
+   * OPTIONAL (Xero W04, refinement 22). The remote invoice a push of this Breeze
+   * invoice created, found by the provider's adoption key, or null. Lets a void
+   * reach a create whose response was lost. A provider without an adoption key
+   * for invoices (QuickBooks) declares none.
+   */
+  findRemoteInvoice?(conn: AccountingConnection, invoiceId: string): Promise<{ id: string; remoteVersion?: string } | null>;
   /**
    * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
    * QuickBooks Payment's amount would rewrite receipt history, and Intuit models

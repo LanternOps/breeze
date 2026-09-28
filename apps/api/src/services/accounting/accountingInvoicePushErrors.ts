@@ -54,6 +54,24 @@ export type AccountingInvoicePushErrorCode =
   // `throttleSource`; the worker DELAYS the job without
   // consuming an attempt (jobs/accountingJobDelay.ts), the route answers 429 +
   // Retry-After. Deliberately NOT in the worker's TERMINAL_CODES.
+  // Xero W04: the provider needs a connection setting that is not set (Xero: a
+  // revenue account, or a tax rate for taxed / untaxed lines). Decided by the
+  // provider's synchronous `invoicePushPreflight` in Phase 1 — before any
+  // dependency sync, token refresh or provider call — and persisted on the
+  // invoice's mapping row like `currency_mismatch`. Terminal: every retry would
+  // refuse the same way until someone fills in the setting.
+  | 'push_settings_incomplete'
+  // Xero W04: the remote invoice this push would update is gone, or voided or
+  // deleted there. Terminal — a push cannot resurrect it (Phase D decision 2).
+  | 'remote_missing'
+  // Xero W04: more than one live remote invoice carries this Breeze invoice's
+  // adoption key. Terminal — never guess which one is ours.
+  | 'remote_ambiguous'
+  // Xero W04: the remote invoice exists but has a payment or credit applied, so
+  // the provider will not change its lines, and its amounts differ. Terminal.
+  | 'remote_locked'
+  // Xero W04: the grant does not cover this call; reconnecting is the fix. Terminal.
+  | 'provider_permission'
   | 'rate_limited'
   | 'provider_error' | 'record_failed' // 502s; record_failed = remote ok, local persist failed (never retry)
   // 'quickbooks_error': pre-W01 alias; never produced any more, kept for compile compatibility

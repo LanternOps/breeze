@@ -778,7 +778,10 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // 8 -> 10: the two SyncToken-re-read fixes later in this branch each added a
     // tag-bearing capture without bumping the pin, which is exactly the count
     // mismatch this number exists to force.
-    ['accounting/accountingInvoicePush.ts', 10],
+    // 10 -> 12: Xero W04 refinement 22 void-recovery persist added its own
+    // zero-row and catch captureException calls (same tag shape as the
+    // existing SyncToken persist).
+    ['accounting/accountingInvoicePush.ts', 12],
     ['accounting/accountingMappingService.ts', 5],
     // Phase D2. Paths are resolved against THIS file's directory (services/),
     // so the two worker files reach out of it.

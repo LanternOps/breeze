@@ -23,6 +23,7 @@ const {
   voidInvoiceMock,
   captureExceptionMock,
   AccountingMappingError,
+  providerExtras,
 } = vi.hoisted(() => {
   // Mirrors the real 4-arg signature (status includes 429; opts.retryAfterMs / throttleSource / cause).
   class AccountingMappingError extends Error {
@@ -54,6 +55,7 @@ const {
     voidInvoiceMock: vi.fn(),
     captureExceptionMock: vi.fn(),
     AccountingMappingError,
+    providerExtras: {} as Record<string, unknown>,
   };
 });
 
@@ -107,6 +109,7 @@ vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({
     pushInvoice: pushInvoiceMock,
     voidInvoice: voidInvoiceMock,
+    ...providerExtras,
   }),
   // An unknown id returns a sentinel, never 'QuickBooks', so a caller that
   // passes the wrong value (a display name, undefined) cannot pass by default.
@@ -381,6 +384,7 @@ beforeEach(() => {
   insertedValues.length = 0;
   updatedPatches.length = 0;
   insertUniqueViolation = null;
+  for (const k of Object.keys(providerExtras)) delete providerExtras[k];
   stubInsert();
   stubUpdate();
   setup();
@@ -1855,5 +1859,177 @@ describe('rate limiting (ruling P6)', () => {
     expect(err).toMatchObject({ code: 'rate_limited', throttleSource: 'local', message });
     expect(err.cause).toBe(tokenErr);
     expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toMatchObject({ syncStatus: 'error', lastError: message });
+  });
+});
+
+describe('Xero W04: labels, preflight and provider refusals', () => {
+  const xeroConn = (over: Record<string, unknown> = {}) => conn({ provider: 'xero', ...over });
+  const refusal = (providerCode: string, kind: 'validation' | 'not_found' = 'validation') =>
+    new AccountingProviderError({ kind, provider: 'xero', operation: 'Xero invoice push', httpStatus: kind === 'not_found' ? 404 : 400, providerCode });
+
+  beforeEach(() => {
+    resolveConnectionMock.mockResolvedValue(xeroConn());
+    resolveLiveConnectionMock.mockResolvedValue(liveConn({ provider: 'xero' }));
+  });
+
+  it('labels coordinator refusals with the connection\'s provider', async () => {
+    setup({ mappings: [] });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'customer_not_mapped',
+      message: 'This organization is not mapped to a Xero customer yet — confirm or create a mapping first',
+    });
+  });
+
+  it('a preflight settings refusal is persisted and stops before any sync, token refresh or provider call', async () => {
+    const preflight = vi.fn(() => ({ reason: 'settings' as const, message: 'Choose a tax rate for non-taxable lines in Integrations → Accounting → Xero, then push again' }));
+    providerExtras.invoicePushPreflight = preflight;
+    setup({ lines: [{ taxable: false }] });
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'push_settings_incomplete', status: 409,
+      message: 'Choose a tax rate for non-taxable lines in Integrations → Accounting → Xero, then push again',
+    });
+    expect(preflight).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'xero' }),
+      { currencyCode: 'USD', taxTotal: '7.00', lines: [expect.objectContaining({ invoiceLineId: 'line-1', lineTotal: '100.00', taxable: false })] },
+    );
+    expect(syncMappedEntityMock).not.toHaveBeenCalled();
+    expect(resolveLiveConnectionMock).not.toHaveBeenCalled();
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice');
+    expect(row).toMatchObject({ syncStatus: 'error', lastError: 'Choose a tax rate for non-taxable lines in Integrations → Accounting → Xero, then push again' });
+  });
+
+  it('a preflight totals refusal reuses invoice_totals_mismatch', async () => {
+    providerExtras.invoicePushPreflight = () => ({ reason: 'totals' as const, message: 'no taxed line' });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'invoice_totals_mismatch', status: 409, message: 'no taxed line' });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('a provider without a preflight still pushes (QuickBooks regression guard)', async () => {
+    resolveConnectionMock.mockResolvedValue(conn());
+    resolveLiveConnectionMock.mockResolvedValue(liveConn());
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
+  });
+
+  it.each<[string, 'validation' | 'not_found', string, string]>([
+    ['remote_missing', 'not_found', 'remote_missing', 'The Xero invoice for this invoice no longer exists or was voided there — pushing again cannot restore it. Check the invoice in Xero; to send it again, void and re-issue it in Breeze.'],
+    ['duplicate_key', 'validation', 'remote_ambiguous', 'Xero holds more than one invoice for this Breeze invoice — void or delete the extra one in Xero, then push again'],
+    ['remote_locked', 'validation', 'remote_locked', 'Xero will not update this invoice because a payment or credit is applied to it there, and its amounts differ from Breeze — remove or unapply it in Xero, then push again'],
+    ['insufficient_scope', 'validation', 'provider_permission', 'Xero did not grant Breeze access to this data — reconnect Xero and approve every requested permission'],
+  ])('provider refusal %s → terminal %s, persisted, no Sentry', async (providerCode, kind, code, message) => {
+    pushInvoiceMock.mockRejectedValueOnce(refusal(providerCode, kind));
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code, status: 409, message });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toMatchObject({ syncStatus: 'error', lastError: message });
+  });
+
+  it('a QuickBooks validation fault (e.g. 6240) is still the retryable 502 with Sentry — QuickBooks unchanged', async () => {
+    resolveConnectionMock.mockResolvedValue(conn());
+    resolveLiveConnectionMock.mockResolvedValue(liveConn());
+    pushInvoiceMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'validation', provider: 'quickbooks', operation: 'QuickBooks invoice push', httpStatus: 400, providerCode: '6240' }));
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502, message: 'QuickBooks rejected the invoice sync (HTTP 400)' });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('an insufficient_scope void is provider_permission; a payment_linked void keeps its existing message', async () => {
+    setup({ mappings: [orgMappingRow(), { ...orgMappingRow({ id: 'map-inv-1', breezeEntityType: 'invoice', breezeEntityId: INVOICE, remoteEntityType: 'Invoice', remoteEntityId: 'xi-inv-1', remoteSyncToken: null }) }] });
+    voidInvoiceMock.mockRejectedValueOnce(refusal('insufficient_scope'));
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_permission', status: 409 });
+    voidInvoiceMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'payment_linked', provider: 'xero', operation: 'Xero invoice void' }));
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'void_blocked_by_payments',
+      message: 'Xero will not void this invoice because a payment is applied to it there — remove or unapply that payment in Xero, then void the invoice again',
+    });
+  });
+
+  describe('void of a create Breeze never recorded (refinement 22)', () => {
+    const errorRow = () => orgMappingRow({
+      id: 'map-inv-1', breezeEntityType: 'invoice', breezeEntityId: INVOICE, remoteEntityType: 'Invoice',
+      remoteEntityId: null, remoteSyncToken: null, linkStatus: 'create_new', syncStatus: 'error', lastError: 'Xero rejected the invoice sync (HTTP 504)',
+    });
+
+    it('finds the invoice by its Breeze id with no DB context held, voids it, and records the remote id and version', async () => {
+      const findRemoteInvoice = vi.fn(async () => {
+        expect(ctx.depth).toBe(0);
+        return { id: 'xi-lost', remoteVersion: 'v1' };
+      });
+      providerExtras.findRemoteInvoice = findRemoteInvoice;
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+      voidInvoiceMock.mockResolvedValueOnce({ remoteVersion: 'v2' });
+
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+      expect(findRemoteInvoice).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fresh-token' }), INVOICE);
+      expect(voidInvoiceMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ invoiceId: INVOICE }), { remoteEntityId: 'xi-lost', remoteSyncToken: 'v1' });
+      expect(currentMappings.find((m) => m.id === 'map-inv-1')).toMatchObject({ remoteEntityId: 'xi-lost', remoteSyncToken: 'v2', linkStatus: 'confirmed' });
+    });
+
+    it('a duplicate_key ambiguity from the recovery lookup is terminal remote_ambiguous, persisted, no Sentry', async () => {
+      providerExtras.findRemoteInvoice = vi.fn(async () => { throw refusal('duplicate_key'); });
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+
+      await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'remote_ambiguous', status: 409,
+        message: 'Xero holds more than one invoice for this Breeze invoice — void or delete the extra one in Xero, then push again',
+      });
+      expect(voidInvoiceMock).not.toHaveBeenCalled();
+      expect(currentMappings.find((m) => m.id === 'map-inv-1')).toMatchObject({
+        syncStatus: 'error',
+        lastError: 'Xero holds more than one invoice for this Breeze invoice — void or delete the extra one in Xero, then push again',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    // Neither of the two tests above can prove the recovery persist's UPDATE
+    // is conditioned at the SQL level on the row NOT already carrying a
+    // remoteEntityId — this mock harness applies a patch synchronously
+    // against the same `currentMappings` array both any JS check and the
+    // UPDATE itself read, so it cannot simulate a genuinely concurrent push
+    // landing between the lookup and this write. Same technique and same
+    // limitation as the analogous remote-deleted regression guard above:
+    // proving the compiled WHERE clause carries the guard predicate (so a
+    // future edit that drops it fails this test instead of shipping
+    // silently) is what a fully-mocked unit file CAN prove.
+    it('the recovery persist UPDATE conditions on the row not already carrying a remoteEntityId (SQL-level regression guard)', async () => {
+      providerExtras.findRemoteInvoice = vi.fn(async () => ({ id: 'xi-lost', remoteVersion: 'v1' }));
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+      voidInvoiceMock.mockResolvedValueOnce({ remoteVersion: 'v2' });
+
+      let capturedWhereCond: unknown;
+      updateMock.mockImplementationOnce(() => ({
+        set: (patch: Record<string, unknown>) => ({
+          where: (cond: unknown) => ({
+            returning: () => {
+              capturedWhereCond = cond;
+              const idx = currentMappings.findIndex((row) => conditionContainsValue(cond, row.id));
+              currentMappings[idx] = { ...currentMappings[idx], ...patch } as MappingRow;
+              return Promise.resolve([currentMappings[idx]]);
+            },
+          }),
+        }),
+      }));
+
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+      const { columns } = sqlColumnsAndValues(capturedWhereCond);
+      expect(columns).toContain('remote_entity_id');
+    });
+
+    it('nothing found → no void call and no write (today\'s no-op)', async () => {
+      providerExtras.findRemoteInvoice = vi.fn(async () => null);
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+      expect(voidInvoiceMock).not.toHaveBeenCalled();
+      expect(updatedPatches).toHaveLength(0);
+    });
+
+    it('a provider without the lookup keeps today\'s no-op, with no token refresh (QuickBooks unchanged)', async () => {
+      resolveConnectionMock.mockResolvedValue(conn());
+      setup({ mappings: [orgMappingRow(), errorRow()] });
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+      expect(resolveLiveConnectionMock).not.toHaveBeenCalled();
+      expect(voidInvoiceMock).not.toHaveBeenCalled();
+    });
   });
 });

@@ -241,6 +241,38 @@ describe('processAccountingSyncJob', () => {
     errSpy.mockRestore();
   });
 
+  it.each(['push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission'] as const)(
+    'a %s push failure is terminal and not reported to Sentry (Xero W04)',
+    async (code) => {
+      getConnectionMock.mockResolvedValue(connectionRow());
+      pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError(code, 409, 'user must act'));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(
+        processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+      ).resolves.toBeUndefined();
+
+      expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
+      expect(errSpy).toHaveBeenCalledWith('[AccountingSyncWorker] terminal failure, not retrying', expect.anything(), expect.anything(), `code=${code}`, 'user must act');
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      errSpy.mockRestore();
+    },
+  );
+
+  it('remote_ambiguous is terminal and IS reported (it should never happen)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError('remote_ambiguous', 409, 'two invoices'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+    ).resolves.toBeUndefined();
+
+    expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+  });
+
   it('rethrows sync_in_progress (409) so BullMQ retries — a void that raced a mid-flight push is NOT terminal', async () => {
     getConnectionMock.mockResolvedValue(connectionRow());
     const err = new AccountingInvoicePushError('sync_in_progress', 409, 'push still in flight');
