@@ -15,6 +15,7 @@ import {
   checkDeviceTokenSuspension,
 } from './deviceCredentialLifecycle';
 import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
+import { checkAgentStorageSessionRateLimit } from '../services/agentStorageSessionRateLimit';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
   computeReservedIngestLimit,
@@ -743,6 +744,34 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
 
   const redis = getRedis();
 
+  const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
+  // Brokered storage sessions (`storage-sessions/<sessionId>/<op>` and the
+  // `…/object` compatibility read). ABSOLUTELY anchored like every other
+  // path-class decision here, so an extension route with the same tail does
+  // not qualify.
+  const isStorageSessionPath =
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'storage-sessions';
+
+  // Storage-session calls are metered by their own per-session and per-device
+  // windows (services/agentStorageSessionRateLimit.ts) INSTEAD of the general
+  // per-(agent, source-IP), per-agent and per-org buckets below. A brokered
+  // transfer makes one call per multipart part or small file; charged to the
+  // general buckets it exhausted them within a minute and the agent's own
+  // heartbeats were refused along with it, taking the device offline. Only the
+  // rate accounting differs: the credential checks above and the session
+  // token, device binding and budget checks in the handlers are unchanged.
+  if (isStorageSessionPath) {
+    const storageCheck = await checkAgentStorageSessionRateLimit(redis, {
+      deviceId: device.id,
+      sessionId: pathSegments[CORE_AGENT_ACTION_INDEX + 1] ?? '',
+    });
+    if (!storageCheck.allowed) {
+      c.header('Retry-After', String(storageCheck.retryAfterSeconds));
+      return c.json({ error: 'storage_session_rate_limit_exceeded' }, 429);
+    }
+  }
+
   // Task 19: per-(agent, source-IP) rate limit. A stolen token used from a
   // second IP can't drain the legit agent's per-agent quota — each IP gets
   // its own 30/min bucket. Runs BEFORE the per-agent limit so a spraying
@@ -753,16 +782,18 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // so a stolen token can't mint a fresh per-IP bucket per request by walking
     // the low 64 bits of a subnet it already owns. `sourceIp` below stays raw —
     // the IP-change audit signal needs the real address.
-    const perIpKey = `agent_rate_ip:${device.id}:${rateLimitIpKey(sourceIp)}`;
-    const perIpCheck = await rateLimiter(
-      redis,
-      perIpKey,
-      AGENT_PER_IP_RATE_LIMIT,
-      AGENT_PER_IP_RATE_WINDOW_SECONDS,
-    );
-    if (!perIpCheck.allowed) {
-      c.header('Retry-After', String(Math.ceil((perIpCheck.resetAt.getTime() - Date.now()) / 1000)));
-      throw new HTTPException(429, { message: 'Agent per-source-IP rate limit exceeded' });
+    if (!isStorageSessionPath) {
+      const perIpKey = `agent_rate_ip:${device.id}:${rateLimitIpKey(sourceIp)}`;
+      const perIpCheck = await rateLimiter(
+        redis,
+        perIpKey,
+        AGENT_PER_IP_RATE_LIMIT,
+        AGENT_PER_IP_RATE_WINDOW_SECONDS,
+      );
+      if (!perIpCheck.allowed) {
+        c.header('Retry-After', String(Math.ceil((perIpCheck.resetAt.getTime() - Date.now()) / 1000)));
+        throw new HTTPException(429, { message: 'Agent per-source-IP rate limit exceeded' });
+      }
     }
 
     // Task 19: detect source-IP changes. The legit agent typically lives at
@@ -828,73 +859,77 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     }
   }
 
-  // Rate limiting per agent
-  const rateKey = `agent_rate:${agentId}`;
-  const rateCheck = await rateLimiter(redis, rateKey, AGENT_RATE_LIMIT, AGENT_RATE_WINDOW_SECONDS);
+  // General agent buckets (per agent, then per org). Storage-session calls
+  // were already metered above and never draw on these.
+  if (!isStorageSessionPath) {
+    // Rate limiting per agent
+    const rateKey = `agent_rate:${agentId}`;
+    const rateCheck = await rateLimiter(redis, rateKey, AGENT_RATE_LIMIT, AGENT_RATE_WINDOW_SECONDS);
 
-  if (!rateCheck.allowed) {
-    c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));
-    throw new HTTPException(429, { message: 'Agent rate limit exceeded' });
-  }
+    if (!rateCheck.allowed) {
+      c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));
+      throw new HTTPException(429, { message: 'Agent rate limit exceeded' });
+    }
 
-  // Rate limiting per org (applied AFTER per-agent so we don't bill the org bucket
-  // for requests that already failed the per-agent check). Protects against a
-  // large fleet on one MSP saturating shared resources via the per-agent budget.
-  const orgRateKey = `agent_org_rate:${device.orgId}`;
-  const orgLimit = await resolveOrgRateLimit(redis, device.orgId);
-  const orgRateCheck = await rateLimiter(
-    redis,
-    orgRateKey,
-    orgLimit,
-    AGENT_ORG_RATE_WINDOW_SECONDS,
-  );
+    // Rate limiting per org (applied AFTER per-agent so we don't bill the org bucket
+    // for requests that already failed the per-agent check). Protects against a
+    // large fleet on one MSP saturating shared resources via the per-agent budget.
+    const orgRateKey = `agent_org_rate:${device.orgId}`;
+    const orgLimit = await resolveOrgRateLimit(redis, device.orgId);
+    const orgRateCheck = await rateLimiter(
+      redis,
+      orgRateKey,
+      orgLimit,
+      AGENT_ORG_RATE_WINDOW_SECONDS,
+    );
 
-  if (!orgRateCheck.allowed) {
-    // #2728 — reserved lane. The org bucket is shared with no per-device
-    // fairness, so a fleet of chatty heartbeats can drain it and starve the
-    // once-per-24h patch/inventory uploads that carry operator-facing posture.
-    // Those uploads are far too infrequent to be a load source themselves, so
-    // when the main bucket is exhausted we still admit them from a smaller
-    // reserved bucket. Only consulted on the overflow path, so the steady-state
-    // request path pays no extra Redis round-trip.
-    const reserved = isReservedIngestPath(c.req.path);
-    const reservedCheck = reserved
-      ? await rateLimiter(
-          redis,
-          `agent_org_rate_reserved:${device.orgId}`,
-          computeReservedIngestLimit(orgLimit),
-          AGENT_ORG_RATE_WINDOW_SECONDS,
-        )
-      : null;
+    if (!orgRateCheck.allowed) {
+      // #2728 — reserved lane. The org bucket is shared with no per-device
+      // fairness, so a fleet of chatty heartbeats can drain it and starve the
+      // once-per-24h patch/inventory uploads that carry operator-facing posture.
+      // Those uploads are far too infrequent to be a load source themselves, so
+      // when the main bucket is exhausted we still admit them from a smaller
+      // reserved bucket. Only consulted on the overflow path, so the steady-state
+      // request path pays no extra Redis round-trip.
+      const reserved = isReservedIngestPath(c.req.path);
+      const reservedCheck = reserved
+        ? await rateLimiter(
+            redis,
+            `agent_org_rate_reserved:${device.orgId}`,
+            computeReservedIngestLimit(orgLimit),
+            AGENT_ORG_RATE_WINDOW_SECONDS,
+          )
+        : null;
 
-    if (!reservedCheck?.allowed) {
-      // Per-device detail so a stale-posture report is diagnosable from logs
-      // without new tables: which device, which org, which endpoint, and
-      // whether the reserved lane was also spent (#2728).
-      console.warn('[agentAuth] org rate limit exceeded', {
+      if (!reservedCheck?.allowed) {
+        // Per-device detail so a stale-posture report is diagnosable from logs
+        // without new tables: which device, which org, which endpoint, and
+        // whether the reserved lane was also spent (#2728).
+        console.warn('[agentAuth] org rate limit exceeded', {
+          orgId: device.orgId,
+          deviceId: device.id,
+          path: c.req.path,
+          orgLimit,
+          reservedLane: reserved ? 'exhausted' : 'not-eligible',
+        });
+        // Advertise the full window. `orgRateCheck.resetAt` is when ONE slot
+        // frees (oldest entry + window), which under sustained saturation is
+        // ~now — advertising that would tell the whole fleet to come back in a
+        // second and turn backoff into a hot loop, amplifying the very overload
+        // that caused the rejection. De-synchronizing the herd is the agent's
+        // job, via additive jitter on this value (httputil.applyPositiveJitter),
+        // not the server's job via a varying header.
+        c.header('Retry-After', String(AGENT_ORG_RATE_WINDOW_SECONDS));
+        return c.json({ error: 'org_rate_limit_exceeded' }, 429);
+      }
+
+      console.warn('[agentAuth] org rate limit exceeded — admitted via reserved ingest lane', {
         orgId: device.orgId,
         deviceId: device.id,
         path: c.req.path,
         orgLimit,
-        reservedLane: reserved ? 'exhausted' : 'not-eligible',
       });
-      // Advertise the full window. `orgRateCheck.resetAt` is when ONE slot
-      // frees (oldest entry + window), which under sustained saturation is
-      // ~now — advertising that would tell the whole fleet to come back in a
-      // second and turn backoff into a hot loop, amplifying the very overload
-      // that caused the rejection. De-synchronizing the herd is the agent's
-      // job, via additive jitter on this value (httputil.applyPositiveJitter),
-      // not the server's job via a varying header.
-      c.header('Retry-After', String(AGENT_ORG_RATE_WINDOW_SECONDS));
-      return c.json({ error: 'org_rate_limit_exceeded' }, 429);
     }
-
-    console.warn('[agentAuth] org rate limit exceeded — admitted via reserved ingest lane', {
-      orgId: device.orgId,
-      deviceId: device.id,
-      path: c.req.path,
-      orgLimit,
-    });
   }
 
   // Tenant-status gate: a suspended/churned/soft-deleted org or partner must
@@ -917,7 +952,6 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   }
   const tenantState = tenantVerdict.tenantState;
 
-  const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
   // #3986 Layer 2 — a DEVICE drain narrows the route surface exactly as a
   // TENANT drain does. This is the layer that does the real containment work:
   // Layer 1 only decided the credential still authenticates, and without this
@@ -1040,14 +1074,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
       && pathSegments[CORE_AGENT_ACTION_INDEX] === segment0
       && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === segment1,
   );
-  // Brokered storage sessions (`storage-sessions/<sessionId>/<op>` and the
-  // `…/object` compatibility read): write operations call object storage over
-  // the network (multipart create/complete/abort, list, delete), which must
-  // never run inside a held transaction — the handlers open one short
-  // org-scoped context per database phase (routes/agents/storageSessions.ts).
-  const isStorageSessionPath =
-    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
-    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'storage-sessions';
+  // Brokered storage sessions (isStorageSessionPath, above): write operations
+  // call object storage over the network (multipart create/complete/abort,
+  // list, delete), which must never run inside a held transaction — the
+  // handlers open one short org-scoped context per database phase
+  // (routes/agents/storageSessions.ts).
   if (
     (
       isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)

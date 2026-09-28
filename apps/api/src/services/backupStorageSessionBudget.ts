@@ -23,8 +23,14 @@ export const STORAGE_SESSION_MAX_BATCH = 100;
  *               URLs at most once per ~270 s usable URL lifetime) and its stall
  *               restarts (<= 3 per object, each after 2 min without bytes) are
  *               two orders of magnitude below it.
- *      calls:   120/min, burst 120 — the per-device agent request rate, so this
- *               bucket never throttles a helper the agent limit would admit.
+ *      calls:   600/min, burst 600. One call per multipart part (or per
+ *               unbatched small file): 10 parts/s is ~50 MiB/s at the 5 MiB
+ *               minimum part size and ~640 MiB/s at the 64 MiB part size the
+ *               server issues. Storage-session calls are metered apart from the
+ *               agent's general request buckets, by a per-session gate at the
+ *               same rate plus a per-device ceiling
+ *               (services/agentStorageSessionRateLimit.ts), so this bucket and
+ *               that gate never disagree about a well-behaved helper.
  *
  * 2. Absolute ceiling for the session's lifetime, sized so that a helper
  *    following the protocol cannot reach it before the deadline ends the
@@ -42,8 +48,8 @@ export const STORAGE_SESSION_MAX_BATCH = 100;
  */
 export const STORAGE_SESSION_OBJECTS_PER_MINUTE = STORAGE_SESSION_MAX_BATCH * 60;
 export const STORAGE_SESSION_OBJECT_BURST = STORAGE_SESSION_MAX_BATCH * 10;
-export const STORAGE_SESSION_CALLS_PER_MINUTE = 120;
-export const STORAGE_SESSION_CALL_BURST = 120;
+export const STORAGE_SESSION_CALLS_PER_MINUTE = 600;
+export const STORAGE_SESSION_CALL_BURST = STORAGE_SESSION_CALLS_PER_MINUTE;
 export const STORAGE_SESSION_RESOLVES_PER_KEY = 8;
 export const STORAGE_SESSION_REFRESH_INTERVAL_SECONDS = 120;
 export const STORAGE_SESSION_EXTRA_CALLS = 200;
