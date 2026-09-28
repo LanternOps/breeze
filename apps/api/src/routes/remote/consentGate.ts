@@ -73,3 +73,9 @@ export const CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_CODE = 'CONSENT_REQUIRED_TRA
 export const CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_MESSAGE =
   'This device requires the user\'s consent before remote access. VNC can\'t ask for consent — '
   + 'use the remote desktop viewer.';
+
+export const CONSENT_REQUIRED_SCREEN_ACCESS_UNAVAILABLE_CODE = 'CONSENT_REQUIRED_SCREEN_ACCESS_UNAVAILABLE';
+export const CONSENT_REQUIRED_SCREEN_ACCESS_UNAVAILABLE_MESSAGE =
+  'This device requires the user\'s consent before anyone views or controls its screen. Screenshots, '
+  + 'screen analysis and input control can\'t ask for consent yet, so nothing was captured or sent. '
+  + 'Start a remote desktop session instead, which asks the user first.';

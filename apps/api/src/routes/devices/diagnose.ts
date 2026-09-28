@@ -9,6 +9,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { executeCommand } from '../../services/commandQueue';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { alertTopologySiteGate } from '../alerts/helpers';
+import { checkScreenAccessConsentGate } from '../remote/screenAccessConsentGate';
 
 const diagnoseRoutes = new Hono();
 
@@ -34,6 +35,19 @@ diagnoseRoutes.post(
 
       if (device.status !== 'online') {
         return c.json({ error: `Device is ${device.status}, cannot capture screenshot` }, 400);
+      }
+
+      // Screen capture honours the device's remote access consent policy: a
+      // consent-mode device refuses here, before anything reaches the agent.
+      const consent = await checkScreenAccessConsentGate({
+        deviceId: device.id,
+        orgId: device.orgId,
+        hostname: device.hostname,
+        surface: 'device_diagnose',
+        actor: auth,
+      });
+      if (!consent.ok) {
+        return c.json(consent.body, consent.status);
       }
 
       // Capture screenshot
