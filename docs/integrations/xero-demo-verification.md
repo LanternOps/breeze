@@ -141,8 +141,8 @@ Run on a `worktree-stack` of the W03b branch **with Task 10's capability flip ap
 | X29 | A contact with an address whose country is written out ("United Kingdom") and a phone with area code | Sync succeeds; Breeze shows the phone as `<country> <area> <number>` |
 | X30 | `UpdatedDateUTC` after a sync | The mapping row's remote version is an ISO timestamp (psql: `select remote_sync_token from accounting_entity_mappings where remote_entity_id = '<ContactID>'`) |
 | X31 | Delete a linked item in Xero (unused on invoices), then **Sync now** on its catalog item | Refused, terminal: "…no longer exists — unlink it and map it again"; no new item is created |
-| X32 | Connect to a Demo Company whose base currency differs from an org's currency (or set an org's currency to a different one), then **Create new** for that org; also for a catalog item | Refused with `currency_mismatch`. Review the copy for contacts: it says Xero fixes a record's currency when it is created and never lets it change — accurate for items (base-currency only); for contacts confirm against Xero's behaviour (a contact's default currency can be set) and record whether the wording should change (W03a ruling P6) |
-| X33 | Items tab: a Xero item that is purchase-only (IsSold off) with a SKU matching a catalog item | It is offered as a normal candidate/suggestion with no Archived badge (Xero items have no archived state); **Confirm match** then **Sync now** makes it sellable and keeps its purchase details |
+| X65 | Connect to a Demo Company whose base currency differs from an org's currency (or set an org's currency to a different one), then **Create new** for that org; also for a catalog item | Refused with `currency_mismatch`. Review the copy for contacts: it says Xero fixes a record's currency when it is created and never lets it change — accurate for items (base-currency only); for contacts confirm against Xero's behaviour (a contact's default currency can be set) and record whether the wording should change (W03a ruling P6) |
+| X66 | Items tab: a Xero item that is purchase-only (IsSold off) with a SKU matching a catalog item | It is offered as a normal candidate/suggestion with no Archived badge (Xero items have no archived state); **Confirm match** then **Sync now** makes it sellable and keeps its purchase details |
 
 ### W03 Results
 
@@ -164,10 +164,10 @@ Run on a `worktree-stack` of the W03b branch **with Task 10's capability flip ap
 | X29 | | |
 | X30 | | |
 | X31 | | |
-| X32 | | |
-| X33 | | |
+| X65 | | |
+| X66 | | |
 
 ## Change log
 
 - W02 — initial checklist (X1–X19); X14 and X7 block the W02c merge.
-- W03 — contacts, items and import (X16–X33); X16 gates the mapping capability flip.
+- W03 — contacts, items and import (X16–X31, plus X65–X66, numbered after W05 to avoid colliding with W04 X32–X46 and W05 X47–X64); X16 gates the mapping capability flip.
