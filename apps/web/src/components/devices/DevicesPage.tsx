@@ -5,6 +5,7 @@ import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { usePermissions } from '@/lib/permissions';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
@@ -178,6 +179,12 @@ function AddAssetMenu({
   testIdPrefix: string;
 }) {
   const { t } = useTranslation('devices');
+  // Installing an agent mints an enrollment key, which the API gates on
+  // organizations:write. A role without it (Org Viewer, Partner Technician)
+  // used to get the menu item, then "Permission denied" on every button in
+  // the modal (#7217). UX only — the API still enforces the grant.
+  const { can } = usePermissions();
+  const canInstallAgent = can('organizations', 'write');
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -221,18 +228,20 @@ function AddAssetMenu({
           data-testid={testIdPrefix}
           className="absolute right-0 z-20 mt-1 w-56 rounded-md border bg-card shadow-lg"
         >
-          <button
-            type="button"
-            role="menuitem"
-            data-testid={`${testIdPrefix}-install-agent`}
-            onClick={() => {
-              setOpen(false);
-              onInstallAgent();
-            }}
-            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
-          >
-            {t('devicesPage.addMenu.installAgent')}
-          </button>
+          {canInstallAgent && (
+            <button
+              type="button"
+              role="menuitem"
+              data-testid={`${testIdPrefix}-install-agent`}
+              onClick={() => {
+                setOpen(false);
+                onInstallAgent();
+              }}
+              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+            >
+              {t('devicesPage.addMenu.installAgent')}
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

@@ -269,6 +269,9 @@ export default defineConfig({
       // of the predicate and cannot test this at all.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
       'src/routes/enrollmentKeysSiteScope.integration.test.ts',
+      // #7217 — failed Add Device attempts leave no live key; failed
+      // short-link downloads give their use back; the list names the site.
+      'src/routes/enrollmentKeysFailureCleanup.integration.test.ts',
       // Co-located real-DB integration test for the fleet posture report
       // (#3244): the mixed never-scanned/stale/clean/detected fixture that
       // guards the two-query split — a mocked unit test cannot catch the

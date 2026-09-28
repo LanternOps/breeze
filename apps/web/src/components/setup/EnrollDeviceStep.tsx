@@ -139,7 +139,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       let dlRes: Response;
       try {
         dlRes = await fetchWithAuth(
-          `/enrollment-keys/${keyData.id}/installer/${selectedPlatform}?count=${deviceCount}`,
+          // discardKeyOnFailure (#7217): a failed build must not leave this
+          // freshly minted parent key live.
+          `/enrollment-keys/${keyData.id}/installer/${selectedPlatform}?count=${deviceCount}&discardKeyOnFailure=1`,
           { signal: dlController.signal },
         );
       } finally {
@@ -202,7 +204,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
       const keyData = await keyRes.json();
 
-      const linkRes = await fetchWithAuth(`/enrollment-keys/${keyData.id}/installer-link`, {
+      const linkRes = await fetchWithAuth(`/enrollment-keys/${keyData.id}/installer-link?discardKeyOnFailure=1`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: selectedPlatform, count: deviceCount }),

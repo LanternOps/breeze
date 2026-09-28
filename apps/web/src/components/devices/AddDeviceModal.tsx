@@ -423,6 +423,31 @@ export default function AddDeviceModal({
     [initializeCli],
   );
 
+  // #7217: Download and Generate Link each mint a parent key, then ask for the
+  // artifact. On an HTTP failure the server discards that key itself (the
+  // request carries ?discardKeyOnFailure=1). When the request never got an
+  // answer — network drop, timeout — the server may never have seen it, so
+  // the modal deletes the key here. Best effort: a key it cannot delete is
+  // logged, and stays listed in Settings → Enrollment Keys until it expires.
+  async function discardMintedKey(keyId: string) {
+    try {
+      const res = await fetchWithAuth(`/enrollment-keys/${keyId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        console.error("[AddDeviceModal] could not delete the enrollment key of a failed attempt", {
+          keyId,
+          status: res.status,
+        });
+      }
+    } catch (err) {
+      console.error("[AddDeviceModal] could not delete the enrollment key of a failed attempt", {
+        keyId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Exchange a raw enrollment key token for a short-lived one-time handle, then
   // navigate to the public-download URL. This keeps the raw token out of browser
   // history, server logs, and referrer headers.
@@ -518,6 +543,9 @@ export default function AddDeviceModal({
     setDownloadSuccess(false);
 
     let parentKeyId: string | undefined;
+    // Set once the installer response is in hand: from then on the server
+    // produced the artifact and the key is in use, whatever happens next.
+    let downloadProduced = false;
 
     try {
       // Step 1: Create the parent enrollment key. The installer downloaded in
@@ -577,7 +605,7 @@ export default function AddDeviceModal({
       let dlRes: Response;
       try {
         dlRes = await fetchWithAuth(
-          `/enrollment-keys/${parentKeyId}/installer/${selectedPlatform}?count=${deviceCount}&ttlMinutes=${ttlMinutes}`,
+          `/enrollment-keys/${parentKeyId}/installer/${selectedPlatform}?count=${deviceCount}&ttlMinutes=${ttlMinutes}&discardKeyOnFailure=1`,
           { signal: dlController.signal },
         );
       } finally {
@@ -594,6 +622,7 @@ export default function AddDeviceModal({
         return;
       }
 
+      downloadProduced = true;
       const blob = await dlRes.blob();
       const filename =
         filenameFromContentDisposition(
@@ -610,6 +639,7 @@ export default function AddDeviceModal({
 
       setDownloadSuccess(true);
     } catch (err) {
+      if (parentKeyId && !downloadProduced) void discardMintedKey(parentKeyId);
       if (err instanceof DOMException && err.name === "AbortError") {
         setDownloadError(
           "Download timed out. Please check your connection and try again.",
@@ -631,6 +661,8 @@ export default function AddDeviceModal({
     setLinkError(undefined);
     setGeneratedLink("");
 
+    let parentKeyId: string | undefined;
+    let linkAnswered = false;
     try {
       // Step 1: Create parent enrollment key
       const keyRes = await fetchWithAuth("/enrollment-keys", {
@@ -664,10 +696,11 @@ export default function AddDeviceModal({
       }
 
       const keyData = await keyRes.json();
+      parentKeyId = keyData.id;
 
       // Step 2: Generate public link
       const linkRes = await fetchWithAuth(
-        `/enrollment-keys/${keyData.id}/installer-link`,
+        `/enrollment-keys/${keyData.id}/installer-link?discardKeyOnFailure=1`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -678,6 +711,7 @@ export default function AddDeviceModal({
           }),
         },
       );
+      linkAnswered = true;
 
       if (!linkRes.ok) {
         const body = await linkRes
@@ -693,6 +727,7 @@ export default function AddDeviceModal({
       const linkData = await linkRes.json();
       setGeneratedLink(linkData.shortUrl ?? linkData.url);
     } catch (err) {
+      if (parentKeyId && !linkAnswered) void discardMintedKey(parentKeyId);
       const message =
         err instanceof Error ? err.message : t("addDeviceModal.unknownError");
       setLinkError(`Failed to generate link: ${message}`);
