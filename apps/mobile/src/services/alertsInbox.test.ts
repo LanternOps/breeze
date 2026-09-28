@@ -14,7 +14,7 @@ vi.mock('./fetchWithTimeout', () => ({
   fetchWithTimeout: (...a: unknown[]) => fetchWithTimeout(...a),
 }));
 
-import { getAlerts, getAlertStats } from './api';
+import { deviceNeedsRestart, getAlert, getAlerts, getAlertStats, hasQueuedReboot } from './api';
 
 function jsonOnce(body: unknown) {
   fetchWithTimeout.mockImplementationOnce(() =>
@@ -92,5 +92,85 @@ describe('getAlerts inbox query', () => {
     });
     const alerts = await getAlerts();
     expect(alerts[0].category).toBeUndefined();
+  });
+});
+
+describe('alert source', () => {
+  it('maps the inbox source so the detail screen can offer Reboot now', async () => {
+    jsonOnce({
+      data: [
+        { id: 'a1', title: 'Reboot pending on host-1', message: 'm', severity: 'medium', status: 'active',
+          triggeredAt: '2026-09-20T12:00:00.000Z', source: 'maintenance-reboot-sweep',
+          device: { id: 'dev-1', hostname: 'host-1' } },
+        { id: 'a2', title: 'Disk full', message: 'm', severity: 'high', status: 'active',
+          triggeredAt: '2026-09-20T12:00:00.000Z', source: null },
+      ],
+    });
+    const [reboot, other] = await getAlerts();
+    expect(reboot.source).toBe('maintenance-reboot-sweep');
+    expect(other.source).toBeUndefined();
+  });
+
+  it('reads the source and status from the core alert context', async () => {
+    jsonOnce({
+      id: 'a1', title: 'Reboot pending on host-1', message: 'm', severity: 'medium', status: 'resolved',
+      triggeredAt: '2026-09-20T12:00:00.000Z', deviceId: 'dev-1',
+      device: { id: 'dev-1', hostname: 'host-1', osType: 'windows', status: 'online' },
+      context: { source: 'maintenance-reboot-sweep', pendingDays: 9 },
+    });
+    const alert = await getAlert('a1');
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/api/v1/alerts/a1');
+    // The detail screen reboots this device, so it must come from the server.
+    expect(alert.deviceId).toBe('dev-1');
+    expect(alert.source).toBe('maintenance-reboot-sweep');
+    expect(alert.metadata?.status).toBe('resolved');
+  });
+
+  it('ignores a non-string context source', async () => {
+    jsonOnce({ id: 'a1', title: 't', message: 'm', severity: 'low', status: 'active',
+      triggeredAt: '2026-09-20T12:00:00.000Z', context: { source: 7 } });
+    expect((await getAlert('a1')).source).toBeUndefined();
+  });
+});
+
+describe('hasQueuedReboot', () => {
+  it('finds a pending reboot', async () => {
+    jsonOnce({ data: [{ type: 'script' }, { type: 'reboot' }] });
+    await expect(hasQueuedReboot('dev-1')).resolves.toBe(true);
+    const url = String(fetchWithTimeout.mock.calls[0][0]);
+    expect(url).toContain('/api/v1/devices/dev-1/commands?status=pending');
+  });
+
+  it('finds a reboot already sent to the agent', async () => {
+    jsonOnce({ data: [] });
+    jsonOnce({ data: [{ type: 'reboot' }] });
+    await expect(hasQueuedReboot('dev-1')).resolves.toBe(true);
+    expect(String(fetchWithTimeout.mock.calls[1][0])).toContain('status=sent');
+  });
+
+  it('reports none when only other commands are waiting', async () => {
+    jsonOnce({ data: [{ type: 'script' }] });
+    jsonOnce({ data: [] });
+    await expect(hasQueuedReboot('dev-1')).resolves.toBe(false);
+  });
+
+  it('rejects when the check itself fails, rather than reporting none', async () => {
+    fetchWithTimeout.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 500 }));
+    await expect(hasQueuedReboot('dev-1')).rejects.toThrow();
+  });
+});
+
+describe('deviceNeedsRestart', () => {
+  it('follows the device pendingReboot flag', async () => {
+    jsonOnce({ id: 'dev-1', pendingReboot: true });
+    await expect(deviceNeedsRestart('dev-1')).resolves.toBe(true);
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/api/v1/devices/dev-1');
+    jsonOnce({ id: 'dev-1', pendingReboot: false });
+    await expect(deviceNeedsRestart('dev-1')).resolves.toBe(false);
+  });
+
+  it('treats a missing flag as no restart needed', async () => {
+    jsonOnce({ id: 'dev-1' });
+    await expect(deviceNeedsRestart('dev-1')).resolves.toBe(false);
   });
 });

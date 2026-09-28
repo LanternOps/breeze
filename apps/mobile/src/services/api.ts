@@ -76,6 +76,9 @@ export interface Alert {
   /** Rule-template category (e.g. "Security", "Performance"); absent for
    * alerts created without a rule. */
   category?: string;
+  /** The emitter's tag from the alert's context (e.g.
+   * 'maintenance-reboot-sweep'); absent when the server did not send one. */
+  source?: string;
   deviceId?: string;
   deviceName?: string;
   acknowledged: boolean;
@@ -287,7 +290,7 @@ type MobileAlertRecord = {
   title: string;
   message: string;
   severity: Alert['severity'];
-  status: 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+  status: 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
   triggeredAt?: string;
   createdAt?: string;
   acknowledgedAt?: string | null;
@@ -300,6 +303,10 @@ type MobileAlertRecord = {
    * always-present.
    */
   category?: string | null;
+  /** `alerts.context->>'source'`, sent by `/alerts/inbox`. */
+  source?: string | null;
+  /** The raw context JSON, sent by the core `GET /alerts/:id`. */
+  context?: unknown;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -613,6 +620,12 @@ export async function coreRequest<T>(
 
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
 
+function contextSource(context: unknown): string | undefined {
+  if (!context || typeof context !== 'object') return undefined;
+  const source = (context as { source?: unknown }).source;
+  return typeof source === 'string' ? source : undefined;
+}
+
 function mapAlert(alert: MobileAlertRecord): Alert {
   const normalizedSeverity: Alert['severity'] =
     alert.severity === 'info' ? 'low' : alert.severity;
@@ -624,6 +637,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     severity: normalizedSeverity,
     type: alert.type || 'alert',
     category: alert.category ?? undefined,
+    source: alert.source ?? contextSource(alert.context),
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),
@@ -1216,6 +1230,37 @@ export async function sendDeviceAction(
     id: response.id || response.commandId || '',
     type: action
   };
+}
+
+/**
+ * Whether the device itself still reports that it needs a restart
+ * (`devices.pending_reboot`). A reboot-pending alert is never auto-resolved,
+ * so it can outlive the restart it asked for; this is the current truth.
+ */
+export async function deviceNeedsRestart(deviceId: string): Promise<boolean> {
+  const response = await requestWithPrefix<{ pendingReboot?: unknown }>(
+    `/devices/${deviceId}`,
+    API_CORE_PREFIX,
+  );
+  return response.pendingReboot === true;
+}
+
+/**
+ * Best-effort check for a restart already queued for the device: a `reboot`
+ * command the agent has not finished (`pending` or `sent`), looking at the
+ * newest 100 of each. The alert-screen Reboot now uses it so reopening a
+ * still-open alert does not queue a second one. It is a read before a write,
+ * so two people confirming at the same moment can still both send.
+ */
+export async function hasQueuedReboot(deviceId: string): Promise<boolean> {
+  for (const status of ['pending', 'sent'] as const) {
+    const response = await requestWithPrefix<{ data?: Array<{ type?: string }> }>(
+      `/devices/${deviceId}/commands?status=${status}&limit=100`,
+      API_CORE_PREFIX,
+    );
+    if ((response.data ?? []).some((command) => command.type === 'reboot')) return true;
+  }
+  return false;
 }
 
 export type WakeFailureCode =
