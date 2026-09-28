@@ -3419,7 +3419,8 @@
     "tryAdjustingYourSearchOrFilters": "Tente ajustar sua pesquisa ou filtros.",
     "active": "Ativo",
     "revoked": "Revogado",
-    "expired": "Expirado"
+    "expired": "Expirado",
+    "statusFilterLabel": "Status da chave"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Carregando chaves de API...",
@@ -4014,7 +4015,8 @@
     "cannotDeleteAssignedRole": "Não é possível excluir a função com usuários atribuídos",
     "inheritedFromParentRole": "Herdado da função pai",
     "waitingForPermissionCatalog": "Aguardando o carregamento do catálogo de permissões",
-    "summary": "{{filtered}} de {{total}} funções"
+    "summary": "{{filtered}} de {{total}} funções",
+    "typeFilterLabel": "Tipo de função"
   },
   "roleSelector": {
     "currentRole": "Função atual",
@@ -4139,7 +4141,8 @@
     "delete": "Excluir",
     "allStatuses": "Todos os status",
     "deactivate": "Desativar",
-    "activate": "Ativar"
+    "activate": "Ativar",
+    "statusFilterLabel": "Status do provedor"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Falha ao buscar provedores de SSO",
@@ -5418,7 +5421,8 @@
       "title": "Excluir campo personalizado",
       "messagePrefix": "Tem certeza de que deseja excluir",
       "messageSuffix": "Isto removerá a definição do campo e todos os valores armazenados nos dispositivos."
-    }
+    },
+    "typeFilterLabel": "Tipo de campo"
   },
   "knownGuestsSettings": {
     "title": "Convidados conhecidos",

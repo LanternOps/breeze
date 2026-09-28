@@ -3419,7 +3419,8 @@
     "tryAdjustingYourSearchOrFilters": "Essayez d’ajuster votre recherche ou vos filtres.",
     "active": "Active",
     "revoked": "Révoquée",
-    "expired": "Expirée"
+    "expired": "Expirée",
+    "statusFilterLabel": "État de la clé"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Chargement des clés API...",
@@ -4009,7 +4010,8 @@
     "cannotDeleteAssignedRole": "Impossible de supprimer un rôle avec des utilisateurs assignés",
     "inheritedFromParentRole": "Hérité du rôle de parent",
     "waitingForPermissionCatalog": "En attente du chargement du catalogue des permissions",
-    "summary": "{{filtered}} de {{total}} Rôles"
+    "summary": "{{filtered}} de {{total}} Rôles",
+    "typeFilterLabel": "Type de rôle"
   },
   "roleSelector": {
     "currentRole": "Rôle actuel",
@@ -4134,7 +4136,8 @@
     "delete": "Supprimer",
     "allStatuses": "Tous les statuts",
     "deactivate": "Désactiver",
-    "activate": "Activez"
+    "activate": "Activez",
+    "statusFilterLabel": "État du fournisseur"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Impossible de récupérer les fournisseurs SSO",
@@ -5413,7 +5416,8 @@
       "title": "Supprimer le champ personnalisé",
       "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
       "messageSuffix": " Cela supprimera la définition du champ et toutes les valeurs stockées sur les appareils."
-    }
+    },
+    "typeFilterLabel": "Type de champ"
   },
   "knownGuestsSettings": {
     "title": "Invités connus",

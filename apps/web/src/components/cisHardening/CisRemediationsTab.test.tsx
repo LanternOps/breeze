@@ -16,7 +16,7 @@ import CisRemediationsTab from './CisRemediationsTab';
 
 describe('CisRemediationsTab status filter select accessible name (#7156)', () => {
   it('gives the status filter select a real accessible name', async () => {
-    render(<CisRemediationsTab />);
+    render(<CisRemediationsTab refreshKey={0} />);
     expect(await screen.findByRole('combobox', { name: 'Status' })).toBeInTheDocument();
   });
 });

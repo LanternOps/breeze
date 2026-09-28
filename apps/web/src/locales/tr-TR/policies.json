@@ -1629,7 +1629,8 @@
       "bulkSoftwareDeployment": "Toplu Yazılım Dağıtımı",
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Tamamlandı (7 gün)",
-      "summaryFailed7d": "Başarısız (7 gün)"
+      "summaryFailed7d": "Başarısız (7 gün)",
+      "categoryFilterLabel": "Kategori"
     },
     "softwareInventory": {
       "allowed": "İzin veriliyor",

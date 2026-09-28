@@ -1629,7 +1629,8 @@
       "bulkSoftwareDeployment": "Implantação de software em massa",
       "catalogTab": "Catálogo",
       "summaryCompleted7d": "Concluídas (7 dias)",
-      "summaryFailed7d": "Com falha (7 dias)"
+      "summaryFailed7d": "Com falha (7 dias)",
+      "categoryFilterLabel": "Categoria"
     },
     "softwareInventory": {
       "allowed": "Permitido",

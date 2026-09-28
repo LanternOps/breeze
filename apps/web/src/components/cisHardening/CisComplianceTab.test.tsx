@@ -16,7 +16,7 @@ import CisComplianceTab from './CisComplianceTab';
 
 describe('CisComplianceTab OS filter select accessible name (#7156)', () => {
   it('gives the OS filter select a real accessible name', async () => {
-    render(<CisComplianceTab />);
+    render(<CisComplianceTab refreshKey={0} />);
     expect(await screen.findByRole('combobox', { name: 'Operating system' })).toBeInTheDocument();
   });
 });

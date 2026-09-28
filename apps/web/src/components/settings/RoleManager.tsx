@@ -2,6 +2,7 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -226,15 +227,16 @@ export default function RoleManager({
             onChange={(event) => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
-          <select
+          <FilterSelect
+            label={t('roleManager.typeFilterLabel')}
             value={typeFilter}
             onChange={(event) => setTypeFilter(event.target.value as 'all' | 'system' | 'custom')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
+            className="w-full sm:w-40"
           >
             <option value="all">{t('roleManager.allTypes')}</option>
             <option value="system">{t('roleManager.systemRoles')}</option>
             <option value="custom">{t('roleManager.customRoles')}</option>
-          </select>
+          </FilterSelect>
           <button
             type="button"
             onClick={() => onCreateRole?.()}

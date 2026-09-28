@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Plus, Pencil, Trash2, Search, Settings, ChevronDown, AlertCircle } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { FilterSelect } from '../shared/FilterSelect';
 import { getJwtClaims } from '../../lib/authScope';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
 import type { CustomFieldDefinition, CustomFieldType, CustomFieldOptions } from '@breeze/shared';
@@ -416,10 +417,11 @@ export default function CustomFieldsPage() {
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
-        <select
+        <FilterSelect
+          label={t('customFieldsPage.typeFilterLabel')}
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as CustomFieldType | '')}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-10"
         >
           <option value="">{t('customFieldsPage.allTypes')}</option>
           {FIELD_TYPES.map((type) => (
@@ -427,7 +429,7 @@ export default function CustomFieldsPage() {
               {t(/* i18n-dynamic */ type.labelKey)}
             </option>
           ))}
-        </select>
+        </FilterSelect>
       </div>
 
       {filteredFields.length === 0 ? (
