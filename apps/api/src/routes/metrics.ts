@@ -265,7 +265,7 @@ const backupDispatchFailuresTotal = new Counter({
 
 const backupReadDispatchesTotal = new Counter({
   name: 'breeze_backup_read_dispatch_total',
-  help: 'Restore-shaped backup command deliveries by command type, mode (brokered storage session or legacy storage destination) and reason',
+  help: 'Restore-shaped backup command delivery attempts by command type, mode (brokered, local, deferred, refused, legacy) and reason',
   labelNames: ['command_type', 'mode', 'reason'] as const,
   registers: [register]
 });

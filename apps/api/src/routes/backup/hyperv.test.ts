@@ -170,6 +170,7 @@ vi.mock('../../middleware/auth', () => ({
 
 import { authMiddleware } from '../../middleware/auth';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
+import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';
 
 describe('hyperv routes', () => {
   let app: Hono;
@@ -635,6 +636,38 @@ describe('hyperv routes', () => {
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Device is offline, cannot execute command' });
+  });
+
+  it('reports a 409 with the update instruction when the device backup helper is too old', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+          {
+            id: '55555555-5555-4555-8555-555555555555',
+            providerSnapshotId: 'hyperv-accounting-1',
+            metadata: { backupKind: 'hyperv_export' },
+            configId: 'config-1',
+          },
+      ])
+    );
+    queueDestinationConfigSelect();
+    dispatchTrackedDbRestoreMock.mockResolvedValueOnce({
+      ok: false,
+      error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE,
+    });
+
+    const res = await app.request('/backup/hyperv/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: '55555555-5555-4555-8555-555555555555',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE });
   });
 
   // D20b item D: a snapshot that predates destination tracking (configId

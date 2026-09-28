@@ -292,6 +292,44 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(queueCommandMock).not.toHaveBeenCalled();
   });
 
+  it('refuses a storage-destination read to a device whose backup helper predates storage sessions, writing no row', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 0 });
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'backup_restore',
+      payload: { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res).toMatchObject({ ok: false, code: 'backup_helper_update_required' });
+    expect(res.ok ? '' : res.error).toMatch(/^Update the Breeze agent on this device/);
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(claimMock).not.toHaveBeenCalled();
+  });
+
+  it('queues a storage-destination read to a device whose backup helper supports storage sessions', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1 });
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'backup_restore',
+      payload: { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res.ok).toBe(true);
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues a local-destination read to any helper', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 0 });
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'backup_restore',
+      payload: { snapshotId: 'snap-1', provider: 'local', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res.ok).toBe(true);
+  });
+
   it('a non-trust error from the trust check propagates rather than being swallowed', async () => {
     selectReturning(deviceRow('online'));
     assertAllowedMock.mockRejectedValue(new Error('db down'));

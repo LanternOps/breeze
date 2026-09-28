@@ -363,6 +363,23 @@ describe('backup verification service', () => {
     expect(backupVerifications.length).toBe(priorCount);
   });
 
+  it('answers a helper that cannot read backups as a 409 carrying the update instruction', async () => {
+    const { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } = await import('../../services/backupReadHelperGate');
+    const { BackupVerificationDispatchError } = await import('./verificationService');
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({ error: BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE });
+
+    const err = await runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      verificationType: 'integrity',
+      source: 'test'
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BackupVerificationDispatchError);
+    expect((err as InstanceType<typeof BackupVerificationDispatchError>).message).toBe(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
+    expect((err as InstanceType<typeof BackupVerificationDispatchError>).statusCode).toBe(409);
+  });
+
   it('does not let a manual source string select scheduled system authority', async () => {
     vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
       command: { id: 'cmd-manual-source', status: 'sent' } as any,

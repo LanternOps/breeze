@@ -16,6 +16,7 @@ import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
+import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 
 export const restoreRoutes = new Hono();
 
@@ -29,10 +30,13 @@ function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
 }
 
 function mapDispatchErrorStatus(error: string): number {
-  return error.startsWith('Device is ') ? 409 : 502;
+  // Both are states of the target device the operator can act on, not
+  // dispatch failures.
+  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) ? 409 : 502;
 }
 
 function dispatchFailureReason(error: string): string {
+  if (isBackupHelperUpdateRequiredError(error)) return 'helper_update_required';
   return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
 

@@ -69,11 +69,18 @@ export function setLowReadinessDevices(count: number): void {
 }
 
 /**
- * One restore-shaped command delivery: `mode` is `brokered` (a storage session
- * was delivered) or `legacy` (the storage destination was delivered), with the
- * reason the command could not be brokered. The legacy count reaching zero is
- * the signal that storage destinations are no longer sent to agents for reads.
+ * One restore-shaped command delivery attempt, by `mode`: `brokered` (a storage
+ * session was delivered), `local` (a local destination path), `deferred`
+ * (released until the snapshot's file index is ready), `refused` (never
+ * delivered), or `legacy` (a VM command delivered as queued, carrying no
+ * destination) — with the reason the command could not be brokered. A storage
+ * destination is never delivered for a read.
  */
-export function recordBackupReadDispatch(commandType: string, mode: 'brokered' | 'legacy', reason: string, count = 1): void {
+export function recordBackupReadDispatch(
+  commandType: string,
+  mode: 'brokered' | 'local' | 'deferred' | 'refused' | 'legacy',
+  reason: string,
+  count = 1,
+): void {
   recorder.onReadDispatch(commandType, mode, reason, count);
 }

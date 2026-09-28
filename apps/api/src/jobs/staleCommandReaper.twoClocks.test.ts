@@ -201,6 +201,23 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
     expect(setArg.result.error).not.toContain('did not reconnect');
   });
 
+  it('a legacy pending row whose delivery kept being deferred reports why it was never delivered', async () => {
+    selectMock.mockReturnValue(selectChain([scriptRow({
+      type: 'backup_restore',
+      payload: { restoreJobId: 'rj-1' },
+      deliverBy: null,
+      result: { deliveryDeferred: "the backup's file list was still being prepared" },
+    })]));
+    const { command: update } = routeUpdates([{ id: 'c1' }]);
+
+    expect(await reapStaleDeviceCommands()).toBe(1);
+    const setArg = update.set.mock.calls[0]![0] as { result: { status: string; reason?: string; error: string } };
+    expect(setArg.result.status).toBe('timeout');
+    expect(setArg.result.reason).toBe('delivery_deferred');
+    expect(setArg.result.error).toContain("the backup's file list was still being prepared");
+    expect(setArg.result.error).not.toContain('agent never received');
+  });
+
   it('a legacy pending row (deliver_by NULL) keeps the created_at + execution-timeout rule', async () => {
     selectMock.mockReturnValue(selectChain([scriptRow({ deliverBy: null })]));
     const { command: update } = routeUpdates([{ id: 'c1' }]);

@@ -22,6 +22,7 @@ import {
   agentBinaryUpdateDispatchRefusal,
 } from './agentEditionCompat';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
+import { backupReadHelperRefusal } from './backupReadHelperGate';
 import { recordCommandDispatch } from './anomalyMetrics';
 // #5128. `dispatchDeviceCommand` imports back from this module; both uses are
 // function-level (neither evaluates the other's exports at module load), so the
@@ -1142,6 +1143,7 @@ function shouldCaptureCrossTenantRefusal(expectedOrgId: string): boolean {
 async function precheckCommandExecution(
   deviceId: string,
   type: CommandType | string,
+  payload: CommandPayload,
   options: ExecuteCommandOptions,
 ): Promise<CommandPrecheckOutcome> {
   const { userId } = options;
@@ -1164,6 +1166,7 @@ async function precheckCommandExecution(
       agentEdition: devices.agentEdition,
       agentVersion: devices.agentVersion,
       watchdogVersion: devices.watchdogVersion,
+      backupReadProtocolVersion: devices.backupReadProtocolVersion,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -1239,6 +1242,13 @@ async function precheckCommandExecution(
       `[commandQueue] ${type} dispatch refused for device ${deviceId} (#4093): ${editionRefusal}`,
     );
     return { ok: false, result: { status: 'failed', error: editionRefusal } };
+  }
+
+  // Same rule as the queue lane (dispatchDeviceCommand.ts): a storage read to
+  // a helper that cannot use a storage session is refused before a row exists.
+  const helperRefusal = backupReadHelperRefusal(type, payload, device.backupReadProtocolVersion);
+  if (helperRefusal) {
+    return { ok: false, result: { status: 'failed', error: helperRefusal } };
   }
 
   if (targetRole === 'watchdog') {
@@ -1561,7 +1571,7 @@ export async function executeCommand(
   payload: CommandPayload = {},
   options: ExecuteCommandOptions = {}
 ): Promise<CommandResult> {
-  const precheck = await precheckCommandExecution(deviceId, type, options);
+  const precheck = await precheckCommandExecution(deviceId, type, payload, options);
   if (!precheck.ok) return precheck.result;
   return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
 }
@@ -1674,10 +1684,10 @@ export async function executeCommandWithSystemPrecheck(
   // guard above says so out loud. It must not also widen what the caller can
   // reach while it is being wrong.
   const precheck = ambient
-    ? await precheckCommandExecution(deviceId, type, options)
+    ? await precheckCommandExecution(deviceId, type, payload, options)
     : await runOutsideDbContextSafe(() =>
       withSystemDbAccessContext(
-        () => precheckCommandExecution(deviceId, type, options),
+        () => precheckCommandExecution(deviceId, type, payload, options),
         'commandQueue.executeCommandWithSystemPrecheck',
       ));
 

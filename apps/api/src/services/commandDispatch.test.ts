@@ -332,6 +332,21 @@ describe('command dispatch helpers', () => {
     expect(where).toHaveBeenCalledTimes(1);
   });
 
+  it('records why delivery was deferred when a released command carries a reason, and nothing otherwise', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    await releaseClaimedCommandDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'), 'index still being prepared');
+    expect(set).toHaveBeenLastCalledWith({
+      status: 'pending',
+      executedAt: null,
+      result: { deliveryDeferred: 'index still being prepared' },
+    });
+
+    await releaseClaimedCommandDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'));
+    expect(set).toHaveBeenLastCalledWith({ status: 'pending', executedAt: null });
+  });
+
   // #5128: the pending-scan predicate must exclude rows whose deadline has
   // already passed — those belong to the reaper, not to a claiming heartbeat.
   it('excludes a command whose deliver_by has already passed from the claim query', async () => {

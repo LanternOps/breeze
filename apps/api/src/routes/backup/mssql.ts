@@ -36,6 +36,7 @@ import {
 import { parseAgentJsonStdout } from '../../services/agentCommandStdout';
 import { applyBackupStartedAck, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
+import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 
 export const mssqlRoutes = new Hono();
 
@@ -459,7 +460,9 @@ mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resourc
 // reject-on-offline restore command, not an infra failure — surface it as
 // 409 so callers/monitoring can distinguish it from a genuine enqueue error.
 function mapDispatchErrorStatus(error: string): number {
-  return error.startsWith('Device is ') ? 409 : 502;
+  // Both are states of the target device the operator can act on, not
+  // dispatch failures.
+  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) ? 409 : 502;
 }
 
 // ── POST /mssql/restore — trigger MSSQL restore ──
@@ -688,7 +691,7 @@ mssqlRoutes.post(
     if (result.status === 'failed') {
       return c.json(
         { error: result.error || 'MSSQL verify failed' },
-        500
+        isBackupHelperUpdateRequiredError(result.error) ? 409 : 500
       );
     }
 

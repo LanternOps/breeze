@@ -928,6 +928,9 @@ describe('command queue service', () => {
         agentId: 'agent-1',
         orgId: 'org-1',
         hostname: 'host-1',
+        // A helper that supports storage sessions, so storage reads pass the
+        // enqueue gate and reach the delivery refresher under test.
+        backupReadProtocolVersion: 1,
       };
       const queued = { id: 'cmd-x' };
       const completed = opts.completedResult ?? {
@@ -1658,6 +1661,60 @@ describe('command queue service', () => {
       await expect(queueCommand('dev-stranded', 'update_watchdog', { version: '0.108.0' }))
         .rejects.toThrow(/executeCommand/i);
       expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('backup read helper gate on executeCommand', () => {
+    function mockDevice(device: Record<string, unknown>) {
+      let pollCall = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(() => {
+              pollCall += 1;
+              if (pollCall === 1) return Promise.resolve([device]);
+              return Promise.resolve([{ id: 'cmd-v', status: 'completed', result: { status: 'completed' } }]);
+            }),
+          }),
+        }),
+      }) as any);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-v', type: 'mssql_verify' }]),
+        execute: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+      return insertValues;
+    }
+
+    const device = {
+      id: 'dev-sql',
+      status: 'online',
+      agentId: null,
+      orgId: 'org-1',
+      hostname: 'sql-01',
+      watchdogLastSeen: null,
+      agentEdition: null,
+      agentVersion: '0.118.0',
+      watchdogVersion: null,
+    };
+    const verifyPayload = { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: 'org-1' } };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('refuses a storage-destination read to a helper below the brokered read protocol, writing no row', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 0 });
+      const result = await executeCommand('dev-sql', 'mssql_verify', verifyPayload, { userId: 'user-1' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/^Update the Breeze agent on this device/);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('lets the same read through to a helper that supports the protocol', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 1 });
+      await executeCommand('dev-sql', 'mssql_verify', verifyPayload, { userId: 'user-1', timeoutMs: 10 });
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'mssql_verify' }));
     });
   });
 

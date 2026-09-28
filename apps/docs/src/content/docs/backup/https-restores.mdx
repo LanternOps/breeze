@@ -1,0 +1,70 @@
+---
+title: HTTPS for Restores
+description: Restores and backup verification read from S3 storage through a short-lived storage session over HTTPS. What a self-hosted install needs, and how to move plain-HTTP MinIO or a plain-HTTP agent API to HTTPS.
+sidebar:
+  order: 5.5
+  label: "HTTPS for Restores"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Restores, test restores and backup verification that read from **S3 or S3-compatible storage** (MinIO, Wasabi, Backblaze B2 and so on) use a short-lived, read-only **storage session**. The session is bound to one command and one device. The device never receives the storage destination or its access keys for a read. Backups themselves are not affected by anything on this page.
+
+Since v0.119, Breeze has no fallback for a read that cannot use a storage session. If a requirement below is missing, the restore is refused with a message that names what to change. Before v0.119, such a restore fell back to sending the storage destination to the device.
+
+Local and NAS destinations are paths, not credentials. They restore the same way as before, on any agent version.
+
+## Requirements
+
+A restore, test restore or verification from S3 storage needs all three of these:
+
+| Requirement | Why | If it is missing |
+|---|---|---|
+| The device runs the **v0.118 agent or later** | Older backup components cannot use a storage session. | `Update the Breeze agent on this device, then try again.` (HTTP 409 from the restore, MSSQL, Hyper-V and verification routes, before anything is queued.) |
+| Agents reach the Breeze API over **HTTPS**, and `PUBLIC_API_URL` is set to that address | The device redeems the storage session at this origin. It accepts only a bare `https://` origin that matches the server it is enrolled with. | `Restoring or verifying backups requires agents to reach Breeze over HTTPS.` or `Set PUBLIC_API_URL to the address agents use.` |
+| The backup destination's **storage endpoint uses HTTPS** | Signed object URLs are only issued for an HTTPS endpoint. | `Restoring or verifying backups requires the storage endpoint to use HTTPS.` |
+
+An empty endpoint (AWS S3) counts as HTTPS. So does an endpoint entered without a scheme: `minio.example.com:9000` is treated as `https://minio.example.com:9000`.
+
+<Aside type="caution" title="Check before you upgrade">
+If your storage configuration uses an `http://` endpoint, or your agents connect to an `http://` API address, **every S3 restore and verification is refused after the upgrade to v0.119.** There is no setting that turns the old path back on. Move to HTTPS first, then upgrade.
+</Aside>
+
+## Moving the agent API to HTTPS
+
+Put Breeze behind a TLS-terminating reverse proxy. The shipped Caddy configuration already does this. See [TLS & Reverse Proxy](/deploy/tls/).
+
+<Steps>
+1. Serve the API at an `https://` address with a certificate the devices trust. See the note on certificates below.
+
+2. Set `PUBLIC_API_URL` to exactly that address, for example `https://rmm.example.com`, and restart the API.
+
+3. Make sure the agents connect at that address. Agents enrolled against an `http://` URL keep using it. Re-enroll them, or update `server_url` in the agent config, so they use the `https://` address.
+</Steps>
+
+## Moving MinIO (or another S3-compatible store) to HTTPS
+
+Breeze records which endpoint **host and port** and which bucket each backup was written to, and it only restores a backup from that same location. The scheme is not part of it: `http://minio.example.com:9000` and `https://minio.example.com:9000` are the same location, but `https://minio.example.com` (port 443) is a different one. A backup written before the change and read from a different host or port is refused with `This backup was written to a different bucket or endpoint than its backup configuration now uses.`
+
+So keep the host and port your existing backups were written to:
+
+- **TLS on MinIO itself (recommended).** Put `public.crt` and `private.key` in MinIO's certificate directory (`~/.minio/certs` by default, or the directory passed with `--certs-dir`) and restart MinIO. It then serves HTTPS on the same port, and existing backups stay restorable.
+- **A reverse proxy in front of MinIO.** Terminate TLS at Caddy or Nginx and proxy to MinIO's HTTP port, passing the `Host` header through unchanged (S3 request signatures cover it). The proxy has to listen on the **same host and port** the backups were written to, or those backups cannot be restored. If it cannot, only backups taken after the change are restorable.
+
+Then edit the storage configuration in Breeze and change only the scheme of the endpoint to `https://`.
+
+Run a **Test connection** on the updated configuration before relying on it.
+
+<Aside title="Certificates">
+The device checks the storage and API certificates against its operating system's trust store. Use a certificate from a public CA, or an internal CA certificate that you have deployed to every device's trust store. A self-signed certificate that the devices do not trust fails the same way it would in a browser.
+</Aside>
+
+## Other refusal messages
+
+| Message | What to do |
+|---|---|
+| `The storage location of this backup has not been confirmed yet.` | Wait for the next storage check, or run a new backup. |
+| `The backup's file list was still being prepared for a secure restore.` | Nothing. The restore is held and delivered automatically once the file list is ready. |
+| `This restore was queued by an earlier version of Breeze and can no longer be delivered.` | Start the restore again. |
+
+See [Restoring Data](/backup/restoring/) for the restore workflow and [Backup Troubleshooting](/backup/troubleshooting/) for other failures.
