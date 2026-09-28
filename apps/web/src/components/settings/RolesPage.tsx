@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import RoleManager, {
   type Role,
-  type Permission,
   type EffectivePermission,
+  type RoleFormData,
   RoleFormModal,
   DeleteRoleModal,
   RoleUsersModal
@@ -188,12 +188,7 @@ export default function RolesPage() {
     setInheritedPermissions([]);
   };
 
-  const handleCreateSubmit = async (data: {
-    name: string;
-    description: string;
-    permissions: Permission[];
-    parentRoleId: string | null;
-  }) => {
+  const handleCreateSubmit = async (data: RoleFormData) => {
     setSubmitting(true);
     try {
       // When focused on a specific org (partner admin drilled into one org, or
@@ -228,12 +223,7 @@ export default function RolesPage() {
     }
   };
 
-  const handleEditSubmit = async (data: {
-    name: string;
-    description: string;
-    permissions: Permission[];
-    parentRoleId: string | null;
-  }) => {
+  const handleEditSubmit = async (data: RoleFormData) => {
     if (!selectedRole) return;
 
     setSubmitting(true);
@@ -261,12 +251,7 @@ export default function RolesPage() {
     }
   };
 
-  const handleCloneSubmit = async (data: {
-    name: string;
-    description: string;
-    permissions: Permission[];
-    parentRoleId: string | null;
-  }) => {
+  const handleCloneSubmit = async (data: RoleFormData) => {
     if (!selectedRole) return;
 
     setSubmitting(true);
@@ -292,6 +277,9 @@ export default function RolesPage() {
         [...originalPermSet].some((p) => !newPermSet.has(p));
 
       const parentRoleChanged = data.parentRoleId !== selectedRole.parentRoleId;
+      // The server copies force_mfa from the source role, so only a changed
+      // toggle needs the follow-up PATCH (#5317).
+      const forceMfaChanged = data.forceMfa !== (selectedRole.forceMfa === true);
 
       // Step 2 (#822 issue #1): if the user edited permissions / description /
       // parent, PATCH the new role with the changes. PREVIOUSLY this PATCH's
@@ -300,14 +288,20 @@ export default function RolesPage() {
       // their edited permissions but silently got the original ones. Now the
       // PATCH goes through runAction so any failure surfaces as a clear toast
       // and the modal does NOT close on partial-success.
-      if (permissionsChanged || data.description !== selectedRole.description || parentRoleChanged) {
+      if (
+        permissionsChanged ||
+        data.description !== selectedRole.description ||
+        parentRoleChanged ||
+        forceMfaChanged
+      ) {
         await runAction({
           request: () => fetchWithAuth(`/roles/${clonedRole.id}`, {
             method: 'PATCH',
             body: JSON.stringify({
               description: data.description,
               permissions: data.permissions,
-              parentRoleId: data.parentRoleId
+              parentRoleId: data.parentRoleId,
+              forceMfa: data.forceMfa
             })
           }),
           errorFallback: t('rolesPage.roleClonedButApplyingTheEditedPermissionsFailedEditTheNe'),

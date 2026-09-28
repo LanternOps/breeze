@@ -534,9 +534,12 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
     { "resource": "alerts", "action": "read" },
     { "resource": "alerts", "action": "acknowledge" }
   ],
-  "parentRoleId": null
+  "parentRoleId": null,
+  "forceMfa": false
 }
 ```
+
+Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → Roles) to require every member assigned this role to enrol in MFA. It defaults to `false`, can be changed later with `PATCH /roles/:id`, and is not inherited through `parentRoleId` — each role sets it for its own members. Roles that require MFA show an **MFA required** badge in the roles list. The built-in Partner Admin role requires MFA and, like every system role, cannot be edited.
 
 Custom roles are automatically scoped to the current user's context (partner or organisation). System roles cannot be modified or deleted.
 
@@ -550,7 +553,7 @@ Use `POST /roles/:id/clone` to duplicate an existing role (including system role
 }
 ```
 
-The cloned role copies all permissions from the source and is created as a non-system role owned by your partner or organisation.
+The cloned role copies all permissions and the `forceMfa` setting from the source and is created as a non-system role owned by your partner or organisation. Because the clone is a custom role, its MFA requirement can then be changed with `PATCH /roles/:id`.
 
 ### Deleting Roles
 
@@ -688,6 +691,7 @@ SSO endpoints are mounted under `/api/v1/sso`.
 | `name` | `varchar(100)` | Role display name. |
 | `description` | `text` | Optional description. |
 | `is_system` | `boolean` | Whether the role is a built-in system role. |
+| `force_mfa` | `boolean` | Members of this role must enrol in MFA. Not inherited. Exposed as `forceMfa` on the role endpoints. |
 
 ### Permissions Table
 
