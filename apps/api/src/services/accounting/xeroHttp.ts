@@ -33,8 +33,11 @@ export const XERO_API_BASE = 'https://api.xero.com/api.xro/2.0';
 /**
  * Pinned granular scopes (spec open item 3; Xero moved apps to granular scopes on
  * 2026-03-02). Requested in full at W02 because Xero cannot widen a token's scope
- * without a fresh consent: contacts (W03), invoices + Items (W03/W04), payments
- * (W05), settings.read (Organisation, Currencies, Accounts, TaxRates — W02).
+ * without a fresh consent: contacts (W03), invoices (W04), payments (W05), and
+ * settings — Organisation, Currencies, Accounts, TaxRates reads (W02) plus Item
+ * writes (W03). Lab X16 (2026-09-28) proved Items are NOT written under
+ * accounting.invoices: an Item create under accounting.settings.read returns
+ * 401 insufficient_scope, so the write scope replaces the read one.
  * offline_access is what makes Xero issue a refresh token at all.
  */
 export const XERO_SCOPES: readonly string[] = Object.freeze([
@@ -42,7 +45,7 @@ export const XERO_SCOPES: readonly string[] = Object.freeze([
   'accounting.contacts',
   'accounting.invoices',
   'accounting.payments',
-  'accounting.settings.read',
+  'accounting.settings',
 ]);
 
 /** Xero's refresh token lifetime is a sliding 60 days it does NOT return (spec W02 "Tokens"). */
