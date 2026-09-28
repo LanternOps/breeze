@@ -37,6 +37,8 @@ import {
   type CreateAgentRunResult,
 } from './aiAgents/runService';
 import { resolveAlertCategory } from './aiAgents/patchWorkClassifier';
+// Type-only: the module itself stays a lazy import in executeDeploySoftwareActions.
+import type { CreateSoftwareDeploymentResult, SoftwareInstallDeliveryReport } from './softwareDeployment';
 import {
   getEmailRecipients,
   sendEmailNotification,
@@ -2613,6 +2615,59 @@ async function runWithConcurrency<T>(
 }
 
 /**
+ * #7187 — the post-commit half of an automation deployment created with
+ * `deferDelivery`. Pushes the live agents' software_install commands with no
+ * ambient context (each claim opens and commits its own short transaction
+ * before its push), then upgrades each pushed device's ledger row from the
+ * in-transaction `queued` stamp to `delivered`, which is what the immediate
+ * path used to stamp. Never throws: a push that did not happen leaves the
+ * committed command queued for the heartbeat claim, and a failed upgrade is
+ * bookkeeping — the install's own result still closes the action.
+ */
+async function deliverCommittedDeployment(
+  runId: string,
+  actionIndex: number,
+  result: Pick<CreateSoftwareDeploymentResult, 'deploymentId' | 'deviceResults'>,
+  deliver: () => Promise<SoftwareInstallDeliveryReport>,
+): Promise<void> {
+  let report: SoftwareInstallDeliveryReport;
+  try {
+    report = await runOutsideDbContext(deliver);
+  } catch (err) {
+    console.error('[automationRuntime] deferred software deployment delivery threw; commands stay queued', {
+      runId,
+      actionIndex,
+      deploymentId: result.deploymentId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { runId, actionIndex: String(actionIndex), deploymentId: result.deploymentId });
+    return;
+  }
+  const byDevice = new Map(result.deviceResults.map((deviceResult) => [deviceResult.deviceId, deviceResult]));
+  for (const deviceId of report.deliveredDeviceIds) {
+    const deviceResult = byDevice.get(deviceId);
+    try {
+      await recordAutomationRuntimeActionDispatch({
+        runId,
+        deviceId,
+        actionIndex,
+        status: 'delivered',
+        ...(deviceResult?.deploymentResultId ? { deploymentResultId: deviceResult.deploymentResultId } : {}),
+        ...(deviceResult?.deviceCommandId ? { commandId: deviceResult.deviceCommandId } : {}),
+      });
+    } catch (err) {
+      console.error('[automationRuntime] failed to record a delivered software deployment action', {
+        runId,
+        actionIndex,
+        deviceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, undefined, { runId, actionIndex: String(actionIndex), deviceId });
+    }
+  }
+}
+
+/**
  * Batched pass for `deploy_software` actions. Called ONCE per automation run
  * after the per-device action loop. Creates one softwareDeployments row per
  * action, filtering out devices whose OS is unsupported or whose installed
@@ -2784,6 +2839,11 @@ export async function executeDeploySoftwareActions(args: {
           scheduleType: 'immediate',
           createdBy: args.createdBy,
           name: `Automation: deploy ${info.catalogName}`,
+          // #7187: the deployment and its device_commands rows are written in
+          // THIS transaction, so the push to a live agent waits for its commit
+          // (`result.deliver` below) or a fast agent answers against a command
+          // the result path cannot see yet.
+          deferDelivery: true,
         });
         const byDevice = new Map((result.deviceResults ?? []).map((deviceResult) => [deviceResult.deviceId, deviceResult]));
         const dispatched = new Set(result.dispatchedDeviceIds);
@@ -2815,6 +2875,12 @@ export async function executeDeploySoftwareActions(args: {
         }
         return { claims, result };
       });
+      // Committed (the batch ran in its own transaction). Push the live
+      // agents' commands now, with no ambient context so each claim commits
+      // before its push, and record the ones that went out as delivered.
+      if (batch.result?.deliver) {
+        await deliverCommittedDeployment(args.runId, actionIndex, batch.result, batch.result.deliver);
+      }
       // The stamps did not reconcile inside the transaction; do it now that
       // they are committed.
       if (batch.result) await withAutomationRuntimeDb(() => reconcileAutomationRun(args.runId));

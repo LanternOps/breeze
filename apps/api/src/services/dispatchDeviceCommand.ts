@@ -33,6 +33,19 @@ export type DispatchDeviceCommandInput = {
   commandId?: string;
   /** #5022 W01 — who DECIDED this command, when an AI surface did. */
   aiOrigin?: AiOriginRef;
+  /**
+   * #7187 — persist the row but do NOT claim or push it; return a `deliver()`
+   * continuation instead (the #3445 `scriptDispatch` shape).
+   *
+   * For a caller whose transaction stays open after this returns (the
+   * automation runtime's claim transaction around a software deployment). The
+   * row is INSERTed through that transaction, and the agent result path reads
+   * `device_commands` on its own connection: a push before commit lets a fast
+   * agent answer against a row it cannot see, and the result is dropped as an
+   * orphan. Such a caller passes this flag and calls `deliver()` after its
+   * transaction commits.
+   */
+  deferDelivery?: boolean;
 };
 
 export type DispatchDeviceCommandResult =
@@ -48,6 +61,16 @@ export type DispatchDeviceCommandResult =
       delivery: 'delivered' | 'queued_offline' | 'queued_live';
       /** NULL for a `reject` policy: those rows stay on the legacy execution clock. */
       deliverBy: Date | null;
+      /**
+       * #7187 — present only for a `deferDelivery` dispatch to a device with a
+       * live agent socket (`delivery` is then `queued_live`). Claims and pushes
+       * the persisted row exactly as the immediate path would, and resolves to
+       * the real delivery. MUST run after the caller's transaction commits,
+       * with no ambient context (the claim and release open their own). Never
+       * rejects: a transport failure leaves the committed row `queued_live`
+       * for the heartbeat claim.
+       */
+      deliver?: () => Promise<DispatchDeviceCommandResult>;
     }
   | {
       ok: false;
@@ -80,6 +103,20 @@ export async function dispatchDeviceCommand(
   const policy = resolveOfflinePolicy(input.type, input.offlinePolicy);
   const prepared = await prepareDeviceCommand(input, policy);
   if (!prepared.ok) return prepared;
+  if (input.deferDelivery) {
+    const { command, deliverBy } = prepared;
+    if (!prepared.online) return { ok: true, command, delivery: 'queued_offline', deliverBy };
+    if (!prepared.device.agentId || input.preferHeartbeat) {
+      return { ok: true, command, delivery: 'queued_live', deliverBy };
+    }
+    return {
+      ok: true,
+      command,
+      delivery: 'queued_live',
+      deliverBy,
+      deliver: () => deliverCommittedDeviceCommand(input, prepared),
+    };
+  }
   return deliverPreparedDeviceCommand(input, prepared);
 }
 
@@ -100,6 +137,14 @@ export async function dispatchDeviceCommandWithSystemPrecheck(
     'dispatchDeviceCommandWithSystemPrecheck',
   );
   if (!prepared.ok) return prepared;
+  return deliverCommittedDeviceCommand(input, prepared);
+}
+
+/** Transport for a row whose transaction has already committed. Never rejects. */
+async function deliverCommittedDeviceCommand(
+  input: DispatchDeviceCommandInput,
+  prepared: PreparedDeviceCommand,
+): Promise<DispatchDeviceCommandResult> {
   try {
     return await deliverPreparedDeviceCommand(input, prepared);
   } catch (error) {
