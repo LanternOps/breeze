@@ -1206,7 +1206,7 @@
     "importSelected": "Importa {{count}} selezionati",
     "customerFailedCount_one": "Importazione di {{count}} cliente non riuscita",
     "customerFailedCount_other": "Importazione di {{count}} clienti non riuscita",
-    "showAllContacts_one": "Mostra tutti i contatti ({{count}} solo fornitori nascosti)",
+    "showAllContacts_one": "Mostra tutti i contatti ({{count}} solo fornitore nascosto)",
     "showAllContacts_other": "Mostra tutti i contatti ({{count}} solo fornitori nascosti)",
     "archived": "Archiviato"
   }
