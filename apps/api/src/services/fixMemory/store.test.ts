@@ -46,9 +46,9 @@ vi.mock('../../db', () => {
 vi.mock('./signatureLoader', () => sigMock);
 
 import {
-  fillOutcomeSignature, groupContributions, identityLockKey, markFixMemoryStaleForOrgErasure, markOwnerDriftStale,
-  markPartnerFixMemoryStale, recomputeForOutcome, recomputeIdentity, rebuildFixMemory, transitionOutcome,
-  type ContributingRow,
+  clearOrgErasureRequest, fillOutcomeSignature, groupContributions, identityLockKey, markFixMemoryStaleForOrgErasure,
+  markOwnerDriftStale, markPartnerFixMemoryStale, recomputeForOutcome, recomputeIdentity, rebuildFixMemory,
+  stalePartnerIds, transitionOutcome, type ContributingRow,
 } from './store';
 
 /** Flattens a Drizzle SQL object without a dialect: literal text plus bound primitive params. */
@@ -280,6 +280,54 @@ describe('markPartnerFixMemoryStale — identity locks before the UPDATE, partne
     expect(calls).toEqual(['select']);
     expect(executeMock).not.toHaveBeenCalled();
     expect(updates).toHaveLength(0);
+  });
+});
+
+describe('clearOrgErasureRequest — undo the pre-cascade mark when the cascade refuses (I1)', () => {
+  it('locks every identity carrying the request (sorted), then array_removes exactly that org from exactly those rows', async () => {
+    selectRows.push([
+      { id: 'm-2', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' },
+      { id: 'm-1', partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' },
+    ]);
+    executeRows.push([], []);
+    updateReturning.push([{ id: 'm-1' }, { id: 'm-2' }]);
+    expect(await clearOrgErasureRequest('org-held')).toBe(2);
+    expect(calls).toEqual(['select', 'execute', 'execute', 'update']);
+    const keyA = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
+    const keyB = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v2' });
+    expect(flatten(executeMock.mock.calls[0]![0]).params).toContain(keyA);
+    expect(flatten(executeMock.mock.calls[1]![0]).params).toContain(keyB);
+    const write = updates.at(-1)!;
+    // stale_since is left alone: the next sweep rebuilds and lifts it (no request pending).
+    expect(Object.keys(write.set).sort()).toEqual(['rebuildPendingOrgIds', 'updatedAt']);
+    const removal = flatten(write.set.rebuildPendingOrgIds);
+    expect(removal.text).toContain('array_remove(');
+    expect(removal.params).toEqual(['org-held']);
+    expect(new PgDialect().sqlToQuery(write.where as never).sql.toLowerCase()).toContain('"id" in');
+  });
+
+  it('does nothing — no locks, no update — when no row carries the request', async () => {
+    selectRows.push([]);
+    expect(await clearOrgErasureRequest('org-held')).toBe(0);
+    expect(calls).toEqual(['select']);
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses outside system scope', async () => {
+    dbAccessContextMock.mockReturnValue({ scope: 'organization' });
+    await expect(clearOrgErasureRequest('org-held')).rejects.toThrow(/system-scoped/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('stalePartnerIds — oldest stale first, so held/poison partners cannot starve the retry pass (I1b)', () => {
+  it('orders by the oldest stale_since (NULLS LAST) then partner id, before the LIMIT', async () => {
+    executeRows.push([{ partner_id: 'p-old' }, { partner_id: 'p-new' }]);
+    expect(await stalePartnerIds(20)).toEqual(['p-old', 'p-new']);
+    const q = flatten(executeMock.mock.calls[0]![0]);
+    const text = q.text.replace(/\s+/g, ' ').toLowerCase();
+    expect(text).toMatch(/order by min\(m\.stale_since\) asc nulls last, partner_id asc limit/);
+    expect(q.params).toEqual([20]);
   });
 });
 

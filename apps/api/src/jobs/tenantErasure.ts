@@ -27,14 +27,16 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
-import { cascadeDeleteOrg, TenantCascadeRefusalError } from '../services/tenantCascade';
+import { cascadeDeleteOrg, hasActiveLegalHoldSnapshots, TenantCascadeRefusalError } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
 import { attachWorkerObservability } from './workerObservability';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, users } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { markFixMemoryStaleForOrgErasure, markPartnerFixMemoryStale, rebuildFixMemory } from '../services/fixMemory/store';
+import {
+  clearOrgErasureRequest, markFixMemoryStaleForOrgErasure, markPartnerFixMemoryStale, rebuildFixMemory,
+} from '../services/fixMemory/store';
 
 const QUEUE_NAME = 'tenant-erasure';
 const JOB_NAME = 'tenant-erasure';
@@ -117,6 +119,17 @@ export async function enqueueTenantErasure(
  * is best-effort: if it fails, log + captureException, then still attempt the
  * rebuild — do not fail the erasure.
  *
+ * Refusals (TenantCascadeRefusalError, e.g. an active legal hold): the org
+ * survives, so step 1's request could never be satisfied (a rebuild clears it
+ * only once the organizations row is gone) and the partner's rows would stay
+ * stale forever. So: an active hold at entry skips step 1 (the cascade still
+ * runs and refuses with its own audit row), and a refusal after step 1 ran
+ * removes the request again (clearOrgErasureRequest) before the refusal
+ * propagates unchanged. stale_since is left set; the next sweep rebuilds the
+ * partner and lifts it. A failed undo is reported, never swallowed silently,
+ * and never changes the refusal. Any other cascade failure keeps the request:
+ * the org may be half-erased, and a retried erasure removes the org row.
+ *
  * Durable-retry guarantee: if step 4's rebuild succeeds, it recomputes every
  * one of the partner's identities fresh (rebuildFixMemory scans the whole
  * partner) and both marks are moot. If step 4 instead fails, every row step 1
@@ -136,9 +149,26 @@ export async function eraseOrgWithFixMemory(
   hooks: { rebuild?: typeof rebuildFixMemory } = {},
 ) {
   const rebuild = hooks.rebuild ?? rebuildFixMemory;
-  const fixMemoryPartnerId = await runOutsideDbContext(() =>
+  // Cheap pre-check (the same one cascadeDeleteOrg runs first): a held org is
+  // refused before anything is deleted, so marking it would only need undoing.
+  const heldAtEntry = await hasActiveLegalHoldSnapshots(orgId);
+  const fixMemoryPartnerId = heldAtEntry ? null : await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
-  const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
+  let stats: Awaited<ReturnType<typeof cascadeDeleteOrg>>;
+  try {
+    stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
+  } catch (err) {
+    if (err instanceof TenantCascadeRefusalError && fixMemoryPartnerId) {
+      try {
+        await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() => clearOrgErasureRequest(orgId), 'tenantErasure.fixMemoryUnmark'));
+      } catch (undoErr) {
+        console.error(`[TenantErasure] undo of the fix-memory erasure request failed for org ${orgId} after a refused cascade (${err.code}); partner ${fixMemoryPartnerId} rows stay stale until it is removed`, undoErr);
+        captureException(undoErr);
+      }
+    }
+    throw err;
+  }
   if (fixMemoryPartnerId) {
     try {
       await runOutsideDbContext(() =>

@@ -446,6 +446,37 @@ export async function markFixMemoryStaleForOrgErasure(orgId: string, now: Date =
 }
 
 /**
+ * Undo markFixMemoryStaleForOrgErasure's durable rebuild request when the
+ * cascade REFUSED (TenantCascadeRefusalError, e.g. an active legal hold). The
+ * org still exists, so no rebuild could ever satisfy the request (it needs the
+ * organizations row gone) and the rows would stay stale forever. Only the
+ * request is removed: stale_since stays set, so the next sweep rebuilds the
+ * partner and lifts it now that nothing is pending.
+ *
+ * Same lock protocol as the marks: SELECT the rows carrying the request, lock
+ * their identities in sorted order, then UPDATE exactly those rows.
+ * Returns the number of rows the request was removed from.
+ */
+export async function clearOrgErasureRequest(orgId: string, now: Date = new Date()): Promise<number> {
+  assertSystemScope('clearOrgErasureRequest');
+  const targets = await db.select({
+    id: fixMemory.id, partnerId: fixMemory.partnerId, signatureVersion: fixMemory.signatureVersion,
+    signatureKey: fixMemory.signatureKey, osType: fixMemory.osType, fixIdentity: fixMemory.fixIdentity,
+  }).from(fixMemory).where(and(isNull(fixMemory.orgId), sql`${orgId}::uuid = ANY(fix_memory.rebuild_pending_org_ids)`));
+  if (targets.length === 0) return 0;
+  // Requests live on partner rows only (org_id IS NULL), so partnerId is set.
+  await lockIdentitiesSorted(targets.map((t) => ({
+    partnerId: t.partnerId!, signatureVersion: t.signatureVersion, signatureKey: t.signatureKey,
+    osType: t.osType, fixIdentity: t.fixIdentity,
+  })));
+  const rows = await db.update(fixMemory).set({
+    rebuildPendingOrgIds: sql`array_remove(${fixMemory.rebuildPendingOrgIds}, ${orgId}::uuid)`,
+    updatedAt: now,
+  }).where(inArray(fixMemory.id, targets.map((t) => t.id))).returning({ id: fixMemory.id });
+  return rows.length;
+}
+
+/**
  * GDPR erasure, durability net for the race markFixMemoryStaleForOrgErasure
  * cannot close (Task 12 review carry-forward). That function's request only
  * covers identities the erased org had ALREADY contributed to at the moment
@@ -552,10 +583,16 @@ export async function markOwnerDriftStale(now: Date = new Date()): Promise<numbe
  * cascade and rebuild).
  */
 export async function stalePartnerIds(limit: number): Promise<string[]> {
+  // Oldest stale first, then partner id: a deterministic order, so the LIMIT
+  // cannot keep returning the same arbitrary partners while others wait. A
+  // partner whose rebuild keeps failing still takes only one slot per sweep.
   const rows = await db.execute<{ partner_id: string }>(sql`
-    SELECT DISTINCT COALESCE(m.partner_id, o.partner_id) AS partner_id
+    SELECT COALESCE(m.partner_id, o.partner_id) AS partner_id
     FROM fix_memory m LEFT JOIN organizations o ON o.id = m.org_id
-    WHERE m.stale_since IS NOT NULL OR cardinality(m.rebuild_pending_org_ids) > 0
+    WHERE (m.stale_since IS NOT NULL OR cardinality(m.rebuild_pending_org_ids) > 0)
+      AND COALESCE(m.partner_id, o.partner_id) IS NOT NULL
+    GROUP BY 1
+    ORDER BY MIN(m.stale_since) ASC NULLS LAST, partner_id ASC
     LIMIT ${limit}`);
   return [...rows].map((r) => r.partner_id).filter((id): id is string => typeof id === 'string');
 }

@@ -20,6 +20,8 @@ const {
   markStaleMock,
   markPartnerMock,
   rebuildMock,
+  clearRequestMock,
+  legalHoldMock,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
   getJobMock: vi.fn(),
@@ -35,6 +37,8 @@ const {
   markStaleMock: vi.fn(),
   markPartnerMock: vi.fn(),
   rebuildMock: vi.fn(),
+  clearRequestMock: vi.fn(),
+  legalHoldMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -80,6 +84,7 @@ const { FakeTenantCascadeRefusalError } = vi.hoisted(() => ({
 
 vi.mock('../services/tenantCascade', () => ({
   cascadeDeleteOrg: (...args: unknown[]) => cascadeDeleteOrgMock(...(args as [])),
+  hasActiveLegalHoldSnapshots: (...args: unknown[]) => legalHoldMock(...(args as [])),
   TenantCascadeRefusalError: FakeTenantCascadeRefusalError,
 }));
 
@@ -91,6 +96,7 @@ vi.mock('../services/fixMemory/store', () => ({
   markFixMemoryStaleForOrgErasure: (...a: unknown[]) => markStaleMock(...(a as [])),
   markPartnerFixMemoryStale: (...a: unknown[]) => markPartnerMock(...(a as [])),
   rebuildFixMemory: (...a: unknown[]) => rebuildMock(...(a as [])),
+  clearOrgErasureRequest: (...a: unknown[]) => clearRequestMock(...(a as [])),
 }));
 
 vi.mock('../db', () => ({
@@ -137,6 +143,8 @@ describe('tenantErasure worker', () => {
       totalRowsDeleted: 2,
     });
     createAuditLogMock.mockResolvedValue(undefined);
+    legalHoldMock.mockResolvedValue(false);
+    clearRequestMock.mockResolvedValue(0);
     orgStateRows.splice(0, orgStateRows.length, [{ status: 'purging', deletedAt: null }]);
     actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: false }]);
     capturedWorkerProcessor.current = null;
@@ -508,6 +516,11 @@ describe('tenantErasure worker', () => {
   });
 
   it('worker processor skips (does not fail the job) when cascadeDeleteOrg refuses on an active legal hold', async () => {
+    // The hold appeared after the entry pre-check (mid-cascade refusal): the
+    // pre-cascade mark already ran, so its durable rebuild request must be
+    // UNDONE — the org still exists, so no rebuild could ever satisfy it.
+    markStaleMock.mockResolvedValue('partner-1');
+    clearRequestMock.mockResolvedValue(2);
     cascadeDeleteOrgMock.mockRejectedValueOnce(
       new FakeTenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', 'held'),
     );
@@ -526,6 +539,49 @@ describe('tenantErasure worker', () => {
     expect(createAuditLogMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'tenant.erasure.failed' }),
     );
+    // Fix-memory side: the request is removed, nothing post-cascade runs.
+    expect(clearRequestMock).toHaveBeenCalledWith('org-xyz');
+    expect(clearRequestMock.mock.invocationCallOrder[0]!).toBeGreaterThan(cascadeDeleteOrgMock.mock.invocationCallOrder[0]!);
+    expect(markPartnerMock).not.toHaveBeenCalled();
+    expect(rebuildMock).not.toHaveBeenCalled();
+  });
+
+  it('an active legal hold at entry skips the fix-memory mark entirely (nothing to undo) and still refuses via the cascade', async () => {
+    legalHoldMock.mockResolvedValue(true);
+    cascadeDeleteOrgMock.mockRejectedValueOnce(new FakeTenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', 'held'));
+    createTenantErasureWorker();
+    const result = await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
+    expect(result).toMatchObject({ skipped: true, reason: 'LEGAL_HOLD_ACTIVE' });
+    expect(legalHoldMock).toHaveBeenCalledWith('org-xyz');
+    expect(markStaleMock).not.toHaveBeenCalled();
+    // cascadeDeleteOrg still runs so its own refusal audit + alert fire.
+    expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
+    expect(clearRequestMock).not.toHaveBeenCalled();
+    expect(rebuildMock).not.toHaveBeenCalled();
+  });
+
+  it('a failed undo of the request is reported but the refusal still propagates as a skip', async () => {
+    markStaleMock.mockResolvedValue('partner-1');
+    const undoErr = new Error('lock timeout');
+    clearRequestMock.mockRejectedValue(undoErr);
+    cascadeDeleteOrgMock.mockRejectedValueOnce(new FakeTenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', 'held'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createTenantErasureWorker();
+    const result = await capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } });
+    expect(result).toMatchObject({ skipped: true, reason: 'LEGAL_HOLD_ACTIVE' });
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('undo of the fix-memory erasure request failed'), undoErr);
+    expect(captureException).toHaveBeenCalledWith(undoErr);
+    err.mockRestore();
+  });
+
+  it('a non-refusal cascade failure keeps the request (the org may be half-erased; the sweeper retries once it is gone)', async () => {
+    markStaleMock.mockResolvedValue('partner-1');
+    cascadeDeleteOrgMock.mockRejectedValueOnce(new Error('DELETE failed'));
+    createTenantErasureWorker();
+    await expect(
+      capturedWorkerProcessor.current!({ name: 'tenant-erasure', id: 'j', data: { orgId: 'org-xyz', performedBy: 'admin-1' } }),
+    ).rejects.toThrow(/DELETE failed/);
+    expect(clearRequestMock).not.toHaveBeenCalled();
   });
 
   it('shutdownTenantErasureWorker closes worker + queue', async () => {
