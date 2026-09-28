@@ -1223,7 +1223,7 @@
     "missing": "Fehlt",
     "reason": "Grund",
     "lastChecked": "Zuletzt überprüft",
-    "thisMacIsBelowTheMacos": "Dieser Mac liegt unterhalb der macOS 14+-Grenze für den nativen Anmeldefenster-Desktop-Pfad.",
+    "reasonLoginWindow": "Anmeldefenster (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "Die Erreichbarkeit des Anmeldefensters wird nur für verwaltete Installationen mit bereitgestelltem Desktop-Helper angekündigt.",
     "theNativeLoginWindowDesktopPath": "Der native Desktop-Pfad im Anmeldefenster ist hinter der Berechtigungsgenehmigung von Apple geschützt.",
     "theNativeLoginWindowDesktopPath2": "Der native Desktop-Pfad für das Anmeldefenster ist auf diesem Gerät noch nicht bereit.",

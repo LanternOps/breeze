@@ -92,6 +92,10 @@
         "default": "The session was ended by a security policy. Reconnect to try again."
       }
     },
+    "startFailed": {
+      "description": "The agent could not start the session. Try again, or check the device's diagnostic logs.",
+      "title": "Remote Desktop failed to start"
+    },
     "unavailable": {
       "default": "Desktop is unavailable on this device",
       "headless": "This device has no display — remote desktop is unavailable",

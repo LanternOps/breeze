@@ -116,6 +116,35 @@ describe('DeviceInfoTab — OS version display', () => {
   });
 });
 
+describe('DeviceInfoTab — desktop access unsupported_os copy (#7331)', () => {
+  it('describes the login window, not an outdated macOS version', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/devices/${deviceId}`) {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          osType: 'macos',
+          desktopAccess: {
+            mode: 'unavailable',
+            reason: 'unsupported_os',
+            remoteDesktopPermission: null,
+            checkedAt: '2026-09-28T00:00:00Z',
+          },
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText(/at the login window/i);
+    expect(screen.getByText('Login Window (macOS)')).toBeInTheDocument();
+    expect(screen.queryByText(/Unsupported macOS Version/i)).toBeNull();
+    expect(screen.queryByText(/below the macOS 14/i)).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — update offers withheld (#6449)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

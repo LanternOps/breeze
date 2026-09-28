@@ -1223,7 +1223,7 @@
     "missing": "Manquants",
     "reason": "Raison",
     "lastChecked": "Dernière vérification",
-    "thisMacIsBelowTheMacos": "Ce Mac se trouve sous le macOS 14+ étage pour le chemin natif de la fenêtre de connexion du bureau.",
+    "reasonLoginWindow": "Fenêtre de connexion (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "La portée des fenêtres de connexion n’est annoncée que pour les installations gérées avec l’assistant de bureau déployé.",
     "theNativeLoginWindowDesktopPath": "Le chemin de bureau de la fenêtre de connexion natif est verrouillé derrière l’approbation des droits Apple.",
     "theNativeLoginWindowDesktopPath2": "Le chemin natif de la fenêtre de connexion sur le bureau n’est pas encore prêt sur cet appareil.",

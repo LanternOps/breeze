@@ -92,6 +92,10 @@
         "default": "Die Sitzung wurde durch eine Sicherheitsrichtlinie beendet. Versuchen Sie es erneut."
       }
     },
+    "startFailed": {
+      "description": "Der Agent konnte die Sitzung nicht starten. Versuchen Sie es erneut oder prüfen Sie die Diagnoseprotokolle des Geräts.",
+      "title": "Remote Desktop konnte nicht gestartet werden"
+    },
     "unavailable": {
       "default": "Desktop ist auf diesem Gerät nicht verfügbar",
       "headless": "Dieses Gerät verfügt über keine Anzeige – der Remote-Desktop ist nicht verfügbar",

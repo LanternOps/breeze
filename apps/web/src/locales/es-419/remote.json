@@ -92,6 +92,10 @@
         "default": "La sesión fue finalizada por una política de seguridad. Vuelva a intentarlo."
       }
     },
+    "startFailed": {
+      "description": "El agente no pudo iniciar la sesión. Inténtalo de nuevo o revisa los registros de diagnóstico del dispositivo.",
+      "title": "No se pudo iniciar Escritorio remoto"
+    },
     "unavailable": {
       "default": "El escritorio no está disponible en este dispositivo",
       "headless": "Este dispositivo no tiene pantalla: el escritorio remoto no está disponible",

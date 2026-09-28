@@ -116,7 +116,9 @@ function desktopAccessUnavailableReason(
 
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null }: Props) {
   const { t } = useTranslation('remote');
-  const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied' | 'ending' | 'revoked' | 'loginWindow' | 'unavailable'>('idle');
+  const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied' | 'ending' | 'revoked' | 'loginWindow' | 'unavailable' | 'startFailed'>('idle');
+  // #7335: the agent's (server-redacted) reason for a failed start_desktop.
+  const [startFailedReason, setStartFailedReason] = useState<string | null>(null);
   // The reason shown when the click-time desktop state refused the connect.
   const [unavailableMessage, setUnavailableMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -237,6 +239,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   const startConnect = useCallback(async (targetSessionId?: number) => {
     setStatus('creating');
     setError(null);
+    setStartFailedReason(null);
 
     try {
       // The `desktopAccess` prop is fetched once when the Remote Tools page mounts
@@ -502,6 +505,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
               setStatus('loginWindow');
               return;
             }
+            // #7335: any other failed start (fence refusal, capture/encoder
+            // failure, …) must surface its reason, not read as "connected".
+            if (sessionStatus === 'failed') {
+              setStartFailedReason(revokedMessage?.trim() ? revokedMessage : null);
+              setStatus('startFailed');
+              return;
+            }
             if (sessionStatus === 'disconnected' && revokedMessage?.startsWith('revoked:')) {
               setRevokedReason(revokedMessage.slice('revoked:'.length));
               setStatus('revoked');
@@ -594,6 +604,11 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   }, []);
 
   const handleDismissEnding = useCallback(() => {
+    setStatus('idle');
+  }, []);
+
+  const handleDismissStartFailed = useCallback(() => {
+    setStartFailedReason(null);
     setStatus('idle');
   }, []);
 
@@ -711,6 +726,42 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           className="flex h-5 w-5 items-center justify-center rounded hover:bg-amber-200 dark:hover:bg-amber-800"
         >
           <X className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  // #7335: the agent failed the start for a reason other than the login window.
+  // The button stays enabled (status is neither creating nor launching), so the
+  // technician can retry straight away.
+  const startFailedContent = status === 'startFailed' ? (
+    <div role="alert" className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-red-200 bg-red-50 p-3 text-sm shadow-lg dark:border-red-800 dark:bg-red-950">
+      <div className="flex items-start gap-2.5">
+        <MonitorOff className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+        <div className="flex-1">
+          <p className="font-medium text-red-800 dark:text-red-300">
+            {t('connectDesktopButton.startFailed.title')}
+          </p>
+          <p className="mt-1 break-words text-xs text-red-700 dark:text-red-400">
+            {startFailedReason ?? t('connectDesktopButton.startFailed.description')}
+          </p>
+          <div className="mt-2.5">
+            <button
+              type="button"
+              onClick={handleDismissStartFailed}
+              className="text-xs text-muted-foreground transition hover:text-foreground"
+            >
+              {t('connectDesktopButton.dismiss')}
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleDismissStartFailed}
+          aria-label={t('connectDesktopButton.dismiss')}
+          className="flex h-5 w-5 items-center justify-center rounded hover:bg-red-200 dark:hover:bg-red-800"
+        >
+          <X className="h-3 w-3 text-red-600 dark:text-red-400" />
         </button>
       </div>
     </div>
@@ -1039,6 +1090,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       {endingContent}
         {revokedContent}
         {loginWindowContent}
+        {startFailedContent}
         {pickerModal}
       </div>
     );
@@ -1065,6 +1117,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       {endingContent}
         {revokedContent}
         {loginWindowContent}
+        {startFailedContent}
         {pickerModal}
       </div>
     );
@@ -1092,6 +1145,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       {endingContent}
       {revokedContent}
         {loginWindowContent}
+        {startFailedContent}
       {pickerModal}
     </div>
   );

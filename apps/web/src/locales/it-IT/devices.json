@@ -1223,7 +1223,7 @@
     "missing": "Mancante",
     "reason": "Motivo",
     "lastChecked": "Ultimo controllo",
-    "thisMacIsBelowTheMacos": "Questo Mac è sotto il requisito minimo macOS 14+ per il percorso desktop nativo della finestra di login.",
+    "reasonLoginWindow": "Finestra di login (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "La raggiungibilità della finestra di login viene dichiarata solo per le installazioni gestite con l'helper desktop distribuito.",
     "theNativeLoginWindowDesktopPath": "Il percorso desktop nativo della finestra di login è vincolato all'approvazione dell'entitlement Apple.",
     "theNativeLoginWindowDesktopPath2": "Il percorso desktop nativo della finestra di login non è ancora pronto su questo dispositivo.",

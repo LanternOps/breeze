@@ -92,6 +92,10 @@
         "default": "La sessione è stata terminata da un criterio di sicurezza. Riprova a connetterti."
       }
     },
+    "startFailed": {
+      "description": "L’agente non è riuscito ad avviare la sessione. Riprova o controlla i log diagnostici del dispositivo.",
+      "title": "Avvio di Desktop remoto non riuscito"
+    },
     "unavailable": {
       "default": "Il desktop non è disponibile su questo dispositivo",
       "headless": "Questo dispositivo non dispone di uno schermo: il desktop remoto non è disponibile",
