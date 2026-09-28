@@ -499,47 +499,89 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 	}
 }
 
-// Control for the budgets above, including the lookup-lag excuse (#6176): a
-// publish that removes the destination before renaming over it is exactly the
-// publication gap the test exists to catch, and it must still fail the
-// verdict, and fail it on what the reader saw rather than on failed installs.
-// The 2ms pause stands in for any work between the delete and the rename.
+// gapInjector opens a real publication gap in front of a publish by renaming
+// the destination away to a unique side name, so the name is absent until the
+// publish renames over it. It counts the gaps it actually opened: a control
+// must prove its mutation landed before a red verdict means anything.
+//
+// It deliberately does not DELETE the destination. Every publisher holds its
+// temporary's handle until installFile returns, so the file at the destination
+// is usually still open by the writer that published it. Deleting it on Windows
+// leaves it DELETE_PENDING, and a concurrent publish then fails with
+// STATUS_DELETE_PENDING ("A non close operation has been requested of a file
+// object with a delete pending") instead of opening a gap the reader can see;
+// CI run 36444609882 lost 6 of 200 installs that way. Renaming away needs only
+// FILE_SHARE_DELETE, which installFile's handles grant (shareFile), and leaves
+// no delete disposition anywhere.
+type gapInjector struct {
+	seq    atomic.Int64
+	opened atomic.Int64
+}
+
+func (g *gapInjector) open(dest string) bool {
+	side := fmt.Sprintf("%s.away-%d", dest, g.seq.Add(1))
+	if err := os.Rename(dest, side); err != nil {
+		// Another injected gap already moved it: that window is open anyway.
+		return false
+	}
+	g.opened.Add(1)
+	return true
+}
+
+// Control for the budgets above (#6176): a publish that takes the destination
+// away before renaming over it is exactly the publication gap the test exists
+// to catch, and it must still fail the verdict, and fail it on what the reader
+// saw rather than on failed installs. The 2ms pause stands in for any work
+// between the removal and the rename.
 func TestInstallFileConcurrentReplacementDetectsAPublicationGap(t *testing.T) {
+	var gaps gapInjector
 	run := runConcurrentReplacement(t, 8, 25, func(dest string, publish publishFunc) publishFunc {
 		return func(handle, parent windows.Handle, name string) error {
-			_ = os.Remove(dest)
-			time.Sleep(2 * time.Millisecond)
+			if gaps.open(dest) {
+				time.Sleep(2 * time.Millisecond)
+			}
 			return publish(handle, parent, name)
 		}
 	})
 	err := run.verdict()
-	if err == nil {
-		t.Fatalf("a delete-then-rename publish passed the concurrent replacement verdict (transient %d, excused %d)",
-			run.watch.transient, len(run.watch.excused))
-	}
 	if errors.Is(err, errPublicationBroken) {
 		t.Fatalf("control is not discriminating: the injected gap broke the installs instead of being observed: %v", err)
 	}
+	// Each opened gap is at least 2ms of absence; this many of them is far
+	// beyond what the transient budget tolerates, so a pass below means the
+	// watcher, not the injection, is blind.
+	if opened := gaps.opened.Load(); opened <= 4*transientMissBudget {
+		t.Fatalf("control did not land: only %d of %d publishes opened a gap (need > %d)",
+			opened, run.attempted, 4*transientMissBudget)
+	}
+	if err == nil {
+		t.Fatalf("%d injected publication gaps passed the concurrent replacement verdict (transient %d, excused %d)",
+			gaps.opened.Load(), run.watch.transient, len(run.watch.excused))
+	}
+	t.Logf("control failed the verdict as required after %d injected gaps: %v", gaps.opened.Load(), err)
 }
 
 // Control for the lookup-lag excuse itself (#6176): the control above fails on
-// the transient budget and never reaches the excuse. Here ONE publish removes
-// the destination and holds the gap open for 500ms, well past the recheck
+// the transient budget and never reaches the excuse. Here ONE publish takes the
+// destination away and holds the gap open for 500ms, well past the recheck
 // window even on a starved runner, with no other writer to republish. That is
 // a sustained, genuine publication gap: the real publishLog.excuse must decline
 // it (no publish returns inside the absence) so the verdict fails as a
 // persistent absence rather than logging it as tolerated lookup lag.
 func TestInstallFileConcurrentReplacementDoesNotExcuseASustainedGap(t *testing.T) {
 	var calls atomic.Int64
+	var gaps gapInjector
 	run := runConcurrentReplacement(t, 1, 3, func(dest string, publish publishFunc) publishFunc {
 		return func(handle, parent windows.Handle, name string) error {
-			if calls.Add(1) == 2 {
-				_ = os.Remove(dest)
+			if calls.Add(1) == 2 && gaps.open(dest) {
 				time.Sleep(500 * time.Millisecond)
 			}
 			return publish(handle, parent, name)
 		}
 	})
+	if gaps.opened.Load() != 1 {
+		t.Fatalf("control did not land: the sustained gap was not opened (opened %d)", gaps.opened.Load())
+	}
 	err := run.verdict()
 	if err == nil {
 		t.Fatal("a 500ms publication gap passed the concurrent replacement verdict")
