@@ -20,15 +20,15 @@ import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegi
 import { __testOnly as orgMergeRegistryTestOnly } from '../../services/orgMergeRegistry';
 
 const TABLES_SQL = readFileSync(
-  new URL('../../../migrations/2026-11-07-100000-fix-memory-tables.sql', import.meta.url),
+  new URL('../../../migrations/2026-11-08-170000-fix-memory-tables.sql', import.meta.url),
   'utf8',
 );
 const ORIGIN_SQL = readFileSync(
-  new URL('../../../migrations/2026-11-07-100100-remediation-suggestion-origin.sql', import.meta.url),
+  new URL('../../../migrations/2026-11-08-170100-remediation-suggestion-origin.sql', import.meta.url),
   'utf8',
 );
 const REASON_SQL = readFileSync(
-  new URL('../../../migrations/2026-11-07-100200-alert-resolution-reason.sql', import.meta.url),
+  new URL('../../../migrations/2026-11-08-170200-alert-resolution-reason.sql', import.meta.url),
   'utf8',
 );
 
