@@ -98,6 +98,33 @@ export async function fetchApproval(id: string): Promise<ApprovalRequest> {
 export interface ApproveStepUp {
   proof?: unknown;
   pin?: string;
+  /** #4052: fresh account re-auth for a critical-tier (L4) approval. */
+  reauth?: ReauthFactor;
+}
+
+/**
+ * Fresh account re-authentication a critical-tier (L4) approval requires on
+ * top of the hardware-key step-up (server: routes/approvals.ts `/:id/approve`,
+ * `reauthPassword` / `reauthMfaCode`). `totp` is the login authenticator-app
+ * code, the only fallback the server accepts for a passwordless (SSO) account:
+ * a passkey cannot satisfy this step yet (#4051).
+ *
+ * Holds a secret: never log it, persist it, or put it in Redux state/actions.
+ */
+export type ReauthFactor = { kind: 'password' | 'totp'; value: string };
+
+/**
+ * The 401s the approve route answers for a rejected re-auth, told apart from
+ * a failed hardware step-up so the screen can say what to fix.
+ *   - `reauth_required` (`error`): critical approve with a trusted key but no
+ *     re-auth → collect the password/code and approve again.
+ *   - `invalid_credentials` (`code`): the password/code we sent was rejected.
+ */
+async function approveUnauthorizedCode(res: Response, sentReauth: boolean): Promise<string> {
+  const data = (await res.json().catch(() => null)) as { error?: unknown; code?: unknown } | null;
+  if (data?.error === 'reauth_required') return 'REAUTH_REQUIRED';
+  if (sentReauth && data?.code === 'invalid_credentials') return 'REAUTH_INVALID';
+  return 'STEP_UP_FAILED';
 }
 
 export async function approveRequest(
@@ -108,21 +135,27 @@ export async function approveRequest(
    *  most approvals never carry this. */
   acknowledgedPatterns?: string[],
 ): Promise<ApprovalRequest> {
-  const hasStepUp = !!(stepUp && (stepUp.proof || stepUp.pin));
+  const reauth = stepUp?.reauth?.value ? stepUp.reauth : undefined;
+  const hasStepUp = !!(stepUp && (stepUp.proof || stepUp.pin || reauth));
   const hasAcknowledgements = !!(acknowledgedPatterns && acknowledgedPatterns.length > 0);
   const body = hasStepUp || hasAcknowledgements
     ? JSON.stringify({
         proof: stepUp?.proof,
         pin: stepUp?.pin,
+        reauthPassword: reauth?.kind === 'password' ? reauth.value : undefined,
+        reauthMfaCode: reauth?.kind === 'totp' ? reauth.value : undefined,
         acknowledgedPatterns: hasAcknowledgements ? acknowledgedPatterns : undefined,
       })
     : undefined;
-  // A 401 on a decision is a failed step-up (see STEP_UP_FAILED below), not an
-  // expired token, so it must not be refreshed and replayed.
+  // A 401 on a decision is a failed step-up or re-auth (see below), not an
+  // expired token, so it must not be refreshed and replayed — and a re-auth
+  // password/code must never be sent twice.
   const res = await authedFetch(`${PREFIX}/${id}/approve`, { method: 'POST', body }, { retryOnAuthFailure: false });
   if (res.status === 409) throw new Error('ALREADY_DECIDED');
   if (res.status === 410) throw new Error('EXPIRED');
-  if (res.status === 401) throw new Error('STEP_UP_FAILED');
+  if (res.status === 401) throw new Error(await approveUnauthorizedCode(res, !!reauth));
+  // The re-auth helpers rate-limit per user (5 per 5 min) and answer 429.
+  if (res.status === 429 && reauth) throw new Error('REAUTH_THROTTLED');
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
   const json = await res.json();
   return json.approval;

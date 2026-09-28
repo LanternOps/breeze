@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import {
   type ApprovalRequest,
+  type ReauthFactor,
   approveRequest as apiApprove,
   denyRequest as apiDeny,
   fetchApproval as apiFetchOne,
@@ -65,7 +66,20 @@ export const fetchOne = createAsyncThunk('approvals/fetchOne', async (id: string
  * `decisionInFlight`/error reducers (keyed by plain id) don't have to change
  * shape for every existing dispatch site and test fixture.
  */
-export type ApproveArg = string | { id: string; acknowledgedPatterns?: string[] };
+export type ApproveArg =
+  | string
+  | {
+      id: string;
+      acknowledgedPatterns?: string[];
+      /**
+       * #4052: critical-tier re-auth, as a one-shot GETTER rather than the
+       * value. RTK copies the thunk arg into every lifecycle action's
+       * `meta.arg`, so a plain password here would ride through the dispatch
+       * pipeline (middleware, devtools, crash breadcrumbs). A function
+       * serialises to nothing. Called once, right before the POST.
+       */
+      takeReauth?: () => ReauthFactor | undefined;
+    };
 
 function approveArgId(arg: ApproveArg): string {
   return typeof arg === 'string' ? arg : arg.id;
@@ -80,7 +94,9 @@ export const approve = createAsyncThunk('approvals/approve', async (arg: Approve
   // blocks — enforcement is Phase 4). A cancelled biometric prompt DOES throw,
   // aborting the approve rather than silently downgrading a deliberate cancel.
   const proof = await gatherApprovalProof(id);
-  const updated = await apiApprove(id, proof ? { proof } : undefined, acknowledgedPatterns);
+  const reauth = typeof arg === 'string' ? undefined : arg.takeReauth?.();
+  const stepUp = proof || reauth ? { ...(proof ? { proof } : {}), ...(reauth ? { reauth } : {}) } : undefined;
+  const updated = await apiApprove(id, stepUp, acknowledgedPatterns);
   await clearCachedApproval(id);
   return updated;
 });

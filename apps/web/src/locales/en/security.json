@@ -957,6 +957,25 @@
       "submitting": "Submitting…",
       "approveElevation": "Approve elevation",
       "denyRequest": "Deny request"
+    },
+    "reauth": {
+      "title": "Critical request: confirm it is you",
+      "why": "Approving a critical-tier elevation requires fresh re-authentication in addition to your approver device. It is checked once and never stored.",
+      "unavailable": "Your account signs in without a password and has no authenticator app, so it cannot re-authenticate for critical approvals. Passkeys are not accepted for this step yet. Set up an authenticator app under Profile → Security, or ask an approver who has a password.",
+      "codeLabel": "Authenticator app code",
+      "passwordLabel": "Account password",
+      "codeHelp": "The 6-digit code from the authenticator app you sign in with. Passkeys and SMS codes are not accepted for this step yet.",
+      "passwordHelp": "The password you use to sign in to Breeze.",
+      "useCode": "Use an authenticator app code instead",
+      "usePassword": "Use my password instead",
+      "errors": {
+        "codeRequired": "Enter the code from your authenticator app to approve this critical request.",
+        "passwordRequired": "Enter your account password to approve this critical request.",
+        "invalid": "That password or code was not accepted. Check it and try again.",
+        "required": "This is a critical request. Re-enter your password (or authenticator code) and approve again.",
+        "assertionFailed": "Your approver-device verification was not accepted. Try again.",
+        "stepUpRequired": "Your organization requires a registered approver device (Windows Hello or Touch ID) to approve this request. Register one under Profile → Security."
+      }
     }
   },
   "pamPamRevokeModal": {
