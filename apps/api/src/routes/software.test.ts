@@ -139,6 +139,16 @@ vi.mock('../db/schema', () => ({
 // middleware is what's actually wired into the router. The inner middleware
 // below reads these gates live on every call, matching the pattern used by
 // routes/alerts.test.ts.
+// #7347: models withAuthDbAccessContext as a fresh transaction that COMMITS
+// when its callback resolves (or throws "commit failed" when `failNextCommit`).
+// `stack` is the currently-open contexts, `committed` the ids that committed.
+const authDbContexts = vi.hoisted(() => ({
+  seq: 0,
+  stack: [] as number[],
+  committed: new Set<number>(),
+  failNextCommit: false,
+}));
+
 const { permissionGate, mfaGate, siteAccessGate, authState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
@@ -174,6 +184,21 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (c: any, next: any) => {
     if (mfaGate.deny) return c.json({ error: 'MFA required' }, 403);
     return next();
+  }),
+  withAuthDbAccessContext: vi.fn(async (_auth: any, fn: () => Promise<unknown>) => {
+    const id = ++authDbContexts.seq;
+    authDbContexts.stack.push(id);
+    try {
+      const result = await fn();
+      if (authDbContexts.failNextCommit) {
+        authDbContexts.failNextCommit = false;
+        throw new Error('commit failed');
+      }
+      authDbContexts.committed.add(id);
+      return result;
+    } finally {
+      authDbContexts.stack.pop();
+    }
   }),
   requireSiteAccess: vi.fn((_siteIdParam?: string) => async (c: any, next: any) => {
     if (siteAccessGate.deny) return c.json({ error: 'Access to this site denied' }, 403);
@@ -269,8 +294,229 @@ describe('software routes', () => {
     authState.partnerId = null;
     authState.accessibleOrgIds = ['org-123'];
     authState.allowedSiteIds = undefined;
+    authDbContexts.stack.length = 0;
+    authDbContexts.committed.clear();
+    authDbContexts.failNextCommit = false;
     app = new Hono();
     app.route('/software', softwareRoutes);
+  });
+
+  // #7347 — the deploy/retry routes wrote deployment + device_commands rows
+  // inside the request transaction and pushed software_install to live agents
+  // before it committed, so a fast agent's result was dropped as an orphan.
+  // They now write everything in one committed auth context with the push
+  // deferred, and deliver() only after it commits.
+  describe('#7347 — software_install is pushed only after its rows commit', () => {
+    const VERSION_ID = '11111111-1111-4111-8111-111111111111';
+    const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+    const CATALOG_ID = '44444444-4444-4444-8444-444444444444';
+    const DEP_ID = '99999999-9999-4999-8999-999999999999';
+    const catalogRow = { id: CATALOG_ID, orgId: 'org-123', name: 'TestApp', integrationProvider: null };
+    const versionRow = {
+      id: VERSION_ID,
+      catalogId: CATALOG_ID,
+      version: '1.0.0',
+      s3Key: null,
+      downloadUrl: 'https://example.com/pkg.exe',
+      checksum: 'abc123',
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: '/S',
+      detectionRules: null,
+    };
+    const wingetMethod = {
+      id: 'method-win', catalogId: CATALOG_ID, platform: 'windows', kind: 'winget', packageId: 'Vendor.App', enabled: true,
+    };
+
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    const events: Array<{ event: string; ctx?: number; open: number }> = [];
+    const deliverMock = vi.fn(async () => {
+      events.push({ event: 'deliver', open: authDbContexts.stack.length });
+      return { deliveredDeviceIds: [DEVICE_ID] };
+    });
+
+    /** The dispatching call records its context; deliver() must run after that context committed. */
+    function trackDispatch(mock: typeof createDeploymentMock, result: Record<string, unknown>) {
+      mock.mockImplementationOnce(async () => {
+        events.push({ event: 'dispatch', ctx: authDbContexts.stack.at(-1), open: authDbContexts.stack.length });
+        return { ...result, deliver: deliverMock };
+      });
+    }
+
+    function expectDeliveredAfterCommit() {
+      const dispatch = events.find((e) => e.event === 'dispatch');
+      const deliver = events.find((e) => e.event === 'deliver');
+      expect(dispatch?.ctx, 'rows were not written in their own auth context').toBeDefined();
+      expect(deliver, 'deliver() never ran').toBeDefined();
+      expect(authDbContexts.committed.has(dispatch!.ctx!), 'the dispatch context never committed').toBe(true);
+      expect(deliver!.open, 'deliver() ran with a context open').toBe(0);
+      expect(events.indexOf(deliver!)).toBeGreaterThan(events.indexOf(dispatch!));
+    }
+
+    beforeEach(() => {
+      events.length = 0;
+      deliverMock.mockClear();
+    });
+
+    const postJson = (path: string, body: unknown) =>
+      app.request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(body),
+      });
+
+    const primeVersionCreate = () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+      trackDispatch(createDeploymentMock, {
+        deploymentId: 'dep-1', deployment: { id: 'dep-1' }, status: 'pending', dispatchedDeviceIds: [DEVICE_ID],
+      });
+    };
+    const versionCreateBody = {
+      name: 'Test Deploy',
+      softwareVersionId: VERSION_ID,
+      deploymentType: 'install',
+      targetType: 'devices',
+      targetIds: [DEVICE_ID],
+      scheduleType: 'immediate',
+    };
+
+    it('POST /deployments (version): creates deferred inside a committed context, delivers after', async () => {
+      primeVersionCreate();
+
+      const res = await postJson('/software/deployments', versionCreateBody);
+
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledWith(expect.objectContaining({ deferDelivery: true }));
+      expectDeliveredAfterCommit();
+    });
+
+    it('POST /deployments (package manager): creates deferred inside a committed context, delivers after', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([wingetMethod]))
+        .mockReturnValueOnce(selectResult([{ id: DEVICE_ID, osType: 'windows' }]));
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+      trackDispatch(createDeploymentMock, {
+        deploymentId: 'dep-win', deployment: { id: 'dep-win' }, status: 'pending', dispatchedDeviceIds: [DEVICE_ID],
+      });
+
+      const res = await postJson('/software/deployments', {
+        name: 'Rollout', catalogId: CATALOG_ID, deploymentType: 'install', targetType: 'devices',
+        targetIds: [DEVICE_ID], scheduleType: 'immediate',
+      });
+
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledWith(expect.objectContaining({ deferDelivery: true }));
+      expectDeliveredAfterCommit();
+    });
+
+    it('POST /deployments (package manager, cross-platform split): delivers every deployment after commit', async () => {
+      const MAC_ID = '33333333-3333-4333-8333-333333333333';
+      const brewMethod = {
+        id: 'method-mac', catalogId: CATALOG_ID, platform: 'macos', kind: 'homebrew_cask', packageId: 'app', enabled: true,
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([wingetMethod, brewMethod]))
+        .mockReturnValueOnce(selectResult([{ id: DEVICE_ID, osType: 'windows' }, { id: MAC_ID, osType: 'macos' }]));
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID, MAC_ID]);
+      const deliverMac = vi.fn(async () => {
+        events.push({ event: 'deliver-mac', open: authDbContexts.stack.length });
+        return { deliveredDeviceIds: [MAC_ID] };
+      });
+      trackDispatch(createDeploymentMock, {
+        deploymentId: 'dep-win', deployment: { id: 'dep-win' }, status: 'pending', dispatchedDeviceIds: [DEVICE_ID],
+      });
+      createDeploymentMock.mockImplementationOnce(async () => ({
+        deploymentId: 'dep-mac', deployment: { id: 'dep-mac' }, status: 'pending', dispatchedDeviceIds: [MAC_ID],
+        deliver: deliverMac,
+      }));
+
+      const res = await postJson('/software/deployments', {
+        name: 'Rollout', catalogId: CATALOG_ID, deploymentType: 'install', targetType: 'devices',
+        targetIds: [DEVICE_ID, MAC_ID], scheduleType: 'immediate',
+      });
+
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(2);
+      expect(createDeploymentMock.mock.calls.every(([input]) => input.deferDelivery === true)).toBe(true);
+      expectDeliveredAfterCommit();
+      expect(events.find((e) => e.event === 'deliver-mac')).toMatchObject({ open: 0 });
+    });
+
+    it('POST /deploy (legacy): creates deferred inside a committed context, delivers after', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([versionRow]));
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+      trackDispatch(createDeploymentMock, {
+        deploymentId: 'dep-legacy', deployment: { id: 'dep-legacy' }, status: 'pending', dispatchedDeviceIds: [DEVICE_ID],
+      });
+
+      const res = await postJson('/software/deploy', {
+        softwareId: CATALOG_ID, version: '1.0.0', targets: { deviceIds: [DEVICE_ID] },
+      });
+
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledWith(expect.objectContaining({ deferDelivery: true }));
+      expectDeliveredAfterCommit();
+    });
+
+    it.each([
+      ['version', { softwareVersionId: VERSION_ID, installMethodId: null }],
+      ['package manager', { softwareVersionId: null, installMethodId: 'method-win' }],
+    ])('POST /deployments/:id/retry (%s): re-dispatches deferred inside a committed context, delivers after', async (
+      _name,
+      target,
+    ) => {
+      const deployment = {
+        id: DEP_ID,
+        orgId: 'org-123',
+        name: 'Retry Deploy',
+        deploymentType: 'install',
+        scheduleType: 'immediate',
+        dispatchedAt: new Date('2026-07-27T00:00:00Z'),
+        options: null,
+        ...target,
+        dependencyFingerprint: target.installMethodId
+          ? fingerprintSoftwareInstallMethodDependency(wingetMethod as any, catalogRow)
+          : fingerprintSoftwareVersionDependency(versionRow as any, catalogRow),
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deployment]))
+        .mockReturnValueOnce(selectResult([target.installMethodId ? wingetMethod : versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+      const returning = vi.fn().mockResolvedValue([{ deviceId: DEVICE_ID, retryCount: 1 }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })) } as any);
+      trackDispatch(buildDispatchMock, { status: 'pending', dispatchedDeviceIds: [DEVICE_ID], deviceResults: [] });
+
+      const res = await postJson(`/software/deployments/${DEP_ID}/retry`, {});
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ retriedDeviceIds: [DEVICE_ID], skippedDeviceIds: [] });
+      expect(buildDispatchMock).toHaveBeenCalledWith(expect.objectContaining({ deferDelivery: true }));
+      expectDeliveredAfterCommit();
+    });
+
+    it('a transaction that rolls back pushes nothing', async () => {
+      primeVersionCreate();
+      authDbContexts.failNextCommit = true;
+
+      const res = await postJson('/software/deployments', versionCreateBody);
+
+      expect(res.status).toBe(500);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(deliverMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /software/catalog', () => {
@@ -2863,6 +3109,7 @@ describe('software routes', () => {
         name: 'Deploy TestApp v1.2.3',
         targetType: 'devices',
         targetIds: [DEVICE_ID],
+        deferDelivery: true,
       });
 
       // The route no longer re-implements insert/results/dispatch inline.

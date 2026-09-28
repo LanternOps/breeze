@@ -15,7 +15,14 @@ import {
   scriptExecutions,
   scripts,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  withAuthDbAccessContext,
+  type AuthContext,
+} from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -48,6 +55,7 @@ import {
   managedAutomationOwnerIsLive,
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
+import { captureException } from '../services/sentry';
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 
@@ -1672,7 +1680,81 @@ automationRoutes.delete(
 // Manual trigger routes (kept for standalone automations)
 // ============================================
 
+/**
+ * #7347 — `POST /:id/trigger` and `POST /:id/run` are registered in
+ * middleware/selfManagedDbContextRoutes.ts: they run with NO ambient request
+ * transaction. The run row is created and COMMITTED in one short
+ * withAuthDbAccessContext block, and only then is `execute-run` enqueued. The
+ * execute-run worker loads the run on its own connection, so under the request
+ * transaction a fast worker found no run and threw `Automation run not found`.
+ */
 async function triggerAutomationRun(
+  c: Context,
+  automationId: string,
+  triggeredBy: string,
+  details?: Record<string, unknown>,
+) {
+  const auth = c.get('auth');
+
+  const admitted = await withAuthDbAccessContext(auth, () =>
+    admitManualAutomationRun(c, automationId, triggeredBy, details),
+  );
+  if (admitted instanceof Response) return admitted;
+  const { automation, run, targetDeviceIds } = admitted;
+
+  try {
+    await enqueueAutomationRun(run.id, targetDeviceIds);
+  } catch (error) {
+    // The run has already committed `running`, and nothing reaps a run no job
+    // will ever execute: fail it here rather than leave it spinning forever.
+    console.error(`[automations] Failed to enqueue manually triggered run ${run.id}:`, error);
+    captureException(error, undefined, { runId: run.id, automationId: automation.id });
+    await withAuthDbAccessContext(auth, () =>
+      db
+        .update(automationRuns)
+        .set({ status: 'failed', completedAt: new Date() })
+        .where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))),
+    ).catch((cleanupError: unknown) => {
+      console.error(`[automations] Failed to mark unenqueued run ${run.id} failed:`, cleanupError);
+    });
+    writeRouteAudit(c, {
+      orgId: automation.orgId,
+      action: 'automation.trigger',
+      resourceType: 'automation',
+      resourceId: automation.id,
+      resourceName: automation.name,
+      details: { runId: run.id, devicesTargeted: targetDeviceIds.length, triggeredBy },
+      result: 'failure',
+    });
+    return c.json({ error: 'Failed to queue the automation run', runId: run.id }, 500);
+  }
+
+  writeRouteAudit(c, {
+    orgId: automation.orgId,
+    action: 'automation.trigger',
+    resourceType: 'automation',
+    resourceId: automation.id,
+    resourceName: automation.name,
+    details: {
+      runId: run.id,
+      devicesTargeted: targetDeviceIds.length,
+      triggeredBy,
+    },
+  });
+
+  return c.json({
+    message: 'Automation triggered',
+    run: {
+      id: run.id,
+      status: toRunStatus(run.status),
+      devicesTargeted: run.devicesTargeted,
+      startedAt: run.startedAt,
+    },
+  });
+}
+
+/** The admission half of triggerAutomationRun; runs inside its own committed context. */
+async function admitManualAutomationRun(
   c: Context,
   automationId: string,
   triggeredBy: string,
@@ -1731,30 +1813,7 @@ async function triggerAutomationRun(
     ...(siteScopedTargetDeviceIds !== null ? { boundDeviceIds: siteScopedTargetDeviceIds } : {}),
   });
 
-  await enqueueAutomationRun(run.id, targetDeviceIds);
-
-  writeRouteAudit(c, {
-    orgId: automation.orgId,
-    action: 'automation.trigger',
-    resourceType: 'automation',
-    resourceId: automation.id,
-    resourceName: automation.name,
-    details: {
-      runId: run.id,
-      devicesTargeted: targetDeviceIds.length,
-      triggeredBy,
-    },
-  });
-
-  return c.json({
-    message: 'Automation triggered',
-    run: {
-      id: run.id,
-      status: toRunStatus(run.status),
-      devicesTargeted: run.devicesTargeted,
-      startedAt: run.startedAt,
-    },
-  });
+  return { automation, run, targetDeviceIds };
 }
 
 automationRoutes.post(

@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -16,6 +16,7 @@ import {
   softwareInventory,
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 import {
   resolveComplianceRulesForDevice,
   scanDueComplianceChecks,
@@ -75,7 +76,75 @@ type EvaluatePolicyOptions = {
    * genuinely system-scoped.
    */
   auth?: PartnerWideReadAuth | null;
+  /**
+   * #7347 — record remediation runs instead of enqueueing them; the result then
+   * carries an `afterCommit` that enqueues them. For a caller whose transaction
+   * stays open after this returns (policyEvaluationWorker): each run row is
+   * INSERTed through that transaction and the execute-run worker reads it on
+   * its own connection, so the job must not exist until the row commits. The
+   * caller runs `afterCommit` once its transaction has committed.
+   */
+  deferEnqueue?: boolean;
 };
+
+/**
+ * #7347 — remediation runs whose `execute-run` enqueue waits for the caller's
+ * transaction to commit (`deferEnqueue`). Enqueued inside it, a fast worker
+ * finds no run and throws `Automation run not found`, and a rollback leaves a
+ * job for a run that never existed.
+ */
+export type DeferredRemediationEnqueues = Array<{ runId: string; deviceId: string }>;
+
+/** What an evaluation hands back under `deferEnqueue`; run it after commit. */
+export type RemediationAfterCommit = { afterCommit?: () => Promise<void> };
+
+/** Enqueue now, or record the run for the caller's `afterCommit` (#7347). */
+async function enqueueRemediationRun(
+  runId: string,
+  deviceId: string,
+  deferred?: DeferredRemediationEnqueues,
+): Promise<void> {
+  if (deferred) {
+    deferred.push({ runId, deviceId });
+    return;
+  }
+  // Dynamically imported so this service does not pull the BullMQ worker graph
+  // in at module load — same pattern as drExecutionService.ts:300.
+  const { enqueueAutomationRun } = await import('../jobs/automationWorker');
+  await enqueueAutomationRun(runId, [deviceId]);
+}
+
+/**
+ * #7347 — the continuation for runs recorded under `deferEnqueue`. MUST run
+ * after the caller's transaction commits, with no ambient context. It never
+ * rejects: a run whose enqueue fails is already committed `running`, and nothing
+ * reaps a run that no job will ever execute, so it is failed on the spot and the
+ * remaining runs still go out. Rethrowing instead would fail the evaluation job,
+ * and a retry would re-evaluate and mint a second run for every device whose
+ * first run was already enqueued.
+ */
+function remediationAfterCommit(deferred: DeferredRemediationEnqueues): (() => Promise<void>) | undefined {
+  if (deferred.length === 0) return undefined;
+  return async () => {
+    const { enqueueAutomationRun } = await import('../jobs/automationWorker');
+    for (const { runId, deviceId } of deferred) {
+      try {
+        await enqueueAutomationRun(runId, [deviceId]);
+      } catch (error) {
+        console.error(`[PolicyEvaluation] Failed to enqueue remediation run ${runId} after commit:`, error);
+        captureException(error, undefined, { runId, deviceId });
+        await withSystemDbAccessContext(() =>
+          db
+            .update(automationRuns)
+            .set({ status: 'failed', completedAt: new Date() })
+            .where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'running'))),
+        ).catch((cleanupError: unknown) => {
+          console.error(`[PolicyEvaluation] Failed to mark unenqueued remediation run ${runId} failed:`, cleanupError);
+        });
+      }
+    }
+  };
+}
 
 type TargetConfig = {
   targetType?: string;
@@ -1260,7 +1329,8 @@ async function triggerRemediationAutomation(
   device: TargetDevice,
   status: EvaluationStatus,
   remediationAutomationId: string | null,
-  auth?: PartnerWideReadAuth | null
+  auth?: PartnerWideReadAuth | null,
+  deferred?: DeferredRemediationEnqueues
 ): Promise<string | null> {
   if (status !== 'non_compliant' || !remediationAutomationId) {
     return null;
@@ -1335,10 +1405,8 @@ async function triggerRemediationAutomation(
   // function of remediation work. `enqueueAutomationRun` falls back to inline
   // execution when Redis is absent, and its stable `automation-run-<id>` job
   // id stops a re-entrant sweep double-dispatching the same run.
-  // Dynamically imported so this service does not pull the BullMQ worker graph
-  // in at module load — same pattern as drExecutionService.ts:300.
-  const { enqueueAutomationRun } = await import('../jobs/automationWorker');
-  await enqueueAutomationRun(run.id, [device.id]);
+  // #7347 — under `deferred` the enqueue waits for the caller's commit.
+  await enqueueRemediationRun(run.id, device.id, deferred);
 
   return run.id;
 }
@@ -1390,8 +1458,9 @@ async function publishPolicyEvents(
 export async function evaluatePolicy(
   policy: PolicyRow,
   options: EvaluatePolicyOptions = {}
-): Promise<PolicyEvaluationResponse> {
+): Promise<PolicyEvaluationResponse & RemediationAfterCommit> {
   const source = options.source ?? 'policy-evaluation-service';
+  const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
   const requestRemediation = options.requestRemediation ?? true;
   const wantsRemediation = requestRemediation && policy.enforcement === 'enforce';
 
@@ -1563,7 +1632,8 @@ export async function evaluatePolicy(
           device,
           status,
           await remediationAutomationIdForOrg(device.orgId),
-          options.auth
+          options.auth,
+          deferred
         )
       : null;
 
@@ -1603,6 +1673,7 @@ export async function evaluatePolicy(
       non_compliant: evaluationResults.filter((result) => result.status === 'non_compliant').length,
     },
     evaluatedAt: new Date().toISOString(),
+    ...(deferred ? { afterCommit: remediationAfterCommit(deferred) } : {}),
   };
 }
 
@@ -1621,6 +1692,8 @@ export type ConfigPolicyEvaluationResult = {
 
 type EvaluateConfigPolicyComplianceOptions = {
   ruleIds?: string[];
+  /** #7347 — collects remediation runs for the caller's `afterCommit` (see `EvaluatePolicyOptions.deferEnqueue`). */
+  deferred?: DeferredRemediationEnqueues;
 };
 
 export function __isComplianceCheckDue(
@@ -1851,7 +1924,7 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
         if (rem.type === 'script' && typeof rem.scriptId === 'string') {
           // Bridge: pass scriptId via legacy field until triggerConfigPolicyRemediation is refactored
           const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId };
-          const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice);
+          const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice, options.deferred);
           if (triggered) remediationTriggered = true;
         } else if (rem.type === 'software_deploy' && typeof rem.catalogId === 'string') {
           console.warn(`[ConfigPolicyCompliance] Software deploy remediation for rule="${complianceRule.name}" catalogId=${rem.catalogId} on device=${targetDevice.id} — not yet implemented`);
@@ -1860,7 +1933,7 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
 
       // Fallback: check legacy remediationScriptId on the rule set
       if (!remediationTriggered && complianceRule.remediationScriptId) {
-        remediationTriggered = await triggerConfigPolicyRemediation(complianceRule, targetDevice);
+        remediationTriggered = await triggerConfigPolicyRemediation(complianceRule, targetDevice, options.deferred);
       }
     }
 
@@ -1907,7 +1980,8 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
  */
 async function triggerConfigPolicyRemediation(
   complianceRule: typeof configPolicyComplianceRules.$inferSelect,
-  device: TargetDevice
+  device: TargetDevice,
+  deferred?: DeferredRemediationEnqueues
 ): Promise<boolean> {
   if (!complianceRule.remediationScriptId) {
     return false;
@@ -2018,11 +2092,9 @@ async function triggerConfigPolicyRemediation(
 
   // Dispatch for real — see the note in triggerRemediationAutomation. The
   // returned boolean means DISPATCHED, not finished; the run row carries the
-  // outcome once the runtime has executed it.
-  // Dynamically imported so this service does not pull the BullMQ worker graph
-  // in at module load — same pattern as drExecutionService.ts:300.
-  const { enqueueAutomationRun } = await import('../jobs/automationWorker');
-  await enqueueAutomationRun(run.id, [device.id]);
+  // outcome once the runtime has executed it. #7347 — under `deferred` the
+  // enqueue waits for the caller's commit.
+  await enqueueRemediationRun(run.id, device.id, deferred);
 
   return true;
 }
@@ -2100,11 +2172,15 @@ async function resolveDevicesForAssignmentTarget(
  * Background worker function: scans all due config-policy compliance checks
  * and evaluates them for their target devices.
  */
-export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
+export async function scanAndEvaluateConfigPolicyCompliance(
+  options: { deferEnqueue?: boolean } = {}
+): Promise<{
   rulesScanned: number;
   devicesEvaluated: number;
   results: ConfigPolicyEvaluationResult[];
-}> {
+} & RemediationAfterCommit> {
+  // #7347 — see `EvaluatePolicyOptions.deferEnqueue`.
+  const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
   const dueChecks = await scanDueComplianceChecks();
   if (dueChecks.length === 0) {
     return { rulesScanned: 0, devicesEvaluated: 0, results: [] };
@@ -2164,7 +2240,7 @@ export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
   for (const deviceId of allDeviceIds) {
     try {
       const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
-      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds });
+      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds, deferred });
       allResults.push(...deviceResults);
     } catch (error) {
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
@@ -2175,6 +2251,7 @@ export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
     rulesScanned: dueChecks.length,
     devicesEvaluated: allDeviceIds.length,
     results: allResults,
+    ...(deferred ? { afterCommit: remediationAfterCommit(deferred) } : {}),
   };
 }
 
@@ -2183,5 +2260,6 @@ export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
 // convention as __evaluateRulesForDevice above.
 export const __triggerRemediationAutomation = triggerRemediationAutomation;
 export const __triggerConfigPolicyRemediation = triggerConfigPolicyRemediation;
+export const __remediationAfterCommit = remediationAfterCommit;
 export const __resolveTargetDevices = resolveTargetDevices;
 export const __resolveDevicesForAssignmentTarget = resolveDevicesForAssignmentTarget;

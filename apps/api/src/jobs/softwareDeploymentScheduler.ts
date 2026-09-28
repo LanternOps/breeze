@@ -12,7 +12,10 @@ import {
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { buildAndDispatchSoftwareInstalls } from '../services/softwareDeployment';
+import {
+  buildAndDispatchSoftwareInstalls,
+  type SoftwareInstallFanoutResult,
+} from '../services/softwareDeployment';
 import {
   dependencyFingerprintError,
   fingerprintSoftwareInstallMethodDependency,
@@ -172,19 +175,27 @@ async function failAllPendingResults(deploymentId: string, errorMessage: string)
     );
 }
 
+/**
+ * #7347 — what the claim transaction decided. `deliver` is the fan-out's
+ * deferred push (`deferDelivery`): the `device_commands` rows are INSERTed in
+ * the claim transaction and the agent result path reads them on its own
+ * connection, so nothing is pushed until that transaction has committed.
+ */
+type DueDeploymentAdmission = { won: boolean } & Pick<SoftwareInstallFanoutResult, 'deliver'>;
+
 /** Dispatch a due package-manager deployment (winget / Homebrew). */
 async function dispatchDueManagerDeployment(
   candidate: DueDeploymentCandidate,
   installMethodId: string,
   deviceIds: string[],
-): Promise<boolean> {
+): Promise<DueDeploymentAdmission> {
   const [method] = await db
     .select()
     .from(softwareInstallMethods)
     .where(eq(softwareInstallMethods.id, installMethodId));
   if (!method) {
     await failAllPendingResults(candidate.id, 'Install method no longer exists');
-    return true;
+    return { won: true };
   }
 
   const [catalogItem] = await db
@@ -197,7 +208,7 @@ async function dispatchDueManagerDeployment(
     .where(eq(softwareCatalog.id, method.catalogId));
   if (!catalogItem) {
     await failAllPendingResults(candidate.id, 'Software catalog item no longer exists');
-    return true;
+    return { won: true };
   }
 
   const dependencyError = dependencyFingerprintError(
@@ -206,7 +217,7 @@ async function dispatchDueManagerDeployment(
   );
   if (dependencyError) {
     await failAllPendingResults(candidate.id, dependencyError);
-    return true;
+    return { won: true };
   }
 
   const options = (candidate.options as Record<string, unknown> | null) ?? null;
@@ -221,20 +232,36 @@ async function dispatchDueManagerDeployment(
     options,
     createdBy: candidate.createdBy,
     markDispatched: false,
+    deferDelivery: true,
   });
 
   console.log(
     `[SoftwareDeploymentScheduler] Dispatched package-manager deployment ${candidate.id} (${candidate.scheduleType}): status=${fanout.status}, devices=${fanout.dispatchedDeviceIds.length}/${deviceIds.length}`,
   );
-  return true;
+  return { won: true, deliver: fanout.deliver };
 }
 
 /**
  * Claim + dispatch one due deployment. Returns true when this instance won
  * the claim (regardless of dispatch outcome), false when another instance
  * already claimed it.
+ *
+ * #7347 — owns its system transaction: the claim, the result rows' reads and
+ * the fan-out's `device_commands` rows commit together, and only then are the
+ * live agents' commands pushed (`deliver()`, which never rejects). A push made
+ * inside the transaction let a fast agent answer a row it could not see yet,
+ * and its result was dropped as an orphan. A transaction that throws —
+ * including a failed commit — propagates before anything is pushed. Call it
+ * with NO ambient context (the tick does): nested inside another transaction it
+ * would join that one and push before it commits.
  */
 export async function processDueDeployment(candidate: DueDeploymentCandidate): Promise<boolean> {
+  const { won, deliver } = await runWithSystemDbAccess(() => admitDueDeployment(candidate));
+  if (deliver) await deliver();
+  return won;
+}
+
+async function admitDueDeployment(candidate: DueDeploymentCandidate): Promise<DueDeploymentAdmission> {
   // Conditional claim: only one API instance flips dispatched_at from NULL.
   const claimedRows = await db
     .update(softwareDeployments)
@@ -248,7 +275,7 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     .returning({ id: softwareDeployments.id });
 
   if (claimedRows.length === 0) {
-    return false; // lost the claim race — another instance dispatches
+    return { won: false }; // lost the claim race — another instance dispatches
   }
 
   // Only still-pending result rows are dispatched (cancelled rows stay cancelled).
@@ -267,7 +294,7 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     console.log(
       `[SoftwareDeploymentScheduler] Deployment ${candidate.id} claimed but has no pending result rows — nothing to dispatch`,
     );
-    return true;
+    return { won: true };
   }
 
   // Package-manager deployment: dispatch against the install method instead
@@ -283,7 +310,7 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     .where(eq(softwareVersions.id, candidate.softwareVersionId!));
   if (!versionRecord) {
     await failAllPendingResults(candidate.id, 'Software version no longer exists');
-    return true;
+    return { won: true };
   }
 
   const [catalogItem] = await db
@@ -296,7 +323,7 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     .where(eq(softwareCatalog.id, versionRecord.catalogId));
   if (!catalogItem) {
     await failAllPendingResults(candidate.id, 'Software catalog item no longer exists');
-    return true;
+    return { won: true };
   }
 
   const dependencyError = dependencyFingerprintError(
@@ -305,7 +332,7 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
   );
   if (dependencyError) {
     await failAllPendingResults(candidate.id, dependencyError);
-    return true;
+    return { won: true };
   }
 
   // Shared payload-building + dispatch fan-out (presign, EDR resolution,
@@ -320,19 +347,20 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     options: (candidate.options as Record<string, unknown> | null) ?? null,
     createdBy: candidate.createdBy,
     markDispatched: false,
+    deferDelivery: true,
   });
 
   console.log(
     `[SoftwareDeploymentScheduler] Dispatched deployment ${candidate.id} (${candidate.scheduleType}): status=${fanout.status}, devices=${fanout.dispatchedDeviceIds.length}/${deviceIds.length}`,
   );
-  return true;
+  return { won: true, deliver: fanout.deliver };
 }
 
 /**
  * One scheduler tick: find due undispatched install deployments, claim each,
  * dispatch its pending result rows. One deployment failing never aborts the
- * tick — each is processed in its own system DB context with its own
- * try/catch (mirrors staleCommandReaper's per-domain isolation).
+ * tick — each is processed in its own system DB context (opened by
+ * processDueDeployment) with its own try/catch (mirrors staleCommandReaper's per-domain isolation).
  */
 export async function runSoftwareDeploymentSchedulerTick(): Promise<{
   claimed: number;
@@ -348,7 +376,9 @@ export async function runSoftwareDeploymentSchedulerTick(): Promise<{
 
   for (const candidate of candidates) {
     try {
-      const won = await runWithSystemDbAccess(() => processDueDeployment(candidate));
+      // #7347 — owns its transaction and pushes after it commits, so it runs
+      // with no ambient context here.
+      const won = await processDueDeployment(candidate);
       if (won) claimed++;
       else skipped++;
     } catch (err) {
