@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { slotMock } = vi.hoisted(() => ({
   slotMock: vi.fn((_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn()),
@@ -186,6 +186,30 @@ describe('upsertXeroContact', () => {
       .mockResolvedValueOnce(json({ Contacts: [contact()] }))
       .mockResolvedValueOnce(json({ Contacts: [contact()] }));
     await expect(upsertXeroContact(ctx, payload(), null)).resolves.toMatchObject({ id: 'xc-1' });
+  });
+
+  const passThrough = (_p: unknown, _s: unknown, _c: unknown, fn: () => unknown) => fn();
+
+  it('surfaces a throttled re-lookup as the throttle, not the original create error (T3-a)', async () => {
+    const refusal = new AccountingProviderError({ kind: 'rate_limited', provider: 'xero', operation: 'slot', retryAfterMs: 1000, throttleSource: 'local' });
+    slotMock
+      .mockImplementationOnce(passThrough)
+      .mockImplementationOnce(passThrough)
+      .mockImplementationOnce(async () => { throw refusal; });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Contacts: [] }))
+      .mockResolvedValueOnce(json({ Title: 'oops' }, 503));
+    await expect(upsertXeroContact(ctx, payload(), null)).rejects.toBe(refusal);
+    expect(fetchMock.mock.calls.map((_c, i) => initOf(fetchMock, i).method)).toEqual(['GET', 'PUT']);
+  });
+
+  it('a failed re-lookup after duplicate_name surfaces the lookup failure, not an unproven duplicate_name (T3-a)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Contacts: [] }))
+      .mockResolvedValueOnce(json({ Elements: [{ ValidationErrors: [{ Message: 'The contact name Acme Ltd is already assigned to another contact.' }] }] }, 400))
+      .mockResolvedValueOnce(json({ Title: 'oops' }, 503));
+    await expect(upsertXeroContact(ctx, payload(), null)).rejects.toMatchObject({ kind: 'transient', httpStatus: 503, operation: 'Xero contact lookup' });
+    expect(fetchMock.mock.calls.map((_c, i) => initOf(fetchMock, i).method)).toEqual(['GET', 'PUT', 'GET']);
   });
 
   it('rethrows the original transient when the re-lookup finds nothing (never a blind second create)', async () => {

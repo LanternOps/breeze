@@ -262,7 +262,12 @@ export async function upsertXeroContact(
     return toRef(xeroArray<XeroContact>(body.Contacts)[0], operation);
   } catch (err) {
     if (!shouldLookAgain(err)) throw err;
-    const landed = await findXeroContactByNumber(ctx, contactNumber).catch(() => null);
+    // A re-lookup that itself fails leaves the outcome unresolved, so its own
+    // error surfaces unchanged (a throttle stays rate_limited with its
+    // Retry-After; a failed look never proves a duplicate_name). The next
+    // attempt's pre-create lookup is the safe adoption path (review ruling T3-a).
+    // The original error is rethrown only when the look succeeded and found nothing.
+    const landed = await findXeroContactByNumber(ctx, contactNumber);
     if (!landed) throw err;
     return adoptContact(ctx, landed, fields);
   }
