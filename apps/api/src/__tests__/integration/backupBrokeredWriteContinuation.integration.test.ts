@@ -22,10 +22,15 @@
  */
 import './setup';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import { withDbAccessContext } from '../../db';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanitor';
+import { reconcileOrphanedBackupSnapshots } from '../../services/backupSnapshotReconcile';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import { SNAPSHOT_TAKEOVER_MAX_AGE_MS } from '../../services/backupSnapshotIdReservations';
 import { authenticateStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
@@ -374,5 +379,49 @@ describe('write session contract additions', () => {
       body: { uploadId: 'upload-sse', appliedEncryption: { algorithm: 'aws:kms', kmsKeyId: kms.kmsKeyId } },
     });
     expect(requested).toEqual({ mode: 's3-sse-kms', keyId: kms.kmsKeyId });
+  });
+});
+
+describe('storage reconcile after a takeover', () => {
+  runDb('attributes a server-issued id to the job currently holding it, not the job that ranks first', async () => {
+    const t = await seedWriteTenant();
+    const root = mkdtempSync(join(tmpdir(), 'brokered-continuation-'));
+    try {
+      const destination = { path: root };
+      const configId = randomUUID();
+      await dbExec(sql`
+        INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
+        VALUES (${configId}, ${t.orgId}, 'Local', 'file', 'local', ${JSON.stringify(destination)}::jsonb)
+      `);
+      const identity = normalizeStorageIdentity('local', destination);
+      const x = `snapshot-20261108T000000Z-${randomBytes(12).toString('hex')}`;
+      mkdirSync(join(root, 'snapshots', x), { recursive: true });
+      writeFileSync(join(root, 'snapshots', x, 'manifest.json'), JSON.stringify({ id: x, files: [] }));
+
+      // The earlier job A left x unfinished; B took it over and then ended
+      // without reporting. Both jobs recorded x; A would rank first (it is on
+      // the same configuration and was created later).
+      const jobB = await seedBackupJob(t.orgId, configId, t.deviceId, 'failed');
+      const jobA = await seedBackupJob(t.orgId, configId, t.deviceId, 'failed');
+      await dbExec(sql`UPDATE backup_jobs SET snapshot_id = ${x}, storage_identity = ${identity},
+        created_at = now() - interval '2 hours' WHERE id = ${jobB}`);
+      await dbExec(sql`UPDATE backup_jobs SET snapshot_id = ${x}, storage_identity = ${identity},
+        created_at = now() - interval '1 hour' WHERE id = ${jobA}`);
+      await dbExec(sql`
+        INSERT INTO backup_snapshot_id_reservations
+          (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, current_job_id, write_generation)
+        VALUES (${x}, ${t.orgId}, ${t.deviceId}, ${configId}, ${identity}, 'server_minted', 'abandoned', ${jobB}, 2)
+      `);
+
+      const result = await reconcileOrphanedBackupSnapshots({
+        orgId: t.orgId, configId, runInDbContext: runFor(t),
+      });
+      expect(result.candidates.find((c) => c.snapshotId === x)).toMatchObject({ jobId: jobB, adopted: true });
+      const snap = await dbExec(sql`SELECT job_id FROM backup_snapshots WHERE snapshot_id = ${x}`);
+      expect(snap[0]).toMatchObject({ job_id: jobB });
+      expect(await reservationRow(x)).toMatchObject({ state: 'published', current_job_id: jobB });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

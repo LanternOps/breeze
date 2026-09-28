@@ -193,23 +193,27 @@ export async function loadReservation(
 
 /**
  * For storage reconcile (system scope): which of these ids are reserved to
- * another organization, and which server-issued ids are still being written
- * or sealed by a live backup job (never adoptable — the job's own result
- * publishes them).
+ * another organization, which server-issued ids are still being written or
+ * sealed by a live backup job (never adoptable — the job's own result
+ * publishes them), and, for each server-issued id, the job currently holding
+ * it — the only job whose result may publish it (after a takeover, earlier
+ * jobs still record the id but can no longer publish it).
  */
 export async function loadSnapshotIdClaims(
   snapshotIds: string[],
   orgId: string,
-): Promise<{ foreign: Set<string>; live: Set<string> }> {
+): Promise<{ foreign: Set<string>; live: Set<string>; currentJobs: Map<string, string> }> {
   const foreign = new Set<string>();
   const live = new Set<string>();
-  if (snapshotIds.length === 0) return { foreign, live };
+  const currentJobs = new Map<string, string>();
+  if (snapshotIds.length === 0) return { foreign, live, currentJobs };
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
       orgId: backupSnapshotIdReservations.orgId,
       state: backupSnapshotIdReservations.state,
       source: backupSnapshotIdReservations.source,
+      currentJobId: backupSnapshotIdReservations.currentJobId,
       jobStatus: backupJobs.status,
     })
     .from(backupSnapshotIdReservations)
@@ -224,8 +228,9 @@ export async function loadSnapshotIdClaims(
       && (row.jobStatus === 'pending' || row.jobStatus === 'running')) {
       live.add(row.snapshotId);
     }
+    if (row.source === 'server_minted' && row.currentJobId) currentJobs.set(row.snapshotId, row.currentJobId);
   }
-  return { foreign, live };
+  return { foreign, live, currentJobs };
 }
 
 // ── Storage reclaim (jobs/backupRetention.ts, system context) ──────────────

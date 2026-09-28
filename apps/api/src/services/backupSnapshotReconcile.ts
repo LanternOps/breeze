@@ -457,6 +457,11 @@ async function loadClaimsAndSharing(params: {
         const reservationClaims = await loadSnapshotIdClaims(batch, orgId);
         for (const id of reservationClaims.foreign) foreignClaimed.add(id);
         for (const id of reservationClaims.live) liveReserved.add(id);
+        // A server-issued id is published only by the job its reservation
+        // currently names: that job wins the dedupe below whatever the rank
+        // of the others (after a takeover, earlier jobs still carry the id).
+        const holder = (snapshotId: string, jobId: string) =>
+          reservationClaims.currentJobs.get(snapshotId) === jobId;
 
         // NOT filtered by config or org: seeing ANOTHER tenant's claim is the
         // entire point (a filtered query would make their snapshot look
@@ -493,7 +498,9 @@ async function loadClaimsAndSharing(params: {
           // records it on both. Rank deterministically rather than letting
           // scan order decide which run owns the objects.
           const existing = jobs.get(row.snapshotId);
-          if (!existing || outranks(claim, existing)) {
+          const claimHolds = holder(row.snapshotId, claim.jobId);
+          const existingHolds = !!existing && holder(row.snapshotId, existing.jobId);
+          if (!existing || (claimHolds && !existingHolds) || (claimHolds === existingHolds && outranks(claim, existing))) {
             jobs.set(row.snapshotId, claim);
           }
         }
