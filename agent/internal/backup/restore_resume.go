@@ -82,7 +82,7 @@ func SaveResumeState(stagingDir string, state *ResumeState) error {
 	// rename: its bytes must be durable before the journal goes.
 	if err := tmpFile.Sync(); err != nil {
 		_ = tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("sync resume state: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
