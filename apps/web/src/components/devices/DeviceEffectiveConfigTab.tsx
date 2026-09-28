@@ -149,9 +149,13 @@ const LEVEL_LABELS: Record<AssignmentLevel, string> = {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function summarizeSettings(settings: Record<string, unknown> | null): string[] {
+type SettingsSummaryItem = { label: string; value: string };
+
+function summarizeSettings(
+  settings: Record<string, unknown> | null,
+): SettingsSummaryItem[] {
   if (!settings || Object.keys(settings).length === 0) return [];
-  const items: string[] = [];
+  const items: SettingsSummaryItem[] = [];
   for (const [key, value] of Object.entries(settings)) {
     if (value === null || value === undefined) continue;
     // Format key from camelCase/snake_case to readable
@@ -161,13 +165,17 @@ function summarizeSettings(settings: Record<string, unknown> | null): string[] {
       .replace(/^\s/, "")
       .toLowerCase();
     if (typeof value === "boolean") {
-      items.push(`${label}: ${value ? "yes" : "no"}`);
+      items.push({ label, value: value ? "yes" : "no" });
     } else if (typeof value === "string" || typeof value === "number") {
-      items.push(`${label}: ${value}`);
+      // Values render verbatim — never CSS-title-cased. A raw id/UUID (e.g.
+      // destinationConfigId) must not have its hyphen-delimited segments
+      // mangled by `text-transform: capitalize` (#7214, paper cut #27).
+      items.push({ label, value: String(value) });
     } else if (Array.isArray(value)) {
-      items.push(
-        `${label}: ${value.length} item${value.length !== 1 ? "s" : ""}`,
-      );
+      items.push({
+        label,
+        value: `${value.length} item${value.length !== 1 ? "s" : ""}`,
+      });
     }
     if (items.length >= 4) break; // limit to 4 summary lines
   }
@@ -368,8 +376,10 @@ export default function DeviceEffectiveConfigTab({
                   <div className="mt-3 rounded-md border bg-muted/30 px-3 py-2">
                     <ul className="space-y-0.5 text-xs text-muted-foreground">
                       {settings.map((s) => (
-                        <li key={s} className="capitalize">
-                          {s}
+                        <li key={s.label}>
+                          <span className="capitalize">{s.label}</span>
+                          {": "}
+                          <span>{s.value}</span>
                         </li>
                       ))}
                     </ul>

@@ -1111,6 +1111,8 @@
     "memoryModules": "Módulos de memoria",
     "memoryNotReported": "Aún no reportado — requiere actualizar el agente",
     "noMemoryModulesReported": "No se reportaron módulos de memoria.",
+    "memoryModulesOnPackage": "La memoria está integrada en el chip (soldada); no hay ranuras extraíbles que informar.",
+    "memoryMaxCapacity": "Capacidad máxima admitida: {{capacity}}",
     "slot": "Ranura",
     "capacity": "Capacidad",
     "memoryType": "Tipo",

@@ -1111,6 +1111,8 @@
     "memoryModules": "Memory Modules",
     "memoryNotReported": "Not reported yet — needs agent update",
     "noMemoryModulesReported": "No memory modules reported.",
+    "memoryModulesOnPackage": "Memory is on-package (soldered) — there are no removable slots to report.",
+    "memoryMaxCapacity": "Max supported capacity: {{capacity}}",
     "slot": "Slot",
     "capacity": "Capacity",
     "memoryType": "Type",

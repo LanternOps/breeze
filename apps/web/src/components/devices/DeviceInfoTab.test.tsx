@@ -209,6 +209,23 @@ describe('DeviceInfoTab — stuck agent update (#4073)', () => {
     expect(notice.textContent).toContain('180');
   });
 
+  it('formats the "since" date the same way as Last Seen / Enrolled (#7214, paper cut #22)', async () => {
+    load({
+      updateAttemptTargetVersion: '0.110.0',
+      updateAttemptStartedAt: '2026-09-27T09:54:11.000Z',
+      updateAttemptLastAt: new Date(Date.now() - 60_000).toISOString(),
+      updateAttemptCount: 14,
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('update-stuck');
+    // The shared formatter (used by Last Seen / Enrolled below) renders
+    // "Sep 27, 2026, ..." — short month, no seconds. The banner previously
+    // called formatDateTime with no options (locale-default, often including
+    // seconds / a different order) instead of that shared style.
+    expect(notice.textContent).toMatch(/Sep 27, 2026, \d{1,2}:\d{2}/);
+    expect(notice.textContent).not.toMatch(/:\d{2}:\d{2}\s*(AM|PM)?$/);
+  });
+
   it('shows no notice while a fresh update is in progress', async () => {
     load({
       updateAttemptTargetVersion: '0.110.0',
