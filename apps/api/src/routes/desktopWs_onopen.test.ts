@@ -743,6 +743,28 @@ describe('desktopWs', () => {
       expect(ws.close).toHaveBeenCalled();
     });
 
+    it('refuses to start, telling the viewer why, when the prompt policy cannot be resolved', async () => {
+      setupSuccessfulValidation();
+      const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+      const { RemoteSessionPromptPolicyError } = await import('./remote/consentGate');
+      vi.mocked(buildRemoteSessionPromptPayload).mockRejectedValueOnce(
+        new RemoteSessionPromptPolicyError('device-1', 'statement timeout'),
+      );
+
+      const handlers = captureWsHandlers(SESSION_ID, 'policy-unavailable-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      expect(sendCommandToAgent).not.toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_stream_start' }),
+      );
+      expect(ws.send).toHaveBeenCalledWith(
+        expect.stringContaining('"REMOTE_PROMPT_POLICY_UNAVAILABLE"'),
+      );
+      expect(ws.close).toHaveBeenCalledWith(4003, expect.any(String));
+    });
+
     it('still starts on a non-consent-prompt-capable agent when the resolved policy is off', async () => {
       setupSuccessfulValidation({ consentPromptProtocolVersion: 0 });
       const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');

@@ -18,6 +18,7 @@ import { canAccessSite, type UserPermissions } from '../../services/permissions'
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import type { AuthContext } from '../../middleware/auth';
 import { DESKTOP_CONSENT_TIMEOUT_MS } from './consentTiming';
+import { RemoteSessionPromptPolicyError } from './consentGate';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 
@@ -345,21 +346,32 @@ export async function logSessionAudit(
 // REMOTE SESSION CONSENT / NOTIFICATION PROMPT POLICY
 // ============================================
 
-/** The two audit actions a consent-denied outcome can be recorded under. */
-export type ConsentDenyAuditAction = 'session_consent_denied' | 'session_consent_bypassed';
+/**
+ * The audit actions a consent-denied (start refused) outcome can be recorded
+ * under. `session_consent_bypassed` is deliberately NOT one of them: it is
+ * written only when a consent-mode start PROCEEDED without an answer under a
+ * bound `proceed` fallback (the activation path in agentWs.ts).
+ */
+export type ConsentDenyAuditAction =
+  | 'session_consent_denied'
+  | 'session_consent_blocked_unanswered'
+  | 'session_consent_blocked_unavailable';
 
 /**
- * Classify a consent-deny `reason` into its audit action. A genuine user denial
- * or a consent timeout is a real "denied" decision; any other reason (no user
- * present, helper absent, a malformed helper reply, or an operator policy
- * choosing proceed-then-block) is a bypass/unavailable outcome, audited
- * distinctly. The authenticated agent WS command-result path is the sole
- * caller allowed to report this endpoint decision.
+ * Classify a consent-deny `reason` into its audit action:
+ *   - `user`    → the end user explicitly declined (`session_consent_denied`)
+ *   - `timeout` → the prompt went unanswered and the start was refused
+ *                 (`session_consent_blocked_unanswered`)
+ *   - anything else (no consent-capable helper, a malformed helper reply, an
+ *     unknown reason) → the prompt could not be shown or answered and the
+ *     start was refused (`session_consent_blocked_unavailable`).
+ * The authenticated agent WS command-result path is the sole caller allowed to
+ * report this endpoint decision.
  */
 export function classifyConsentDenyAction(reason: string): ConsentDenyAuditAction {
-  return reason === 'user' || reason === 'timeout'
-    ? 'session_consent_denied'
-    : 'session_consent_bypassed';
+  if (reason === 'user') return 'session_consent_denied';
+  if (reason === 'timeout') return 'session_consent_blocked_unanswered';
+  return 'session_consent_blocked_unavailable';
 }
 
 /**
@@ -419,10 +431,11 @@ export interface RemoteSessionPromptConfig {
   identityLevel: TechnicianIdentityLevel;
 }
 
-// Spec defaults applied when no `remote_access` policy resolves for the device,
-// or when policy resolution fails. `notify` is the safe baseline: the end user is
-// told a session is starting but is not asked to consent, so a resolution outage
-// can never silently elevate to a fully-silent (`off`) session.
+// Spec defaults applied when the device positively resolves with no
+// `remote_access` policy at all. They are NEVER a fallback for a resolution
+// failure or a malformed/incomplete policy: those refuse the session start
+// (RemoteSessionPromptPolicyError), because falling back to `notify` would
+// silently drop a consent requirement the device's policy may carry.
 export const DEFAULT_REMOTE_SESSION_PROMPT_CONFIG: RemoteSessionPromptConfig = {
   mode: 'notify',
   consentUnavailableBehavior: 'proceed',
@@ -446,16 +459,12 @@ const promptConfigSystemAuth: AuthContext = {
   canAccessOrg: () => true,
 };
 
-function coercePromptMode(value: unknown): SessionPromptMode {
-  return value === 'off' || value === 'notify' || value === 'consent'
-    ? value
-    : DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.mode;
+function isPromptMode(value: unknown): value is SessionPromptMode {
+  return value === 'off' || value === 'notify' || value === 'consent';
 }
 
-function coerceConsentUnavailable(value: unknown): ConsentUnavailableBehavior {
-  return value === 'proceed' || value === 'block'
-    ? value
-    : DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.consentUnavailableBehavior;
+function isConsentUnavailableBehavior(value: unknown): value is ConsentUnavailableBehavior {
+  return value === 'proceed' || value === 'block';
 }
 
 function coerceIdentityLevel(value: unknown): TechnicianIdentityLevel {
@@ -464,13 +473,39 @@ function coerceIdentityLevel(value: unknown): TechnicianIdentityLevel {
     : DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.identityLevel;
 }
 
+// The consent/notification keys the remote_access link JSON mirrors into the
+// normalized settings row (remoteAccessConsentSettingsSchema).
+const PROMPT_SETTING_KEYS = [
+  'sessionPromptMode',
+  'consentUnavailableBehavior',
+  'notifyOnSessionEnd',
+  'showActiveIndicator',
+  'technicianIdentityLevel',
+] as const;
+
+function linkCarriesPromptSettings(inlineSettings: unknown): boolean {
+  if (!inlineSettings || typeof inlineSettings !== 'object') return false;
+  return PROMPT_SETTING_KEYS.some((key) => key in (inlineSettings as Record<string, unknown>));
+}
+
 /**
  * Resolve the effective remote-session consent/notification prompt config for a
  * device. Resolves the effective `remote_access` configuration feature the same
  * way `resolveDesktopSessionPolicy` does (via `resolveEffectiveConfig`), then
  * reads the authoritative normalized `config_policy_remote_access_settings` row
- * by `featureLinkId`. Returns the spec defaults when no `remote_access` policy
- * applies, when the settings row is missing, or when resolution fails.
+ * by `featureLinkId`.
+ *
+ * Returns the spec defaults ONLY when the device resolves and no
+ * `remote_access` policy applies to it. Throws `RemoteSessionPromptPolicyError`
+ * when the policy cannot be established — see the class doc. One case needs a
+ * rule of its own: a remote_access link with no normalized settings row. The
+ * write path skips that row only when the link was saved without any settings
+ * (null inline settings), and fills every prompt field it is not given with
+ * the schema/column defaults, so:
+ *   - link JSON carries no prompt keys → whatever the write path stored (or
+ *     would have stored) is the defaults, so the defaults apply;
+ *   - link JSON carries prompt keys → the row should exist and does not; the
+ *     stored mode is unknown (it may be `consent`), so the start is refused.
  *
  * Runs the DB work via `runOutsideDbContext` → `withSystemDbAccessContext` so it
  * works from paths that have no request-scoped DB context (e.g. viewer-token
@@ -488,8 +523,13 @@ export async function resolveRemoteSessionPromptConfig(
     return await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const effective = await resolveEffectiveConfig(deviceId, promptConfigSystemAuth);
-        const feature = effective?.features?.remote_access;
+        if (!effective) {
+          throw new RemoteSessionPromptPolicyError(deviceId, 'effective configuration did not resolve');
+        }
+        const feature = effective.features?.remote_access;
         if (!feature) {
+          // Positively established: the device resolved and no remote_access
+          // policy applies to it.
           return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
         }
 
@@ -497,17 +537,20 @@ export async function resolveRemoteSessionPromptConfig(
         // the normalized settings row keyed on that link. The authoritative
         // values live in config_policy_remote_access_settings (the JSONB on the
         // feature link is only a UI/compat mirror).
-        const [settings] = await db
+        const [row] = await db
           .select({
+            linkId: configPolicyEffectiveFeatureLinks.id,
+            linkInlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+            settingsId: configPolicyRemoteAccessSettings.id,
             sessionPromptMode: configPolicyRemoteAccessSettings.sessionPromptMode,
             consentUnavailableBehavior: configPolicyRemoteAccessSettings.consentUnavailableBehavior,
             notifyOnSessionEnd: configPolicyRemoteAccessSettings.notifyOnSessionEnd,
             showActiveIndicator: configPolicyRemoteAccessSettings.showActiveIndicator,
             technicianIdentityLevel: configPolicyRemoteAccessSettings.technicianIdentityLevel,
           })
-          .from(configPolicyRemoteAccessSettings)
-          .innerJoin(
-            configPolicyEffectiveFeatureLinks,
+          .from(configPolicyEffectiveFeatureLinks)
+          .leftJoin(
+            configPolicyRemoteAccessSettings,
             eq(configPolicyRemoteAccessSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
           )
           .where(
@@ -518,29 +561,59 @@ export async function resolveRemoteSessionPromptConfig(
           )
           .limit(1);
 
-        if (!settings) {
+        if (!row) {
+          throw new RemoteSessionPromptPolicyError(
+            deviceId,
+            `remote_access feature link not found for policy ${feature.sourcePolicyId}`
+          );
+        }
+
+        if (!row.settingsId) {
+          if (linkCarriesPromptSettings(row.linkInlineSettings)) {
+            throw new RemoteSessionPromptPolicyError(
+              deviceId,
+              `remote_access settings row missing for feature link ${row.linkId}`
+            );
+          }
           return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
         }
 
+        if (!isPromptMode(row.sessionPromptMode)) {
+          throw new RemoteSessionPromptPolicyError(
+            deviceId,
+            `invalid session prompt mode on feature link ${row.linkId}`
+          );
+        }
+        if (!isConsentUnavailableBehavior(row.consentUnavailableBehavior)) {
+          throw new RemoteSessionPromptPolicyError(
+            deviceId,
+            `invalid consent-unavailable behavior on feature link ${row.linkId}`
+          );
+        }
+
         return {
-          mode: coercePromptMode(settings.sessionPromptMode),
-          consentUnavailableBehavior: coerceConsentUnavailable(settings.consentUnavailableBehavior),
-          notifyOnEnd: settings.notifyOnSessionEnd ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.notifyOnEnd,
-          showIndicator: settings.showActiveIndicator ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.showIndicator,
-          identityLevel: coerceIdentityLevel(settings.technicianIdentityLevel),
+          mode: row.sessionPromptMode,
+          consentUnavailableBehavior: row.consentUnavailableBehavior,
+          notifyOnEnd: row.notifyOnSessionEnd ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.notifyOnEnd,
+          showIndicator: row.showActiveIndicator ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.showIndicator,
+          identityLevel: coerceIdentityLevel(row.technicianIdentityLevel),
         };
       })
     );
   } catch (error) {
-    // Fail-safe to the spec defaults (mode 'notify') rather than 500-ing the
-    // offer handler. A resolution outage must not silently produce a fully
-    // silent session, nor block the operator entirely.
-    console.error(
-      `[RemoteSessionPrompt] Failed to resolve prompt config for device ${deviceId}; using defaults:`,
-      error instanceof Error ? error.message : error
-    );
-    captureException(error);
-    return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
+    // Refuse the start rather than fall back to `notify`: a lookup error or an
+    // unreadable policy must never drop a consent requirement. Callers map
+    // this error to a technician-facing "try again / re-save the policy".
+    const policyError = error instanceof RemoteSessionPromptPolicyError
+      ? error
+      : new RemoteSessionPromptPolicyError(
+        deviceId,
+        error instanceof Error ? error.message : String(error),
+        { cause: error }
+      );
+    console.error(`[RemoteSessionPrompt] ${policyError.message}; refusing the session start`);
+    captureException(policyError);
+    throw policyError;
   }
 }
 
@@ -579,6 +652,10 @@ export function buildTechnicianDisplay(
  * The dialog shows who the technician WORKS FOR — the MSP (partner) — not the
  * client org the device belongs to. Showing the client's own company name is
  * what a social engineer would claim anyway.
+ *
+ * Throws `RemoteSessionPromptPolicyError` when the prompt policy cannot be
+ * established; callers refuse the start. The technician identity lookup is
+ * display-only and stays best-effort.
  */
 export async function buildRemoteSessionPromptPayload(
   device: { id: string; orgId: string },
@@ -644,21 +721,5 @@ export async function buildRemoteSessionPromptPayload(
   };
 }
 
-/**
- * The only consent/notification prompt protocol version this server speaks.
- * An agent reporting exactly this value (`devices.consentPromptProtocolVersion`,
- * from the heartbeat `securityCapabilities` handshake) parses the `prompt`
- * block on a desktop-stream-start command and gates capture on it. Anything
- * else — omitted, an old pre-consent-gate build, a downgrade, or a future
- * version this server does not recognize — is capability 0: the agent
- * silently drops the unfamiliar `prompt` key (Go's JSON unmarshal into a
- * known struct drops unknown fields) and streams unconditionally, so a
- * dispatch site that resolved a policy requiring consent or notification
- * must refuse to start on such an agent rather than send a prompt block it
- * will not honor.
- */
-export const CONSENT_PROMPT_PROTOCOL_VERSION = 1;
-
-export function isConsentPromptCapable(consentPromptProtocolVersion: number): boolean {
-  return consentPromptProtocolVersion === CONSENT_PROMPT_PROTOCOL_VERSION;
-}
+// Re-exported for the existing importers of these from this module.
+export { CONSENT_PROMPT_PROTOCOL_VERSION, isConsentPromptCapable } from './consentGate';

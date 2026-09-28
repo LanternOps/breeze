@@ -38,6 +38,7 @@ vi.mock('../../db/schema', () => ({
   devices: {},
   auditLogs: { __table: 'audit_logs' },
   configPolicyFeatureLinks: {},
+  configPolicyEffectiveFeatureLinks: {},
   configPolicyRemoteAccessSettings: {},
   users: {},
   organizations: {},
@@ -45,10 +46,14 @@ vi.mock('../../db/schema', () => ({
 }));
 
 // buildRemoteSessionPromptPayload → resolveRemoteSessionPromptConfig lazily
-// imports the configurationPolicy service; return "no effective config" so the
+// imports the configurationPolicy service. The default is a resolved config
+// with no remote_access feature (absence positively established), so the
 // prompt config falls to the spec defaults (mode 'notify', indicator on).
+const { resolveEffectiveConfig } = vi.hoisted(() => ({
+  resolveEffectiveConfig: vi.fn(async (): Promise<unknown> => ({ deviceId: 'dev-1', features: {} })),
+}));
 vi.mock('../../services/configurationPolicy', () => ({
-  resolveEffectiveConfig: vi.fn(async () => undefined)
+  resolveEffectiveConfig,
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -67,7 +72,9 @@ import {
   logSessionAudit,
   parseDesktopStartCommandId,
   resolveConsentMarkerSessionId,
+  resolveRemoteSessionPromptConfig,
 } from './helpers';
+import { RemoteSessionPromptPolicyError, requiresConsentCapableAgent } from './consentGate';
 
 describe('buildTechnicianDisplay', () => {
   it('returns name + email + orgName at name_email level', () => {
@@ -168,6 +175,15 @@ describe('buildRemoteSessionPromptPayload', () => {
     });
     expect(captureException).toHaveBeenCalled();
   });
+
+  it('propagates a prompt-policy resolution failure instead of shipping a notify prompt', async () => {
+    resolveEffectiveConfig.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(buildRemoteSessionPromptPayload(DEVICE, 'user-1'))
+      .rejects.toBeInstanceOf(RemoteSessionPromptPolicyError);
+    // No identity lookups: the start is refused before any prompt is built.
+    expect(select).not.toHaveBeenCalled();
+  });
 });
 
 describe('isUnsolicitedConsentReason', () => {
@@ -187,26 +203,174 @@ describe('isUnsolicitedConsentReason', () => {
 });
 
 describe('classifyConsentDenyAction', () => {
-  // The agent WS command-result path and the operator deny route both feed
-  // reasons through this single classifier; these cases pin the taxonomy so the
-  // two paths can never drift (type-design finding #5).
+  // The agent WS command-result path feeds every consent_denied reason through
+  // this single classifier. A refused start is never audited as session_consent_bypassed:
+  // `session_consent_bypassed` is reserved for a start that PROCEEDED without
+  // an answer (written on the activation path, not here).
   it('classifies an explicit user denial as session_consent_denied', () => {
     expect(classifyConsentDenyAction('user')).toBe('session_consent_denied');
   });
 
-  it('classifies a consent timeout as session_consent_denied', () => {
-    expect(classifyConsentDenyAction('timeout')).toBe('session_consent_denied');
+  it('classifies an unanswered prompt as session_consent_blocked_unanswered', () => {
+    expect(classifyConsentDenyAction('timeout')).toBe('session_consent_blocked_unanswered');
   });
 
-  it('classifies unavailable/technical reasons as session_consent_bypassed', () => {
-    expect(classifyConsentDenyAction('no_user')).toBe('session_consent_bypassed');
-    expect(classifyConsentDenyAction('helper_absent')).toBe('session_consent_bypassed');
-    expect(classifyConsentDenyAction('policy_proceed')).toBe('session_consent_bypassed');
+  it('classifies unavailable/technical reasons as session_consent_blocked_unavailable', () => {
+    expect(classifyConsentDenyAction('no_user')).toBe('session_consent_blocked_unavailable');
+    expect(classifyConsentDenyAction('helper_absent')).toBe('session_consent_blocked_unavailable');
+    expect(classifyConsentDenyAction('policy_proceed')).toBe('session_consent_blocked_unavailable');
   });
 
-  it('defaults an unknown/empty reason to the safer bypassed bucket', () => {
-    expect(classifyConsentDenyAction('')).toBe('session_consent_bypassed');
-    expect(classifyConsentDenyAction('something-new')).toBe('session_consent_bypassed');
+  it('classifies an unknown/empty reason as blocked-unavailable, never as session_consent_bypassed', () => {
+    expect(classifyConsentDenyAction('')).toBe('session_consent_blocked_unavailable');
+    expect(classifyConsentDenyAction('something-new')).toBe('session_consent_blocked_unavailable');
+    for (const reason of ['user', 'timeout', 'no_user', 'helper_absent', '', 'x']) {
+      expect(classifyConsentDenyAction(reason)).not.toBe('session_consent_bypassed');
+    }
+  });
+});
+
+describe('resolveRemoteSessionPromptConfig', () => {
+  const REMOTE_ACCESS_FEATURE = {
+    featureType: 'remote_access',
+    sourcePolicyId: 'policy-1',
+    inlineSettings: null,
+  };
+
+  // link lookup — select({...}).from(effectiveLinks).leftJoin(settings).where().limit()
+  function rigLinkSelect(result: unknown[] | Error) {
+    select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: result instanceof Error
+              ? vi.fn().mockRejectedValue(result)
+              : vi.fn().mockResolvedValue(result),
+          }),
+        }),
+      }),
+    } as never);
+  }
+
+  function settingsRow(overrides: Record<string, unknown> = {}) {
+    return {
+      linkId: 'link-1',
+      linkInlineSettings: { sessionPromptMode: 'consent' },
+      settingsId: 'settings-1',
+      sessionPromptMode: 'consent',
+      consentUnavailableBehavior: 'block',
+      notifyOnSessionEnd: true,
+      showActiveIndicator: true,
+      technicianIdentityLevel: 'name',
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    select.mockReset();
+    captureException.mockClear();
+    resolveEffectiveConfig.mockReset();
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: {} });
+  });
+
+  it('returns the notify defaults only when the device resolves with no remote_access policy', async () => {
+    const cfg = await resolveRemoteSessionPromptConfig('dev-1');
+    expect(cfg).toEqual({
+      mode: 'notify',
+      consentUnavailableBehavior: 'proceed',
+      notifyOnEnd: true,
+      showIndicator: true,
+      identityLevel: 'name_email',
+    });
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('returns the stored consent settings when the normalized row exists', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow()]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).resolves.toEqual({
+      mode: 'consent',
+      consentUnavailableBehavior: 'block',
+      notifyOnEnd: true,
+      showIndicator: true,
+      identityLevel: 'name',
+    });
+  });
+
+  it('refuses (throws) instead of falling back to notify when policy resolution throws', async () => {
+    resolveEffectiveConfig.mockRejectedValue(new Error('connection reset'));
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toBeInstanceOf(RemoteSessionPromptPolicyError);
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('refuses when the device configuration cannot be resolved at all', async () => {
+    resolveEffectiveConfig.mockResolvedValue(null);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/did not resolve/);
+  });
+
+  it('refuses when the settings lookup throws', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect(new Error('statement timeout'));
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/statement timeout/);
+  });
+
+  it('refuses when the resolved remote_access policy has no matching feature link', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/feature link not found/);
+  });
+
+  it('refuses an invalid stored prompt mode instead of coercing it to notify', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({ sessionPromptMode: 'CONSENT ' })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/invalid session prompt mode/);
+  });
+
+  it('refuses an invalid stored unavailable-behavior instead of coercing it to proceed', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({ consentUnavailableBehavior: 'maybe' })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/invalid consent-unavailable behavior/);
+  });
+
+  it('refuses a missing settings row when the link carries prompt settings', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({
+      settingsId: null,
+      sessionPromptMode: null,
+      consentUnavailableBehavior: null,
+      notifyOnSessionEnd: null,
+      showActiveIndicator: null,
+      technicianIdentityLevel: null,
+    })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/settings row missing/);
+  });
+
+  it('uses the stored-row defaults for a missing settings row when the link carries no prompt settings', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({
+      linkInlineSettings: { webrtcDesktop: true, vncRelay: true },
+      settingsId: null,
+      sessionPromptMode: null,
+      consentUnavailableBehavior: null,
+      notifyOnSessionEnd: null,
+      showActiveIndicator: null,
+      technicianIdentityLevel: null,
+    })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).resolves.toMatchObject({
+      mode: 'notify',
+      consentUnavailableBehavior: 'proceed',
+    });
+  });
+});
+
+describe('requiresConsentCapableAgent', () => {
+  it('is true only for a consent-mode prompt on an agent without the consent prompt protocol', () => {
+    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 0 })).toBe(true);
+    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 2 })).toBe(true);
+    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: null })).toBe(true);
+    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 1 })).toBe(false);
+    expect(requiresConsentCapableAgent({ mode: 'notify' }, { consentPromptProtocolVersion: 0 })).toBe(false);
+    expect(requiresConsentCapableAgent(undefined, { consentPromptProtocolVersion: 0 })).toBe(false);
   });
 });
 
