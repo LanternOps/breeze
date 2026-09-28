@@ -32,7 +32,7 @@ Boot a blank or replacement machine from Breeze recovery media, type a short cod
 |---|---|---|
 | Recovery tokens, bundles, `bmr-recover` (reinstall-then-recover) | shipped, proven Linux + Windows | token issuance, download descriptor, complete endpoint, retry/circuit breaker, D21 redirect handling |
 | Linux system state (feature #5439) | shipped, proven incl. tamper | collector, checksummed manifest, W02 verifier, W03 restorer (gains a `root` parameter) |
-| Restore-as-VM / Instant Boot (`agent/internal/backup/hyperv/vmrestore.go`) | shipped, Windows-only | provisioning logic is generalised into the engine (driver injection is not supported yet — §6.1); `New-VM` stays in the Hyper-V front |
+| Restore-as-VM / Instant Boot (`agent/internal/backup/hyperv/vmrestore.go`) | shipped, Windows-only | provisioning logic is generalised into the engine (the rebuild engine does not inject drivers yet — §6.1); `New-VM` stays in the Hyper-V front |
 | DR plans (`apps/api/src/routes/dr.ts`, `drExecutionService.ts`) | shipped | new `BARE_METAL_REBUILD` step; rehearsal mode uses VHDX + new identity |
 | Vault mirror + fallback provider (`exec_backup.go` `resolveRestoreProvider`) | shipped | engine restores vault-first, cloud second, unchanged |
 | Recovery keys escrow (`device_recovery_keys`, access events) | shipped | engine fetches the escrowed key for encrypted sources; reveal is audited |

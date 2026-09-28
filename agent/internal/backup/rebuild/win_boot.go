@@ -97,11 +97,6 @@ func ensureBootx64(espVolume string) error {
 	return nil
 }
 
-// inboxDriversOnlyWarning is on every completed boot phase: driver
-// injection is not supported yet, so the restored system starts with the
-// drivers its own image carries.
-const inboxDriversOnlyWarning = "driver injection is not supported yet; the restored system has its inbox drivers only — install hardware drivers from Windows after the first boot"
-
 // winBoot regenerates the ESP with the host's bcdboot (never imports
 // system-state/boot/bcd_export, never runs bcdedit or reagentc) (Global
 // Constraint "ESP and boot"). It runs no other external tool; driver
@@ -162,6 +157,5 @@ func winBoot(ctx context.Context, r *run) error {
 			}
 		}
 	}
-	r.warn("%s", inboxDriversOnlyWarning)
 	return nil
 }

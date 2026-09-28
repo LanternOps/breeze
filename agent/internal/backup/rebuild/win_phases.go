@@ -69,10 +69,27 @@ const legacyStateStagingMaxAge = 24 * time.Hour
 // C:\Windows\SystemTemp). A seam for tests.
 var stateStagingParent = os.TempDir
 
-// processAlive reports whether pid is a running process. Anything short of
-// a definite "no such process" answers true, so the sweep never removes a
+// processState reports whether pid is a running process and, when the OS
+// can say, when that process started (zero = unknown). Anything short of a
+// definite "no such process" answers running, so the sweep never removes a
 // live run's dir. Set per OS (winsystem_windows.go, winsystem_other.go).
-var processAlive func(pid int) bool
+var processState func(pid int) (running bool, started time.Time)
+
+// stagingOwnerGone reports whether the process that created a staging dir
+// last written at dirModified is gone: no process holds its pid any more,
+// or the one that does started after the dir was last written — the
+// original owner exited and the id was reused. An unknown start time
+// counts as the owner (kept).
+func stagingOwnerGone(pid int, dirModified time.Time) bool {
+	if processState == nil {
+		return false
+	}
+	running, started := processState(pid)
+	if !running {
+		return true
+	}
+	return !started.IsZero() && started.After(dirModified)
+}
 
 // newStateStagingDir creates this run's system-state staging dir,
 // "<TEMP>\breeze-rebuild-state-<pid>-<random>", so a later run can tell
@@ -116,8 +133,8 @@ func allDigits(s string) bool {
 // normal exit, but a killed process never reaches it, and the dir holds a
 // copy of the backup's registry hives. Only dirs this engine names are
 // considered, and of those only
-//   - "<prefix><pid>-<random>" whose pid is not this process and not a
-//     running process, and
+//   - "<prefix><pid>-<random>" whose pid is not this process and whose
+//     owner is gone (stagingOwnerGone — covers pid reuse), and
 //   - legacy "<prefix><random>" (no pid) dirs older than
 //     legacyStateStagingMaxAge;
 //
@@ -142,7 +159,7 @@ func sweepStaleStateStaging(r *run) {
 			continue
 		}
 		if pid, ok := stateStagingOwner(name); ok {
-			if pid == self || processAlive == nil || processAlive(pid) {
+			if pid == self || !stagingOwnerGone(pid, fi.ModTime()) {
 				continue
 			}
 		} else if !allDigits(strings.TrimPrefix(name, stateStagingPrefix)) || time.Since(fi.ModTime()) < legacyStateStagingMaxAge {

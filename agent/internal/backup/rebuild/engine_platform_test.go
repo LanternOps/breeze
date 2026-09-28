@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -191,26 +192,38 @@ func withStateStagingParent(t *testing.T, dir string) {
 	t.Cleanup(func() { stateStagingParent = prev })
 }
 
-func withProcessAlive(t *testing.T, fn func(pid int) bool) {
+func withProcessState(t *testing.T, fn func(pid int) (bool, time.Time)) {
 	t.Helper()
-	prev := processAlive
-	processAlive = fn
-	t.Cleanup(func() { processAlive = prev })
+	prev := processState
+	processState = fn
+	t.Cleanup(func() { processState = prev })
 }
 
 // Lab L2: a hard-killed run leaves its system-state staging dir (a copy of
 // the backup's registry hives) in TEMP, and nothing removed it. The next
 // run's startup cleanup removes staging dirs this engine created whose
-// owning process is gone (legacy unowned names only once they are a day
-// old) — never a live process's, never this process's, never anything
-// else in TEMP — and says so in the result.
+// owning process is gone — or its pid now belongs to a process started
+// after the dir was last written (pid reuse) — and legacy unowned names
+// only once they are a day old; never a live owner's (including one whose
+// start time is unknown), never this process's, never anything else in
+// TEMP — and says so in the result.
 func TestRun_CleanupLeftovers_RemovesStaleStateStaging(t *testing.T) {
 	withHostPlatform(t, "windows")
 	dir := t.TempDir()
 	tmp := t.TempDir()
 	withStateStagingParent(t, tmp)
-	const deadPID, livePID = 999991, 999992
-	withProcessAlive(t, func(pid int) bool { return pid == livePID })
+	const deadPID, livePID, reusedPID, unknownStartPID = 999991, 999992, 999993, 999994
+	withProcessState(t, func(pid int) (bool, time.Time) {
+		switch pid {
+		case livePID:
+			return true, time.Now().Add(-72 * time.Hour) // started before its dir was written
+		case reusedPID:
+			return true, time.Now() // a newer, unrelated process holds the id now
+		case unknownStartPID, os.Getpid():
+			return true, time.Time{} // running, start time unknown
+		}
+		return false, time.Time{}
+	})
 	mk := func(name string, age time.Duration) string {
 		t.Helper()
 		p := filepath.Join(tmp, name)
@@ -230,12 +243,14 @@ func TestRun_CleanupLeftovers_RemovesStaleStateStaging(t *testing.T) {
 	}
 	dead := mk(fmt.Sprintf("breeze-rebuild-state-%d-111", deadPID), 0)
 	legacyOld := mk("breeze-rebuild-state-303156243", 48*time.Hour)
+	reused := mk(fmt.Sprintf("breeze-rebuild-state-%d-555", reusedPID), 48*time.Hour)
 	keep := []string{
-		mk(fmt.Sprintf("breeze-rebuild-state-%d-222", livePID), 48*time.Hour),     // owner still running
-		mk(fmt.Sprintf("breeze-rebuild-state-%d-333", os.Getpid()), 48*time.Hour), // this process
-		mk("breeze-rebuild-state-404", 0),                                         // legacy, too recent to call stale
-		mk("breeze-rebuild-state-abc", 48*time.Hour),                              // not a name this engine makes
-		mk("breeze-rebuild-other-1-1", 48*time.Hour),                              // different prefix
+		mk(fmt.Sprintf("breeze-rebuild-state-%d-222", livePID), 48*time.Hour),         // owner still running
+		mk(fmt.Sprintf("breeze-rebuild-state-%d-666", unknownStartPID), 48*time.Hour), // running, start unknown
+		mk(fmt.Sprintf("breeze-rebuild-state-%d-333", os.Getpid()), 48*time.Hour),     // this process
+		mk("breeze-rebuild-state-404", 0),                                             // legacy, too recent to call stale
+		mk("breeze-rebuild-state-abc", 48*time.Hour),                                  // not a name this engine makes
+		mk("breeze-rebuild-other-1-1", 48*time.Hour),                                  // different prefix
 	}
 	file := filepath.Join(tmp, fmt.Sprintf("breeze-rebuild-state-%d-444", deadPID)) // a file, not a dir
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -248,7 +263,7 @@ func TestRun_CleanupLeftovers_RemovesStaleStateStaging(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected a Result")
 	}
-	for _, p := range []string{dead, legacyOld} {
+	for _, p := range []string{dead, legacyOld, reused} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale staging dir %s survived startup cleanup (stat err %v)", p, err)
 		}
@@ -260,7 +275,7 @@ func TestRun_CleanupLeftovers_RemovesStaleStateStaging(t *testing.T) {
 	}
 	found := false
 	for _, w := range res.Warnings {
-		found = found || strings.Contains(w, "removed 2 stale system-state staging dir(s)")
+		found = found || strings.Contains(w, "removed 3 stale system-state staging dir(s)")
 	}
 	if !found {
 		t.Fatalf("warnings = %v, want the stale-staging cleanup reported", res.Warnings)
@@ -281,17 +296,25 @@ func TestNewStateStagingDir_NameCarriesOwnerPID(t *testing.T) {
 	}
 }
 
-// processAlive (the real, per-OS seam): this process is alive; a child that
-// has exited is not.
-func TestProcessAlive(t *testing.T) {
-	if !processAlive(os.Getpid()) {
-		t.Fatal("processAlive(self) = false")
+// processState (the real, per-OS seam): this process is running, and any
+// start time it reports is not in the future; a child that has exited is
+// not running.
+func TestProcessState(t *testing.T) {
+	running, started := processState(os.Getpid())
+	if !running {
+		t.Fatal("processState(self): not running")
+	}
+	if !started.IsZero() && started.After(time.Now()) {
+		t.Fatalf("processState(self) start time %v is in the future", started)
+	}
+	if runtime.GOOS == "windows" && started.IsZero() {
+		t.Fatal("processState(self): Windows must report the process start time")
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if processAlive(cmd.Process.Pid) {
-		t.Fatalf("processAlive(%d) = true for an exited child", cmd.Process.Pid)
+	if running, _ := processState(cmd.Process.Pid); running {
+		t.Fatalf("processState(%d): running for an exited child", cmd.Process.Pid)
 	}
 }

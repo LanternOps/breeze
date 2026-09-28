@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"syscall"
+	"time"
 )
 
 // NewWinSystem is unavailable off Windows — mirrors NewSystem's !linux stub
@@ -16,16 +17,17 @@ func init() {
 	// hostWindowsDir (win_boot.go): no real host Windows directory off
 	// Windows; hostSystemTool's C:\Windows fallback applies.
 	hostWindowsDir = func() string { return "" }
-	processAlive = unixProcessAlive
+	processState = unixProcessState
 }
 
-// unixProcessAlive: signal 0 probes without delivering anything. Only "no
-// such process" means dead — EPERM (another user's process) is alive.
-func unixProcessAlive(pid int) bool {
+// unixProcessState: signal 0 probes without delivering anything. Only "no
+// such process" means not running — EPERM (another user's process) is
+// running. The start time is not read here (zero = unknown).
+func unixProcessState(pid int) (bool, time.Time) {
 	p, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		return false, time.Time{}
 	}
 	err = p.Signal(syscall.Signal(0))
-	return !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH)
+	return !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH), time.Time{}
 }

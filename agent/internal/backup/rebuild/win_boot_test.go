@@ -231,20 +231,21 @@ type closeHook struct {
 func (h closeHook) Close() error { h.fn(); return nil }
 
 // D20: driver injection is not supported yet. The boot phase never runs
-// DISM; every run gets the inbox-drivers warning, and a non-empty
-// DriverDirs that somehow reached the phase (Run refuses it first) is
-// refused before any command runs.
+// DISM, and a non-empty DriverDirs that somehow reached the phase (Run
+// refuses it first) is refused before any command runs.
 func TestWinBoot_DriverInjectionNotSupported(t *testing.T) {
 	r, sys := newBootRun(t, TargetDisk)
 	if err := winBoot(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	if !hasWarning(r.warnings, inboxDriversOnlyWarning) {
-		t.Fatalf("warnings = %v", r.warnings)
-	}
 	for _, c := range sys.cmds {
 		if strings.Contains(strings.ToLower(c), "dism") {
 			t.Fatalf("the boot phase must not run DISM: %v", sys.cmds)
+		}
+	}
+	for _, w := range r.warnings {
+		if strings.Contains(w, "driver injection") {
+			t.Fatalf("a successful boot phase must not carry a driver-injection warning: %v", r.warnings)
 		}
 	}
 

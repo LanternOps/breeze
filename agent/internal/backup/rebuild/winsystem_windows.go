@@ -79,24 +79,33 @@ func init() {
 		}
 		return dir
 	}
-	processAlive = windowsProcessAlive
+	processState = windowsProcessState
 }
 
-// windowsProcessAlive: OpenProcess failing with ERROR_INVALID_PARAMETER is
+// windowsProcessState: OpenProcess failing with ERROR_INVALID_PARAMETER is
 // the one definite "no process has this id"; any other failure (e.g.
-// ACCESS_DENIED for a protected process) means one exists. An opened
-// process is alive until it has an exit code (STILL_ACTIVE = 259).
-func windowsProcessAlive(pid int) bool {
+// ACCESS_DENIED for a protected process) means one exists, start unknown.
+// An opened process is running until it has an exit code (STILL_ACTIVE =
+// 259); its start time is GetProcessTimes' creation time (zero = unknown
+// when that call fails).
+func windowsProcessState(pid int) (bool, time.Time) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
+		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER), time.Time{}
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	var code uint32
 	if err := windows.GetExitCodeProcess(h, &code); err != nil {
-		return true
+		return true, time.Time{}
 	}
-	return code == 259 // STILL_ACTIVE
+	if code != 259 { // STILL_ACTIVE
+		return false, time.Time{}
+	}
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &created, &exited, &kernel, &user); err != nil {
+		return true, time.Time{}
+	}
+	return true, time.Unix(0, created.Nanoseconds())
 }
 
 // attachedVHDX is the PROCESS-wide registry of VHDX attaches this process
