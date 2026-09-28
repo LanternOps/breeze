@@ -290,6 +290,80 @@ func TestResultResend_OtherRejectionForgetsWithoutResending(t *testing.T) {
 	}
 }
 
+// newUnconnectedResendClient returns a client whose resend delay is long
+// enough that a scheduled resend is still pending when the test inspects it.
+func newUnconnectedResendClient(delay time.Duration) *Client {
+	c := newTestClient("http://localhost", noopHandler)
+	c.resends.delay = func(int) time.Duration { return delay }
+	return c
+}
+
+func drainResults(c *Client) int {
+	n := 0
+	for {
+		select {
+		case <-c.resultChan:
+			n++
+		default:
+			return n
+		}
+	}
+}
+
+// A transient drop (rate budget) of a resend must not cancel the resend or
+// forget the result — only INVALID_MESSAGE is definitive.
+func TestResultResend_RateBudgetRejectionKeepsTheRecord(t *testing.T) {
+	c := newUnconnectedResendClient(20 * time.Millisecond)
+	if err := c.SendResult(CommandResult{CommandID: "cmd-rate"}); err != nil {
+		t.Fatalf("SendResult: %v", err)
+	}
+	drainResults(c)
+	c.handleServerErrorFrame(processingFailedFrame("cmd-rate"))
+	c.handleServerErrorFrame([]byte(`{"type":"error","code":"MESSAGE_RATE_BUDGET_EXCEEDED","messageType":"command_result","commandId":"cmd-rate"}`))
+	if !c.resends.tracked("cmd-rate") {
+		t.Fatal("a rate-budget drop forgot the result")
+	}
+	waitFor(t, "the scheduled resend", func() bool { return len(c.resultChan) == 1 })
+}
+
+// An ack arriving while a resend is scheduled cancels it: the server recorded
+// the result (e.g. via an outbox-flushed copy).
+func TestResultResend_AckCancelsAPendingResend(t *testing.T) {
+	c := newUnconnectedResendClient(30 * time.Millisecond)
+	if err := c.SendResult(CommandResult{CommandID: "cmd-pending"}); err != nil {
+		t.Fatalf("SendResult: %v", err)
+	}
+	drainResults(c)
+	c.handleServerErrorFrame(processingFailedFrame("cmd-pending"))
+	c.handleAckFrame(ackFrame("cmd-pending"))
+	settle()
+	if n := drainResults(c); n != 0 {
+		t.Fatalf("%d resend(s) went out after the ack cancelled them, want 0", n)
+	}
+}
+
+// Two error frames for one result (the same result also went out via an
+// outbox flush) produce one resend and spend one attempt.
+func TestResultResend_DuplicateErrorFramesScheduleOneResend(t *testing.T) {
+	c := newUnconnectedResendClient(30 * time.Millisecond)
+	if err := c.SendResult(CommandResult{CommandID: "cmd-dup"}); err != nil {
+		t.Fatalf("SendResult: %v", err)
+	}
+	drainResults(c)
+	c.handleServerErrorFrame(processingFailedFrame("cmd-dup"))
+	c.handleServerErrorFrame(processingFailedFrame("cmd-dup"))
+	settle()
+	if n := drainResults(c); n != 1 {
+		t.Fatalf("%d resends went out for two error frames on one pending resend, want 1", n)
+	}
+	c.resends.mu.Lock()
+	resends := c.resends.entries["cmd-dup"].resends
+	c.resends.mu.Unlock()
+	if resends != 1 {
+		t.Fatalf("attempts spent = %d, want 1", resends)
+	}
+}
+
 // A resend that cannot be queued (client stopped, channel full) must reach the
 // on-disk outbox via OnResultWriteFailed rather than vanish.
 func TestResultResend_UnqueueableResendFallsBackToOutbox(t *testing.T) {

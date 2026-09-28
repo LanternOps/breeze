@@ -35,6 +35,9 @@ import (
 // cleared by the `ack` they already return (or by the TTL), with no resend.
 const (
 	resultProcessingFailedCode = "RESULT_PROCESSING_FAILED"
+	// invalidMessageCode is the server's schema rejection of a frame
+	// (buildAgentMessageRejection) — definitive for those exact bytes.
+	invalidMessageCode = "INVALID_MESSAGE"
 
 	// resultResendMaxAttempts caps resends per command id. The failure is a
 	// server-side persistence error; one that survives three spaced retries is
@@ -282,20 +285,25 @@ func (c *Client) handleAckFrame(raw []byte) {
 
 // handleServerErrorFrame logs a server rejection and, for a command result,
 // acts on it: RESULT_PROCESSING_FAILED schedules a bounded resend of a result
-// this agent sent; any other rejection is definitive (resending the same bytes
-// would be rejected again), so the record is dropped.
+// this agent sent; INVALID_MESSAGE is a definitive rejection of the frame's
+// content (resending the same bytes would be rejected again), so the record is
+// dropped. Any other code (e.g. a transient MESSAGE_RATE_BUDGET_EXCEEDED drop)
+// leaves the record — and any resend already scheduled — alone; it ages out by
+// TTL if nothing else touches it.
 func (c *Client) handleServerErrorFrame(raw []byte) {
 	frame, ok := logServerErrorFrame(raw)
 	if !ok || frame.MessageType != "command_result" || frame.CommandID == "" {
 		return
 	}
-	if frame.Code != resultProcessingFailedCode {
+	switch frame.Code {
+	case resultProcessingFailedCode:
+		if !c.resends.onProcessingFailed(frame.CommandID, c.resendResult) {
+			log.Warn("server could not record a command result this agent holds no live record of "+
+				"(never sent, already acked, evicted, or older than the resend TTL); not resending",
+				"commandId", frame.CommandID)
+		}
+	case invalidMessageCode:
 		c.resends.ack(frame.CommandID)
-		return
-	}
-	if !c.resends.onProcessingFailed(frame.CommandID, c.resendResult) {
-		log.Warn("server could not record a command result this agent has no record of sending; not resending",
-			"commandId", frame.CommandID)
 	}
 }
 
