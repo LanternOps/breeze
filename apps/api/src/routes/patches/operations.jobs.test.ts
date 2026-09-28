@@ -99,6 +99,7 @@ vi.mock('./helpers', () => ({
 
 import { operationsRoutes } from './operations';
 import { db } from '../../db';
+import { canAccessSite } from '../../services/permissions';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const OTHER_ORG_ID = '99999999-9999-4999-8999-999999999999';
@@ -106,10 +107,11 @@ const JOB_ID = '22222222-2222-4222-8222-222222222222';
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
 const PATCH_ID = '44444444-4444-4444-8444-444444444444';
 
-function mountApp(auth: Record<string, unknown>) {
+function mountApp(auth: Record<string, unknown>, permissions?: Record<string, unknown>) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     (c as any).set('auth', auth);
+    if (permissions) (c as any).set('permissions', permissions);
     await next();
   });
   app.route('/patches', operationsRoutes);
@@ -252,6 +254,23 @@ describe('GET /patches/jobs/:id', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { ...jobRow, results: [resultRow] } });
+  });
+
+  it('hides per-device results outside a site-restricted caller\'s allowed sites', async () => {
+    const jobRow = { id: JOB_ID, orgId: ORG_ID, name: 'Fleet patch', status: 'completed' };
+    const inSite = { id: 'r-in', deviceId: DEVICE_ID, deviceSiteId: 'site-a', status: 'completed' };
+    const outSite = { id: 'r-out', deviceId: 'other-device', deviceSiteId: 'site-b', status: 'completed' };
+    vi.mocked(canAccessSite).mockImplementation((_p: any, siteId: string) => siteId === 'site-a');
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([jobRow]))
+      .mockReturnValueOnce(chain([inSite, outSite]));
+
+    const res = await mountApp(orgScopedAuth(ORG_ID), { allowedSiteIds: ['site-a'] }).request(`/patches/jobs/${JOB_ID}`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.results).toEqual([{ id: 'r-in', deviceId: DEVICE_ID, status: 'completed' }]);
+    vi.mocked(canAccessSite).mockImplementation(() => true);
   });
 
   it('rejects a malformed job id before hitting the database', async () => {

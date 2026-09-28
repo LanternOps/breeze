@@ -83,8 +83,7 @@ export default function PatchJobsList({ onSelectJob }: PatchJobsListProps) {
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stableT is effect-safe (#3632)
-  }, []);
+  }, [stableT]);
 
   useEffect(() => {
     void fetchJobs(page);
@@ -164,7 +163,7 @@ export default function PatchJobsList({ onSelectJob }: PatchJobsListProps) {
                   <td className="max-w-xs truncate px-4 py-3 font-medium">{job.name}</td>
                   <td className="px-4 py-3">
                     <span className={cn('inline-flex w-fit items-center rounded-full border px-2.5 py-1 text-xs font-medium', STATUS_STYLES[job.status])}>
-                      {t(`patchJobsList.status.${job.status}`)}
+                      {t(/* i18n-dynamic */ `patchJobsList.status.${job.status}`)}
                     </span>
                   </td>
                   <td className="px-4 py-3">{renderDevices(job)}</td>
@@ -184,7 +183,7 @@ export default function PatchJobsList({ onSelectJob }: PatchJobsListProps) {
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate font-medium">{job.name}</span>
                   <span className={cn('inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium', STATUS_STYLES[job.status])}>
-                    {t(`patchJobsList.status.${job.status}`)}
+                    {t(/* i18n-dynamic */ `patchJobsList.status.${job.status}`)}
                   </span>
                 </div>
                 <div className="mt-2 space-y-1">

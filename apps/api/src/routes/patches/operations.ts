@@ -247,6 +247,7 @@ operationsRoutes.get(
         id: patchJobResults.id,
         deviceId: patchJobResults.deviceId,
         deviceHostname: devices.hostname,
+        deviceSiteId: devices.siteId,
         patchId: patchJobResults.patchId,
         patchTitle: patches.title,
         status: patchJobResults.status,
@@ -265,7 +266,14 @@ operationsRoutes.get(
       .where(eq(patchJobResults.jobId, job.id))
       .orderBy(desc(patchJobResults.createdAt));
 
-    return c.json({ data: { ...job, results } });
+    // Site-restricted callers only see per-device results for devices in
+    // their allowed sites (the job row itself is org-scoped; results are not).
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const visibleResults = results
+      .filter((r) => canAccessDeviceSite({ siteId: r.deviceSiteId }, permissions))
+      .map(({ deviceSiteId: _deviceSiteId, ...rest }) => rest);
+
+    return c.json({ data: { ...job, results: visibleResults } });
   }
 );
 

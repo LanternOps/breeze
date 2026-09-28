@@ -98,8 +98,7 @@ export default function PatchJobDetail({ jobId, onClose }: PatchJobDetailProps) 
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stableT is effect-safe (#3632)
-  }, [jobId]);
+  }, [jobId, stableT]);
 
   useEffect(() => {
     void load();
@@ -139,7 +138,7 @@ export default function PatchJobDetail({ jobId, onClose }: PatchJobDetailProps) 
           <>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <dt className="text-muted-foreground">{t('patchJobDetail.summary.status')}</dt>
-              <dd className="text-right font-medium">{t(`patchJobsList.status.${job.status}`)}</dd>
+              <dd className="text-right font-medium">{t(/* i18n-dynamic */ `patchJobsList.status.${job.status}`)}</dd>
               <dt className="text-muted-foreground">{t('patchJobDetail.summary.createdBy')}</dt>
               <dd className="text-right">{job.createdByName ?? t('patchJobsList.createdBySystem')}</dd>
               <dt className="text-muted-foreground">{t('patchJobDetail.summary.scheduled')}</dt>
