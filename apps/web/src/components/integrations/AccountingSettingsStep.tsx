@@ -45,7 +45,6 @@ export default function AccountingSettingsStep({ provider, values, onSaved, onUn
   // effect would wipe an unsaved pick on every unrelated panel re-render.
   useEffect(() => {
     setDraft(values);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values.defaultIncomeAccountRef, values.defaultTaxCodeRef, values.defaultExemptTaxCodeRef, values.defaultPaymentAccountRef]);
 
   useEffect(() => {
