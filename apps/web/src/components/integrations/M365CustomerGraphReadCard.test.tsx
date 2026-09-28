@@ -204,13 +204,13 @@ describe("M365CustomerGraphReadCard", () => {
     render(<M365CustomerGraphReadCard />);
 
     expect(
-      await screen.findByRole("heading", { name: "Customer Graph Read" }),
+      await screen.findByRole("heading", { name: /Read access/ }),
     ).toBeInTheDocument();
     for (const grant of REQUIRED_GRANTS) {
       expect(screen.getByText(grant.value)).toBeInTheDocument();
     }
     expect(screen.getAllByTestId("required-grant")).toHaveLength(13);
-    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Connect tenant" })).toBeEnabled();
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
     expect(screen.queryByLabelText(/client secret|certificate|vault/i)).not.toBeInTheDocument();
     expect(fetchWithAuthMock).toHaveBeenCalledWith(
@@ -227,10 +227,10 @@ describe("M365CustomerGraphReadCard", () => {
 
     const status = await screen.findByText("Not available on this Breeze instance yet.");
     expect(status).not.toHaveAttribute("role", "alert");
-    const card = screen.getByRole("region", { name: "Customer Graph Read" });
+    const card = screen.getByRole("region", { name: /Read access/ });
     expect(card).toHaveAttribute("aria-describedby", status.id);
     expect(screen.queryByTestId("required-grant")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect tenant" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Customer Graph Read onboarding is not enabled for this organization."),
@@ -393,7 +393,7 @@ describe("M365CustomerGraphReadCard", () => {
       "Connection details are unavailable.",
     );
     expect(screen.queryByText("do-not-render")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect tenant" })).not.toBeInTheDocument();
   });
 
   it("fails closed when one canonical manifest assignment is substituted", async () => {
@@ -550,7 +550,7 @@ describe("M365CustomerGraphReadCard", () => {
       .mockResolvedValueOnce(makeResponse({ adminConsentUrl: "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned" }));
 
     render(<M365CustomerGraphReadCard />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect tenant" }));
 
     await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
     expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
@@ -569,7 +569,7 @@ describe("M365CustomerGraphReadCard", () => {
       .mockResolvedValueOnce(makeResponse({ adminConsentUrl: "https://evil.example/consent" }));
 
     render(<M365CustomerGraphReadCard />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect tenant" }));
 
     await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
     expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
@@ -693,11 +693,11 @@ describe("M365CustomerGraphReadCard", () => {
         adminConsentUrl: "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=org-b",
       }));
     const view = render(<M365CustomerGraphReadCard />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect tenant" }));
 
     state.currentOrgId = ORG_B;
     view.rerender(<M365CustomerGraphReadCard />);
-    const orgBConnect = await screen.findByRole("button", { name: "Connect" });
+    const orgBConnect = await screen.findByRole("button", { name: "Connect tenant" });
     expect(orgBConnect).toBeEnabled();
     fireEvent.click(orgBConnect);
     await waitFor(() =>
@@ -743,7 +743,7 @@ describe("M365CustomerGraphReadCard", () => {
   });
 
   it.each([
-    ["consent", "Connect"],
+    ["consent", "Connect tenant"],
     ["retest", "Retest"],
     ["disconnect", "Disconnect from Breeze"],
     ["sync", "Sync now"],
@@ -788,8 +788,8 @@ describe("M365CustomerGraphReadCard", () => {
   });
 
   it.each([
-    ["consent", "Connect", "complete"],
-    ["consent", "Connect", "reject"],
+    ["consent", "Connect tenant", "complete"],
+    ["consent", "Connect tenant", "reject"],
     ["retest", "Retest", "complete"],
     ["retest", "Retest", "reject"],
     ["disconnect", "Disconnect from Breeze", "complete"],
@@ -907,7 +907,7 @@ describe("M365CustomerGraphReadCard", () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeResponse(envelope()));
     const view = render(<M365CustomerGraphReadCard />);
 
-    expect(await screen.findByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Connect tenant" })).toBeEnabled();
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/m365/connections?orgId=${ORG_A}`);
     view.unmount();
 
@@ -940,7 +940,7 @@ describe("M365CustomerGraphReadCard", () => {
 
       render(<M365CustomerGraphReadCard />);
 
-      expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: /Read access/ })).toBeInTheDocument();
       expect(screen.queryByTestId("m365-read-manifest-stale-banner")).not.toBeInTheDocument();
     });
 
@@ -1005,7 +1005,7 @@ describe("M365CustomerGraphReadCard", () => {
 
       render(<M365CustomerGraphReadCard />);
 
-      expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: /Read access/ })).toBeInTheDocument();
       expect(screen.queryByTestId("m365-read-manifest-stale-banner")).not.toBeInTheDocument();
       expect(screen.getAllByText(REQUIRED_GRANTS[12]!.value).length).toBeGreaterThan(0);
     });
@@ -1039,7 +1039,7 @@ describe("M365CustomerGraphReadCard", () => {
     it("is hidden when there is no connection", async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: null, syncEnabled: true })));
       render(<M365CustomerGraphReadCard />);
-      await screen.findByRole("button", { name: "Connect" });
+      await screen.findByRole("button", { name: "Connect tenant" });
       expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
     });
 
@@ -1181,7 +1181,7 @@ describe("M365CustomerGraphReadCard", () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ syncEnabled: false, sync: null })));
       render(<M365CustomerGraphReadCard />);
 
-      expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: /Read access/ })).toBeInTheDocument();
       expect(screen.queryByTestId("m365-sync-summary")).not.toBeInTheDocument();
     });
 
@@ -1253,6 +1253,66 @@ describe("M365CustomerGraphReadCard", () => {
       expect(summary).toHaveTextContent("96 devices");
       // At least one chip: sign-in activity on a tenant without Entra ID P1.
       expect(screen.getByText(/Entra ID P1/)).toBeInTheDocument();
+    });
+  });
+  describe("read-access step", () => {
+    it("leads with plain-verb capabilities, is labelled recommended first, and hides permission names behind a disclosure", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: null })));
+      render(<M365CustomerGraphReadCard />);
+
+      const heading = await screen.findByRole("heading", { name: /Read access/ });
+      expect(heading.tagName).toBe("H3");
+      expect(screen.getByText("Recommended first")).toBeInTheDocument();
+      expect(screen.getByText("Look up users and groups")).toBeVisible();
+      expect(screen.getByText("See devices and sign-ins")).toBeVisible();
+      expect(screen.getByText("Review security posture")).toBeVisible();
+
+      const grants = screen.getAllByTestId("required-grant");
+      for (const grant of grants) expect(grant).not.toBeVisible();
+      fireEvent.click(screen.getByText("Show Microsoft permissions"));
+      for (const grant of grants) expect(grant).toBeVisible();
+    });
+
+    it("keeps drift alerts visible outside the permissions disclosure", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection({
+          status: "degraded",
+          grantHealth: "unexpected",
+          unexpectedGrants: [{
+            resourceApplicationId: GRAPH_APP_ID,
+            appRoleId: "19dbc75e-c2e2-444c-a770-ec69d8559fc7",
+            value: "Directory.ReadWrite.All",
+          }],
+        }),
+      })));
+      render(<M365CustomerGraphReadCard />);
+      expect(await screen.findByRole("alert", { name: "Unexpected permissions detected" })).toBeVisible();
+    });
+
+    it("can leave tenant identity to the surrounding panel", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+      render(<M365CustomerGraphReadCard hideTenantIdentity />);
+      expect(await screen.findByText("Manifest version 3")).toBeInTheDocument();
+      expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+      expect(screen.queryByText("44444444-4444-4444-8444-444444444444")).not.toBeInTheDocument();
+    });
+
+    it("reports load state, onboarding, and connection identity to its container", async () => {
+      const onStateChange = vi.fn();
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+      render(<M365CustomerGraphReadCard onStateChange={onStateChange} />);
+      await waitFor(() =>
+        expect(onStateChange).toHaveBeenLastCalledWith({
+          loadState: "ready",
+          onboardingEnabled: true,
+          connection: {
+            tenantId: "44444444-4444-4444-8444-444444444444",
+            displayName: "Northwind Tenant",
+            lastVerifiedAt: "2026-07-14T18:01:00.000Z",
+            status: "active",
+          },
+        }),
+      );
     });
   });
 });

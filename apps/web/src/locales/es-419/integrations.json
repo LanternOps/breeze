@@ -62,7 +62,8 @@
       "upgradeFailed": "No se pudo iniciar la aprobación de los nuevos permisos.",
       "syncNow": "Sincronizar ahora",
       "syncFailed": "No se pudo solicitar la sincronización del inquilino.",
-      "syncSucceeded": "Sincronización del inquilino solicitada."
+      "syncSucceeded": "Sincronización del inquilino solicitada.",
+      "connectTenant": "Conectar inquilino"
     },
     "sync": {
       "lastSynced": "Última sincronización {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
+    },
+    "stepTitle": "Acceso de lectura",
+    "stepDescription": "Acceso de solo lectura otorgado por un administrador del cliente. Breeze nunca pide un secreto ni un certificado del inquilino.",
+    "recommendedFirst": "Recomendado primero",
+    "showPermissions": "Mostrar permisos de Microsoft",
+    "capabilities": {
+      "intro": "Para consultas de IA e informes, Breeze puede:",
+      "users": "Buscar usuarios y grupos",
+      "devices": "Ver dispositivos e inicios de sesión",
+      "posture": "Revisar la postura de seguridad"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "La nueva prueba de conexión finalizó.",
       "disconnectWarning": "Al desconectar, Breeze dejará de usar esta conexión. El consentimiento de todo el inquilino de Microsoft permanecerá hasta que un administrador del cliente lo quite en Microsoft Entra.",
       "disconnectFailed": "No se pudo desconectar la conexión.",
-      "disconnectSucceeded": "La conexión de Breeze se desconectó."
+      "disconnectSucceeded": "La conexión de Breeze se desconectó.",
+      "grant": "Conceder acciones de administrador…"
     },
     "errors": {
       "consent_expired": "La sesión de consentimiento venció. Inicia el consentimiento nuevamente.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
+    },
+    "stepTitle": "Acciones de administrador",
+    "stepDescription": "Restablecer contraseñas de usuarios y deshabilitar el inicio de sesión de usuarios desde Breeze.",
+    "readRequiredNote": "Las consultas de IA y los informes necesitan acceso de lectura (paso 1).",
+    "showPermissions": "Mostrar permisos de Microsoft",
+    "preflight": {
+      "title": "Antes de continuar a Microsoft",
+      "canDoIntro": "Breeze podrá:",
+      "resetPasswords": "Restablecer contraseñas de usuarios",
+      "disableSignIn": "Deshabilitar el inicio de sesión de usuarios",
+      "adminRequired": "Debes haber iniciado sesión en Microsoft como administrador global (o administrador de roles con privilegios) de {{target}}.",
+      "revoke": "Para revocar el acceso más adelante, desconecta aquí o quita la aplicación empresarial de Breeze en Microsoft Entra.",
+      "continue": "Continuar a Microsoft",
+      "defaultTarget": "el inquilino de Microsoft 365 de esta organización"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Cargando las conexiones de Microsoft 365.",
+    "consentUnavailable": "La conexión basada en consentimiento aún no está disponible en esta instancia de Breeze.",
+    "selectOrganization": "Selecciona una organización para conectar su inquilino de Microsoft 365.",
+    "noTenantForOrg": "No hay ningún inquilino de Microsoft 365 conectado a {{orgName}}",
+    "noTenant": "No hay ningún inquilino de Microsoft 365 conectado a esta organización",
+    "tenantId": "ID del inquilino",
+    "copyTenantId": "Copiar ID del inquilino",
+    "copied": "ID del inquilino copiado",
+    "lastVerified": "Última verificación: {{date}}",
+    "notVerifiedYet": "Aún no verificado",
+    "stepLabel": "Paso {{number}}",
+    "legacyDisclosure": "Avanzado: usa tu propio registro de aplicación (heredado)"
   },
   "communicationIntegrations": {
     "critical": "Crítico",
@@ -566,7 +606,10 @@
     "hideSecret": "Ocultar secreto",
     "showSecret": "Mostrar secreto",
     "updateConnection": "Actualizar conexión",
-    "saveAndVerify": "Guardar y verificar"
+    "saveAndVerify": "Guardar y verificar",
+    "legacyBadge": "Heredado",
+    "precedenceNote": "Esta conexión directa heredada tiene prioridad sobre la conexión basada en consentimiento para este inquilino.",
+    "disconnectConfirm": "¿Desconectar la conexión directa heredada? Breeze elimina las credenciales guardadas del registro de aplicación. El registro de aplicación sigue existiendo en Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Estado del dispositivo",

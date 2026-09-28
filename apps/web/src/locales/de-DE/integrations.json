@@ -62,7 +62,8 @@
       "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
       "syncNow": "Jetzt synchronisieren",
       "syncFailed": "Die Mandantensynchronisierung konnte nicht angefordert werden.",
-      "syncSucceeded": "Mandantensynchronisierung angefordert."
+      "syncSucceeded": "Mandantensynchronisierung angefordert.",
+      "connectTenant": "Mandanten verbinden"
     },
     "sync": {
       "lastSynced": "Zuletzt synchronisiert {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
+    },
+    "stepTitle": "Lesezugriff",
+    "stepDescription": "Schreibgeschützter Zugriff, erteilt von einem Administrator des Kunden. Breeze fragt nie nach einem Mandantengeheimnis oder Zertifikat.",
+    "recommendedFirst": "Zuerst empfohlen",
+    "showPermissions": "Microsoft-Berechtigungen anzeigen",
+    "capabilities": {
+      "intro": "Für KI-Abfragen und Berichte kann Breeze:",
+      "users": "Benutzer und Gruppen nachschlagen",
+      "devices": "Geräte und Anmeldungen einsehen",
+      "posture": "Den Sicherheitsstatus prüfen"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Die erneute Verbindungsprüfung ist abgeschlossen.",
       "disconnectWarning": "Durch das Trennen kann Breeze diese Verbindung nicht mehr verwenden. Die mandantenweite Microsoft-Zustimmung bleibt bestehen, bis ein Kundenadministrator sie in Microsoft Entra entfernt.",
       "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
-      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt."
+      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt.",
+      "grant": "Administratoraktionen gewähren…"
     },
     "errors": {
       "consent_expired": "Die Zustimmungssitzung ist abgelaufen. Starten Sie die Zustimmung erneut.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
+    },
+    "stepTitle": "Administratoraktionen",
+    "stepDescription": "Benutzerkennwörter zurücksetzen und die Benutzeranmeldung aus Breeze heraus deaktivieren.",
+    "readRequiredNote": "KI-Abfragen und Berichte benötigen Lesezugriff (Schritt 1).",
+    "showPermissions": "Microsoft-Berechtigungen anzeigen",
+    "preflight": {
+      "title": "Bevor Sie zu Microsoft weitergehen",
+      "canDoIntro": "Breeze kann dann:",
+      "resetPasswords": "Benutzerkennwörter zurücksetzen",
+      "disableSignIn": "Die Benutzeranmeldung deaktivieren",
+      "adminRequired": "Sie müssen bei Microsoft als globaler Administrator (oder Administrator für privilegierte Rollen) für {{target}} angemeldet sein.",
+      "revoke": "Um den Zugriff später zu widerrufen, trennen Sie die Verbindung hier oder entfernen Sie die Breeze-Unternehmensanwendung in Microsoft Entra.",
+      "continue": "Weiter zu Microsoft",
+      "defaultTarget": "den Microsoft 365-Mandanten dieser Organisation"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Microsoft 365-Verbindungen werden geladen.",
+    "consentUnavailable": "Eine zustimmungsbasierte Verbindung ist auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "selectOrganization": "Wählen Sie eine Organisation aus, um ihren Microsoft 365-Mandanten zu verbinden.",
+    "noTenantForOrg": "Kein Microsoft 365-Mandant mit {{orgName}} verbunden",
+    "noTenant": "Kein Microsoft 365-Mandant mit dieser Organisation verbunden",
+    "tenantId": "Mandanten-ID",
+    "copyTenantId": "Mandanten-ID kopieren",
+    "copied": "Mandanten-ID kopiert",
+    "lastVerified": "Zuletzt überprüft {{date}}",
+    "notVerifiedYet": "Noch nicht überprüft",
+    "stepLabel": "Schritt {{number}}",
+    "legacyDisclosure": "Erweitert: eigene App-Registrierung verwenden (veraltet)"
   },
   "communicationIntegrations": {
     "critical": "Kritisch",
@@ -566,7 +606,10 @@
     "hideSecret": "Geheimnis verbergen",
     "showSecret": "Geheimnis zeigen",
     "updateConnection": "Verbindung aktualisieren",
-    "saveAndVerify": "Speichern und überprüfen"
+    "saveAndVerify": "Speichern und überprüfen",
+    "legacyBadge": "Veraltet",
+    "precedenceNote": "Diese veraltete Direktverbindung hat für diesen Mandanten Vorrang vor der zustimmungsbasierten Verbindung.",
+    "disconnectConfirm": "Die veraltete Direktverbindung trennen? Breeze löscht die gespeicherten Anmeldedaten der App-Registrierung. Die App-Registrierung selbst bleibt in Microsoft Entra erhalten."
   },
   "monitoringIntegration": {
     "deviceHealth": "Gerätezustand",

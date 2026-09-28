@@ -62,7 +62,8 @@
       "upgradeFailed": "Não foi possível iniciar a aprovação das novas permissões.",
       "syncNow": "Sincronizar agora",
       "syncFailed": "Não foi possível solicitar a sincronização do locatário.",
-      "syncSucceeded": "Sincronização do locatário solicitada."
+      "syncSucceeded": "Sincronização do locatário solicitada.",
+      "connectTenant": "Conectar locatário"
     },
     "sync": {
       "lastSynced": "Última sincronização {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
+    },
+    "stepTitle": "Acesso de leitura",
+    "stepDescription": "Acesso somente leitura concedido por um administrador do cliente. O Breeze nunca pede um segredo ou certificado do locatário.",
+    "recommendedFirst": "Recomendado primeiro",
+    "showPermissions": "Mostrar permissões da Microsoft",
+    "capabilities": {
+      "intro": "Para consultas de IA e relatórios, o Breeze pode:",
+      "users": "Consultar usuários e grupos",
+      "devices": "Ver dispositivos e entradas",
+      "posture": "Revisar a postura de segurança"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "O novo teste da conexão foi concluído.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
-      "disconnectSucceeded": "A conexão do Breeze foi desconectada."
+      "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
+      "grant": "Conceder ações de administrador…"
     },
     "errors": {
       "consent_expired": "A sessão de consentimento expirou. Inicie o consentimento novamente.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
+    },
+    "stepTitle": "Ações de administrador",
+    "stepDescription": "Redefinir senhas de usuários e desabilitar a entrada de usuários pelo Breeze.",
+    "readRequiredNote": "Consultas de IA e relatórios precisam de acesso de leitura (etapa 1).",
+    "showPermissions": "Mostrar permissões da Microsoft",
+    "preflight": {
+      "title": "Antes de continuar para a Microsoft",
+      "canDoIntro": "O Breeze poderá:",
+      "resetPasswords": "Redefinir senhas de usuários",
+      "disableSignIn": "Desabilitar a entrada de usuários",
+      "adminRequired": "Você precisa estar conectado à Microsoft como Administrador Global (ou Administrador de Função Privilegiada) de {{target}}.",
+      "revoke": "Para revogar o acesso depois, desconecte aqui ou remova o aplicativo empresarial do Breeze no Microsoft Entra.",
+      "continue": "Continuar para a Microsoft",
+      "defaultTarget": "o locatário do Microsoft 365 desta organização"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Carregando conexões do Microsoft 365.",
+    "consentUnavailable": "A conexão baseada em consentimento ainda não está disponível nesta instância do Breeze.",
+    "selectOrganization": "Selecione uma organização para conectar o locatário do Microsoft 365 dela.",
+    "noTenantForOrg": "Nenhum locatário do Microsoft 365 conectado a {{orgName}}",
+    "noTenant": "Nenhum locatário do Microsoft 365 conectado a esta organização",
+    "tenantId": "ID do locatário",
+    "copyTenantId": "Copiar ID do locatário",
+    "copied": "ID do locatário copiado",
+    "lastVerified": "Última verificação: {{date}}",
+    "notVerifiedYet": "Ainda não verificado",
+    "stepLabel": "Etapa {{number}}",
+    "legacyDisclosure": "Avançado: usar seu próprio registro de aplicativo (legado)"
   },
   "communicationIntegrations": {
     "critical": "Crítico",
@@ -566,7 +606,10 @@
     "hideSecret": "Ocultar segredo",
     "showSecret": "Mostrar segredo",
     "updateConnection": "Atualizar conexão",
-    "saveAndVerify": "Salvar e verificar"
+    "saveAndVerify": "Salvar e verificar",
+    "legacyBadge": "Legado",
+    "precedenceNote": "Esta conexão direta legada tem prioridade sobre a conexão baseada em consentimento para este locatário.",
+    "disconnectConfirm": "Desconectar a conexão direta legada? O Breeze exclui as credenciais armazenadas do registro de aplicativo. O registro de aplicativo continua no Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Integridade do dispositivo",

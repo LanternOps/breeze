@@ -220,16 +220,21 @@ describe("IntegrationsPage — M365 coexistence", () => {
     [true, false],
     [true, true],
     [false, false],
-  ])("keeps legacy=%s and Customer Graph Read=%s as sibling cards", (legacyEnabled, graphReadEnabled) => {
+  ])("mounts legacy=%s and Customer Graph Read=%s together in the Microsoft 365 tenant section", (legacyEnabled, graphReadEnabled) => {
     m365State.legacyEnabled = legacyEnabled;
     m365State.graphReadEnabled = graphReadEnabled;
     render(<IntegrationsPage />);
 
+    // Ordering between them is the section's job (M365TenantSection.test.tsx);
+    // the page's job is to mount all three connection paths in that section.
+    const section = screen.getByTestId("m365-tenant-section");
     const legacy = screen.getByTestId("stub-m365");
     const graphRead = screen.getByTestId("stub-customer-graph-read");
     expect(legacy).toHaveAttribute("data-enabled", String(legacyEnabled));
     expect(graphRead).toHaveAttribute("data-enabled", String(graphReadEnabled));
-    expect(legacy.parentElement).toBe(graphRead.parentElement);
+    expect(section).toContainElement(legacy);
+    expect(section).toContainElement(graphRead);
+    expect(section).toContainElement(screen.getByTestId("stub-customer-graph-actions"));
   });
 });
 

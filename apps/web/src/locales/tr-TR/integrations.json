@@ -62,7 +62,8 @@
       "upgradeFailed": "Yeni izinlerin onayı başlatılamadı.",
       "syncNow": "Şimdi eşitle",
       "syncFailed": "Kiracı eşitlemesi istenemedi.",
-      "syncSucceeded": "Kiracı eşitlemesi istendi."
+      "syncSucceeded": "Kiracı eşitlemesi istendi.",
+      "connectTenant": "Kiracıyı bağla"
     },
     "sync": {
       "lastSynced": "Son eşitleme {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
+    },
+    "stepTitle": "Okuma erişimi",
+    "stepDescription": "Müşteri yöneticisi tarafından verilen salt okunur erişim. Breeze asla kiracı gizli anahtarı veya sertifikası istemez.",
+    "recommendedFirst": "Önce önerilir",
+    "showPermissions": "Microsoft izinlerini göster",
+    "capabilities": {
+      "intro": "Yapay zekâ sorguları ve raporlar için Breeze şunları yapabilir:",
+      "users": "Kullanıcıları ve grupları arama",
+      "devices": "Cihazları ve oturum açmaları görme",
+      "posture": "Güvenlik duruşunu inceleme"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Bağlantının yeniden testi tamamlandı.",
       "disconnectWarning": "Bağlantının kesilmesi Breeze'nin bu bağlantıyı kullanmasını durdurur. Microsoft kiracı çapında izin, bir müşteri yöneticisi bunu Microsoft Entra'da kaldırıncaya kadar kalır.",
       "disconnectFailed": "Bağlantı kesilemedi.",
-      "disconnectSucceeded": "Breeze bağlantısı kesildi."
+      "disconnectSucceeded": "Breeze bağlantısı kesildi.",
+      "grant": "Yönetici eylemlerine izin ver…"
     },
     "errors": {
       "consent_expired": "İzin oturumunun süresi doldu. Onaylamayı yeniden başlatın.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
+    },
+    "stepTitle": "Yönetici eylemleri",
+    "stepDescription": "Breeze üzerinden kullanıcı parolalarını sıfırlayın ve kullanıcı oturum açmayı devre dışı bırakın.",
+    "readRequiredNote": "Yapay zekâ sorguları ve raporlar okuma erişimi gerektirir (adım 1).",
+    "showPermissions": "Microsoft izinlerini göster",
+    "preflight": {
+      "title": "Microsoft'a devam etmeden önce",
+      "canDoIntro": "Breeze şunları yapabilecek:",
+      "resetPasswords": "Kullanıcı parolalarını sıfırlama",
+      "disableSignIn": "Kullanıcı oturum açmayı devre dışı bırakma",
+      "adminRequired": "{{target}} için Microsoft'ta Genel Yönetici (veya Ayrıcalıklı Rol Yöneticisi) olarak oturum açmış olmanız gerekir.",
+      "revoke": "Erişimi daha sonra iptal etmek için buradan bağlantıyı kesin veya Microsoft Entra'da Breeze kurumsal uygulamasını kaldırın.",
+      "continue": "Microsoft'a devam et",
+      "defaultTarget": "bu kuruluşun Microsoft 365 kiracısı"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Microsoft 365 bağlantıları yükleniyor.",
+    "consentUnavailable": "Onaya dayalı bağlantı bu Breeze örneğinde henüz kullanılamıyor.",
+    "selectOrganization": "Microsoft 365 kiracısını bağlamak için bir kuruluş seçin.",
+    "noTenantForOrg": "{{orgName}} ile bağlı Microsoft 365 kiracısı yok",
+    "noTenant": "Bu kuruluşa bağlı Microsoft 365 kiracısı yok",
+    "tenantId": "Kiracı kimliği",
+    "copyTenantId": "Kiracı kimliğini kopyala",
+    "copied": "Kiracı kimliği kopyalandı",
+    "lastVerified": "Son doğrulama: {{date}}",
+    "notVerifiedYet": "Henüz doğrulanmadı",
+    "stepLabel": "Adım {{number}}",
+    "legacyDisclosure": "Gelişmiş: kendi uygulama kaydınızı kullanın (eski yöntem)"
   },
   "communicationIntegrations": {
     "critical": "Kritik",
@@ -566,7 +606,10 @@
     "hideSecret": "Sırrı gizle",
     "showSecret": "Sırrı göster",
     "updateConnection": "Bağlantıyı güncelle",
-    "saveAndVerify": "Kaydet ve doğrula"
+    "saveAndVerify": "Kaydet ve doğrula",
+    "legacyBadge": "Eski yöntem",
+    "precedenceNote": "Bu eski doğrudan bağlantı, bu kiracı için onaya dayalı bağlantıya göre önceliklidir.",
+    "disconnectConfirm": "Eski doğrudan bağlantı kesilsin mi? Breeze, kayıtlı uygulama kaydı kimlik bilgilerini siler. Uygulama kaydının kendisi Microsoft Entra'da kalır."
   },
   "monitoringIntegration": {
     "deviceHealth": "Cihaz sağlığı",
