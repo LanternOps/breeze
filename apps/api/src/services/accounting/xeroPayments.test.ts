@@ -508,6 +508,41 @@ describe('payment delete (refinement 18)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // #7300: Xero does not delete one member of a batch payment on its own. The
+  // read-first GET exposes membership (OpenAPI Payment.BatchPaymentID, "Present
+  // if the payment was created as part of a batch."), so no failing write is sent.
+  it.each([
+    ['BatchPaymentID', { BatchPaymentID: 'b0e9bbbf-5b8a-48b6-906a-035591fcb061' }],
+    ['a nested BatchPayment', { BatchPayment: { BatchPaymentID: 'b0e9bbbf-5b8a-48b6-906a-035591fcb061' } }],
+    ['a batch that is also reconciled', { BatchPaymentID: 'b0e9bbbf-5b8a-48b6-906a-035591fcb061', IsReconciled: true }],
+  ])('a batch-payment member (%s) is refused as remote_batched without writing', async (_l, extra) => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP, ...extra })] }));
+    await expect(deleteXeroPayment(ctx, XP)).rejects.toMatchObject({ kind: 'validation', providerCode: 'remote_batched' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['an empty BatchPaymentID', { BatchPaymentID: '' }],
+    ['the all-zero GUID', { BatchPaymentID: '00000000-0000-0000-0000-000000000000' }],
+    ['a BatchPayment with no id', { BatchPayment: {} }],
+  ])('%s is not batch membership: the delete is sent', async (_l, extra) => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP, ...extra })] }))
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP, Status: 'DELETED' })] }));
+    await expect(deleteXeroPayment(ctx, XP)).resolves.toBe('deleted');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a batch refusal on the POST itself (membership not on the read) is remote_batched', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP })] }))
+      .mockResolvedValueOnce(json({
+        ErrorNumber: 10, Type: 'ValidationException', Message: 'A validation exception occurred',
+        Elements: [{ ValidationErrors: [{ Message: 'Payments within a batch cannot be deleted.' }] }],
+      }, 400));
+    await expect(deleteXeroPayment(ctx, XP)).rejects.toMatchObject({ kind: 'validation', providerCode: 'remote_batched' });
+  });
+
   it('a 404 on the POST (deleted in between) is already_absent', async () => {
     fetchMock
       .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP })] }))

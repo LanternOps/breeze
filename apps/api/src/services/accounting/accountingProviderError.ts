@@ -227,10 +227,15 @@ export function providerPermissionMessage(label: string): string {
  *  - remote_deleted     — the payment this create re-sends was deleted remotely after
  *                         Breeze sent it (Xero W05). Payment create only. Surfaced;
  *                         never retried.
+ *  - remote_batched     — the remote payment is one member of a provider-side batch
+ *                         (Xero: a batch payment) and the provider will not delete it
+ *                         on its own (#7300). A `remote_locked` variant whose fix is
+ *                         different, so it gets its own text. Payment delete only.
+ *                         Surfaced; never retried.
  */
 export const ACCOUNTING_REFUSAL_CODES = [
   'duplicate_name', 'duplicate_key', 'remote_archived', 'remote_missing', 'insufficient_scope', 'remote_locked',
-  'amount_exceeds_due', 'remote_deleted',
+  'amount_exceeds_due', 'remote_deleted', 'remote_batched',
 ] as const;
 export type AccountingRefusalCode = typeof ACCOUNTING_REFUSAL_CODES[number];
 

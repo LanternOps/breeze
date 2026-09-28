@@ -107,7 +107,7 @@ import {
   paymentRecordFailedRetryMessage,
   paymentRemoteAmbiguousMessage,
   paymentRemoteDeletedMessage,
-  paymentRemoteLockedMessage,
+  paymentRemoteLockedMessage, paymentRemoteBatchedMessage,
   paymentRemoteMissingMessage,
   paymentSyncInProgressMessage,
 } from './accountingPaymentMessages';
@@ -353,7 +353,8 @@ function sanitizePaymentSyncErrorMessage(err: unknown, label: string): string {
  * terminal 409 with an explained message. Only codes a provider sets on
  * purpose (ACCOUNTING_REFUSAL_CODES via refusalCodeOf) qualify — QuickBooks
  * sets none on a payment, so its errors keep the retryable 502 path.
- * Per operation: `remote_locked` is delete-only; `remote_missing`,
+ * Per operation: `remote_locked` and `remote_batched` are delete-only (both
+ * surface as the payment error `remote_locked`, with their own text); `remote_missing`,
  * `amount_exceeds_due`, `duplicate_key` and `remote_deleted` are create-only;
  * `insufficient_scope` maps on both, with op-specific text (a create must be
  * re-pushed; a delete is parked by the caller). Anything else returns null.
@@ -371,6 +372,9 @@ function paymentPushRefusal(
       message: op === 'create' ? paymentProviderPermissionMessage(label) : providerPermissionMessage(label),
     };
     case 'remote_locked': return op === 'delete' ? { code: 'remote_locked', message: paymentRemoteLockedMessage(label) } : null;
+    // #7300: same bookkeeper-owned outcome as a reconciled payment (terminal,
+    // pending_op cleared, remote id kept, quiet) — only the fix differs.
+    case 'remote_batched': return op === 'delete' ? { code: 'remote_locked', message: paymentRemoteBatchedMessage(label) } : null;
     case 'remote_missing': return op === 'create' ? { code: 'remote_missing', message: paymentRemoteMissingMessage(label) } : null;
     case 'amount_exceeds_due': return op === 'create' ? { code: 'amount_exceeds_due', message: paymentAmountExceedsDueMessage(label) } : null;
     case 'duplicate_key': return op === 'create' ? { code: 'remote_ambiguous', message: paymentRemoteAmbiguousMessage(label) } : null;

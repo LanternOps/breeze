@@ -136,3 +136,14 @@ export function paymentProviderPermissionMessage(label: string): string {
 export function paymentRemoteLockedMessage(label: string): string {
   return `${label} will not delete this payment because it is reconciled to a bank transaction — unreconcile it in ${label} and delete it there`;
 }
+
+/**
+ * Delete refused with `remote_batched` (#7300): the remote payment is one member
+ * of a batch payment, which the provider changes only as a whole. The text does
+ * not claim what deleting the batch does to its other members — the bookkeeper
+ * checks them, since they may be other Breeze payments.
+ */
+export function paymentRemoteBatchedMessage(label: string): string {
+  return `${label} will not delete this payment on its own because it is part of a batch payment there — `
+    + `delete it through the batch payment in ${label}, and check the other payments in that batch first`;
+}

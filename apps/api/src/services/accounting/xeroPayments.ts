@@ -44,6 +44,9 @@ export interface XeroPayment {
   Amount?: number;
   Reference?: string;
   IsReconciled?: boolean;
+  /** OpenAPI `Payment.BatchPaymentID`: "Present if the payment was created as part of a batch." (#7300) */
+  BatchPaymentID?: string;
+  BatchPayment?: { BatchPaymentID?: string };
   UpdatedDateUTC?: string;
   Invoice?: { InvoiceID?: string; Type?: string; CurrencyCode?: string };
   HasValidationErrors?: boolean;
@@ -493,10 +496,26 @@ export async function createXeroPayment(
   return toRemoteRef(row);
 }
 
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * A payment Xero created as part of a batch payment (#7300). Xero's OpenAPI
+ * example value for `BatchPaymentID` is the all-zero GUID, so that — and an
+ * empty string — is read as "no batch", never as membership.
+ */
+function xeroBatchPaymentId(p: XeroPayment): string | null {
+  for (const id of [p.BatchPaymentID, p.BatchPayment?.BatchPaymentID]) {
+    if (typeof id === 'string' && id.trim() !== '' && id.trim() !== EMPTY_GUID) return id;
+  }
+  return null;
+}
+
 /**
  * Delete one Xero payment (refinement 18). Read first: gone or DELETED →
- * already_absent (no write); reconciled → remote_locked (no write); else
- * POST Status DELETED with NO idempotency key (a cached error must not replay).
+ * already_absent (no write); a batch-payment member → remote_batched (no write,
+ * #7300); reconciled → remote_locked (no write); else POST Status DELETED with
+ * NO idempotency key (a cached error must not replay). A batch refusal that
+ * only shows on the POST is classified by `classifyXeroValidation`.
  */
 export async function deleteXeroPayment(ctx: XeroCallContext, remotePaymentId: string): Promise<PaymentDeleteResult> {
   const op = 'Xero payment delete';
@@ -515,6 +534,11 @@ export async function deleteXeroPayment(ctx: XeroCallContext, remotePaymentId: s
   // mapping while a live payment may remain in Xero, so retry instead.
   if (!current) throw paymentError('transient', op, `${readOp} returned no payment`);
   if (current.Status === 'DELETED') return 'already_absent';
+  // Batch before reconciled: a reconciled batch is unreconciled and deleted as a
+  // batch, so the batch is the instruction the bookkeeper needs.
+  if (xeroBatchPaymentId(current) !== null) {
+    throw paymentError('validation', op, 'Xero will not delete one payment of a batch payment on its own', 'remote_batched');
+  }
   if (current.IsReconciled === true) {
     throw paymentError('validation', op, 'Xero will not delete a reconciled payment', 'remote_locked');
   }

@@ -2789,6 +2789,35 @@ describe('Xero W05: preflight park, provider refusals, labels', () => {
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
+  it('delete refusal remote_batched (#7300) → remote_locked, terminal, pending_op cleared, the remote id KEPT, no Sentry', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: 'xp-1/xi-1', remoteSyncToken: '2026-09-20T10:00:00.000Z', pendingOp: 'delete', syncStatus: 'pending',
+      syncAttempts: 2,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'Xero payment delete', providerCode: 'remote_batched',
+    }));
+    const message = 'Xero will not delete this payment on its own because it is part of a batch payment there — '
+      + 'delete it through the batch payment in Xero, and check the other payments in that batch first';
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_locked', status: 409, message,
+    });
+    // Same stamp as a reconciled delete (W05b Ruling 1): the bookkeeper owns it.
+    // `pending_op` NULL means `owedPaymentDeletesOfConnection` / `readOwedPaymentDeletes`
+    // (#7291) no longer count it — exactly as for remote_locked; the kept remote
+    // id is what lets the pull drop the mapping once the batch is deleted in Xero.
+    expect(mapping()).toMatchObject({
+      pendingOp: null, remoteEntityId: 'xp-1/xi-1', syncStatus: 'error', lastError: message, claimedAt: null, syncAttempts: 2,
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('remote_batched on a CREATE is not a payment refusal (delete-only, like remote_locked)', async () => {
+    createPaymentMock.mockRejectedValueOnce(xeroRefusal('remote_batched'));
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502 });
+    expect(mapping()!.pendingOp).toBe('push');
+  });
+
   it('delete refusal insufficient_scope PARKS: 409 provider_permission, the owed delete KEPT, no attempt, no Sentry', async () => {
     // A delete row is NEVER dropped (coordinator invariant): a missing grant is
     // fixed by reconnecting, after which the sweep must still find this delete.
