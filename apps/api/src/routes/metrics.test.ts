@@ -1666,6 +1666,18 @@ describe('backup storage-session and helper-capability metrics', () => {
     for (const s of mints) expect(Object.keys(s.labels).sort()).toEqual(['outcome', 'reason', 'scope']);
   });
 
+  it('counts backup write dispatches by command type, mode and reason', async () => {
+    const { recordBackupWriteDispatch } = await import('../services/backupMetrics');
+    recordBackupWriteDispatch('backup_run', 'legacy_credential', 'inline_provider_config');
+    recordBackupWriteDispatch('mssql_backup', 'local', 'no_credential');
+
+    const series = await seriesOf('breeze_backup_write_dispatch_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { command_type: 'backup_run', mode: 'legacy_credential', reason: 'inline_provider_config' }, value: 1 },
+      { labels: { command_type: 'mssql_backup', mode: 'local', reason: 'no_credential' }, value: 1 },
+    ]));
+  });
+
   it('counts backup helper capability regressions by capability only', async () => {
     const { recordBackupCapabilityRegressed } = await import('../services/backupMetrics');
     recordBackupCapabilityRegressed('integrity');

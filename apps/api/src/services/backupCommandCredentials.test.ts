@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   selectMock,
@@ -267,6 +267,52 @@ describe('materializeBackupStorageCredentials', () => {
           ctx('mssql_backup'),
         ),
       ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    });
+
+    describe('write dispatch telemetry', () => {
+      const writeDispatch = vi.fn();
+      beforeEach(async () => {
+        writeDispatch.mockReset();
+        const { setBackupMetricsRecorder } = await import('./backupMetrics');
+        setBackupMetricsRecorder({ onWriteDispatch: writeDispatch });
+      });
+      afterEach(async () => {
+        const { setBackupMetricsRecorder } = await import('./backupMetrics');
+        setBackupMetricsRecorder(null);
+      });
+
+      it('counts a write delivered with the storage destination as a legacy credential write', async () => {
+        await materializeBackupStorageCredentials(
+          backupWriteCredentialPayload(CONFIG, ORG, { provider: 's3', storageEncryption }),
+          ctx('mssql_backup'),
+        );
+        expect(writeDispatch.mock.calls).toEqual([['mssql_backup', 'legacy_credential', 'delivery_refresher', 1]]);
+      });
+
+      it('counts a write to a local destination as a local write', async () => {
+        resolveWriteMock.mockResolvedValue({
+          ok: true,
+          destination: { provider: 'local', providerConfig: LOCAL_CONFIG, storageEncryption: { required: false, mode: 'disabled' } },
+        });
+        await materializeBackupStorageCredentials(
+          backupWriteCredentialPayload(CONFIG, ORG, { provider: 'local', storageEncryption: { required: false, mode: 'disabled' } }),
+          ctx('hyperv_backup'),
+        );
+        expect(writeDispatch.mock.calls).toEqual([['hyperv_backup', 'local', 'no_credential', 1]]);
+      });
+
+      it('does not count a refused write or a read', async () => {
+        resolveWriteMock.mockResolvedValue({ ok: false, reason: 'config_not_found', message: 'gone' });
+        await expect(
+          materializeBackupStorageCredentials(
+            backupWriteCredentialPayload(CONFIG, ORG, { provider: 's3', storageEncryption }),
+            ctx('mssql_backup'),
+          ),
+        ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+        resolveReadMock.mockResolvedValue({ provider: 'local', providerConfig: LOCAL_CONFIG });
+        await materializeBackupStorageCredentials(backupReadCredentialPayload(CONFIG, ORG, 'local'), ctx('backup_restore'));
+        expect(writeDispatch).not.toHaveBeenCalled();
+      });
     });
   });
 });

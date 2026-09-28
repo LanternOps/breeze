@@ -298,6 +298,13 @@ const backupCapabilityRegressionsTotal = new Counter({
   registers: [register]
 });
 
+const backupWriteDispatchesTotal = new Counter({
+  name: 'breeze_backup_write_dispatch_total',
+  help: 'Backup write commands handed to agents by command type, mode (brokered, legacy_credential, local, refused) and reason',
+  labelNames: ['command_type', 'mode', 'reason'] as const,
+  registers: [register]
+});
+
 const backupVerificationSkipsTotal = new Counter({
   name: 'breeze_backup_verification_skips_total',
   help: 'Scheduled backup verification skips by verification type and reason',
@@ -903,6 +910,14 @@ function recordStorageSessionMintMetric(scope: string, outcome: string, reason: 
     .inc(safeCount);
 }
 
+function recordBackupWriteDispatchMetric(commandType: string, mode: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupWriteDispatchesTotal
+    .labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(mode, 'unknown'), normalizeMetricLabel(reason, 'unknown'))
+    .inc(safeCount);
+}
+
 function recordBackupCapabilityRegressedMetric(capability: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1094,6 +1109,7 @@ function bindMetricsRecorders(): void {
     onStorageSessionCall: recordStorageSessionCallMetric,
     onStorageSessionObjects: recordStorageSessionObjectsMetric,
     onStorageSessionMint: recordStorageSessionMintMetric,
+    onWriteDispatch: recordBackupWriteDispatchMetric,
   });
 
   setAnomalyMetricsRecorder({

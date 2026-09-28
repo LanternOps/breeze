@@ -14,6 +14,7 @@ type BackupMetricsRecorder = {
   onStorageSessionCall: (scope: string, op: string, status: number, count?: number) => void;
   onStorageSessionObjects: (scope: string, method: string, count?: number) => void;
   onStorageSessionMint: (scope: string, outcome: string, reason: string, count?: number) => void;
+  onWriteDispatch: (commandType: string, mode: string, reason: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -30,6 +31,7 @@ let recorder: BackupMetricsRecorder = {
   onStorageSessionCall: noop,
   onStorageSessionObjects: noop,
   onStorageSessionMint: noop,
+  onWriteDispatch: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -45,6 +47,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onStorageSessionCall: next?.onStorageSessionCall ?? noop,
     onStorageSessionObjects: next?.onStorageSessionObjects ?? noop,
     onStorageSessionMint: next?.onStorageSessionMint ?? noop,
+    onWriteDispatch: next?.onWriteDispatch ?? noop,
   };
 }
 
@@ -160,3 +163,21 @@ export function recordStorageSessionMint(
 ): void {
   recorder.onStorageSessionMint(scope, outcome, reason, count);
 }
+
+/**
+ * How a backup write command reached the device: `brokered` (through a
+ * storage session), `legacy_credential` (carrying the storage destination
+ * with its credentials), `local` (a local destination path, no credential)
+ * or `refused`. Recorded once per command actually handed to the agent.
+ */
+export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused';
+
+export function recordBackupWriteDispatch(
+  commandType: string,
+  mode: BackupWriteDispatchMode,
+  reason: string,
+  count = 1,
+): void {
+  recorder.onWriteDispatch(commandType, mode, reason, count);
+}
+
