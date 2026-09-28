@@ -59,6 +59,8 @@ import {
   userRequiresSetup,
   requireCurrentPasswordStepUp,
   resolveEnrollmentStepUp,
+  resolveFactorManagementStepUp,
+  consumeFactorManagementReauthGrant,
   enforceExistingFactorStepUp,
   parsePendingMfa,
   evaluatePendingMfa,
@@ -125,12 +127,17 @@ async function enforceTotpEnrollmentPolicy(c: Context, auth: AuthContext): Promi
   return null;
 }
 
-// Body schemas that require a password re-prompt. A stolen access token
-// must not be sufficient to install/remove an MFA factor — these
-// endpoints always re-verify the user's current password against the
-// argon2 hash, rate-limited per user to blunt online password guessing.
+// Factor-MANAGEMENT body schemas (recovery-code rotation, MFA disable). A
+// stolen access token must not be sufficient to rotate or remove an MFA factor:
+// each route demands a "user at the keyboard" proof — the current password,
+// or (#4045) for a PASSWORDLESS SSO account a fresh IdP re-auth grant — ON TOP
+// OF its existing-factor proof. Both of the former are optional HERE and
+// resolveFactorManagementStepUp decides which road this account may take, so
+// "neither supplied" is that helper's rejection, not a zod error whose shape
+// would differ by account type.
 const recoveryCodeRotationSchema = z.object({
-  currentPassword: z.string().min(1).max(256),
+  currentPassword: z.string().min(1).max(256).optional(),
+  ssoReauthGrantId: z.string().uuid().optional(),
   stepUpGrantId: z.string().optional(),
 });
 
@@ -141,8 +148,8 @@ const recoveryCodeRotationSchema = z.object({
 // rejection must not tell an attacker whether the account has a password.
 // (#4470 moved that rejection's status from 401 to 400 on these routes; the
 // point stands unchanged — it is the UNIFORMITY that closes the oracle, not
-// the particular status.) `passwordOnlySchema` above stays password-only:
-// /mfa/recovery-codes is not an enrollment.
+// the particular status.) The factor-MANAGEMENT schemas above use a different
+// resolver: an enrollment grant can never rotate or remove a factor.
 const enrollmentStepUpSchema = z.object({
   currentPassword: z.string().min(1).max(256).optional(),
   ssoReauthGrantId: z.string().uuid().optional()
@@ -154,19 +161,13 @@ const mfaEnableWithStepUpSchema = mfaEnableSchema.extend({
   // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
   stepUpGrantId: z.string().optional()
 });
-// Exported so its shape (specifically the ssoReauthGrantId omission below) is
-// unit-testable without exercising the whole /mfa/disable handler — see
-// mfa.schemas.test.ts.
+// Exported so its shape is unit-testable without exercising the whole
+// /mfa/disable handler — see mfa.schemas.test.ts. #4050 omitted the inherited
+// ssoReauthGrantId because nothing read it; #4045 wires it to
+// resolveFactorManagementStepUp as the passwordless alternative to
+// currentPassword, so it is accepted again (as mfaVerifySchema declares it).
 export const mfaDisableSchema = mfaVerifySchema.extend({
-  currentPassword: z.string().min(1).max(256)
-}).omit({
-  // #4050: mfaVerifySchema's ssoReauthGrantId exists for the passwordless-SSO
-  // enrollment-confirm case (see the comment on the field in ./schemas), but
-  // /mfa/disable requires currentPassword unconditionally above (not optional
-  // like the enable/setup-confirm schemas), so there is no passwordless path
-  // through this route for it to satisfy. Omit it explicitly rather than
-  // accept-and-silently-drop it.
-  ssoReauthGrantId: true,
+  currentPassword: z.string().min(1).max(256).optional(),
 });
 
 export const mfaRoutes = new Hono();
@@ -813,16 +814,22 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   }
 
   const auth = c.get('auth');
-  const { code, currentPassword } = c.req.valid('json');
+  const { code, currentPassword, ssoReauthGrantId } = c.req.valid('json');
 
-  // Re-verify password — defense in depth. The MFA code alone proves
-  // possession of the second factor; the password proves the user is at
-  // the keyboard right now (vs an attacker on a stolen access token who
-  // somehow got an MFA code, e.g. social-engineered SMS).
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd', {
-    rejectionStatus: MFA_PROOF_REJECTION_STATUS,
-  });
-  if (passwordError) return passwordError;
+  // Re-verify the user — defense in depth. The MFA code alone proves
+  // possession of the second factor; this proves the user is at the keyboard
+  // right now (vs an attacker on a stolen access token who somehow got an MFA
+  // code, e.g. social-engineered SMS). The current password, or (#4045) for a
+  // passwordless SSO account a fresh IdP re-auth grant. Non-consuming: the
+  // grant is spent only once the code below has verified, so a mistyped code
+  // does not cost the user another IdP round-trip.
+  const reauth = await resolveFactorManagementStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'mfa:pwd', rejectionStatus: MFA_PROOF_REJECTION_STATUS },
+  );
+  if ('error' in reauth) return reauth.error;
 
   // MFA policy blocks self-disable when effective policy (role OR org/partner
   // requireMfa, partner-inherited) still requires MFA for this user. Uses the
@@ -921,6 +928,16 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     const response = authIssuanceAdmissionError(c, error);
     if (!response) throw error;
     return response;
+  }
+  // #4045: spend the SSO re-auth grant (no-op on the password road) only now
+  // that the code has verified and admission has passed, immediately before
+  // the factor write.
+  const reauthConsumeError = await consumeFactorManagementReauthGrant(c, auth, reauth.proof, {
+    rejectionStatus: MFA_PROOF_REJECTION_STATUS,
+  });
+  if (reauthConsumeError) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    return reauthConsumeError;
   }
   let result;
   try {
@@ -1410,12 +1427,17 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recover
   }
 
   const auth = c.get('auth');
-  const { currentPassword, stepUpGrantId } = c.req.valid('json');
+  const { currentPassword, ssoReauthGrantId, stepUpGrantId } = c.req.valid('json');
 
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd', {
-    rejectionStatus: MFA_PROOF_REJECTION_STATUS,
-  });
-  if (passwordError) return passwordError;
+  // The password, or (#4045) for a passwordless SSO account a fresh IdP
+  // re-auth grant. Validated here, spent at the terminal write below.
+  const reauth = await resolveFactorManagementStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'mfa:pwd', rejectionStatus: MFA_PROOF_REJECTION_STATUS },
+  );
+  if ('error' in reauth) return reauth.error;
 
   // Rotating recovery codes replaces a complete login factor and returns its
   // plaintext successor. Password proof alone is insufficient: require a
@@ -1466,6 +1488,13 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recover
   if (stepUpConsumeError) {
     await cancelAuthIssuance(capability).catch(() => undefined);
     return stepUpConsumeError;
+  }
+  const reauthConsumeError = await consumeFactorManagementReauthGrant(c, auth, reauth.proof, {
+    rejectionStatus: MFA_PROOF_REJECTION_STATUS,
+  });
+  if (reauthConsumeError) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    return reauthConsumeError;
   }
   let result;
   try {

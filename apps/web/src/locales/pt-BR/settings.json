@@ -3828,7 +3828,9 @@
     "verifyYourIdentity": "Verifique sua identidade",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta conta faz login por meio de um provedor de identidade e não tem senha. Verifique-se novamente com seu provedor para começar a configurar um aplicativo autenticador.",
     "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
-    "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração do seu aplicativo autenticador."
+    "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração do seu aplicativo autenticador.",
+    "ssoReauthManageHint": "Esta conta entra por meio de um provedor de identidade e não tem senha. Verifique com seu provedor para confirmar esta alteração.",
+    "ssoReauthManageVerified": "Identidade verificada com seu provedor. Conclua a etapa abaixo para confirmar esta alteração."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar do Pax8",
@@ -3945,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente.",
     "passkeyRegistrationServerError": "Falha ao registrar a chave de acesso. Tente novamente.",
     "deletePasskeyVerifyHeading": "Verificar para excluir uma chave de acesso",
-    "deletePasskeyVerifyHint": "Digite aqui um código MFA atual antes de remover uma das chaves de acesso acima. Este código não afeta a adição de uma nova chave de acesso."
+    "deletePasskeyVerifyHint": "Digite aqui um código MFA atual antes de remover uma das chaves de acesso acima. Este código não afeta a adição de uma nova chave de acesso.",
+    "ssoReauthManageProofExpired": "A verificação com seu provedor de identidade expirou. Verifique novamente para confirmar esta alteração.",
+    "verifyWithIdpToDeletePasskey": "Esta conta não tem senha. Verifique com seu provedor de identidade antes de remover uma chave de acesso.",
+    "deletePasskeySsoReauth": "Verificar identidade para remover uma chave de acesso",
+    "deletePasskeySsoVerified": "Identidade verificada. Escolha Excluir na chave de acesso que deseja remover."
   },
   "roleManager": {
     "roles": "Funções",

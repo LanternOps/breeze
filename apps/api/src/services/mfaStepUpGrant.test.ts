@@ -296,6 +296,62 @@ describe('mfaStepUpGrant operation isolation', () => {
     // Non-consuming: the record is still present afterward.
     expect(redisStore.has(`mfa:stepup:${id}`)).toBe(true);
   });
+
+  // #4045: the SSO re-auth callback now mints one of TWO purposes. Each must be
+  // useless for the other — an IdP login that proved "enroll my first factor"
+  // must never authorize removing one, and vice versa — and the new purpose
+  // gets the same single-use / user / session / epoch binding as every other.
+  describe('sso_reauth_manage_factor (#4045)', () => {
+    // Mint-site shape from routes/sso.ts: no resourceDigest.
+    const ssoBind = (overrides: Partial<ReturnType<typeof bind>> = {}) => {
+      const { resourceDigest: _omit, ...rest } = bind('sso_reauth_manage_factor');
+      return { ...rest, ...overrides };
+    };
+
+    it('validates non-consumingly, then consumes exactly once (reuse fails)', async () => {
+      const id = await mintStepUpGrant(ssoBind());
+      await expect(validateStepUpGrant(id!, ssoBind())).resolves.toBe(true);
+      await expect(consumeStepUpGrant(id!, ssoBind())).resolves.toBe(true);
+      await expect(consumeStepUpGrant(id!, ssoBind())).resolves.toBe(false);
+      await expect(validateStepUpGrant(id!, ssoBind())).resolves.toBe(false);
+    });
+
+    it('is not usable as enroll_first_factor, and an enroll_first_factor grant is not usable as it', async () => {
+      const manage = await mintStepUpGrant(ssoBind());
+      const enroll = await mintStepUpGrant(ssoBind({ operation: 'enroll_first_factor' }));
+      await expect(validateStepUpGrant(manage!, ssoBind({ operation: 'enroll_first_factor' }))).resolves.toBe(false);
+      await expect(validateStepUpGrant(enroll!, ssoBind())).resolves.toBe(false);
+      await expect(consumeStepUpGrant(enroll!, ssoBind())).resolves.toBe(false);
+    });
+
+    it('is not usable as any existing-factor operation (it can never stand in for the factor proof)', async () => {
+      const manage = await mintStepUpGrant(ssoBind());
+      for (const op of ['rotate_recovery_codes', 'delete_passkey', 'add_factor'] as const) {
+        await expect(validateStepUpGrant(manage!, ssoBind({ operation: op }))).resolves.toBe(false);
+      }
+    });
+
+    it("rejects another user's grant", async () => {
+      const id = await mintStepUpGrant(ssoBind());
+      await expect(validateStepUpGrant(id!, ssoBind({ userId: 'user-2' }))).resolves.toBe(false);
+      await expect(consumeStepUpGrant(id!, ssoBind({ userId: 'user-2' }))).resolves.toBe(false);
+    });
+
+    it('rejects a stale grant after a factor or auth change (epoch bump) or from another session', async () => {
+      const a = await mintStepUpGrant(ssoBind());
+      const b = await mintStepUpGrant(ssoBind());
+      const s = await mintStepUpGrant(ssoBind());
+      await expect(validateStepUpGrant(a!, ssoBind({ mfaEpoch: 3 }))).resolves.toBe(false);
+      await expect(validateStepUpGrant(b!, ssoBind({ authEpoch: 2 }))).resolves.toBe(false);
+      await expect(validateStepUpGrant(s!, ssoBind({ sid: 'sid-2' }))).resolves.toBe(false);
+    });
+
+    it('expires on the default 300s TTL', async () => {
+      const id = await mintStepUpGrant(ssoBind());
+      expect(ttls.get(`mfa:stepup:${id}`)).toBe(300);
+      expect(stepUpGrantTtlSeconds('sso_reauth_manage_factor')).toBe(300);
+    });
+  });
 });
 
 /**

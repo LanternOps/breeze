@@ -3828,7 +3828,9 @@
     "verifyYourIdentity": "Bestätigen Sie Ihre Identität",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, um die Einrichtung einer Authenticator-App zu starten.",
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
-    "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen."
+    "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen.",
+    "ssoReauthManageHint": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich bei Ihrem Anbieter, um diese Änderung zu bestätigen.",
+    "ssoReauthManageVerified": "Identität bei Ihrem Anbieter bestätigt. Schließen Sie den folgenden Schritt ab, um diese Änderung zu bestätigen."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import aus Pax8",
@@ -3945,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut.",
     "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
     "deletePasskeyVerifyHeading": "Zum Löschen eines Passkeys bestätigen",
-    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys."
+    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys.",
+    "ssoReauthManageProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um diese Änderung zu bestätigen.",
+    "verifyWithIdpToDeletePasskey": "Dieses Konto hat kein Passwort. Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey entfernen.",
+    "deletePasskeySsoReauth": "Identität bestätigen, um einen Passkey zu entfernen",
+    "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“."
   },
   "roleManager": {
     "roles": "Rollen",
