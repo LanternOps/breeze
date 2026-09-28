@@ -35,8 +35,8 @@ var rollbackRetryDelays = []time.Duration{
 }
 
 // rollbackBinaryLocked restores the pre-update backup over the helper binary
-// after a failed update. preVersion is the binary's version read before the
-// install ("" when unknown). Every tracked session must already be stopped.
+// after a failed update. backup.version is the build the backup holds ("" when
+// unknown). Every tracked session must already be stopped.
 //
 // The backup is restored only when it still matches the copy recorded when it
 // was written (#7113): a truncated or replaced file is never put back as the
@@ -44,26 +44,31 @@ var rollbackRetryDelays = []time.Duration{
 //
 // Outcomes:
 //   - restored: the backup is consumed by the rename, nothing is left behind;
-//   - the rename keeps failing but the exe is still the pre-update build:
-//     there is nothing to restore, so the duplicate backup is removed;
+//   - the rename keeps failing but the exe is still the build the backup
+//     holds: there is nothing to restore, so the duplicate backup is removed;
 //   - the rename keeps failing and the exe changed: the backup is the only
-//     good copy and is kept, and the failure is logged as an error.
+//     good copy and is kept, and the failure is logged as an error. It is
+//     recorded as kept, so the next attempt reuses it instead of overwriting
+//     it with a copy of the changed exe (#7357).
 //
 // Must be called with m.mu held.
-func (m *Manager) rollbackBinaryLocked(backup helperBackup, preVersion string) {
+func (m *Manager) rollbackBinaryLocked(backup helperBackup) {
 	if err := backup.verify(); err != nil {
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			log.Warn("no helper backup to roll back to", "backup", backup.path, "error", err.Error())
+			m.releaseKeptBackupLocked()
 		case errors.Is(err, errBackupMismatch):
 			log.Error("refusing to roll back to a damaged helper backup, discarded it",
 				"backup", backup.path, "path", m.binaryPath, "error", err.Error())
 			if rmErr := os.Remove(backup.path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 				log.Warn("failed to remove damaged helper backup", "backup", backup.path, "error", rmErr.Error())
 			}
+			m.releaseKeptBackupLocked()
 		default:
 			log.Error("cannot verify helper backup, not rolling back, backup kept",
 				"backup", backup.path, "path", m.binaryPath, "error", err.Error())
+			m.keepBackupLocked(backup)
 		}
 		return
 	}
@@ -72,6 +77,7 @@ func (m *Manager) rollbackBinaryLocked(backup helperBackup, preVersion string) {
 	err := renameFunc(backupPath, m.binaryPath)
 	if err == nil {
 		log.Info("rolled back helper binary", "path", m.binaryPath)
+		m.releaseKeptBackupLocked()
 		return
 	}
 	firstErr := err
@@ -87,25 +93,28 @@ func (m *Manager) rollbackBinaryLocked(backup helperBackup, preVersion string) {
 			log.Warn("rolled back helper binary after retrying",
 				"path", m.binaryPath, "attempts", attempts,
 				"firstError", firstErr.Error(), "stoppedPids", stoppedPIDs)
+			m.releaseKeptBackupLocked()
 			return
 		}
 	}
 
-	if preVersion != "" {
+	if backup.version != "" {
 		onDisk, verr := m.readBinaryVersion()
-		if verr == nil && helperVersionsMatch(onDisk, preVersion) {
+		if verr == nil && helperVersionsMatch(onDisk, backup.version) {
 			if rmErr := os.Remove(backupPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 				log.Warn("failed to remove helper backup", "backup", backupPath, "error", rmErr.Error())
 			}
-			log.Warn("helper rollback not needed: binary is still the pre-update build, discarded the backup",
+			log.Warn("helper rollback not needed: binary is already the backed-up build, discarded the backup",
 				"path", m.binaryPath, "version", onDisk, "attempts", attempts,
 				"error", err.Error(), "stoppedPids", stoppedPIDs)
+			m.releaseKeptBackupLocked()
 			return
 		}
 	}
 	log.Error("failed to rollback helper, backup kept",
 		"path", m.binaryPath, "backup", backupPath, "attempts", attempts,
 		"error", err.Error(), "stoppedPids", stoppedPIDs)
+	m.keepBackupLocked(backup)
 }
 
 // stopAllHelperInstancesLocked terminates every running process whose image

@@ -3,6 +3,8 @@ package helper
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +34,9 @@ type helperBackup struct {
 	path   string
 	size   int64
 	sha256 [sha256.Size]byte
+	// version is the build the backup holds, read before the update; "" when
+	// unknown.
+	version string
 }
 
 // backupPartialPath is where the copy is written before it is renamed into
@@ -114,4 +119,198 @@ func (b helperBackup) verify() error {
 		return fmt.Errorf("%w: SHA-256 differs", errBackupMismatch)
 	}
 	return nil
+}
+
+// Kept backup (#7357).
+//
+// When a rollback cannot restore the backup and the exe has changed, the
+// backup is the only good copy of the helper and is kept. The next update
+// attempt must not overwrite it with a copy of the exe it starts from, which
+// is the broken build: a second failure would then "restore" that. So the
+// rollback records the kept backup, in memory and in a small file next to it
+// (it has to outlive an agent restart), and the next attempt reuses it as its
+// rollback target instead of taking a new backup. The record is dropped when
+// a restore consumes the backup, when the backup is gone or damaged, or when
+// an update installs and starts a new build.
+
+// keptBackupRecordPath is where the record of a kept backup is written.
+func keptBackupRecordPath(backupPath string) string {
+	return backupPath + ".kept"
+}
+
+// keptBackupRecord is the on-disk form of a kept helperBackup. The path is not
+// stored: the record always sits next to the backup it describes.
+type keptBackupRecord struct {
+	Size    int64  `json:"size"`
+	SHA256  string `json:"sha256"`
+	Version string `json:"version,omitempty"`
+}
+
+// saveKeptBackupRecord writes the record of b through a scratch file, so a
+// crash never leaves a half-written record behind.
+func saveKeptBackupRecord(b helperBackup) error {
+	data, err := json.Marshal(keptBackupRecord{
+		Size:    b.size,
+		SHA256:  hex.EncodeToString(b.sha256[:]),
+		Version: b.version,
+	})
+	if err != nil {
+		return err
+	}
+	path := keptBackupRecordPath(b.path)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // best effort; the next save overwrites it
+		return err
+	}
+	return nil
+}
+
+// loadKeptBackupRecord reads the record of the backup at backupPath. It
+// returns an error wrapping os.ErrNotExist when there is none.
+func loadKeptBackupRecord(backupPath string) (helperBackup, error) {
+	data, err := os.ReadFile(keptBackupRecordPath(backupPath))
+	if err != nil {
+		return helperBackup{}, err
+	}
+	var rec keptBackupRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return helperBackup{}, fmt.Errorf("parse kept helper backup record: %w", err)
+	}
+	sum, err := hex.DecodeString(rec.SHA256)
+	if err != nil || len(sum) != sha256.Size || rec.Size < 0 {
+		return helperBackup{}, errors.New("parse kept helper backup record: invalid size or SHA-256")
+	}
+	b := helperBackup{path: backupPath, size: rec.Size, version: rec.Version}
+	copy(b.sha256[:], sum)
+	return b, nil
+}
+
+// keepBackupLocked records b as the only good copy of the helper. A record
+// that cannot be written is logged: the in-memory copy still protects the
+// backup until the agent restarts. Must be called with m.mu held.
+func (m *Manager) keepBackupLocked(b helperBackup) {
+	m.keptBackup = b
+	if err := saveKeptBackupRecord(b); err != nil {
+		log.Error("failed to record kept helper backup, it is protected only until the agent restarts",
+			"backup", b.path, "error", err.Error())
+	}
+}
+
+// releaseKeptBackupLocked drops the kept-backup record. It does not touch the
+// backup itself. Must be called with m.mu held.
+func (m *Manager) releaseKeptBackupLocked() {
+	m.keptBackup = helperBackup{}
+	path := keptBackupRecordPath(m.backupPath())
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("failed to remove kept helper backup record", "path", path, "error", err.Error())
+	}
+}
+
+// keptBackupLocked returns the kept backup, reading its record from disk when
+// the agent restarted since it was kept. A record that exists but cannot be
+// read still says the backup was kept, so the backup is adopted again from its
+// current bytes rather than overwritten. Must be called with m.mu held.
+func (m *Manager) keptBackupLocked() (helperBackup, bool) {
+	if m.keptBackup.path != "" {
+		return m.keptBackup, true
+	}
+	b, err := loadKeptBackupRecord(m.backupPath())
+	if err == nil {
+		m.keptBackup = b
+		return b, true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return helperBackup{}, false
+	}
+	adopted, adoptErr := m.recordExistingBackupLocked()
+	if adoptErr != nil {
+		log.Error("kept helper backup record is unreadable and the backup cannot be re-recorded, a new backup will replace it",
+			"backup", m.backupPath(), "recordError", err.Error(), "error", adoptErr.Error())
+		m.releaseKeptBackupLocked()
+		return helperBackup{}, false
+	}
+	log.Warn("kept helper backup record was unreadable, re-recorded the backup from its current contents",
+		"backup", adopted.path, "backupVersion", adopted.version, "recordError", err.Error())
+	m.keepBackupLocked(adopted)
+	return adopted, true
+}
+
+// recordExistingBackupLocked hashes the backup file as it is now and reads the
+// build it holds, for a kept backup whose record was lost. Must be called with
+// m.mu held.
+func (m *Manager) recordExistingBackupLocked() (helperBackup, error) {
+	path := m.backupPath()
+	f, err := os.Open(path)
+	if err != nil {
+		return helperBackup{}, err
+	}
+	defer func() { _ = f.Close() }() // read-only handle
+	hash := sha256.New()
+	n, err := io.Copy(hash, f)
+	if err != nil {
+		return helperBackup{}, err
+	}
+	b := helperBackup{path: path, size: n}
+	copy(b.sha256[:], hash.Sum(nil))
+	if m.binaryVersionFunc != nil {
+		if v, verr := m.binaryVersionFunc(path); verr == nil {
+			b.version = v
+		}
+	}
+	return b, nil
+}
+
+// backupPath is where the pre-update copy of the helper binary is kept.
+func (m *Manager) backupPath() string {
+	return m.binaryPath + ".backup"
+}
+
+// backupForUpdateLocked returns the backup the rollback of this update attempt
+// restores. A kept backup that still verifies is reused as is, never
+// overwritten (#7357); one that is gone or damaged is dropped and a new backup
+// of the current binary is taken. One that cannot be read is reused too: it
+// may still be the good copy, and the rollback verifies it again before use.
+// A failed backup does not stop the update, as before; the rollback then finds
+// no recorded copy and leaves the binary alone (#7113). Must be called with
+// m.mu held.
+func (m *Manager) backupForUpdateLocked() helperBackup {
+	if kept, ok := m.keptBackupLocked(); ok {
+		err := kept.verify()
+		switch {
+		case err == nil:
+			log.Warn("helper backup from a failed rollback is the only good copy, reusing it for this update",
+				"backup", kept.path, "backupVersion", kept.version, "path", m.binaryPath)
+			return kept
+		case errors.Is(err, os.ErrNotExist), errors.Is(err, errBackupMismatch):
+			log.Warn("kept helper backup is gone or damaged, taking a new backup",
+				"backup", kept.path, "error", err.Error())
+			m.releaseKeptBackupLocked()
+		default:
+			log.Warn("cannot verify kept helper backup, reusing it for this update",
+				"backup", kept.path, "error", err.Error())
+			return kept
+		}
+	}
+
+	backup, err := writeHelperBackup(m.binaryPath, m.backupPath())
+	if err != nil {
+		log.Warn("failed to backup helper binary, a failed update cannot be rolled back", "error", err.Error())
+		return helperBackup{}
+	}
+	// The version lets a rollback that cannot replace the exe tell "nothing
+	// to restore" (msiexec rolled its own change back) from "the good copy is
+	// only in the backup" (#6869). "" when unknown.
+	version, err := m.readBinaryVersion()
+	if err != nil {
+		if !errors.Is(err, errBinaryVersionUnsupported) {
+			log.Warn("failed to read pre-update helper version", "path", m.binaryPath, "error", err.Error())
+		}
+		version = ""
+	}
+	backup.version = version
+	return backup
 }
