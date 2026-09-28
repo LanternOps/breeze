@@ -54,7 +54,7 @@ W04 calls these by the exact names below. **M** rows were read from `main` (`c17
 | M12 | `loadConnectedConnection` (`accountingPaymentPush.ts:485-506`) | returns null unless `providerSupports(provider, 'paymentPush')` — so `fanOutOwedPayments` creates no payment mapping for a Xero invoice until W05 | main |
 | M13 | `listPayments` payment `accountingSync` (`services/invoiceService.ts:2145-2156`) | `{ status, lastError }`; the joined `provider` column is already selected (`:2126`) | main |
 | M14 | Web `InvoicePayment.accountingSync` (`components/billing/invoiceTypes.ts:249`); payment badge (`InvoiceDetail.tsx:713-727`, test id `invoice-payment-qbosync-<id>`); `syncProviderName` (`:78`) | as quoted in Task 9 | main |
-| M15 | Bulk push route (`routes/accounting/index.ts`, `POST /:provider/invoices/push-bulk`) | answers 200 `{ enqueued: 0, skipped: N }` when the partner has no connection (W01d R14) | main |
+| M15 | Bulk push route (`routes/accounting/index.ts`, `POST /:provider/invoices/push-bulk`) | answers 200 `{ enqueued: 0, skipped: N, failed: 0 }` when the partner has no connection (W01d R14) | main |
 | M16 | `computeLineTotal(quantity, unitPrice, currency)` (`services/invoiceMath.ts:19`) — half-up at the currency's minor unit; `minorUnitExponent(currency)` (`@breeze/shared`) — `0 \| 2` | as named | main |
 | A1 | `xeroApiGet<T>(ctx, path, operation)`, `XeroCallContext { connectionId, tenantId, accessToken, rate, timeoutMs? }` (`xeroHttp.ts`) | as named | W02a |
 | A2 | `xeroProvider.ts` private `callContext(conn, timeoutMs?)` (throws `AccountingProviderError{validation}` without tenant/token); stubs `pushInvoice`/`voidInvoice` with `_`-prefixed params calling `notYet('invoice push' \| 'invoice void', 'W04')` | as named | W02a |
@@ -195,7 +195,7 @@ grep -n "invoice-payment-qbosync\|syncProviderName =" components/billing/Invoice
 ls ../../../docs/integrations/xero-demo-verification.md && grep -n "^## \|X31" ../../../docs/integrations/xero-demo-verification.md
 ```
 
-Expected: every symbol found. The `QuickBooks` grep lists exactly the 11 lines in M5 (write any difference into the PR body). The `pushGeneration` grep prints nothing (refinement 2 — if it prints an invoice writer, stop and amend refinement 2). `loadConnectedConnection` contains `providerSupports(…, 'paymentPush')` (refinement 18 — if not, stop: flipping `invoicePush` would create Xero payment mappings). For each other difference, note it in the PR body and adapt the task that uses it.
+Expected: every symbol found. The `QuickBooks` grep lists 13 lines: the 11 in M5 plus the doc comments at `:93` and `:150` (write any difference into the PR body). The `pushGeneration` grep prints nothing (refinement 2 — if it prints an invoice writer, stop and amend refinement 2). `loadConnectedConnection` contains `providerSupports(…, 'paymentPush')` (refinement 18 — if not, stop: flipping `invoicePush` would create Xero payment mappings). For each other difference, note it in the PR body and adapt the task that uses it.
 
 - [ ] **Step 3: Record the baseline**
 
@@ -540,7 +540,7 @@ describe('Xero W04: labels, preflight and provider refusals', () => {
     expect(pushInvoiceMock).not.toHaveBeenCalled();
   });
 
-  it('a provider without a preflight is never asked (QuickBooks path unchanged)', async () => {
+  it('a provider without a preflight still pushes (QuickBooks regression guard)', async () => {
     resolveConnectionMock.mockResolvedValue(conn());
     resolveLiveConnectionMock.mockResolvedValue(liveConn());
     await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
@@ -620,26 +620,43 @@ describe('Xero W04: labels, preflight and provider refusals', () => {
 
 (`orgMappingRow` spreads its overrides, so the invoice row above is an invoice mapping with a Xero remote id; if the file's `MappingRow` type complains, build it with `remoteDeletedInvoiceMappingRow({ syncStatus: 'synced', lastError: null, remoteEntityId: 'xi-inv-1' })` instead.)
 
-In `jobs/accountingSyncWorker.test.ts`, next to the existing invoice terminal tests (reuse their job/processor helpers):
+In `jobs/accountingSyncWorker.test.ts`, next to the existing `it.each(terminalCodes)` block (`:201`; it uses the same names — `getConnectionMock`, `connectionRow`, `pushInvoiceMock` (the mocked coordinator), `processAccountingSyncJob`, `INV_ID`, `PARTNER_ID`, `captureExceptionMock`). The connection setup is load-bearing: without it the worker drops the job before the coordinator runs, and the "not reported" cases would pass without reaching the new code.
 
 ```ts
 it.each(['push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission'] as const)(
   'a %s push failure is terminal and not reported to Sentry (Xero W04)',
   async (code) => {
-    pushInvoiceToAccountingMock.mockRejectedValueOnce(new AccountingInvoicePushError(code, 409, 'user must act'));
-    await expect(runInvoiceJob({ type: 'push-invoice' })).resolves.toBeUndefined();
+    getConnectionMock.mockResolvedValue(connectionRow());
+    pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError(code, 409, 'user must act'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+    ).resolves.toBeUndefined();
+
+    expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith('[AccountingSyncWorker] terminal failure, not retrying', expect.anything(), expect.anything(), `code=${code}`, 'user must act');
     expect(captureExceptionMock).not.toHaveBeenCalled();
+    errSpy.mockRestore();
   },
 );
 
 it('remote_ambiguous is terminal and IS reported (it should never happen)', async () => {
-  pushInvoiceToAccountingMock.mockRejectedValueOnce(new AccountingInvoicePushError('remote_ambiguous', 409, 'two invoices'));
-  await expect(runInvoiceJob({ type: 'push-invoice' })).resolves.toBeUndefined();
+  getConnectionMock.mockResolvedValue(connectionRow());
+  pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError('remote_ambiguous', 409, 'two invoices'));
+  const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  await expect(
+    processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+  ).resolves.toBeUndefined();
+
+  expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
   expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  errSpy.mockRestore();
 });
 ```
 
-Use the file's real names for the mocked coordinator (`pushInvoiceToAccountingMock` or equivalent) and for the helper that runs one invoice job through the processor (`runInvoiceJob` above); the assertions are fixed. The existing terminal-code tests (e.g. `invoice_totals_mismatch` captured) stay unedited.
+Add the five new codes to the file's `terminalCodes` table only if it is meant to list every terminal code; its existing rows stay unedited (they still assert capture).
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -653,7 +670,7 @@ In `accountingInvoicePush.ts`:
 a. Imports: add `import { invoicePushMessages } from './accountingInvoicePushMessages';` and extend the `./accountingProviderError` import with `providerPermissionMessage, refusalCodeOf`.
 
 b. Replace each of the 11 literals (M5) with its message function. The label is `accountingProviderDisplayName(conn.provider)`:
-   - in `pushInvoiceToAccounting` Phase 1, add `const label = accountingProviderDisplayName(conn.provider);` right after `resolveConnection`, and use it for `notPushable`, both `remoteDeleted` sites (Phase 1 and Phase 1b), `customerNotMapped`, `customerCurrencyMismatch(label, orgMapping.remoteCurrencyCode, inv.currencyCode)`; return `label` in `prep` so the later sites (`customerSyncNoRemoteId`, `recordFailed(label, result.id)`) use it too;
+   - in `pushInvoiceToAccounting` Phase 1, add `const label = accountingProviderDisplayName(conn.provider);` right after `resolveConnection`, and use it for `notPushable`, both `remoteDeleted` sites (Phase 1 and Phase 1b), `customerNotMapped`, `customerCurrencyMismatch(label, orgMapping.remoteCurrencyCode, inv.currencyCode)`; return `label` in `prep` — and add `label: string` to the explicit `let prep: { … }` annotation (`:676-683`), or `prep.label` fails with TS2339 — so the later sites (`customerSyncNoRemoteId`, `recordFailed(label, result.id)`) use it too;
    - `upsertInvoiceMappingPending` gains a `label: string` param (passed from Phase 1b) for `remoteDeleted(label)` and `concurrentSync(label)`;
    - `persistInvoiceRemoteRef` gains a `label: string` param for `persistNoRow(label, params.mappingId)`;
    - in `voidInvoiceInAccounting` Phase 1: `invoicePushMessages.voidPushInFlight(accountingProviderDisplayName(conn.provider))`.
