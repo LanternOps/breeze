@@ -317,6 +317,9 @@ async function handleProviderBackedBackupResult({ agentId, command, result, reso
               ...parsedBackup.data,
               error: result.error || result.stderr,
             },
+            // Reached only after the terminal compare-and-set on this
+            // device's own dispatched command row.
+            dispatchExpectationVerified: true,
           });
         }
       }

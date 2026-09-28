@@ -1719,6 +1719,9 @@ async function processResults(
       ...result,
       error: data.result.error,
     },
+    // Carried from the WS handler that consumed the dispatch expectation; a
+    // queue item without it never records a snapshot attestation.
+    dispatchExpectationVerified: data.dispatchExpectationVerified === true,
   });
 
   console.log(

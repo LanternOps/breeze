@@ -976,6 +976,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'backupSnapshotAttestationWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupSnapshotAttestationWorker');
+      return { init: m.initializeBackupSnapshotAttestationWorker, shutdown: m.shutdownBackupSnapshotAttestationWorker };
+    },
+  },
+  {
     name: 'sensitiveDataWorker',
     placement: 'socket-owner',
     load: async () => {
