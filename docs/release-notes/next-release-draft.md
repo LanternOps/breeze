@@ -30,9 +30,12 @@ Last release: **v0.118.0** (2026-09-27).
   desktop viewer to VNC (`POST /vnc-viewer/downgrade-to-vnc`), and minting a
   ticket or connect code for an existing VNC tunnel (`POST /tunnels/:id/ws-ticket`,
   `POST /tunnels/:id/connect-code`, `POST /vnc-exchange/:code`) now return
-  `409 { code: 'CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE' }`. VNC cannot show the
-  consent prompt; technicians use the remote desktop viewer instead. Notify and
-  off modes are unchanged.
+  `409 { code: 'CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE' }`. The VNC tunnel
+  WebSocket is refused at connect time too, and an open VNC relay is closed
+  (close code 4003) at its next live re-check once the device's policy
+  changes to *Require consent*. VNC cannot show the consent prompt;
+  technicians use the remote desktop viewer instead. Notify and off modes are
+  unchanged.
 - **Consent-mode desktop starts need a consent-capable agent.** Both WebRTC
   offer routes (`POST /remote/sessions/:id/offer` and
   `POST /desktop-ws/:id/viewer/offer`) now refuse a consent-mode start with

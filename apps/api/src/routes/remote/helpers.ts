@@ -1,6 +1,6 @@
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import { createHmac, randomBytes, randomUUID } from 'crypto';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, hasDbAccessContext, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import { terminalIntentSet } from '../../services/remoteDesktopTerminalIntent';
@@ -488,6 +488,88 @@ function linkCarriesPromptSettings(inlineSettings: unknown): boolean {
   return PROMPT_SETTING_KEYS.some((key) => key in (inlineSettings as Record<string, unknown>));
 }
 
+async function resolvePromptConfigInCurrentContext(
+  deviceId: string,
+  resolveEffectiveConfig: typeof import('../../services/configurationPolicy').resolveEffectiveConfig,
+): Promise<RemoteSessionPromptConfig> {
+  const effective = await resolveEffectiveConfig(deviceId, promptConfigSystemAuth);
+  if (!effective) {
+    throw new RemoteSessionPromptPolicyError(deviceId, 'effective configuration did not resolve');
+  }
+  const feature = effective.features?.remote_access;
+  if (!feature) {
+    // Positively established: the device resolved and no remote_access
+    // policy applies to it.
+    return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
+  }
+
+  // Find the remote_access feature link for the source policy, then read
+  // the normalized settings row keyed on that link. The authoritative
+  // values live in config_policy_remote_access_settings (the JSONB on the
+  // feature link is only a UI/compat mirror).
+  const [row] = await db
+    .select({
+      linkId: configPolicyEffectiveFeatureLinks.id,
+      linkInlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      settingsId: configPolicyRemoteAccessSettings.id,
+      sessionPromptMode: configPolicyRemoteAccessSettings.sessionPromptMode,
+      consentUnavailableBehavior: configPolicyRemoteAccessSettings.consentUnavailableBehavior,
+      notifyOnSessionEnd: configPolicyRemoteAccessSettings.notifyOnSessionEnd,
+      showActiveIndicator: configPolicyRemoteAccessSettings.showActiveIndicator,
+      technicianIdentityLevel: configPolicyRemoteAccessSettings.technicianIdentityLevel,
+    })
+    .from(configPolicyEffectiveFeatureLinks)
+    .leftJoin(
+      configPolicyRemoteAccessSettings,
+      eq(configPolicyRemoteAccessSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+    )
+    .where(
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, feature.sourcePolicyId),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'remote_access')
+      )
+    )
+    .limit(1);
+
+  if (!row) {
+    throw new RemoteSessionPromptPolicyError(
+      deviceId,
+      `remote_access feature link not found for policy ${feature.sourcePolicyId}`
+    );
+  }
+
+  if (!row.settingsId) {
+    if (linkCarriesPromptSettings(row.linkInlineSettings)) {
+      throw new RemoteSessionPromptPolicyError(
+        deviceId,
+        `remote_access settings row missing for feature link ${row.linkId}`
+      );
+    }
+    return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
+  }
+
+  if (!isPromptMode(row.sessionPromptMode)) {
+    throw new RemoteSessionPromptPolicyError(
+      deviceId,
+      `invalid session prompt mode on feature link ${row.linkId}`
+    );
+  }
+  if (!isConsentUnavailableBehavior(row.consentUnavailableBehavior)) {
+    throw new RemoteSessionPromptPolicyError(
+      deviceId,
+      `invalid consent-unavailable behavior on feature link ${row.linkId}`
+    );
+  }
+
+  return {
+    mode: row.sessionPromptMode,
+    consentUnavailableBehavior: row.consentUnavailableBehavior,
+    notifyOnEnd: row.notifyOnSessionEnd ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.notifyOnEnd,
+    showIndicator: row.showActiveIndicator ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.showIndicator,
+    identityLevel: coerceIdentityLevel(row.technicianIdentityLevel),
+  };
+}
+
 /**
  * Resolve the effective remote-session consent/notification prompt config for a
  * device. Resolves the effective `remote_access` configuration feature the same
@@ -507,10 +589,15 @@ function linkCarriesPromptSettings(inlineSettings: unknown): boolean {
  *   - link JSON carries prompt keys → the row should exist and does not; the
  *     stored mode is unknown (it may be `consent`), so the start is refused.
  *
- * Runs the DB work via `runOutsideDbContext` → `withSystemDbAccessContext` so it
- * works from paths that have no request-scoped DB context (e.g. viewer-token
- * desktop WS handlers) AND satisfies tenant isolation: the breeze_app pool needs
- * an explicit DB context or the SELECTs return 0 rows under FORCE RLS.
+ * Reads in the caller's DB context when one is active (a request route, or a
+ * system-context authorization check), inside a savepoint on that same
+ * connection; RLS then applies as the caller. An org-scoped caller sees its
+ * own org's policies plus its own partner's partner-wide policies (the
+ * SELECT-only partner-wide branch on the configuration-policy tables), and a
+ * device it cannot see does not resolve, which refuses rather than falling
+ * back to `notify`. A caller with no DB context (viewer-token and WebSocket
+ * handlers) gets a fresh system context: the breeze_app pool needs an explicit
+ * context or the SELECTs return 0 rows under FORCE RLS.
  */
 export async function resolveRemoteSessionPromptConfig(
   deviceId: string
@@ -520,86 +607,15 @@ export async function resolveRemoteSessionPromptConfig(
     // table set don't have to satisfy the full configurationPolicy import graph
     // just to exercise the pure `buildTechnicianDisplay` helper in this module.
     const { resolveEffectiveConfig } = await import('../../services/configurationPolicy');
-    return await runOutsideDbContext(() =>
-      withSystemDbAccessContext(async () => {
-        const effective = await resolveEffectiveConfig(deviceId, promptConfigSystemAuth);
-        if (!effective) {
-          throw new RemoteSessionPromptPolicyError(deviceId, 'effective configuration did not resolve');
-        }
-        const feature = effective.features?.remote_access;
-        if (!feature) {
-          // Positively established: the device resolved and no remote_access
-          // policy applies to it.
-          return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
-        }
-
-        // Find the remote_access feature link for the source policy, then read
-        // the normalized settings row keyed on that link. The authoritative
-        // values live in config_policy_remote_access_settings (the JSONB on the
-        // feature link is only a UI/compat mirror).
-        const [row] = await db
-          .select({
-            linkId: configPolicyEffectiveFeatureLinks.id,
-            linkInlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
-            settingsId: configPolicyRemoteAccessSettings.id,
-            sessionPromptMode: configPolicyRemoteAccessSettings.sessionPromptMode,
-            consentUnavailableBehavior: configPolicyRemoteAccessSettings.consentUnavailableBehavior,
-            notifyOnSessionEnd: configPolicyRemoteAccessSettings.notifyOnSessionEnd,
-            showActiveIndicator: configPolicyRemoteAccessSettings.showActiveIndicator,
-            technicianIdentityLevel: configPolicyRemoteAccessSettings.technicianIdentityLevel,
-          })
-          .from(configPolicyEffectiveFeatureLinks)
-          .leftJoin(
-            configPolicyRemoteAccessSettings,
-            eq(configPolicyRemoteAccessSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
-          )
-          .where(
-            and(
-              eq(configPolicyEffectiveFeatureLinks.configPolicyId, feature.sourcePolicyId),
-              eq(configPolicyEffectiveFeatureLinks.featureType, 'remote_access')
-            )
-          )
-          .limit(1);
-
-        if (!row) {
-          throw new RemoteSessionPromptPolicyError(
-            deviceId,
-            `remote_access feature link not found for policy ${feature.sourcePolicyId}`
-          );
-        }
-
-        if (!row.settingsId) {
-          if (linkCarriesPromptSettings(row.linkInlineSettings)) {
-            throw new RemoteSessionPromptPolicyError(
-              deviceId,
-              `remote_access settings row missing for feature link ${row.linkId}`
-            );
-          }
-          return { ...DEFAULT_REMOTE_SESSION_PROMPT_CONFIG };
-        }
-
-        if (!isPromptMode(row.sessionPromptMode)) {
-          throw new RemoteSessionPromptPolicyError(
-            deviceId,
-            `invalid session prompt mode on feature link ${row.linkId}`
-          );
-        }
-        if (!isConsentUnavailableBehavior(row.consentUnavailableBehavior)) {
-          throw new RemoteSessionPromptPolicyError(
-            deviceId,
-            `invalid consent-unavailable behavior on feature link ${row.linkId}`
-          );
-        }
-
-        return {
-          mode: row.sessionPromptMode,
-          consentUnavailableBehavior: row.consentUnavailableBehavior,
-          notifyOnEnd: row.notifyOnSessionEnd ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.notifyOnEnd,
-          showIndicator: row.showActiveIndicator ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.showIndicator,
-          identityLevel: coerceIdentityLevel(row.technicianIdentityLevel),
-        };
-      })
-    );
+    const resolve = () => resolvePromptConfigInCurrentContext(deviceId, resolveEffectiveConfig);
+    // Inside a request (or other) DB context, read on that context's own
+    // connection, in a savepoint so a failed read cannot poison the caller's
+    // transaction. Opening a second pooled connection while the caller holds
+    // one can exhaust the pool under load. Only a caller with no DB context
+    // gets a fresh system context.
+    return hasDbAccessContext()
+      ? await withDbTransaction(resolve)
+      : await runOutsideDbContext(() => withSystemDbAccessContext(resolve));
   } catch (error) {
     // Refuse the start rather than fall back to `notify`: a lookup error or an
     // unreadable policy must never drop a consent requirement. Callers map

@@ -56,7 +56,10 @@ vi.mock('../db', () => ({
   db: mockDb,
   // remoteDesktopStartIntent.ts (real impl, not mocked here) throws unless
   // this reports an open db access context.
-  hasDbAccessContext: vi.fn(() => true)
+  hasDbAccessContext: vi.fn(() => true),
+  // resolveRemoteSessionPromptConfig reads in the request's own context via a
+  // savepoint when one is active.
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

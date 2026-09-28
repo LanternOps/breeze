@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import './setup';
+import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import {
   partners,
@@ -39,6 +40,7 @@ const hasDb = !!process.env.DATABASE_URL;
 
 let orgId: string;
 let siteId: string;
+let partnerId: string;
 
 async function seedTenant(sfx: string): Promise<void> {
   const db = getTestDb();
@@ -46,6 +48,7 @@ async function seedTenant(sfx: string): Promise<void> {
     .insert(partners)
     .values({ name: `PromptCfg ${sfx}`, slug: `promptcfg-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
     .returning({ id: partners.id });
+  partnerId = p!.id;
   const [o] = await db
     .insert(organizations)
     .values({ currencyCode: 'USD', partnerId: p!.id, name: `PromptOrg ${sfx}`, slug: `promptorg-${sfx}` })
@@ -247,5 +250,107 @@ describe('checkVncConsentGate (real policy resolution)', () => {
 
     await expect(checkVncConsentGate(notifyDevice)).resolves.toEqual({ ok: true });
     await expect(checkVncConsentGate(bareDevice)).resolves.toEqual({ ok: true });
+  });
+});
+
+/**
+ * Request routes (POST /tunnels, the JWT offer route) resolve the prompt policy
+ * in the caller's own DB context rather than a second system connection, so
+ * RLS applies as the caller. These pin that an RLS-invisible policy never reads
+ * as "no policy → notify": a partner-wide consent policy is visible to an
+ * org-scoped caller of that partner, and anything the caller cannot see refuses.
+ */
+describe('prompt policy resolution in an org-scoped request context', () => {
+  function orgContext(ctxOrgId: string, currentPartnerId: string | null): DbAccessContext {
+    return {
+      scope: 'organization',
+      orgId: ctxOrgId,
+      accessibleOrgIds: [ctxOrgId],
+      accessiblePartnerIds: [],
+      userId: null,
+      currentPartnerId,
+    };
+  }
+
+  async function assignPartnerWideConsentPolicy(sfx: string): Promise<void> {
+    const db = getTestDb();
+    const settings = {
+      vncRelay: true,
+      sessionPromptMode: 'consent',
+      consentUnavailableBehavior: 'block',
+      technicianIdentityLevel: 'name',
+    };
+    const [policy] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId, name: `PartnerWideConsent ${sfx}`, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    const [link] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: policy!.id, featureType: 'remote_access', inlineSettings: settings })
+      .returning({ id: configPolicyFeatureLinks.id });
+    await db.insert(configPolicyRemoteAccessSettings).values({
+      featureLinkId: link!.id,
+      sessionPromptMode: 'consent',
+      consentUnavailableBehavior: 'block',
+      technicianIdentityLevel: 'name',
+    });
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy!.id,
+      level: 'partner',
+      targetId: partnerId,
+    });
+  }
+
+  beforeEach(async () => {
+    if (!hasDb) return;
+    await seedTenant(`orgctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  });
+
+  it.runIf(hasDb)('an org-scoped caller resolves a partner-wide consent policy as consent and VNC is refused', async () => {
+    const sfx = `pw-consent-${Date.now()}`;
+    const deviceId = await seedDevice(sfx);
+    await assignPartnerWideConsentPolicy(sfx);
+
+    const { cfg, gate } = await withDbAccessContext(orgContext(orgId, partnerId), async () => ({
+      cfg: await resolveRemoteSessionPromptConfig(deviceId),
+      gate: await checkVncConsentGate(deviceId),
+    }));
+
+    expect(cfg.mode).toBe('consent');
+    expect(cfg.consentUnavailableBehavior).toBe('block');
+    expect(gate).toMatchObject({
+      ok: false,
+      status: 409,
+      body: { code: 'CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE' },
+    });
+  });
+
+  it.runIf(hasDb)('refuses, rather than returning notify, when the partner-wide policy is invisible to the caller', async () => {
+    const sfx = `pw-blind-${Date.now()}`;
+    const deviceId = await seedDevice(sfx);
+    await assignPartnerWideConsentPolicy(sfx);
+
+    // Same org, but a context without the caller's own partner id: the
+    // SELECT-only partner-wide branch cannot fire.
+    await expect(withDbAccessContext(orgContext(orgId, null), () =>
+      resolveRemoteSessionPromptConfig(deviceId),
+    )).rejects.toBeInstanceOf(RemoteSessionPromptPolicyError);
+  });
+
+  it.runIf(hasDb)('refuses, rather than returning notify, for a device in another org', async () => {
+    const sfx = `other-org-${Date.now()}`;
+    const deviceId = await seedDevice(sfx);
+    const deviceOrgId = orgId;
+    const devicePartnerId = partnerId;
+    await seedTenant(`${sfx}-caller`);
+    expect(orgId).not.toBe(deviceOrgId);
+
+    await expect(withDbAccessContext(orgContext(orgId, partnerId), () =>
+      resolveRemoteSessionPromptConfig(deviceId),
+    )).rejects.toThrow(/did not resolve/);
+    // Same partner as the device, different org: still refused.
+    await expect(withDbAccessContext(orgContext(orgId, devicePartnerId), () =>
+      checkVncConsentGate(deviceId),
+    )).resolves.toMatchObject({ ok: false, status: 503 });
   });
 });

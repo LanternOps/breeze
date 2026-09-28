@@ -11,6 +11,12 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { checkVncConsentGate } from './remote/vncConsentGate';
+import {
+  CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_CODE,
+  CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_MESSAGE,
+  REMOTE_PROMPT_POLICY_UNAVAILABLE_CODE,
+  REMOTE_PROMPT_POLICY_UNAVAILABLE_MESSAGE,
+} from './remote/consentGate';
 import { HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
 import {
@@ -61,6 +67,20 @@ async function authorizeTunnelContinuation(sessionId: string, userId: string) {
 }
 
 function liveAuthorizationResponse(c: Context, denial: { status: 403 | 404 | 429 | 503; reason: string }) {
+  // The live-authority check refuses VNC tunnels on consent-mode devices;
+  // answer with the same technician-facing codes as POST /tunnels.
+  if (denial.reason === 'consent_required') {
+    return c.json({
+      error: CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_MESSAGE,
+      code: CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE_CODE,
+    }, 409);
+  }
+  if (denial.reason === 'prompt_policy_unavailable') {
+    return c.json({
+      error: REMOTE_PROMPT_POLICY_UNAVAILABLE_MESSAGE,
+      code: REMOTE_PROMPT_POLICY_UNAVAILABLE_CODE,
+    }, 503);
+  }
   return c.json({ error: 'Remote session access denied', reason: denial.reason }, denial.status);
 }
 
@@ -1221,13 +1241,6 @@ tunnelRoutes.post(
     const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
     if (trustDenial) return c.json(trustDenial, 403);
 
-    // A fresh ticket reconnects the relay, so a VNC tunnel re-checks the
-    // device's consent policy (it may have changed since the tunnel opened).
-    if (session.type === 'vnc') {
-      const consentGate = await checkVncConsentGate(session.deviceId);
-      if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
-    }
-
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel',
@@ -1375,9 +1388,6 @@ tunnelRoutes.post(
     const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
     if (trustDenial) return c.json(trustDenial, 403);
 
-    const consentGate = await checkVncConsentGate(session.deviceId);
-    if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
-
     try {
       const result = await createVncConnectCode({
         tunnelId: session.id,
@@ -1468,9 +1478,6 @@ vncExchangeRoutes.post(
 
     const liveAuthority = await authorizeTunnelContinuation(record.tunnelId, record.userId);
     if (!liveAuthority.ok) return liveAuthorizationResponse(c, liveAuthority);
-
-    const consentGate = await checkVncConsentGate(result.deviceId);
-    if (!consentGate.ok) return c.json(consentGate.body, consentGate.status);
 
     // Build the WebSocket URL from the canonical external base URL. Using
     // c.req.url would yield an internal http://api:3001 in Caddy-fronted

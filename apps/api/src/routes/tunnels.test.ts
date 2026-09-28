@@ -2112,37 +2112,41 @@ describe('VNC consent gate', () => {
     expect(checkVncConsentGate).not.toHaveBeenCalled();
   });
 
+  // ws-ticket, connect-code and vnc-exchange re-prove live authority through
+  // authorizeRemoteSessionContinuation, which carries the consent check for VNC
+  // tunnels (remoteWsAuthorization.ts). The route maps its denial reasons to
+  // the same technician-facing codes as POST /tunnels.
   it.each([
     { routeName: 'ws-ticket', minted: () => vi.mocked(createWsTicket) },
     { routeName: 'connect-code', minted: () => vi.mocked(createVncConnectCode) },
-  ])('POST /tunnels/:id/$routeName refuses to hand out access to an existing VNC tunnel', async ({ routeName, minted }) => {
+  ])('POST /tunnels/:id/$routeName answers a consent_required live denial with 409 CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE', async ({ routeName, minted }) => {
     const app = new Hono();
     app.route('/tunnels', tunnelRoutes);
     vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
-    checkVncConsentGate.mockResolvedValueOnce(consentRefusal);
+    authorizeContinuationMock.mockResolvedValueOnce({ ok: false, status: 403, reason: 'consent_required' });
 
     const res = await app.request(`/tunnels/${SESSION_ID}/${routeName}`, { method: 'POST' });
 
     expect(res.status).toBe(409);
-    expect((await res.json()).code).toBe('CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE');
-    expect(checkVncConsentGate).toHaveBeenCalledWith(DEVICE_ID);
+    expect(await res.json()).toEqual(consentRefusal.body);
     expect(minted()).not.toHaveBeenCalled();
-  });
-
-  it('POST /tunnels/:id/ws-ticket does not consult the consent gate for a proxy tunnel', async () => {
-    const app = new Hono();
-    app.route('/tunnels', tunnelRoutes);
-    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, type: 'proxy' }]) as any);
-    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
-    checkVncConsentGate.mockResolvedValue(consentRefusal);
-
-    const res = await app.request(`/tunnels/${SESSION_ID}/ws-ticket`, { method: 'POST' });
-
-    expect(res.status).toBe(200);
     expect(checkVncConsentGate).not.toHaveBeenCalled();
   });
 
-  it('POST /vnc-exchange/:code refuses to redeem a code for a consent-mode device', async () => {
+  it('POST /tunnels/:id/ws-ticket answers a prompt_policy_unavailable live denial with 503 REMOTE_PROMPT_POLICY_UNAVAILABLE', async () => {
+    const app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    authorizeContinuationMock.mockResolvedValueOnce({ ok: false, status: 503, reason: 'prompt_policy_unavailable' });
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/ws-ticket`, { method: 'POST' });
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('REMOTE_PROMPT_POLICY_UNAVAILABLE');
+    expect(createWsTicket).not.toHaveBeenCalled();
+  });
+
+  it('POST /vnc-exchange/:code answers a consent_required live denial with 409 and mints nothing', async () => {
     const app = new Hono();
     app.route('/vnc-exchange', vncExchangeRoutes);
     vi.mocked(consumeVncConnectCode).mockResolvedValueOnce({
@@ -2154,7 +2158,7 @@ describe('VNC consent gate', () => {
       expiresAt: Date.now() + 60_000,
     });
     vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
-    checkVncConsentGate.mockResolvedValueOnce(consentRefusal);
+    authorizeContinuationMock.mockResolvedValueOnce({ ok: false, status: 403, reason: 'consent_required' });
 
     const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
 

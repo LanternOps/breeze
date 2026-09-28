@@ -6,6 +6,8 @@ const {
   select,
   runOutsideDbContext,
   withSystemDbAccessContext,
+  hasDbAccessContext,
+  withDbTransaction,
   captureException
 } = vi.hoisted(() => {
   const insertValues = vi.fn(() => Promise.resolve());
@@ -16,6 +18,8 @@ const {
   // passes through so we can assert ordering separately.
   const runOutsideDbContext = vi.fn(<T>(fn: () => T): T => fn());
   const withSystemDbAccessContext = vi.fn(async (fn: () => unknown) => fn());
+  const hasDbAccessContext = vi.fn(() => false);
+  const withDbTransaction = vi.fn(async (fn: () => unknown) => fn());
   const captureException = vi.fn();
   return {
     insert,
@@ -23,6 +27,8 @@ const {
     select,
     runOutsideDbContext,
     withSystemDbAccessContext,
+    hasDbAccessContext,
+    withDbTransaction,
     captureException
   };
 });
@@ -30,7 +36,9 @@ const {
 vi.mock('../../db', () => ({
   db: { insert, select },
   runOutsideDbContext,
-  withSystemDbAccessContext
+  withSystemDbAccessContext,
+  hasDbAccessContext,
+  withDbTransaction,
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -283,6 +291,30 @@ describe('resolveRemoteSessionPromptConfig', () => {
       identityLevel: 'name_email',
     });
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it('resolves in the caller\'s DB context (a savepoint, no second connection) when one is active', async () => {
+    hasDbAccessContext.mockReturnValue(true);
+    runOutsideDbContext.mockClear();
+    withSystemDbAccessContext.mockClear();
+    withDbTransaction.mockClear();
+    try {
+      await expect(resolveRemoteSessionPromptConfig('dev-1')).resolves.toMatchObject({ mode: 'notify' });
+      expect(withDbTransaction).toHaveBeenCalledTimes(1);
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    } finally {
+      hasDbAccessContext.mockReturnValue(false);
+    }
+  });
+
+  it('opens a system DB context only when no DB context is active', async () => {
+    runOutsideDbContext.mockClear();
+    withSystemDbAccessContext.mockClear();
+    withDbTransaction.mockClear();
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).resolves.toMatchObject({ mode: 'notify' });
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(withDbTransaction).not.toHaveBeenCalled();
   });
 
   it('returns the stored consent settings when the normalized row exists', async () => {
