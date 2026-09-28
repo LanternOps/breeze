@@ -1714,6 +1714,29 @@ describe('a Breeze-origin Payment deleted in QuickBooks (spec decision 5)', () =
     }));
   });
 
+  it('QuickBooks: DROPS a synced mapping whose void never flipped it to delete (org-scoped void, post-commit flip failed)', async () => {
+    // The QuickBooks-reachable shape: an org-scoped `voidPayment` deletes the
+    // payment row, but its post-commit system-context `requestPaymentDelete`
+    // (invoiceService.voidPayment, `else if (orgScoped)`) throws and is only
+    // logged — so the SYNCED mapping keeps `pending_op` NULL and its remote id.
+    // When QuickBooks later reports the Payment deleted, Breeze's void is
+    // satisfied: the mapping is removed and audited `deleteSatisfied: true`
+    // (before Xero W05 it was marked re-ownable, which nothing could re-own).
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: null, syncStatus: 'synced', lastError: null, claimedAt: null,
+    })];
+
+    const results = await reverseAccountingPayment(conn({ provider: 'quickbooks' }), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(currentMappings.map((m) => m.id)).toEqual(['map-invoice-1']);
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.removed_remotely',
+      details: expect.objectContaining({ deleteSatisfied: true, invoicePaymentId: BREEZE_PAY }),
+    }));
+  });
+
   it('SKIPS a nothing-owed mapping whose Breeze payment is gone while a live lease holds it', async () => {
     currentPayments = [];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping({

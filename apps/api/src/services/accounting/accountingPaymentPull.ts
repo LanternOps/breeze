@@ -1285,7 +1285,7 @@ async function reverseOneInsideTransaction(
  * |---------------|------------|---------|
  * | `deleted`     | `'delete'` | The remote deletion SATISFIES the owed delete: drop the row. |
  * | `deleted`     | none       | Keep the payment row (the money moved); clear the ids so the fan-out can re-push. |
- * | `deleted`     | none, payment row gone | A refused reconciled delete the bookkeeper finished: drop the row (Xero W05 refinement 16). |
+ * | `deleted`     | none, payment row gone | The void is satisfied: drop the row (a refused reconciled delete the bookkeeper finished, Xero W05 refinement 16; or a void whose delete flip never landed). |
  * | `reallocated` | `'delete'` | NO WRITE. The Payment is alive and the delete job is about to remove it outright. |
  * | `reallocated` | none       | An EDIT: mark the mapping diverged and KEEP the ids — a later void still has to delete that Payment. |
  *
@@ -1385,11 +1385,16 @@ async function breezeOriginRemoval(
     return dropSatisfiedMapping();
   }
 
-  // Nothing owed, but the Breeze payment row is already GONE (Xero W05
-  // refinement 16): a Breeze void deleted it, the provider refused the delete
-  // as reconciled, and the refusal stamp cleared `pending_op` while KEEPING the
-  // remote id — the delete was handed to the bookkeeper. Their deletion is what
-  // satisfies that void, so the mapping goes exactly as in the owed-delete arm.
+  // Nothing owed, but the Breeze payment row is already GONE, so a Breeze void
+  // (or refund) already destroyed it and the remote deletion satisfies that
+  // void; the mapping goes exactly as in the owed-delete arm. Two ways here:
+  //  - Xero W05 refinement 16: the provider refused the delete as reconciled,
+  //    and the refusal stamp cleared `pending_op` while KEEPING the remote id —
+  //    the delete was handed to the bookkeeper, whose deletion lands here;
+  //  - any provider, QuickBooks included: an org-scoped `voidPayment` whose
+  //    post-commit system-context `requestPaymentDelete` failed (logged only),
+  //    or a destroyer that bypasses that helper, leaves the synced mapping
+  //    with `pending_op` NULL.
   // Marking it re-ownable instead would strand it for good: the fan-out that
   // re-owns rows iterates `invoice_payments`, and this one no longer exists.
   if (!await loadPaymentRow(mapping.breezeEntityId)) {
