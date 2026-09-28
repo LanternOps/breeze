@@ -1140,7 +1140,7 @@ function isLayoutKeyOf(snapshotId: string, key: string): boolean {
 }
 
 /** Digest of the live keys that group under each snapshot id (same grouping rule as the root pass). */
-function fingerprintLiveKeysBySnapshotId(liveSet: ReadonlySet<string>): Map<string, KeySetFingerprint> {
+export function fingerprintLiveKeysBySnapshotId(liveSet: ReadonlySet<string>): Map<string, KeySetFingerprint> {
   const bySnapshotId = new Map<string, KeySetFingerprint>();
   for (const key of liveSet) {
     const snapshotId = snapshotIdOfKey(key);
@@ -1158,9 +1158,11 @@ function fingerprintLiveKeysBySnapshotId(liveSet: ReadonlySet<string>): Map<stri
 /**
  * True only when the root pass proves every key it listed under `snapshotId`
  * is live, so the group has no deletion candidate of any age. False means
- * "not proven" (the caller re-lists), never "has garbage".
+ * "not proven" (the caller re-lists), never "has garbage". Exported for a
+ * direct test of the layout-key guard, which sweepUnreferencedBackupObjects
+ * cannot reach today (every root's layout key is marked live).
  */
-function listedKeysProvablyAllLive(
+export function listedKeysProvablyAllLive(
   snapshotId: string,
   summary: BackupGcSnapshotSummary,
   liveSet: ReadonlySet<string>,

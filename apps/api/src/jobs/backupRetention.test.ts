@@ -188,6 +188,8 @@ const {
   normalizeStorageIdentity,
   orphanManifestSnapshotIds,
   BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP,
+  fingerprintLiveKeysBySnapshotId,
+  listedKeysProvablyAllLive,
 } = await import('./backupRetention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -3188,6 +3190,29 @@ describe('sweepUnreferencedBackupObjects', () => {
 // normalizeStorageIdentity must collapse cosmetic differences between configs
 // describing the SAME physical bucket, or two configs on one bucket split into
 // two identities and cross-config deletion comes back via the back door.
+describe('listedKeysProvablyAllLive layout-key guard (#6843 gap 4)', () => {
+  // Unreachable through sweepUnreferencedBackupObjects today (every root's
+  // layout key is marked live), so pinned directly: a LISTED layout.json that
+  // is not live must defeat the skip even when the digests match.
+  const manifestKey = 'snapshots/R/manifest.json';
+  const layoutKey = 'snapshots/R/layout.json';
+  const summaryWithLayout = () => ({
+    manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: true,
+    listedKeys: fingerprintLiveKeysBySnapshotId(new Set([manifestKey])).get('R')!,
+    hasLayoutKey: true,
+  });
+
+  it('is false when layout.json was listed but is not in the live set', () => {
+    const liveSet = new Set([manifestKey]);
+    expect(listedKeysProvablyAllLive('R', summaryWithLayout(), liveSet, fingerprintLiveKeysBySnapshotId(liveSet))).toBe(false);
+  });
+
+  it('control: is true when the listed layout.json is live and the rest matches', () => {
+    const liveSet = new Set([manifestKey, layoutKey]);
+    expect(listedKeysProvablyAllLive('R', summaryWithLayout(), liveSet, fingerprintLiveKeysBySnapshotId(liveSet))).toBe(true);
+  });
+});
+
 describe('normalizeStorageIdentity', () => {
   it('treats a blank S3 endpoint as identical to an explicit default AWS endpoint', () => {
     const blank = normalizeStorageIdentity('s3', { bucket: 'my-bucket' });
