@@ -27,8 +27,8 @@ Spec: `docs/superpowers/specs/billing/2026-09-26-xero-accounting-integration-des
 No environment may set `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` /
 `XERO_REDIRECT_URI` until these pass.
 
-- **W03b (wave #7170): do not merge until X14 + X7 (W02c) and **X16** (section
-  3) pass — X16 gates the mapping/customerImport capability flip.**
+- **W03b (wave #7170):** do not merge until X14 + X7 (W02c) and **X16**
+  (section 3) pass — X16 gates the mapping/customerImport capability flip.
 
 ---
 
