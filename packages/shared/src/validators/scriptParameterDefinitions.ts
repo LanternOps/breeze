@@ -141,9 +141,11 @@ const builtinParameterDefinitionSchema = z.object({
  *   and nothing to coerce.
  * - `defaultValue` and `options` are rejected when present. A default would be
  *   a plaintext credential stored in the script definition; the value is never
- *   a choice list. Zod 4 treats a bare `z.undefined()` object field as a
- *   required key (`expected nonoptional`), hence the `.optional()` — the
- *   custom message still fires when the key is present with a value.
+ *   a choice list. `z.never().optional()` accepts only an absent (or
+ *   undefined) key; the custom message fires when the key carries a value.
+ *   Not `z.undefined()`: the script builder hands this schema to the model as
+ *   a tool input, and `toJSONSchema` cannot represent `undefined` — it throws
+ *   for the whole MCP `tools/list`, leaving the model with no tools.
  */
 const tenantSecretParameterDefinitionSchema = z.object({
   name: z
@@ -156,8 +158,8 @@ const tenantSecretParameterDefinitionSchema = z.object({
   variableKey: tenantVariableKeySchema,
   type: z.literal('string').default('string'),
   required: z.literal(true).default(true),
-  defaultValue: z.undefined({ message: 'A secret parameter cannot carry a default value' }).optional(),
-  options: z.undefined({ message: 'A secret parameter cannot declare options' }).optional(),
+  defaultValue: z.never({ message: 'A secret parameter cannot carry a default value' }).optional(),
+  options: z.never({ message: 'A secret parameter cannot declare options' }).optional(),
 });
 
 /**

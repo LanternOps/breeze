@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   DEVICE_CUSTOM_FIELD_KEY_PATTERN,
   MAX_SCRIPT_PARAMETER_OPTIONS_LENGTH,
@@ -607,5 +608,15 @@ describe('scriptParameterDefinitionsEqual', () => {
 
   it('reports changed when either side is unparseable', () => {
     expect(scriptParameterDefinitionsEqual([{ garbage: 1 }], [{ garbage: 1 }])).toBe(false);
+  });
+});
+
+describe('scriptParameterDefinitionsSchema as an AI tool input', () => {
+  // The script builder's apply_script_metadata tool takes this schema as its
+  // `parameters` input, and MCP `tools/list` converts it with Zod's
+  // toJSONSchema. A field it cannot represent (e.g. `z.undefined()`) fails the
+  // whole list and leaves the model with no tools at all.
+  it('converts to JSON Schema', () => {
+    expect(() => z.toJSONSchema(scriptParameterDefinitionsSchema, { io: 'input' })).not.toThrow();
   });
 });
