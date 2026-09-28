@@ -452,6 +452,31 @@ describe('snapshot routes', () => {
     expect(body.data[0].layoutManifest).toBeUndefined();
   });
 
+  it('exposes the layout platform so Restore-as-VM can match the rebuild host OS (W06d)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ snapshotId: 'snap-win', layoutManifest: { platform: 'windows', disks: [] } }),
+      makeSnapshot({ id: 'snapshot-2', snapshotId: 'snap-lin', layoutManifest: { platform: 'linux', disks: [] } }),
+      makeSnapshot({ id: 'snapshot-3', snapshotId: 'snap-old', layoutManifest: { disks: [] } }),
+      makeSnapshot({ id: 'snapshot-4', snapshotId: 'snap-mac', layoutManifest: { platform: 'darwin' } }),
+      makeSnapshot({ id: 'snapshot-5', snapshotId: 'snap-none', layoutManifest: null }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((row: { layoutPlatform: unknown }) => row.layoutPlatform)).toEqual([
+      'windows',
+      'linux',
+      null,
+      null,
+      null,
+    ]);
+  });
+
   it('returns a null bare-metal verdict (never assessed) as null + empty reasons, not false', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({ bareMetalRestorable: null, bareMetalReasons: null }),

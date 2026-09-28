@@ -199,7 +199,7 @@ describe('VMRestoreWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
 
     expect(screen.getByRole('button', { name: /Instant Boot/i })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Rebuild engine \(Linux\)/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Rebuild engine/i })).toBeNull();
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('osType=linux'))).toBe(false);
   });
 
@@ -209,7 +209,7 @@ describe('VMRestoreWizard', () => {
       if (url === '/backup/snapshots') {
         return makeJsonResponse({
           data: [
-            { id: 'snapshot-linux', label: 'Linux Server Snapshot', createdAt: '2026-03-28T10:00:00Z', sizeBytes: 1024, layoutManifestKey: 'backups/snap-ext-1/layout.json', bareMetalRestorable: true },
+            { id: 'snapshot-linux', label: 'Linux Server Snapshot', createdAt: '2026-03-28T10:00:00Z', sizeBytes: 1024, layoutManifestKey: 'backups/snap-ext-1/layout.json', layoutPlatform: 'linux', bareMetalRestorable: true },
           ],
         });
       }
@@ -230,11 +230,14 @@ describe('VMRestoreWizard', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Linux Server Snapshot/i }));
     fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /Rebuild engine \(Linux\)/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Rebuild engine/i }));
 
     // Linux host picker + output path appear inline
+    expect(screen.getByTestId('vm-restore-rebuild-host-picker')).toHaveAttribute('data-os-filter', 'linux');
     fireEvent.click(await screen.findByRole('radio', { name: /rebuild-01/i }));
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('osType=linux'))).toBe(true);
+    // Hyper-V VM creation is a Windows-host feature; never offered for Linux.
+    expect(screen.queryByTestId('vm-restore-hyperv-options')).toBeNull();
     fireEvent.change(screen.getByLabelText(/Output path/i), { target: { value: '/srv/rebuild/dev-1.vhdx' } });
 
     fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
@@ -264,7 +267,7 @@ describe('VMRestoreWizard', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/backup/snapshots') {
-        return makeJsonResponse({ data: [{ id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'k' }] });
+        return makeJsonResponse({ data: [{ id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'k', layoutPlatform: 'linux' }] });
       }
       if (url.startsWith('/devices/options?')) {
         const params = new URL(url, 'http://localhost').searchParams;
@@ -282,12 +285,159 @@ describe('VMRestoreWizard', () => {
     render(<VMRestoreWizard />);
     fireEvent.click(await screen.findByRole('button', { name: /Linux Server Snapshot/i }));
     fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /Rebuild engine \(Linux\)/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Rebuild engine/i }));
     fireEvent.click(await screen.findByRole('radio', { name: /rebuild-01/i }));
     fireEvent.change(screen.getByLabelText(/Output path/i), { target: { value: '/srv/rebuild/dev-1.vhdx' } });
     fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
     fireEvent.click(screen.getByRole('button', { name: /Start Rebuild/i }));
 
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+});
+
+// W06d (Task 22): the rebuild host must run the snapshot's platform, so the
+// picker filters by the snapshot's layoutPlatform; a Windows host adds the
+// optional Hyper-V VM block and takes drive-letter VHDX paths.
+describe('VMRestoreWizard — platform-matched rebuild host', () => {
+  const pageOf = (data: unknown[]) => ({
+    data,
+    page: { nextCursor: null, returned: data.length, total: data.length, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+  });
+  const windowsHost = { id: 'windows-host-1', hostname: 'hv-rebuild-01', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null };
+  const linuxHost = { id: 'linux-host-1', hostname: 'rebuild-01', displayName: null, osType: 'linux', status: 'online', siteId: null, siteName: null };
+
+  function mockWithSnapshots(snapshots: unknown[]) {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: snapshots });
+      if (url.startsWith('/devices/options?')) {
+        const params = new URL(url, 'http://localhost').searchParams;
+        const os = params.get('osType');
+        return makeJsonResponse(pageOf(os === 'linux' ? [linuxHost] : os === 'windows' ? [windowsHost] : []));
+      }
+      if (url.startsWith('/backup/restore/as-vm/estimate/')) {
+        return makeJsonResponse({ data: { memoryMb: 8192, cpuCount: 4, diskSizeGb: 120 } });
+      }
+      if (url === '/backup/restore/as-vm') {
+        return makeJsonResponse({ jobId: 'job-1', recoveryId: 'rec-1', commandId: 'cmd-1', status: 'queued' }, true, 202);
+      }
+      return makeJsonResponse({});
+    });
+  }
+
+  const windowsSnapshot = { id: 'snapshot-win', label: 'Windows Server Snapshot', layoutManifestKey: 'backups/snap-win/layout.json', layoutPlatform: 'windows' };
+  const linuxSnapshot = { id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'backups/snap-lin/layout.json', layoutPlatform: 'linux' };
+
+  async function openRebuildFor(label: RegExp) {
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: label }));
+    fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
+    fireEvent.click(await screen.findByTestId('vm-restore-engine-rebuild'));
+  }
+
+  function bodyOfRestoreCall() {
+    const call = fetchMock.mock.calls.find(([url]) => url === '/backup/restore/as-vm');
+    return JSON.parse(String((call?.[1] as { body?: string } | undefined)?.body ?? '{}'));
+  }
+
+  it('filters the rebuild host picker to the Windows snapshot\'s platform', async () => {
+    mockWithSnapshots([windowsSnapshot]);
+    await openRebuildFor(/Windows Server Snapshot/i);
+
+    expect(screen.getByTestId('vm-restore-rebuild-host-picker')).toHaveAttribute('data-os-filter', 'windows');
+    expect(await screen.findByRole('radio', { name: /hv-rebuild-01/i })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: /^rebuild-01/i })).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('osType=linux'))).toBe(false);
+  });
+
+  it('does not offer the rebuild engine when the layout records no platform (the API would refuse it)', async () => {
+    mockWithSnapshots([{ id: 'snapshot-old', label: 'Old Snapshot', layoutManifestKey: 'backups/snap-old/layout.json' }]);
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Old Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
+
+    expect(screen.getByRole('button', { name: /Instant Boot/i })).toBeTruthy();
+    expect(screen.queryByTestId('vm-restore-engine-rebuild')).toBeNull();
+  });
+
+  it('accepts a drive-letter VHDX path on a Windows host and refuses a POSIX one', async () => {
+    mockWithSnapshots([windowsSnapshot]);
+    await openRebuildFor(/Windows Server Snapshot/i);
+    fireEvent.click(await screen.findByRole('radio', { name: /hv-rebuild-01/i }));
+
+    const output = screen.getByTestId('vm-restore-rebuild-output-path') as HTMLInputElement;
+    expect(output.placeholder).toMatch(/^C:\\/);
+
+    fireEvent.change(output, { target: { value: '/srv/rebuild/x.vhdx' } });
+    expect(screen.getByTestId('vm-restore-rebuild-output-path-invalid')).toBeInTheDocument();
+
+    fireEvent.change(output, { target: { value: '\\\\server\\share\\x.vhdx' } });
+    expect(screen.getByTestId('vm-restore-rebuild-output-path-invalid')).toBeInTheDocument();
+
+    fireEvent.change(output, { target: { value: 'C:\\Rebuild\\srv-01.vhdx' } });
+    expect(screen.queryByTestId('vm-restore-rebuild-output-path-invalid')).toBeNull();
+  });
+
+  it('shows the optional Hyper-V fields for a Windows host and sends hyperv with the VM specs', async () => {
+    mockWithSnapshots([windowsSnapshot]);
+    await openRebuildFor(/Windows Server Snapshot/i);
+    fireEvent.click(await screen.findByRole('radio', { name: /hv-rebuild-01/i }));
+
+    expect(screen.getByTestId('vm-restore-hyperv-options')).toBeInTheDocument();
+    // No switch named → the hint warns there will be no network adapter.
+    fireEvent.change(screen.getByTestId('vm-restore-hyperv-vm-name'), { target: { value: 'srv-01-restored' } });
+    expect(screen.getByTestId('vm-restore-hyperv-no-nic-hint')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('vm-restore-hyperv-switch'), { target: { value: 'Isolated' } });
+    expect(screen.queryByTestId('vm-restore-hyperv-no-nic-hint')).toBeNull();
+    fireEvent.change(screen.getByTestId('vm-restore-rebuild-output-path'), { target: { value: 'C:\\Rebuild\\srv-01.vhdx' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
+    // A VM will be created, so the manual-attach note gives way to the VM note.
+    expect(screen.getByTestId('vm-restore-rebuild-hyperv-note')).toHaveTextContent('srv-01-restored');
+    expect(screen.queryByText(/Attach the VHDX to a Hyper-V VM manually/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Rebuild/i }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/backup/restore/as-vm')).toBe(true));
+
+    expect(bodyOfRestoreCall()).toEqual({
+      engine: 'rebuild',
+      snapshotId: 'snapshot-win',
+      rebuildHostDeviceId: 'windows-host-1',
+      outputPath: 'C:\\Rebuild\\srv-01.vhdx',
+      hyperv: { vmName: 'srv-01-restored', switchName: 'Isolated', memoryMb: 8192, cpuCount: 4 },
+    });
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+
+  it('omits hyperv when no VM name is given and keeps the manual-attach note', async () => {
+    mockWithSnapshots([windowsSnapshot]);
+    await openRebuildFor(/Windows Server Snapshot/i);
+    fireEvent.click(await screen.findByRole('radio', { name: /hv-rebuild-01/i }));
+    fireEvent.change(screen.getByTestId('vm-restore-hyperv-switch'), { target: { value: 'Isolated' } });
+    fireEvent.change(screen.getByTestId('vm-restore-rebuild-output-path'), { target: { value: 'C:\\Rebuild\\srv-01.vhdx' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
+    expect(screen.getByText(/Attach the VHDX to a Hyper-V VM manually/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Start Rebuild/i }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/backup/restore/as-vm')).toBe(true));
+
+    const body = bodyOfRestoreCall();
+    expect(body).not.toHaveProperty('hyperv');
+    expect(body.rebuildHostDeviceId).toBe('windows-host-1');
+  });
+
+  it('clears the picked rebuild host when the snapshot platform changes', async () => {
+    mockWithSnapshots([linuxSnapshot, windowsSnapshot]);
+    await openRebuildFor(/Linux Server Snapshot/i);
+    fireEvent.click(await screen.findByRole('radio', { name: /rebuild-01/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /1\. Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Windows Server Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
+
+    expect(screen.getByTestId('vm-restore-rebuild-host-picker')).toHaveAttribute('data-os-filter', 'windows');
+    const radio = (await screen.findByRole('radio', { name: /hv-rebuild-01/i })) as HTMLInputElement;
+    expect(radio.checked).toBe(false);
+    expect(screen.queryByRole('radio', { name: /^rebuild-01/i })).toBeNull();
   });
 });
