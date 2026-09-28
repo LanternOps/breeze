@@ -194,9 +194,11 @@ describe('ci-success gating contract', () => {
     // Per-area gating (.github/scripts/ci-area-gating.test.mjs pins the exact per-job
     // lines): an area-gated job appends ONE area clause to the code+app gate, so a
     // docs-only or tooling-only PR still skips it. check-migrations is code AND api —
-    // never app, it is the release-lineage guard for tooling-only PRs.
+    // never app, it is the release-lineage guard for tooling-only PRs. integration-test
+    // carries the single-job `integration` clause instead of an area (#5936; pinned by
+    // classify-pr-paths.test.mjs).
     const areaClause =
-      "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust) == 'true'|" +
+      "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust|integration) == 'true'|" +
       "\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\)))?";
     const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const ungated = workflowJobs.filter((job) => {
