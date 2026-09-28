@@ -29,6 +29,7 @@ type fakeIdleTimer struct {
 }
 
 // installFakeIdleClock swaps the package's idleAfterFunc seam for the test.
+// It mutates a package global, so tests using it must not run in parallel.
 func installFakeIdleClock(t *testing.T) *fakeIdleClock {
 	t.Helper()
 	c := &fakeIdleClock{}
@@ -138,14 +139,31 @@ func TestSlowButProgressingTransferIsNotCutOff(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- p.Download(key, dst) }()
 
+	var dlErr error
+	finished := false
 	// resets: 1 after the response headers, then one per body chunk read.
 	for i := 0; i < chunks; i++ {
 		clock.waitResets(t, i+2)
 		clock.Advance(gap) // idle window is re-armed by the progress just seen
-		release <- struct{}{}
+		// The last chunk completes the body (Content-Length reached), so
+		// Download may legitimately return before the final release is taken.
+		select {
+		case release <- struct{}{}:
+		case dlErr = <-errCh:
+			finished = true
+		}
+		if finished {
+			if i != chunks-1 || dlErr != nil {
+				t.Fatalf("Download ended after %d of %d chunks: %v", i+1, chunks, dlErr)
+			}
+			break
+		}
 	}
-	if err := <-errCh; err != nil {
-		t.Fatalf("Download: %v", err)
+	if !finished {
+		dlErr = <-errCh
+	}
+	if dlErr != nil {
+		t.Fatalf("Download: %v", dlErr)
 	}
 	if got := readFile(t, dst); got != strings.Repeat("s", chunks) {
 		t.Fatalf("content = %q", got)
