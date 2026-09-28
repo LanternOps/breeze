@@ -145,6 +145,7 @@ export type McpExemptReason =
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { gap: '#6781' },
+  'accounting/connectionSetupRoutes.ts': { exempt: 'vendor_console_admin', note: 'Xero organisation picker, cancel, and settings-option pickers -- post-consent steps of the interactive OAuth connect flow for the partner\'s accounting connection (Xero W02); no agent-driven equivalent.' },
   'accounting/index.ts': { gap: '#6784' },
   'actionIntents.ts': { exempt: 'identity' },
   'admin/abuse.ts': { exempt: 'platform_admin' },

@@ -786,7 +786,9 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // #6082: the sync-mapping terminal-failure path (`AccountingMappingError`)
     // added a third tag-bearing capture (`accounting_entity_id`).
     ['../jobs/accountingSyncWorker.ts', 3],
-    ['../jobs/accountingReconcileWorker.ts', 5],
+    // Xero W02: sweep pass 3 (reap stale pending_tenant rows) added a sixth
+    // tag-bearing capture (`accounting_reconcile_phase: 'sweep.reapPendingTenants'`).
+    ['../jobs/accountingReconcileWorker.ts', 6],
     // #5126: the same #4828/Phase D2 defect in the pull-back path — every
     // captureException in accountingPaymentPull.ts tagged camelCase keys
     // (action, resourceId, remotePaymentId, invoiceId) with no allowlisted
