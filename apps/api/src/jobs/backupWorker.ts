@@ -45,6 +45,7 @@ import { markBackupJobFailedIfInFlight } from '../services/backupResultPersisten
 import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../services/backupJobCreation';
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
+import { recordBackupWriteDispatch } from '../services/backupMetrics';
 import { captureException } from '../services/sentry';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -1577,6 +1578,13 @@ async function processDispatchBackup(
       if (outcome.status === 'sent') {
         sendState.set(target.commandJobId, 'sent');
         sentCount++;
+        // The command carried its storage destination inline; a local one
+        // is a path, not a credential.
+        if (target.command.payload?.provider === 'local') {
+          recordBackupWriteDispatch(target.commandType, 'local', 'no_credential');
+        } else {
+          recordBackupWriteDispatch(target.commandType, 'legacy_credential', 'inline_provider_config');
+        }
         continue;
       }
 

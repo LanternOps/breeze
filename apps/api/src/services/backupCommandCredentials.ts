@@ -24,6 +24,7 @@ import { resolveBackupProviderConfig, resolveBackupWriteCommandDestination } fro
 import { CommandTypes } from './commandTypes';
 import { CommandDeliveryRefusedError, type DeliveryRefreshContext } from './commandDeliveryRefusal';
 import { BACKUP_READ_CREDENTIAL_COMMAND_TYPES } from './backupReadHelperGate';
+import { recordBackupWriteDispatch } from './backupMetrics';
 
 export const PROVIDER_CONFIG_REF_FIELD = 'providerConfigRef';
 
@@ -189,6 +190,11 @@ export async function materializeBackupStorageCredentials(
         throw new CommandDeliveryRefusedError(
           'The backup destination encryption settings changed after this command was queued; run it again.',
         );
+      }
+      if (destination.provider === 'local') {
+        recordBackupWriteDispatch(ctx.type, 'local', 'no_credential');
+      } else {
+        recordBackupWriteDispatch(ctx.type, 'legacy_credential', 'delivery_refresher');
       }
       return {
         ...rest,

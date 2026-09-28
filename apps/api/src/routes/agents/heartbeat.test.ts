@@ -3179,6 +3179,38 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.backupReadProtocolVersion).toBe(expected);
   });
+
+  // The integrity and write protocols follow the same top-level, non-sticky
+  // contract as the read protocol: only versions this server implements are
+  // stored, anything else (including omission by an older agent) is 0.
+  it.each([
+    { name: 'recognized versions', extra: { backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 }, integrity: 2, write: 1 },
+    { name: 'integrity version 1', extra: { backupIntegrityProtocolVersion: 1 }, integrity: 1, write: 0 },
+    { name: 'omitted (older helper or agent)', extra: {}, integrity: 0, write: 0 },
+    { name: 'unknown future versions', extra: { backupIntegrityProtocolVersion: 3, backupWriteProtocolVersion: 2 }, integrity: 0, write: 0 },
+    { name: 'fractional and string versions', extra: { backupIntegrityProtocolVersion: 1.5, backupWriteProtocolVersion: '1' }, integrity: 0, write: 0 },
+    { name: 'negative versions', extra: { backupIntegrityProtocolVersion: -1, backupWriteProtocolVersion: -1 }, integrity: 0, write: 0 },
+    {
+      name: 'nested in securityCapabilities is not the field',
+      extra: { securityCapabilities: { backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 } },
+      integrity: 0,
+      write: 0,
+    },
+  ])('persists the non-sticky backup integrity and write protocol versions: $name', async ({ extra, integrity, write }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...extra }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.backupIntegrityProtocolVersion).toBe(integrity);
+    expect(updateArg.backupWriteProtocolVersion).toBe(write);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -5042,6 +5074,111 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     expect(resp.status).toBe(200);
     const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
     expect(changes.filter((ch) => ch.field === 'backupReadProtocolVersion')).toEqual([]);
+  });
+
+  describe('backup helper capability regression', () => {
+    const regressed = vi.fn();
+    beforeEach(async () => {
+      regressed.mockReset();
+      const { setBackupMetricsRecorder } = await import('../../services/backupMetrics');
+      setBackupMetricsRecorder({ onCapabilityRegressed: regressed });
+    });
+    afterEach(async () => {
+      const { setBackupMetricsRecorder } = await import('../../services/backupMetrics');
+      setBackupMetricsRecorder(null);
+    });
+
+    async function regressionAudits() {
+      const { writeAuditEvent } = await import('../../services/auditEvents');
+      return vi
+        .mocked(writeAuditEvent)
+        .mock.calls.filter((c) => (c[1] as { action?: string })?.action === 'device.backup_capability.regressed')
+        .map((c) => c[1] as unknown as Record<string, unknown>);
+    }
+
+    it('a lower integrity protocol is audited once as a capability regression', async () => {
+      arrange({ backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 0 });
+      const resp = await beat({ ...minimalHeartbeatBody, backupIntegrityProtocolVersion: 1 });
+      expect(resp.status).toBe(200);
+
+      const audits = await regressionAudits();
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        orgId: 'org-1',
+        actorType: 'agent',
+        resourceType: 'device',
+        resourceId: 'device-1',
+        details: { capability: 'integrity', before: 2, after: 1 },
+      });
+      expect(regressed).toHaveBeenCalledTimes(1);
+      expect(regressed).toHaveBeenCalledWith('integrity', 1);
+      const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+      expect(changes).toContainEqual({ field: 'backupIntegrityProtocolVersion', before: 2, after: 1 });
+    });
+
+    it('a steady report after the drop is not audited again', async () => {
+      arrange({ backupIntegrityProtocolVersion: 1 });
+      const resp = await beat({ ...minimalHeartbeatBody, backupIntegrityProtocolVersion: 1 });
+      expect(resp.status).toBe(200);
+      expect(await regressionAudits()).toEqual([]);
+      expect(regressed).not.toHaveBeenCalled();
+    });
+
+    it('an agent that stops reporting the fields drops them to 0 and audits each drop', async () => {
+      arrange({ backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+      const resp = await beat({ ...minimalHeartbeatBody });
+      expect(resp.status).toBe(200);
+
+      const audits = await regressionAudits();
+      expect(audits.map((a) => a.details)).toEqual([
+        { capability: 'integrity', before: 2, after: 0 },
+        { capability: 'write', before: 1, after: 0 },
+      ]);
+      expect(regressed.mock.calls).toEqual([['integrity', 1], ['write', 1]]);
+    });
+
+    it('an unknown future version reads as 0 and counts as a regression from 1', async () => {
+      arrange({ backupIntegrityProtocolVersion: 1 });
+      const resp = await beat({ ...minimalHeartbeatBody, backupIntegrityProtocolVersion: 3 });
+      expect(resp.status).toBe(200);
+      const audits = await regressionAudits();
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.details).toEqual({ capability: 'integrity', before: 1, after: 0 });
+    });
+
+    it('the read protocol drop is also recorded as a capability regression', async () => {
+      arrange({ backupReadProtocolVersion: 1 });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const resp = await beat({ ...minimalHeartbeatBody });
+      expect(resp.status).toBe(200);
+      const audits = await regressionAudits();
+      expect(audits.map((a) => a.details)).toEqual([{ capability: 'read', before: 1, after: 0 }]);
+      expect(regressed).toHaveBeenCalledWith('read', 1);
+      warn.mockRestore();
+    });
+
+    it.each([
+      { name: 'first report', before: {}, extra: { backupIntegrityProtocolVersion: 1, backupWriteProtocolVersion: 1 } },
+      { name: 'upgrade', before: { backupIntegrityProtocolVersion: 1 }, extra: { backupIntegrityProtocolVersion: 2 } },
+      { name: 'steady at 0', before: {}, extra: {} },
+    ])('no capability regression audit on $name', async ({ before, extra }) => {
+      arrange(before);
+      const resp = await beat({ ...minimalHeartbeatBody, ...extra });
+      expect(resp.status).toBe(200);
+      expect(await regressionAudits()).toEqual([]);
+      expect(regressed).not.toHaveBeenCalled();
+    });
+
+    it('a write the status guard rejected is never audited as a regression', async () => {
+      arrange({ backupIntegrityProtocolVersion: 2 });
+      updateMock.mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning([])) })),
+      });
+      const resp = await beat({ ...minimalHeartbeatBody });
+      expect(resp.status).toBe(200);
+      expect(await regressionAudits()).toEqual([]);
+      expect(regressed).not.toHaveBeenCalled();
+    });
   });
 
   it('tccPermissions change emits a state_change audit', async () => {

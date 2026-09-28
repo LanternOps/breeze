@@ -473,6 +473,31 @@ describe('storage-destination delivery refreshers', () => {
     ]);
   });
 
+  it('hands the integrity and write helper protocols this heartbeat reported to the refresher', async () => {
+    const seen: unknown[] = [];
+    deliveryRefreshers.mssql_backup = async (p, ctx) => {
+      seen.push(ctx);
+      return p;
+    };
+
+    await prepareClaimedCommandsForDelivery(
+      [{ id: 'cmd-w', type: 'mssql_backup', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt }],
+      { reportedBackupReadProtocolVersion: 0, reportedBackupIntegrityProtocolVersion: 2, reportedBackupWriteProtocolVersion: 1 },
+    );
+
+    expect(seen).toEqual([
+      {
+        commandId: 'cmd-w',
+        deviceId: CLAIM_DEVICE,
+        type: 'mssql_backup',
+        claimedAt,
+        reportedBackupReadProtocolVersion: 0,
+        reportedBackupIntegrityProtocolVersion: 2,
+        reportedBackupWriteProtocolVersion: 1,
+      },
+    ]);
+  });
+
   it('hands every refresher the identity of the command it is preparing', async () => {
     const seen: unknown[] = [];
     deliveryRefreshers.software_install = async (p, ctx) => {

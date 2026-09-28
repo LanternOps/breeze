@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { authenticateMock, resolveMock, renewMock } = vi.hoisted(() => ({
+const { authenticateMock, resolveMock, renewMock, callMetric, objectsMetric } = vi.hoisted(() => ({
   authenticateMock: vi.fn(),
   resolveMock: vi.fn(),
   renewMock: vi.fn(),
+  callMetric: vi.fn(),
+  objectsMetric: vi.fn(),
+}));
+
+vi.mock('../../services/backupMetrics', () => ({
+  recordStorageSessionCall: callMetric,
+  recordStorageSessionObjects: objectsMetric,
 }));
 
 vi.mock('../../services/backupStorageSessions', () => ({
@@ -21,7 +28,7 @@ const SESSION_ID = '0b6f0c7e-3d2a-4f5b-9e1c-8a7d6c5b4a39';
 const TOKEN = 's'.repeat(43);
 const DEVICE = '33333333-3333-4333-8333-333333333333';
 const ORG = '11111111-1111-4111-8111-111111111111';
-const SESSION_ROW = { id: SESSION_ID };
+const SESSION_ROW = { id: SESSION_ID, scope: 'snapshot_read' };
 
 function buildApp(role: 'agent' | 'watchdog' = 'agent') {
   const app = new Hono();
@@ -157,5 +164,66 @@ describe('storage session single-object compatibility endpoint', () => {
       headers: { 'X-Breeze-Storage-Session': TOKEN },
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('storage session call telemetry', () => {
+  it('counts a resolved call and the objects it returned', async () => {
+    const res = await post(resolvePath, { keys: ['snapshots/s/manifest.json'] });
+    expect(res.status).toBe(200);
+    expect(callMetric.mock.calls).toEqual([['snapshot_read', 'resolve', 200]]);
+    expect(objectsMetric.mock.calls).toEqual([['snapshot_read', 'GET', 1]]);
+  });
+
+  it('counts a renew that found the session expired', async () => {
+    renewMock.mockResolvedValue({ status: 410, error: 'expired' });
+    const res = await post(renewPath, {});
+    expect(res.status).toBe(410);
+    expect(callMetric.mock.calls).toEqual([['snapshot_read', 'renew', 410]]);
+    expect(objectsMetric).not.toHaveBeenCalled();
+  });
+
+  it('counts a call whose session could not be authenticated under the read scope', async () => {
+    authenticateMock.mockResolvedValue({ ok: false, status: 401, error: 'refused' });
+    const res = await post(resolvePath, { keys: ['k'] });
+    expect(res.status).toBe(401);
+    expect(callMetric.mock.calls).toEqual([['snapshot_read', 'resolve', 401]]);
+  });
+
+  it('counts a malformed body and a throttled call', async () => {
+    await post(resolvePath, { keys: [] });
+    resolveMock.mockResolvedValue({ status: 429, retryAfterSeconds: 30 });
+    await post(resolvePath, { keys: ['k'] });
+    expect(callMetric.mock.calls).toEqual([
+      ['snapshot_read', 'resolve', 400],
+      ['snapshot_read', 'resolve', 429],
+    ]);
+    expect(objectsMetric).not.toHaveBeenCalled();
+  });
+
+  it('counts a call that failed with an error as 500', async () => {
+    resolveMock.mockRejectedValue(new Error('database unavailable'));
+    const res = await post(resolvePath, { keys: ['k'] });
+    expect(res.status).toBe(500);
+    expect(callMetric.mock.calls).toEqual([['snapshot_read', 'resolve', 500]]);
+  });
+
+  it('counts the compatibility single-object call', async () => {
+    const key = 'snapshots/s/manifest.json';
+    resolveMock.mockResolvedValue({
+      status: 200,
+      body: { objects: [{ key, method: 'GET', url: 'https://storage.example/o', headers: {}, expiresAt: '2026-09-26T12:05:00Z' }], denied: [] },
+    });
+    const res = await buildApp().request(`/agent-7c1d/storage-sessions/${SESSION_ID}/object?key=${encodeURIComponent(key)}`, {
+      headers: { 'X-Breeze-Storage-Session': TOKEN },
+    });
+    expect(res.status).toBe(302);
+    expect(callMetric.mock.calls).toEqual([['snapshot_read', 'object', 302]]);
+    expect(objectsMetric.mock.calls).toEqual([['snapshot_read', 'GET', 1]]);
+  });
+
+  it('does not count an unknown operation', async () => {
+    await post(`/agent-7c1d/storage-sessions/${SESSION_ID}/objects:list`, { keys: ['k'] });
+    expect(callMetric).not.toHaveBeenCalled();
   });
 });

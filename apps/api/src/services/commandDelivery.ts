@@ -9,6 +9,7 @@ import {
   isCommandDeliveryDeferral,
   isCommandDeliveryRefusal,
   type DeliveryRefreshContext,
+  type ReportedBackupHelperProtocols,
 } from './commandDeliveryRefusal';
 import { getPresignedUrl, isS3Configured } from './s3Storage';
 import { failClaimedSecretCommandsForUnsupportedAgent } from './scriptSecretDelivery';
@@ -120,6 +121,13 @@ export type ClaimedCommand = {
   executedAt: Date | null;
 };
 
+/** Backup helper protocol fields a heartbeat may hand to delivery refreshers. */
+const REPORTED_BACKUP_HELPER_PROTOCOL_FIELDS = [
+  'reportedBackupReadProtocolVersion',
+  'reportedBackupIntegrityProtocolVersion',
+  'reportedBackupWriteProtocolVersion',
+] as const satisfies ReadonlyArray<keyof ReportedBackupHelperProtocols>;
+
 /**
  * Decrypt a batch of JUST-CLAIMED commands for delivery, releasing any that
  * fail decryption back to `pending` (issue #2414).
@@ -166,17 +174,19 @@ export type ClaimedCommand = {
  * `opts.reportedScriptSecretEnvVersion` lets a caller that just received the
  * agent's own capability report (the heartbeat) hand it to the gate as
  * authoritative, avoiding both the extra select and the race against the
- * heartbeat's own non-sticky device write.
+ * heartbeat's own non-sticky device write. The backup helper protocol
+ * fields are passed to every delivery refresher the same way.
  */
 export async function prepareClaimedCommandsForDelivery(
   claimed: ClaimedCommand[],
-  opts?: { reportedScriptSecretEnvVersion?: number; reportedBackupReadProtocolVersion?: number },
+  opts?: { reportedScriptSecretEnvVersion?: number } & ReportedBackupHelperProtocols,
 ): Promise<DeliverableCommand[]> {
-  const refreshed = await refreshClaimedCommandPayloads(claimed, {
-    ...(typeof opts?.reportedBackupReadProtocolVersion === 'number'
-      ? { reportedBackupReadProtocolVersion: opts.reportedBackupReadProtocolVersion }
-      : {}),
-  });
+  const helperProtocols: ReportedBackupHelperProtocols = {};
+  for (const field of REPORTED_BACKUP_HELPER_PROTOCOL_FIELDS) {
+    const value = opts?.[field];
+    if (typeof value === 'number') helperProtocols[field] = value;
+  }
+  const refreshed = await refreshClaimedCommandPayloads(claimed, helperProtocols);
 
   const deliverable = await failClaimedSecretCommandsForUnsupportedAgent(refreshed, {
     ...(typeof opts?.reportedScriptSecretEnvVersion === 'number'
@@ -319,7 +329,7 @@ function runRefresher(
  */
 async function refreshClaimedCommandPayloads(
   claimed: ClaimedCommand[],
-  extraCtx: Pick<DeliveryRefreshContext, 'reportedBackupReadProtocolVersion'> = {},
+  extraCtx: ReportedBackupHelperProtocols = {},
 ): Promise<ClaimedCommand[]> {
   const out: ClaimedCommand[] = [];
   for (const cmd of claimed) {

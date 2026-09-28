@@ -208,6 +208,10 @@ export const heartbeatSchema = z.object({
   // reports it via --protocol-info; the agent omits it when 0). Top-level, not
   // part of securityCapabilities. Tolerant: anything malformed reads as absent.
   backupReadProtocolVersion: z.number().int().optional().catch(undefined),
+  // Snapshot integrity and storage write protocols of the same installed
+  // helper. Same contract: top-level, omitted when 0, malformed reads as absent.
+  backupIntegrityProtocolVersion: z.number().int().optional().catch(undefined),
+  backupWriteProtocolVersion: z.number().int().optional().catch(undefined),
   rollbackComponentVersions: z.record(
     z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
     z.string().min(1).max(20),

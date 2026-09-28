@@ -10,6 +10,7 @@ import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared'
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
+import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
@@ -234,7 +235,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
   }
 
   const [lineage] = await db
-    .select({ orgId: backupSnapshots.orgId, deviceId: backupSnapshots.deviceId })
+    .select({ orgId: backupSnapshots.orgId, deviceId: backupSnapshots.deviceId, keyLayout: backupSnapshots.keyLayout })
     .from(backupSnapshots)
     .where(and(
       eq(backupSnapshots.id, snapshotDbId),
@@ -243,6 +244,11 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     .limit(1);
   if (!lineage || lineage.orgId !== tokenRow.orgId || lineage.deviceId !== tokenRow.deviceId) {
     return { unavailable: true, reason: 'Recovery snapshot lineage is unavailable.' } as const;
+  }
+  // Object keys are derived from the snapshot's layout; one this server does
+  // not understand is refused rather than guessed.
+  if (!isSupportedKeyLayout(lineage.keyLayout)) {
+    return { unavailable: true, reason: 'This backup was written in a storage format this server version cannot read.' } as const;
   }
 
   const resolved = await resolveSnapshotProviderConfig(snapshotDbId);

@@ -22,7 +22,7 @@ import {
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { backupChains } from '../db/schema/applicationBackup';
-import { eq, and, or, lt, gt, gte, desc, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, or, lt, gt, gte, desc, inArray, notInArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import {
   resolveMsKnob,
   resolveBackupRestorePinLingerMs,
@@ -31,6 +31,7 @@ import {
   resolveBackupOrphanManifestMaxAgeMs,
 } from '../services/backupGcKnobs';
 import { backupHelperSupportsServerBase } from '../services/backupHelperCapabilities';
+import { BACKUP_KEY_LAYOUTS, isSupportedKeyLayout } from '../services/backupKeyLayout';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -206,6 +207,10 @@ export type RetentionCleanupResult = {
   // the whole pass. It is retried on the next run -- nothing here is a
   // permanent skip.
   failed: number;
+  // A row written in an object-key layout this server does not understand
+  // (services/backupKeyLayout.ts) is never retired: retiring it would hand
+  // its prefix to storage GC. Left in place, and in its max-versions slot.
+  skippedUnsupportedLayout: number;
 };
 
 type DeleteSnapshotOutcome = 'deleted' | 'pinned' | 'chainBase' | 'legalHold' | 'immutable' | 'unresolved';
@@ -478,6 +483,7 @@ export async function cleanupExpiredSnapshots(
     skippedChainBase: 0,
     prunedByMaxVersions: 0,
     failed: 0,
+    skippedUnsupportedLayout: 0,
   };
 
   // D18 section 3.7: this read runs with no ambient context
@@ -493,6 +499,7 @@ export async function cleanupExpiredSnapshots(
         deviceId: backupSnapshots.deviceId,
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
+        keyLayout: backupSnapshots.keyLayout,
         backupType: backupSnapshots.backupType,
       })
       .from(backupSnapshots)
@@ -505,6 +512,10 @@ export async function cleanupExpiredSnapshots(
   );
 
   for (const snap of expired) {
+    if (!isSupportedKeyLayout(snap.keyLayout)) {
+      result.skippedUnsupportedLayout++;
+      continue;
+    }
     const outcome = await tryDeleteSnapshotRow({
       id: snap.id,
       snapshotId: snap.snapshotId,
@@ -527,6 +538,7 @@ export async function cleanupExpiredSnapshots(
         deviceId: backupSnapshots.deviceId,
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
+        keyLayout: backupSnapshots.keyLayout,
         backupType: backupSnapshots.backupType,
         retention: configPolicyBackupSettings.retention,
       })
@@ -558,6 +570,10 @@ export async function cleanupExpiredSnapshots(
     if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) continue;
 
     for (const snap of groupRows.slice(maxVersions)) {
+      if (!isSupportedKeyLayout(snap.keyLayout)) {
+        result.skippedUnsupportedLayout++;
+        continue;
+      }
       const outcome = await tryDeleteSnapshotRow({
         id: snap.id,
         snapshotId: snap.snapshotId,
@@ -576,7 +592,7 @@ export async function cleanupExpiredSnapshots(
   if (
     result.deleted > 0 || result.skippedLegalHold > 0 || result.skippedImmutable > 0 ||
     result.skippedPinned > 0 || result.skippedUnresolved > 0 || result.skippedChainBase > 0 ||
-    result.prunedByMaxVersions > 0 || result.failed > 0
+    result.prunedByMaxVersions > 0 || result.failed > 0 || result.skippedUnsupportedLayout > 0
   ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
@@ -584,6 +600,9 @@ export async function cleanupExpiredSnapshots(
       `${result.skippedPinned} (pinned), ${result.skippedUnresolved} (unresolved identity), ` +
       `${result.skippedChainBase} (active chain base), ` +
       `pruned ${result.prunedByMaxVersions} by maxVersions` +
+      (result.skippedUnsupportedLayout > 0
+        ? `, kept ${result.skippedUnsupportedLayout} written in a key layout this server cannot read`
+        : '') +
       (result.failed > 0 ? `, FAILED ${result.failed} delete(s) (see prior per-row errors -- will retry next run)` : '')
     );
   }
@@ -2032,7 +2051,9 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   const orphanWindowMs = Math.max(resolveBackupOrphanManifestMaxAgeMs(), resolveBackupBaseLeaseMs() + graceMs);
   const manifestlessWindowMs = resolveBackupManifestlessPrefixMaxAgeMs();
 
-  const { unattributedCount, identities, snapshotOwnersByIdentityKey, unreachableIdentities, unreachableIdentityKeys } =
+  const {
+    unattributedCount, identities, snapshotOwnersByIdentityKey, unreachableIdentities, unreachableIdentityKeys, layoutBlockedIdentityKeys,
+  } =
     await withSystemDbAccessContext(async () => {
       const unattributedRows = await db.select({ id: backupSnapshots.id }).from(backupSnapshots).where(isNull(backupSnapshots.configId));
       const destinations = await db
@@ -2074,12 +2095,43 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         }
       }
 
+      // Snapshot key-layout barrier: every row (any org, any identity string,
+      // or none yet) whose object-key layout this server does not understand.
+      // Its objects cannot be told apart from unreferenced ones in a listing,
+      // so the physical identity it lives on is not swept at all this run.
+      // A row is attributed both to its recorded identity and to the identity
+      // its configuration maps to now (NULL identity, or a stale string left
+      // by a config edit). Only offending rows are returned.
+      const layoutBlockedIdentityKeys = new Set<string>();
+      if (identityKeys.length > 0) {
+        const identityKeyByConfigId = new Map<string, string>();
+        for (const identity of identitiesInner.values()) {
+          for (const configId of identity.configIds) identityKeyByConfigId.set(configId, identity.key);
+        }
+        const unsupportedLayoutRows = await db
+          .select({ storageIdentity: backupSnapshots.storageIdentity, configId: backupSnapshots.configId, keyLayout: backupSnapshots.keyLayout })
+          .from(backupSnapshots)
+          // The redundant `<> 'legacy_flat'` lets the planner use the partial
+          // index instead of scanning every snapshot row each run.
+          .where(and(
+            sql`${backupSnapshots.keyLayout} <> 'legacy_flat'`,
+            notInArray(backupSnapshots.keyLayout, [...BACKUP_KEY_LAYOUTS]),
+          ));
+        for (const row of unsupportedLayoutRows) {
+          if (isSupportedKeyLayout(row.keyLayout)) continue;
+          if (row.storageIdentity !== null) layoutBlockedIdentityKeys.add(row.storageIdentity);
+          const configKey = row.configId ? identityKeyByConfigId.get(row.configId) : undefined;
+          if (configKey) layoutBlockedIdentityKeys.add(configKey);
+        }
+      }
+
       return {
         unattributedCount: unattributedRows.length,
         identities: identitiesInner,
         snapshotOwnersByIdentityKey,
         unreachableIdentities: unreachable.count,
         unreachableIdentityKeys: unreachable.keys,
+        layoutBlockedIdentityKeys,
       };
     });
 
@@ -2200,6 +2252,17 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
 
     if (suspiciousIdentityKeys.has(physicalKey)) {
       skippedIdentities += orgIdentities.length;
+      continue;
+    }
+
+    if (layoutBlockedIdentityKeys.has(physicalKey)) {
+      skippedIdentities += orgIdentities.length;
+      const message =
+        `[BackupGC] identity ${physicalKey}: unsupported_key_layout — a snapshot on this storage was written in an ` +
+        `object-key layout this server cannot read; sweep skipped for every organization on it (fail-closed). ` +
+        `Update the server before storage on this identity is reclaimed again.`;
+      console.error(message);
+      captureException(new Error(message));
       continue;
     }
 

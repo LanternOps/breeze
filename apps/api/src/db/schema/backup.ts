@@ -385,6 +385,10 @@ export const backupSnapshots = pgTable(
     // — the W02 sweep self-heals a NULL row from the storage listing; there
     // is no follow-up NOT NULL migration.
     storageIdentity: text('storage_identity'),
+    // Object-key layout the snapshot was written with. Every writer produces
+    // 'legacy_flat' (snapshots/<snapshotId>/...); readers refuse any other
+    // value (services/backupKeyLayout.ts).
+    keyLayout: text('key_layout').notNull().default('legacy_flat'),
     // Bare-metal recovery (W01): disk layout captured at run time and the
     // guard verdict. NULL verdict = not assessed (file-only run / old agent).
     layoutManifest: jsonb('layout_manifest'),
@@ -420,6 +424,11 @@ export const backupSnapshots = pgTable(
     ).on(table.storageIdentity, table.snapshotId).where(
       sql`${table.storageIdentity} IS NOT NULL`
     ),
+    // Storage GC looks up rows with a non-default layout on every run; almost
+    // every row is 'legacy_flat', so the partial index stays tiny.
+    keyLayoutNonDefaultIdx: index('backup_snapshots_key_layout_non_default_idx')
+      .on(table.keyLayout)
+      .where(sql`${table.keyLayout} <> 'legacy_flat'`),
   })
 );
 

@@ -270,6 +270,14 @@ export const devices = pgTable('devices', {
   // credentials; 0 (default, and every agent that omits the field) = no.
   // Non-sticky: rewritten every beat so a helper downgrade clears the claim.
   backupReadProtocolVersion: integer('backup_read_protocol_version').notNull().default(0),
+  // Snapshot integrity protocol of the INSTALLED backup helper (same report,
+  // same non-sticky contract). 1 = the helper produces snapshot attestations;
+  // 2 = it also checks them at every restore. 0 = neither.
+  backupIntegrityProtocolVersion: integer('backup_integrity_protocol_version').notNull().default(0),
+  // Storage write protocol of the INSTALLED backup helper (same report, same
+  // non-sticky contract). 1 = the helper writes through brokered storage
+  // sessions; 0 = it writes with the configured storage destination.
+  backupWriteProtocolVersion: integer('backup_write_protocol_version').notNull().default(0),
   rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally

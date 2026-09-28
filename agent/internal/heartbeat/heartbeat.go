@@ -131,6 +131,13 @@ type HeartbeatPayload struct {
 	// 0 on every heartbeat (non-sticky), so a helper downgrade is reflected
 	// on the next beat.
 	BackupReadProtocolVersion int `json:"backupReadProtocolVersion,omitempty"`
+	// BackupIntegrityProtocolVersion and BackupWriteProtocolVersion are the
+	// snapshot integrity and brokered storage-write protocols the same
+	// installed helper reports, under the same rules: never inferred,
+	// omitted at 0, and read by the server as 0 on every heartbeat that
+	// omits them.
+	BackupIntegrityProtocolVersion int `json:"backupIntegrityProtocolVersion,omitempty"`
+	BackupWriteProtocolVersion     int `json:"backupWriteProtocolVersion,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -848,14 +855,14 @@ type Heartbeat struct {
 	backupVersionRead          bool
 	backupVersionReadWarned    bool
 
-	// backupReadProtocolReader is a test seam for the --protocol-info probe
-	// (readInstalledBackupReadProtocol); nil in production. The cache fields
+	// backupProtocolReader is a test seam for the --protocol-info probe
+	// (readInstalledBackupProtocols); nil in production. The cache fields
 	// below are guarded by backupVersionMu and cleared by
 	// invalidateBackupVersionCache, exactly like the version cache.
-	backupReadProtocolReader   func() (int, backupProbeOutcome)
-	backupReadProtocolValue    int
-	backupReadProtocolRead     bool
-	backupReadProtocolFailedAt time.Time
+	backupProtocolReader   func() (backupipc.ProtocolInfo, backupProbeOutcome)
+	backupProtocolValue    backupipc.ProtocolInfo
+	backupProtocolRead     bool
+	backupProtocolFailedAt time.Time
 
 	// backupHelperDownloader is an optional test seam: when non-nil,
 	// prefetchBackupHelper / reconcileBackupHelper call this instead of
@@ -4637,7 +4644,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache).
-	payload.BackupReadProtocolVersion = h.backupReadProtocolVersion()
+	backupProtocols := h.backupProtocols()
+	payload.BackupReadProtocolVersion = backupProtocols.BackupReadProtocolVersion
+	payload.BackupIntegrityProtocolVersion = backupProtocols.BackupIntegrityProtocolVersion
+	payload.BackupWriteProtocolVersion = backupProtocols.BackupWriteProtocolVersion
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
 	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation

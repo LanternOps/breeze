@@ -32,6 +32,12 @@ const (
 	// device whose installed helper reports at least this version.
 	ProtocolVersion = 1
 
+	// WriteProtocolVersion is the brokered storage-write protocol this build
+	// implements (1 = backups are written through storage sessions instead
+	// of the configured storage credentials; 0 = not implemented). Reported
+	// the same way as ProtocolVersion.
+	WriteProtocolVersion = 0
+
 	// SessionHeader carries the session token on control-plane calls.
 	SessionHeader = "X-Breeze-Storage-Session"
 
