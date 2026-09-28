@@ -1771,6 +1771,41 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(pamLifecycleMocks.createPamDecisionIntent).toHaveBeenCalledOnce();
   });
 
+  it('flags a grace-allowed under-assured approve in the elevation audit details', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'high', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 1,
+      decidedVia: 'session_tap',
+      authenticatorDeviceId: null,
+      graceDowngrade: true,
+    });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(tx.auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'approved',
+        details: expect.objectContaining({
+          assurance_downgraded_grace: true,
+          required_assurance_level: 3,
+        }),
+      }),
+    );
+  });
+
+  it('omits the grace marker from the elevation audit details when assurance met the floor', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const details = (tx.auditValues.mock.calls[0]![0] as { details: Record<string, unknown> }).details;
+    expect(details).not.toHaveProperty('assurance_downgraded_grace');
+    expect(details).not.toHaveProperty('required_assurance_level');
+  });
+
   it('deny mirrors elevation to denied', async () => {
     mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
@@ -2119,6 +2154,44 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ orgId: 'org-9', intentId: 'intent-1', outcome: 'approved' }),
     );
+  });
+
+  it('marks a grace-allowed under-assured four-eyes approve in the intent event details', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    mockIntentFanInTx();
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 1,
+      decidedVia: 'session_tap',
+      authenticatorDeviceId: null,
+      graceDowngrade: true,
+    });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'approved',
+        details: expect.objectContaining({
+          decidedAssuranceLevel: 1,
+          decidedVia: 'session_tap',
+          assuranceDowngradedGrace: true,
+          requiredAssuranceLevel: 3,
+        }),
+      }),
+    );
+  });
+
+  it('leaves the grace marker off a four-eyes approve whose assurance met the floor', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const call = vi.mocked(recordActionIntentEvent).mock.calls.find(([e]) => e.outcome === 'approved');
+    expect(call).toBeDefined();
+    expect(call![0].details).not.toHaveProperty('assuranceDowngradedGrace');
+    expect(call![0].details).not.toHaveProperty('requiredAssuranceLevel');
   });
 
   it('refuses an intent-linked APPROVE (403) when the decider no longer holds approvals:decide', async () => {
@@ -2739,6 +2812,62 @@ describe('Task 6: supervised intent plain-decide branch', () => {
     // Gated to approve-only — a deny never spends a partner-policy read.
     expect(loadPartnerPolicy).not.toHaveBeenCalled();
     expect(assertApprovalAssurance).not.toHaveBeenCalled();
+  });
+
+  it('marks a plain-click supervised approve below the risk floor as a grace downgrade, recording the same L1/session_tap', async () => {
+    mockDecideWithSupervisedIntent({ riskTier: 'high' });
+    const { approvalCasSet } = mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    // The recorded level/factor are unchanged by the marker.
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedAssuranceLevel: 1, decidedVia: 'session_tap' }),
+    );
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'approved',
+        details: expect.objectContaining({
+          approvalMethod: 'supervised_self',
+          decidedAssuranceLevel: 1,
+          assuranceDowngradedGrace: true,
+          requiredAssuranceLevel: 3,
+        }),
+      }),
+    );
+  });
+
+  it('applies the partner raise-only floor when deciding the supervised grace marker', async () => {
+    mockDecideWithSupervisedIntent({ riskTier: 'low' });
+    mockSupervisedFanInTx();
+    vi.mocked(loadPartnerPolicy).mockResolvedValueOnce({
+      partnerId: 'partner-123',
+      floorOverrides: { low: 2 },
+      requireEnrollment: false,
+      enforceFrom: null,
+    } as any);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: expect.objectContaining({
+          assuranceDowngradedGrace: true,
+          requiredAssuranceLevel: 2,
+        }),
+      }),
+    );
+  });
+
+  it('leaves the grace marker off a supervised approve whose floor is L1', async () => {
+    mockDecideWithSupervisedIntent({ riskTier: 'low' });
+    mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const call = vi.mocked(recordActionIntentEvent).mock.calls.find(([e]) => e.outcome === 'approved');
+    expect(call).toBeDefined();
+    expect(call![0].details).not.toHaveProperty('assuranceDowngradedGrace');
   });
 
   it('records session_tap/L1 (no proof consumed) on a supervised approve', async () => {
