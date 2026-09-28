@@ -255,6 +255,12 @@ export default function IntegrationsPage({
   // While false, a bare `#accounting` hash lets the auto-pick effect below
   // choose a provider once the provider list loads.
   const accountingSubTabExplicitRef = useRef(false);
+  // Bumped every time applyHash lands on a bare `#accounting` hash (mount,
+  // hashchange, back/forward), so the auto-pick effect below re-runs even when
+  // `accountingProviders` hasn't changed — e.g. an explicit `#quickbooks`
+  // selection followed by navigating back to bare `#accounting` must re-pick,
+  // not leave the stale explicit panel showing.
+  const [accountingAutoPickTrigger, setAccountingAutoPickTrigger] = useState(0);
   const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
     result: M365CustomerGraphReadCallbackResult | null;
     refreshKey: number;
@@ -310,8 +316,12 @@ export default function IntegrationsPage({
         } else {
           // A bare #accounting hash: let the auto-pick effect below choose a
           // provider once the list loads, rather than always defaulting to
-          // whatever provider was last selected (or QuickBooks).
+          // whatever provider was last selected (or QuickBooks). Bump the
+          // trigger so the effect re-runs even if `accountingProviders` itself
+          // hasn't changed since the last pick (e.g. back/forward navigation
+          // from an explicit `#quickbooks` to bare `#accounting`).
           accountingSubTabExplicitRef.current = false;
+          setAccountingAutoPickTrigger((n) => n + 1);
         }
       }
       if (parsed.consumeCustomerGraphReadResult) {
@@ -431,7 +441,13 @@ export default function IntegrationsPage({
   // loads: the active connection's provider if it's visible, else the first
   // visible provider in `data` order, else nothing. Never overrides an
   // explicit hash/param/click, and never writes to the URL hash itself —
-  // `#accounting` stays as-is (Xero W02c task 11b).
+  // `#accounting` stays as-is (Xero W02c task 11b). Depends on
+  // `accountingAutoPickTrigger` (not just `accountingProviders`) so landing on
+  // a bare `#accounting` hash re-applies the pick even when the provider list
+  // is unchanged from the last time it ran (back/forward navigation away from
+  // an explicit selection) — and intentionally re-applies whenever the
+  // provider list itself refreshes while the selection is still not explicit
+  // (e.g. after a connect/disconnect bumps `accountingProvidersRefreshKey`).
   useEffect(() => {
     if (accountingSubTabExplicitRef.current) return;
     if (!accountingProviders) return;
@@ -444,7 +460,7 @@ export default function IntegrationsPage({
       ? active.provider
       : accountingProviders.data.find((p) => isAccountingProviderVisible(p, active))?.id;
     if (pick) setAccountingSubTab(pick);
-  }, [accountingProviders]);
+  }, [accountingProviders, accountingAutoPickTrigger]);
   const visibleCustomerGraphReadResult = callbackOrgId !== null
     && customerGraphReadCallback.orgId === callbackOrgId
     ? customerGraphReadCallback.result

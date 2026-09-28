@@ -933,6 +933,23 @@ describe("IntegrationsPage — bare #accounting auto-picks the connected provide
     expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
     expect(screen.queryByTestId("stub-xero")).toBeNull();
   });
+
+  it("re-picks the provider when navigating from an explicit hash back to bare #accounting", async () => {
+    providersBody = {
+      data: PROVIDERS_BOTH.data,
+      activeConnection: { provider: "xero", status: "connected" },
+    };
+    window.history.replaceState({}, "", "/integrations#quickbooks");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
+
+    window.location.hash = "accounting";
+    // jsdom does not fire hashchange for a scripted hash write.
+    fireEvent(window, new HashChangeEvent("hashchange"));
+
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
+    expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
+  });
 });
 
 describe("IntegrationsPage header (#7151)", () => {
