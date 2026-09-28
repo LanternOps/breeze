@@ -113,6 +113,12 @@ describe('DeviceGroupsPage list unwrapping', () => {
     expect(screen.queryByText(/is not a function/i)).not.toBeInTheDocument();
   });
 
+  it('gives the "select all groups" checkbox an accessible name via its wrapping label (#7158 a11y)', async () => {
+    render(<DeviceGroupsPage />);
+
+    expect(await screen.findByRole('checkbox', { name: /select all groups/i })).toBeInTheDocument();
+  });
+
   it('fetches sites from /orgs/sites, not the non-existent /sites', async () => {
     render(<DeviceGroupsPage />);
 

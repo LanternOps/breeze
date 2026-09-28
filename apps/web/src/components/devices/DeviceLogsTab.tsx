@@ -352,10 +352,11 @@ export default function DeviceLogsTab({
             )}
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
+            <label htmlFor="device-logs-start-date" className="mb-1 block text-xs text-muted-foreground">
               {t("deviceLogsTab.startDate")}
             </label>
             <input
+              id="device-logs-start-date"
               type="datetime-local"
               value={startDate}
               onChange={(e) => {
@@ -366,10 +367,11 @@ export default function DeviceLogsTab({
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
+            <label htmlFor="device-logs-end-date" className="mb-1 block text-xs text-muted-foreground">
               {t("deviceLogsTab.endDate")}
             </label>
             <input
+              id="device-logs-end-date"
               type="datetime-local"
               value={endDate}
               onChange={(e) => {

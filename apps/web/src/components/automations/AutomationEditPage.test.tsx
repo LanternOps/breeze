@@ -67,6 +67,16 @@ beforeEach(() => {
   };
 });
 
+describe('AutomationEditPage back link (#7158 a11y)', () => {
+  it('gives the icon-only back-to-automations link an accessible name', async () => {
+    mockEndpoints({ ...baseAutomation, managedByAgentId: null, actions: [] });
+
+    render(<AutomationEditPage automationId="automation-1" />);
+
+    expect(await screen.findByRole('link', { name: 'Back to Jobs' })).toHaveAttribute('href', '/jobs');
+  });
+});
+
 describe('AutomationEditPage managed automations', () => {
   it('renders a read-only notice instead of the editor for a managed automation', async () => {
     mockEndpoints({

@@ -873,6 +873,7 @@
           "title": "Berichtstyp"
         }
       },
+      "removeField": "{{field}} entfernen",
       "selectedFields": "Ausgewählte Felder",
       "success": {
         "created": "Bericht „{{name}}“ gespeichert.",

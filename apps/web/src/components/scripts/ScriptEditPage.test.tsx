@@ -192,3 +192,15 @@ describe('ScriptEditPage header (#7151)', () => {
     expect(backLink?.className).toContain('shrink-0');
   });
 });
+
+describe('ScriptEditPage back link (#7158 a11y)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('gives the icon-only back-to-scripts link an accessible name', () => {
+    render(<ScriptEditPage />);
+
+    expect(screen.getByRole('link', { name: 'Back to Scripts' })).toHaveAttribute('href', '/scripts');
+  });
+});

@@ -498,6 +498,9 @@ export default function ConfigPolicyDetailPage({
           <a
             href="/configuration-policies"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={i18n.t(
+              "policies:configurationPolicies.configPolicyDetailPage.backToList",
+            )}
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
@@ -558,20 +561,22 @@ export default function ConfigPolicyDetailPage({
           </h2>
           <div className="mt-4 grid gap-4">
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-name" className="text-sm font-medium">
                 {i18n.t("common:labels.name")}
               </label>
               <input
+                id="config-policy-name"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-description" className="text-sm font-medium">
                 {i18n.t("common:labels.description")}
               </label>
               <textarea
+                id="config-policy-description"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
                 className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

@@ -97,7 +97,8 @@
       "create": "Crear monitor",
       "test": "Probar en un dispositivo",
       "deploy": "Desplegar en…",
-      "delete": "Eliminar"
+      "delete": "Eliminar",
+      "backToMonitors": "Volver a monitores"
     },
     "errors": {
       "load": "No se pudo cargar el monitor",

@@ -164,7 +164,7 @@ describe('ReportBuilder responsive layout (#7154)', () => {
 
     // Default state always has at least one selected field, so the
     // "Selected fields" list is populated on first render.
-    const removeButtons = await screen.findAllByRole('button', { name: '' });
+    const removeButtons = await screen.findAllByRole('button', { name: /^Remove / });
     const chipRow = removeButtons
       .map(button => button.closest('[draggable="true"]'))
       .find((row): row is HTMLElement => row !== null);

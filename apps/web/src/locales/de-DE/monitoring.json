@@ -97,7 +97,8 @@
       "create": "Monitor erstellen",
       "test": "Auf einem Gerät testen",
       "deploy": "Bereitstellen für…",
-      "delete": "Löschen"
+      "delete": "Löschen",
+      "backToMonitors": "Zurück zu Monitoren"
     },
     "errors": {
       "load": "Monitor konnte nicht geladen werden",

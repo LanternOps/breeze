@@ -873,6 +873,7 @@
           "title": "Tipo de informe"
         }
       },
+      "removeField": "Quitar {{field}}",
       "selectedFields": "Campos seleccionados",
       "success": {
         "created": "Informe \"{{name}}\" guardado.",

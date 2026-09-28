@@ -25,7 +25,8 @@
     },
     "actions": {
       "create": "Erstellen Sie Automatisierung",
-      "saveChanges": "Änderungen speichern"
+      "saveChanges": "Änderungen speichern",
+      "backToAutomations": "Zurück zu Jobs"
     }
   },
   "automationForm": {
@@ -434,6 +435,7 @@
       "generic": "Es ist ein Fehler aufgetreten"
     },
     "loading": "Compliance-Daten werden geladen...",
+    "backToPolicies": "Zurück zu Richtlinien",
     "policyTitle": "Compliance: {{policy}}",
     "policyFallback": "Richtlinie",
     "title": "Compliance-Dashboard",
@@ -491,7 +493,8 @@
     },
     "actions": {
       "create": "Richtlinie erstellen",
-      "saveChanges": "Änderungen speichern"
+      "saveChanges": "Änderungen speichern",
+      "backToPolicies": "Zurück zu Richtlinien"
     }
   },
   "policyForm": {
@@ -550,7 +553,8 @@
     },
     "actions": {
       "savePolicy": "Richtlinie speichern",
-      "addRule": "Regel hinzufügen"
+      "addRule": "Regel hinzufügen",
+      "removeRule": "Regel entfernen"
     },
     "fields": {
       "name": "Richtlinienname",
@@ -981,6 +985,7 @@
     "loading": "Ausführungen werden geladen...",
     "actions": {
       "backToScripts": "Zurück zu Skripten",
+      "backToScript": "Zurück zum Skript",
       "runScript": "Skript ausführen"
     },
     "breadcrumb": {
