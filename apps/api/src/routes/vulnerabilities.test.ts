@@ -69,7 +69,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../services/vulnerabilityRemediation', () => ({
-  remediateVulnerabilities: vi.fn(async () => ({ scheduled: 0, skipped: [] })),
+  remediateVulnerabilities: vi.fn(async () => ({ scheduled: 0, alreadyQueued: [], skipped: [] })),
 }));
 vi.mock('../services/vulnerabilityFleetQueries', () => ({
   fetchFleetFindingRows: vi.fn(async () => []),
@@ -963,6 +963,7 @@ describe('POST /vulnerabilities/remediate — all-skipped surfacing', () => {
     granted.add('devices:execute');
     vi.mocked(remediateVulnerabilities).mockResolvedValue({
       scheduled: 0,
+      alreadyQueued: [],
       skipped: [
         { id: DV1, reason: 'no_available_patch' },
         { id: DV2, reason: 'patch_not_approved' },

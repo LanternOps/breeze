@@ -197,7 +197,7 @@ describe('SoftwareGroupDrawer (device rollup, #2262)', () => {
   });
 
   it('remediate sends exactly the selected devices\' open finding ids, after a confirmation', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 3, skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 3, alreadyQueued: [], skipped: [] });
     renderDrawer();
     fireEvent.click(await screen.findByTestId('vuln-action-remediate'));
     // Nothing fired yet — the confirmation stands between the button and the mutation.
@@ -209,7 +209,7 @@ describe('SoftwareGroupDrawer (device rollup, #2262)', () => {
   });
 
   it('deselecting a device removes its findings from the action', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
     renderDrawer();
     fireEvent.click(await screen.findByTestId('vuln-device-check-dev-1'));
     fireEvent.click(screen.getByTestId('vuln-action-remediate'));
