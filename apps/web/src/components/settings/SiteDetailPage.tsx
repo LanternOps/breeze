@@ -21,6 +21,7 @@ import { showToast } from '@/components/shared/Toast';
 import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 // --- Types ---
 
@@ -116,6 +117,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   };
 
   const [site, setSite] = useState<SiteDetails | null>(null);
+  usePageItemName(site?.name);
   const [org, setOrg] = useState<OrgInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();

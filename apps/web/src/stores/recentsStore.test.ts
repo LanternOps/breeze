@@ -120,3 +120,49 @@ describe('isRecordablePagePath', () => {
     expect(isRecordablePagePath(path)).toBe(expected);
   });
 });
+
+describe('recentsStore — page item names', () => {
+  const quote = '/billing/quotes/188ea8ed-5451-4157-87cc-a65efa4536d9';
+
+  it('names an already-recorded page and persists the name', () => {
+    const s = useRecentsStore.getState();
+    s.hydrate('u1');
+    s.recordPage({ path: quote, title: 'Quote' });
+    s.namePage(quote, 'Q-0042 Acme firewall refresh');
+    expect(useRecentsStore.getState().pages[0]).toEqual(
+      expect.objectContaining({ path: quote, title: 'Quote', name: 'Q-0042 Acme firewall refresh' }),
+    );
+    const persisted = JSON.parse(localStorage.getItem(recentsStorageKey('u1'))!);
+    expect(persisted.pages[0].name).toBe('Q-0042 Acme firewall refresh');
+    s.hydrate(null);
+    s.hydrate('u1');
+    expect(useRecentsStore.getState().pages[0].name).toBe('Q-0042 Acme firewall refresh');
+  });
+
+  it('keeps the name when the same page is visited again', () => {
+    const s = useRecentsStore.getState();
+    s.hydrate('u1');
+    s.recordPage({ path: quote, title: 'Quote' });
+    s.namePage(quote, 'Q-0042');
+    s.recordPage({ path: '/alerts', title: 'Alerts' });
+    s.recordPage({ path: quote, title: 'Quote' });
+    expect(useRecentsStore.getState().pages[0]).toEqual(expect.objectContaining({ path: quote, name: 'Q-0042' }));
+  });
+
+  it('applies a name that arrives before the visit is recorded', () => {
+    const s = useRecentsStore.getState();
+    s.hydrate('u1');
+    s.namePage(quote, 'Q-0042');
+    expect(useRecentsStore.getState().pages).toEqual([]);
+    s.recordPage({ path: quote, title: 'Quote' });
+    expect(useRecentsStore.getState().pages[0].name).toBe('Q-0042');
+  });
+
+  it('ignores blank names', () => {
+    const s = useRecentsStore.getState();
+    s.hydrate('u1');
+    s.recordPage({ path: quote, title: 'Quote' });
+    s.namePage(quote, '   ');
+    expect(useRecentsStore.getState().pages[0].name).toBeUndefined();
+  });
+});

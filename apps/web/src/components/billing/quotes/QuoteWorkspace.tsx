@@ -15,6 +15,7 @@ import { useShowInternalMargin } from './quoteEditorShared';
 import { useOrgStore } from '../../../stores/orgStore';
 import { STATUS_ROLES, type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../../layout/usePageItemName';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -42,6 +43,7 @@ export default function QuoteWorkspace({ id }: Props) {
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const organizations = useOrgStore((s) => s.organizations);
   const [detail, setDetail] = useState<QuoteDetailData | null>(null);
+  usePageItemName(detail ? [detail.quote.quoteNumber, detail.quote.title?.trim()].filter(Boolean).join(' ') : undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');

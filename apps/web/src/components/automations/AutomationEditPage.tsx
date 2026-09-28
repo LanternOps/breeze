@@ -16,6 +16,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -167,6 +168,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [defaultValues, setDefaultValues] = useState<Partial<AutomationFormValues>>();
+  usePageItemName(isNew ? undefined : defaultValues?.name);
   const [webhookUrl, setWebhookUrl] = useState<string>();
   // #3824: a seeded, agent-owned automation is read-only — render a notice
   // instead of the editor. The API 409s on save anyway.

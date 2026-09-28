@@ -18,6 +18,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type ScriptEditPageProps = {
   scriptId?: string;
@@ -198,6 +199,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       setDuplicating(false);
     }
   };
+
+  usePageItemName(script?.name);
 
   if (loading) {
     return (

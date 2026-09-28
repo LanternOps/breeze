@@ -48,6 +48,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import { i18n } from '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -259,6 +260,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [aiAgents, setAiAgents] = useState<AiAgent[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [builtinKey, setBuiltinKey] = useState<string | null>(null);
+  const [loadedName, setLoadedName] = useState<string | undefined>();
   // Null for a partner-wide monitor — DeployMonitorDialog falls back to the
   // currently selected org from the org store in that case.
   const [monitorOrgId, setMonitorOrgId] = useState<string | null>(null);
@@ -390,6 +392,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       setBuiltinKey(typeof monitor.builtinKey === 'string' ? monitor.builtinKey : null);
       setMonitorOrgId(typeof monitor.orgId === 'string' ? monitor.orgId : null);
       setMonitorPartnerId(typeof monitor.partnerId === 'string' ? monitor.partnerId : null);
+      setLoadedName(typeof monitor.name === 'string' ? monitor.name : undefined);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -646,6 +649,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       setTestSubmitting(false);
     }
   };
+
+  usePageItemName(loadedName);
 
   if (loading) {
     return (

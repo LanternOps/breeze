@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { usePageItemName } from '../layout/usePageItemName';
 
 // The as-built detail DTO (packages/shared/src/types/scriptProposals.ts,
 // ScriptProposalDetailDto) — this read-only page renders only the fields
@@ -65,6 +66,8 @@ export default function ScriptProposalDetail({ proposalId }: { proposalId: strin
       cancelled = true;
     };
   }, [proposalId]);
+
+  usePageItemName(proposal?.proposal.goal);
 
   if (state === 'loading') {
     return <p className="text-sm text-muted-foreground">{t('scriptProposalDetail.loading')}</p>;

@@ -8,6 +8,7 @@ vi.mock('../../stores/auth', () => ({
 
 import { currentPageEntry, useRecentsRecorder } from './useRecentsRecorder';
 import { useRecentsStore } from '../../stores/recentsStore';
+import { usePageItemName } from './usePageItemName';
 
 function goTo(path: string, title: string) {
   window.history.pushState({}, '', path);
@@ -26,6 +27,14 @@ describe('useRecentsRecorder', () => {
     expect(currentPageEntry()).toEqual({ path: '/alerts', title: 'Alerts' });
     document.title = 'Dashboard';
     expect(currentPageEntry().title).toBe('Dashboard');
+  });
+
+  it('reads the page title without the item-name prefix a detail page added', () => {
+    goTo('/organizations/org-1', 'Organization');
+    const { unmount } = renderHook(() => usePageItemName('Acme Dental'));
+    expect(document.title).toBe('Acme Dental · Organization | Breeze RMM');
+    expect(currentPageEntry().title).toBe('Organization');
+    unmount();
   });
 
   it('records nothing while signed out', () => {

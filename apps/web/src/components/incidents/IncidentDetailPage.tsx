@@ -8,6 +8,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
@@ -78,6 +79,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
   const { t } = useTranslation('common');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [incident, setIncident] = useState<Incident | null>(null);
+  usePageItemName(incident?.title);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [actions, setActions] = useState<ActionEntry[]>([]);
   const [evidence, setEvidence] = useState<EvidenceEntry[]>([]);

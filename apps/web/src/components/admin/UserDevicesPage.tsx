@@ -9,6 +9,7 @@ import { formatAbsolute, formatRelative } from '../account/relativeTime';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 interface MobileDevice {
   id: string;
@@ -62,6 +63,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const currentUser = useAuthStore((s) => s.user);
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  usePageItemName(state.kind === 'ready' ? state.user.name || state.user.email : undefined);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [submitting, setSubmitting] = useState(false);
 

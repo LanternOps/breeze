@@ -39,6 +39,7 @@ import OrgSitesTab from './OrgSitesTab';
 import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
 import { tabFromHash, visibleTabs, type OrgRecordTab } from './orgRecordTabs';
+import { usePageItemName } from '../../layout/usePageItemName';
 
 type LoadState =
   | { kind: 'loading' }
@@ -82,6 +83,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const orgFetch = useMemo(() => makeOrgFetch(orgId), [orgId]);
 
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  usePageItemName(state.kind === 'loaded' ? state.org.name : undefined);
   const [summary, setSummary] = useState<OrgSummary | null>(null);
   const [summaryFailed, setSummaryFailed] = useState(false);
   const [restoring, setRestoring] = useState(false);

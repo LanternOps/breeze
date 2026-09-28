@@ -9,6 +9,7 @@ import { formatAbsolute, formatRelative } from '../account/relativeTime';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 interface AdminDeletionRequest {
   requestId: string;
@@ -49,6 +50,7 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
   const { t } = useTranslation('admin');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  usePageItemName(state.kind === 'ready' ? state.request.user?.name || state.request.user?.email : undefined);
   const [dialog, setDialog] = useState<ConfirmDialogState | null>(null);
   const [submitting, setSubmitting] = useState(false);
 

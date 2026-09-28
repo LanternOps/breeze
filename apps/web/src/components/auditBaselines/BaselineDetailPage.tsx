@@ -10,6 +10,7 @@ import BaselineOverviewTab from './BaselineOverviewTab';
 import BaselineComplianceTab from './BaselineComplianceTab';
 import BaselineApplyTab from './BaselineApplyTab';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { usePageItemName } from '../layout/usePageItemName';
 
 const tabs = [
   { id: 'overview', labelKey: 'overview', icon: Eye },
@@ -52,6 +53,8 @@ export default function BaselineDetailPage({ baselineId }: Props) {
   useEffect(() => {
     fetchBaseline();
   }, [fetchBaseline]);
+
+  usePageItemName(baseline?.name);
 
   if (loading) {
     return (
