@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { usePermissions } from "../../lib/permissions";
@@ -80,6 +80,32 @@ interface RemoteCandidate {
   email?: string | null;
   sku?: string | null;
   currencyCode?: string | null;
+  archived?: boolean;
+}
+
+/** The same normalisation the API's `normalizeMatchValue` applies (Xero W03):
+ *  NFKC, trim, collapse internal whitespace runs, then lower-case with a fixed
+ *  locale so the comparison never depends on the viewer's browser locale. */
+const normalizeName = (s: string) =>
+  s.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+
+/**
+ * Cleans a remote provider's record name into a search-box seed (Xero W03,
+ * duplicate-name link flow). Strips angle brackets (Xero stores contact names
+ * with `<`/`>` stripped), collapses whitespace runs, trims, then truncates to
+ * at most 255 UTF-16 code units without splitting a surrogate pair — the
+ * route's `q` param is `z.string().max(255)`.
+ */
+function seedSearchTerm(name: string): string {
+  const cleaned = name.replace(/[<>]/g, "").replace(/\s+/g, " ").trim();
+  if (cleaned.length <= 255) return cleaned;
+  let end = 255;
+  // Don't split a surrogate pair: if the code unit just before the cut is a
+  // high surrogate (0xD800–0xDBFF), back off one more so its low surrogate
+  // partner stays attached.
+  const before = cleaned.charCodeAt(end - 1);
+  if (before >= 0xd800 && before <= 0xdbff) end -= 1;
+  return cleaned.slice(0, end);
 }
 
 /** Long enough that per-keystroke typing doesn't hammer a real QuickBooks API
@@ -106,6 +132,10 @@ interface Props {
   /** Called after a successful income-account save so the parent's status
    *  (rendered elsewhere on the page) updates without a full page reload. */
   onSettingsChanged?: (settings: { defaultIncomeAccountRef: string | null }) => void;
+  /** Where this provider's income account is edited (settings rule 1). "settings" = the
+   *  connection's settings step owns it (providers with `features.settingsOptions`):
+   *  the workbench shows no picker, never fetches /income-accounts, and points there. */
+  incomeAccountHome?: "workbench" | "settings";
 }
 
 export default function AccountingMappingWorkbench({
@@ -113,6 +143,7 @@ export default function AccountingMappingWorkbench({
   onUnauthorized,
   defaultIncomeAccountRef,
   onSettingsChanged,
+  incomeAccountHome = "workbench",
 }: Props) {
   const { t } = useTranslation("integrations");
   const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
@@ -146,6 +177,17 @@ export default function AccountingMappingWorkbench({
     defaultIncomeAccountRef,
   );
   const [savingIncomeAccount, setSavingIncomeAccount] = useState(false);
+  /** Keyed by breezeEntityId: the remote name from a rejected duplicate_name
+   *  sync, seeded into that row's search box and cleared once the row moves. */
+  const [searchSeed, setSearchSeed] = useState<Record<string, string>>({});
+
+  // Keep the saved/pending income account in step with the prop (Xero W03):
+  // when the settings step owns it, a save made there must re-enable "Create
+  // new" here without a full reload. Previously read once at mount only.
+  useEffect(() => {
+    setSavedIncomeAccountRef(defaultIncomeAccountRef);
+    setIncomeAccountRef(defaultIncomeAccountRef ?? "");
+  }, [defaultIncomeAccountRef]);
 
   function switchTab(next: WorkbenchTab) {
     window.location.hash = next;
@@ -176,7 +218,7 @@ export default function AccountingMappingWorkbench({
       // has already toasted by the time this catch runs, so it deliberately
       // swallows and continues — except a 401, which must still reach the
       // auth redirect via the outer handler.
-      if (entityType === "catalog_item" && incomeAccounts === null) {
+      if (entityType === "catalog_item" && incomeAccountHome === "workbench" && incomeAccounts === null) {
         try {
           const accountsRes = await runAction<{ data: RemoteIncomeAccount[] }>({
             request: () => fetchWithAuth(accountingPath(provider, "/income-accounts")),
@@ -293,6 +335,13 @@ export default function AccountingMappingWorkbench({
   function handleSyncFailure(id: string, err: unknown) {
     if (err instanceof ActionError && err.status !== 401) {
       setRowError((prev) => ({ ...prev, [id]: err.message }));
+      // Only a genuinely useful remoteName offers the "link it" flow — a
+      // duplicate_name on the UPDATE path carries no `details` (its message
+      // already tells the operator to rename), so there is nothing to seed.
+      const remoteName = (err.body as { details?: { remoteName?: unknown } } | undefined)?.details?.remoteName;
+      if (err.code === "duplicate_name" && typeof remoteName === "string" && remoteName) {
+        setSearchSeed((prev) => ({ ...prev, [id]: seedSearchTerm(remoteName) }));
+      }
     } else {
       handleActionError(err, t("accountingMapping.failedToSyncEntity", { provider: providerName }));
     }
@@ -321,6 +370,12 @@ export default function AccountingMappingWorkbench({
     const id = p.breezeEntityId;
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
+    setSearchSeed((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     // The PUT only RECORDS the decision — nothing reaches QuickBooks until a
     // sync runs. Operators read the saved row as "done" and left ~10 confirmed
     // customers unsynced on prod (paper cut #1), so push it straight away and
@@ -374,6 +429,12 @@ export default function AccountingMappingWorkbench({
     const id = p.breezeEntityId;
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
+    setSearchSeed((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     try {
       await requestSync(p);
     } catch (err) {
@@ -465,7 +526,7 @@ export default function AccountingMappingWorkbench({
         })}
       </div>
 
-      {entityType === "catalog_item" && (
+      {entityType === "catalog_item" && incomeAccountHome === "workbench" && (
         <div className="rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <label htmlFor={`${provider}-income-account-select`} className="font-medium">
@@ -513,6 +574,15 @@ export default function AccountingMappingWorkbench({
             </p>
           )}
         </div>
+      )}
+
+      {entityType === "catalog_item" && incomeAccountHome === "settings" && !savedIncomeAccountRef && (
+        <p
+          data-testid={`${provider}-income-account-in-settings`}
+          className="rounded-md border bg-muted/30 p-3 text-sm"
+        >
+          {t("accountingMapping.incomeAccountInSettings", { provider: providerName })}
+        </p>
       )}
 
       {proposals && proposals.length === 0 && (
@@ -616,6 +686,7 @@ export default function AccountingMappingWorkbench({
                         setRemoteSelection((prev) => ({ ...prev, [id]: remoteId }))
                       }
                       onUnauthorized={onUnauthorized}
+                      seedTerm={searchSeed[id]}
                     />
                   </td>
                   <td className="space-x-1 py-2">
@@ -663,6 +734,14 @@ export default function AccountingMappingWorkbench({
                         {error}
                       </p>
                     )}
+                    {searchSeed[id] && (
+                      <p
+                        data-testid={`${provider}-mapping-duplicate-hint-${id}`}
+                        className="mt-1 text-xs text-muted-foreground"
+                      >
+                        {t("accountingMapping.duplicateNameHint", { provider: providerName })}
+                      </p>
+                    )}
                   </td>
                 </tr>
               );
@@ -685,6 +764,10 @@ interface PickerProps {
   proposed: { id: string; displayName: string } | null;
   onSelect: (remoteId: string) => void;
   onUnauthorized?: () => void;
+  /** A remote name to seed the search box with (Xero W03 duplicate-name link
+   *  flow) — normalised via `seedSearchTerm` by the caller. Runs the search
+   *  once and, on a single exact normalised-name match, preselects it. */
+  seedTerm?: string;
 }
 
 /**
@@ -703,6 +786,7 @@ function RemoteCandidatePicker({
   proposed,
   onSelect,
   onUnauthorized,
+  seedTerm,
 }: PickerProps) {
   const { t } = useTranslation("integrations");
   const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
@@ -710,6 +794,21 @@ function RemoteCandidatePicker({
   const [term, setTerm] = useState("");
   const [candidates, setCandidates] = useState<RemoteCandidate[] | null>(null);
   const [searching, setSearching] = useState(false);
+
+  // The parent passes a fresh `onSelect` arrow every render, and a preselect
+  // itself updates parent state — depending on either from the search effect
+  // would re-run the search on every re-render (a request loop for a seeded
+  // search, and a refetch on every ordinary pick for every provider). Read
+  // both through a ref instead; only `seedTerm` drives the effect.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const appliedSeed = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (seedTerm) setTerm(seedTerm);
+  }, [seedTerm]);
 
   useEffect(() => {
     const q = term.trim();
@@ -732,6 +831,16 @@ function RemoteCandidatePicker({
             onUnauthorized,
           });
           if (!cancelled) setCandidates(res.data);
+          // Seeded exact-match preselect (Xero W03 duplicate-name link flow):
+          // fires at most once per seed, only for the search that seed itself
+          // triggered (q === the seed we sent), and only when exactly one
+          // candidate's displayName normalises to the same value.
+          if (!cancelled && seedTerm && q === seedTerm.trim() && appliedSeed.current !== seedTerm) {
+            appliedSeed.current = seedTerm;
+            const wanted = normalizeName(seedTerm);
+            const exact = res.data.filter((c) => normalizeName(c.displayName) === wanted);
+            if (exact.length === 1 && exact[0]!.id !== valueRef.current) onSelectRef.current(exact[0]!.id);
+          }
         } catch (err) {
           // runAction has already toasted anything but a 401; keep the row
           // usable (the suggested option is still selectable) instead of
@@ -747,25 +856,31 @@ function RemoteCandidatePicker({
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [term, entityType, onUnauthorized, stableT, provider, providerName]);
+    // `onSelect` and `value` are deliberately absent — read via ref above.
+  }, [term, entityType, onUnauthorized, stableT, provider, providerName, seedTerm]);
 
   // Suggested match first, then search hits, de-duplicated by remote id. The
   // currently selected id is always present as an option even when it is in
   // neither list (a stale suggestion, or a search that has since been cleared),
   // so the controlled <select> never points at an option that doesn't exist.
-  const options: { id: string; label: string }[] = [];
+  const options: { id: string; label: string; archived: boolean }[] = [];
   const seen = new Set<string>();
+  // Live candidates before archived ones (Xero W03: archived remote records
+  // are still valid link targets, but shouldn't crowd out active matches).
+  const ordered = [...(candidates ?? [])].sort((a, b) => Number(!!a.archived) - Number(!!b.archived));
   for (const candidate of [
     ...(proposed ? [{ id: proposed.id, displayName: proposed.displayName }] : []),
-    ...(candidates ?? []),
+    ...ordered,
   ]) {
     if (seen.has(candidate.id)) continue;
     seen.add(candidate.id);
     const suffix = "sku" in candidate && candidate.sku ? ` (${candidate.sku})`
       : "email" in candidate && candidate.email ? ` (${candidate.email})` : "";
-    options.push({ id: candidate.id, label: `${candidate.displayName}${suffix}` });
+    const isArchived = "archived" in candidate && !!candidate.archived;
+    const archivedSuffix = isArchived ? ` · ${t("accountingMapping.archived")}` : "";
+    options.push({ id: candidate.id, label: `${candidate.displayName}${suffix}${archivedSuffix}`, archived: isArchived });
   }
-  if (value && !seen.has(value)) options.unshift({ id: value, label: value });
+  if (value && !seen.has(value)) options.unshift({ id: value, label: value, archived: false });
 
   return (
     <div className="space-y-1">
@@ -788,7 +903,11 @@ function RemoteCandidatePicker({
       >
         <option value="">—</option>
         {options.map((option) => (
-          <option key={option.id} value={option.id}>
+          <option
+            key={option.id}
+            value={option.id}
+            data-testid={option.archived ? `${provider}-candidate-archived-${option.id}` : undefined}
+          >
             {option.label}
           </option>
         ))}

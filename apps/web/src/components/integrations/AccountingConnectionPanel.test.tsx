@@ -1013,4 +1013,34 @@ describe("Xero W02 panel behaviour", () => {
     expect(screen.queryByTestId("quickbooks-settings-step")).toBeNull();
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/quickbooks/settings/options");
   });
+
+  // Xero W03b: the settings step owns the income account when
+  // features.settingsOptions is true — the workbench must not show its own picker.
+  it("renders the workbench without xero-income-account-select when the settings step owns the income account", async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url === "/accounting/xero") {
+        return jsonResponse(xeroStatus({
+          features: { tenantSelection: true, settingsOptions: true },
+          capabilities: { connect: true, mapping: true, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false },
+        }));
+      }
+      if (url === "/accounting/xero/settings/options") {
+        return jsonResponse({ data: { organisation: { name: "Acme", isDemoCompany: false }, incomeAccounts: [], taxRates: [], bankAccounts: [] } });
+      }
+      if (url === "/accounting/xero/owed-operations") return jsonResponse({ count: 0, data: [] });
+      return jsonResponse({}, 404);
+    });
+    render(<AccountingConnectionPanel provider="xero" />);
+    await screen.findByTestId("xero-mapping-workbench");
+    fireEvent.click(screen.getByTestId("xero-mapping-tab-items"));
+    expect(screen.queryByTestId("xero-income-account-select")).toBeNull();
+  });
+
+  it("QuickBooks (no features) still shows its own income-account picker in the workbench", async () => {
+    mockStatus("/accounting/quickbooks", connected);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await screen.findByTestId("quickbooks-mapping-workbench");
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    expect(screen.getByTestId("quickbooks-income-account-select")).toBeInTheDocument();
+  });
 });

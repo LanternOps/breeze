@@ -979,6 +979,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
           provider={provider}
           onUnauthorized={onUnauthorized}
           defaultIncomeAccountRef={status.defaultIncomeAccountRef ?? null}
+          incomeAccountHome={status?.features?.settingsOptions ? "settings" : "workbench"}
           onSettingsChanged={(settings) =>
             setStatus((prev) =>
               prev ? { ...prev, defaultIncomeAccountRef: settings.defaultIncomeAccountRef } : prev,
