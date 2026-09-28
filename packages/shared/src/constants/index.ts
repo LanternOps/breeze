@@ -171,3 +171,6 @@ export * from './ticketAttachments';
 
 // Hardware & RAID monitoring (W01 #6856)
 export * from './hardwareHealth';
+
+// Software-install time budgets, mirrored from the Go agent (#3578)
+export * from './softwareInstallTimeouts';

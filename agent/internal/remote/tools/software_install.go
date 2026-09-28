@@ -62,9 +62,46 @@ var (
 
 var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
+// In-flight stages reported through a ProgressReporter (#3578). The server
+// records the latest one on the command row so a long install stops reading as
+// an opaque "Pending". Must match COMMAND_PROGRESS_STAGES in
+// apps/api/src/services/commandProgress.ts, which only ever advances a command
+// along that list — report stages in this order.
+const (
+	ProgressStageDownloading = "downloading"
+	ProgressStageInstalling  = "installing"
+)
+
+// ProgressReporter receives a stage the moment it BEGINS. It must not block:
+// progress is advisory, and a slow or lost report must never delay or fail the
+// install. A nil reporter is valid and reports nothing.
+type ProgressReporter func(stage string)
+
+func (r ProgressReporter) report(stage string) {
+	if r != nil {
+		r(stage)
+	}
+}
+
+// Download and installer seams. Vars (not direct calls) solely so tests can
+// observe stage ordering without a network or a real installer.
+var (
+	downloadFileFn     = downloadFile
+	executeInstallerFn = executeInstaller
+)
+
 // InstallSoftware downloads a package from a presigned URL, verifies its checksum,
 // and executes it with the provided silent install arguments.
-func InstallSoftware(payload map[string]any) (result CommandResult) {
+func InstallSoftware(payload map[string]any) CommandResult {
+	return InstallSoftwareWithProgress(payload, nil)
+}
+
+// InstallSoftwareWithProgress is InstallSoftware plus in-flight stage reports:
+// ProgressStageDownloading just before the package download starts and
+// ProgressStageInstalling just before the installer runs (package-manager
+// installs report only ProgressStageInstalling — winget/brew download
+// internally). A payload refused before either stage reports nothing.
+func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReporter) (result CommandResult) {
 	startTime := time.Now()
 	// Stamp StartedAt on every return path so the server can record the
 	// real start instead of reconstructing it from durationMs.
@@ -73,6 +110,7 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 	}()
 
 	if _, ok := payload["installMethod"].(map[string]any); ok {
+		progress.report(ProgressStageInstalling)
 		return installViaManager(payload, defaultManagerDeps())
 	}
 
@@ -157,7 +195,8 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 
 	localPath := filepath.Join(tempDir, filepath.Base(fileName))
 
-	if err := downloadFile(client, downloadUrl, localPath); err != nil {
+	progress.report(ProgressStageDownloading)
+	if err := downloadFileFn(client, downloadUrl, localPath); err != nil {
 		// safeDownloadError, never %w: net/http wraps every transport failure
 		// in *url.Error, whose message repeats the full request URL — and a
 		// managed software URL is typically presigned, carrying a capability
@@ -183,7 +222,8 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 	}
 
 	// Execute installer
-	exitCode, output, descendantsPending, err := executeInstaller(localPath, fileType, silentInstallArgs, successExitCodes)
+	progress.report(ProgressStageInstalling)
+	exitCode, output, descendantsPending, err := executeInstallerFn(localPath, fileType, silentInstallArgs, successExitCodes)
 	output, outputTruncated := sanitizeInstallerOutput(output)
 	if err != nil {
 		errMsg := err.Error()

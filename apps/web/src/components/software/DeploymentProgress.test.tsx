@@ -457,3 +457,83 @@ describe("DeploymentProgress — package manager unavailable (#3604)", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("DeploymentProgress — in-flight installs (#3578)", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+  const inFlight = (id: string, extra: Record<string, unknown>) => ({
+    ...RESULT_QUEUED_OFFLINE,
+    id,
+    deviceId: `device-${id}`,
+    hostname: `HOST-${id}`,
+    queuedOffline: false,
+    ...extra,
+  });
+
+  it("shows the agent's stage and how long it has been in it instead of a bare Pending", async () => {
+    routeFetch({
+      detail: detailPayload("in_progress", { pending: 3, total: 3 }),
+      results: {
+        data: [
+          inFlight("a", { sentAt: minutesAgo(9), agentStage: null, agentStageAt: null }),
+          inFlight("b", { sentAt: minutesAgo(9), agentStage: "downloading", agentStageAt: minutesAgo(3) }),
+          inFlight("c", { sentAt: minutesAgo(20), agentStage: "installing", agentStageAt: minutesAgo(12) }),
+        ],
+        total: 3,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    const rowA = screen.getByTestId("deployment-result-row-a");
+    expect(within(rowA).getByText("Sent to agent")).toBeInTheDocument();
+    expect(within(rowA).getByTestId("deployment-result-elapsed-a")).toHaveTextContent("for 9 minutes");
+
+    const rowB = screen.getByTestId("deployment-result-row-b");
+    expect(within(rowB).getByText("Downloading")).toBeInTheDocument();
+    expect(within(rowB).getByTestId("deployment-result-elapsed-b")).toHaveTextContent("for 3 minutes");
+
+    const rowC = screen.getByTestId("deployment-result-row-c");
+    expect(within(rowC).getByText("Installing")).toBeInTheDocument();
+    expect(within(rowC).getByTestId("deployment-result-elapsed-c")).toHaveTextContent("for 12 minutes");
+
+    // None of them has been quiet past the agent's own ceiling.
+    expect(screen.queryByTestId(/^deployment-result-silent-/)).not.toBeInTheDocument();
+  });
+
+  it("warns when the agent has been quiet longer than it allows itself", async () => {
+    routeFetch({
+      detail: detailPayload("in_progress", { pending: 1, total: 1 }),
+      results: {
+        data: [inFlight("d", { sentAt: minutesAgo(25), agentStage: "downloading", agentStageAt: minutesAgo(18) })],
+        total: 1,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    const hint = screen.getByTestId("deployment-result-silent-d");
+    expect(hint).toHaveTextContent("No update from the agent for 18 minutes");
+    // Quotes the server's timeout so the operator knows what happens next.
+    expect(hint).toHaveTextContent("55 minutes");
+  });
+
+  it("keeps the queued-offline and terminal rows unchanged", async () => {
+    routeFetch({
+      detail: detailPayload("in_progress", { pending: 1, completed: 1, total: 2 }),
+      results: { data: [RESULT_COMPLETED, RESULT_QUEUED_OFFLINE], total: 2 },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    expect(screen.getByText("Queued — device offline")).toBeInTheDocument();
+    expect(screen.queryByTestId(/^deployment-result-elapsed-/)).not.toBeInTheDocument();
+  });
+});

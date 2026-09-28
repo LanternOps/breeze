@@ -1,3 +1,4 @@
+import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -92,7 +93,9 @@ const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 // ceilings (15 min download + 30 min install,
 // agent/internal/remote/tools/software_install.go:22-26), so the server only
 // declares a timeout after the agent's ceilings have provably lapsed.
-export const SOFTWARE_INSTALL_TIMEOUT_MS = 55 * 60 * 1000;
+// Lives in @breeze/shared (#3578) so the web deployment view's "no update from
+// the agent" hint quotes the same number this reaper enforces.
+export const SOFTWARE_INSTALL_TIMEOUT_MS = SOFTWARE_INSTALL_SERVER_TIMEOUT_MS;
 // #5128: the old Tier 2 constant (a flat 7-day expiry for an install queued
 // against an offline device) is gone. `device_commands.deliver_by` is the one
 // delivery deadline now, and `reapStaleDeviceCommands` is its only owner.

@@ -693,6 +693,14 @@ export const deviceCommands = pgTable('device_commands', {
   // clock). NULL = legacy rule (execution timeout measured from created_at).
   // See services/commandOfflinePolicy.ts and jobs/staleCommandReaper.ts.
   deliverBy: timestamp('deliver_by', { withTimezone: true }),
+  // #3578 -- the last in-flight stage the agent reported for this command over
+  // the `command_progress` WS frame (services/commandProgress.ts), and when it
+  // reported it. NULL on every row from an agent that predates the frame, and
+  // until the first report. Advisory only: nothing gates on it -- terminal
+  // state is still owned by `status`. See
+  // 2026-11-08-113300-device-commands-progress-stage.sql.
+  progressStage: varchar('progress_stage', { length: 32 }),
+  progressAt: timestamp('progress_at', { withTimezone: true }),
   // #5128 -- the device's org at enqueue. PROVENANCE, not tenancy: compared at
   // claim time to cancel rows whose device has since moved org. Deliberately
   // NOT named org_id so the RLS/cascade auto-discovery keeps device_commands

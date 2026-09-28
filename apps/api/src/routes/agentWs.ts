@@ -41,6 +41,7 @@ import {
   isLegacyBackupTimeoutResult,
   tryParseBackupResultPayload,
 } from '../services/backupProgress';
+import { applyCommandProgress } from '../services/commandProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
@@ -117,7 +118,15 @@ import { checkAgentWsMessageBudget } from '../services/agentWsMessageBudget';
 import { beginAgentUpdateStatusWrite, finishAgentUpdateStatusWrite } from '../services/agentUpdateStatusCoalescer';
 import { sniffCommandId, sniffTerminalMessageType } from '../services/agentWsTerminalMessageSniff';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
-export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async', 'backup_queue_async'] as const;
+export const AGENT_WS_CAPABILITIES = [
+  'terminal_output_base64',
+  'backup_run_async',
+  'backup_queue_async',
+  // #3578: agents send `command_progress` frames only when this is advertised.
+  // Literal (not the imported constant) so the tuple stays `as const`; the
+  // agentWs test pins it to COMMAND_PROGRESS_CAPABILITY.
+  'command_progress',
+] as const;
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -912,11 +921,23 @@ const revocationLeaseRenewSchema = z.object({
   syncNonce: z.string().min(1).max(64).optional(),
 });
 
+// #3578: in-flight stage for a command the agent is executing (agent side:
+// websocket.Client.SendCommandProgress). Sent only to servers advertising the
+// `command_progress` capability. `stage` is loose here on purpose — an agent
+// newer than this server may know stages this server does not, and that must
+// be a quiet drop in applyCommandProgress, not an INVALID_MESSAGE error frame.
+const commandProgressMessageSchema = z.object({
+  type: z.literal('command_progress'),
+  commandId: z.string().max(128),
+  stage: z.string().max(32),
+});
+
 const agentMessageSchema = z.discriminatedUnion('type', [
   commandResultSchema,
   heartbeatMessageSchema,
   terminalOutputSchema,
-  backupProgressMessageSchema
+  backupProgressMessageSchema,
+  commandProgressMessageSchema,
 ]);
 
 // Command types sent to agent
@@ -3611,6 +3632,42 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               }
             });
             // Fire-and-forget: no ack expected by the agent for progress pings.
+            break;
+          }
+
+          case 'command_progress': {
+            // Same delivery-epoch fence as command_result: a dying socket must
+            // not speak for the live connection.
+            if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+              console.debug(
+                `[AgentWs] Dropping command_progress ${parsed.data.commandId} from superseded socket for agent ${agentId}`
+              );
+              break;
+            }
+            const progressMessage = parsed.data as z.infer<typeof commandProgressMessageSchema>;
+            // Advisory and fire-and-forget (no ack): a lost stage costs the UI
+            // a label, never the command. A failure is logged and swallowed so
+            // it can never surface as an error frame or break the socket loop.
+            try {
+              const applied = await applyCommandProgress({
+                // The AUTHENTICATED device — never anything the agent sent.
+                deviceId: authenticatedAgent.deviceId,
+                commandId: progressMessage.commandId,
+                stage: progressMessage.stage,
+              });
+              if (!applied.applied) {
+                // Routine: the terminal result won the race, a duplicate or
+                // out-of-order frame, or a stage this server predates.
+                console.debug(
+                  `[AgentWs] Dropping command_progress for ${progressMessage.commandId} from agent ${agentId}: reason=${applied.reason}`
+                );
+              }
+            } catch (err) {
+              console.warn(
+                `[AgentWs] Failed to record command_progress for ${progressMessage.commandId} from agent ${agentId}:`,
+                err instanceof Error ? err.message : err,
+              );
+            }
             break;
           }
 
