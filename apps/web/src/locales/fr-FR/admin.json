@@ -639,6 +639,7 @@
       "session_consent_blocked_unanswered": "Session à distance bloquée : demande de consentement sans réponse",
       "session_consent_blocked_unavailable": "Session à distance bloquée : demande de consentement indisponible",
       "session_consent_bypassed": "Session à distance démarrée sans réponse à la demande de consentement",
+      "screen_access_consent_blocked": "Accès à l'écran bloqué : l'appareil exige le consentement de l'utilisateur",
       "device.wake_on_lan": "Wake-on-LAN envoyé",
       "device.create": "Appareil ajouté",
       "device.update": "Appareil mis à jour",

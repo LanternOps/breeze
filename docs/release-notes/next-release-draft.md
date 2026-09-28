@@ -67,3 +67,16 @@ Last release: **v0.118.0** (2026-09-27).
 - The policy editor's help text for *If no one can respond* now lists every
   case it covers: no one signed in, the consent prompt can't be shown, or the
   signed-in user doesn't answer within 30 seconds.
+- **AI screen tools and device diagnose honour the consent policy.** On a device
+  whose resolved remote access policy is *Require consent*, the AI tools
+  `take_screenshot`, `analyze_screen` and `computer_control` and
+  `POST /devices/:id/diagnose` are refused before anything is sent to the
+  device: the tools return `{ code: 'CONSENT_REQUIRED_SCREEN_ACCESS_UNAVAILABLE' }`
+  to the AI, the route returns `409` with the same code. These one-shot
+  captures cannot show the consent prompt yet; use the remote desktop viewer,
+  which asks. An unreadable prompt policy refuses with
+  `REMOTE_PROMPT_POLICY_UNAVAILABLE` (`503` on the route). Each refusal is
+  audited as `screen_access_consent_blocked` (details: `surface`, `reason`
+  `prompt_unsupported` or `policy_unavailable`). This includes the on-device
+  Helper chat on consent-mode devices. Notify and off modes are unchanged.
+  Terminal and file transfer are not covered by the consent policy.

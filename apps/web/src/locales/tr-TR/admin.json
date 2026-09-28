@@ -639,6 +639,7 @@
       "session_consent_blocked_unanswered": "Uzak oturum engellendi: onay istemi yanıtlanmadı",
       "session_consent_blocked_unavailable": "Uzak oturum engellendi: onay istemi kullanılamıyor",
       "session_consent_bypassed": "Uzak oturum, onay istemine yanıt verilmeden başlatıldı",
+      "screen_access_consent_blocked": "Ekran erişimi engellendi: cihaz kullanıcı onayı gerektiriyor",
       "device.wake_on_lan": "Wake-on-LAN gönderildi",
       "device.create": "Cihaz eklendi",
       "device.update": "Cihaz güncellendi",
