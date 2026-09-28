@@ -139,3 +139,24 @@ func TestLive_WholeMachineShadowRootIsWalkable(t *testing.T) {
 	}
 	t.Logf("walked %d top-level entries through %s", len(files), rewritten[0])
 }
+
+// Review minor: `C:foo` is drive-RELATIVE (relative to C:'s current
+// directory), not `C:\foo`. Concatenating it onto a device root would yield
+// `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7foo` — a different device
+// name. It must be left unmapped (read live and reported) instead.
+func TestRewritePathsForVSS_DriveRelativePathIsNotRewritten(t *testing.T) {
+	const dev = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7`
+	shadowPaths := map[string]string{"C:": dev}
+	paths := []string{`C:foo\bar`, `C:\rooted`, `C:`}
+
+	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths, noStagingIdx)
+	if rewritten[0] != `C:foo\bar` {
+		t.Errorf("drive-relative path rewritten to %q, want it left as-is", rewritten[0])
+	}
+	if len(unmapped) != 1 || unmapped[0] != 0 {
+		t.Errorf("unmapped = %v, want [0] (the drive-relative path)", unmapped)
+	}
+	if rewritten[1] != dev+`\rooted` || rewritten[2] != dev {
+		t.Errorf("rooted paths = %q, %q; want them rewritten as before", rewritten[1], rewritten[2])
+	}
+}

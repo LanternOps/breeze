@@ -2084,6 +2084,13 @@ func rewritePathsForVSS(paths []string, shadowPaths map[string]string, stagingId
 	for i, p := range paths {
 		vol := filepath.VolumeName(p)
 		shadow, ok := shadowPaths[vol]
+		// A drive-relative path (`C:foo`, relative to C:'s current
+		// directory) has no separator after the volume; appending it to the
+		// device root would name a different device. Leave it live and
+		// reported, like any other path with no shadow root.
+		if rest := p[len(vol):]; rest != "" && rest[0] != '\\' && rest[0] != '/' {
+			ok = false
+		}
 		if !ok || i == stagingIdx {
 			rewritten[i] = p // fallback: use original path
 			unmapped = append(unmapped, i)
