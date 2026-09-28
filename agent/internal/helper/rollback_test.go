@@ -289,18 +289,20 @@ func containsPID(pids []int, pid int) bool {
 // The idle gate before an update covers only tracked sessions, so a helper in
 // an untracked session can be mid-chat. The rollback must not kill a live
 // Assist conversation to free the exe: it leaves that holder running and keeps
-// the backup (the logged, safe fallback).
+// the backup (the logged, safe fallback). Since #7113 the pre-update gate
+// covers untracked sessions too, so the chat here starts during the install
+// (a helper relaunched by msiexec's Restart Manager, then used).
 func TestRollbackDoesNotStopHolderWithActiveChat(t *testing.T) {
 	h := newRollbackHarness(t, "1")
 	installPackageFunc = func(_, binaryPath, _ string) error {
+		h.procs.procs = append(h.procs.procs, helperInstance{PID: 4242, SessionKey: "7"})
+		writeSessionStatus(t, h.mgr.baseDir, "7", "pid: 0\nchat_active: true\nlast_activity: "+
+			time.Now().UTC().Format(time.RFC3339)+"\n")
 		if err := os.WriteFile(binaryPath, []byte("0.114.0-partial"), 0755); err != nil {
 			return err
 		}
 		return errors.New("msiexec: exit status 1603")
 	}
-	h.procs.procs = append(h.procs.procs, helperInstance{PID: 4242, SessionKey: "7"})
-	writeSessionStatus(t, h.mgr.baseDir, "7", "pid: 0\nchat_active: true\nlast_activity: "+
-		time.Now().UTC().Format(time.RFC3339)+"\n")
 
 	h.mgr.CheckUpdate("0.114.0")
 	h.mgr.mu.Lock()
