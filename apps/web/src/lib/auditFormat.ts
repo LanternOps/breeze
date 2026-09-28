@@ -108,7 +108,37 @@ const ACTION_DISPLAY: Record<string, string> = {
   'automation.create': 'Created automation',
   'automation.update': 'Updated automation',
   'automation.delete': 'Deleted automation',
+
+  // Verb templates for catch-all HTTP audit rows (`api.<verb>.<path>`, #3991).
+  // `{target}` is the path with ids stripped - see `formatFallbackAction`.
+  'api.fallback.post': 'Submitted {target}',
+  'api.fallback.put': 'Updated {target}',
+  'api.fallback.patch': 'Updated {target}',
+  'api.fallback.delete': 'Deleted {target}',
 };
+
+// The API's catch-all audit middleware names rows `api.<verb>.<seg>.<seg>`
+// (see buildFallbackAction in apps/api/src/index.ts), with `:id` / `:n`
+// standing in for UUIDs and numeric ids. Render those as an operation instead
+// of leaking the HTTP verb and the route template.
+const FALLBACK_ACTION_RE = /^api\.(post|put|patch|delete)\.(.+)$/;
+
+function formatFallbackAction(
+  action: string,
+  labels?: Record<string, string>,
+): string | null {
+  const match = FALLBACK_ACTION_RE.exec(action);
+  if (!match) return null;
+  const [, verb, path] = match;
+  const target = path
+    .split('.')
+    .filter((seg) => seg && seg !== ':id' && seg !== ':n')
+    .map((seg) => seg.replace(/[-_]/g, ' '))
+    .join(' \u203a ');
+  const template = labels?.[`api.fallback.${verb}`] ?? ACTION_DISPLAY[`api.fallback.${verb}`];
+  if (!target || !template) return null;
+  return template.replace('{target}', target);
+}
 
 // Generic prettifier for codes that aren't in the map.
 // Examples:
@@ -137,7 +167,12 @@ export function formatAuditAction(
   labels?: Record<string, string>,
 ): string {
   if (!action) return '';
-  return labels?.[action] ?? ACTION_DISPLAY[action] ?? prettify(action);
+  return (
+    labels?.[action] ??
+    ACTION_DISPLAY[action] ??
+    formatFallbackAction(action, labels) ??
+    prettify(action)
+  );
 }
 
 /**
