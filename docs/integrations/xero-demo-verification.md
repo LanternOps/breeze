@@ -27,6 +27,9 @@ Spec: `docs/superpowers/specs/billing/2026-09-26-xero-accounting-integration-des
 No environment may set `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` /
 `XERO_REDIRECT_URI` until these pass.
 
+- **W03b (wave #7170): do not merge until X14 + X7 (W02c) and **X16** (section
+  3) pass — X16 gates the mapping/customerImport capability flip.**
+
 ---
 
 ## 0. Setup
@@ -116,6 +119,55 @@ apps" means Xero → Settings → Connected apps for that organisation.
 | X18 | | |
 | X19 | | |
 
+## 3. W03 checklist — contacts, items, import
+
+Run on a `worktree-stack` of the W03b branch **with Task 10's capability flip applied locally** (the flip is committed only after X16 passes). Connected to the Demo Company (section 2 done). Record each result in the table below the checklist.
+
+| # | Step | Expected |
+|---|---|---|
+| X16 | Items → a catalog item with an income account set → **Create new** | An item appears in Xero → Products and services. **If the sync fails with "did not grant Breeze access", STOP: the pinned scopes cannot write Items (refinement 1). Do not merge W03b; escalate.** The flip is the separate last commit on the W03b branch; if X16 fails, drop that commit (W03b then ships web + server fixes with Xero still connect-only) and escalate the scope choice (`accounting.settings` vs contacts-only). |
+| X17 | Customers → an org → **Create new**; then in Xero open the new contact | "Contact Code" shows `breeze:<orgId>`. Time `GET Contacts?where=ContactNumber=="breeze:<orgId>"&includeArchived=true` in the API log: under 2 s |
+| X18 | Create a Xero contact named exactly like a second, unmapped org; **Create new** for that org | Row shows "Xero already has a customer named …"; the row search is prefilled and the contact preselected; **Confirm match** links it. Copy the raw Xero message into Results |
+| X19 | In Xero, set another contact's Contact Code to `breeze:<orgId of a third org>` via the API (Postman), then **Create new** for that org | No second contact is created; the existing one is adopted and updated. Record the raw duplicate-ContactNumber message if Xero returned one |
+| X20 | Create a Xero item with Code = a catalog item's SKU (same name, too); **Create new** for that catalog item | A new item with code `<sku-slug>-<10 hex>` is created; the MSP's item is untouched (it is offered as an exact-SKU suggestion instead). Rename the catalog item and **Sync now** after unlinking and choosing **Create new** again: the same Xero item is adopted, not duplicated. Record Xero's duplicate-code message text if you can provoke one (Postman `PUT` of an existing Code) |
+| X21 | Archive the contact created in X17 in Xero; **Sync now** on the (still linked) org; then unlink it and **Create new** again | Both refused: "…is archived — restore it in Xero, then sync again". Record whether `POST {ContactStatus:'ACTIVE'}` via Postman un-archives it, and whether Xero accepts an update to an archived contact at all |
+| X22 | Edit a linked item's price in Breeze → **Sync now**; repeat for (a) an MSP-created item that has a purchase side (PurchaseDetails with a cost/account) and (b) a tracked-inventory item linked via Confirm match | Price changes; Code unchanged; (a) the item's purchase details are unchanged after the sync (`POST Items/{id}` without PurchaseDetails keeps the purchase side); (b) Xero accepts the update for a tracked-inventory item, or record the exact refusal text. Record whether a POST without `Code` would be accepted (Postman) |
+| X23 | Replay the same `PUT /Contacts` body twice within 60 s with the same `Idempotency-Key` (Postman, copying Breeze's key from the API log); then confirm an update `POST` from Breeze carries no `Idempotency-Key` header | One contact; the second response is a replay; updates are unkeyed. If you can provoke a Xero 5xx, record whether a same-key retry replays it (refinement 9's known limitation) |
+| X24 | Mapping row search: type 2 characters of a contact's name | The contact is offered (`searchTerm`) |
+| X25 | Import tab → Load | Customers and never-invoiced contacts listed; a supplier-only contact (one bill, no invoices) is hidden behind "Show all contacts (1 supplier-only hidden)"; an archived contact shows the Archived badge |
+| X26 | Import one contact | An org + site exist; the org's external link reads `system = xero`; the mapping workbench shows the org as linked on the next load |
+| X27 | Set `acct-rl:xero:day-remaining:<connectionId>` in Redis to 10% of `XERO_DAILY_CALL_LIMIT`, then Import → Load | 429 toast: "…daily API allowance … nearly used up…"; clear the key afterwards |
+| X28 | Xero connection with the income account set in the settings step | The workbench shows no income-account picker; **Create new** on items is enabled |
+| X29 | A contact with an address whose country is written out ("United Kingdom") and a phone with area code | Sync succeeds; Breeze shows the phone as `<country> <area> <number>` |
+| X30 | `UpdatedDateUTC` after a sync | The mapping row's remote version is an ISO timestamp (psql: `select remote_sync_token from accounting_entity_mappings where remote_entity_id = '<ContactID>'`) |
+| X31 | Delete a linked item in Xero (unused on invoices), then **Sync now** on its catalog item | Refused, terminal: "…no longer exists — unlink it and map it again"; no new item is created |
+| X32 | Connect to a Demo Company whose base currency differs from an org's currency (or set an org's currency to a different one), then **Create new** for that org; also for a catalog item | Refused with `currency_mismatch`. Review the copy for contacts: it says Xero fixes a record's currency when it is created and never lets it change — accurate for items (base-currency only); for contacts confirm against Xero's behaviour (a contact's default currency can be set) and record whether the wording should change (W03a ruling P6) |
+| X33 | Items tab: a Xero item that is purchase-only (IsSold off) with a SKU matching a catalog item | It is offered as a normal candidate/suggestion with no Archived badge (Xero items have no archived state); **Confirm match** then **Sync now** makes it sellable and keeps its purchase details |
+
+### W03 Results
+
+| # | Result | Notes / raw Xero text |
+|---|---|---|
+| X16 | | |
+| X17 | | |
+| X18 | | |
+| X19 | | |
+| X20 | | |
+| X21 | | |
+| X22 | | |
+| X23 | | |
+| X24 | | |
+| X25 | | |
+| X26 | | |
+| X27 | | |
+| X28 | | |
+| X29 | | |
+| X30 | | |
+| X31 | | |
+| X32 | | |
+| X33 | | |
+
 ## Change log
 
 - W02 — initial checklist (X1–X19); X14 and X7 block the W02c merge.
+- W03 — contacts, items and import (X16–X33); X16 gates the mapping capability flip.
