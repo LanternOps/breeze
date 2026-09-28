@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -69,6 +70,45 @@ func TestCollectBackupFiles_RecordsSkippedIrregularEntry(t *testing.T) {
 	// otherwise empty and needs its own entry, or a restore never recreates it.
 	if !sawDirEntry {
 		t.Fatal("directory whose only child was skipped must get its own KindDir entry")
+	}
+}
+
+// End-to-end wiring: a run whose walk skips a reparse point completes green
+// with the skip named on job.Warning and no ErrorCount contribution.
+func TestRunBackupContext_SkippedReparsePointSetsWarningNotErrors(t *testing.T) {
+	root := t.TempDir()
+	createTempFile(t, root, "data.txt", "payload that uploads fine")
+	fifo := filepath.Join(root, "My Music")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("mkfifo unsupported here: %v", err)
+	}
+	orig := skippedReparsePointFor
+	skippedReparsePointFor = func(path string, info os.FileInfo) (skippedReparsePoint, bool) {
+		return skippedReparsePoint{path: path, kind: reparseKindJunction, target: `C:\Users\Public\Music`}, true
+	}
+	t.Cleanup(func() { skippedReparsePointFor = orig })
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   newMockProvider(),
+		Paths:      []string{root},
+		StagingDir: t.TempDir(),
+	})
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("a skipped junction must not downgrade the run, status = %q", job.Status)
+	}
+	if job.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d, want 0", job.ErrorCount)
+	}
+	want := fifo + ` (junction -> C:\Users\Public\Music)`
+	if !strings.Contains(job.Warning, "1 reparse point(s) were not backed up") || !strings.Contains(job.Warning, want) {
+		t.Fatalf("Warning must name the skipped junction, got: %q", job.Warning)
+	}
+	if job.FilesBackedUp != 1 {
+		t.Fatalf("FilesBackedUp = %d, want 1", job.FilesBackedUp)
 	}
 }
 

@@ -885,7 +885,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		log.Warn("backup file scan completed with errors", "error", scanErr.Error())
 	}
 	// Junctions and mount points the walk skipped (#7051). Reported right
-	// after the scan so the Warning is on the job however the run ends.
+	// after a completed scan, so the Warning is on the job however the rest
+	// of the run ends. A run stopped mid-scan (above) produces no snapshot
+	// and reports none.
 	if vssSession != nil {
 		for i := range reparseSkipped.sample {
 			reparseSkipped.sample[i].path = livePathForVSS(reparseSkipped.sample[i].path, vssSession.ShadowPaths)
