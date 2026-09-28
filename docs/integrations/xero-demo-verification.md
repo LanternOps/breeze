@@ -29,6 +29,9 @@ No environment may set `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` /
 
 - **W03b (wave #7170):** do not merge until X14 + X7 (W02c) and **X16**
   (section 3) pass — X16 gates the mapping/customerImport capability flip.
+- **W04b (wave #7171):** do not merge until W02c (X14 + X7) and W03b (X16)
+  are merged and **X32, X34/X35 and X38** (section 4) pass — they gate the
+  `invoicePush` capability flip, which is W04b's last commit.
 
 ---
 
@@ -167,7 +170,50 @@ Run on a `worktree-stack` of the W03b branch **with Task 10's capability flip ap
 | X65 | | |
 | X66 | | |
 
+## 4. W04 checklist — invoice push and void
+
+Run on a `worktree-stack` of the W04b branch **with Task 10's capability flip applied locally** (it is committed only after X32, X34/X35 and X38 pass). Connected to the Demo Company, with sections 2–3 done: the settings step has a revenue account, a taxable tax rate (e.g. 20% VAT on Income) and an exempt one (e.g. No VAT), and at least one org and one catalog item are mapped. Record each result, with Xero's raw text where asked, in the table below.
+
+| # | Step | Expected |
+|---|---|---|
+| X32 | Issue a Breeze invoice (2 lines: one taxable 100.00, one non-taxable 50.00; 20% tax) with **Push mode = manual**, then **Push to Xero** | One AUTHORISED sales invoice in Xero: same number, contact, dates, currency; lines on the chosen revenue account; tax types VAT / No VAT; **Subtotal 150.00, Tax 20.00, Total 170.00**. Card: "Synced". **GATE** — if this fails, stop and record the raw response |
+| X33 | Push mode = auto; issue another invoice, then record a 50.00 payment on it | Invoice appears in Xero without a click. **No** payment appears in Xero, and the payment row shows **no** sync badge (paymentPush is off until W05) |
+| X34 | An invoice whose tax does not split evenly: three taxable lines of 1.00, tax 0.10 at a 3.333% rate typed into the invoice. Also a near-cancelling pair: two taxed lines +100.00 and −99.99 (a credit line) at a rate that leaves tax 0.01 (e.g. 50%); Breeze allocates line tax 100.00 / −99.99, far from Xero's own per-line figure. If Breeze cannot enter a negative line, send the same two lines and TaxAmounts from Postman. | Xero shows line tax 0.04 / 0.03 / 0.03 and Tax 0.10; no "tax adjusted" warning blocks approval. **GATE** (open item 1). Record whether Xero shows a "tax adjusted" note. The pair: record whether Xero accepts the opposite-sign shares and totals Tax 0.01; a refusal is handled like X35's. |
+| X35 | A taxable line of **10 × 0.50** (line total 5.00) at 20% → line tax 1.00, which exceeds the unit price | Accepted with TaxAmount 1.00. **GATE**. If Xero refuses ("TaxAmount specified cannot be greater than the UnitAmount"), set `XERO_SEND_LINE_TAX_AMOUNT = false`, re-run X32–X35, and record the drift result instead. X34's near-cancelling pair is judged under this gate too. |
+| X36 | A line of **1.50 h × 10.95** (Breeze total 16.43). Add a line with **quantity 0** (price 25.00, total 0.00). | Xero shows quantity 1, unit 16.43, description ending "(1.50 × 10.95)"; totals equal Breeze. Separately in Postman, `PUT` a DRAFT with Quantity 1.5 × UnitAmount 10.95 and record Xero's LineAmount (16.42 or 16.43 → its rounding mode). The quantity-0 line is sent as `Quantity: 0`; record whether Xero accepts it and the raw text if not (a refusal would block every invoice with a zero-quantity line). |
+| X37 | API log of X32's push | The first call is `GET Invoices?where=Reference=="breeze:<id>"` and returns 200 (record the time taken). If Xero rejects `==`, record the error and try the documented single `=` |
+| X38 | Create a Xero invoice by hand numbered like the next Breeze invoice (e.g. INV-2026-0042); then issue and push that Breeze invoice. First, in Postman: create a DRAFT with Reference `breeze:lagtest-<n>`, then immediately `GET Invoices?where=Reference=="breeze:lagtest-<n>"`; repeat 5×. | Pushed **without** the number; Xero assigns its own (e.g. INV-0012); the card shows "Xero document INV-0012". **GATE**. Record the raw duplicate-number message. The Reference search finds the new invoice on the first GET every time (record any lag). If the search lags a create, a lost create can be missed by the lookup and the numberless retry can mint a second invoice; the next push then shows `remote_ambiguous` — record the lag as a gate failure. |
+| X39 | In Xero, apply a payment to X32's invoice; then **Void** it in Breeze | Card: "Xero will not void this invoice because a payment is applied to it there — remove or unapply that payment in Xero, then void the invoice again"; no retries in the worker log. Then, in Postman, `POST {Status:'VOIDED'}` on that invoice and record Xero's raw message |
+| X40 | Void an unpaid pushed invoice in Breeze; then void it again (re-enqueue from the worker or repeat the void). Then: create a DRAFT in Postman, point a pushed Breeze invoice's mapping at it (`update accounting_entity_mappings set remote_entity_id = '<DraftInvoiceID>' where …`), and void that Breeze invoice | Xero: VOIDED; the second void makes no write (API log: one GET). The DRAFT ends **DELETED**, not VOIDED (Xero cannot void a draft) |
+| X41 | Postman: `POST /Invoices` (collection URL, no id) with an existing InvoiceNumber and different lines, on a throwaway DRAFT | Record whether Xero edits that invoice (refinement 1). Breeze never does this — it creates with PUT and updates by InvoiceID |
+| X42 | Postman: create an AUTHORISED invoice with Reference `breeze:<id>` for a Breeze invoice that has not been pushed, matching its totals; then push it from Breeze. Then: with Breeze's mapping row set back to `error` and `remote_entity_id` null (psql), void that Breeze invoice | No second invoice: API log shows the lookup GET and a POST resend, no PUT; card "Synced". The void finds the invoice by Reference and voids it; the mapping now holds its InvoiceID (refinement 22) |
+| X43 | A tax-exempt organisation's invoice (tax 0.00, lines flagged taxable) | Every line on the exempt tax type; Tax 0.00 |
+| X44 | Postman: `PUT /Invoices` of an invalid invoice (bad AccountCode) **without** `summarizeErrors` | Record the status code (200 with HasErrors, or 400) — the real default (refinement 13) |
+| X45 | Clear the exempt tax rate in the settings step; push an invoice with a non-taxable line | Card: "Choose a tax rate for non-taxable lines in Integrations → Accounting → Xero, then push again"; API log: **no** Xero call for this push |
+| X46 | Open X32's invoice as the customer-facing PDF (Print → PDF) and as the online invoice link a customer receives (default branding theme) | Record whether "breeze:<id>" is visible to the customer on either (refinement 11). Visible = note it for the spec owner; not a gate |
+
+### W04 Results
+
+| # | Result | Notes / raw Xero text |
+|---|---|---|
+| X32 | | |
+| X33 | | |
+| X34 | | |
+| X35 | | |
+| X36 | | |
+| X37 | | |
+| X38 | | |
+| X39 | | |
+| X40 | | |
+| X41 | | |
+| X42 | | |
+| X43 | | |
+| X44 | | |
+| X45 | | |
+| X46 | | |
+
 ## Change log
 
 - W02 — initial checklist (X1–X19); X14 and X7 block the W02c merge.
 - W03 — contacts, items and import (X16–X31, plus X65–X66, numbered after W05 to avoid colliding with W04 X32–X46 and W05 X47–X64); X16 gates the mapping capability flip.
+- W04 — invoice push and void (X32–X46); X32, X34/X35 and X38 gate the invoicePush capability flip.
