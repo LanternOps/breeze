@@ -319,6 +319,7 @@
     "tabs": {
       "compliance": "Conformité",
       "patches": "Correctifs",
+      "jobs": "Tâches",
       "updateRings": "Anneaux de mise à jour"
     },
     "actions": {
@@ -336,6 +337,7 @@
     "errors": {
       "fetchRings": "Impossible de récupérer les anneaux de mise à jour",
       "fetchPatches": "Impossible de récupérer des correctifs",
+      "fetchJobs": "Échec de la récupération des tâches de correctifs",
       "partnerLevel": "Les approbations des correctifs sont gérées au niveau du partenaire",
       "approvePatches": "Impossible d’approuver les correctifs",
       "approveCountOne": "Impossible d’approuver {{count}} correctif",
@@ -378,6 +380,68 @@
     },
     "truncatedNotice": "Affichage de {{shown}} correctifs sur {{total}}. Les filtres ici ne réduisent que ce qui est déjà chargé ; le reste est donc inaccessible depuis cette vue — utilisez l'API des correctifs pour parcourir le catalogue complet.",
     "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste."
+  },
+  "patchJobsList": {
+    "empty": "Aucune tâche de correctif pour le moment. Les tâches créées par des politiques, des anneaux de mise à jour ou l'assistant IA apparaîtront ici.",
+    "loading": "Chargement des tâches de correctifs...",
+    "columns": {
+      "name": "Tâche",
+      "status": "Statut",
+      "devices": "Appareils",
+      "createdBy": "Créé par",
+      "scheduled": "Planifié",
+      "started": "Démarré",
+      "completed": "Terminé"
+    },
+    "status": {
+      "scheduled": "Planifié",
+      "running": "En cours",
+      "completed": "Terminé",
+      "failed": "Échoué",
+      "cancelled": "Annulé"
+    },
+    "devicesSummary": "{{completed}}/{{total}} terminés",
+    "devicesSummaryWithFailed": "{{completed}}/{{total}} terminés, {{failed}} échoués",
+    "createdBySystem": "Système",
+    "notScheduled": "—",
+    "actions": {
+      "tryAgain": "Réessayer",
+      "previousPage": "Précédent",
+      "nextPage": "Suivant"
+    },
+    "pagination": "Page {{page}} sur {{totalPages}}",
+    "filters": {
+      "allStatuses": "Tous les statuts"
+    }
+  },
+  "patchJobDetail": {
+    "title": "Tâche de correctif",
+    "loading": "Chargement des détails de la tâche...",
+    "notFound": "Cette tâche de correctif est introuvable.",
+    "summary": {
+      "status": "Statut",
+      "source": "Source",
+      "scheduled": "Planifié",
+      "started": "Démarré",
+      "completed": "Terminé",
+      "createdBy": "Créé par"
+    },
+    "resultsTitle": "Résultats par appareil ({{count}})",
+    "resultsEmpty": "Aucun résultat par appareil pour le moment.",
+    "columns": {
+      "device": "Appareil",
+      "patch": "Correctif",
+      "status": "Statut",
+      "started": "Démarré",
+      "completed": "Terminé",
+      "reboot": "Redémarrage"
+    },
+    "rebootRequired": "Requis",
+    "rebootDone": "Terminé",
+    "rebootNotRequired": "—",
+    "errors": {
+      "load": "Échec du chargement de la tâche de correctif"
+    }
   },
   "ringSelector": {
     "label": "Anneau de mise à jour :",

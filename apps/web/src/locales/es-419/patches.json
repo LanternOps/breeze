@@ -319,6 +319,7 @@
     "tabs": {
       "compliance": "Cumplimiento",
       "patches": "Parches",
+      "jobs": "Trabajos",
       "updateRings": "Actualizar anillos"
     },
     "actions": {
@@ -336,6 +337,7 @@
     "errors": {
       "fetchRings": "No se pudieron recuperar los anillos de actualización",
       "fetchPatches": "No se pudieron recuperar los parches",
+      "fetchJobs": "No se pudieron recuperar los trabajos de parches",
       "partnerLevel": "Las aprobaciones de parches se gestionan a nivel de socio",
       "approvePatches": "No se pudieron aprobar los parches",
       "approveCountOne": "No se pudo aprobar el parche {{count}}",
@@ -378,6 +380,68 @@
     },
     "truncatedNotice": "Se muestran {{shown}} de {{total}} parches. Los filtros de aquí solo acotan lo ya cargado, así que el resto no se puede alcanzar desde esta vista: usa la API de parches para recorrer el catálogo completo.",
     "shiftedNotice": "Se muestran {{shown}} de {{total}} parches: el catálogo cambió mientras se cargaba. Vuelve a cargar para ver el resto."
+  },
+  "patchJobsList": {
+    "empty": "Aún no hay trabajos de parches. Los trabajos creados por políticas, anillos de actualización o el asistente de IA aparecerán aquí.",
+    "loading": "Cargando trabajos de parches...",
+    "columns": {
+      "name": "Trabajo",
+      "status": "Estado",
+      "devices": "Dispositivos",
+      "createdBy": "Creado por",
+      "scheduled": "Programado",
+      "started": "Iniciado",
+      "completed": "Completado"
+    },
+    "status": {
+      "scheduled": "Programado",
+      "running": "En curso",
+      "completed": "Completado",
+      "failed": "Fallido",
+      "cancelled": "Cancelado"
+    },
+    "devicesSummary": "{{completed}}/{{total}} completados",
+    "devicesSummaryWithFailed": "{{completed}}/{{total}} completados, {{failed}} fallidos",
+    "createdBySystem": "Sistema",
+    "notScheduled": "—",
+    "actions": {
+      "tryAgain": "Intentar otra vez",
+      "previousPage": "Anterior",
+      "nextPage": "Siguiente"
+    },
+    "pagination": "Página {{page}} de {{totalPages}}",
+    "filters": {
+      "allStatuses": "Todos los estados"
+    }
+  },
+  "patchJobDetail": {
+    "title": "Trabajo de parche",
+    "loading": "Cargando detalles del trabajo...",
+    "notFound": "No se pudo encontrar este trabajo de parche.",
+    "summary": {
+      "status": "Estado",
+      "source": "Origen",
+      "scheduled": "Programado",
+      "started": "Iniciado",
+      "completed": "Completado",
+      "createdBy": "Creado por"
+    },
+    "resultsTitle": "Resultados por dispositivo ({{count}})",
+    "resultsEmpty": "Aún no hay resultados por dispositivo.",
+    "columns": {
+      "device": "Dispositivo",
+      "patch": "Parche",
+      "status": "Estado",
+      "started": "Iniciado",
+      "completed": "Completado",
+      "reboot": "Reinicio"
+    },
+    "rebootRequired": "Requerido",
+    "rebootDone": "Completado",
+    "rebootNotRequired": "—",
+    "errors": {
+      "load": "No se pudo cargar el trabajo de parche"
+    }
   },
   "ringSelector": {
     "label": "Anillo de actualización:",

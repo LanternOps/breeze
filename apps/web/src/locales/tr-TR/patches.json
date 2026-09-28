@@ -319,6 +319,7 @@
     "tabs": {
       "compliance": "Uyumluluk",
       "patches": "Yamalar",
+      "jobs": "İşler",
       "updateRings": "Zilleri Güncelle"
     },
     "actions": {
@@ -336,6 +337,7 @@
     "errors": {
       "fetchRings": "Güncelleme halkaları getirilemedi",
       "fetchPatches": "Yamalar getirilemedi",
+      "fetchJobs": "Yama işleri alınamadı",
       "partnerLevel": "Yama onayları iş ortağı düzeyinde yönetilir",
       "approvePatches": "Yamalar onaylanamadı",
       "approveCountOne": "{{count}} yaması onaylanamadı",
@@ -378,6 +380,68 @@
     },
     "truncatedNotice": "{{total}} yamalardan {{shown}} gösteriliyor. Buradaki filtreler yalnızca önceden yüklenmiş olanları daraltır, dolayısıyla geri kalanlara bu görünümden erişilemez; kataloğun tamamı üzerinde çalışmak için API yamalarını kullanın.",
     "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin."
+  },
+  "patchJobsList": {
+    "empty": "Henüz yama işi yok. Politikalar, güncelleme halkaları veya yapay zeka asistanı tarafından oluşturulan işler burada görünecek.",
+    "loading": "Yama işleri yükleniyor...",
+    "columns": {
+      "name": "İş",
+      "status": "Durum",
+      "devices": "Cihazlar",
+      "createdBy": "Oluşturan",
+      "scheduled": "Planlandı",
+      "started": "Başladı",
+      "completed": "Tamamlandı"
+    },
+    "status": {
+      "scheduled": "Planlandı",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
+    },
+    "devicesSummary": "{{completed}}/{{total}} tamamlandı",
+    "devicesSummaryWithFailed": "{{completed}}/{{total}} tamamlandı, {{failed}} başarısız",
+    "createdBySystem": "Sistem",
+    "notScheduled": "—",
+    "actions": {
+      "tryAgain": "Tekrar dene",
+      "previousPage": "Önceki",
+      "nextPage": "Sonraki"
+    },
+    "pagination": "Sayfa {{page}} / {{totalPages}}",
+    "filters": {
+      "allStatuses": "Tüm durumlar"
+    }
+  },
+  "patchJobDetail": {
+    "title": "Yama işi",
+    "loading": "İş ayrıntıları yükleniyor...",
+    "notFound": "Bu yama işi bulunamadı.",
+    "summary": {
+      "status": "Durum",
+      "source": "Kaynak",
+      "scheduled": "Planlandı",
+      "started": "Başladı",
+      "completed": "Tamamlandı",
+      "createdBy": "Oluşturan"
+    },
+    "resultsTitle": "Cihaz sonuçları ({{count}})",
+    "resultsEmpty": "Henüz cihaz bazlı sonuç yok.",
+    "columns": {
+      "device": "Cihaz",
+      "patch": "Yama",
+      "status": "Durum",
+      "started": "Başladı",
+      "completed": "Tamamlandı",
+      "reboot": "Yeniden başlatma"
+    },
+    "rebootRequired": "Gerekli",
+    "rebootDone": "Tamamlandı",
+    "rebootNotRequired": "—",
+    "errors": {
+      "load": "Yama işi yüklenemedi"
+    }
   },
   "ringSelector": {
     "label": "Güncelleme Zil Sesi:",
