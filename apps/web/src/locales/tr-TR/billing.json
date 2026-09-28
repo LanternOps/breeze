@@ -1949,10 +1949,10 @@
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin.",
-      "inProvider": "{{provider}}'ta",
+      "inProvider": "{{provider}} tarafında",
       "syncingToProvider": "Eşitleniyor…",
       "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",
-      "reverseInProviderToo": "Bu ödemeyi {{provider}}’ta da iptal edin"
+      "reverseInProviderToo": "Bu ödemeyi {{provider}} tarafında da iptal edin"
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",
@@ -2003,11 +2003,11 @@
       "docNumber": "{{provider}} belgesi {{docNumber}}",
       "lastSynced": "Son eşitleme: {{when}}",
       "syncing": "Eşitleniyor…",
-      "push": "{{provider}}'a gönder",
-      "pushed": "Fatura {{provider}}'a gönderildi.",
-      "pushFailed": "Fatura {{provider}}'a gönderilemedi.",
-      "voidedHint": "Bu fatura iptal edildi — {{provider}}'a gönderilecek bir şey yok.",
-      "remoteDeletedHint": "Bu fatura {{provider}}'ta silindi. Yeniden göndermek bir kopya oluşturur — önce {{provider}}'ta çözün."
+      "push": "{{provider}} hizmetine gönder",
+      "pushed": "Fatura {{provider}} hizmetine gönderildi.",
+      "pushFailed": "Fatura {{provider}} hizmetine gönderilemedi.",
+      "voidedHint": "Bu fatura iptal edildi — {{provider}} hizmetine gönderilecek bir şey yok.",
+      "remoteDeletedHint": "Bu fatura {{provider}} tarafında silindi. Yeniden göndermek bir kopya oluşturur — önce {{provider}} tarafında çözün."
     }
   },
   "invoiceDocument": {
@@ -2070,7 +2070,7 @@
       "success": "{{succeeded}} {{verb}}",
       "void": "Geçersiz",
       "voidedVerb": "geçersiz kılındı",
-      "pushToProvider": "{{provider}}'a gönder",
+      "pushToProvider": "{{provider}} hizmetine gönder",
       "providerQueued": "{{enqueued}} kayıt {{provider}} kuyruğunda",
       "providerQueuedPartial": "{{enqueued}} kayıt {{provider}} kuyruğunda, {{skipped}} atlandı",
       "providerQueuedFailed": "{{enqueued}} kayıt {{provider}} kuyruğunda, {{skipped}} atlandı, {{failed}} kuyruğa alınamadı",
