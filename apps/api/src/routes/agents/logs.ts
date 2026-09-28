@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { bodyLimitOnError, reportBodyLimitRejection } from '../../middleware/bodyLimitGate';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -52,6 +52,15 @@ const LOG_BATCH_TOO_LARGE = 'Log batch too large (max 256KB gzipped)';
 // event evidence, but an agent must not place records arbitrarily far into the
 // future. Receipt time remains the authoritative lifecycle/recency clock.
 const MAX_AGENT_LOG_FUTURE_SKEW_MS = 10 * 60 * 1000;
+
+/**
+ * #7067 — `devices.last_log_at` throttle. This route is the hottest ingest
+ * path per device (up to once a minute), so it must not cost a write on every
+ * batch just to record "still shipping". Only move the column when it has
+ * drifted by at least this much — a conditional UPDATE, not a read-then-write,
+ * so it stays race-safe under concurrent requests for the same device.
+ */
+const DEVICE_LAST_LOG_AT_THROTTLE_MS = 5 * 60 * 1000;
 
 /**
  * Remove the two server-authored clamp-provenance keys from redacted agent
@@ -229,6 +238,28 @@ logsRoutes.post(
     }
   } catch (err) {
     console.error(`[AgentLogs] Error batch inserting logs for device ${device.id}:`, err);
+  }
+
+  // #7067 — stamp the device's latest log-ingest time so "heartbeating but no
+  // logs" becomes a queryable condition (isDeviceLogSilent, @breeze/shared)
+  // instead of an absence. Throttled: skip the write entirely when the column
+  // already moved within the last DEVICE_LAST_LOG_AT_THROTTLE_MS, so a
+  // healthy device shipping every ~60s doesn't cost a write per batch.
+  if (inserted > 0) {
+    try {
+      await db
+        .update(devices)
+        .set({ lastLogAt: receivedAt })
+        .where(and(
+          eq(devices.id, device.id),
+          or(
+            isNull(devices.lastLogAt),
+            lt(devices.lastLogAt, new Date(receivedAt.getTime() - DEVICE_LAST_LOG_AT_THROTTLE_MS)),
+          ),
+        ));
+    } catch (err) {
+      console.error(`[AgentLogs] Failed to update last_log_at for device ${device.id}:`, err);
+    }
   }
 
   // Content-free ingest audit (counts only, NO log message contents), written

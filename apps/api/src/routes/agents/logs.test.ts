@@ -14,6 +14,7 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
+    update: vi.fn(),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -25,6 +26,7 @@ vi.mock('../../db/schema', () => ({
     id: 'id',
     agentId: 'agent_id',
     orgId: 'org_id',
+    lastLogAt: 'last_log_at',
   },
   agentLogs: {
     deviceId: 'device_id',
@@ -106,6 +108,13 @@ function mockInsertFailure() {
   return values;
 }
 
+function mockUpdateSuccess() {
+  const where = vi.fn().mockResolvedValue(undefined);
+  const set = vi.fn().mockReturnValue({ where });
+  vi.mocked(db.update).mockReturnValue({ set } as any);
+  return { set, where };
+}
+
 function makeLogEntry(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     timestamp: '2026-05-01T00:00:00.000Z',
@@ -127,6 +136,9 @@ describe('agent logs routes', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/agents', logsRoutes);
+    // Default: the #7067 last_log_at update succeeds silently. Tests that
+    // care about its call shape override this directly.
+    mockUpdateSuccess();
   });
 
   it('clamps excessive future event time and records server-authored provenance', async () => {
@@ -561,6 +573,60 @@ describe('agent logs routes', () => {
 
       expect(res.status).toBe(400);
       expect(values).not.toHaveBeenCalled();
+    });
+  });
+
+  // #7067 — devices.last_log_at throttled conditional update.
+  describe('last_log_at update', () => {
+    it('stamps last_log_at on a successful insert', async () => {
+      mockDeviceLookup(true);
+      mockInsertSuccess();
+      const { set, where } = mockUpdateSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(db.update).toHaveBeenCalledWith(expect.anything());
+      expect(set).toHaveBeenCalledWith({ lastLogAt: expect.any(Date) });
+      expect(where).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not stamp last_log_at when nothing was inserted', async () => {
+      mockDeviceLookup(true);
+      mockInsertFailure();
+      const { set } = mockUpdateSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('swallows a last_log_at update failure without failing the request', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockRejectedValue(new Error('update failed')),
+        }),
+      } as any);
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalled();
     });
   });
 });

@@ -22,6 +22,7 @@ export * from './cron';
 export * from './approvalBatchGrouping';
 export * from './agentOutcome';
 export * from './agentUpdateAttempt';
+export * from './deviceLogSilence';
 export * from './aiToolHandoff';
 export * from './aiToolLabels';
 export * from './scriptSecurityPatterns';

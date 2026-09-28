@@ -1121,6 +1121,8 @@
     "ratedSpeed": "nominal {{speed}}"
   },
   "deviceInfoTab": {
+    "logsSilent": "Bu cihaz çevrimiçi ancak {{since}} tarihinden bu yana günlük göndermedi. Günlük gönderimi devre dışı bırakılmış, başarısız olmuş veya sunucuya ulaşmıyor olabilir — cihazdaki ajan günlük gönderim yapılandırmasını kontrol edin.",
+    "logsSilentNeverShipped": "Bu cihaz çevrimiçi ancak hiç günlük göndermedi. Günlük gönderimi devre dışı bırakılmış, başarısız olmuş veya sunucuya ulaşmıyor olabilir — cihazdaki ajan günlük gönderim yapılandırmasını kontrol edin.",
     "updateStuck": "{{target}} sürümüne ajan güncellemesi takılmış görünüyor: {{since}} tarihinden bu yana {{attempts}} deneme yapıldı ve cihaz hâlâ eski sürümünde. Güncelleyici her heartbeat'te yeniden deniyor; ajan günlüklerini veya hiç günlük göndermiyorsa cihazın kendisini kontrol edin.",
     "updateOfferWithheld": "Bu cihaz için güncelleme teklifleri durduruldu ({{since}} tarihinden beri): aracı sürümünün bu sunucunun sunduğu sürümü kabul ettiği doğrulanamıyor, bu nedenle mevcut sürümünde kalıyor. Sunulan sürümün yükleyicisiyle veya sürümünü bildiren bir aracı sürümüyle kurtarın.",
     "helperInstallIssue": {
@@ -1469,6 +1471,8 @@
       "manual": "Manuel"
     },
     "updateWithheld": "Güncellemeler durduruldu",
+    "logsSilent": "Günlükler sessiz",
+    "logsSilentTooltip": "Bu cihaz çevrimiçi ancak 6 saatten uzun süredir günlük göndermedi. Günlük gönderimi devre dışı bırakılmış, başarısız olmuş veya sunucuya ulaşmıyor olabilir.",
     "updateStuck": "Güncelleme takıldı",
     "updateStuckTooltip": "Bu cihaz bir saatten uzun süredir {{target}} sürümüne ajan güncellemesini tamamlayamadan yeniden deniyor.",
     "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",

@@ -29,7 +29,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatUptime } from "../../lib/utils";
 import { runAction, ActionError } from "../../lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
-import { isAgentUpdateStuck } from "@breeze/shared";
+import { isAgentUpdateStuck, isDeviceLogSilent } from "@breeze/shared";
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -85,6 +85,7 @@ type DeviceInfo = {
   helperInstallIssueSince?: string | null;
   status?: string | null;
   lastSeenAt?: string | null;
+  lastLogAt?: string | null;
   enrolledAt?: string | null;
   lastUser?: string | null;
   uptimeSeconds?: number | null;
@@ -1093,6 +1094,22 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                 : "—",
               attempts: info.updateAttemptCount ?? 1,
             })}
+          </div>
+        ) : null}
+        {info &&
+        isDeviceLogSilent({
+          status: info.status,
+          lastLogAt: info.lastLogAt,
+          enrolledAt: info.enrolledAt,
+        }) ? (
+          <div
+            data-testid="logs-silent"
+            role="status"
+            className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+          >
+            {info.lastLogAt
+              ? t("deviceInfoTab.logsSilent", { since: formatDateTime(info.lastLogAt) })
+              : t("deviceInfoTab.logsSilentNeverShipped")}
           </div>
         ) : null}
         {info?.updateOfferWithheldReason ? (

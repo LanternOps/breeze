@@ -167,3 +167,30 @@ describe('DeviceList — stuck update badge (#4073)', () => {
     expect(screen.queryByTestId(`device-${dev.id}-update-stuck`)).toBeNull();
   });
 });
+
+describe('DeviceList — logs silent badge (#7067)', () => {
+  it('flags an online device with no logs for over the threshold', () => {
+    const dev = device('99999999-9999-9999-9999-999999999994', 'quiet', {
+      lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString(),
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    expect(screen.getByTestId(`device-${dev.id}-logs-silent-badge`)).toBeTruthy();
+  });
+
+  it('does not flag an online device with recent logs', () => {
+    const dev = device('99999999-9999-9999-9999-999999999995', 'healthy-logs', {
+      lastLogAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    expect(screen.queryByTestId(`device-${dev.id}-logs-silent-badge`)).toBeNull();
+  });
+
+  it('does not flag an offline device with a stale last log', () => {
+    const dev = device('99999999-9999-9999-9999-999999999996', 'offline-quiet', {
+      status: 'offline',
+      lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString(),
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    expect(screen.queryByTestId(`device-${dev.id}-logs-silent-badge`)).toBeNull();
+  });
+});

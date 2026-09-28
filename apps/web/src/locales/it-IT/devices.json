@@ -1121,6 +1121,8 @@
     "ratedSpeed": "nominale {{speed}}"
   },
   "deviceInfoTab": {
+    "logsSilent": "Questo dispositivo è online ma non ha inviato log dal {{since}}. L'invio dei log potrebbe essere disabilitato, non riuscito o non raggiungere il server — controlla la configurazione di invio dei log dell'agent sul dispositivo.",
+    "logsSilentNeverShipped": "Questo dispositivo è online ma non ha mai inviato un log. L'invio dei log potrebbe essere disabilitato, non riuscito o non raggiungere il server — controlla la configurazione di invio dei log dell'agent sul dispositivo.",
     "updateStuck": "L'aggiornamento dell'agent a {{target}} sembra bloccato: {{attempts}} tentativi dal {{since}} e il dispositivo è ancora alla versione precedente. L'updater riprova a ogni heartbeat; controlla i log dell'agent, o il dispositivo stesso se non ne invia.",
     "updateOfferWithheld": "Le offerte di aggiornamento sono sospese per questo dispositivo (dal {{since}}): non è possibile confermare che la build del suo agente accetti l'edizione servita da questo server, quindi resta alla versione attuale. Ripristinalo con un programma di installazione dell'edizione servita o con una release dell'agente che segnali la propria edizione.",
     "helperInstallIssue": {
@@ -1469,6 +1471,8 @@
       "manual": "Manuale"
     },
     "updateWithheld": "Aggiornamenti sospesi",
+    "logsSilent": "Log silenti",
+    "logsSilentTooltip": "Questo dispositivo è online ma non ha inviato log da oltre 6 ore. L'invio dei log potrebbe essere disabilitato, non riuscito o non raggiungere il server.",
     "updateStuck": "Aggiornamento bloccato",
     "updateStuckTooltip": "Questo dispositivo riprova da oltre un'ora l'aggiornamento dell'agent a {{target}} senza completarlo.",
     "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
