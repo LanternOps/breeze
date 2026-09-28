@@ -459,7 +459,15 @@ export async function upsertConnection(
     // callback) must not move it — that would re-open the whole history the
     // horizon exists to exclude. The settings route re-stamps it when the
     // operator turns `push_payments` back on.
-    pushPaymentsSince: now,
+    //
+    // Stamped from the DATABASE clock, never Node's (#7293): the horizon is
+    // compared against `invoice_payments.created_at`, which Postgres stamps with
+    // `now()`. With `new Date()` here, an API host clock running even a few ms
+    // ahead of Postgres put a payment recorded right after connecting "before"
+    // the horizon, so it was silently never pushed. One clock on both sides
+    // matches the other two writers (the column's backfill migration and the
+    // settings route's re-enable), which already use `now()`.
+    pushPaymentsSince: sql`now()`,
     status: fields.status ?? 'connected',
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
