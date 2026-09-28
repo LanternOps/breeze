@@ -1,7 +1,12 @@
 import { expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({ select: vi.fn() }));
-vi.mock('../db', () => ({ db: { select: m.select } }));
+// processTriggerEvent opens its own transaction (#7187), so the mock needs the
+// system-context entry point too.
+vi.mock('../db', () => ({
+  db: { select: m.select },
+  withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+}));
 vi.mock('../services/eventBus', () => ({ getEventBus: () => ({ subscribe: vi.fn() }) }));
 // automationWorker.ts's real imports of automationRuntime/featureConfigResolver
 // pull in scriptDispatch -> commandQueue, which destructures `runOutsideDbContext`

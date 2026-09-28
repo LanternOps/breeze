@@ -457,7 +457,40 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
   return { due };
 }
 
-async function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ runId?: string; skipped?: string }> {
+/**
+ * #7187 — what a trigger handler decided inside its transaction. `afterCommit`
+ * (the #3445 continuation shape) carries the `execute-run` enqueue: the run row
+ * is INSERTed in the handler's transaction, and the execute-run worker reads it
+ * on its own connection, so the job must not exist until that row commits.
+ * Enqueued inside the transaction, a fast worker finds no run and throws
+ * `Automation run not found`, and a rollback leaves a job for a run that never
+ * existed.
+ */
+type TriggerAdmission<R extends object> = R & { afterCommit?: () => Promise<void> };
+
+/**
+ * Runs a trigger handler in its own system transaction, then — only once that
+ * transaction has committed — runs the enqueue it deferred. A transaction that
+ * throws (including a failed commit) propagates before `afterCommit` runs, so a
+ * rolled-back run is never enqueued. The worker calls these under
+ * `runOutsideDbAccess`, so this transaction is the outermost one and really
+ * commits when it returns.
+ */
+async function commitThenEnqueue<R extends object>(
+  admit: () => Promise<TriggerAdmission<R>>,
+): Promise<R> {
+  const { afterCommit, ...result } = await runWithSystemDbAccess(admit);
+  if (afterCommit) await afterCommit();
+  return result as unknown as R;
+}
+
+function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ runId?: string; skipped?: string }> {
+  return commitThenEnqueue(() => admitTriggerSchedule(data));
+}
+
+async function admitTriggerSchedule(
+  data: TriggerScheduleJobData,
+): Promise<TriggerAdmission<{ runId?: string; skipped?: string }>> {
   const [automation] = await db
     .select()
     .from(automations)
@@ -553,9 +586,13 @@ async function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ r
     occurrenceKey: `schedule:${data.slotKey}`,
   });
 
-  await enqueueAutomationRun(run.id, targetDeviceIds);
-
-  return { runId: run.id };
+  return {
+    runId: run.id,
+    // #7187 — enqueued only after this transaction commits (commitThenEnqueue).
+    afterCommit: async () => {
+      await enqueueAutomationRun(run.id, targetDeviceIds);
+    },
+  };
 }
 
 /** Recheck maintenance at both boundaries; a failed lookup must not run a workflow. */
@@ -571,7 +608,13 @@ async function policyWorkflowMaintenanceSuppressed(deviceId: string): Promise<bo
   }
 }
 
-async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?: string; skipped?: string }> {
+function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?: string; skipped?: string }> {
+  return commitThenEnqueue(() => admitTriggerEvent(data));
+}
+
+async function admitTriggerEvent(
+  data: TriggerEventJobData,
+): Promise<TriggerAdmission<{ runId?: string; skipped?: string }>> {
   const [automation] = await db
     .select()
     .from(automations)
@@ -750,12 +793,6 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     ...(data.eventId ? { occurrenceKey: `event:${data.eventId}` } : {}),
   });
 
-  if (triggerContext) {
-    await enqueueAutomationRun(run.id, targetDeviceIds, triggerContext);
-  } else {
-    await enqueueAutomationRun(run.id, targetDeviceIds);
-  }
-
   // #5290 — record the response attempt on the OPEN episode for the pair. The
   // outcome walks forward only: automationActionResults terminalises it to
   // completed/failed when the run finishes.
@@ -769,7 +806,17 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     });
   }
 
-  return { runId: run.id };
+  return {
+    runId: run.id,
+    // #7187 — enqueued only after this transaction commits (commitThenEnqueue).
+    afterCommit: async () => {
+      if (triggerContext) {
+        await enqueueAutomationRun(run.id, targetDeviceIds, triggerContext);
+      } else {
+        await enqueueAutomationRun(run.id, targetDeviceIds);
+      }
+    },
+  };
 }
 
 async function processExecuteRun(data: ExecuteRunJobData): Promise<{ runId: string }> {
@@ -1275,20 +1322,26 @@ export function createAutomationWorker(): Worker<AutomationJobData> {
       // throws. scan-schedules drains too so a crash between a prior
       // admission's commit and its dispatch retries on the next minute tick
       // even without another alert event.
+      //
+      // #7187 — both trigger handlers own their transaction (commitThenEnqueue)
+      // and enqueue `execute-run` only after it commits, so they run with NO
+      // ambient context here: wrapped in a worker transaction, theirs would
+      // join it and the enqueue would again precede the commit.
       if (data.type === 'trigger-event') {
         assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
-        const result = await runWithSystemDbAccess(() => processTriggerEvent(data));
+        const result = await runOutsideDbAccess(() => processTriggerEvent(data));
         await drainCommittedSubjectResponses();
         return result;
+      }
+      if (data.type === 'trigger-schedule') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-schedule');
+        return runOutsideDbAccess(() => processTriggerSchedule(data));
       }
       const result = await runWithSystemDbAccess(async () => {
         switch (data.type) {
           case 'scan-schedules':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'scan-schedules');
             return processScanSchedules(data.scanAt);
-          case 'trigger-schedule':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-schedule');
-            return processTriggerSchedule(data);
           case 'trigger-config-policy-schedule':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-config-policy-schedule');
             return processTriggerConfigPolicySchedule(data);
