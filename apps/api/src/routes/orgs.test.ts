@@ -305,7 +305,25 @@ vi.mock('../db/schema', () => ({
     isEphemeral: { __column: 'devices.isEphemeral' },
   },
   // Agent version pins (issue #2124) validate against this table at save time.
-  agentVersions: { id: {}, component: {}, version: {} }
+  agentVersions: { id: {}, component: {}, version: {} },
+  // orgs.ts's real (unmocked) import chain reaches
+  // tenantOffboarding -> jobs/tenantErasure -> services/fixMemory/store,
+  // which reads fixMemory.rebuildPendingOrgIds at module load to build a
+  // static sql fragment. A plain sentinel is safe — the mocked db never
+  // executes it.
+  fixMemory: {
+    id: { __column: 'fix_memory.id' },
+    orgId: { __column: 'fix_memory.orgId' },
+    partnerId: { __column: 'fix_memory.partnerId' },
+    signatureVersion: { __column: 'fix_memory.signatureVersion' },
+    signatureKey: { __column: 'fix_memory.signatureKey' },
+    osType: { __column: 'fix_memory.osType' },
+    fixIdentity: { __column: 'fix_memory.fixIdentity' },
+    status: { __column: 'fix_memory.status' },
+    scriptId: { __column: 'fix_memory.scriptId' },
+    staleSince: { __column: 'fix_memory.staleSince' },
+    rebuildPendingOrgIds: { __column: 'fix_memory.rebuildPendingOrgIds' }
+  }
 }));
 
 // Spy on inArray so the site-allowlist test can assert the GET /orgs/sites

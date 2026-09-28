@@ -116,7 +116,24 @@ vi.mock('../db/schema', () => ({
   oauthRefreshTokens: { id: 'id', orgId: 'org_id', partnerId: 'partner_id', revokedAt: 'revoked_at' },
   roles: {},
   permissions: {},
-  rolePermissions: {}
+  rolePermissions: {},
+  // Real chain: tenantOffboarding -> jobs/tenantErasure -> services/fixMemory/store
+  // (org erasure rebuilds partner fix memory). store.ts reads
+  // fixMemory.rebuildPendingOrgIds at module load to build a static sql
+  // fragment; a plain sentinel is safe — the mocked db never executes it.
+  fixMemory: {
+    id: 'id',
+    orgId: 'org_id',
+    partnerId: 'partner_id',
+    signatureVersion: 'signature_version',
+    signatureKey: 'signature_key',
+    osType: 'os_type',
+    fixIdentity: 'fix_identity',
+    status: 'status',
+    scriptId: 'script_id',
+    staleSince: 'stale_since',
+    rebuildPendingOrgIds: 'rebuild_pending_org_ids'
+  }
 }));
 
 vi.mock('../services/auditEvents', () => ({
