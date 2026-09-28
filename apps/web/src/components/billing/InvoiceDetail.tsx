@@ -70,13 +70,16 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   );
   const syncProvider = detail.accountingSync?.provider ?? pushProvider;
   // Display name for the {{provider}} interpolation on payment-row sync
-  // badges. Those badges only render for a Breeze-origin payment that has
-  // actually been pushed (`p.accountingSync` set), which only happens once
-  // `syncProvider` is known — `null` here is defensive, not a case the
-  // current (QuickBooks-only) test suite can hit. Deliberately no brand
-  // fallback (never guess "QuickBooks"): when the provider genuinely isn't
-  // known, the interpolation is left blank rather than naming the wrong one.
+  // badges, used as a fallback when a payment's own accountingSync carries no
+  // provider (an older API response — see paymentBadgeProvider below).
+  // Deliberately no brand fallback (never guess "QuickBooks"): when the
+  // provider genuinely isn't known, the interpolation is left blank rather
+  // than naming the wrong one.
   const syncProviderName = syncProvider ? ACCOUNTING_PROVIDER_NAMES[syncProvider] : '';
+  // A pushed payment's badge names the provider it was pushed to (W01d "Invoice
+  // badge" deferral); the invoice-level name only for an older API response.
+  const paymentBadgeProvider = (p: InvoicePayment): string =>
+    p.accountingSync?.provider ? ACCOUNTING_PROVIDER_NAMES[p.accountingSync.provider] : syncProviderName;
   const currency = invoice.currencyCode;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
@@ -713,10 +716,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           title={p.accountingSync.lastError ?? undefined}
                         >
                           {p.accountingSync.status === 'error'
-                            ? t('invoiceDetail.payments.providerSyncFailed', { provider: syncProviderName })
+                            ? t('invoiceDetail.payments.providerSyncFailed', { provider: paymentBadgeProvider(p) })
                             : p.accountingSync.status === 'pending'
-                              ? t('invoiceDetail.payments.syncingToProvider', { provider: syncProviderName })
-                              : t('invoiceDetail.payments.inProvider', { provider: syncProviderName })}
+                              ? t('invoiceDetail.payments.syncingToProvider', { provider: paymentBadgeProvider(p) })
+                              : t('invoiceDetail.payments.inProvider', { provider: paymentBadgeProvider(p) })}
                         </span>
                       )}
                     </span>

@@ -531,6 +531,22 @@ describe('InvoiceDetail', () => {
     expect(screen.getByTestId('invoice-payment-void-p8')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-qbosync-p8')).not.toBeInTheDocument();
   });
+
+  // W01d deferral "Invoice badge": the invoice-level sync read can fail
+  // transiently (the API returns accountingSync: null), and a user without
+  // accounting:manage never resolves a push provider — the badge used to read "In ".
+  it('names the payment\'s own provider when the invoice-level provider is unknown (Xero W04)', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p9', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-18', note: null, createdAt: '', source: 'manual', accountingSync: { status: 'synced', lastError: null, provider: 'xero' } },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={{ ...issued, accountingSync: null }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p9')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-qbosync-p9')).toHaveTextContent('In Xero');
+  });
 });
 
 describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {
