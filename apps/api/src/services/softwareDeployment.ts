@@ -77,6 +77,14 @@ export interface CreateSoftwareDeploymentInput {
    * it on the very next pass, 15 minutes later).
    */
   softwarePolicyId?: string;
+  /**
+   * #7187 — create every row but push nothing; the result carries a
+   * `deliver()` that pushes the live devices' commands. For a caller whose
+   * transaction stays open after this returns (the automation runtime's claim
+   * transaction): it calls `deliver()` once that transaction has committed.
+   * See `DispatchDeviceCommandInput.deferDelivery`.
+   */
+  deferDelivery?: boolean;
 }
 
 export interface CreateSoftwareDeploymentResult {
@@ -87,6 +95,14 @@ export interface CreateSoftwareDeploymentResult {
   message?: string;
   dispatchedDeviceIds: string[];
   deviceResults: SoftwareInstallFanoutDeviceResult[];
+  /** #7187 — see `SoftwareInstallFanoutResult.deliver`. */
+  deliver?: () => Promise<SoftwareInstallDeliveryReport>;
+}
+
+/** What a deferred fan-out's `deliver()` pushed after commit (#7187). */
+export interface SoftwareInstallDeliveryReport {
+  /** Devices whose command went out over the live socket; the rest stay queued for the heartbeat claim. */
+  deliveredDeviceIds: string[];
 }
 
 export type SoftwareInstallDispatchTransport = 'ws' | 'queued';
@@ -101,6 +117,13 @@ export interface SoftwareInstallDispatchOutcome {
    * It used to be `null` on the WS path, which created no row at all.
    */
   deviceCommandId: string;
+  /**
+   * #7187 — present only for a `deferDelivery` dispatch to a live agent
+   * (`transport` is then `queued`). Pushes the persisted command after the
+   * caller's transaction commits and resolves to the real transport. Never
+   * rejects.
+   */
+  deliver?: () => Promise<SoftwareInstallDispatchTransport>;
 }
 
 /**
@@ -138,6 +161,7 @@ export async function dispatchSoftwareInstallToDevice(
   payload: AgentCommand['payload'],
   createdBy?: string | null,
   retryCount = 0,
+  options: { deferDelivery?: boolean } = {},
 ): Promise<SoftwareInstallDispatchOutcome> {
   void retryCount; // carried in `payload.retryCount` by the caller; kept for the signature's contract
 
@@ -147,6 +171,7 @@ export async function dispatchSoftwareInstallToDevice(
     payload: (payload ?? {}) as Record<string, unknown>,
     ...(createdBy ? { userId: createdBy } : {}),
     offlinePolicy: { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') },
+    ...(options.deferDelivery ? { deferDelivery: true } : {}),
   });
 
   if (!res.ok) {
@@ -165,9 +190,18 @@ export async function dispatchSoftwareInstallToDevice(
       ),
     );
 
+  const deliver = res.deliver;
   return {
     transport: res.delivery === 'delivered' ? 'ws' : 'queued',
     deviceCommandId: res.command.id,
+    ...(deliver
+      ? {
+        deliver: async () => {
+          const delivered = await deliver();
+          return delivered.ok && delivered.delivery === 'delivered' ? 'ws' : 'queued';
+        },
+      }
+      : {}),
   };
 }
 
@@ -254,6 +288,8 @@ export interface BuildAndDispatchSoftwareInstallsInput {
   deviceRetryCounts?: Record<string, number>;
   /** Exact rows created/claimed for this fan-out, keyed by device id. */
   deploymentResultIdsByDevice?: ReadonlyMap<string, string>;
+  /** #7187 — see `CreateSoftwareDeploymentInput.deferDelivery`. */
+  deferDelivery?: boolean;
 }
 
 export interface SoftwareInstallFanoutResult {
@@ -261,6 +297,32 @@ export interface SoftwareInstallFanoutResult {
   message?: string;
   dispatchedDeviceIds: string[];
   deviceResults: SoftwareInstallFanoutDeviceResult[];
+  /**
+   * #7187 — present only for a `deferDelivery` fan-out that queued at least one
+   * command for a live agent. Pushes those commands (their `deviceResults`
+   * entries read `queued` until then) and reports which went out. MUST run
+   * after the caller's transaction commits, with no ambient context. Never
+   * rejects: a command that fails to push stays queued for the heartbeat.
+   */
+  deliver?: () => Promise<SoftwareInstallDeliveryReport>;
+}
+
+type PendingInstallDelivery = { deviceId: string; deliver: () => Promise<SoftwareInstallDispatchTransport> };
+
+/** Folds a deferred fan-out's per-device pushes into one continuation (#7187). */
+function deferredFanoutDelivery(
+  pending: PendingInstallDelivery[],
+): Pick<SoftwareInstallFanoutResult, 'deliver'> {
+  if (pending.length === 0) return {};
+  return {
+    deliver: async () => {
+      const deliveredDeviceIds: string[] = [];
+      for (const { deviceId, deliver } of pending) {
+        if ((await deliver()) === 'ws') deliveredDeviceIds.push(deviceId);
+      }
+      return { deliveredDeviceIds };
+    },
+  };
 }
 
 export interface SoftwareInstallFanoutDeviceResult {
@@ -411,6 +473,7 @@ async function dispatchManagerInstalls(
   }
 
   const dispatchedDeviceIds: string[] = [];
+  const pendingDeliveries: PendingInstallDelivery[] = [];
   const deviceResults: SoftwareInstallFanoutDeviceResult[] = [];
   for (const deviceId of fanoutDeviceIds) {
     if (!targetDevices.some((device) => device.id === deviceId)) {
@@ -466,7 +529,9 @@ async function dispatchManagerInstalls(
     // silent-death bug this feature exists to remove.
     let dispatch: SoftwareInstallDispatchOutcome;
     try {
-      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount, {
+        deferDelivery: input.deferDelivery,
+      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to dispatch software install';
       console.error(`[software-deploy] dispatch failed for device ${device.id} in deployment ${deploymentId}:`, err);
@@ -484,6 +549,7 @@ async function dispatchManagerInstalls(
       continue;
     }
     dispatchedDeviceIds.push(device.id);
+    if (dispatch.deliver) pendingDeliveries.push({ deviceId: device.id, deliver: dispatch.deliver });
     const result = fanoutDeviceResult(
       input,
       device.id,
@@ -504,7 +570,7 @@ async function dispatchManagerInstalls(
       deviceResults,
     };
   }
-  return { status: 'pending', dispatchedDeviceIds, deviceResults };
+  return { status: 'pending', dispatchedDeviceIds, deviceResults, ...deferredFanoutDelivery(pendingDeliveries) };
 }
 
 export async function buildAndDispatchSoftwareInstalls(
@@ -751,6 +817,7 @@ export async function buildAndDispatchSoftwareInstalls(
   }
 
   const dispatchedDeviceIds: string[] = [];
+  const pendingDeliveries: PendingInstallDelivery[] = [];
   const deviceResults: SoftwareInstallFanoutDeviceResult[] = [];
   for (const deviceId of fanoutDeviceIds) {
     if (!targetDevices.some((device) => device.id === deviceId)) {
@@ -935,7 +1002,9 @@ export async function buildAndDispatchSoftwareInstalls(
     // silent-death bug this feature exists to remove.
     let dispatch: SoftwareInstallDispatchOutcome;
     try {
-      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount, {
+        deferDelivery: input.deferDelivery,
+      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to dispatch software install';
       console.error(`[software-deploy] dispatch failed for device ${device.id} in deployment ${deploymentId}:`, err);
@@ -953,6 +1022,7 @@ export async function buildAndDispatchSoftwareInstalls(
       continue;
     }
     dispatchedDeviceIds.push(device.id);
+    if (dispatch.deliver) pendingDeliveries.push({ deviceId: device.id, deliver: dispatch.deliver });
     const result = fanoutDeviceResult(
       input,
       device.id,
@@ -983,7 +1053,7 @@ export async function buildAndDispatchSoftwareInstalls(
       deviceResults,
     };
   }
-  return { status: 'pending', dispatchedDeviceIds, deviceResults };
+  return { status: 'pending', dispatchedDeviceIds, deviceResults, ...deferredFanoutDelivery(pendingDeliveries) };
 }
 
 export async function createSoftwareDeployment(
@@ -1137,6 +1207,7 @@ export async function createSoftwareDeployment(
       createdBy,
       markDispatched: true,
       deploymentResultIdsByDevice,
+      ...(input.deferDelivery ? { deferDelivery: true } : {}),
     });
     return { deploymentId: deployment.id, deployment, ...fanout };
   }

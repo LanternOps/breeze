@@ -1066,6 +1066,82 @@ describe('createAndEnqueueAgentRun admission success', () => {
     expect(enqueueAgentRunJob).not.toHaveBeenCalled();
   });
 
+  describe('deferEnqueue (#7187) — a caller that holds a system transaction', () => {
+    // The automation runtime calls the gate inside its per-device claim
+    // transaction (system scope), so inSystemDbContext JOINS it and the ledger
+    // row stays uncommitted after the gate returns. The announce/enqueue must
+    // then wait for the caller's commit, or the runner's CAS out of `queued`
+    // finds no row.
+    function holdCallerSystemTransaction() {
+      dbMockState.ambientContext = { scope: 'system' };
+      dbMockState.systemContextDepth = 1;
+    }
+
+    it('inserts in the caller transaction and neither announces nor enqueues until enqueue() runs', async () => {
+      seedAdmissionReads();
+      holdCallerSystemTransaction();
+
+      const result = await createAndEnqueueAgentRun(input(), { deferEnqueue: true });
+
+      expect(dbMockState.contextAtInsert).toBe('system');
+      expect(result).toMatchObject({ created: true, run: dbMockState.insertRows[0] });
+      expect(publishEvent).not.toHaveBeenCalled();
+      expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+
+      // The caller commits, leaves its context, then runs the continuation.
+      dbMockState.ambientContext = undefined;
+      dbMockState.systemContextDepth = 0;
+      const enqueue = (result as { enqueue?: () => Promise<unknown> }).enqueue;
+      expect(typeof enqueue).toBe('function');
+      const final = await enqueue!();
+
+      expect(final).toEqual({ created: true, run: dbMockState.insertRows[0] });
+      expect(publishEvent).toHaveBeenCalledWith(
+        'ai.agent.run.queued',
+        ORG_ID,
+        expect.objectContaining({ runId: RUN_ID }),
+        'ai-agent-runner',
+      );
+      expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
+      expect(dbMockState.contextAtEnqueue).toBe('none');
+    });
+
+    it('a deferred enqueue that fails marks the run enqueue_failed, exactly like the immediate path', async () => {
+      seedAdmissionReads();
+      holdCallerSystemTransaction();
+      enqueueAgentRunJob.mockResolvedValue({ enqueued: false });
+
+      const result = await createAndEnqueueAgentRun(input(), { deferEnqueue: true });
+      expect(dbMockState.updateSets).toEqual([]);
+
+      dbMockState.ambientContext = undefined;
+      dbMockState.systemContextDepth = 0;
+      dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {} }];
+      dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }]);
+      const final = await (result as { enqueue: () => Promise<unknown> }).enqueue();
+
+      expect(dbMockState.updateSets.at(-1)).toMatchObject({ status: 'failed', errorCode: 'enqueue_failed' });
+      expect((final as { run: { status: string } }).run.status).toBe('failed');
+    });
+
+    it('a skipped admission carries no continuation', async () => {
+      seedAdmissionReads();
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'off' }));
+
+      const result = await createAndEnqueueAgentRun(input(), { deferEnqueue: true });
+
+      expect(result).toEqual({ created: false, skipped: 'mode_off' });
+      expect('enqueue' in result).toBe(false);
+    });
+
+    it('without deferEnqueue the immediate path is unchanged (no continuation)', async () => {
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(input());
+      expect('enqueue' in result).toBe(false);
+      expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
+    });
+  });
+
   it('routes the enqueue-failure terminalization through recordRunTerminal', async () => {
     seedAdmissionReads();
     enqueueAgentRunJob.mockResolvedValue({ enqueued: false });

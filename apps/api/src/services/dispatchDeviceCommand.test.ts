@@ -193,6 +193,65 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(releaseMock).not.toHaveBeenCalled();
   });
 
+  describe('deferDelivery (#7187)', () => {
+    it('persists the row but neither claims nor pushes until deliver() runs', async () => {
+      selectReturning(deviceRow('online'));
+      const executedAt = new Date();
+      claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+      sendMock.mockReturnValue(true);
+
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
+
+      expect(queueCommandMock).toHaveBeenCalledTimes(1);
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(sendMock).not.toHaveBeenCalled();
+      expect(res.ok && res.delivery).toBe('queued_live');
+      const deliver = res.ok ? res.deliver : undefined;
+      expect(typeof deliver).toBe('function');
+
+      const delivered = await deliver!();
+
+      expect(claimMock).toHaveBeenCalledWith('cmd-1');
+      expect(sendMock).toHaveBeenCalledTimes(1);
+      expect(delivered.ok && delivered.delivery).toBe('delivered');
+    });
+
+    it('an offline device gets no continuation — there is nothing to push', async () => {
+      selectReturning(deviceRow('offline'));
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
+      expect(res.ok && res.delivery).toBe('queued_offline');
+      expect(res.ok && res.deliver).toBeUndefined();
+    });
+
+    it('a device with no agent socket gets no continuation', async () => {
+      selectReturning(deviceRow('online', null));
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
+      expect(res.ok && res.delivery).toBe('queued_live');
+      expect(res.ok && res.deliver).toBeUndefined();
+    });
+
+    it('a deliver() whose transport throws resolves queued_live instead of rejecting (the row is committed)', async () => {
+      selectReturning(deviceRow('online'));
+      claimMock.mockRejectedValue(new Error('pool exhausted'));
+
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
+      const delivered = await (res.ok ? res.deliver! : async () => { throw new Error('no deliver'); })();
+
+      expect(delivered.ok && delivered.delivery).toBe('queued_live');
+      expect(delivered.ok && delivered.command.id).toBe('cmd-1');
+      expect(captureExceptionMock).toHaveBeenCalled();
+    });
+
+    it('without deferDelivery the immediate push is unchanged and carries no continuation', async () => {
+      selectReturning(deviceRow('online'));
+      claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+      sendMock.mockReturnValue(true);
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('delivered');
+      expect(res.ok && res.deliver).toBeUndefined();
+    });
+  });
+
   it('online device, push fails → claim released, delivery=queued_live', async () => {
     selectReturning(deviceRow('online'));
     const executedAt = new Date();
