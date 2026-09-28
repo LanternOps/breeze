@@ -13,7 +13,7 @@ import { recordOutcomeVote } from '../../services/fixMemory/outcomeRecorder';
 import { advanceOutcomesForTerminalExecution } from '../../services/fixMemory/scriptTerminalHook';
 import { alertSignature } from '../../services/fixMemory/signatureLoader';
 import {
-  fillOutcomeSignature, markFixMemoryStaleForOrgErasure, markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome,
+  clearOrgErasureRequest, fillOutcomeSignature, markFixMemoryStaleForOrgErasure, markOwnerDriftStale, rebuildFixMemory, recomputeForOutcome,
   stalePartnerIds, transitionOutcome,
 } from '../../services/fixMemory/store';
 import { executeOrgMerge } from '../../services/orgMerge';
@@ -298,6 +298,36 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, verifiedCount: 2, staleSince: null, rebuildPendingOrgIds: [] });
     expect((await memoryFor(w, w.o1, last.alertId)).proven).toEqual([]); // 2 verified < the 3-attempt proof bar
   }, 240_000); // the real org cascade walks every tenant table (13-45 s locally, load-dependent)
+
+  it('a refused erasure (legal hold) leaves no request behind: the next sweep rebuilds and un-stales the partner (I1)', async () => {
+    const w = await world();
+    const base = Date.UTC(2026, 10, 27);
+    await verify(w, w.o1, w.d1, w.partnerScript, new Date(base));
+    await verify(w, w.o2, w.d2, w.partnerScript, new Date(base + 30 * H));
+    // The pre-cascade mark ran, then the cascade refused: undo exactly what the mark added.
+    expect(await sys(() => markFixMemoryStaleForOrgErasure(w.o2))).toBe(w.partnerId);
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ rebuildPendingOrgIds: [w.o2] });
+    expect(await sys(() => clearOrgErasureRequest(w.o2))).toBe(1);
+    expect(await sys(() => clearOrgErasureRequest(w.o2))).toBe(0); // idempotent
+    const unmarked = (await partnerMemory(w.partnerId))[0]!;
+    expect(unmarked).toMatchObject({ rebuildPendingOrgIds: [], attempts: 2 });
+    expect(unmarked.staleSince).not.toBeNull(); // still stale until the sweeper rebuilds...
+    expect(await sys(() => stalePartnerIds(1000))).toContain(w.partnerId);
+    await sys(() => rebuildFixMemory({ partnerId: w.partnerId }));
+    // ...which can now lift it: o2 still exists and nothing is pending.
+    expect((await partnerMemory(w.partnerId))[0]).toMatchObject({ attempts: 2, staleSince: null, rebuildPendingOrgIds: [] });
+  });
+
+  it('stalePartnerIds returns the partner stale the longest first (I1b)', async () => {
+    const older = await world();
+    const newer = await world();
+    await verify(older, older.o1, older.d1, older.partnerScript, new Date(Date.UTC(2026, 10, 28)));
+    await verify(newer, newer.o1, newer.d1, newer.partnerScript, new Date(Date.UTC(2026, 10, 28)));
+    await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 10, 1)) }).where(eq(fixMemory.partnerId, newer.partnerId)));
+    await sys(() => db.update(fixMemory).set({ staleSince: new Date(Date.UTC(2026, 9, 1)) }).where(eq(fixMemory.partnerId, older.partnerId)));
+    expect(await sys(() => stalePartnerIds(1))).toEqual([older.partnerId]);
+    expect(await sys(() => stalePartnerIds(10))).toEqual([older.partnerId, newer.partnerId]);
+  });
 
   it('script re-scope org→partner folds org history into the partner row (Review Focus 5)', async () => {
     const w = await world();
