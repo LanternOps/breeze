@@ -55,7 +55,7 @@ import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../../middleware/agentAuth';
-import { shouldRotateAgentToken } from './heartbeatTokenRotation';
+import { implicitPromotionTokenHash, shouldRotateAgentToken } from './heartbeatTokenRotation';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
@@ -1965,11 +1965,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // permanently, with no way to self-heal (rotateToken is suppressed while a
   // rotation is staged, and after expiry it can no longer authenticate at all).
   // It also backstops a current agent whose confirm response was lost in flight.
-  if (pendingRotationLive && c.get('agentPendingTokenPresented') === true && device.agentTokenHash) {
+  //
+  // #2773 — bind the promotion to the hash the caller AUTHENTICATED with, not
+  // to this handler's re-read of `pendingTokenHash`: see
+  // implicitPromotionTokenHash for how the re-read strands the endpoint.
+  const implicitPromotionHash = implicitPromotionTokenHash({
+    pendingRotationLive,
+    pendingTokenPresented: c.get('agentPendingTokenPresented') === true,
+    presentedTokenHash: agent.authTokenHash,
+    devicePendingTokenHash: device.pendingTokenHash,
+    deviceAgentTokenHash: device.agentTokenHash,
+  });
+  if (implicitPromotionHash && device.agentTokenHash) {
     try {
       const promoted = await promotePendingAgentCredentials({
         deviceId: device.id,
-        pendingTokenHash: device.pendingTokenHash!,
+        pendingTokenHash: implicitPromotionHash,
         expectedAgentTokenHash: device.agentTokenHash,
         pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
         pendingHelperTokenHash: device.pendingHelperTokenHash,

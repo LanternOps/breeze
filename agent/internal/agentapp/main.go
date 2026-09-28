@@ -1801,7 +1801,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		}
 	}
 
-	if err := config.SaveTo(cfg, cfgFile); err != nil {
+	if err := config.SaveEnrollment(cfg, cfgFile); err != nil {
 		return &enrollFailure{cat: catConfig, friendly: fmt.Sprintf(
 			"enrollment succeeded but could not save config to %s — check that the directory exists and SYSTEM has write access (agentID=%s)",
 			cfgFile, cfg.AgentID), detail: err}

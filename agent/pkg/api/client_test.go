@@ -685,11 +685,16 @@ func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
 			wantTerminal: true,
 		},
 		{
-			name:         "staged token not accepted at all",
-			status:       http.StatusUnauthorized,
-			body:         `{"error":"unauthorized"}`,
-			wantErr:      ErrPendingRotationExpired,
-			wantTerminal: true,
+			// #2773 — NOT terminal on its own. agentAuth answers the same opaque
+			// 401 for an expired staged token and for a suspended device or an
+			// inactive tenant, and in the latter cases the staged token may be the
+			// server's CURRENT credential (promotion landed, response lost).
+			// The heartbeat discards only after proving the current credential
+			// live; see Heartbeat.currentCredentialProvenCurrent.
+			name:    "staged token not accepted at all",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"unauthorized"}`,
+			wantErr: ErrStagedTokenRejected,
 		},
 		{
 			// Retryable: the server may still be authenticating the device on
@@ -699,9 +704,10 @@ func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
 			body:   `{"error":"conflict","code":"rotation_conflict"}`,
 		},
 		{
-			name:   "presented the current token",
-			status: http.StatusConflict,
-			body:   `{"error":"wrong token","code":"pending_token_required"}`,
+			name:    "presented the current token",
+			status:  http.StatusConflict,
+			body:    `{"error":"wrong token","code":"pending_token_required"}`,
+			wantErr: ErrPendingTokenRequired,
 		},
 		{
 			// Fail safe: an unrecognised code must never be treated as terminal.
