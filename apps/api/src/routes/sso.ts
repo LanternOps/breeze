@@ -812,11 +812,13 @@ const PROVIDER_CREATE_ORG_REQUIRED: Omit<OrgResolutionError, 'status'> = {
 function resolveOrgIdForProviderRoute(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
   requestedOrgId?: string,
-  missingOrg: Omit<OrgResolutionError, 'status'> = ORG_REQUIRED
+  // Only the partner-scope branch uses this: that is the one caller that can
+  // actually act on a suggestion to create a partner-wide provider instead.
+  partnerMissingOrg: Omit<OrgResolutionError, 'status'> = ORG_REQUIRED
 ): { orgId: string } | OrgResolutionError {
   if (auth.scope === 'organization') {
     if (!auth.orgId) {
-      return { ...missingOrg, status: 400 };
+      return { ...ORG_REQUIRED, status: 400 };
     }
     if (requestedOrgId && requestedOrgId !== auth.orgId) {
       return { error: 'Access to this organization denied', status: 403 };
@@ -841,7 +843,7 @@ function resolveOrgIdForProviderRoute(
       return { orgId: orgIds[0] };
     }
 
-    return { ...missingOrg, status: 400 };
+    return { ...partnerMissingOrg, status: 400 };
   }
 
   if (requestedOrgId) {
@@ -857,7 +859,7 @@ function resolveOrgIdForProviderRoute(
     return { orgId: orgIds[0] };
   }
 
-  return { ...missingOrg, status: 400 };
+  return { ...ORG_REQUIRED, status: 400 };
 }
 
 type ProviderOwnerRow = { orgId: string | null; partnerId: string | null };

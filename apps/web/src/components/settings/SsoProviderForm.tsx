@@ -190,6 +190,18 @@ export default function SsoProviderForm({
     return scoped.filter(r => !r.isSystem);
   }, [roles, ownerScope]);
 
+  // `initialOwnerScope` only seeds the form at mount. If availability changes
+  // while it is open (e.g. the org selection is cleared), a disabled radio
+  // stays checked and would still submit, so move the selection to the option
+  // that is still available.
+  useEffect(() => {
+    if (ownerScope === 'organization' && orgOwnerDisabled && !partnerOwnerDisabled) {
+      setValue('ownerScope', 'partner');
+    } else if (ownerScope === 'partner' && partnerOwnerDisabled && !orgOwnerDisabled) {
+      setValue('ownerScope', 'organization');
+    }
+  }, [ownerScope, orgOwnerDisabled, partnerOwnerDisabled, setValue]);
+
   // Apply preset configuration when preset changes
   useEffect(() => {
     if (selectedPreset && presets.length > 0) {

@@ -146,6 +146,26 @@ describe('SsoProviderForm in the All-organizations view (#7252)', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it('moves off "This organization" if the org selection is cleared while the form is open', async () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(
+      <SsoProviderForm showOwnerScope canManagePartnerWide roles={ROLES} onSubmit={onSubmit} />
+    );
+    expect((screen.getByTestId('sso-provider-owner-org') as HTMLInputElement).checked).toBe(true);
+
+    rerender(
+      <SsoProviderForm showOwnerScope noOrgSelected canManagePartnerWide roles={ROLES} onSubmit={onSubmit} />
+    );
+    await waitFor(() =>
+      expect((screen.getByTestId('sso-provider-owner-partner') as HTMLInputElement).checked).toBe(true)
+    );
+
+    fireEvent.change(screen.getByLabelText(/Provider name/i), { target: { value: 'Authentik' } });
+    fireEvent.click(screen.getByRole('button', { name: /save provider/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ ownerScope: 'partner' }));
+  });
+
   it('with an org selected, a selected-org partner user keeps "This organization" and cannot pick partner', () => {
     render(<SsoProviderForm showOwnerScope canManagePartnerWide={false} roles={ROLES} />);
     const orgRadio = screen.getByTestId('sso-provider-owner-org') as HTMLInputElement;

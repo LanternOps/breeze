@@ -775,6 +775,18 @@ describe('SsoProvidersPage partner-axis behavior', () => {
       expect(postBody()).toMatchObject({ ownerScope: 'partner' });
     });
 
+    it('treats an absent canManagePartnerWide (pre-/users/me session) as capable', async () => {
+      orgScopeRef.current = FLEET_SCOPE;
+      authUserRef.current = {};
+      routeCreate(jsonRes({ data: { ...PARTNER_PROVIDER, status: 'inactive' } }, true, 201));
+      await openCreateForm();
+
+      const partnerRadio = screen.getByTestId('sso-provider-owner-partner') as HTMLInputElement;
+      expect(partnerRadio.disabled).toBe(false);
+      expect(partnerRadio.checked).toBe(true);
+      expect(screen.queryByTestId('sso-provider-owner-blocked')).toBeNull();
+    });
+
     it('never sends a create for a selected-org partner user with no org selected', async () => {
       orgScopeRef.current = FLEET_SCOPE;
       authUserRef.current = { canManagePartnerWide: false };
