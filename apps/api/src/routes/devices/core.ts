@@ -288,7 +288,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_retirements',
   'backup_snapshots', 'backup_storage_sessions', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
@@ -527,6 +527,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Brokered storage sessions reference the snapshot, the command and the
   // device (executing = device_id; the snapshot's source device cascades by FK).
   'backup_storage_sessions',
+  // Snapshot attestations reference the snapshot, the job and the device.
+  'backup_snapshot_attestations',
   'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',

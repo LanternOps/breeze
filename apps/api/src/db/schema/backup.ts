@@ -402,6 +402,16 @@ export const backupSnapshots = pgTable(
     fileIndexHydratedAt: timestamp('file_index_hydrated_at', { withTimezone: true }),
     fileIndexExternalCount: integer('file_index_external_count'),
     fileIndexError: text('file_index_error'),
+    // Snapshot attestation projection for display and reports (see
+    // schema/backupSnapshotAttestations.ts). Restore decisions read the
+    // attestation row, never this column. 'unattested_legacy' = produced
+    // before attestations existed; never backfilled.
+    integrityStatus: text('integrity_status').notNull().default('unattested_legacy'),
+    // How the row came to exist: 'agent_result' (an authenticated result for a
+    // dispatched job), 'reconcile' (adopted from storage) or
+    // 'agent_result_after_reconcile' (a reconciled row whose producing
+    // device's own result arrived later). NULL = created before this column.
+    resultProvenance: text('result_provenance'),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),

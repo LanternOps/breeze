@@ -263,6 +263,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // RAISEs and never reverts org_id — a merge repoint is exactly the case it
   // exists for.
   'backup_snapshots.backup_snapshots_file_index_tenancy_reset': 'only resets file_index_status on an org/device change; never reads-to-block or reverts org_id',
+  // Snapshot attestations (2026-11-08-110000): the BEFORE UPDATE guard freezes
+  // the attested/binding columns and the status transition, and deliberately
+  // leaves org_id out of both, so a device move or merge repoint passes.
+  'backup_snapshot_attestations.backup_snapshot_attestations_guard': 'freezes attested columns and status transitions; org_id is excluded and may change',
   // Recipe library E2 (2026-10-26-160000): fires only on UPDATE OF
   // device_id/ticket_id/contact_id and only stamps detached_at/_reason/state
   // when the last pointer goes null. Never reads or writes org_id; the table is
