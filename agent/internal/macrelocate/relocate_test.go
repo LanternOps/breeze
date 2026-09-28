@@ -214,7 +214,7 @@ func TestRunRelocationCopiesSiblings(t *testing.T) {
 	if got := Run(h.cfg(), h.deps()); got != OutcomeRelocationScheduled {
 		t.Fatalf("outcome = %q", got)
 	}
-	want := "/usr/local/bin/breeze-agent->/Library/Breeze/bin,/usr/local/bin/breeze-backup->/Library/Breeze/bin"
+	want := "/usr/local/bin/breeze-backup->/Library/Breeze/bin,/usr/local/bin/breeze-agent->/Library/Breeze/bin"
 	if got := strings.Join(h.migrated, ","); got != want {
 		t.Fatalf("migrated = %s, want %s", got, want)
 	}
@@ -232,6 +232,13 @@ func TestRunRelocationSiblingCopyFailureAborts(t *testing.T) {
 	}
 	if len(h.scripts) != 0 {
 		t.Fatal("a failed sibling copy must not repoint the plist")
+	}
+	// The agent itself must not have been copied: its trusted copy would
+	// make the next .pkg install treat this host as already relocated.
+	for _, m := range h.migrated {
+		if strings.HasPrefix(m, testLegacyDir+"/breeze-agent->") {
+			t.Fatalf("agent copied despite the sibling failure: %v", h.migrated)
+		}
 	}
 }
 

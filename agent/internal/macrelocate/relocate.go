@@ -119,17 +119,12 @@ func relocateIfUnsafe(cfg Config, d Deps, self string) Outcome {
 		return OutcomeKeptLegacy
 	}
 
-	newPath, err := d.Migrate(self, cfg.TrustedDir)
-	if err != nil {
-		d.Log.Warn("executable relocation: legacy install location is unsafe but copying to the trusted directory failed; "+
-			"continuing from the legacy location",
-			"path", self, "reason", unsafeErr.Error(), "error", err.Error())
-		return OutcomeRelocationFailed
-	}
 	// Siblings the agent resolves next to its own executable (breeze-backup)
-	// must move with it, or every backup fails after the reload. A failed
-	// sibling copy aborts: the next start retries the whole move rather than
-	// leaving a half-moved install.
+	// must move with it, or every backup fails after the reload. They are
+	// copied BEFORE this binary: a trusted copy of this binary is what the
+	// .pkg (install-location.sh choose_bin_dir) reads as "already
+	// relocated", so it must only appear once everything else is in place.
+	// A failed copy aborts; the next start retries the whole move.
 	for _, sib := range cfg.Siblings {
 		legacySib := filepath.Join(cfg.LegacyDir, sib)
 		if !isRegularFile(d, legacySib) {
@@ -141,6 +136,13 @@ func relocateIfUnsafe(cfg Config, d Deps, self string) Outcome {
 				"path", legacySib, "reason", unsafeErr.Error(), "error", err.Error())
 			return OutcomeRelocationFailed
 		}
+	}
+	newPath, err := d.Migrate(self, cfg.TrustedDir)
+	if err != nil {
+		d.Log.Warn("executable relocation: legacy install location is unsafe but copying to the trusted directory failed; "+
+			"continuing from the legacy location",
+			"path", self, "reason", unsafeErr.Error(), "error", err.Error())
+		return OutcomeRelocationFailed
 	}
 	if err := d.StartDetached(BuildRelocateScript(cfg.PlistPath, self, newPath)); err != nil {
 		d.Log.Warn("executable relocation: copied to the trusted directory but could not schedule the service reload",
