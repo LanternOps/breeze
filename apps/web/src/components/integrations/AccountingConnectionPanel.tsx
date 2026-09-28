@@ -103,8 +103,8 @@ interface Props {
   provider: AccountingProviderId;
   /** Called after a mutation that changes whether/how this provider is
    *  connected: a successful disconnect, or the tenant picker finishing
-   *  (select or cancel). Task 11b wires this in IntegrationsPage to refresh
-   *  the provider cards and org-readiness state. */
+   *  (select or cancel). IntegrationsPage wires this in to refresh the
+   *  provider cards and org-readiness state. */
   onConnectionChanged?: () => void;
 }
 
@@ -233,7 +233,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
           message: t("accountingConnection.providerConnected", { provider: providerName }),
         });
       } else if (error) {
-        // R1: `connectErrorKey` resolves every code to a full i18n key —
+        // `connectErrorKey` resolves every code to a full i18n key —
         // QuickBooks' `provider_conflict` and unknown/null both land on the
         // two pre-existing keys this panel always used, so their copy is
         // byte-identical; Xero's new codes get their own specific messages.
@@ -614,7 +614,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
               {status.lastError}
             </p>
           )}
-          {/* R3: gated on the FEATURE, never on the provider id — this is
+          {/* Gated on the FEATURE, never on the provider id — this is
               product copy about what tenant-selection-capable reconnects do,
               not a Xero-specific string. */}
           {needsReauth && status?.features?.tenantSelection && (

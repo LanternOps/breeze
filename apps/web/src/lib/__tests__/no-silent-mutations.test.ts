@@ -333,14 +333,14 @@ const TARGET_GLOBS = [
   // from provider customers. It already used runAction but was never listed
   // (Xero W01 Task 18), so a regression to a bare fetch would have gone unseen.
   'src/components/integrations/AccountingCustomerImport.tsx',
-  // Xero organisation (tenant) picker (Xero W02 Task 11): select/cancel both
-  // mutate the pending tenant-selection row. A silent failure here would leave
-  // the partner believing an organisation was connected (or the pending grant
-  // cancelled) when the API never confirmed either.
+  // Xero organisation (tenant) picker: select/cancel both mutate the pending
+  // tenant-selection row. A silent failure here would leave the partner
+  // believing an organisation was connected (or the pending grant cancelled)
+  // when the API never confirmed either.
   'src/components/integrations/AccountingTenantPicker.tsx',
-  // Xero settings step (Xero W02 Task 12): the four default-account/tax/bank
-  // picker PATCH is a one-page Save — a silent failure here would leave the
-  // operator believing new defaults are live when the server never saved them.
+  // Xero settings step: the four default-account/tax/bank picker PATCH is a
+  // one-page Save — a silent failure here would leave the operator believing
+  // new defaults are live when the server never saved them.
   'src/components/integrations/AccountingSettingsStep.tsx',
   // Partner trust action links approve or suspend an entire partner. Keep the
   // TOTP-confirmed mutation inside runAction so this high-impact result cannot

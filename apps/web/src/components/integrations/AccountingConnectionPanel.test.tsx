@@ -345,6 +345,20 @@ describe("AccountingConnectionPanel", () => {
     expect(showToast).not.toHaveBeenCalled();
     expect(window.location.search).toBe("?accounting=xero&error=provider_conflict");
   });
+
+  it("toasts a warning to pick a Xero organisation on ?select_tenant=1 and strips the query params", async () => {
+    window.history.replaceState({}, "", "/integrations?accounting=xero&select_tenant=1#xero");
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/xero" ? { ...disconnected, status: "pending_tenant" } : { count: 0, data: [] }));
+    render(<AccountingConnectionPanel provider="xero" />);
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "warning",
+        message: "Choose which Xero organisation to connect.",
+      }),
+    );
+    expect(window.location.search).toBe("");
+  });
 });
 
 // ─── Phase D: payment pull-back controls ────────────────────────────────────
@@ -864,7 +878,10 @@ describe("Xero W02 panel behaviour", () => {
     mockStatus("/accounting/xero", xeroStatus());
     render(<AccountingConnectionPanel provider="xero" />);
     await screen.findByTestId("xero-disconnect");
-    for (const id of ["xero-pushmode", "xero-pullpayments", "xero-pushpayments", "xero-reconcile-now", "xero-owed-operations"]) {
+    for (const id of [
+      "xero-pushmode", "xero-pullpayments", "xero-pushpayments", "xero-reconcile-now", "xero-owed-operations",
+      "xero-mapping-workbench", "xero-import-panel",
+    ]) {
       expect(screen.queryByTestId(id)).toBeNull();
     }
   });
@@ -872,7 +889,12 @@ describe("Xero W02 panel behaviour", () => {
   it("QuickBooks without a capabilities field (older API) still shows every control", async () => {
     mockStatus("/accounting/quickbooks", connected);
     render(<AccountingConnectionPanel provider="quickbooks" />);
-    expect(await screen.findByTestId("quickbooks-pushmode")).toBeTruthy();
+    for (const id of [
+      "quickbooks-pushmode", "quickbooks-pullpayments", "quickbooks-pushpayments", "quickbooks-reconcile-now", "quickbooks-owed-operations",
+      "quickbooks-mapping-workbench", "quickbooks-import-panel",
+    ]) {
+      expect(await screen.findByTestId(id)).toBeTruthy();
+    }
   });
 
   it("pending_tenant renders the organisation picker instead of the connect card", async () => {
@@ -941,7 +963,7 @@ describe("Xero W02 panel behaviour", () => {
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error", message })));
   });
 
-  // R3: reconnect copy is gated on features.tenantSelection, never on the
+  // Reconnect copy is gated on features.tenantSelection, never on the
   // provider id — shown for Xero (feature true), absent for QuickBooks
   // (feature false/missing), even though both are reauth_required.
   it("shows the 'reconnect keeps organisation' note for Xero reauth_required with tenantSelection", async () => {
@@ -971,7 +993,7 @@ describe("Xero W02 panel behaviour", () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/xero/owed-operations");
   });
 
-  // Task 12: the settings step is gated on the FEATURE, never the provider id.
+  // The settings step is gated on the FEATURE, never the provider id.
   it("renders the settings step for Xero when features.settingsOptions is true", async () => {
     fetchWithAuthMock.mockImplementation(async (url: string) => {
       if (url === "/accounting/xero") return jsonResponse(xeroStatus({ features: { tenantSelection: true, settingsOptions: true } }));

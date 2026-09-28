@@ -50,7 +50,7 @@ describe('AccountingSettingsStep', () => {
     });
   });
 
-  // R5: prompt to (re-)pick defaults when the SAVED values are all four null.
+  // Prompt to (re-)pick defaults when the SAVED values are all four null.
   it('shows the pick-defaults notice when all saved values are null', async () => {
     m.fetchWithAuth.mockReturnValue(ok({ data: options }));
     render(<AccountingSettingsStep provider="xero" values={empty} onSaved={vi.fn()} onUnauthorized={vi.fn()} />);
@@ -86,8 +86,8 @@ describe('AccountingSettingsStep', () => {
     expect((screen.getByTestId('xero-setting-defaultTaxCodeRef') as HTMLSelectElement).value).toBe('OUTPUT2');
   });
 
-  // Fix round 1: the MFA-required 403 must render the same persistent hint
-  // the panel's own PATCH handlers show, not runAction's generic toast.
+  // The MFA-required 403 must render the same persistent hint the panel's
+  // own PATCH handlers show, not runAction's generic toast.
   it('shows the MFA-required hint on a 403 MFA save failure and does not call onSaved', async () => {
     m.fetchWithAuth.mockImplementation((_url: string, init?: RequestInit) => init?.method === 'PATCH'
       ? ok({ error: 'MFA required' }, 403)
@@ -100,8 +100,8 @@ describe('AccountingSettingsStep', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
-  // Fix round 1 (minor): a saved ref absent from the fetched options list must
-  // stay visible/selected rather than silently reading as blank.
+  // A saved ref absent from the fetched options list must stay
+  // visible/selected rather than silently reading as blank.
   it('keeps a saved ref visible even when absent from the fetched options', async () => {
     m.fetchWithAuth.mockReturnValue(ok({ data: options }));
     render(<AccountingSettingsStep provider="xero" values={{ ...empty, defaultPaymentAccountRef: 'gone-1' }} onSaved={vi.fn()} onUnauthorized={vi.fn()} />);

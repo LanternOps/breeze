@@ -55,7 +55,7 @@ describe('AccountingTenantPicker', () => {
     expect(screen.getByTestId('xero-tenant-picker')).toBeTruthy();
   });
 
-  // R2: GET /tenants 404 no_pending_selection — the row is gone (raced away by
+  // GET /tenants 404 no_pending_selection — the row is gone (raced away by
   // something else), so the picker hands control back to the panel to reload.
   it('a 404 no_pending_selection on load calls onDone (the row is gone)', async () => {
     m.fetchWithAuth.mockImplementation((url: string) => url.endsWith('/tenants')
@@ -66,7 +66,7 @@ describe('AccountingTenantPicker', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
 
-  // R2: the deadline line, formatted from expiresAt, and auto-expiry when the
+  // The deadline line, formatted from expiresAt, and auto-expiry when the
   // deadline passes while the picker stays open. Uses REAL timers with a
   // short (50ms) deadline rather than fake timers: RTL's `findBy*` polling
   // relies on `setInterval`, which fake timers freeze — combining the two
@@ -92,7 +92,7 @@ describe('AccountingTenantPicker', () => {
     expect(screen.queryByTestId('xero-tenant-deadline')).toBeNull();
   });
 
-  // R2: the error state (load failed) gets a Retry button that re-runs the load.
+  // The error state (load failed) gets a Retry button that re-runs the load.
   it('a load failure shows Retry, which re-runs the load', async () => {
     let calls = 0;
     m.fetchWithAuth.mockImplementation((url: string) => {
@@ -108,7 +108,7 @@ describe('AccountingTenantPicker', () => {
     expect(calls).toBe(2);
   });
 
-  // R2: grant_superseded on select reloads the list instead of just clearing
+  // grant_superseded on select reloads the list instead of just clearing
   // the choice — the grant itself changed, so the old options may be stale.
   it('grant_superseded on select reloads the tenant list', async () => {
     let tenantCalls = 0;
@@ -130,7 +130,7 @@ describe('AccountingTenantPicker', () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
-  // R2: a 401 on the GET calls onUnauthorized.
+  // A 401 on the GET calls onUnauthorized.
   it('a 401 on load calls onUnauthorized', async () => {
     m.fetchWithAuth.mockImplementation((url: string) => url.endsWith('/tenants')
       ? ok({}, 401)
@@ -138,5 +138,16 @@ describe('AccountingTenantPicker', () => {
     const onUnauthorized = vi.fn();
     render(<AccountingTenantPicker provider="xero" onUnauthorized={onUnauthorized} onDone={vi.fn()} />);
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalled());
+  });
+
+  it('a 404 no_pending_selection on cancel calls onDone (the pending row is already gone)', async () => {
+    m.fetchWithAuth.mockImplementation((url: string) => url.endsWith('/tenants')
+      ? ok({ data: [{ tenantId: 't-A', name: 'Alpha Ltd' }], expiresAt: null })
+      : ok({ error: 'gone', code: 'no_pending_selection' }, 404));
+    const onDone = vi.fn();
+    render(<AccountingTenantPicker provider="xero" onUnauthorized={vi.fn()} onDone={onDone} />);
+    await screen.findByTestId('xero-tenant-option-t-A');
+    fireEvent.click(screen.getByTestId('xero-tenant-cancel'));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
 });

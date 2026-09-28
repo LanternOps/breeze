@@ -8,9 +8,9 @@ interface Props { provider: AccountingProviderId; reconnect: boolean; busy: bool
 /**
  * The connect/reconnect button. QuickBooks keeps the exact pre-W02 markup
  * (test id and classes unchanged). Xero uses a branded treatment in line
- * with Xero's app-certification guidance ("Connect to Xero", Xero blue
- * #13B5EA on white text); a lab pass checks it against Xero's current brand
- * guidelines before certification.
+ * with Xero's app-certification guidance ("Connect to Xero", white text on a
+ * Xero-blue (#13B5EA) background); a lab pass checks it against Xero's
+ * current brand guidelines before certification.
  */
 export default function AccountingConnectButton({ provider, reconnect, busy, disabled, onClick }: Props) {
   const { t } = useTranslation("integrations");

@@ -94,7 +94,7 @@ describe('ALL_CAPABILITIES', () => {
   });
 });
 
-// R1: connectErrorKey returns a FULL i18n key (namespace-relative). QuickBooks
+// connectErrorKey returns a FULL i18n key (namespace-relative). QuickBooks
 // copy stays byte-identical — provider_conflict and the unknown/null fallback
 // both point at the two EXISTING keys the panel already used pre-W02, never a
 // new duplicate `connectErrors.generic` / `connectErrors.providerConflict`.

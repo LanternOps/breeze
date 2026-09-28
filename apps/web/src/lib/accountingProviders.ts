@@ -43,7 +43,7 @@ export const ALL_CAPABILITIES: Record<AccountingCapability, boolean> = {
   connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
 };
 
-// R1: QuickBooks copy stays byte-identical. `provider_conflict` and the
+// QuickBooks copy stays byte-identical. `provider_conflict` and the
 // unknown/null fallback both resolve to the two EXISTING keys the panel used
 // pre-W02 (`providerConflict`, `providerConnectionFailedPleaseTryAgain`) —
 // never a new duplicate `connectErrors.generic` / `connectErrors.providerConflict`.
@@ -67,8 +67,8 @@ export function connectErrorKey(code: string | null): string {
 /** Whether a runAction failure is the MFA-required 403 the accounting
  *  `/settings` PATCH routes answer with when the caller hasn't stepped up.
  *  Shared between `AccountingConnectionPanel` (push mode, payment sync
- *  toggles, settings refresh) and `AccountingSettingsStep` (Xero W02 Task 12)
- *  so both surface the same persistent `mfaRequiredHint` copy instead of
+ *  toggles, settings refresh) and `AccountingSettingsStep` so both surface
+ *  the same persistent `mfaRequiredHint` copy instead of
  *  runAction's generic toast. */
 export function isMfaError(err: unknown): boolean {
   return (

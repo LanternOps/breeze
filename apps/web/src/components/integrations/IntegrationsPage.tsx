@@ -441,7 +441,7 @@ export default function IntegrationsPage({
   // loads: the active connection's provider if it's visible, else the first
   // visible provider in `data` order, else nothing. Never overrides an
   // explicit hash/param/click, and never writes to the URL hash itself —
-  // `#accounting` stays as-is (Xero W02c task 11b). Depends on
+  // `#accounting` stays as-is. Depends on
   // `accountingAutoPickTrigger` (not just `accountingProviders`) so landing on
   // a bare `#accounting` hash re-applies the pick even when the provider list
   // is unchanged from the last time it ran (back/forward navigation away from

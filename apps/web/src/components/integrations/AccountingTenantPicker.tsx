@@ -18,8 +18,8 @@ type LoadState =
  * The Xero organisation (tenant) picker, shown while a connection is
  * `pending_tenant` (the authorising user ticked more than one Xero
  * organisation on the consent screen; Breeze connects to exactly one).
- * Server contract: `server-contract.md` (Xero W02) — GET/POST
- * `/accounting/:provider/tenants{,/select,/cancel}`.
+ * Server contract: `apps/api/src/routes/accounting/connectionSetupRoutes.ts`
+ * (GET /tenants, POST /tenants/select, POST /tenants/cancel).
  */
 export default function AccountingTenantPicker({ provider, onUnauthorized, onDone }: Props) {
   const { t, i18n } = useTranslation("integrations");
@@ -121,7 +121,14 @@ export default function AccountingTenantPicker({ provider, onUnauthorized, onDon
       });
       onDone();
     } catch (err) {
-      if (!(err instanceof ActionError)) handleActionError(err, t("accountingConnection.tenantPicker.cancelFailed"));
+      if (!(err instanceof ActionError)) {
+        handleActionError(err, t("accountingConnection.tenantPicker.cancelFailed"));
+      } else if (err.code === "no_pending_selection") {
+        // The pending row is already gone (e.g. reaped, or cancelled from
+        // another tab) — every retry would just 404 again, so hand control
+        // back to the panel instead of stranding the user here.
+        onDone();
+      }
     } finally {
       setBusy(false);
     }
