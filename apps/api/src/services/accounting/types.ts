@@ -397,6 +397,9 @@ export interface ChangeSet {
  *      once; a second stale fault may escape as `stale_version`).
  *    - `pushInvoice`: a duplicate document number is handled internally
  *      (QuickBooks retries once without DocNumber).
+ *    - `paymentPushPreflight` must be pure and synchronous (no network, no DB):
+ *      it runs inside the payment coordinator's Phase 1 transaction, before
+ *      any token refresh.
  * 3. `paymentMarker`: `extract(embed(ref, marker))` must recover the marker's
  *    Breeze payment id for ANY `ref` (including null and a max-length one),
  *    and the provider must set `ChangeSetPaymentLine.breezePaymentId` from
@@ -484,6 +487,8 @@ export interface AccountingProvider {
    * recorded as a divergence rather than pushed (spec decision 9).
    */
   createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef>;
+  /** Synchronous settings check before any token refresh or network call (Xero W05). A message = park the payment. Absent = none (QuickBooks). */
+  paymentPushPreflight?(conn: AccountingConnection): string | null;
   deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;

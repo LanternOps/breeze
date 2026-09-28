@@ -563,6 +563,22 @@ describe('payment jobs', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
+  it.each<AccountingPaymentPushErrorCode>([
+    'push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission', 'amount_exceeds_due', 'remote_deleted',
+  ])('treats %s as TERMINAL and QUIET — no retry, no Sentry (Xero W05 refinement 16)', async (code) => {
+    pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 409, 'resolve it'));
+    await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('remote_ambiguous is terminal but still reported', async () => {
+    pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('remote_ambiguous', 409, 'two'));
+    await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
   it.each<AccountingPaymentPushErrorCode>(['provider_error', 'sync_in_progress', 'invoice_not_synced'])(
     'rethrows %s so BullMQ retries', async (code) => {
       pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 502, 'later'));

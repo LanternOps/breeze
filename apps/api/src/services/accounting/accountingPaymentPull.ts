@@ -414,7 +414,7 @@ export async function applyAccountingPayment(
         // cursor past a payment that now exists NOWHERE. Fail the item instead:
         // the cursor stays put and the next sweep re-applies it cleanly.
         throw new Error(
-          `accountingPaymentPull: a concurrent writer claimed the QuickBooks payment mapping ${remoteMappingId} `
+          `accountingPaymentPull: a concurrent writer claimed the ${accountingProviderDisplayName(conn.provider)} payment mapping ${remoteMappingId} `
           + 'but no mapping row remains on re-read — refusing to report this payment as already applied',
         );
       }
@@ -510,7 +510,7 @@ async function applyInsideTransaction(
   // hold the CDC cursor for a connection that would have discarded it anyway.
   if (line.txnDate.trim() === '') {
     throw new Error(
-      `accountingPaymentPull: QuickBooks payment ${line.remotePaymentId} reported no transaction date `
+      `accountingPaymentPull: ${accountingProviderDisplayName(conn.provider)} payment ${line.remotePaymentId} reported no transaction date `
       + `for invoice ${line.remoteInvoiceId}; refusing to record a payment with no received_at`,
     );
   }
@@ -575,7 +575,8 @@ async function applyInsideTransaction(
     if (updatedPayments.length !== 1) {
       throw new Error(
         `accountingPaymentPull: payment mapping ${existing.id} points at invoice_payments row `
-        + `${existing.breezeEntityId}, which the update did not match — refusing to lose the QuickBooks payment edit`,
+        + `${existing.breezeEntityId}, which the update did not match — refusing to lose the `
+        + `${accountingProviderDisplayName(conn.provider)} payment edit`,
       );
     }
 
@@ -646,8 +647,8 @@ async function applyInsideTransaction(
   if (!paymentId) {
     // A zero-row INSERT ... RETURNING is an RLS-context bug, never a no-op.
     throw new Error(
-      'accountingPaymentPull: invoice_payments insert returned no row — refusing to record a QuickBooks payment '
-      + `with no row to claim (remotePaymentId=${line.remotePaymentId})`,
+      'accountingPaymentPull: invoice_payments insert returned no row — refusing to record a '
+      + `${accountingProviderDisplayName(conn.provider)} payment with no row to claim (remotePaymentId=${line.remotePaymentId})`,
     );
   }
 
