@@ -1405,6 +1405,31 @@ export async function listOwedPaymentMappings(
 }
 
 /**
+ * Does this connection owe a payment DELETE whose remote id only a pull can
+ * recover? That is the `awaiting_remote_ref` park: a create whose response was
+ * lost, then a Breeze void (Xero W05, quorum finding 3). The reconcile worker
+ * and sweep never budget-defer such a connection. One indexed read, no lock.
+ */
+export async function connectionOwesUnresolvedPaymentDelete(
+  dbc: PaymentMappingExecutor,
+  connectionId: string,
+  partnerId: string,
+): Promise<boolean> {
+  const [row] = await dbc
+    .select({ id: accountingEntityMappings.id })
+    .from(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.integrationId, connectionId),
+      eq(accountingEntityMappings.partnerId, partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      eq(accountingEntityMappings.pendingOp, 'delete'),
+      isNull(accountingEntityMappings.remoteEntityId),
+    ))
+    .limit(1);
+  return !!row;
+}
+
+/**
  * After an invoice lands in QuickBooks, give every payment of that invoice a
  * pending push mapping (spec decision 10).
  *

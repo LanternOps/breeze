@@ -162,6 +162,7 @@ import {
   partialRefundDivergenceMessage,
   PAYMENT_RECORD_FAILED_MAX_SWEEPS,
   PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+  connectionOwesUnresolvedPaymentDelete,
 } from './accountingPaymentPush';
 
 const PARTNER = 'p1';
@@ -2651,5 +2652,18 @@ describe('rate limiting — throttle source and cause (F1/F2)', () => {
     expect(mapping()).toMatchObject({
       pendingOp: 'delete', claimedAt: null, syncAttempts: 0, lastError: 'Breeze could not reach its rate limiter; retrying automatically',
     });
+  });
+});
+
+describe('connectionOwesUnresolvedPaymentDelete (Xero W05, quorum finding 3)', () => {
+  it('is true only for a delete-pending payment row with no remote id on THIS connection', async () => {
+    currentMappings = [paymentMapRow({ pendingOp: 'delete', remoteEntityId: null })];
+    await expect(runCtx(() => connectionOwesUnresolvedPaymentDelete(db, CONN_ID, PARTNER))).resolves.toBe(true);
+    currentMappings = [paymentMapRow({ pendingOp: 'delete', remoteEntityId: '181/145' })];
+    await expect(runCtx(() => connectionOwesUnresolvedPaymentDelete(db, CONN_ID, PARTNER))).resolves.toBe(false);
+    currentMappings = [paymentMapRow({ pendingOp: 'push', remoteEntityId: null })];
+    await expect(runCtx(() => connectionOwesUnresolvedPaymentDelete(db, CONN_ID, PARTNER))).resolves.toBe(false);
+    currentMappings = [paymentMapRow({ pendingOp: 'delete', remoteEntityId: null, integrationId: 'other-conn' })];
+    await expect(runCtx(() => connectionOwesUnresolvedPaymentDelete(db, CONN_ID, PARTNER))).resolves.toBe(false);
   });
 });

@@ -55,4 +55,18 @@ describe('routeWebhookToConnection', () => {
     const { routeWebhookToConnection } = await import('./accountingWebhookRouting');
     await expect(routeWebhookToConnection('quickbooks', 'fp')).resolves.toBe('enqueue_failed');
   });
+  it('passes the enqueue options through (Xero W05 delay)', async () => {
+    m.find.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'xero' });
+    m.enqueue.mockResolvedValue(true);
+    const { routeWebhookToConnection } = await import('./accountingWebhookRouting');
+    await expect(routeWebhookToConnection('xero', 'fp', { delayMs: 30_000 })).resolves.toBe('enqueued');
+    expect(m.enqueue).toHaveBeenCalledWith('c1', 'p1', 'webhook', { delayMs: 30_000 });
+  });
+  it('calls enqueue with EXACTLY three arguments when no options are given (QuickBooks pin)', async () => {
+    m.find.mockResolvedValue({ id: 'c1', partnerId: 'p1', provider: 'quickbooks' });
+    m.enqueue.mockResolvedValue(true);
+    const { routeWebhookToConnection } = await import('./accountingWebhookRouting');
+    await routeWebhookToConnection('quickbooks', 'fp');
+    expect(m.enqueue.mock.calls.at(-1)).toHaveLength(3);
+  });
 });
