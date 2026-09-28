@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { usePermissions } from "../../lib/permissions";
 import {
   Play,
   RotateCcw,
@@ -219,6 +220,9 @@ export default function DeviceActions({
   compact = false,
 }: DeviceActionsProps) {
   const { t } = useTranslation("devices");
+  const { can } = usePermissions();
+  // UX gate; POST /devices/:id/commands requires devices.execute.
+  const canWake = can("devices", "execute");
   const canMoveOrg = useCanMoveDeviceOrg();
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
@@ -396,7 +400,7 @@ export default function DeviceActions({
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
               </button>
-              {device.status === "offline" && (
+              {canWake && device.status === "offline" && (
                 <button
                   type="button"
                   onClick={() => handleAction("wake")}
@@ -500,7 +504,7 @@ export default function DeviceActions({
         {/* When the device is offline, Wake is the one action that matters —
             promote it to a primary header button instead of burying it in the
             Power dropdown, where every other action is disabled anyway. */}
-        {device.status === "offline" && (
+        {canWake && device.status === "offline" && (
           <button
             type="button"
             onClick={() => handleAction("wake")}

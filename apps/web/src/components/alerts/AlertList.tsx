@@ -19,6 +19,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePermissions } from '../../lib/permissions';
 import { FilterSelect } from '../shared/FilterSelect';
 import {
   severityConfig,
@@ -130,6 +131,10 @@ export default function AlertList({
   const [dateRangeFilter, setDateRangeFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const { can } = usePermissions();
+  // UX gate only — mirrors requirePermission on the /alerts/:id/* routes.
+  const canAck = can('alerts', 'acknowledge');
+  const canWrite = can('alerts', 'write');
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
 
@@ -378,7 +383,7 @@ export default function AlertList({
       )}
 
       {/* Bulk action bar */}
-      {selectedIds.size > 0 && (
+      {selectedIds.size > 0 && (canAck || canWrite) && (
         <div className="flex items-center gap-3 border-b bg-muted/30 px-4 py-2">
           <span className="text-sm font-medium">{selectedIds.size} {t('alertList.selected')}</span>
           <div className="relative">
@@ -395,6 +400,7 @@ export default function AlertList({
             </button>
             {bulkMenuOpen && !actionsBlocked && (
               <div role="menu" className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+                {canAck && (
                 <button
                   type="button"
                   role="menuitem"
@@ -404,6 +410,8 @@ export default function AlertList({
                   <CheckCircle className="h-4 w-4" />
                   {t('alertList.acknowledge')}
                 </button>
+                )}
+                {canWrite && (
                 <button
                   type="button"
                   role="menuitem"
@@ -413,6 +421,8 @@ export default function AlertList({
                   <CheckCircle className="h-4 w-4 text-success" />
                   {t('alertList.resolve')}
                 </button>
+                )}
+                {canWrite && (
                 <button
                   type="button"
                   role="menuitem"
@@ -422,6 +432,8 @@ export default function AlertList({
                   <BellOff className="h-4 w-4" />
                   {t('alertList.suppress')}
                 </button>
+                )}
+                {canWrite && (
                 <button
                   type="button"
                   role="menuitem"
@@ -431,6 +443,7 @@ export default function AlertList({
                   <XCircle className="h-4 w-4" />
                   {t('alertList.dismissPermanently')}
                 </button>
+                )}
               </div>
             )}
           </div>
@@ -628,7 +641,7 @@ export default function AlertList({
                           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                         ) : (
                           <>
-                            {alert.status === 'active' && (
+                            {canAck && alert.status === 'active' && (
                               <button
                                 type="button"
                                 onClick={e => {
@@ -643,7 +656,7 @@ export default function AlertList({
                                 {t('alertList.ack')}
                               </button>
                             )}
-                            {(alert.status === 'active' || alert.status === 'acknowledged') && (
+                            {canWrite && (alert.status === 'active' || alert.status === 'acknowledged') && (
                               <button
                                 type="button"
                                 onClick={e => {
@@ -658,7 +671,7 @@ export default function AlertList({
                                 {t('alertList.resolve')}
                               </button>
                             )}
-                            {alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
+                            {canWrite && alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
                               <button
                                 type="button"
                                 onClick={e => {
@@ -673,7 +686,7 @@ export default function AlertList({
                                 {t('alertList.mute')}
                               </button>
                             )}
-                            {alert.status !== 'dismissed' && (
+                            {canWrite && alert.status !== 'dismissed' && (
                               <button
                                 type="button"
                                 onClick={e => {

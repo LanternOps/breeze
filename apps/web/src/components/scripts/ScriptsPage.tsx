@@ -9,6 +9,7 @@ import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { usePermissions } from '@/lib/permissions';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
 import { useJwtClaims } from '@/lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
@@ -52,6 +53,8 @@ type SystemScript = {
 
 export default function ScriptsPage() {
   const { t } = useTranslation('scripts');
+  const { can } = usePermissions();
+  const canWrite = can('scripts', 'write'); // UX gate; API enforces scripts.write
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [scripts, setScripts] = useState<ScriptWithDetails[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -358,6 +361,7 @@ export default function ScriptsPage() {
         headingTestId="scripts-heading"
         actions={
           <>
+            {canWrite && (
             <button
               type="button"
               onClick={() => setModalMode('bundle-import')}
@@ -367,6 +371,7 @@ export default function ScriptsPage() {
               <Upload className="h-4 w-4" />
               {t('bundle.importButton')}
             </button>
+            )}
             <button
               type="button"
               onClick={() => setModalMode('bundle-export')}
@@ -377,6 +382,7 @@ export default function ScriptsPage() {
               <Download className="h-4 w-4" />
               {t('bundle.exportButton')}
             </button>
+            {canWrite && (
             <button
               type="button"
               onClick={handleOpenLibrary}
@@ -385,6 +391,8 @@ export default function ScriptsPage() {
               <Download className="h-4 w-4" />
               {t('scriptsPage.actions.importFromLibrary')}
             </button>
+            )}
+            {canWrite && (
             <a
               href="/scripts/new"
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
@@ -392,6 +400,7 @@ export default function ScriptsPage() {
               <Plus className="h-4 w-4" />
               {t('scriptsPage.actions.newScript')}
             </a>
+            )}
           </>
         }
       />
@@ -411,10 +420,12 @@ export default function ScriptsPage() {
           <p className="text-sm text-muted-foreground max-w-md mb-6">
             {t('scriptsPage.empty.description')}
           </p>
+{canWrite && (
           <a href="/scripts/new" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
             {t('scriptsPage.actions.createScript')}
             <ArrowRight className="h-4 w-4" />
           </a>
+          )}
         </div>
       ) : (
         <ScriptList

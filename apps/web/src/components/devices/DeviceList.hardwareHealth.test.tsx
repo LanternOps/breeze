@@ -32,3 +32,10 @@ it('renders a dash for a missing rollup', () => {
   render(<DeviceList devices={[{ ...device, hardwareHealth: null }]} />);
   expect(screen.getByTestId(`device-${device.id}-hardware-health`)).toHaveTextContent('—');
 });
+
+// #7215: Wake is gated on devices:execute; grant everything here (role-aware
+// behaviour is covered in DeviceList.permissions.test.tsx).
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));

@@ -158,3 +158,10 @@ describe('DeviceList — custom field columns (#6594)', () => {
     expect(screen.queryByTestId(`device-${populated.id}-custom-deleted_field`)).toBeNull();
   });
 });
+
+// #7215: Wake is gated on devices:execute; grant everything here (role-aware
+// behaviour is covered in DeviceList.permissions.test.tsx).
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));
