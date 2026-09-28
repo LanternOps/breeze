@@ -453,12 +453,40 @@ func setUploadTimeoutFloorForTest(d time.Duration) (restore func()) {
 	return func() { uploadTimeoutFloor = old }
 }
 
+// uploadTimeoutCeiling caps uploadDeadline (#7105). Before the cap the
+// deadline scaled linearly with no ceiling: ~17 h for a 4 GB file and ~7 days
+// for a 40 GB one, so a black-holed multipart body held the upload loop for
+// days (#2798).
+//
+// 24 h, and not the "an hour is generous" #2798 floated, because a cap only
+// helps if it never fires on an upload that is actually moving. A file that
+// hits the cap is retried once and then SKIPPED, and every later run restarts
+// it from zero, so a cap below a real file's transfer time drops that file
+// from every backup, permanently. 24 h still carries a 40 GB file (a PST, a
+// VHDX) over a ~4 Mbit/s uplink — the same 512 KiB/s floor rate the server's
+// stall reaper assumes — and it equals the server's own no-transfer ceiling
+// (BACKUP_NO_TRANSFER_MAX_WINDOW_MS in apps/api/src/jobs/staleCommandReaper.ts),
+// so the agent never outwaits the window the server would give the same job.
+//
+// The cap binds from ~5.3 GiB up (24 h at uploadMinThroughputBps). The faster
+// stall signal is now server-side: agents since #7097 report in-file byte
+// progress, so a wedged upload stops advancing transferred_size and the
+// reaper's no-transfer rule stops the job long before this deadline.
+const uploadTimeoutCeiling = 24 * time.Hour
+
 // uploadDeadline returns the per-file upload deadline for a file of the given
-// size, scaled to size at uploadMinThroughputBps with a floor of
-// uploadTimeoutFloor. A stalled per-file upload is treated as a per-file
-// failure (skip and continue), not a job abort — see CreateSnapshotContext.
+// size, scaled to size at uploadMinThroughputBps and clamped to
+// [uploadTimeoutFloor, uploadTimeoutCeiling]. A stalled per-file upload is
+// treated as a per-file failure (skip and continue), not a job abort — see
+// CreateSnapshotContext.
 func uploadDeadline(size int64) time.Duration {
-	d := time.Duration(size/uploadMinThroughputBps) * time.Second
+	secs := size / uploadMinThroughputBps
+	// Compare in seconds before converting: a Duration is int64 nanoseconds,
+	// so scaling an absurd size would overflow before any clamp could see it.
+	if secs >= int64(uploadTimeoutCeiling/time.Second) {
+		return uploadTimeoutCeiling
+	}
+	d := time.Duration(secs) * time.Second
 	if d < uploadTimeoutFloor {
 		return uploadTimeoutFloor
 	}
@@ -1091,8 +1119,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 		// Log the file we are ABOUT to upload, at debug, before we block on it.
 		// This is the line that makes a wedged backup diagnosable: the deadline
-		// below scales with file size and has no ceiling, so a large file whose
-		// upload stalls mid-body can hold the loop for hours with no other
+		// below scales with file size (capped at uploadTimeoutCeiling), so a
+		// large file whose upload stalls mid-body can hold the loop for hours with no other
 		// output. Without a start line the last thing in the log is the
 		// previous file's success and there is no way to tell which file is
 		// stuck (#2790, #2798).
@@ -1467,9 +1495,7 @@ func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvi
 	if statErr == nil {
 		manifestSize = manifestInfo.Size()
 	}
-	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(manifestSize))
-	manifestUploadErr := uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)
-	cancelAttempt()
+	manifestUploadErr := uploadWithDeadline(ctx, provider, manifestPath, manifestKey, manifestSize)
 	if manifestUploadErr != nil {
 		if errors.Is(manifestUploadErr, errBackupStopped) {
 			return manifestUploadErr
@@ -1501,9 +1527,7 @@ func publishLayoutManifest(ctx context.Context, provider providers.BackupProvide
 		return fmt.Errorf("stage layout manifest: %w", err)
 	}
 	key := path.Join(snapshotRootDir, snapshotID, layoutManifestKey)
-	attemptCtx, cancel := context.WithTimeout(ctx, uploadDeadline(int64(len(data))))
-	defer cancel()
-	if err := uploadSnapshotFile(attemptCtx, provider, tmpPath, key); err != nil {
+	if err := uploadWithDeadline(ctx, provider, tmpPath, key, int64(len(data))); err != nil {
 		if errors.Is(err, errBackupStopped) {
 			return err
 		}
@@ -1570,9 +1594,7 @@ func publishSystemState(ctx context.Context, provider providers.BackupProvider, 
 		}
 
 		remoteKey := path.Join(prefix, art.Path)
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(info.Size()))
-		uploadErr := uploadSnapshotFile(attemptCtx, provider, localPath, remoteKey)
-		cancelAttempt()
+		uploadErr := uploadWithDeadline(ctx, provider, localPath, remoteKey, info.Size())
 		if uploadErr != nil {
 			if errors.Is(uploadErr, errBackupStopped) {
 				return uploadErr
@@ -1597,9 +1619,7 @@ func publishSystemState(ctx context.Context, provider providers.BackupProvider, 
 	if statErr == nil {
 		manifestSize = manifestInfo.Size()
 	}
-	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(manifestSize))
-	manifestUploadErr := uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)
-	cancelAttempt()
+	manifestUploadErr := uploadWithDeadline(ctx, provider, manifestPath, manifestKey, manifestSize)
 	if manifestUploadErr != nil {
 		if errors.Is(manifestUploadErr, errBackupStopped) {
 			return manifestUploadErr
@@ -1629,24 +1649,45 @@ func writeSystemStateManifest(manifest *systemstate.SystemStateManifest) (string
 
 // attemptFileUpload runs a single upload attempt for file against a fresh
 // per-attempt context scoped to ctx with a size-scaled deadline (see
-// uploadDeadline). A deadline expiry that is not also a job-context cancel is
-// converted to a plain error so the caller can distinguish "this file
-// stalled" (retry / skip-and-continue) from "the job was cancelled" (abort).
+// uploadWithDeadline).
 func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, file backupFile, backupPath string) error {
-	deadline := uploadDeadline(file.size)
+	return uploadWithDeadline(ctx, provider, file.sourcePath, backupPath, file.size)
+}
+
+// uploadWithDeadline uploads localPath to remotePath under a per-attempt
+// context bounded by uploadDeadline(size). It is the ONLY way a snapshot
+// upload gets a deadline: files, the snapshot manifest, the layout manifest and
+// the system-state artifacts all go through it (#7105).
+//
+// uploadSnapshotFile maps any context error to errBackupStopped, so without the
+// conversion here a deadline expiry is indistinguishable from a user cancel —
+// the publish-time uploads used to return it as-is and the run was reported as
+// stopped, with nothing logged. A deadline expiry that is not also a job-context
+// cancel is therefore logged at warn and converted to a plain "upload stalled"
+// error; a real job cancel still returns errBackupStopped unwrapped, so callers
+// keep aborting on it.
+//
+// The warn is not rate-limited: it fires at most once per attempt, and every
+// caller makes at most two attempts per file (the main loop's single retry;
+// publish-time uploads never retry), so it cannot repeat for a file. The
+// main loop's per-file skip warn has the same one-per-file bound.
+func uploadWithDeadline(ctx context.Context, provider providers.BackupProvider, localPath, remotePath string, size int64) error {
+	deadline := uploadDeadline(size)
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, deadline)
 	defer cancelAttempt()
-	uploadErr := uploadSnapshotFile(attemptCtx, provider, file.sourcePath, backupPath)
+	uploadErr := uploadSnapshotFile(attemptCtx, provider, localPath, remotePath)
 	if errors.Is(uploadErr, errBackupStopped) && ctx.Err() == nil {
 		// The per-file deadline fired, not a job cancel. Log it distinctly:
-		// a deadline expiry means we sat on one file for the whole (size-
-		// scaled, uncapped) window with the destination accepting the request
-		// and never finishing it. That is a different failure from an outright
-		// upload error and it is the signature of the stall in #2798.
+		// a deadline expiry means we sat on one file for the whole size-
+		// scaled window with the destination accepting the request and never
+		// finishing it. That is a different failure from an outright upload
+		// error and it is the signature of the stall in #2798.
 		log.Warn("file upload deadline expired",
-			"path", file.sourcePath,
-			"bytes", file.size,
+			"path", localPath,
+			"remotePath", remotePath,
+			"bytes", size,
 			"deadlineMs", deadline.Milliseconds(),
+			"deadlineCapped", deadline == uploadTimeoutCeiling,
 		)
 		uploadErr = fmt.Errorf("upload stalled: no completion within %s", deadline)
 	}
