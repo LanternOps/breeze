@@ -205,8 +205,6 @@ function formatDesktopAccessReason(
       return "Helper Not Connected";
     case "virtual_display_unavailable":
       return "Virtual Display Unavailable";
-    case "unsupported_os":
-      return "Unsupported macOS Version";
     case "manual_install":
       return "Manual Install";
     case "no_display_session":
@@ -357,7 +355,8 @@ const statusColors: Record<string, string> = {
 };
 
 export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
-  const { t } = useTranslation("devices");
+  // `remote` is loaded for the desktop-access copy shared with ConnectDesktopButton.
+  const { t } = useTranslation(["devices", "remote"]);
   const [info, setInfo] = useState<DeviceInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -1222,7 +1221,11 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           />
           <InfoRow
             label={t("deviceInfoTab.reason")}
-            value={formatDesktopAccessReason(info.desktopAccess.reason)}
+            value={
+              info.desktopAccess.reason === "unsupported_os"
+                ? t("deviceInfoTab.reasonLoginWindow")
+                : formatDesktopAccessReason(info.desktopAccess.reason)
+            }
           />
           <InfoRow
             label={t("deviceInfoTab.lastChecked")}
@@ -1234,7 +1237,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
                 <p className="text-sm text-amber-700 dark:text-amber-400">
                   {info.desktopAccess.reason === "unsupported_os"
-                    ? t("deviceInfoTab.thisMacIsBelowTheMacos")
+                    ? t("remote:connectDesktopButton.unavailable.unsupportedOs")
                     : info.desktopAccess.reason === "manual_install"
                       ? t(
                           "deviceInfoTab.loginWindowReachabilityIsOnlyAdvertised",

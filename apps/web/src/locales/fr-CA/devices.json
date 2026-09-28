@@ -1223,7 +1223,7 @@
     "missing": "Manquants",
     "reason": "Raison",
     "lastChecked": "Dernière vérification",
-    "thisMacIsBelowTheMacos": "Ce Mac utilise une version antérieure à macOS 14, version minimale requise pour l’accès natif au bureau à partir de la fenêtre d’ouverture de session.",
+    "reasonLoginWindow": "Fenêtre d’ouverture de session (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "L’accès à partir de la fenêtre d’ouverture de session est indiqué seulement pour les installations gérées sur lesquelles l’assistant de bureau est déployé.",
     "theNativeLoginWindowDesktopPath": "L’accès natif au bureau à partir de la fenêtre d’ouverture de session dépend de l’approbation des droits par Apple.",
     "theNativeLoginWindowDesktopPath2": "L’accès natif au bureau à partir de la fenêtre d’ouverture de session n’est pas encore prêt sur cet appareil.",

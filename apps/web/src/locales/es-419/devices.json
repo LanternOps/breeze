@@ -1223,7 +1223,7 @@
     "missing": "Faltante",
     "reason": "Razón",
     "lastChecked": "Última comprobación",
-    "thisMacIsBelowTheMacos": "Esta Mac está por debajo del piso macOS 14+ para la ruta de escritorio de la ventana de inicio de sesión nativa.",
+    "reasonLoginWindow": "Ventana de inicio de sesión (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "La accesibilidad de la ventana de inicio de sesión solo se anuncia para instalaciones administradas con el asistente de escritorio implementado.",
     "theNativeLoginWindowDesktopPath": "La ruta de escritorio de la ventana de inicio de sesión nativa está cerrada tras la aprobación de derechos de Apple.",
     "theNativeLoginWindowDesktopPath2": "La ruta del escritorio de la ventana de inicio de sesión nativa aún no está lista en este dispositivo.",

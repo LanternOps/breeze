@@ -92,6 +92,10 @@
         "default": "A sessão foi encerrada por uma política de segurança. Tente se reconectar."
       }
     },
+    "startFailed": {
+      "description": "O agente não conseguiu iniciar a sessão. Tente novamente ou verifique os logs de diagnóstico do dispositivo.",
+      "title": "Falha ao iniciar a Área de Trabalho Remota"
+    },
     "unavailable": {
       "default": "A área de trabalho não está disponível neste dispositivo",
       "headless": "Este dispositivo não tem tela; a área de trabalho remota está indisponível",

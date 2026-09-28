@@ -92,6 +92,10 @@
         "default": "La session a été terminée par une politique de sécurité. Reconnectez-vous pour réessayer."
       }
     },
+    "startFailed": {
+      "description": "L’agent n’a pas pu démarrer la session. Réessayez ou consultez les journaux de diagnostic de l’appareil.",
+      "title": "Le Bureau à distance n’a pas pu démarrer"
+    },
     "unavailable": {
       "default": "Le mode de bureau n’est pas disponible sur cet appareil",
       "headless": "Cet appareil n’a pas d’affichage — le bureau à distance n’est pas disponible",

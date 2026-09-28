@@ -1223,7 +1223,7 @@
     "missing": "Missing",
     "reason": "Reason",
     "lastChecked": "Last Checked",
-    "thisMacIsBelowTheMacos": "This Mac is below the macOS 14+ floor for the native login-window desktop path.",
+    "reasonLoginWindow": "Login Window (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "Login-window reachability is only advertised for managed installs with the desktop helper deployed.",
     "theNativeLoginWindowDesktopPath": "The native login-window desktop path is gated behind Apple entitlement approval.",
     "theNativeLoginWindowDesktopPath2": "The native login-window desktop path is not ready on this device yet.",

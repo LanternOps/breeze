@@ -92,6 +92,10 @@
         "default": "Oturum bir güvenlik politikası tarafından sonlandırıldı. Yeniden bağlanmayı deneyin."
       }
     },
+    "startFailed": {
+      "description": "Aracı oturumu başlatamadı. Yeniden deneyin veya cihazın tanılama günlüklerini kontrol edin.",
+      "title": "Uzak Masaüstü başlatılamadı"
+    },
     "unavailable": {
       "default": "Masaüstü bu cihazda kullanılamıyor",
       "headless": "Bu cihazın ekranı yok — uzak masaüstü kullanılamıyor",

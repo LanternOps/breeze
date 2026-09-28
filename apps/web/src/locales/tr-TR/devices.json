@@ -1223,7 +1223,7 @@
     "missing": "Eksik",
     "reason": "Sebep",
     "lastChecked": "Son Kontrol Edildi",
-    "thisMacIsBelowTheMacos": "Bu Mac, yerel oturum açma penceresi masaüstü yolu için macOS 14+ katının altındadır.",
+    "reasonLoginWindow": "Oturum açma penceresi (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "Oturum açma penceresinin erişilebilirliği yalnızca masaüstü yardımcısının dağıtıldığı yönetilen yüklemeler için duyurulur.",
     "theNativeLoginWindowDesktopPath": "Yerel oturum açma penceresi masaüstü yolu, Apple yetkilendirme onayının arkasında geçişlidir.",
     "theNativeLoginWindowDesktopPath2": "Yerel oturum açma penceresi masaüstü yolu bu cihazda henüz hazır değil.",
