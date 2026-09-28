@@ -97,6 +97,23 @@ export interface MetricRollupRange {
   from: Date;
   to: Date;
   expectedSampleSeconds?: number;
+  /**
+   * #4276 — which days the hour→day derived passes re-derive.
+   *
+   * A day bucket is a full re-aggregate of its day's hourly rows (min/max are
+   * not subtractable, so it cannot be patched incrementally), which makes each
+   * day pass O(hours elapsed in the day) per device×series. On the 5-minute
+   * path that grew through the day and was the bulk of the 2s+ hold.
+   *
+   *  - omitted: every day touched by `[from, to)` — the historical behaviour,
+   *    kept for backfills and the backfill script.
+   *  - `'skip'`: no day passes this run.
+   *  - `{ from }`: every day touched by `[dayRollups.from, to)`. The scheduler
+   *    uses this on its once-an-hour day run, with a `from` reaching back far
+   *    enough to re-fold every hour changed since the previous day run
+   *    (including yesterday's last hours just after midnight).
+   */
+  dayRollups?: 'skip' | { from: Date };
 }
 
 export interface MetricRollupResult {
@@ -639,12 +656,12 @@ async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {
 
 async function rollupDerivedMetricSource(
   options: MetricRollupRange,
+  window: { from: Date; to: Date },
   sourceTable: 'device_metrics' | 'device_process_samples' | 'snmp_metrics',
   sourceBucketSeconds: MetricRollupBucketSeconds,
   targetBucketSeconds: MetricRollupBucketSeconds,
 ): Promise<void> {
-  const { from, to } = normalizeRange(options.from, options.to);
-  const sourceRange = expandRangeToBucketBounds(from, to, targetBucketSeconds);
+  const sourceRange = expandRangeToBucketBounds(window.from, window.to, targetBucketSeconds);
   const fromIso = sourceRange.from.toISOString();
   const toIso = sourceRange.to.toISOString();
   const targetBucketSql = bucketStartSql(sql`mr.bucket_start`, targetBucketSeconds);
@@ -721,6 +738,14 @@ export async function rollupDeviceMetricsRange(options: MetricRollupRange): Prom
 
 async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<MetricRollupResult> {
   const { from, to } = normalizeRange(options.from, options.to);
+  const hourWindow = { from, to };
+  // Validated up front so a bad day window fails before any write, like a bad range.
+  const dayWindow =
+    options.dayRollups === 'skip'
+      ? null
+      : options.dayRollups
+        ? normalizeRange(options.dayRollups.from, to)
+        : hourWindow;
   // The gate reads `organizations` + `partners`, both RLS-forced — with no
   // context the read returns zero rows and every org would look disabled.
   const produceOutput = await inRollupDbContext('metricRollups.mlFeatureGate', () =>
@@ -748,18 +773,14 @@ async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<
   await rollupRawSnmpMetrics(options);
   statements += 1;
 
-  await rollupDerivedMetricSource(options, 'device_metrics', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
-  statements += 1;
-  await rollupDerivedMetricSource(options, 'device_metrics', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
-  statements += 1;
-  await rollupDerivedMetricSource(options, 'device_process_samples', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
-  statements += 1;
-  await rollupDerivedMetricSource(options, 'device_process_samples', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
-  statements += 1;
-  await rollupDerivedMetricSource(options, 'snmp_metrics', RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
-  statements += 1;
-  await rollupDerivedMetricSource(options, 'snmp_metrics', HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
-  statements += 1;
+  for (const sourceTable of ['device_metrics', 'device_process_samples', 'snmp_metrics'] as const) {
+    await rollupDerivedMetricSource(options, hourWindow, sourceTable, RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
+    statements += 1;
+    if (dayWindow) {
+      await rollupDerivedMetricSource(options, dayWindow, sourceTable, HOUR_BUCKET_SECONDS, DAY_BUCKET_SECONDS);
+      statements += 1;
+    }
+  }
 
   return {
     orgId: options.orgId,

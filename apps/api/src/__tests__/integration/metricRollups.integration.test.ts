@@ -5,7 +5,7 @@ import { and, eq } from 'drizzle-orm';
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { discoveredAssets, devices, deviceMetrics, deviceProcessSamples, metricRollups, snmpDevices, snmpMetrics } from '../../db/schema';
-import { rollupDeviceMetricsRange } from '../../services/metricRollups';
+import { rollupDeviceMetricsRange, type MetricRollupRange } from '../../services/metricRollups';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -164,7 +164,12 @@ async function insertSnmpMetric(options: {
   });
 }
 
-async function runRollup(orgId: string, from: Date, to: Date): Promise<void> {
+async function runRollup(
+  orgId: string,
+  from: Date,
+  to: Date,
+  dayRollups?: MetricRollupRange['dayRollups'],
+): Promise<void> {
   // Deliberately NO outer context wrap: this must exercise the same call shape
   // as jobs/metricRollups.ts — rollupDeviceMetricsRange opens its own labeled
   // context per statement. If a refactor ever drops that (e.g. removes the
@@ -176,6 +181,7 @@ async function runRollup(orgId: string, from: Date, to: Date): Promise<void> {
     from,
     to,
     expectedSampleSeconds: 60,
+    ...(dayRollups === undefined ? {} : { dayRollups }),
   });
 }
 
@@ -314,6 +320,57 @@ describe('metric rollups integration', () => {
       sampleCount: 4,
       gapSeconds: 960,
     }));
+  });
+
+  // #4276 direction 1 — day buckets are re-derived only on the hourly :15 run,
+  // which reaches back past midnight. A sample for the previous day's last hour
+  // that lands on a skip run after midnight must still reach that day's bucket.
+  it('folds a late sample from the previous day into its day bucket on the next day run', async () => {
+    const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'day-boundary-device' });
+    await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T23:05:00.000Z'), cpuPercent: 20 });
+
+    // The 23:15 day run: the 18th's day bucket sees the one sample.
+    await runRollup(
+      orgA,
+      new Date('2026-06-18T23:00:00.000Z'),
+      new Date('2026-06-18T23:15:00.000Z'),
+      { from: new Date('2026-06-18T20:00:00.000Z') },
+    );
+    const firstDay = await selectCpuRollupsForBucket(orgA, device, 86400);
+    expect(firstDay).toHaveLength(1);
+    expect(firstDay[0]).toEqual(expect.objectContaining({
+      bucketStart: new Date('2026-06-18T00:00:00.000Z'),
+      avgValue: 20,
+      sampleCount: 1,
+    }));
+
+    // A sample at 23:58 is rolled up by the 00:10 run, which skips day passes:
+    // the hour bucket moves, the day bucket must not (yet).
+    await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T23:58:00.000Z'), cpuPercent: 40 });
+    await runRollup(
+      orgA,
+      new Date('2026-06-18T23:55:00.000Z'),
+      new Date('2026-06-19T00:10:00.000Z'),
+      'skip',
+    );
+    const lateHour = await selectCpuRollupsForBucket(orgA, device, 3600);
+    expect(lateHour.find((row) => row.bucketStart.getTime() === Date.parse('2026-06-18T23:00:00.000Z')))
+      .toEqual(expect.objectContaining({ avgValue: 30, sampleCount: 2 }));
+    const skippedDay = await selectCpuRollupsForBucket(orgA, device, 86400);
+    expect(skippedDay).toHaveLength(1);
+    expect(skippedDay[0]).toEqual(expect.objectContaining({ avgValue: 20, sampleCount: 1 }));
+
+    // The 00:15 day run: its raw window is entirely on the 19th, but its day
+    // window reaches back into the 18th and folds the late sample in.
+    await runRollup(
+      orgA,
+      new Date('2026-06-19T00:00:00.000Z'),
+      new Date('2026-06-19T00:15:00.000Z'),
+      { from: new Date('2026-06-18T21:00:00.000Z') },
+    );
+    const foldedDay = await selectCpuRollupsForBucket(orgA, device, 86400);
+    expect(foldedDay.find((row) => row.bucketStart.getTime() === Date.parse('2026-06-18T00:00:00.000Z')))
+      .toEqual(expect.objectContaining({ avgValue: 30, sampleCount: 2 }));
   });
 
   it('materializes process sample buckets and replay-updates late process samples', async () => {
