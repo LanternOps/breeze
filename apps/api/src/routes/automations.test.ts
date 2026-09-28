@@ -3,6 +3,16 @@ import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 import { automationRoutes, automationWebhookRoutes } from './automations';
 
+// #7347: models withAuthDbAccessContext as a fresh transaction that COMMITS
+// when its callback resolves (or throws "commit failed" when `failNextCommit`).
+// `stack` is the currently-open contexts, `committed` the ids that committed.
+const authDbContexts = vi.hoisted(() => ({
+  seq: 0,
+  stack: [] as number[],
+  committed: new Set<number>(),
+  failNextCommit: false,
+}));
+
 const {
   resolveAutomationReferencesForOwnerMock,
   replaceAutomationResourceBindingsMock,
@@ -23,6 +33,9 @@ vi.mock('../services/automationReadProjection', () => ({
 vi.mock('../jobs/automationWorker', () => ({
   enqueueAutomationRun: vi.fn(async () => ({ enqueued: true, jobId: 'job-1' }))
 }));
+
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null)
@@ -212,10 +225,26 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: any, fn: () => Promise<unknown>) => {
+    const id = ++authDbContexts.seq;
+    authDbContexts.stack.push(id);
+    try {
+      const result = await fn();
+      if (authDbContexts.failNextCommit) {
+        authDbContexts.failNextCommit = false;
+        throw new Error('commit failed');
+      }
+      authDbContexts.committed.add(id);
+      return result;
+    } finally {
+      authDbContexts.stack.pop();
+    }
+  }),
 }));
 
 import { db } from '../db';
+import { enqueueAutomationRun } from '../jobs/automationWorker';
 import { getRedis } from '../services/redis';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { checkAutomationTargetsWithinSiteScope, createAutomationRunRecord } from '../services/automationRuntime';
@@ -225,6 +254,9 @@ describe('automations routes', () => {
 
 	  beforeEach(() => {
 	    vi.clearAllMocks();
+	    authDbContexts.stack.length = 0;
+	    authDbContexts.committed.clear();
+	    authDbContexts.failNextCommit = false;
 	    capturedScriptExecWhere.length = 0;
 	    capturedCommandResultsWhere.length = 0;
 	    mockState.permissions = undefined;
@@ -1148,6 +1180,102 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.message).toContain('triggered');
     expect(body.run.devicesTargeted).toBe(2);
+  });
+
+  describe('#7347 — manual trigger enqueues only after the run row commits', () => {
+    const AUTOMATION_ROW = {
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'Automation One',
+      orgId: 'org-123',
+      enabled: true,
+      runCount: 0,
+      trigger: { type: 'manual' },
+    };
+
+    function mockAutomationRow() {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([AUTOMATION_ROW]) }),
+        }),
+      } as any);
+    }
+
+    /** Records which auth context created the run and whether it had committed at enqueue. */
+    function trackRunAndEnqueue() {
+      const seen: { createdIn?: number; openAtEnqueue?: number; committedAtEnqueue?: boolean } = {};
+      vi.mocked(createAutomationRunRecord).mockImplementationOnce(async () => {
+        seen.createdIn = authDbContexts.stack.at(-1);
+        return {
+          run: { id: 'run-1', status: 'running', devicesTargeted: 2, startedAt: new Date() },
+          targetDeviceIds: ['device-1', 'device-2'],
+          reused: false,
+        } as any;
+      });
+      vi.mocked(enqueueAutomationRun).mockImplementationOnce(async () => {
+        seen.openAtEnqueue = authDbContexts.stack.length;
+        seen.committedAtEnqueue = seen.createdIn !== undefined && authDbContexts.committed.has(seen.createdIn);
+        return { enqueued: true, jobId: 'job-1' };
+      });
+      return seen;
+    }
+
+    it.each(['trigger', 'run'])('POST /:id/%s creates the run in a committed context, then enqueues with none open', async (path) => {
+      mockAutomationRow();
+      const seen = trackRunAndEnqueue();
+
+      const res = await app.request(`/automations/11111111-1111-4111-8111-111111111111/${path}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(seen.createdIn, 'the run was not created in its own auth context').toBeDefined();
+      expect(seen.committedAtEnqueue, 'execute-run was enqueued before the run committed').toBe(true);
+      expect(seen.openAtEnqueue).toBe(0);
+      expect(vi.mocked(enqueueAutomationRun)).toHaveBeenCalledWith('run-1', ['device-1', 'device-2']);
+    });
+
+    it('a run transaction that rolls back enqueues nothing', async () => {
+      mockAutomationRow();
+      trackRunAndEnqueue();
+      authDbContexts.failNextCommit = true;
+
+      const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(500);
+      expect(vi.mocked(createAutomationRunRecord)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(enqueueAutomationRun)).not.toHaveBeenCalled();
+    });
+
+    it('an enqueue that fails after commit fails the committed run and reports it', async () => {
+      mockAutomationRow();
+      trackRunAndEnqueue();
+      vi.mocked(enqueueAutomationRun).mockReset().mockRejectedValueOnce(new Error('redis down'));
+      const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({ error: expect.any(String), runId: 'run-1' });
+      // The committed run would otherwise sit `running` with no job, forever.
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'redis down' }),
+        undefined,
+        { runId: 'run-1', automationId: '11111111-1111-4111-8111-111111111111' },
+      );
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'automation.trigger', result: 'failure' }),
+      );
+    });
   });
 
   it('rejects manual triggering of a managed automation before creating a run', async () => {

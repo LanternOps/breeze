@@ -131,6 +131,13 @@ type HeartbeatPayload struct {
 	// 0 on every heartbeat (non-sticky), so a helper downgrade is reflected
 	// on the next beat.
 	BackupReadProtocolVersion int `json:"backupReadProtocolVersion,omitempty"`
+	// BackupIntegrityProtocolVersion and BackupWriteProtocolVersion are the
+	// snapshot integrity and brokered storage-write protocols the same
+	// installed helper reports, under the same rules: never inferred,
+	// omitted at 0, and read by the server as 0 on every heartbeat that
+	// omits them.
+	BackupIntegrityProtocolVersion int `json:"backupIntegrityProtocolVersion,omitempty"`
+	BackupWriteProtocolVersion     int `json:"backupWriteProtocolVersion,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -848,14 +855,14 @@ type Heartbeat struct {
 	backupVersionRead          bool
 	backupVersionReadWarned    bool
 
-	// backupReadProtocolReader is a test seam for the --protocol-info probe
-	// (readInstalledBackupReadProtocol); nil in production. The cache fields
+	// backupProtocolReader is a test seam for the --protocol-info probe
+	// (readInstalledBackupProtocols); nil in production. The cache fields
 	// below are guarded by backupVersionMu and cleared by
 	// invalidateBackupVersionCache, exactly like the version cache.
-	backupReadProtocolReader   func() (int, backupProbeOutcome)
-	backupReadProtocolValue    int
-	backupReadProtocolRead     bool
-	backupReadProtocolFailedAt time.Time
+	backupProtocolReader   func() (backupipc.ProtocolInfo, backupProbeOutcome)
+	backupProtocolValue    backupipc.ProtocolInfo
+	backupProtocolRead     bool
+	backupProtocolFailedAt time.Time
 
 	// backupHelperDownloader is an optional test seam: when non-nil,
 	// prefetchBackupHelper / reconcileBackupHelper call this instead of
@@ -4637,7 +4644,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache).
-	payload.BackupReadProtocolVersion = h.backupReadProtocolVersion()
+	backupProtocols := h.backupProtocols()
+	payload.BackupReadProtocolVersion = backupProtocols.BackupReadProtocolVersion
+	payload.BackupIntegrityProtocolVersion = backupProtocols.BackupIntegrityProtocolVersion
+	payload.BackupWriteProtocolVersion = backupProtocols.BackupWriteProtocolVersion
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
 	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation
@@ -6038,7 +6048,21 @@ func (h *Heartbeat) confirmTokenRotation(newAuthToken string) (confirmed bool, t
 	confirmClient := api.NewClient(h.serverURL(), newAuthToken, h.config.AgentID)
 	resp, err := confirmClient.ConfirmTokenRotation()
 	if err != nil {
-		if api.IsRotationTerminal(err) {
+		discard := api.IsRotationTerminal(err)
+		if !discard && errors.Is(err, api.ErrStagedTokenRejected) {
+			// Issue #2773 — a bare 401 does not by itself say the staged set is
+			// dead (see api.ErrStagedTokenRejected). Discard only once the
+			// current credential is proven to be the server's current one;
+			// otherwise the staged copy may be the only credential the server
+			// will accept once this device or its tenant is reinstated.
+			if !h.currentCredentialProvenCurrent(newAuthToken) {
+				log.Warn("staged token was rejected but the current credential could not be proven current; keeping the staged set and retrying",
+					"reason", err.Error())
+				return false, false
+			}
+			discard = true
+		}
+		if discard {
 			// The staged set can never be promoted now — it expired, or the server
 			// told us (#2894) that it is neither the staged nor the current
 			// credential. Drop it so the per-tick retry and startup reconciliation
@@ -6064,6 +6088,44 @@ func (h *Heartbeat) confirmTokenRotation(newAuthToken string) (confirmed bool, t
 	}
 
 	return resp.Confirmed, false
+}
+
+// currentCredentialProvenCurrent reports whether the agent's in-memory current
+// token is provably the server's CURRENT agent credential — the precondition
+// for discarding a staged set the confirm route answered with a bare 401
+// (#2773).
+//
+// It asks the confirm route itself, authenticated with the current token. That
+// route mutates nothing for a token that is already current, and its answers
+// are precise:
+//   - 200 (`alreadyCurrent`, or the token was the live staged hash and has
+//     just been promoted) — current.
+//   - 409 `pending_token_required` — current, with some other set staged.
+//   - anything else — NOT proven: a 401 (suspended device, inactive tenant,
+//     or a token that is no longer accepted at all), `rotation_unresolvable`
+//     (it authenticates only as the superseded previous credential, so the
+//     server's current one is something else — possibly the staged token), or
+//     a transport/5xx failure.
+func (h *Heartbeat) currentCredentialProvenCurrent(stagedToken string) bool {
+	if h.secureToken == nil || h.secureToken.IsZeroed() {
+		return false
+	}
+	current := h.secureToken.Reveal()
+	// After a confirmed promotion whose local write failed, memory already runs
+	// on the staged token. Probing with the token that was just rejected would
+	// prove nothing.
+	if current == "" || current == stagedToken {
+		return false
+	}
+	_, err := api.NewClient(h.serverURL(), current, h.config.AgentID).ConfirmTokenRotation()
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, api.ErrPendingTokenRequired) {
+		return true
+	}
+	log.Warn("could not prove the current credential is the server's current one", "reason", err.Error())
+	return false
 }
 
 // applyRotatedCredentials collapses a confirmed rotation into the agent's

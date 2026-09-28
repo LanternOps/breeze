@@ -160,6 +160,8 @@ export const SENTRY_EVENT_CODES = [
   'accounting_home_currency_cas_lost',
   /** The Intuit webhook route was reached with QBO_WEBHOOK_VERIFIER_TOKEN unset. */
   'accounting_webhook_verifier_token_missing',
+  /** The Xero webhook route was reached with XERO_WEBHOOK_KEY unset. */
+  'accounting_webhook_signing_key_missing',
   /** Inbound mail arrived with no usable provider sender-auth verdict. */
   'inbound_email_sender_auth_unverified',
   /** Inbound mail lost the message-id claim race and duplicated a ticket. */

@@ -2,6 +2,7 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { FilterSelect } from '../shared/FilterSelect';
 
 export type ApiKeyStatus = 'active' | 'revoked' | 'expired';
 
@@ -110,17 +111,18 @@ export default function ApiKeyList({
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
-          <select
+          <FilterSelect
+            label={t('apiKeyList.statusFilterLabel')}
             value={statusFilter}
             onChange={event => setStatusFilter(event.target.value as ApiKeyStatus | 'all')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
+            className="w-full sm:w-40"
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
                 {status === 'all' ? t('apiKeyList.allStatuses') : t(/* i18n-dynamic */ statusLabelKeys[status as ApiKeyStatus])}
               </option>
             ))}
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

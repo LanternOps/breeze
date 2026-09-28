@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Essayez d’ajuster votre recherche ou vos filtres.",
     "active": "Active",
     "revoked": "Révoquée",
-    "expired": "Expirée"
+    "expired": "Expirée",
+    "statusFilterLabel": "État de la clé"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Chargement des API des clés...",
@@ -3827,7 +3828,9 @@
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez-vous à nouveau auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
-    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification."
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification.",
+    "ssoReauthManageHint": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur pour confirmer cette modification.",
+    "ssoReauthManageVerified": "Identité vérifiée auprès de votre fournisseur. Terminez l’étape ci-dessous pour confirmer cette modification."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -3944,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
     "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer.",
     "deletePasskeyVerifyHeading": "Vérifier pour supprimer une clé d'accès",
-    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès."
+    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès.",
+    "ssoReauthManageProofExpired": "La vérification auprès de votre fournisseur d'identité a expiré. Vérifiez à nouveau pour confirmer cette modification.",
+    "verifyWithIdpToDeletePasskey": "Ce compte n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur d'identité avant de supprimer une clé d'accès.",
+    "deletePasskeySsoReauth": "Vérifier l'identité pour supprimer une clé d'accès",
+    "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer."
   },
   "roleManager": {
     "roles": "Rôles",
@@ -4012,13 +4019,18 @@
     "createANewCustomRoleBasedOnThisOne": "Créez un nouveau rôle personnalisé basé sur celui-ci.",
     "saving": "Enregistrement...",
     "cloneRole2": "Rôle du clone",
+    "mfaRequired": "MFA requise",
+    "mfaRequiredTooltip": "Les membres de ce rôle doivent configurer l'authentification multifacteur.",
+    "requireMfaForThisRole": "Exiger la MFA pour ce rôle",
+    "requireMfaForThisRoleHelp": "Les membres ayant ce rôle doivent configurer l'authentification multifacteur avant de pouvoir utiliser Breeze.",
     "saveChanges": "Enregistrer les modifications",
     "deleting": "Suppression…",
     "networkErrorLoadingPermissions": "Erreur réseau lors du chargement des autorisations",
     "cannotDeleteAssignedRole": "Impossible de supprimer un rôle avec des utilisateurs assignés",
     "inheritedFromParentRole": "Hérité du rôle de parent",
     "waitingForPermissionCatalog": "En attente du chargement du catalogue des permissions",
-    "summary": "{{filtered}} de {{total}} Rôles"
+    "summary": "{{filtered}} de {{total}} Rôles",
+    "typeFilterLabel": "Type de rôle"
   },
   "roleSelector": {
     "currentRole": "Rôle actuel",
@@ -4067,6 +4079,9 @@
     "thisOrganization": "Cette organisation",
     "partnerTechnicianLogin": "Partenaire (connexion technicienne)",
     "yourOwnTeamSignsInWithThis": "(votre propre équipe se connecte avec ceci)",
+    "selectAnOrganizationToCreateAnOrgProvider": "Sélectionnez une organisation dans le sélecteur d’organisation pour créer un fournisseur pour cette organisation.",
+    "partnerProviderRequiresFullPartnerAccess": "Les fournisseurs à l’échelle du partenaire nécessitent l’accès à toutes les organisations.",
+    "selectAnOrganizationBeforeCreatingAProvider": "Sélectionnez une organisation dans le sélecteur d’organisation avant de créer un fournisseur.",
     "basicInformation": "Informations de base",
     "providerName": "Nom du fournisseur",
     "eGOktaProduction": "par exemple, Okta Production",
@@ -4143,7 +4158,8 @@
     "delete": "Supprimer",
     "allStatuses": "Tous les statuts",
     "deactivate": "Désactiver",
-    "activate": "Activez"
+    "activate": "Activez",
+    "statusFilterLabel": "État du fournisseur"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Impossible de récupérer les fournisseurs SSO",
@@ -4173,6 +4189,7 @@
     "failedToDeleteProvider": "Impossible de supprimer le fournisseur",
     "anErrorOccurred": "Une erreur s’est produite",
     "failedToSaveProvider": "Impossible d’enregistrer le prestataire",
+    "providerNeedsOrganization": "Sélectionnez une organisation dans le sélecteur d’organisation, ou réglez « S’applique à » sur « Partenaire (connexion technicienne) » pour créer un fournisseur à l’échelle du partenaire.",
     "addSSOProvider": "Ajouter SSO Fournisseur",
     "editSSOProvider": "Modifier le fournisseur SSO",
     "configureANewSSOProviderForYourOrganization": "Configurez un nouveau fournisseur SSO pour votre organisation.",
@@ -5369,7 +5386,8 @@
       "title": "Supprimer le champ personnalisé",
       "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
       "messageSuffix": " Cela supprimera la définition du champ et toutes les valeurs stockées sur les appareils."
-    }
+    },
+    "typeFilterLabel": "Type de champ"
   },
   "knownGuestsSettings": {
     "title": "Invités connus",

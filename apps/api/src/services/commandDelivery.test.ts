@@ -442,9 +442,9 @@ describe('storage-destination delivery refreshers', () => {
     }
   });
 
-  it('routes the eight restore-shaped types through the storage-session refresher and writes through the destination refresher', async () => {
+  it('routes the eight restore-shaped types through the storage-session refresher and writes through the write-session refresher', async () => {
     const { deliverBrokeredReadCommand } = await import('./backupStorageSessions');
-    const { materializeBackupStorageCredentials } = await import('./backupCommandCredentials');
+    const { deliverBackupWriteCommand } = await import('./backupStorageWriteDelivery');
     for (const type of [
       'backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore',
       'mssql_verify', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
@@ -452,7 +452,7 @@ describe('storage-destination delivery refreshers', () => {
       expect(deliveryRefreshers[type], type).toBe(deliverBrokeredReadCommand);
     }
     for (const type of ['mssql_backup', 'hyperv_backup']) {
-      expect(deliveryRefreshers[type], type).toBe(materializeBackupStorageCredentials);
+      expect(deliveryRefreshers[type], type).toBe(deliverBackupWriteCommand);
     }
   });
 
@@ -470,6 +470,31 @@ describe('storage-destination delivery refreshers', () => {
 
     expect(seen).toEqual([
       { commandId: 'cmd-r', deviceId: CLAIM_DEVICE, type: 'backup_restore', claimedAt, reportedBackupReadProtocolVersion: 1 },
+    ]);
+  });
+
+  it('hands the integrity and write helper protocols this heartbeat reported to the refresher', async () => {
+    const seen: unknown[] = [];
+    deliveryRefreshers.mssql_backup = async (p, ctx) => {
+      seen.push(ctx);
+      return p;
+    };
+
+    await prepareClaimedCommandsForDelivery(
+      [{ id: 'cmd-w', type: 'mssql_backup', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt }],
+      { reportedBackupReadProtocolVersion: 0, reportedBackupIntegrityProtocolVersion: 2, reportedBackupWriteProtocolVersion: 1 },
+    );
+
+    expect(seen).toEqual([
+      {
+        commandId: 'cmd-w',
+        deviceId: CLAIM_DEVICE,
+        type: 'mssql_backup',
+        claimedAt,
+        reportedBackupReadProtocolVersion: 0,
+        reportedBackupIntegrityProtocolVersion: 2,
+        reportedBackupWriteProtocolVersion: 1,
+      },
     ]);
   });
 

@@ -71,8 +71,10 @@ function formatDuration(seconds: number | null | undefined): string {
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null) return '-';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
-  return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+  // Auto-scale units (B → TB) like the rest of the backup screens (#7213).
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${formatNumber(bytes / 1024 ** i, { maximumFractionDigits: 1 })} ${units[i]}`;
 }
 
 function readinessColor(score: number): string {

@@ -1,0 +1,23 @@
+# Local E2E overlay for e2e-tests/tests/topology-ai.spec.ts (topology M4, #6000). Never used in production.
+# Applied ON TOP of the wt-stack files (see the spec header for the command):
+#  - carries MCP_LLM_* into the api container (docker-compose.yml maps none of them)
+#  - runs the mock OpenAI-compatible model endpoint inside the stack network
+services:
+  api:
+    environment:
+      MCP_LLM_PROVIDER: ${MCP_LLM_PROVIDER:-anthropic}
+      MCP_LLM_BASE_URL: ${MCP_LLM_BASE_URL:-}
+      MCP_LLM_API_KEY: ${MCP_LLM_API_KEY:-}
+      MCP_LLM_MODEL: ${MCP_LLM_MODEL:-}
+      MCP_LLM_PRICE_INPUT_PER_M_USD: ${MCP_LLM_PRICE_INPUT_PER_M_USD:-0}
+      MCP_LLM_PRICE_OUTPUT_PER_M_USD: ${MCP_LLM_PRICE_OUTPUT_PER_M_USD:-0}
+
+  mock-llm:
+    image: node:22-bookworm-slim
+    command: ["node", "/mock/mockLlmServer.mjs"]
+    volumes:
+      - ./e2e-tests/fixtures:/mock:ro
+    ports:
+      - "0:8080"
+    networks:
+      - breeze

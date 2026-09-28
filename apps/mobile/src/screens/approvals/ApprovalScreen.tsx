@@ -45,6 +45,13 @@ import { getApprovalCopy } from './approvalCopy';
 import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
 import { ToastOutlet, useToast } from '../../components/toast/ToastHost';
+import { CriticalReauthField } from './components/CriticalReauthField';
+import {
+  buildReauthFactor,
+  reauthErrorMessage,
+  requiresCriticalReauth,
+  type ReauthMode,
+} from './criticalReauth';
 
 export function ApprovalScreen() {
   const insets = useSafeAreaInsets();
@@ -94,6 +101,15 @@ export function ApprovalScreen() {
   // this doesn't need its own focus-tracking effect.
   const [acknowledgedPatterns, setAcknowledgedPatterns] = useState<string[]>([]);
   const [proposalApproveBlocked, setProposalApproveBlocked] = useState<'acknowledge' | 'permission' | null>(null);
+  // #4052: critical-tier re-auth. Held only in component state for the one
+  // approve it is typed for: cleared the moment Approve is pressed and
+  // whenever focus moves to another request, never persisted or logged.
+  const [reauthMode, setReauthMode] = useState<ReauthMode>('password');
+  const [reauthSecret, setReauthSecret] = useState('');
+  const focusedId = focused?.id ?? null;
+  useEffect(() => {
+    setReauthSecret('');
+  }, [focusedId]);
 
   // When does the user "see" the approval? When ApprovalScreen mounts onto a
   // focused approval — that's the takeover moment. We stamp it per approval
@@ -166,6 +182,17 @@ export function ApprovalScreen() {
       showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
       return;
     }
+    // #4052: a critical approve carries the re-auth typed for THIS request.
+    // Taken into a local and cleared from state right away — one attempt per
+    // entry, so a rejected password is retyped rather than silently resent.
+    const reauth = requiresCriticalReauth(target.riskTier)
+      ? buildReauthFactor(reauthMode, reauthSecret)
+      : undefined;
+    setReauthSecret('');
+    if (requiresCriticalReauth(target.riskTier) && !reauth) {
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: reauthErrorMessage('REAUTH_REQUIRED')! });
+      return;
+    }
     successWash.value = withSequence(
       withTiming(1, { duration: 200, easing: ease }),
       withTiming(0, { duration: 600, easing: ease })
@@ -176,10 +203,16 @@ export function ApprovalScreen() {
     // Recomputed from the captured snapshot (not the outer `flowType`) so the
     // decision matches exactly what the user consented to at press time.
     const isScriptProposal = resolveApprovalFlowType(approvalSnap) === 'script_proposal';
+    const acks = isScriptProposal && acknowledgedPatterns.length > 0 ? acknowledgedPatterns : undefined;
     dispatch(
       approve(
-        isScriptProposal && acknowledgedPatterns.length > 0
-          ? { id: approvalSnap.id, acknowledgedPatterns }
+        acks || reauth
+          ? {
+              id: approvalSnap.id,
+              ...(acks ? { acknowledgedPatterns: acks } : {}),
+              // A getter, not the value — see ApproveArg.takeReauth.
+              ...(reauth ? { takeReauth: () => reauth } : {}),
+            }
           : approvalSnap.id
       )
     )
@@ -231,6 +264,8 @@ export function ApprovalScreen() {
   function messageForDecisionError(code: string, verb: 'Approve' | 'Deny'): string {
     if (code === 'ALREADY_DECIDED') return 'Already decided elsewhere.';
     if (code === 'EXPIRED') return 'This request expired.';
+    const reauthMessage = reauthErrorMessage(code);
+    if (reauthMessage) return reauthMessage;
     return `${verb} failed. Try again.`;
   }
 
@@ -318,6 +353,7 @@ export function ApprovalScreen() {
   // other flow keeps the existing actionLabel + generic JSON details.
   const flowType = resolveApprovalFlowType(focused);
   const copy = getApprovalCopy(focused);
+  const needsReauth = requiresCriticalReauth(focused.riskTier);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
@@ -398,7 +434,11 @@ export function ApprovalScreen() {
           </View>
         ) : null}
 
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: spacing[16] }}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: spacing[16] }}
+          keyboardShouldPersistTaps="handled"
+        >
           <RequesterRow
             clientLabel={focused.requestingClientLabel}
             machineLabel={focused.requestingMachineLabel}
@@ -409,6 +449,15 @@ export function ApprovalScreen() {
             <CustomerTenantBadge tenant={focused.customerTenant} />
           ) : null}
           <RiskBand tier={focused.riskTier} summary={focused.riskSummary} />
+          {needsReauth ? (
+            <CriticalReauthField
+              mode={reauthMode}
+              value={reauthSecret}
+              onChangeMode={setReauthMode}
+              onChangeValue={setReauthSecret}
+              editable={inFlight === null}
+            />
+          ) : null}
           {flowType === 'uac_intercept' ? (
             <UacInterceptDetails args={focused.actionArguments} />
           ) : flowType === 'script_proposal' ? (
@@ -432,7 +481,10 @@ export function ApprovalScreen() {
             holdLabel={copy.holdLabel}
             onApprove={handleApprove}
             onDeny={handleDeny}
-            approveDisabled={flowType === 'script_proposal' && proposalApproveBlocked !== null}
+            approveDisabled={
+              (flowType === 'script_proposal' && proposalApproveBlocked !== null) ||
+              (needsReauth && !buildReauthFactor(reauthMode, reauthSecret))
+            }
           />
         </View>
       </Animated.View>

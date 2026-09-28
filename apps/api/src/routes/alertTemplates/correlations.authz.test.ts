@@ -62,6 +62,7 @@ vi.mock('../tickets/siteScope', () => ({
   filterAlertsBySiteScope: vi.fn(async (_auth: unknown, rows: Array<{ id: string }>) =>
     rows.filter((row) => visibleAlertIds.current.has(row.id))),
   deviceInSiteScope: vi.fn(async () => deviceVisible.current),
+  alertInSiteScope: vi.fn(async () => deviceVisible.current),
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: auditMock }));

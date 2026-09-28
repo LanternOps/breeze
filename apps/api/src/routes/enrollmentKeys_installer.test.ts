@@ -784,4 +784,157 @@ describe('enrollment key routes — installer download', () => {
       });
     });
   });
+
+  // ============================================
+  // #7217 — ?discardKeyOnFailure=1: a failed build must not leave the parent
+  // key that Add Device minted for this attempt live.
+  // ============================================
+  describe('discardKeyOnFailure (#7217)', () => {
+    /** Capture db.delete().where().returning() — the guarded discard. */
+    function mockDiscardDelete(rows: any[] = [{ id: KEY_ID, orgId: ORG_ID, name: 'Add device installer' }]) {
+      const where = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(rows),
+      });
+      vi.mocked(db.delete).mockReturnValueOnce({ where } as any);
+      return where;
+    }
+
+    it('deletes the parent key when the Windows build fails (non-https server)', async () => {
+      process.env.PUBLIC_API_URL = 'http://self-hosted.example.com:8080';
+      mockSelectFromWhereLimit([makeEnrollmentKey({ maxUsage: 1 })]);
+      const where = mockDiscardDelete();
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(400);
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      expect(where).toHaveBeenCalledTimes(1);
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'enrollment_key.delete',
+          resourceId: KEY_ID,
+          details: expect.objectContaining({
+            reason: 'artifact_not_produced',
+            route: 'installer',
+            status: 400,
+          }),
+        }),
+      );
+    });
+
+    it('deletes the parent key (and with it the bootstrap token) when the MSI fetch fails', async () => {
+      const { fetchRegularMsi } = await import('../services/installerBuilder');
+      vi.mocked(fetchRegularMsi).mockRejectedValueOnce(new Error('GitHub 404'));
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockDiscardDelete();
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(503);
+      // A token was issued before the failure; deleting the parent cascades it
+      // (installer_bootstrap_tokens.parent_enrollment_key_id ON DELETE CASCADE).
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledTimes(1);
+      expect(db.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it('deletes the parent key when the handler throws', async () => {
+      vi.mocked(issueBootstrapTokenForKey).mockRejectedValueOnce(new Error('db down'));
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockDiscardDelete();
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(500);
+      expect(db.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the parent key when the installer is produced', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('never deletes on failure without the flag (Settings downloads reuse long-lived keys)', async () => {
+      process.env.PUBLIC_API_URL = 'http://self-hosted.example.com:8080';
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET', headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('does not audit a delete when the guard matched nothing (key used, or not the caller\'s)', async () => {
+      process.env.PUBLIC_API_URL = 'http://self-hosted.example.com:8080';
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockDiscardDelete([]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(400);
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      expect(createAuditLogAsync).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'enrollment_key.delete' }),
+      );
+    });
+
+    it('logs (never swallows) a failed discard and still returns the original error', async () => {
+      process.env.PUBLIC_API_URL = 'http://self-hosted.example.com:8080';
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockRejectedValue(new Error('connection reset')),
+        }),
+      } as any);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(400);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/could not discard/i),
+        expect.objectContaining({ keyId: KEY_ID }),
+      );
+      errSpy.mockRestore();
+    });
+
+    it('does not delete when the caller is denied the key\'s site', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: 'site-hidden' })]);
+      mockDiscardDelete([]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?discardKeyOnFailure=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(403);
+      // The guard carries the site ceiling, so the DB-side delete matches
+      // nothing; nothing is audited.
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
+    });
+  });
 });

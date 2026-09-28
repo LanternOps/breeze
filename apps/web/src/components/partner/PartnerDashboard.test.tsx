@@ -56,6 +56,17 @@ beforeEach(() => {
   resetApproximateTotalCache();
 });
 
+describe('PartnerDashboard filter selects accessible name (#7156)', () => {
+  it('gives the health and sort selects a real accessible name', async () => {
+    wire([org('o1', 'Acme', [{ currencyCode: 'EUR', amount: '410.00' }])]);
+    render(<PartnerDashboard />);
+
+    await screen.findByTestId('partner-dashboard-mrr-o1');
+    expect(screen.getByRole('combobox', { name: 'Health' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Sort by' })).toBeInTheDocument();
+  });
+});
+
 describe('PartnerDashboard MRR (multi-currency, wave 7)', () => {
   it('labels a single-currency portfolio with its own currency, never USD', async () => {
     wire([org('o1', 'Acme', [{ currencyCode: 'EUR', amount: '410.00' }])]);

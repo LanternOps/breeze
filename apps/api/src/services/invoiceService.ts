@@ -18,7 +18,7 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from './invoicePdf';
-import { resolveDocumentFooter } from './documentFooter';
+import { freezeDocumentFooter } from './documentFooter';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
@@ -1519,8 +1519,11 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // Resolved through the SHARED chain (settings audit rule 5, finding 22)
       // so issue time sees the portal-branding fallback the render path always
       // had. `documentTerms: null` because a draft's `terms` is not yet
-      // stamped — this call is what establishes it.
-      terms: resolveDocumentFooter({
+      // stamped — this call is what establishes it. freezeDocumentFooter stamps
+      // '' (frozen "no footer") rather than NULL when no level sets one: NULL
+      // means "not frozen" to the render path, which would then print a footer
+      // added after issue on this invoice (#7216).
+      terms: freezeDocumentFooter({
         documentTerms: null,
         partnerFooter: partner?.invoiceFooter ?? null,
         brandingFooter: issueBranding?.footerText ?? null,
@@ -1878,11 +1881,11 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
           eq(accountingEntityMappings.breezeEntityId, paymentId),
         ))
         .limit(1);
-      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false, provider: null };
+      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, providerWillReimport: false, provider: null };
       const [inv] = await db
         .select({ partnerId: invoices.partnerId })
         .from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1);
-      if (!inv) return { mapping, quickbooksWillReimport: false, provider: null };
+      if (!inv) return { mapping, providerWillReimport: false, provider: null };
       // The partner's ONE accounting connection (accounting_connections_partner_idx).
       const [conn] = await db
         .select({
@@ -1895,7 +1898,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
         .limit(1);
       return {
         mapping,
-        quickbooksWillReimport: !!conn && conn.status === 'connected' && conn.pullPayments,
+        providerWillReimport: !!conn && conn.status === 'connected' && conn.pullPayments,
         provider: (conn?.provider ?? null) as AccountingProviderId | null,
       };
     }))
@@ -1948,7 +1951,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // enqueued and Breeze never asks QuickBooks to remove a Payment it did not
     // create. The audit says so explicitly, because the QuickBooks record
     // surviving is the part a reader must not have to infer.
-    let quickbooksRecordUntouched = false;
+    let providerRecordUntouched = false;
     let untouchedReason: 'pull_disabled' | 'not_connected' | 'no_connection' | null = null;
     // The provider that owns the payment. A remote-origin mapping row cannot
     // outlive its connection (composite FK, ON DELETE CASCADE), so the fallback
@@ -1969,17 +1972,17 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       const connProvider = orgScoped ? preCheck!.provider : (conn?.provider ?? null) as AccountingProviderId | null;
       owningProvider = connProvider ?? LEGACY_UNTARGETED_JOB_PROVIDER;
       const willReimport = orgScoped
-        ? preCheck!.quickbooksWillReimport
+        ? preCheck!.providerWillReimport
         : !!conn && conn.status === 'connected' && conn.pullPayments;
       if (willReimport) {
         const label = accountingProviderDisplayName(owningProvider);
-        // The code keeps its QuickBooks name: apps/web reads it (plan preamble item 8).
+        // apps/web reads the message, not the code (Xero W05 refinement 21).
         throw new InvoiceServiceError(
           `This payment came from ${label}; reverse it in ${label} instead`,
-          409, 'QUICKBOOKS_OWNED_PAYMENT',
+          409, 'PROVIDER_OWNED_PAYMENT',
         );
       }
-      quickbooksRecordUntouched = true;
+      providerRecordUntouched = true;
       untouchedReason = orgScoped
         ? 'pull_disabled'
         : !conn ? 'no_connection' : conn.status !== 'connected' ? 'not_connected' : 'pull_disabled';
@@ -2016,7 +2019,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       recordedBy: pay.recordedBy,
       // Present ONLY on the QuickBooks-origin branch above, so an ordinary void
       // does not carry a field that reads as meaningful when it is not.
-      ...(quickbooksRecordUntouched ? { quickbooksRecordUntouched: true, untouchedReason } : {}),
+      ...(providerRecordUntouched ? { providerRecordUntouched: true, untouchedReason } : {}),
     };
     // Settle the 'payment' accounting_entity_mappings row FIRST, inside this
     // same transaction. breeze_entity_id is polymorphic (no FK, so nothing
@@ -2043,9 +2046,11 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
   // service covers every caller, present and future. Fire-and-forget, exactly
   // like the enqueue below: the void has already committed and an audit failure
   // must not undo it.
-  if (audit.quickbooksRecordUntouched) {
+  if (audit.providerRecordUntouched) {
     writeAuditEvent(requestLikeFromSnapshot({}), {
       orgId: audit.orgId,
+      // Persisted action string — kept byte-identical; `details.provider` names
+      // the provider (Xero W05 refinement 21).
       action: 'invoice.payment.voided_quickbooks_untouched',
       resourceType: 'invoice_payment',
       resourceId: audit.paymentId,

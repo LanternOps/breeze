@@ -1,9 +1,11 @@
 package rebuild
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -284,6 +286,33 @@ func TestRetryTransient(t *testing.T) {
 	err = retryTransient(5, 0, isTransient, func() error { calls++; return errOther })
 	if !errors.Is(err, errOther) || calls != 1 {
 		t.Fatalf("non-transient error: err=%v calls=%d, want errOther after 1", err, calls)
+	}
+}
+
+// 18b row 5 / ruling C4: format.com is always the host's own System32
+// binary by absolute path, the same rule win_boot.go's hostSystemTool
+// already applies to bcdboot.exe — nothing resolves via PATH.
+func TestFormatVolume_UsesHostSystem32FormatCom(t *testing.T) {
+	// Fix round 1 / MINOR 5: pin hostWindowsDir so the expected
+	// C:\Windows\System32\format.com path does not depend on the actual
+	// runner's real Windows directory (native Windows CI could report
+	// something other than C:\Windows).
+	withHostWindowsDir(t, "")
+	sys := newFakeWinSystem(t.TempDir())
+	assign := func(string) (string, func() error, error) {
+		return "Q", func() error { return nil }, nil
+	}
+	if err := formatVolume(context.Background(), sys, assign, `\\?\Volume{x}\`, "ntfs", "WINDOWS"); err != nil {
+		t.Fatal(err)
+	}
+	want := `C:\Windows\System32\format.com Q: /FS:NTFS /Q /Y /V:WINDOWS`
+	if len(countCalls(sys.cmds, want)) != 1 {
+		t.Fatalf("cmds = %v, want exactly one %q", sys.cmds, want)
+	}
+	for _, c := range sys.cmds {
+		if strings.HasPrefix(c, "format.com ") {
+			t.Fatalf("cmds = %v, format.com must never run unqualified (PATH resolution)", sys.cmds)
+		}
 	}
 }
 

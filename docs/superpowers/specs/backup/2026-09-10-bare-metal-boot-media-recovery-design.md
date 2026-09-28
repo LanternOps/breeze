@@ -3,7 +3,7 @@ title: Bare-metal recovery from Breeze boot media — design
 status: draft for review
 date: 2026-09-10
 owner: Todd
-supersedes: docs/superpowers/plans/backup/2026-09-10-bmr-windows-offline-hive-decision.md (Option B remains the contract for the reinstall-then-recover mode; boot-media mode applies Windows state offline, see §6.4)
+supersedes: docs/superpowers/plans/backup/2026-09-10-bmr-windows-offline-hive-decision.md (Option B remains the contract for the reinstall-then-recover mode; boot-media mode applies Windows state offline, see §6.1)
 tracking_issue: LanternOps/breeze#5493
 related: feature #5439 (Linux system state), campaign doc docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md, issues #5470 #5479 #5460
 ---
@@ -32,7 +32,7 @@ Boot a blank or replacement machine from Breeze recovery media, type a short cod
 |---|---|---|
 | Recovery tokens, bundles, `bmr-recover` (reinstall-then-recover) | shipped, proven Linux + Windows | token issuance, download descriptor, complete endpoint, retry/circuit breaker, D21 redirect handling |
 | Linux system state (feature #5439) | shipped, proven incl. tamper | collector, checksummed manifest, W02 verifier, W03 restorer (gains a `root` parameter) |
-| Restore-as-VM / Instant Boot (`agent/internal/backup/hyperv/vmrestore.go`) | shipped, Windows-only | provisioning + DISM driver-injection logic is generalised into the engine; `New-VM` stays in the Hyper-V front |
+| Restore-as-VM / Instant Boot (`agent/internal/backup/hyperv/vmrestore.go`) | shipped, Windows-only | provisioning logic is generalised into the engine (the rebuild engine does not inject drivers yet — §6.1); `New-VM` stays in the Hyper-V front |
 | DR plans (`apps/api/src/routes/dr.ts`, `drExecutionService.ts`) | shipped | new `BARE_METAL_REBUILD` step; rehearsal mode uses VHDX + new identity |
 | Vault mirror + fallback provider (`exec_backup.go` `resolveRestoreProvider`) | shipped | engine restores vault-first, cloud second, unchanged |
 | Recovery keys escrow (`device_recovery_keys`, access events) | shipped | engine fetches the escrowed key for encrypted sources; reveal is audited |
@@ -77,12 +77,61 @@ Phases (idempotent, resumable, logged by name):
 1. **Preflight** — verify manifests and checksums (W02 verifier); target size ≥ source used size + 10 %; layout supported (else `refused` with the feature named); target disk not carrying the device's current live identity unless explicitly overridden; nothing written before this passes.
 2. **Provision** — write GPT from the layout: every partition keeps its recorded size except the last data partition (normally the root/`C:` volume), which absorbs any extra space on a larger target; no partition is ever made smaller than its recorded used size. Format with the recorded filesystem types; reuse recorded UUIDs and labels so `fstab`, GRUB and BCD keep resolving.
 3. **Restore tree** — mount under a staging root; restore the file snapshot through the provider chain (vault first) with the existing journal, retry and circuit breaker; apply system state against the staging root (Linux restorer takes `root`; Windows applies hives, BCD, drivers, certs, firewall offline — legitimate here because the volume is not the running OS).
-4. **Boot** — Linux: chroot, `grub-install --target=<arch>-efi`, regenerate GRUB config, ensure an EFI boot entry; Windows: `bcdboot <root>\Windows /s <efi> /f UEFI`, DISM driver injection for the target's storage/network devices (reuse of the Hyper-V injector, generalised).
+4. **Boot** — Linux: chroot, `grub-install --target=<arch>-efi`, regenerate GRUB config, ensure an EFI boot entry; Windows: `bcdboot <root>\Windows /s <efi> /f UEFI`; driver injection is not supported yet (§6.1).
 5. **Identity** — `original`: restore hostname, machine identity, agent enrollment state and secrets, and write the recovery marker (`recoveryId` + one-time nonce issued with the token) into the agent state directory; `new`: regenerate hostname suffix and machine identity, strip enrollment state so the agent starts unenrolled, no marker (the recovery completes at Validate, see §8.1).
 6. **Encryption** — if the source volume was encrypted, re-apply with the escrowed key (BitLocker: enable on first boot via a one-shot task; LUKS: refused in the first release).
 7. **Validate** — sample restored files against checksums, confirm bootloader files and EFI entry, unmount, report.
 
 Targets: `disk` (block device on the booted media) and `vhdx` (attached and partitioned on a Windows host, or a loop-mounted image on Linux for tests).
+
+### 6.1 Windows offline state apply
+
+Registry hives are the authoritative source when present in the VSS file
+tree (`Windows\System32\config\{SYSTEM,SOFTWARE,SAM,SECURITY,DEFAULT}` plus
+each `.LOG1`/`.LOG2`, and every `Users\*\NTUSER.DAT`). If any one of
+SYSTEM/SOFTWARE/SAM/SECURITY is missing from the tree, all four are
+replaced together from the independently captured system-state artifacts
+(`system-state/registry/<HIVE>`). The tree's `.LOG1`/`.LOG2` for those
+hives are deleted and each artifact's own `.LOG1`/`.LOG2` are installed
+beside it when the artifact carries them: a hive copied from a VSS shadow
+copy is dirty, and loading it replays those logs (a `reg save` artifact has
+none). A tree log is never left beside an artifact hive — mixing a tree
+hive or log with an artifact hive from a different capture point would
+split LSA secrets from the machine password. If an artifact is
+missing too, the restore fails naming the hive.
+
+Every hive is mounted at a run-scoped key (`HKLM\BRZ_<runid>_<HIVE>`),
+never the live `HKLM`. Edits target `ControlSet00<Select\Default>`; when
+`Select\Current` differs from `Select\Default`, the same edits are applied
+to both. `MountedDevices` is always rewritten regardless of whether the
+disk layout changed: `\DosDevices\C:` is set to the restored root
+partition's GUID (`DMIO:ID:` + the 16-byte mixed-endian GUID exactly as
+`IOCTL_DISK_GET_PARTITION_INFO_EX` returns it), and every other
+`\DosDevices\<letter>:` value whose GUID is not on the rebuilt disk is
+deleted; `\??\Volume{…}` values are left untouched.
+
+`bcdboot <root>\Windows /s <ESP letter>: /f UEFI /v` regenerates the EFI
+system partition. It always runs the rebuild host's own `bcdboot.exe`, by
+absolute path from the host's Windows directory. Nothing from the restored
+tree is ever executed, and there is no fallback: a host without bcdboot
+fails the phase. The guest's boot files are still copied from
+`<root>\Windows`. For a VHDX target on a live host, `/p` is added so
+bcdboot keeps the existing order of the host's UEFI firmware boot entries
+(order only — it does not stop bcdboot creating or updating a Windows Boot
+Manager entry). The captured BCD store (`system-state/boot/bcd_export`) is
+never imported.
+
+Driver injection is not supported yet. bcdboot is the only external tool
+the boot phase runs. A rebuild given driver directories (`--drivers`,
+`Options.DriverDirs`) is refused before anything runs, with an
+operator-facing reason; the restored system starts with its inbox drivers,
+and the operator installs the rest from Windows after the first boot.
+
+A BitLocker-protected source restores in plaintext. The phase writes a
+post-restore-actions intent file rather than re-encrypting immediately —
+re-encryption executes from the restored agent at first boot with a NEW
+recovery password once W07 ships the executor; the escrowed key is never
+carried on recovery media.
 
 ## 7. Boot media and console
 
@@ -155,7 +204,7 @@ the full wire contract, data model and refusal matrix.
 3. Rebuild engine, Linux: disk + raw-image (loop) targets, offline system-state apply, GRUB/EFI boot, unit tests without root, root-gated loopback test.
 4. Linux live media in CI, console, recovery codes and state machine, heartbeat completion; QEMU integration test; lab proof on KIT.
 5. Restore-as-VM / Instant Boot and DR plans on the engine (rehearsal mode); raw image → VHDX conversion for Hyper-V.
-6. Windows engine: offline hives, `bcdboot`, DISM injection, `vhdx` target with tests.
+6. Windows engine: offline hives, `bcdboot`, `vhdx` target with tests (driver injection not supported yet — §6.1).
 7. Windows media builder (WinPE) + console; lab proof on KIT via WIN-A.
 8. Docs, UI polish, recovery readiness fed from real results.
 9. Token-mode recovery follows cross-snapshot object references (§8.5): server-verified file index, provenance tracking, refuse-before-provision on both client and server.
@@ -163,3 +212,12 @@ the full wire contract, data model and refusal matrix.
 ## 12. Out of scope (first release)
 
 Block-level imaging; LVM, LUKS, RAID, BIOS/MBR, multi-disk targets (refused, not silently attempted); macOS bare-metal; dissimilar-boot-mode conversion; unattended fleet recovery (reserved flag only); hard links, extended attributes/capabilities and Windows ACLs in the file backup (§5.4); crossing filesystem boundaries under `/` beyond the preset's excluded trees (a one-filesystem walk option is a follow-up).
+
+- **D-BL** — BitLocker re-encryption is recorded as intent in this wave, not
+  executed; the executor ships with W07 because it needs a booted disk
+  target to test against, and disk targets aren't shippable until WinPE
+  media exists.
+- **D-ACL** — NTFS security descriptors are captured and restored in this
+  wave, ahead of where the original spec sequenced them, because a rebuilt
+  `C:\Windows\System32\config` without them is a HiveNightmare-class
+  vulnerability (CVE-2021-36934) the day it boots.

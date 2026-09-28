@@ -11,7 +11,24 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 )
+
+// traceCapabilitySupported is injectable for tests; production asks the
+// platform whether a native trace transport can actually be opened.
+var traceCapabilitySupported = networkdiagnostic.TraceSupported
+
+// topologyDiagnosticCapabilities are the agent-level diagnostic capabilities
+// appended to every network-context report. `network_trace` is always listed
+// so the server sees an explicit unsupported entry rather than an absence.
+func topologyDiagnosticCapabilities(eventsAvailable bool) []networkcontext.Capability {
+	return []networkcontext.Capability{
+		{Name: "change_notifications", Version: 1, Supported: eventsAvailable},
+		{Name: "network_diagnostic", Version: 1, Supported: true},
+		{Name: "network_trace", Version: 1, Supported: traceCapabilitySupported()},
+		{Name: "topology_interface_poll", Version: 1, Supported: true},
+	}
+}
 
 type networkContextConfig struct {
 	AcceptedVersions        []int  `json:"acceptedNetworkContextVersions"`
@@ -160,7 +177,7 @@ func (m *networkContextManager) attach(now time.Time, stop <-chan struct{}) (*ne
 			m.mu.Lock()
 			eventsAvailable := m.eventsAvailable
 			m.mu.Unlock()
-			snapshot.Capabilities = append(snapshot.Capabilities, networkcontext.Capability{Name: "change_notifications", Version: 1, Supported: eventsAvailable}, networkcontext.Capability{Name: "network_diagnostic", Version: 1, Supported: true})
+			snapshot.Capabilities = append(snapshot.Capabilities, topologyDiagnosticCapabilities(eventsAvailable)...)
 			if readErr != nil {
 				log.Warn("network context collection incomplete", "error", readErr)
 			}

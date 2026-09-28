@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db } from '../../../db';
-import { monitorConversions, monitorConversionOutputs, monitorDefinitions, users } from '../../../db/schema';
+import type { MonitorConversionSourceTable } from '../../../db/schema/monitorConversions';
+import { monitorConversions,monitorConversionOutputs, monitorDefinitions, users } from '../../../db/schema';
 import type { AuthContext } from '../../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { canMutateOrgWideGovernance } from '../../siteCeilingAccess';
@@ -20,7 +21,7 @@ function storedSourceName(state: Record<string, unknown>): string | undefined {
   }
   return undefined;
 }
-export async function listConversionLedger(query: { orgId?: string; policyId?: string; cursor?: string; limit?: number }, auth: AuthContext): Promise<{ items: ConversionLedgerEntry[]; nextCursor: string | null }> {
+export async function listConversionLedger(query: { orgId?: string; policyId?: string; sourceTable?: MonitorConversionSourceTable; cursor?: string; limit?: number }, auth: AuthContext): Promise<{ items: ConversionLedgerEntry[]; nextCursor: string | null }> {
   if (query.orgId && !auth.canAccessOrg(query.orgId)) throw new ConversionError('partner_wide_denied', 'Organization access denied');
   if (query.policyId && !await getConfigPolicy(query.policyId, auth)) throw new ConversionError('policy_not_found', 'Policy not found');
   const limit = Math.min(100, Math.max(1, query.limit ?? 25));
@@ -29,6 +30,7 @@ export async function listConversionLedger(query: { orgId?: string; policyId?: s
     auth.scope === 'partner' && auth.partnerId ? and(isNull(monitorConversions.orgId), eq(monitorConversions.partnerId, auth.partnerId)) : undefined);
   const rows = await db.select().from(monitorConversions).where(and(owner,
     query.orgId ? eq(monitorConversions.orgId, query.orgId) : undefined,
+    query.sourceTable ? eq(monitorConversions.sourceTable, query.sourceTable) : undefined,
     query.cursor ? lt(monitorConversions.id, query.cursor) : undefined,
     query.policyId ? or(eq(monitorConversions.policyId, query.policyId), sql`EXISTS (SELECT 1 FROM ${monitorConversionOutputs}
       WHERE ${monitorConversionOutputs.conversionId} = ${monitorConversions.id} AND ${monitorConversionOutputs.policyId} = ${query.policyId})`) : undefined,

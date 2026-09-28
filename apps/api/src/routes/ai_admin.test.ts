@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Topology M4-D2: the admin/session reads resolve the caller's pinned-site visibility.
+vi.mock('../services/topology/aiSessionAccess', () => ({
+  resolveTopologySessionVisibility: vi.fn(async () => ({ kind: 'all' })),
+  topologySessionAccessCondition: vi.fn(async () => undefined),
+  topologySessionCondition: vi.fn(() => undefined),
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -513,7 +519,8 @@ describe('AI routes', () => {
 
       expect(getSessionHistory).toHaveBeenCalledWith(
         ORG_ID,
-        expect.objectContaining({ flagged: true })
+        expect.objectContaining({ flagged: true }),
+        { kind: 'all' },
       );
     });
   });
@@ -726,6 +733,33 @@ describe('AI routes', () => {
       const execFields = selectCalls[selectCalls.length - 1]![0] as Record<string, unknown>;
       expect(execFields).toHaveProperty('intentId');
       expect(execFields).toHaveProperty('tempPasswordState');
+    });
+  });
+
+  describe('M4-D2 pinned-site filter on the admin analytics reads', () => {
+    const makeChainMock = (result: unknown[]) => {
+      const chain: any = {};
+      for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'groupBy', 'orderBy', 'limit']) chain[m] = vi.fn(() => chain);
+      chain.then = (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject);
+      return chain;
+    };
+
+    it('tool-executions applies the caller\'s site condition to every query, before aggregation and LIMIT', async () => {
+      const { resolveTopologySessionVisibility, topologySessionCondition } = await import('../services/topology/aiSessionAccess');
+      const visibility = { kind: 'sites' as const, siteIds: ['site-b'] };
+      vi.mocked(resolveTopologySessionVisibility).mockResolvedValueOnce(visibility);
+      const SITE_FILTER = { sentinel: 'site-filter' };
+      vi.mocked(topologySessionCondition).mockReturnValueOnce(SITE_FILTER as never);
+      const chains = [makeChainMock([]), makeChainMock([]), makeChainMock([]), makeChainMock([])];
+      for (const chain of chains) vi.mocked(db.select).mockReturnValueOnce(chain);
+
+      const res = await app.request(`/ai/admin/tool-executions?orgId=${ORG_ID}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(topologySessionCondition).toHaveBeenCalledWith(visibility);
+      for (const chain of chains) {
+        expect(JSON.stringify(chain.where.mock.calls[0])).toContain('site-filter');
+      }
     });
   });
 

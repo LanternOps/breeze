@@ -22,7 +22,11 @@ export function CompositeConditionFields({ name }: { name: string }) {
   return (
     <fieldset className="space-y-3 rounded border p-3">
       <legend>{t('monitoring:editor.composite.children')}</legend>
-      <select data-testid="composite-match" {...register(`${name}.match`)}>
+      <select
+        aria-label={t('monitoring:editor.composite.matchLabel')}
+        data-testid="composite-match"
+        {...register(`${name}.match`)}
+      >
         <option value="all">{t('monitoring:compositeMatch.all')}</option>
         <option value="any">{t('monitoring:compositeMatch.any')}</option>
       </select>

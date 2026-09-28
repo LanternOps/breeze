@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DRPlanGroupCard, { DR_STEP_TYPES, type DRGroupForm } from './DRPlanGroupCard';
 import { fetchWithAuth } from '../../stores/auth';
@@ -92,6 +92,10 @@ describe('DRPlanGroupCard step type', () => {
     expect(screen.getByTestId('dr-group-rebuild-options')).toBeInTheDocument();
     expect(await screen.findByText('rebuild-host-01')).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('osType=linux'))).toBe(true);
+    // W06d: the host OS selector offers Linux and Windows — never macOS.
+    const hostOs = screen.getByTestId('dr-group-rebuild-host-os') as HTMLSelectElement;
+    expect(hostOs.value).toBe('linux');
+    expect(Array.from(hostOs.options).map((option) => option.value)).toEqual(['linux', 'windows']);
 
     const outputDir = screen.getByTestId('dr-group-rebuild-output-dir') as HTMLInputElement;
     expect(outputDir.value).toBe('/var/lib/breeze/rebuild/out');
@@ -104,5 +108,73 @@ describe('DRPlanGroupCard step type', () => {
     fireEvent.change(timeout, { target: { value: '60' } });
     const timeoutUpdater = onChange.mock.calls.at(-1)![0] as (group: DRGroupForm) => DRGroupForm;
     expect(timeoutUpdater(makeGroup()).waitTimeoutMinutes).toBe('60');
+  });
+});
+
+// W06d (Task 22): the rebuild engine is platform-matched, so a DR rehearsal
+// can use a Windows rebuild host for Windows devices. The picker filters by
+// one OS at a time (Linux or Windows, never macOS); the output-dir
+// placeholder shows the picked OS's default.
+describe('DRPlanGroupCard rebuild host platform (W06d)', () => {
+  const page = (data: unknown[]) => ({
+    data,
+    page: { nextCursor: null, returned: data.length, total: data.length, hasMore: false, observedAt: '' },
+  });
+  const linuxHost = { id: 'host-1', hostname: 'rebuild-host-01', displayName: null, osType: 'linux', status: 'online', siteId: null, siteName: null };
+  const windowsHost = { id: 'win-host-1', hostname: 'hv-rebuild-01', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async (input) => {
+      const params = new URL(String(input), 'http://localhost').searchParams;
+      const os = params.get('osType');
+      const included = (params.get('includeIds') ?? '').split(',').includes('win-host-1') ? [windowsHost] : [];
+      if (os === 'linux') return makeJsonResponse(page([linuxHost, ...included]));
+      if (os === 'windows') return makeJsonResponse(page([windowsHost]));
+      return makeJsonResponse(page([{ id: 'd-1', hostname: 'srv-01', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null }]));
+    });
+  });
+
+  const hostFetchOsTypes = () =>
+    fetchMock.mock.calls
+      .map(([url]) => new URL(String(url), 'http://localhost').searchParams)
+      .filter((params) => params.has('osType'))
+      .map((params) => params.get('osType'));
+
+  it('switches the host picker to Windows hosts and shows the Windows default output dir', async () => {
+    const { onChange } = renderCard(makeGroup({ stepType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: 'host-1', outputDir: '' }));
+    await screen.findByText('rebuild-host-01');
+    const outputDir = screen.getByTestId('dr-group-rebuild-output-dir') as HTMLInputElement;
+    expect(outputDir.placeholder).toBe('/var/lib/breeze/rebuild/out');
+
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-host-os'), { target: { value: 'windows' } });
+
+    expect(await screen.findByText('hv-rebuild-01')).toBeInTheDocument();
+    expect(outputDir.placeholder).toBe('C:\\ProgramData\\Breeze\\rebuild\\out');
+    // The previously picked Linux host no longer matches → cleared.
+    const updater = onChange.mock.calls.at(-1)![0] as (group: DRGroupForm) => DRGroupForm;
+    expect(updater(makeGroup({ rebuildHostDeviceId: 'host-1' })).rebuildHostDeviceId).toBeNull();
+
+    expect(hostFetchOsTypes()).toContain('windows');
+    expect(hostFetchOsTypes()).not.toContain('macos');
+  });
+
+  it('follows a saved Windows rebuild host to the Windows filter', async () => {
+    renderCard(makeGroup({ stepType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: 'win-host-1', outputDir: '' }));
+    await waitFor(() =>
+      expect((screen.getByTestId('dr-group-rebuild-host-os') as HTMLSelectElement).value).toBe('windows')
+    );
+    expect((screen.getByTestId('dr-group-rebuild-output-dir') as HTMLInputElement).placeholder).toBe(
+      'C:\\ProgramData\\Breeze\\rebuild\\out'
+    );
+  });
+
+  it('warns when the output dir does not fit the picked host OS', async () => {
+    renderCard(makeGroup({ stepType: 'BARE_METAL_REBUILD', outputDir: '/srv/rebuild' }));
+    await screen.findByText('rebuild-host-01');
+    expect(screen.queryByTestId('dr-group-rebuild-output-dir-os-mismatch')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-host-os'), { target: { value: 'windows' } });
+    expect(await screen.findByTestId('dr-group-rebuild-output-dir-os-mismatch')).toBeInTheDocument();
   });
 });

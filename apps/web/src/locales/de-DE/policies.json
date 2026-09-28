@@ -157,7 +157,8 @@
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
-      "inheritsBadge": "Erbt"
+      "inheritsBadge": "Erbt",
+      "statusFilterLabel": "Status"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -711,7 +712,7 @@
         "timezone2": "Zeitzone",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Warnungen unterdrücken",
-        "muteAlertNotificationsDuringWindow": "Warnmeldungen während des Fensters stummschalten.",
+        "muteAlertNotificationsDuringWindow": "Während des Fensters werden keine neuen Warnungen erstellt.",
         "suppressAlerts2": "unterdrückenAlerts",
         "suppressPatching": "Unterdrücken Sie das Patchen",
         "delayPatchInstallationsDuringWindow": "Patch-Installationen während des Fensters verzögern.",
@@ -947,7 +948,8 @@
         "promptNotify": "Benachrichtigen — Verbindungshinweis anzeigen",
         "promptConsent": "Zustimmung erforderlich — der Benutzer muss genehmigen",
         "consentUnavailable": "Wenn niemand antworten kann",
-        "consentUnavailableHelp": "Gilt, wenn Zustimmung erforderlich ist, aber kein Benutzer angemeldet ist.",
+        "consentUnavailableHelp": "Gilt, wenn niemand angemeldet ist, wenn die Zustimmungsabfrage nicht angezeigt werden kann (zum Beispiel, weil Breeze Assist nicht läuft oder nicht reagiert) oder wenn der angemeldete Benutzer nicht innerhalb von 30 Sekunden antwortet.",
+        "consentVncNote": "VNC kann keine Zustimmung einholen. Daher werden VNC-Sitzungen auf Geräten, die eine Zustimmung erfordern, abgelehnt. Verwenden Sie stattdessen den Remotedesktop-Viewer.",
         "unavailableProceed": "Sitzung fortsetzen",
         "unavailableBlock": "Sitzung blockieren",
         "showIndicator": "Anzeige aktiver Sitzungen",
@@ -1371,6 +1373,12 @@
       "cancelled": "Abgebrochen",
       "downloading": "Wird heruntergeladen",
       "installing": "Wird installiert",
+      "sentToAgent": "An Agent gesendet",
+      "stageElapsed_one": "seit {{count}} Minute",
+      "stageElapsed_other": "seit {{count}} Minuten",
+      "stageElapsedJustNow": "gerade eben",
+      "noAgentUpdate_one": "Seit {{count}} Minute keine Rückmeldung vom Agent – länger, als dieser Schritt normalerweise dauert. Kommt nichts mehr, wird die Installation {{timeoutMinutes}} Minuten nach dem Senden als fehlgeschlagen markiert.",
+      "noAgentUpdate_other": "Seit {{count}} Minuten keine Rückmeldung vom Agent – länger, als dieser Schritt normalerweise dauert. Kommt nichts mehr, wird die Installation {{timeoutMinutes}} Minuten nach dem Senden als fehlgeschlagen markiert.",
       "exitCode": "Exit-Code",
       "retryStarted": "Wiederholung gestartet",
       "failedToRetryDeployment": "Bereitstellung konnte nicht wiederholt werden",
@@ -1628,7 +1636,8 @@
       "bulkSoftwareDeployment": "Massensoftwarebereitstellung",
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
-      "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
+      "summaryFailed7d": "Fehlgeschlagen (7 Tage)",
+      "categoryFilterLabel": "Kategorie"
     },
     "softwareInventory": {
       "allowed": "Erlaubt",

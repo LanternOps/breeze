@@ -6,6 +6,16 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 
 const ORG = 'Acme Corp';
 
+describe('OrgDefaultsEditor filter selects accessible name (#7156)', () => {
+  it('gives the device-group, alert-threshold, and agent-update-policy selects a real accessible name', () => {
+    render(<OrgDefaultsEditor organizationName={ORG} onSave={vi.fn()} />);
+
+    expect(screen.getByRole('combobox', { name: 'Default device group' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Default alert severity' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Agent update policy' })).toBeInTheDocument();
+  });
+});
+
 describe('OrgDefaultsEditor — maintenance window', () => {
   it('defaults an unconfigured org to the explicit "always (24/7)" state and saves it durably', async () => {
     const user = userEvent.setup();

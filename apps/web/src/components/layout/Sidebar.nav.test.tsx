@@ -108,6 +108,8 @@ describe('navSections structure (#1321, #1324)', () => {
       '/devices/groups',
       '/configuration-policies',
       '/software',
+      '/software-inventory',
+      '/software-policies',
       '/monitoring',
       '/discovery',
       '/onedrive',
@@ -351,17 +353,36 @@ describe('sidebar i18n seed', () => {
     expect(screen.queryByText('Network')).not.toBeInTheDocument();
   });
 
-  it.each(['/software-inventory', '/software-policies'])(
-    'highlights the single Software item for alias path %s',
+  it('exposes Software, Software Inventory and Software Policies as separate nav links (#7123)', async () => {
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => {
+      for (const href of ['/software', '/software-inventory', '/software-policies']) {
+        expect(container.querySelector(`a[href="${href}"]`), href).not.toBeNull();
+      }
+    });
+  });
+
+  it('gates and labels the new software items like Software (devices:read, own i18n keys)', () => {
+    const items = section('fleet-management').items;
+    for (const [href, labelKey] of [
+      ['/software-inventory', 'nav.softwareInventory'],
+      ['/software-policies', 'nav.softwarePolicies'],
+    ]) {
+      const item = items.find((i) => i.href === href);
+      expect(item?.labelKey, href).toBe(labelKey);
+      expect(item?.requiredPermission, href).toEqual({ resource: 'devices', action: 'read' });
+    }
+  });
+
+  it.each(['/software', '/software-inventory', '/software-policies'])(
+    'highlights only the matching Software item for path %s',
     async (path) => {
       const { container } = render(<Sidebar currentPath={path} />);
-      const link = await waitFor(() => {
-        const a = container.querySelector('a[href="/software"]');
-        expect(a).not.toBeNull();
-        return a as HTMLAnchorElement;
+      await waitFor(() => {
+        expect(container.querySelector(`a[href="${path}"]`)).not.toBeNull();
       });
-      expect(link.className).toContain('bg-primary');
-      expect(container.querySelector(`a[href="${path}"]`)).toBeNull();
+      const active = Array.from(container.querySelectorAll('a.bg-primary')).map((a) => a.getAttribute('href'));
+      expect(active).toEqual([path]);
     },
   );
 

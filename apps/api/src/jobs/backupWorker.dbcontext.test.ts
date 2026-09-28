@@ -118,6 +118,18 @@ const agentRelayMock = {
   isAgentConnectedAnywhere: vi.fn(async () => true),
   dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
 };
+// Brokered write delivery is covered by backupStorageWriteDelivery.test.ts and
+// the write-session integration suites; here the helper never reports it
+// unless a test says otherwise.
+const writeDeliveryMock = vi.hoisted(() => ({
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
+    mode: input.provider === 'local' ? 'local' : 'legacy',
+    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
+    payload: input.payload,
+  })),
+}));
+vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
@@ -162,6 +174,10 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         rows = []; label = 'baseFallbackProbeSelect';
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = []; label = 'baseLockOrRetirementSelect';
+      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+        // stampDispatchPinAndIdentity's helper-capability read: an older
+        // helper, so the legacy base selection runs.
+        rows = []; label = 'deviceIntegritySelect';
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
@@ -240,6 +256,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
       // tentative identity/lease stamp UPDATE, both inside this same short
       // context (no eligible base -> one candidate select, one update).
+      'deviceIntegritySelect@depth1',
       'baseCandidateSelect@depth1',
       'update@depth1',
       'baseFallbackProbeSelect@depth1',
@@ -331,6 +348,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
       // tentative identity/lease stamp UPDATE, both inside this same short
       // context (no eligible base -> one candidate select, one update).
+      'deviceIntegritySelect@depth1',
       'baseCandidateSelect@depth1',
       'update@depth1',
       'baseFallbackProbeSelect@depth1',

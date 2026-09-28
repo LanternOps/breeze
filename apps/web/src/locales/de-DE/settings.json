@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Suche oder Filter anpassen.",
     "active": "Aktiv",
     "revoked": "Widerrufen",
-    "expired": "Abgelaufen"
+    "expired": "Abgelaufen",
+    "statusFilterLabel": "API-Schlüsselstatus"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API-Schlüssel werden geladen...",
@@ -3827,7 +3828,9 @@
     "verifyYourIdentity": "Bestätigen Sie Ihre Identität",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, um die Einrichtung einer Authenticator-App zu starten.",
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
-    "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen."
+    "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen.",
+    "ssoReauthManageHint": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich bei Ihrem Anbieter, um diese Änderung zu bestätigen.",
+    "ssoReauthManageVerified": "Identität bei Ihrem Anbieter bestätigt. Schließen Sie den folgenden Schritt ab, um diese Änderung zu bestätigen."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import aus Pax8",
@@ -3944,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut.",
     "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
     "deletePasskeyVerifyHeading": "Zum Löschen eines Passkeys bestätigen",
-    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys."
+    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys.",
+    "ssoReauthManageProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um diese Änderung zu bestätigen.",
+    "verifyWithIdpToDeletePasskey": "Dieses Konto hat kein Passwort. Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey entfernen.",
+    "deletePasskeySsoReauth": "Identität bestätigen, um einen Passkey zu entfernen",
+    "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“."
   },
   "roleManager": {
     "roles": "Rollen",
@@ -4012,13 +4019,18 @@
     "createANewCustomRoleBasedOnThisOne": "Erstellen Sie basierend auf dieser Rolle eine neue benutzerdefinierte Rolle.",
     "saving": "Speichern...",
     "cloneRole2": "Klonrolle",
+    "mfaRequired": "MFA erforderlich",
+    "mfaRequiredTooltip": "Mitglieder dieser Rolle müssen die Multi-Faktor-Authentifizierung einrichten.",
+    "requireMfaForThisRole": "MFA für diese Rolle erzwingen",
+    "requireMfaForThisRoleHelp": "Mitglieder mit dieser Rolle müssen die Multi-Faktor-Authentifizierung einrichten, bevor sie Breeze nutzen können.",
     "saveChanges": "Änderungen speichern",
     "deleting": "Löschen...",
     "networkErrorLoadingPermissions": "Netzwerkfehler beim Laden der Berechtigungen",
     "cannotDeleteAssignedRole": "Rolle mit zugewiesenen Benutzern kann nicht gelöscht werden",
     "inheritedFromParentRole": "Von der übergeordneten Rolle geerbt",
     "waitingForPermissionCatalog": "Warten auf das Laden des Berechtigungskatalogs",
-    "summary": "{{filtered}} von {{total}} Rollen"
+    "summary": "{{filtered}} von {{total}} Rollen",
+    "typeFilterLabel": "Rollentyp"
   },
   "roleSelector": {
     "currentRole": "Aktuelle Rolle",
@@ -4067,6 +4079,9 @@
     "thisOrganization": "Diese Organisation",
     "partnerTechnicianLogin": "Partner (Techniker-Login)",
     "yourOwnTeamSignsInWithThis": "(Ihr eigenes Team meldet sich hiermit an)",
+    "selectAnOrganizationToCreateAnOrgProvider": "Wählen Sie im Organisationswechsler eine Organisation aus, um einen Anbieter für diese Organisation zu erstellen.",
+    "partnerProviderRequiresFullPartnerAccess": "Partnerweite Anbieter erfordern Zugriff auf alle Organisationen.",
+    "selectAnOrganizationBeforeCreatingAProvider": "Wählen Sie im Organisationswechsler eine Organisation aus, bevor Sie einen Anbieter erstellen.",
     "basicInformation": "Grundlegende Informationen",
     "providerName": "Anbietername",
     "eGOktaProduction": "z. B. Okta Production",
@@ -4143,7 +4158,8 @@
     "delete": "Löschen",
     "allStatuses": "Alle Status",
     "deactivate": "Deaktivieren",
-    "activate": "Aktivieren"
+    "activate": "Aktivieren",
+    "statusFilterLabel": "Anbieterstatus"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Fehler beim Abrufen von SSO Anbietern",
@@ -4173,6 +4189,7 @@
     "failedToDeleteProvider": "Anbieter konnte nicht gelöscht werden",
     "anErrorOccurred": "Es ist ein Fehler aufgetreten",
     "failedToSaveProvider": "Anbieter konnte nicht gespeichert werden",
+    "providerNeedsOrganization": "Wählen Sie im Organisationswechsler eine Organisation aus oder setzen Sie „Gilt für“ auf „Partner (Techniker-Login)“, um einen partnerweiten Anbieter zu erstellen.",
     "addSSOProvider": "SSO Anbieter hinzufügen",
     "editSSOProvider": "SSO Anbieter bearbeiten",
     "configureANewSSOProviderForYourOrganization": "Konfigurieren Sie einen neuen SSO-Anbieter für Ihre Organisation.",
@@ -5369,7 +5386,8 @@
       "title": "Benutzerdefiniertes Feld löschen",
       "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "messageSuffix": "Dadurch werden die Felddefinition und alle auf den Geräten gespeicherten Werte entfernt."
-    }
+    },
+    "typeFilterLabel": "Feldtyp"
   },
   "knownGuestsSettings": {
     "title": "Bekannte Gäste",

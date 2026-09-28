@@ -64,7 +64,8 @@
           "label": "Betriebszeit der Flotte",
           "title": "Betriebszeit"
         }
-      }
+      },
+      "dateRangeSelectLabel": "Zeitraum"
     },
     "capacityForecast": {
       "actual": "Tatsächlich",
@@ -893,7 +894,12 @@
         "tuesday": "Dienstag",
         "wednesday": "Mittwoch"
       },
-      "where": "Wo"
+      "where": "Wo",
+      "filterLabels": {
+        "logic": "Filterlogik",
+        "field": "Filterfeld",
+        "operator": "Filteroperator"
+      }
     },
     "reportTemplates": {
       "blankConfigurationDescription": "Konfigurieren Sie einen Bericht von Grund auf oder beginnen Sie mit einer leeren Konfiguration.",

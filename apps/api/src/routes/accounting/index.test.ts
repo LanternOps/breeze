@@ -1577,7 +1577,7 @@ describe('accounting routes', () => {
 
     it('disconnect of a pending_tenant row is a cancel (no release, no plain delete), audited like any disconnect (F19)', async () => {
       mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
-      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
       const res = await disconnect();
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ disconnected: true });
@@ -1591,6 +1591,42 @@ describe('accounting routes', () => {
       });
     });
 
+    it('#7289: disconnect of a re-parked row that owed payment deletes still disconnects and audits the discarded debt', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      mocks.discardPendingTenantSelection.mockResolvedValue({
+        discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 2, remoteEntityIds: ['P-181/INV-145', 'P-182/INV-146'] },
+      });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(auditActions().find((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toEqual({
+        orgId: null,
+        action: 'accounting.connection.owed_deletes_discarded',
+        resourceType: 'accounting_connection',
+        resourceId: CONNECTION_ID,
+        result: 'failure',
+        details: { provider: 'xero', reason: 'disconnect', count: 2, remoteEntityIds: ['P-181/INV-145', 'P-182/INV-146'] },
+      });
+    });
+
+    it('#7289: the same audit on the re-read path (row re-parked after the first read)', async () => {
+      mocks.getConnection.mockResolvedValue(xeroConnection({ status: 'pending_tenant', providerConnectionRef: null }));
+      mocks.discardPendingTenantSelection.mockResolvedValue({
+        discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 1, remoteEntityIds: ['P-181/INV-145'] },
+      });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(auditActions().find((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toMatchObject({
+        resourceId: CONNECTION_ID, result: 'failure', details: { provider: 'xero', reason: 'disconnect', count: 1 },
+      });
+    });
+
+    it('#7289: a pending row that owed nothing writes no owed-deletes audit', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
+      await disconnect();
+      expect(auditActions().some((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toBe(false);
+    });
+
     it('a pending row that was claimed in the meantime still disconnects through the normal path', async () => {
       mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
       mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: false });
@@ -1602,7 +1638,7 @@ describe('accounting routes', () => {
 
     it('a connected row RE-PARKED to pending_tenant before the full read goes through the held-checked discard, not release + plain delete (review H)', async () => {
       mocks.getConnection.mockResolvedValue(xeroConnection({ status: 'pending_tenant', providerConnectionRef: null }));
-      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
       const res = await disconnect();
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ disconnected: true });
@@ -1719,7 +1755,7 @@ describe('accounting routes', () => {
     });
 
     it('cancel is mounted and discards the partner\'s pending row', async () => {
-      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
       const res = await app.request('/accounting/xero/tenants/cancel', { method: 'POST' });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ cancelled: true });

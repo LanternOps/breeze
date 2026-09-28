@@ -48,6 +48,8 @@ export type TopologyMonitorOverlay = {
   /** Null means the reader may not count alerts, which is not the same as zero. */
   activeAlertCount: number | null;
   provenance: TopologyMonitorOverlayProvenance;
+  /** When a fresh result lapses to stale without new evidence; null unless fresh. */
+  freshUntil: string | null;
 };
 
 export type MonitorBindingRow = {
@@ -110,6 +112,27 @@ const REASON_MESSAGES: Record<string, string> = {
   origin_not_visible: 'The measuring device is outside the sites you may read.',
   monitor_detail_restricted: 'You may not read the monitor that supplies this overlay.',
   alert_counts_restricted: 'You may not read alerts, so alert counts are withheld.',
+  mixed_context_results: 'Measurements from different contexts disagree; the failure may be specific to one location.',
+  interface_unmeasured: 'No current port measurement exists for this interface.',
+  interface_measurement_stale: 'The latest port measurement is older than its expected cadence.',
+  interface_measurement_stopped: 'Port measurement was stopped, so earlier readings are historical.',
+  interface_generation_retired: 'The interface generation changed; nothing current is claimed about the old one.',
+  interface_link_down: 'The port reports its link down.',
+  interface_admin_disabled: 'The port is administratively disabled (an expected state, not a fault).',
+  interface_admin_status_unknown: 'The port\'s administrative state is unknown, so no fault is inferred.',
+  interface_dormant: 'The port reports a dormant state.',
+  interface_testing: 'The port is in a testing state.',
+  interface_not_present: 'The port reports a missing component.',
+  interface_oper_status_unknown: 'The port reports an unknown operational state.',
+  interface_rates_unavailable: 'No continuous measurement window is available yet for rates.',
+  interface_error_rates_unavailable: 'The port does not report error or discard counters.',
+  interface_errors_elevated: 'The port is receiving or sending errors above the threshold.',
+  interface_discards_elevated: 'The port is discarding packets above the threshold.',
+  interface_rate_exceeds_capacity: 'A measured rate exceeds the reported port speed.',
+  policy_disabled: 'The recurring monitoring policy for this entity is not armed.',
+  policy_result_pending: 'The recurring monitoring policy is armed but has not produced a result yet.',
+  policy_result_stale: 'The latest scheduled policy result is older than its cadence allows.',
+  policy_run_not_completed: 'The latest scheduled policy run did not complete in time, so it is not evidence.',
 };
 
 export function overlayReasonMessage(code: string): string {
@@ -228,6 +251,7 @@ function evaluate(
       reasons: [code, ...reasons],
       activeAlertCount: access.canReadAlerts ? 0 : null,
       provenance: { ...provenance, resultId: null, observedAt: null },
+      freshUntil: null,
     },
     eligible: false,
     observedAt: 0,
@@ -246,6 +270,7 @@ function evaluate(
   let status: HealthStatus = 'unknown';
   let coverage: HealthCoverage = 'unmonitored';
   let freshness: Freshness = 'unknown';
+  let freshUntil: string | null = null;
 
   if (!row.resultId || !observedAt) {
     reasons.push('no_monitor_result');
@@ -256,6 +281,7 @@ function evaluate(
   } else {
     freshness = 'fresh';
     coverage = 'monitored';
+    freshUntil = new Date(Date.parse(observedAt) + freshnessWindowMs(row.pollingInterval)).toISOString();
     status = RESULT_STATUS_HEALTH[row.resultStatus ?? 'unknown'] ?? 'unknown';
     if (status === 'unknown') reasons.push('no_monitor_result');
   }
@@ -266,6 +292,7 @@ function evaluate(
       status, coverage, freshness, reasons,
       activeAlertCount: access.canReadAlerts ? 0 : null,
       provenance,
+      freshUntil,
     },
     eligible: true,
     observedAt: observedAt ? Date.parse(observedAt) : 0,
@@ -339,21 +366,33 @@ export async function readTopologyMonitorOverlays(
  * of always answering "not measured".
  */
 export function overlayHealthSummary(scope: 'node' | 'relationship', overlay: TopologyMonitorOverlay | undefined) {
-  const codes = overlay?.reasons.length
-    ? overlay.reasons
-    : overlay ? [] : ['no_monitor_binding'];
-  const status = overlay?.status ?? 'unknown';
-  const freshness = overlay?.freshness ?? 'unknown';
+  return topologyHealthSummary(scope, overlay && {
+    status: overlay.status, coverage: overlay.coverage, freshness: overlay.freshness, reasons: overlay.reasons,
+    originNodeId: overlay.provenance.originNodeId, resultId: overlay.provenance.resultId,
+  });
+}
+
+export type TopologyHealthSummaryInput = {
+  status: HealthStatus; coverage: HealthCoverage; freshness: Freshness; reasons: string[];
+  originNodeId: string | null; resultId: string | null;
+};
+/** The M0 wire shape for one subject's (aggregated) health; undefined = nothing measures it. */
+export function topologyHealthSummary(scope: 'node' | 'relationship', input: TopologyHealthSummaryInput | undefined) {
+  const codes = input?.reasons.length
+    ? input.reasons
+    : input ? [] : ['no_monitor_binding'];
+  const status = input?.status ?? 'unknown';
+  const freshness = input?.freshness ?? 'unknown';
   const reasons = (codes.length || (status !== 'unknown' && freshness !== 'unknown')
     ? codes
     : ['monitoring_unavailable']).map((code) => ({ code, message: overlayReasonMessage(code) }));
 
   return {
     status,
-    coverage: overlay?.coverage ?? ('unmonitored' as HealthCoverage),
+    coverage: input?.coverage ?? ('unmonitored' as HealthCoverage),
     scope,
-    originNodeId: overlay?.provenance.originNodeId ?? null,
-    resultId: overlay?.provenance.resultId ?? null,
+    originNodeId: input?.originNodeId ?? null,
+    resultId: input?.resultId ?? null,
     reasons,
     freshness,
   };

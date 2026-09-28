@@ -27,6 +27,16 @@ vi.mock('../../stores/auth', () => ({
   handleSessionExpired: vi.fn(),
 }));
 
+// #7217 — "Install agent…" is offered only to a role that can mint enrollment
+// keys (organizations:write). Mutable so a case can drop the grant.
+const permState = vi.hoisted(() => ({ grants: new Set<string>(['organizations:write']) }));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({
+    permissions: [],
+    can: (resource: string, action: string) => permState.grants.has(`${resource}:${action}`),
+  }),
+}));
+
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(),
   fetchAllNetworkDevices: vi.fn(),
@@ -3125,6 +3135,22 @@ describe('DevicesPage — header "Add" split menu (#5213)', () => {
     expect(window.location.hash).toBe('#add-network-asset');
     // The menu itself closes on selection — it is not the same UI as the modal.
     expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+  });
+
+  it('does not offer "Install agent…" to a role that cannot mint enrollment keys (#7217)', async () => {
+    permState.grants = new Set();
+    try {
+      render(<DevicesPage />);
+      await screen.findByTestId('device-list');
+
+      fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+      expect(screen.getByTestId('devices-page-add-menu')).toBeTruthy();
+      expect(screen.queryByTestId('devices-page-add-menu-install-agent')).toBeNull();
+      // The asset entries do not need enrollment keys and stay available.
+      expect(screen.getByTestId('devices-page-add-menu-add-manual-asset')).toBeTruthy();
+    } finally {
+      permState.grants = new Set(['organizations:write']);
+    }
   });
 
   it('selecting "Install agent…" closes the menu without touching the hash', async () => {

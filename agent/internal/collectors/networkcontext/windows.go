@@ -338,7 +338,12 @@ func winSockaddr(ip netip.Addr, index uint32) windows.RawSockaddrInet {
 		v := (*windows.RawSockaddrInet6)(unsafe.Pointer(&raw))
 		v.Family = windows.AF_INET6
 		v.Addr = ip.As16()
-		v.Scope_id = index
+		// Only a link-local address is zoned by its interface. GetBestRoute2
+		// rejects a scope id on a global/ULA destination with
+		// ERROR_INVALID_PARAMETER; the interface pin is the separate InterfaceIndex.
+		if ip.IsLinkLocalUnicast() {
+			v.Scope_id = index
+		}
 	}
 	return raw
 }

@@ -163,8 +163,8 @@ func TestWinPreflight_RefusesExpectSystemStateWithoutManifest(t *testing.T) {
 	}
 }
 
-// R15: a domain-controller source (Services\NTDS in the staged SYSTEM
-// artifact) is refused unless AllowDomainController.
+// R15: a domain-controller source (ProductType LanmanNt in the staged
+// SYSTEM artifact) is refused unless AllowDomainController.
 func TestWinPreflight_RefusesDomainControllerUnlessAllowed(t *testing.T) {
 	withHostPlatformWindows(t)
 	dir := t.TempDir()
@@ -172,7 +172,7 @@ func TestWinPreflight_RefusesDomainControllerUnlessAllowed(t *testing.T) {
 	dcHive := winhiveDCFake()
 	sys.hives["SYSTEM"] = dcHive
 	res, err := Run(context.Background(), opts)
-	want := "source is a domain controller (Services\\NTDS present); pass --allow-domain-controller"
+	want := "source is a domain controller (ControlSet001\\Control\\ProductOptions\\ProductType is LanmanNt); pass --allow-domain-controller"
 	if err == nil || res == nil || res.Status != "refused" || !strings.Contains(res.Refusal, want) {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
@@ -208,13 +208,68 @@ type admissionDenyingProvider struct{ *memProvider }
 func (a *admissionDenyingProvider) Admits(string) bool { return false }
 
 // winhiveDCFake returns a winhive.Fake pre-seeded with
-// Select\Default=1 and ControlSet001\Services\NTDS present.
+// Select\Default=1 and ControlSet001 ProductType LanmanNt.
 func winhiveDCFake() *winhive.Fake {
+	return winhiveProductTypeFake("LanmanNt")
+}
+
+// winhiveProductTypeFake returns a SYSTEM hive with Select\Default=1,
+// ControlSet001\Control\ProductOptions\ProductType = productType (unset
+// when empty) and the empty ControlSet001\Services\NTDS\RID Values key a
+// standalone Server 2022 carries without AD DS.
+func winhiveProductTypeFake(productType string) *winhive.Fake {
 	h := winhive.NewFake()
 	sel, _ := h.CreateKey("Select")
 	_ = sel.SetDWORD("Default", 1)
-	_, _ = h.CreateKey(`ControlSet001\Services\NTDS`)
+	_, _ = h.CreateKey(`ControlSet001\Services\NTDS\RID Values`)
+	if productType != "" {
+		po, _ := h.CreateKey(`ControlSet001\Control\ProductOptions`)
+		_ = po.SetString("ProductType", productType)
+	}
 	return h
+}
+
+// Bug C (native lab run): a standalone Server 2022 (ProductType ServerNT)
+// with an empty Services\NTDS key is not a DC and must not be refused.
+func TestWinPreflight_StandaloneServerWithEmptyNTDSIsNotRefused(t *testing.T) {
+	withHostPlatformWindows(t)
+	opts, sys := winFakeOptions(t, t.TempDir())
+	system := sys.hives["SYSTEM"]
+	po, _ := system.CreateKey(`ControlSet001\Control\ProductOptions`)
+	_ = po.SetString("ProductType", "ServerNT")
+	_, _ = system.CreateKey(`ControlSet001\Services\NTDS\RID Values`)
+	res, err := Run(context.Background(), opts)
+	if err != nil || res.Status != "completed" {
+		t.Fatalf("standalone server must rebuild, got res=%+v err=%v", res, err)
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "domain-controller") {
+			t.Fatalf("a conclusive ServerNT hive must not warn: %v", res.Warnings)
+		}
+	}
+}
+
+// An inconclusive hive (no ProductType, no AD DS database value) is not
+// refused, but the operator is told the check was inconclusive.
+func TestIsDomainController_InconclusiveHiveWarns(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(staging, "registry"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM"), []byte("hive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := newFakeWinSystem(dir)
+	sys.hives["SYSTEM"] = winhiveProductTypeFake("")
+	r := &run{opts: Options{WinSystem: sys, Target: Target{Kind: TargetVHDX, Path: "x.vhdx"}}, stateStaging: staging}
+	dc, err := r.isDomainController()
+	if err != nil || dc.IsDC {
+		t.Fatalf("isDomainController = %+v, %v; want not a DC", dc, err)
+	}
+	if len(r.warnings) != 1 || !strings.Contains(r.warnings[0], "domain-controller check inconclusive") {
+		t.Fatalf("warnings = %v, want the inconclusive warning", r.warnings)
+	}
 }
 
 // Final-review Imp 3: a restore into the root volume flattens every drive
@@ -250,18 +305,40 @@ func TestWinPreflight_RefusesEntriesFromOtherVolumes(t *testing.T) {
 	}
 }
 
-// Final-review Imp 5: hasNTDS fails closed — no staging dir is an error,
+// 18b row 9e: a snapshot with a staging dir but no system-state/registry/
+// SYSTEM artifact (files-only, or the artifact was itself missing) means
+// isDomainController genuinely cannot tell — it must not pass that silently as "not a
+// DC"; it must warn so the operator knows the DC refusal did not run.
+func TestIsDomainController_NoSystemStateArtifactWarns(t *testing.T) {
+	staging := t.TempDir() // no registry/SYSTEM under here
+	r := &run{opts: Options{WinSystem: newFakeWinSystem(t.TempDir())}, stateStaging: staging}
+	dc, err := r.isDomainController()
+	if err != nil || dc.IsDC {
+		t.Fatalf("isDomainController = %+v, %v; want not a DC, nil (cannot tell, not a positive DC finding)", dc, err)
+	}
+	found := false
+	for _, w := range r.warnings {
+		if strings.Contains(w, "system-state") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %v, want one about the missing system-state artifact", r.warnings)
+	}
+}
+
+// Final-review Imp 5: isDomainController fails closed — no staging dir is an error,
 // never "not a DC".
-func TestHasNTDS_EmptyStagingIsAnError(t *testing.T) {
+func TestIsDomainController_EmptyStagingIsAnError(t *testing.T) {
 	r := &run{opts: Options{WinSystem: newFakeWinSystem(t.TempDir())}}
-	if isDC, err := r.hasNTDS(); err == nil || isDC {
-		t.Fatalf("hasNTDS with no staging dir = %v, %v; want an error", isDC, err)
+	if dc, err := r.isDomainController(); err == nil || dc.IsDC {
+		t.Fatalf("isDomainController with no staging dir = %+v, %v; want an error", dc, err)
 	}
 }
 
 // Final-review Imp 5: a hive that will not unload is an error, not a
 // silently dropped Close.
-func TestHasNTDS_CloseErrorIsReturned(t *testing.T) {
+func TestIsDomainController_CloseErrorIsReturned(t *testing.T) {
 	dir := t.TempDir()
 	staging := filepath.Join(dir, "state")
 	if err := os.MkdirAll(filepath.Join(staging, "registry"), 0o755); err != nil {
@@ -274,7 +351,39 @@ func TestHasNTDS_CloseErrorIsReturned(t *testing.T) {
 	sys.hives["SYSTEM"] = winhive.NewFake()
 	sys.hiveCloseErr = errors.New("RegUnLoadKeyW: access denied")
 	r := &run{opts: Options{WinSystem: sys, Target: Target{Kind: TargetVHDX, Path: "x.vhdx"}}, stateStaging: staging}
-	if _, err := r.hasNTDS(); err == nil || !strings.Contains(err.Error(), "access denied") {
-		t.Fatalf("hasNTDS err = %v, want the unload failure", err)
+	if _, err := r.isDomainController(); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("isDomainController err = %v, want the unload failure", err)
+	}
+}
+
+// 18b row 8: isDomainController only inspects the staged SYSTEM hive — it never edits
+// it — so it must load it read-only, like validate's BCD check, not
+// read-write.
+func TestIsDomainController_LoadsHiveReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(staging, "registry"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM"), []byte("hive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sys := newFakeWinSystem(dir)
+	h := winhive.NewFake()
+	sel, _ := h.CreateKey("Select")
+	_ = sel.SetDWORD("Default", 1)
+	_, _ = h.CreateKey("ControlSet001")
+	sys.hives["SYSTEM"] = h
+	target := Target{Kind: TargetVHDX, Path: "x.vhdx"}
+	r := &run{opts: Options{WinSystem: sys, Target: target}, stateStaging: staging}
+	if _, err := r.isDomainController(); err != nil {
+		t.Fatal(err)
+	}
+	want := "LoadHiveReadOnly " + filepath.Join(staging, "registry", "SYSTEM") + " BRZ_" + targetKey(target) + "_PRE"
+	if got := countCalls(sys.cmds, "LoadHiveReadOnly"); len(got) != 1 || got[0] != want {
+		t.Fatalf("cmds = %v, want exactly %q", sys.cmds, want)
+	}
+	if got := countCalls(sys.cmds, "LoadHive "); len(got) != 0 {
+		t.Fatalf("cmds = %v, isDomainController must never load read-write", sys.cmds)
 	}
 }

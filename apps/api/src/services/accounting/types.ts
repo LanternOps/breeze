@@ -92,6 +92,8 @@ export interface RemoteCustomer extends RemoteEntity {
   remoteVersion?: string;
   /** QBO CurrencyRef.value, surfaced from listing/create responses (multi-currency §11). */
   currencyCode?: string;
+  /** True when the provider knows this contact only as a supplier (Xero: IsSupplier && !IsCustomer). Never set by QuickBooks. */
+  supplierOnly?: boolean;
 }
 
 export interface RemoteItem extends RemoteEntity {
@@ -395,6 +397,9 @@ export interface ChangeSet {
  *      once; a second stale fault may escape as `stale_version`).
  *    - `pushInvoice`: a duplicate document number is handled internally
  *      (QuickBooks retries once without DocNumber).
+ *    - `paymentPushPreflight` must be pure and synchronous (no network, no DB):
+ *      it runs inside the payment coordinator's Phase 1 transaction, before
+ *      any token refresh.
  * 3. `paymentMarker`: `extract(embed(ref, marker))` must recover the marker's
  *    Breeze payment id for ANY `ref` (including null and a max-length one),
  *    and the provider must set `ChangeSetPaymentLine.breezePaymentId` from
@@ -404,6 +409,18 @@ export interface ChangeSet {
  *    (`AccountingPaymentPayload.reference`), before `embed` runs.
  * 5. `connectEnvironment()` is only valid once `configError()` returns null.
  */
+/**
+ * A provider's local refusal to push an invoice, decided without any I/O
+ * (Xero W04). `settings` → the connection lacks a setting this provider needs
+ * (coordinator code `push_settings_incomplete`); `totals` → Breeze's own
+ * figures cannot be expressed to this provider (`invoice_totals_mismatch`).
+ * `message` is operator-facing and persisted as the mapping's last_error.
+ */
+export interface AccountingInvoicePreflightRefusal {
+  reason: 'settings' | 'totals';
+  message: string;
+}
+
 export interface AccountingProvider {
   readonly provider: AccountingProviderId;
   /** Brand name used in operator-visible text ("QuickBooks", "Xero"). Never translated. */
@@ -423,6 +440,9 @@ export interface AccountingProvider {
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
   listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
   listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
+  /** One remote customer by id, or null when it does not exist. Lets a link confirm read one record instead of the whole list. */
+  getRemoteCustomer?(conn: AccountingConnection, id: string): Promise<RemoteCustomer | null>;
+  getRemoteItem?(conn: AccountingConnection, id: string): Promise<RemoteItem | null>;
   upsertCustomer(
     conn: AccountingConnection,
     customer: AccountingCustomerPayload,
@@ -444,12 +464,31 @@ export interface AccountingProvider {
     mapping: AccountingEntityMapping,
   ): Promise<InvoiceVoidResult>;
   /**
+   * OPTIONAL, synchronous, no I/O (Xero W04). Called by the invoice coordinator
+   * in Phase 1 — after the currency and totals guards, before any dependency
+   * sync, token refresh or provider call — with the exact line payloads it will
+   * push. Null means "no objection". QuickBooks declares none.
+   */
+  invoicePushPreflight?(
+    conn: AccountingConnection,
+    invoice: Pick<AccountingInvoicePayload, 'currencyCode' | 'taxTotal' | 'lines'>,
+  ): AccountingInvoicePreflightRefusal | null;
+  /**
+   * OPTIONAL (Xero W04, refinement 22). The remote invoice a push of this Breeze
+   * invoice created, found by the provider's adoption key, or null. Lets a void
+   * reach a create whose response was lost. A provider without an adoption key
+   * for invoices (QuickBooks) declares none.
+   */
+  findRemoteInvoice?(conn: AccountingConnection, invoiceId: string): Promise<{ id: string; remoteVersion?: string } | null>;
+  /**
    * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
    * QuickBooks Payment's amount would rewrite receipt history, and Intuit models
    * a refund as a separate transaction; a Breeze partial refund is therefore
    * recorded as a divergence rather than pushed (spec decision 9).
    */
   createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef>;
+  /** Synchronous settings check before any token refresh or network call (Xero W05). A message = park the payment. Absent = none (QuickBooks). */
+  paymentPushPreflight?(conn: AccountingConnection): string | null;
   deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;

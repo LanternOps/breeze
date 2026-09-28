@@ -3,8 +3,8 @@ import './setup';
 import { mkdtemp, mkdir, writeFile, utimes, readdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { expect, it, vi } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   backupConfigs,
@@ -17,6 +17,7 @@ import {
   sites,
 } from '../../db/schema';
 import { sweepUnreferencedBackupObjects } from '../../jobs/backupRetention';
+import { markReservationRetired } from '../../services/backupSnapshotIdReservations';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -452,4 +453,185 @@ runDb('scenario 9: a second org sharing the same physical storage identity can n
   // org's objects as its own to reclaim.
   expect(remaining).toContain('snapshots/B-LIVE/manifest.json');
   expect(remaining).toContain('snapshots/B-LIVE/files/b.dat');
+});
+
+// ---------------------------------------------------------------------------
+// Snapshot key layout: a storage identity holding ANY snapshot row whose
+// key_layout this server does not understand is not swept at all this run —
+// not even orphan reclamation of other snapshot prefixes — because the
+// listing cannot tell that snapshot's objects apart from unreferenced ones.
+// Checked across every org sharing the identity, and for rows whose
+// storage_identity is still NULL but whose config maps to the identity.
+// ---------------------------------------------------------------------------
+
+const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
+
+async function insertLayoutRow(params: {
+  orgId: string; deviceId: string; configId: string; snapshotId: string; identity: string | null; keyLayout: string;
+}) {
+  const [job] = await db.insert(backupJobs).values({
+    orgId: params.orgId, configId: params.configId, deviceId: params.deviceId, status: 'completed', snapshotId: params.snapshotId,
+  }).returning({ id: backupJobs.id });
+  await db.insert(backupSnapshots).values({
+    orgId: params.orgId, jobId: job!.id, deviceId: params.deviceId, configId: params.configId,
+    snapshotId: params.snapshotId, storageIdentity: params.identity, keyLayout: params.keyLayout, backupType: 'file',
+  });
+}
+
+/** One identity with a retained flat snapshot and an old orphan prefix the sweep would normally reclaim. */
+// Snapshot ids are owned once across every organization and destination
+// (backup_snapshot_id_reservations), so each identity keeps its own id.
+async function seedLayoutIdentity(unique: string, root: string, kept = 'KEPT') {
+  const seed = await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+    await writeAged(root, `snapshots/${kept}/manifest.json`, 1000, JSON.stringify({ files: [{ backupPath: `snapshots/${kept}/files/k.dat` }] }));
+    await writeAged(root, `snapshots/${kept}/files/k.dat`, 1000);
+    await insertSnapshotRow({ ...seed, snapshotId: kept });
+    await writeAged(root, 'snapshots/ORPHAN/manifest.json', TEN_DAYS_MS, JSON.stringify({ files: [] }));
+    await writeAged(root, 'snapshots/ORPHAN/files/o.dat', TEN_DAYS_MS);
+    return seed;
+  });
+  return seed;
+}
+
+runDb.each([
+  ['with its storage identity recorded', 'recorded'],
+  ['with its storage identity still NULL (config maps to the identity)', 'null'],
+] as const)('an identity holding a snapshot in an unsupported key layout %s is not swept at all', async (_name, identityShape) => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rootX = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-x-'));
+  const rootY = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-y-'));
+
+  const seedX = await seedLayoutIdentity(`${unique}-x`, rootX);
+  await seedLayoutIdentity(`${unique}-y`, rootY, 'KEPT-Y');
+  await withSystemDbAccessContext(async () => {
+    await insertLayoutRow({
+      ...seedX, snapshotId: 'OTHERLAYOUT', identity: identityShape === 'recorded' ? seedX.identity : null, keyLayout: 'device_scoped',
+    });
+  });
+
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await sweepUnreferencedBackupObjects();
+    expect(error.mock.calls.some((args) => String(args[0]).includes('unsupported_key_layout') && String(args[0]).includes(seedX.identity))).toBe(true);
+  } finally {
+    error.mockRestore();
+  }
+
+  // X: nothing deleted, the orphan included.
+  expect((await listAll(rootX)).sort()).toEqual([
+    'snapshots/KEPT/files/k.dat', 'snapshots/KEPT/manifest.json',
+    'snapshots/ORPHAN/files/o.dat', 'snapshots/ORPHAN/manifest.json',
+  ]);
+  // Y: an ordinary identity still sweeps its orphan.
+  expect((await listAll(rootY)).sort()).toEqual(['snapshots/KEPT-Y/files/k.dat', 'snapshots/KEPT-Y/manifest.json']);
+});
+
+runDb('an unsupported key layout in ANOTHER org sharing the physical identity stops the sweep for every org on it', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-shared-'));
+
+  const seedA = await seedLayoutIdentity(`${unique}-a`, root);
+  const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-b`, root));
+  expect(seedA.identity).toBe(seedB.identity);
+  await withSystemDbAccessContext(async () => {
+    await insertLayoutRow({ ...seedB, snapshotId: 'B-OTHERLAYOUT', identity: seedB.identity, keyLayout: 'device_scoped' });
+  });
+
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await sweepUnreferencedBackupObjects();
+  } finally {
+    error.mockRestore();
+  }
+
+  expect(await listAll(root)).toContain('snapshots/ORPHAN/manifest.json');
+  expect(await listAll(root)).toContain('snapshots/ORPHAN/files/o.dat');
+});
+
+// ---------------------------------------------------------------------------
+// Snapshot id reservations (brokered writes): a prefix whose id is reserved
+// or sealing for ANY organization is never swept; an abandoned one only after
+// the orphan window, and its reservation is then tombstoned.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+async function reserveId(params: {
+  orgId: string; deviceId: string; configId: string; snapshotId: string; identity: string; state: string; updatedAt?: Date;
+}) {
+  await db.execute(sql`
+    INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, updated_at)
+    VALUES (${params.snapshotId}, ${params.orgId}, ${params.deviceId}, ${params.configId}, ${params.identity},
+            'server_minted', ${params.state}, ${(params.updatedAt ?? new Date()).toISOString()}::timestamptz)
+  `);
+}
+
+runDb('a reserved (in-progress) prefix survives the sweep, also when another org shares the storage; an unreserved one of the same age does not', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-reserved-'));
+  const seedA = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-ra`, root));
+  const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-rb`, root));
+  await writeAged(root, 'snapshots/RES-A/files/part.dat', 10 * DAY_MS);
+  await writeAged(root, 'snapshots/RES-B/files/part.dat', 10 * DAY_MS);
+  await writeAged(root, 'snapshots/NOT-RESERVED/files/part.dat', 10 * DAY_MS);
+  await withSystemDbAccessContext(async () => {
+    await reserveId({ ...seedA, snapshotId: 'RES-A', state: 'reserved' });
+    await reserveId({ ...seedB, snapshotId: 'RES-B', state: 'sealing' });
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  const remaining = await listAll(root);
+  expect(remaining).toContain('snapshots/RES-A/files/part.dat');
+  expect(remaining).toContain('snapshots/RES-B/files/part.dat');
+  expect(remaining).not.toContain('snapshots/NOT-RESERVED/files/part.dat');
+});
+
+runDb('an abandoned prefix is reclaimed only after the orphan window, and its reservation is then tombstoned', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-abandoned-'));
+  const seed = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-ab`, root));
+  await writeAged(root, 'snapshots/ABANDONED-OLD/files/part.dat', 40 * DAY_MS);
+  await writeAged(root, 'snapshots/ABANDONED-NEW/files/part.dat', 40 * DAY_MS);
+  await withSystemDbAccessContext(async () => {
+    await reserveId({ ...seed, snapshotId: 'ABANDONED-OLD', state: 'abandoned', updatedAt: new Date(Date.now() - 40 * DAY_MS) });
+    await reserveId({ ...seed, snapshotId: 'ABANDONED-NEW', state: 'abandoned' });
+  });
+
+  await sweepUnreferencedBackupObjects();
+  let remaining = await listAll(root);
+  expect(remaining).not.toContain('snapshots/ABANDONED-OLD/files/part.dat');
+  expect(remaining).toContain('snapshots/ABANDONED-NEW/files/part.dat');
+
+  // The next run's fresh listing confirms the prefix is gone: the reservation
+  // is deleted and the id tombstoned.
+  await sweepUnreferencedBackupObjects();
+  remaining = await listAll(root);
+  expect(remaining).toContain('snapshots/ABANDONED-NEW/files/part.dat');
+  const rows = await withSystemDbAccessContext(() => db.execute(sql`
+    SELECT
+      (SELECT count(*) FROM backup_snapshot_id_reservations WHERE snapshot_id = 'ABANDONED-OLD')::int AS old_reservation,
+      (SELECT reason FROM backup_snapshot_id_tombstones WHERE snapshot_id = 'ABANDONED-OLD') AS old_tombstone,
+      (SELECT state FROM backup_snapshot_id_reservations WHERE snapshot_id = 'ABANDONED-NEW') AS new_state
+  `));
+  expect(rows[0]).toMatchObject({ old_reservation: 0, old_tombstone: 'abandoned_reclaimed', new_state: 'abandoned' });
+});
+
+runDb('a retired snapshot\'s reservation is tombstoned once its prefix is confirmed gone', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-retired-res-'));
+  const seed = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-rt`, root));
+  await withSystemDbAccessContext(async () => {
+    await insertSnapshotRow({ ...seed, snapshotId: 'RETIRE-ME' });
+    await db.execute(sql`DELETE FROM backup_snapshots WHERE snapshot_id = 'RETIRE-ME'`);
+    await db.insert(backupSnapshotRetirements).values({
+      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
+      snapshotId: 'RETIRE-ME', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
+    });
+    await markReservationRetired('RETIRE-ME', seed.orgId);
+  });
+  await sweepUnreferencedBackupObjects();
+  const rows = await withSystemDbAccessContext(() => db.execute(sql`
+    SELECT (SELECT count(*) FROM backup_snapshot_id_reservations WHERE snapshot_id = 'RETIRE-ME')::int AS reservation,
+           (SELECT reason FROM backup_snapshot_id_tombstones WHERE snapshot_id = 'RETIRE-ME') AS tombstone
+  `));
+  expect(rows[0]).toMatchObject({ reservation: 0, tombstone: 'retired' });
 });

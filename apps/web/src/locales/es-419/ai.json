@@ -32,6 +32,7 @@
     "notSoleApprover": "Ahora se requiere otro aprobador: ya no puedes aprobar tu propia solicitud.",
     "siteCeiling": "Esta aprobación otorga autoridad en toda la organización. Tu acceso está limitado a sitios específicos, así que otro aprobador debe decidir sobre esta solicitud.",
     "noApproverDevice": "Aprobar tu propia solicitud requiere Touch ID / Windows Hello.",
+    "freshFactorRequired": "Esta verificación requiere una confirmación nueva con passkey (Touch ID, Windows Hello o una llave de hardware) para esta aprobación. Inténtalo de nuevo.",
     "registerDevice": "Registrar este dispositivo",
     "decideFailed": "No se pudo enviar la decisión",
     "approvedToast": "Acción aprobada",

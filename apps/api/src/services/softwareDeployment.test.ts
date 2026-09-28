@@ -392,6 +392,128 @@ describe('createSoftwareDeployment', () => {
     expect(dispatchClaims).toHaveLength(1);
   });
 
+  describe('deferDelivery (#7187)', () => {
+    const versionRecord = {
+      id: 'ver-1',
+      catalogId: 'cat-1',
+      s3Key: 'pkg.key',
+      downloadUrl: null,
+      checksum: null,
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: null,
+      version: '1.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+
+    /** The seam's deferDelivery contract: row persisted now, push in deliver(). */
+    function deferringSeam(pushes: string[], offline: Set<string> = new Set()) {
+      return async ({ deviceId, deferDelivery }: { deviceId: string; deferDelivery?: boolean }) => {
+        const command = { id: `cmd-${deviceId}`, status: 'pending' };
+        const deliverBy = new Date(Date.now() + 3600_000);
+        if (offline.has(deviceId)) return { ok: true, command, delivery: 'queued_offline', deliverBy };
+        const push = async () => {
+          pushes.push(deviceId);
+          return { ok: true, command: { ...command, status: 'sent' }, delivery: 'delivered', deliverBy };
+        };
+        if (deferDelivery) return { ok: true, command, delivery: 'queued_live', deliverBy, deliver: push };
+        return push();
+      };
+    }
+
+    it('persists every command, pushes none, and hands back a deliver() that pushes the live ones', async () => {
+      selectMock
+        .mockReturnValueOnce(sel([versionRecord]))
+        .mockReturnValueOnce(sel([catalogItem]))
+        .mockReturnValueOnce(sel([
+          { id: 'dev-1', agentId: 'agent-1' },
+          { id: 'dev-2', agentId: 'agent-2' },
+        ]));
+      insertMock
+        .mockReturnValueOnce(insWithReturning([{ id: 'dep-1', orgId: 'org-1' }]))
+        .mockReturnValueOnce(ins());
+      const pushes: string[] = [];
+      dispatchDeviceCommandMock.mockImplementation(deferringSeam(pushes, new Set(['dev-2'])));
+
+      const result = await createSoftwareDeployment({
+        orgId: 'org-1',
+        softwareVersionId: 'ver-1',
+        deploymentType: 'install',
+        deviceIds: ['dev-1', 'dev-2'],
+        scheduleType: 'immediate',
+        createdBy: 'system:automation',
+        deferDelivery: true,
+      });
+
+      expect(dispatchDeviceCommandMock.mock.calls.map(([arg]) => arg.deferDelivery)).toEqual([true, true]);
+      expect(pushes).toEqual([]);
+      expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-2']);
+      expect(result.deviceResults.map((r) => [r.deviceId, r.status, r.deviceCommandId])).toEqual([
+        ['dev-1', 'queued', 'cmd-dev-1'],
+        ['dev-2', 'queued', 'cmd-dev-2'],
+      ]);
+      expect(typeof result.deliver).toBe('function');
+
+      const report = await result.deliver!();
+
+      expect(pushes).toEqual(['dev-1']);
+      expect(report).toEqual({ deliveredDeviceIds: ['dev-1'] });
+    });
+
+    it('the package-manager fan-out defers the same way', async () => {
+      const method = { id: 'm-1', catalogId: 'cat-1', platform: 'windows', kind: 'winget', packageId: 'Test.App' };
+      selectMock
+        .mockReturnValueOnce(sel([method]))
+        .mockReturnValueOnce(sel([catalogItem]))
+        .mockReturnValueOnce(sel([{ id: 'dev-1', agentId: 'agent-1', osType: 'windows' }]));
+      insertMock
+        .mockReturnValueOnce(insWithReturning([{ id: 'dep-1', orgId: 'org-1' }]))
+        .mockReturnValueOnce(ins());
+      const pushes: string[] = [];
+      dispatchDeviceCommandMock.mockImplementation(deferringSeam(pushes));
+
+      const result = await createSoftwareDeployment({
+        orgId: 'org-1',
+        installMethodId: 'm-1',
+        deploymentType: 'install',
+        deviceIds: ['dev-1'],
+        scheduleType: 'immediate',
+        createdBy: 'system:automation',
+        deferDelivery: true,
+      });
+
+      expect(pushes).toEqual([]);
+      expect(result.deviceResults[0]?.status).toBe('queued');
+      expect(await result.deliver!()).toEqual({ deliveredDeviceIds: ['dev-1'] });
+      expect(pushes).toEqual(['dev-1']);
+    });
+
+    it('without deferDelivery the fan-out pushes inline and returns no continuation', async () => {
+      selectMock
+        .mockReturnValueOnce(sel([versionRecord]))
+        .mockReturnValueOnce(sel([catalogItem]))
+        .mockReturnValueOnce(sel([{ id: 'dev-1', agentId: 'agent-1' }]));
+      insertMock
+        .mockReturnValueOnce(insWithReturning([{ id: 'dep-1', orgId: 'org-1' }]))
+        .mockReturnValueOnce(ins());
+      const pushes: string[] = [];
+      dispatchDeviceCommandMock.mockImplementation(deferringSeam(pushes));
+
+      const result = await createSoftwareDeployment({
+        orgId: 'org-1',
+        softwareVersionId: 'ver-1',
+        deploymentType: 'install',
+        deviceIds: ['dev-1'],
+        scheduleType: 'immediate',
+        createdBy: 'system:automation',
+      });
+
+      expect(pushes).toEqual(['dev-1']);
+      expect(result.deviceResults[0]?.status).toBe('delivered');
+      expect(result.deliver).toBeUndefined();
+    });
+  });
+
   // #5128 (OD-8): a presigned URL is only valid for an hour, but a queued
   // install may be claimed days later. The payload carries the STABLE s3Key
   // reference too, so deliveryRefreshers['software_install'] can re-mint the

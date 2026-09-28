@@ -71,27 +71,20 @@ describe('script_cancel result handler wiring', () => {
     });
   });
 
-  it('reports a failed ack with the ids needed to find the stranded row', async () => {
-    // Both transports CAS the command row terminal BEFORE dispatching here, so
-    // the agent never resends. A swallowed throw would lose the only proof the
-    // script stopped, with nothing in Sentry to search on.
+  it('propagates a failed ack so the transport can roll back the terminal CAS', async () => {
+    // #3530: this handler no longer catches-and-swallows a persistence
+    // failure — it rethrows so the transport rolls back the command's terminal
+    // transition and parks the row as result_processing_failed, instead of the
+    // command silently reading "done" while the ack never landed. Sentry
+    // capture now happens exactly once, at the transport, not here — asserting
+    // a handler-level captureException would reassert the old swallow-and-log
+    // contract this fix replaced.
     const boom = new Error('deadlock detected');
     applyScriptCancelAckMock.mockRejectedValueOnce(boom);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    try {
-      await expect(dispatch({ status: 'completed', result: { outcome: 'terminated' } }))
-        .resolves.toBeUndefined();
-      expect(consoleError).toHaveBeenCalled();
-    } finally {
-      consoleError.mockRestore();
-    }
+    await expect(dispatch({ status: 'completed', result: { outcome: 'terminated' } }))
+      .rejects.toBe(boom);
 
-    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(captureExceptionMock.mock.calls[0]![0]).toBe(boom);
-    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
-      commandId: COMMAND_ID,
-      agentId: 'agent-1',
-    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });

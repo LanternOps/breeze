@@ -1,3 +1,4 @@
+import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
 import { ensureDefaultProfile } from '../services/billingProfileService';
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
@@ -10,6 +11,7 @@ import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
+import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 // Imported from the CONCRETE schema module, not the '../db/schema' barrel:
 // several suites mock that barrel with a non-partial factory, and a plain
@@ -3149,14 +3151,37 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
-  await db.delete(sites).where(eq(sites.id, id));
+  // The site's topology domain cascades with it, but two kinds of row point at
+  // it through NO ACTION FKs and must go first, under the site row lock, in ONE
+  // transaction — otherwise the delete aborts with 23503:
+  //  - the topology policy alerts it OWNS (M3-D6, PR #7117 T3) and their
+  //    NO ACTION children;
+  //  - its topology investigation sessions (M4-D2, #6000), pinned to it by
+  //    ai_sessions.topology_site_id, children first.
+  // Both counts land on the audit row.
+  const removed = await db.transaction(async (tx) => {
+    if (!(await lockSiteForDelete(tx, site.id))) return null;
+    const removedTopologyAlerts = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
+    const topologyAiSessions = await deleteSiteTopologyAiSessions(tx, { orgId: site.orgId, siteId: site.id });
+    await tx.delete(sites).where(eq(sites.id, id));
+    return { removedTopologyAlerts, topologyAiSessions };
+  });
+  if (removed === null) {
+    return c.json({ error: 'Site not found' }, 404);
+  }
+  const { removedTopologyAlerts, topologyAiSessions } = removed;
+  const siteDeleteDetails = {
+    ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
+    ...(topologyAiSessions.investigations > 0 ? { topologyInvestigationsDeleted: topologyAiSessions } : {}),
+  };
 
   writeRouteAudit(c, {
     orgId: site.orgId,
     action: 'site.delete',
     resourceType: 'site',
     resourceId: site.id,
-    resourceName: site.name
+    resourceName: site.name,
+    ...(Object.keys(siteDeleteDetails).length > 0 ? { details: siteDeleteDetails } : {}),
   });
 
   return c.json({ success: true });

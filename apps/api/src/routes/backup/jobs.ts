@@ -309,25 +309,38 @@ jobsRoutes.post(
   if ('response' in phase1) return phase1.response;
   const { createdJobs, configId, featureLinkId } = phase1;
 
-  // Phase 2 — enqueue BullMQ dispatch for each now-committed job.
-  const enqueueFailure = await withAuthDbAccessContext(auth, async (): Promise<{ jobId: string; error: string } | null> => {
-    const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
-    for (const [index, row] of createdJobs.entries()) {
-      try {
-        await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
-      } catch (err) {
-        const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
-        console.error('[BackupJobs] Failed to enqueue dispatch:', err);
-        recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
-        // This job and every one after it in the fan-out never reached the queue.
-        for (const stranded of createdJobs.slice(index)) {
-          await markBackupJobDispatchFailed(stranded.id, error);
-        }
-        return { jobId: row.id, error };
-      }
+  // Phase 2 — enqueue BullMQ dispatch for each now-committed job. The Redis
+  // call runs OUTSIDE any DB context (it needs none, and inside one it holds a
+  // pooled connection across network I/O — #7213); only the failure-marking
+  // writes below open a context.
+  const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
+  let enqueueFailure: { jobId: string; error: string; strandedFrom: number } | null = null;
+  for (const [index, row] of createdJobs.entries()) {
+    try {
+      await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
+      console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+      recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
+      // This job and every one after it in the fan-out never reached the queue.
+      enqueueFailure = { jobId: row.id, error, strandedFrom: index };
+      break;
     }
-    return null;
-  });
+  }
+  if (enqueueFailure) {
+    const failure = enqueueFailure;
+    await withAuthDbAccessContext(auth, async () => {
+      for (const stranded of createdJobs.slice(failure.strandedFrom)) {
+        // One failed write must not leave the remaining jobs `pending`, or
+        // mask the enqueue error the caller is about to receive.
+        try {
+          await markBackupJobDispatchFailed(stranded.id, failure.error);
+        } catch (markErr) {
+          console.error('[BackupJobs] Failed to mark job dispatch-failed:', { jobId: stranded.id }, markErr);
+        }
+      }
+    });
+  }
 
   if (enqueueFailure) {
     writeRouteAudit(c, {
@@ -567,21 +580,32 @@ jobsRoutes.post(
 
   // Phase 2 — enqueue a dispatch for every now-committed job.
   if (toDispatch.length > 0) {
-    await withAuthDbAccessContext(auth, async () => {
-      const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
-      for (const { job, configId, deviceId } of toDispatch) {
-        try {
-          await enqueueBackupDispatch(job.id, configId, orgId, deviceId);
-          created.push(job.id);
-        } catch (err) {
-          const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
-          console.error('[BackupJobs] Failed to enqueue dispatch:', err);
-          recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
-          await markBackupJobDispatchFailed(job.id, error);
-          failed.push(job.id);
-        }
+    // Enqueue outside any DB context (#7213); only failure-marking writes need one.
+    const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
+    const enqueueFailures: Array<{ jobId: string; error: string }> = [];
+    for (const { job, configId, deviceId } of toDispatch) {
+      try {
+        await enqueueBackupDispatch(job.id, configId, orgId, deviceId);
+        created.push(job.id);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
+        console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+        recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
+        enqueueFailures.push({ jobId: job.id, error });
+        failed.push(job.id);
       }
-    });
+    }
+    if (enqueueFailures.length > 0) {
+      await withAuthDbAccessContext(auth, async () => {
+        for (const { jobId, error } of enqueueFailures) {
+          try {
+            await markBackupJobDispatchFailed(jobId, error);
+          } catch (markErr) {
+            console.error('[BackupJobs] Failed to mark job dispatch-failed:', { jobId }, markErr);
+          }
+        }
+      });
+    }
   }
 
   const skipped = skippedOffline.length + skippedRunning.length + skippedBrokenProfile.length;

@@ -54,10 +54,13 @@ vi.mock('../services/accounting/accountingConnectionService', () => ({
 const getConnectionByIdMock = getConnectionMock;
 
 const { providerSupportsMock } = vi.hoisted(() => ({ providerSupportsMock: vi.fn((_id: string, _cap: string) => true) }));
-vi.mock('../services/accounting/providerRegistry', () => ({
+vi.mock('../services/accounting/providerRegistry', async (importOriginal) => ({
   providerSupports: providerSupportsMock,
   findAccountingProvider: (id: string) => ({ id, limits: { rate: { provider: id } } }),
   LEGACY_UNTARGETED_JOB_PROVIDER: 'quickbooks',
+  // Real display names: the not-connected skip labels the row by its provider.
+  accountingProviderDisplayName:
+    (await importOriginal<typeof import('../services/accounting/providerRegistry')>()).accountingProviderDisplayName,
 }));
 
 const { pushInvoiceMock, voidInvoiceMock } = vi.hoisted(() => ({
@@ -238,6 +241,38 @@ describe('processAccountingSyncJob', () => {
 
     expect(errSpy).toHaveBeenCalled();
     expect(captureExceptionMock).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it.each(['push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission'] as const)(
+    'a %s push failure is terminal and not reported to Sentry (Xero W04)',
+    async (code) => {
+      getConnectionMock.mockResolvedValue(connectionRow());
+      pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError(code, 409, 'user must act'));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(
+        processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+      ).resolves.toBeUndefined();
+
+      expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
+      expect(errSpy).toHaveBeenCalledWith('[AccountingSyncWorker] terminal failure, not retrying', expect.anything(), expect.anything(), `code=${code}`, 'user must act');
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      errSpy.mockRestore();
+    },
+  );
+
+  it('remote_ambiguous is terminal and IS reported (it should never happen)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    pushInvoiceMock.mockRejectedValue(new AccountingInvoicePushError('remote_ambiguous', 409, 'two invoices'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+    ).resolves.toBeUndefined();
+
+    expect(pushInvoiceMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     errSpy.mockRestore();
   });
 
@@ -479,6 +514,21 @@ describe('payment jobs', () => {
     expect(noteSkippedMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE);
   });
 
+  it('labels the not-connected skip with the row\'s OWN provider (Xero W05b F4)', async () => {
+    // The mapping row binds to a Xero connection: stamping "QuickBooks is not
+    // connected" on it would send the operator to the wrong integration.
+    getConnectionMock.mockResolvedValue({ id: 'c1', provider: 'xero', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+    awaitsRemoteRefMock.mockResolvedValue(false);
+
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(noteSkippedMock.mock.calls).toEqual([
+      [MAPPING_ID, PARTNER_ID, 'Xero is not connected'],
+      [MAPPING_ID, PARTNER_ID, 'Xero is not connected'],
+    ]);
+  });
+
   it('records the same skip when there is no QuickBooks connection row at all', async () => {
     getConnectionMock.mockResolvedValue(null);
 
@@ -530,6 +580,41 @@ describe('payment jobs', () => {
       .resolves.toBeUndefined();
     expect(captureExceptionMock).toHaveBeenCalled();
   });
+
+  it.each<AccountingPaymentPushErrorCode>([
+    'push_settings_incomplete', 'remote_missing', 'remote_locked', 'provider_permission', 'amount_exceeds_due', 'remote_deleted',
+  ])('treats %s as TERMINAL and QUIET — no retry, no Sentry (Xero W05 refinement 16)', async (code) => {
+    pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 409, 'resolve it'));
+    await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('remote_ambiguous is terminal and NOT re-reported by the worker (the coordinator already captured it)', async () => {
+    // The coordinator's create-catch is the ONE Sentry report, with the
+    // provider telemetry tags only it has; a second capture here doubled every
+    // event (Xero W05b F3).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('remote_ambiguous', 409, 'two'));
+    await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(pushPaymentMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[AccountingSyncWorker] terminal payment failure, not retrying',
+      'type=push-payment', `mappingId=${MAPPING_ID}`, 'code=remote_ambiguous', 'two',
+    );
+    errorSpy.mockRestore();
+  });
+
+  it.each<AccountingPaymentPushErrorCode>(['record_failed', 'customer_not_mapped', 'invoice_void'])(
+    'pre-W05 terminal %s still reaches Sentry from the worker (QuickBooks telemetry unchanged)', async (code) => {
+      pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 409, 'x'));
+      await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+        .resolves.toBeUndefined();
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each<AccountingPaymentPushErrorCode>(['provider_error', 'sync_in_progress', 'invoice_not_synced'])(
     'rethrows %s so BullMQ retries', async (code) => {
@@ -589,6 +674,14 @@ describe('mapping jobs and recovery sweep', () => {
     await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
     expect(captureExceptionMock).toHaveBeenCalled();
   });
+  it.each<AccountingMappingErrorCode>(['duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission'])(
+    'does not retry user-resolvable %s and does not report it to Sentry (Xero W03)',
+    async (code) => {
+      syncMappingMock.mockRejectedValueOnce(new AccountingMappingError(code, 409, 'x'));
+      await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    },
+  );
   it('does not retry a remote write whose local persistence failed', async () => {
     syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('record_failed', 502, 'remote write landed'));
     await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();

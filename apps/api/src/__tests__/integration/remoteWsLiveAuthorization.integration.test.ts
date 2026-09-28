@@ -3,8 +3,18 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { devices, organizationUsers, remoteSessions } from '../../db/schema';
+import {
+  configPolicyAssignments,
+  configPolicyFeatureLinks,
+  configPolicyRemoteAccessSettings,
+  configurationPolicies,
+  devices,
+  organizationUsers,
+  remoteSessions,
+  tunnelSessions,
+} from '../../db/schema';
 import { getRedis } from '../../services/redis';
+import { revalidateTunnelSession } from '../../routes/tunnelWs';
 import {
   authorizeLiveRemoteSessionAccess,
   revalidateRemoteWsAuthority,
@@ -57,6 +67,66 @@ describe('remote WebSocket live authority — real PostgreSQL and Redis', () => 
     await revokeViewerSession(session!.id);
     await expect(isViewerSessionRevoked(session!.id)).resolves.toBe(true);
     await redis!.del(`viewer-session-revoked:${session!.id}`);
+  });
+
+  runDb('an open VNC relay loses live authority once the device policy switches to consent', async () => {
+    const env = await setupTestEnvironment({
+      rolePermissions: [
+        { resource: 'remote', action: 'access' },
+        { resource: 'devices', action: 'execute' },
+      ],
+    });
+    const tdb = getTestDb();
+    const [device] = await tdb.insert(devices).values({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      agentId: `live-vnc-${randomUUID()}`,
+      hostname: 'synthetic-live-vnc',
+      osType: 'macos',
+      osVersion: 'test',
+      architecture: 'arm64',
+      agentVersion: 'test',
+      status: 'online',
+    }).returning({ id: devices.id });
+    const [policy] = await tdb.insert(configurationPolicies).values({
+      orgId: env.organization.id,
+      name: `Live VNC ${randomUUID()}`,
+      status: 'active',
+    }).returning({ id: configurationPolicies.id });
+    const [link] = await tdb.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id,
+      featureType: 'remote_access',
+      inlineSettings: { vncRelay: true, sessionPromptMode: 'notify' },
+    }).returning({ id: configPolicyFeatureLinks.id });
+    await tdb.insert(configPolicyRemoteAccessSettings).values({
+      featureLinkId: link!.id,
+      sessionPromptMode: 'notify',
+    });
+    await tdb.insert(configPolicyAssignments).values({
+      configPolicyId: policy!.id,
+      level: 'device',
+      targetId: device!.id,
+    });
+    const [tunnel] = await tdb.insert(tunnelSessions).values({
+      deviceId: device!.id,
+      userId: env.user.id,
+      orgId: env.organization.id,
+      type: 'vnc',
+      status: 'active',
+      targetHost: '127.0.0.1',
+      targetPort: 5900,
+    }).returning({ id: tunnelSessions.id });
+    const conn = { userId: env.user.id, deviceId: device!.id, tunnelType: 'vnc' as const };
+
+    await expect(revalidateTunnelSession(tunnel!.id, conn)).resolves.toEqual({ ok: true });
+
+    await tdb.update(configPolicyRemoteAccessSettings)
+      .set({ sessionPromptMode: 'consent' })
+      .where(eq(configPolicyRemoteAccessSettings.featureLinkId, link!.id));
+
+    await expect(revalidateTunnelSession(tunnel!.id, conn)).resolves.toEqual({
+      ok: false, reason: 'consent_required',
+    });
   });
 
   runDb('cancels a lock-stalled PostgreSQL revalidation and releases the loser', async () => {

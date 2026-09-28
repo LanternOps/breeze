@@ -186,6 +186,12 @@ func Load(hiveFile, mountName string) (Handle, error) {
 // WRITE_DAC, so Load's KEY_ALL_ACCESS root open is denied there even with
 // SeBackup/SeRestore held (lab-proven). The caller holds the same
 // privileges as for Load; Close still flushes and unloads.
+//
+// KEY_READ only restricts the KEY HANDLES this package opens: RegLoadKeyW
+// itself still mounts the hive file writable at the OS level (18b row 9d),
+// so the kernel may still touch its .LOG1/.LOG2 transaction logs (e.g. to
+// roll one forward) even on this "read-only" load. That is not a write
+// this package makes, and not one a caller can suppress.
 func LoadReadOnly(hiveFile, mountName string) (Handle, error) {
 	return load(hiveFile, mountName, registry.READ)
 }

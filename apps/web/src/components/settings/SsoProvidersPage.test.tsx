@@ -2,14 +2,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
-const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
-// Org scope, so the fleet-view gate stays open and the data paths under test run.
+const { showToastMock, orgScopeRef, authUserRef } = vi.hoisted(() => ({
+  showToastMock: vi.fn(),
+  // Org scope by default, so the fleet-view gate stays open and the data paths
+  // under test run. The #7252 block flips it to the All-organizations view.
+  orgScopeRef: {
+    current: { ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null } as Record<string, unknown>,
+  },
+  authUserRef: { current: {} as { canManagePartnerWide?: boolean } },
+}));
+const ORG_SCOPE = { ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null };
+const FLEET_SCOPE = { ready: true, status: 'resolved', scope: 'all', orgId: null, org: null, error: null };
 vi.mock('@/hooks/useOrgScope', () => ({
-  useOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
-  getOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
+  useOrgScope: () => orgScopeRef.current,
+  getOrgScope: () => orgScopeRef.current,
 }));
 vi.mock('../../stores/auth', () => ({
-  registerOrgIdProvider: vi.fn(), fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+  registerOrgIdProvider: vi.fn(),
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: (sel: (s: { user: unknown }) => unknown) => sel({ user: authUserRef.current }),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
@@ -71,6 +83,8 @@ describe('SsoProvidersPage partner-axis behavior', () => {
     fetchWithAuth.mockReset();
     showToastMock.mockClear();
     getJwtClaims.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgScopeRef.current = ORG_SCOPE;
+    authUserRef.current = {};
   });
 
   it('tolerates the expected org-fetch 400 (no org context) and still shows partner rows', async () => {
@@ -717,6 +731,98 @@ describe('SsoProvidersPage partner-axis behavior', () => {
       await waitFor(() => {
         expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
       });
+    });
+  });
+  // #7252: a partner admin in the All-organizations view clicked Create and got
+  // a bare "Organization ID required" — the form defaulted to an org-owned
+  // provider with no org to own it.
+  describe('creating a provider in the All-organizations view (#7252)', () => {
+    function routeCreate(post: Response) {
+      fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+        if (url === '/sso/providers' && opts?.method === 'POST') return Promise.resolve(post);
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+    }
+
+    async function openCreateForm() {
+      render(<SsoProvidersPage />);
+      await waitFor(() => expect(screen.getByText('Add provider')).toBeTruthy());
+      fireEvent.click(screen.getByText('Add provider'));
+      await screen.findByTestId('sso-provider-owner');
+      fireEvent.change(screen.getByLabelText(/Provider name/i), { target: { value: 'Authentik' } });
+    }
+
+    function postBody() {
+      const call = fetchWithAuth.mock.calls.find(
+        (c) => c[0] === '/sso/providers' && (c[1] as { method?: string })?.method === 'POST'
+      );
+      return call ? JSON.parse((call[1] as { body: string }).body) : undefined;
+    }
+
+    it('creates a partner-wide provider by default for a full-partner admin', async () => {
+      orgScopeRef.current = FLEET_SCOPE;
+      authUserRef.current = { canManagePartnerWide: true };
+      routeCreate(jsonRes({ data: { ...PARTNER_PROVIDER, status: 'inactive' } }, true, 201));
+      await openCreateForm();
+
+      expect((screen.getByTestId('sso-provider-owner-org') as HTMLInputElement).disabled).toBe(true);
+      fireEvent.click(screen.getByRole('button', { name: /create provider/i }));
+
+      await waitFor(() => expect(postBody()).toBeTruthy());
+      expect(postBody()).toMatchObject({ ownerScope: 'partner' });
+    });
+
+    it('treats an absent canManagePartnerWide (pre-/users/me session) as capable', async () => {
+      orgScopeRef.current = FLEET_SCOPE;
+      authUserRef.current = {};
+      routeCreate(jsonRes({ data: { ...PARTNER_PROVIDER, status: 'inactive' } }, true, 201));
+      await openCreateForm();
+
+      const partnerRadio = screen.getByTestId('sso-provider-owner-partner') as HTMLInputElement;
+      expect(partnerRadio.disabled).toBe(false);
+      expect(partnerRadio.checked).toBe(true);
+      expect(screen.queryByTestId('sso-provider-owner-blocked')).toBeNull();
+    });
+
+    it('never sends a create for a selected-org partner user with no org selected', async () => {
+      orgScopeRef.current = FLEET_SCOPE;
+      authUserRef.current = { canManagePartnerWide: false };
+      routeCreate(jsonRes({ data: PARTNER_PROVIDER }, true, 201));
+      await openCreateForm();
+
+      expect(screen.getByTestId('sso-provider-owner-blocked')).toBeTruthy();
+      const create = screen.getByRole('button', { name: /create provider/i }) as HTMLButtonElement;
+      expect(create.disabled).toBe(true);
+      fireEvent.submit(create.closest('form')!);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(postBody()).toBeUndefined();
+    });
+
+    it('turns the API\'s organization-required refusal into an actionable toast', async () => {
+      // Org view, so the form allows an org-owned create; the server still
+      // could not resolve an org (e.g. the selection went stale).
+      routeCreate(
+        jsonRes(
+          {
+            error: 'Organization ID required',
+            code: 'sso_provider_org_required',
+          },
+          false,
+          400
+        )
+      );
+      await openCreateForm();
+      fireEvent.click(screen.getByRole('button', { name: /create provider/i }));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }))
+      );
+      const toast = showToastMock.mock.calls.find((c) => c[0]?.type === 'error')![0];
+      expect(toast.message).toMatch(/select an organization in the organization switcher/i);
+      expect(toast.message).not.toBe('Organization ID required');
     });
   });
 });

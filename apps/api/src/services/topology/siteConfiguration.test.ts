@@ -67,13 +67,13 @@ describe('configuration effect authority', () => {
     );
     expect(mocks.access).toHaveBeenCalledTimes(1);
   });
-  it('never enables recurring execution in M1', async () => {
+  it('accepts recurring activation INTENT only under configure + execute + MFA (arming is separate)', async () => {
     const policy = { kind: 'policy', enabled: true } as const;
+    await assertConfigurationEffects(ctx, empty, { ...empty, policies: { policy: policy as never } });
+    expect(mocks.access.mock.calls.map((c) => c[3])).toEqual(['write', 'configure', 'execute']);
+    mocks.mfa.mockReturnValue(false);
     await expect(
-      assertConfigurationEffects(ctx, empty, {
-        ...empty,
-        policies: { policy: policy as never },
-      }),
-    ).rejects.toMatchObject({ code: 'capability_unavailable' });
+      assertConfigurationEffects(ctx, empty, { ...empty, policies: { policy: policy as never } }),
+    ).rejects.toMatchObject({ code: 'mfa_required' });
   });
 });

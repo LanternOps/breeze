@@ -508,7 +508,11 @@ export default function ScriptTestRunner({
           <Terminal className="h-4 w-4 text-muted-foreground" />
           {t('testRunner.title')}
         </span>
+        <label htmlFor="test-device-select" className="sr-only">
+          {t('testRunner.deviceSelectLabel')}
+        </label>
         <select
+          id="test-device-select"
           value={selectedDeviceId}
           onChange={event => handleDeviceSelect(event.target.value)}
           disabled={!scriptId || busy}

@@ -232,7 +232,7 @@ MFA verification is rate-limited separately from login.
   { "error": "Invalid or expired MFA session" }
   ```
 
-  Branch on the status code, and on `code` when you need the specific reason. `401` from these endpoints means "re-authenticate"; it never means "you mistyped a digit". The codes in use are `mfa_code_invalid` (wrong TOTP/SMS/recovery code), `mfa_proof_invalid` (a rejected `POST /auth/mfa/step-up` factor proof), `invalid_credentials` (a rejected step-up password or enrollment grant), and `enrollment_grant_expired` (the SSO re-authentication grant a passwordless account used to authorise first-factor enrollment has expired, been replayed, or no longer matches the session — it carries `reauthUrl` so a client can offer the one action that resolves it, restarting `POST /sso/reauth/start`). Never branch on the human-readable `error`/`message` text — it is not part of the contract.
+  Branch on the status code, and on `code` when you need the specific reason. `401` from these endpoints means "re-authenticate"; it never means "you mistyped a digit". The codes in use are `mfa_code_invalid` (wrong TOTP/SMS/recovery code), `mfa_proof_invalid` (a rejected `POST /auth/mfa/step-up` factor proof), `invalid_credentials` (a rejected step-up password or enrollment grant), and `enrollment_grant_expired` (the SSO re-authentication grant a passwordless account used to authorise first-factor enrollment has expired, been replayed, or no longer matches the session — it carries `reauthUrl` so a client can offer the one action that resolves it, restarting `POST /sso/reauth/start`), `sso_reauth_required` (a passwordless account called a factor-management endpoint without a re-authentication grant) and `sso_reauth_grant_expired` (that grant has expired, been replayed, or no longer matches the session) — both also carry `reauthUrl`. Never branch on the human-readable `error`/`message` text — it is not part of the contract.
 
   This applies to `/auth/mfa/*` and `/auth/phone/*`, and to the two other endpoints that verify a password supplied in the request body: `POST /auth/change-password` and `POST /auth/account-deletion-request`. Both answer a rejected password with `400` and `code: "invalid_credentials"`. Earlier releases answered `401` for both cases, which is why a client that auto-refreshes on `401` could sign the user out mid-enrollment for a mistyped digit — or, on those two endpoints, mid-flow for a mistyped password.
 </Aside>
@@ -240,6 +240,10 @@ MFA verification is rate-limited separately from login.
 ### Disabling MFA
 
 Call `POST /auth/mfa/disable` with `currentPassword` and the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. Every **other** session and refresh token for the user is revoked; the calling session is replaced in the same response (new access and refresh tokens, or refreshed cookies in the browser flow), so the user is not signed out by their own request. If the organisation enforces MFA, the endpoint returns `403`. A caller that cannot receive the replacement session (a bearer-only client with no device binding) receives `428`.
+
+### Passwordless (SSO-provisioned) accounts
+
+An account created by SSO auto-provisioning has no password, so it cannot supply `currentPassword` to the factor-management endpoints: `POST /auth/mfa/disable`, `POST /auth/mfa/recovery-codes` and `DELETE /auth/passkeys/:id`. Instead it re-authenticates at its identity provider — `POST /sso/reauth/start` forces a fresh sign-in (`prompt=login`, `max_age=0`) and returns to the profile page with a single-use grant — and sends that grant as `ssoReauthGrantId` in place of `currentPassword`. The grant replaces only the password: the current MFA code (disable) or the existing-factor step-up grant (recovery codes, passkey deletion) is still required. It is bound to the user and the session that started the re-authentication, expires after five minutes, is consumed by the first successful call, and is refused for any account that has a password. In the dashboard these actions show **Verify with your identity provider** instead of a password field.
 
 ### Recovery Codes
 
@@ -357,7 +361,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `backup` | Backup jobs, vaults, and restore operations |
 | `devices` | Manage and view endpoints |
 | `agent_rollback` | Signed rollback of an agent component on a device |
-| `topology` | Network discovery topology view and saved layout |
+| `topology` | Network topology view and saved layout (`read`, `write`); running topology diagnostics and arming scheduled topology checks (`execute`) |
 | `scripts` | Script library and execution |
 | `variables` | Tenant script variable definitions |
 | `alerts` | Alert rules and acknowledgement |
@@ -438,6 +442,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `AGENT_ROLLBACK_CREATE` | `agent_rollback` | `create` |
 | `TOPOLOGY_READ` | `topology` | `read` |
 | `TOPOLOGY_WRITE` | `topology` | `write` |
+| `TOPOLOGY_EXECUTE` | `topology` | `execute` |
 | `SCRIPTS_READ` | `scripts` | `read` |
 | `SCRIPTS_WRITE` | `scripts` | `write` |
 | `SCRIPTS_DELETE` | `scripts` | `delete` |
@@ -533,9 +538,12 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
     { "resource": "alerts", "action": "read" },
     { "resource": "alerts", "action": "acknowledge" }
   ],
-  "parentRoleId": null
+  "parentRoleId": null,
+  "forceMfa": false
 }
 ```
+
+Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → Roles) to require every member assigned this role to enrol in MFA. It defaults to `false`, can be changed later with `PATCH /roles/:id`, and is not inherited through `parentRoleId` — each role sets it for its own members. Roles that require MFA show an **MFA required** badge in the roles list. The built-in Partner Admin role requires MFA and, like every system role, cannot be edited.
 
 Custom roles are automatically scoped to the current user's context (partner or organisation). System roles cannot be modified or deleted.
 
@@ -549,7 +557,7 @@ Use `POST /roles/:id/clone` to duplicate an existing role (including system role
 }
 ```
 
-The cloned role copies all permissions from the source and is created as a non-system role owned by your partner or organisation.
+The cloned role copies all permissions and the `forceMfa` setting from the source and is created as a non-system role owned by your partner or organisation. Because the clone is a custom role, its MFA requirement can then be changed with `PATCH /roles/:id`.
 
 ### Deleting Roles
 
@@ -687,6 +695,7 @@ SSO endpoints are mounted under `/api/v1/sso`.
 | `name` | `varchar(100)` | Role display name. |
 | `description` | `text` | Optional description. |
 | `is_system` | `boolean` | Whether the role is a built-in system role. |
+| `force_mfa` | `boolean` | Members of this role must enrol in MFA. Not inherited. Exposed as `forceMfa` on the role endpoints. |
 
 ### Permissions Table
 

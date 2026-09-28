@@ -123,7 +123,9 @@
     "score": "Punteggio",
     "estRto": "RTO stim.",
     "estRpo": "RPO stim.",
-    "riskFactors": "Fattori di rischio"
+    "riskFactors": "Fattori di rischio",
+    "reason": "Motivo",
+    "noDevicesScoredYet": "Nessun dispositivo ha ancora un punteggio di prontezza."
   },
   "backupVerificationTab": {
     "loadingVerificationData": "Caricamento dati di verifica...",
@@ -521,14 +523,19 @@
     "command": "Comando:",
     "targetPath": "Percorso destinazione:",
     "completed": "Completato:",
-    "resultPayload": "Payload risultato",
     "noRestoreHistoryYetStartARestoreTo": "Nessuna cronologia di ripristino. Avvia un ripristino per caricare qui i dettagli del risultato in tempo reale.",
     "recentRestoreHistory": "Cronologia ripristini recente",
     "mostRecentRestoreJobsForThisOrganization": "Processi di ripristino più recenti per questa organizzazione.",
     "noRestoreHistoryYet": "Nessuna cronologia di ripristino.",
-    "restore": "ripristino ·",
     "files2": "File:",
-    "size": "Dimensione:"
+    "size": "Dimensione:",
+    "filesSelected_one": "{{count}} file selezionato",
+    "filesSelected_other": "{{count}} file selezionati",
+    "unknownDevice": "Dispositivo sconosciuto",
+    "kindVm": "Ripristina come VM",
+    "kindInstantBoot": "Avvio istantaneo",
+    "kindSelective": "Ripristino selettivo",
+    "kindFull": "Ripristino completo"
   },
   "sLAConfigDialog": {
     "name": "Nome",
@@ -626,8 +633,9 @@
     "mode": "Modalita",
     "rebuildHost": "Host di ricostruzione",
     "outputPath": "Percorso di output",
-    "rebuildEngine": "Motore di ricostruzione (Linux)",
-    "manualAttachNote": "Collega manualmente il VHDX a una VM Hyper-V; la creazione automatica delle VM per i guest Linux arriverà con il motore Windows.",
+    "rebuildEngine": "Motore di ricostruzione",
+    "manualAttachNote": "Collega manualmente il VHDX a una VM Hyper-V. Breeze crea la VM al posto tuo solo quando uno snapshot Windows viene ricostruito su un host Windows con un nome VM indicato.",
+    "hypervVmNote": "Breeze crea la VM Hyper-V \"{{vmName}}\" sull'host di ricostruzione non appena l'immagine viene convalidata.",
     "newIdentityNote": "L'immagine ricostruita riceve sempre una nuova identità macchina e non riprende mai l'identità del dispositivo originale."
   },
   "vMRestoreSpecsStep": {
@@ -667,15 +675,25 @@
     "back": "Indietro",
     "continue": "Continua",
     "starting": "Avvio...",
-    "rebuildEngineLinux": "Motore di ricostruzione (Linux)",
-    "rebuildEngineDescription": "Ricostruisce questo snapshot di macchina completa Linux in un'immagine disco VHDX per Hyper-V su un dispositivo Linux con l'helper Breeze. L'immagine riceve sempre una nuova identità macchina.",
-    "selectRebuildHost": "Seleziona l'host di ricostruzione Linux",
+    "rebuildEngineLinux": "Motore di ricostruzione",
+    "rebuildEngineDescription": "Ricostruisce questo snapshot dell'intera macchina in un'immagine disco VHDX Hyper-V su un dispositivo della stessa piattaforma che esegue l'helper Breeze. L'immagine riceve sempre una nuova identità macchina.",
+    "selectRebuildHost": "Seleziona l'host di ricostruzione",
     "chooseALinuxDeviceWithQemuUtils": "Scegli un dispositivo Linux online con qemu-utils installato e spazio libero sufficiente per l'immagine.",
+    "chooseAWindowsRebuildHost": "Scegli un dispositivo Windows online che esegue l'helper Breeze e ha spazio libero sufficiente per l'immagine. Hyper-V serve solo per creare la VM.",
     "outputPath": "Percorso di output",
     "outputPathHint": "Percorso assoluto sull'host di ricostruzione che termina con .vhdx.",
-    "outputPathInvalid": "Inserisci un percorso assoluto che termini con .vhdx.",
+    "outputPathInvalid": "Inserisci un percorso assoluto adatto al sistema operativo dell'host di ricostruzione che termini con .vhdx (un percorso di unità come C:\\ su Windows, un percorso che inizia con / su Linux).",
+    "hypervOptional": "VM Hyper-V (facoltativa)",
+    "hypervSpecsHint": "Inserisci un nome VM perché l'host di ricostruzione crei la VM con CPU e memoria del passaggio Specifiche VM.",
+    "hypervVmName": "Nome VM",
+    "hypervVmNamePlaceholder": "es. srv-01-restored",
+    "hypervSwitch": "Switch virtuale",
+    "hypervSwitchPlaceholder": "Lascia vuoto per nessun adattatore di rete",
+    "hypervNoNicHint": "Nessuno switch selezionato — la VM non avrà un adattatore di rete finché non ne colleghi uno.",
     "startRebuild": "Avvia ricostruzione",
-    "rebuildStarted": "Ricostruzione avviata. Il VHDX comparirà sull'host di ricostruzione al termine."
+    "rebuildStarted": "Ricostruzione avviata. Il VHDX comparirà sull'host di ricostruzione al termine.",
+    "enterAVmNameToContinue": "Inserisci un nome per la VM per continuare.",
+    "enterAVmNameOnTheVmNameStep": "Inserisci un nome per la VM nel passaggio «Nome VM» per avviare il ripristino."
   },
   "vaultConfigDialog": {
     "device": "Dispositivo",
@@ -821,7 +839,7 @@
     "uniqueDeviceCount_other": "{{count}} dispositivi univoci",
     "chooseAStepTypeForEachGroup": "Scegli un tipo di passaggio per ogni gruppo di ripristino.",
     "rebuildWaitTimeoutOutOfRange": "Il timeout di attesa della ricostruzione bare-metal deve essere un numero intero compreso tra {{min}} e {{max}} minuti.",
-    "rebuildOutputDirMustBeAbsolute": "La directory di output della ricostruzione bare-metal deve essere un percorso assoluto che inizia con \"/\" e non superare {{max}} caratteri.",
+    "rebuildOutputDirMustBeAbsolute": "La directory di output della ricostruzione bare-metal deve essere un percorso assoluto (che inizia con \"/\" o con un'unità Windows come C:\\) e non superare {{max}} caratteri.",
     "partialSaveFailure": "Parte di questo piano è stata salvata prima dell'errore, quindi il piano e l'elenco potrebbero non coincidere. Risolvi il problema e salva di nuovo. Il server segnala: {{message}}"
   },
   "dRPlanGroupCard": {
@@ -849,9 +867,13 @@
       "bareMetalRebuild": "Ricostruzione bare-metal (motore di ricostruzione)"
     },
     "rebuildHost": "Host di ricostruzione",
-    "rebuildHostHint": "Dispositivo Linux con qemu-utils che esegue le prove. In caso di failover ogni dispositivo avvia invece il supporto di ripristino.",
+    "rebuildHostHint": "Deve eseguire lo stesso sistema operativo dei dispositivi provati; Breeze rifiuta una coppia non corrispondente all'avvio. In failover, ogni dispositivo si avvia invece dal supporto di ripristino.",
+    "rebuildHostOs": "Sistema operativo dell'host",
+    "rebuildHostOsLinux": "Host Linux",
+    "rebuildHostOsWindows": "Host Windows",
     "outputDir": "Directory di output",
-    "outputDirHint": "Directory sull'host di ricostruzione che riceve un'immagine VHDX per dispositivo.",
+    "outputDirHint": "Directory sull'host di ricostruzione che riceve un'immagine VHDX per dispositivo. Lascia vuoto per usare il valore predefinito dell'host.",
+    "outputDirOsMismatch": "Questa directory non corrisponde al sistema operativo dell'host: gli host Windows richiedono un percorso di unità come C:\\, gli host Linux un percorso che inizia con /.",
     "waitTimeout": "Timeout di attesa (min)",
     "waitTimeoutHint": "Minuti di attesa della registrazione di ogni dispositivo prima che il passaggio fallisca."
   },

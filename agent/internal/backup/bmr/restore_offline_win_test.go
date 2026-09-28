@@ -2,6 +2,9 @@ package bmr
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,15 +56,22 @@ func seedArtifacts(t *testing.T, hives ...string) string {
 	return staging
 }
 
-func systemFake(ntds bool) *winhive.Fake {
+// systemFake: Select\Default=Current=1 and ControlSet001 with the empty
+// Services\NTDS\RID Values key a standalone Server 2022 carries. dc sets
+// ProductType LanmanNt; otherwise ServerNT (Bug C: the NTDS key alone is not
+// a DC).
+func systemFake(dc bool) *winhive.Fake {
 	f := winhive.NewFake()
 	sel, _ := f.CreateKey("Select")
 	_ = sel.SetDWORD("Default", 1)
 	_ = sel.SetDWORD("Current", 1)
-	_, _ = f.CreateKey(`ControlSet001\Services`)
-	if ntds {
-		_, _ = f.CreateKey(`ControlSet001\Services\NTDS`)
+	_, _ = f.CreateKey(`ControlSet001\Services\NTDS\RID Values`)
+	productType := "ServerNT"
+	if dc {
+		productType = "LanmanNt"
 	}
+	po, _ := f.CreateKey(`ControlSet001\Control\ProductOptions`)
+	_ = po.SetString("ProductType", productType)
 	return f
 }
 
@@ -147,7 +157,7 @@ func TestRestoreSystemStateOfflineWindows_RefusesDomainController(t *testing.T) 
 	var calls []string
 	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": systemFake(true), "SOFTWARE": winhive.NewFake()}, &calls)
 	_, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
-	if err == nil || err.Error() != `source is a domain controller (Services\NTDS present); pass --allow-domain-controller and read the DC recovery guidance` {
+	if err == nil || err.Error() != `source is a domain controller (ControlSet001\Control\ProductOptions\ProductType is LanmanNt); pass --allow-domain-controller and read the DC recovery guidance` {
 		t.Fatalf("err = %v", err)
 	}
 	if _, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", true, load); err != nil {
@@ -167,6 +177,44 @@ func TestSelectOfflineHives_TreeHiveWithoutArtifact(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(root, "Windows", "System32", "config", "SAM")); string(b) != "tree-SAM" {
 		t.Fatalf("SAM was overwritten before every artifact was confirmed: %q", b)
+	}
+}
+
+// Bug C: a standalone server (ServerNT) with an empty Services\NTDS key is
+// not refused, and no domain-controller warning is emitted.
+func TestRestoreSystemStateOfflineWindows_StandaloneServerNotRefused(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	var calls []string
+	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": systemFake(false), "SOFTWARE": winhive.NewFake()}, &calls)
+	_, warnings, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
+	if err != nil {
+		t.Fatalf("standalone server refused: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "domain-controller") {
+			t.Fatalf("warnings = %v", warnings)
+		}
+	}
+}
+
+// An inconclusive SYSTEM hive (no ProductOptions, no AD DS database value)
+// is not refused but carries the inconclusive warning.
+func TestRestoreSystemStateOfflineWindows_InconclusiveDCCheckWarns(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	sys := systemFake(false)
+	_ = sys.DeleteKey(`ControlSet001\Control\ProductOptions`)
+	var calls []string
+	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": sys, "SOFTWARE": winhive.NewFake()}, &calls)
+	_, warnings, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range warnings {
+		found = found || strings.Contains(w, "domain-controller check inconclusive")
+	}
+	if !found {
+		t.Fatalf("warnings = %v, want the inconclusive warning", warnings)
 	}
 }
 
@@ -210,11 +258,13 @@ func TestRestoreSystemStateOfflineWindows_BootStartInEachControlSet(t *testing.T
 	}
 }
 
-// Fix round 1: a DC whose NTDS key is only under Select\Current is refused.
-func TestRestoreSystemStateOfflineWindows_RefusesNTDSUnderCurrentOnly(t *testing.T) {
+// Fix round 1: a DC whose LanmanNt ProductType is only under Select\Current
+// is refused.
+func TestRestoreSystemStateOfflineWindows_RefusesDCUnderCurrentOnly(t *testing.T) {
 	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
 	sys := systemFakeTwoSets()
-	_, _ = sys.CreateKey(`ControlSet002\Services\NTDS`)
+	po, _ := sys.CreateKey(`ControlSet002\Control\ProductOptions`)
+	_ = po.SetString("ProductType", "LanmanNt")
 	var calls []string
 	load := fakeLoad(map[string]*winhive.Fake{"SYSTEM": sys, "SOFTWARE": winhive.NewFake()}, &calls)
 	_, _, err := RestoreSystemStateOfflineWindows(context.Background(), root, "", testRootGUID, nil, "k1", false, load)
@@ -249,5 +299,160 @@ func TestSelectOfflineHives_CopyFailureLeavesTreeUntouched(t *testing.T) {
 		if b, _ := os.ReadFile(filepath.Join(cfg, h)); string(b) != "tree-"+h {
 			t.Errorf("%s = %q, want the tree hive", h, b)
 		}
+	}
+}
+
+// #5397 follow-up: under VSS the system-state artifacts are the shadow copy's
+// hive FILES plus their .LOG1/.LOG2 (registry/<HIVE>.LOG1), not reg-save
+// output. A lazily reconciled primary is only complete together with its
+// logs, so the all-or-nothing fallback must install each artifact hive's own
+// logs next to it — never the tree's stale ones, never none when the
+// artifact carries them.
+func TestSelectOfflineHives_FallbackInstallsTheArtifactsOwnLogs(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM") // SECURITY missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	_ = os.WriteFile(filepath.Join(cfg, "SYSTEM.LOG1"), []byte("tree-log"), 0o600)
+	_ = os.WriteFile(filepath.Join(cfg, "SAM.LOG2"), []byte("tree-log"), 0o600)
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	for _, l := range []string{"SYSTEM.LOG1", "SYSTEM.LOG2", "SECURITY.LOG1"} {
+		if err := os.WriteFile(filepath.Join(staging, "registry", l), []byte("artifact-"+l), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := selectOfflineHives(root, staging); err != nil {
+		t.Fatalf("selectOfflineHives: %v", err)
+	}
+	for _, l := range []string{"SYSTEM.LOG1", "SYSTEM.LOG2", "SECURITY.LOG1"} {
+		if b, _ := os.ReadFile(filepath.Join(cfg, l)); string(b) != "artifact-"+l {
+			t.Errorf("%s = %q, want the artifact's own log", l, b)
+		}
+	}
+	// SAM's artifact carries no logs: the tree's stale SAM.LOG2 must be gone,
+	// not left to be replayed against the artifact hive.
+	for _, l := range []string{"SAM.LOG1", "SAM.LOG2", "SOFTWARE.LOG1", "SECURITY.LOG2"} {
+		if _, err := os.Stat(filepath.Join(cfg, l)); !os.IsNotExist(err) {
+			t.Errorf("%s must not exist after the fallback (err=%v)", l, err)
+		}
+	}
+	entries, _ := os.ReadDir(cfg)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".brz-fallback-tmp") {
+			t.Errorf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+// A log artifact that is present but cannot be copied fails the fallback
+// before the tree is touched.
+func TestSelectOfflineHives_UnreadableArtifactLogLeavesTreeUntouched(t *testing.T) {
+	root := seedTree(t, "SYSTEM", "SOFTWARE", "SAM") // SECURITY missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	_ = os.WriteFile(filepath.Join(cfg, "SYSTEM.LOG1"), []byte("tree-log"), 0o600)
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	if err := os.MkdirAll(filepath.Join(staging, "registry", "SAM.LOG1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SAM.LOG1") {
+		t.Fatalf("err = %v, want a SAM.LOG1 copy failure", err)
+	}
+	entries, _ := os.ReadDir(cfg)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "SAM,SOFTWARE,SYSTEM,SYSTEM.LOG1" {
+		t.Fatalf("config dir = %v, want the untouched tree", names)
+	}
+}
+
+// Review item 2: the swap must install every artifact log first, then the
+// primaries of hives the tree still had, and the tree-MISSING primaries
+// strictly last. A failure anywhere earlier then leaves a tree-missing hive
+// still missing, so a retry re-runs the whole fallback instead of accepting a
+// dirty artifact primary that never got its logs.
+func TestSelectOfflineHives_FailedLogRenameLeavesTreeMissingHiveAbsent(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM", "SECURITY") // SYSTEM missing
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	if err := os.WriteFile(filepath.Join(staging, "registry", "SYSTEM.LOG1"), []byte("artifact-SYSTEM.LOG1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := renameHive
+	t.Cleanup(func() { renameHive = orig })
+	var renamed []string
+	renameHive = func(from, to string) error {
+		if filepath.Base(to) == "SYSTEM.LOG1" {
+			return errors.New("injected rename failure")
+		}
+		renamed = append(renamed, filepath.Base(to))
+		return os.Rename(from, to)
+	}
+
+	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SYSTEM.LOG1") {
+		t.Fatalf("err = %v, want the injected SYSTEM.LOG1 rename failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "SYSTEM")); !os.IsNotExist(err) {
+		t.Fatalf("config\\SYSTEM exists after a failed swap (renamed before the failure: %v); a retry would accept a dirty primary without its logs", renamed)
+	}
+	entries, _ := os.ReadDir(cfg)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".brz-fallback-tmp") {
+			t.Errorf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+// The full order, observed through the seam: logs, then tree-present
+// primaries, then tree-missing primaries.
+func TestSelectOfflineHives_RenameOrder(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM") // SYSTEM and SECURITY missing
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+	for _, l := range []string{"SYSTEM.LOG1", "SAM.LOG2"} {
+		_ = os.WriteFile(filepath.Join(staging, "registry", l), []byte("artifact-"+l), 0o600)
+	}
+	orig := renameHive
+	t.Cleanup(func() { renameHive = orig })
+	var order []string
+	renameHive = func(from, to string) error {
+		order = append(order, filepath.Base(to))
+		return os.Rename(from, to)
+	}
+	if _, err := selectOfflineHives(root, staging); err != nil {
+		t.Fatalf("selectOfflineHives: %v", err)
+	}
+	want := "SYSTEM.LOG1,SAM.LOG2,SOFTWARE,SAM,SYSTEM,SECURITY"
+	if got := strings.Join(order, ","); got != want {
+		t.Errorf("rename order = %s, want %s", got, want)
+	}
+}
+
+// 18b row 3: with no artifact logs, the final rename swap must do the
+// tree-present primaries first and the tree-missing primaries LAST. A failure
+// on the 2nd primary rename must leave config\SYSTEM absent: a filled
+// tree-missing slot would look "complete" to a retry and stop it re-entering
+// the fallback.
+func TestSelectOfflineHives_RenameFailureNeverLeavesCompleteMixedTree(t *testing.T) {
+	root := seedTree(t, "SOFTWARE", "SAM", "SECURITY") // SYSTEM missing from the tree
+	cfg := filepath.Join(root, "Windows", "System32", "config")
+	staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+
+	calls := 0
+	orig := renameHive
+	renameHive = func(oldpath, newpath string) error {
+		calls++
+		if calls == 2 {
+			return fmt.Errorf("simulated rename failure")
+		}
+		return orig(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameHive = orig })
+
+	if _, err := selectOfflineHives(root, staging); err == nil {
+		t.Fatal("want a rename failure error")
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "SYSTEM")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("config\\SYSTEM stat err = %v, want the tree-missing hive still absent so a retry re-enters the fallback", err)
 	}
 }

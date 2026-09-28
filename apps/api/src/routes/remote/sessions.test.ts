@@ -264,6 +264,7 @@ vi.mock('./recordingUrl', () => ({ normalizeRecordingUrl: vi.fn((u: unknown) => 
 import { sessionRoutes } from './sessions';
 import { db } from '../../db';
 import { buildRemoteSessionPromptPayload } from './helpers';
+import { RemoteSessionPromptPolicyError } from './consentGate';
 
 const ORG_ID = 'org-111';
 const ALLOWED_SITE = 'site-a';
@@ -1255,7 +1256,7 @@ describe('remote sessions — site-scope enforcement', () => {
     ] as const)('binds consentUnavailableBehavior=$bound for a $mode/$behavior prompt', async ({ mode, behavior, bound }) => {
       getSessionWithOrgCheck.mockResolvedValue({
         session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
-        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', consentPromptProtocolVersion: 1 },
       });
       const { set } = rigOfferUpdate();
       vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({
@@ -1280,6 +1281,79 @@ describe('remote sessions — site-scope enforcement', () => {
         desktopPromptMode: mode,
         desktopConsentUnavailableBehavior: bound,
       }));
+    });
+
+    describe('offer consent start gates', () => {
+      const consentPrompt = {
+        mode: 'consent',
+        technicianName: null,
+        technicianEmail: null,
+        orgName: null,
+        consentUnavailableBehavior: 'block',
+        consentTimeoutMs: 30000,
+        notifyOnEnd: true,
+        showIndicator: true,
+      };
+
+      function offer() {
+        return app.request(`/remote/sessions/${SESSION_ID}/offer`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+          body: offerBody,
+        });
+      }
+
+      it.each([0, 2, undefined])('refuses a consent-mode start before dispatch when the agent reports consent prompt protocol %s', async (version) => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', consentPromptProtocolVersion: version },
+        });
+        rigOfferUpdate();
+        vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(consentPrompt as never);
+
+        const res = await offer();
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.code).toBe('CONSENT_UPGRADE_REQUIRED');
+        expect(body.error).toMatch(/update the agent/i);
+        // Refused before the start intent is committed and before any dispatch.
+        expect(db.update).not.toHaveBeenCalled();
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+      });
+
+      it('does not gate a notify-mode start on the consent prompt protocol', async () => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', consentPromptProtocolVersion: 0 },
+        });
+        rigOfferUpdate();
+        vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce({ ...consentPrompt, mode: 'notify' } as never);
+
+        const res = await offer();
+
+        expect(res.status).toBe(200);
+        expect(vi.mocked(sendCommandToAgent)).toHaveBeenCalled();
+      });
+
+      it('refuses the start when the prompt policy cannot be resolved', async () => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', consentPromptProtocolVersion: 1 },
+        });
+        rigOfferUpdate();
+        vi.mocked(buildRemoteSessionPromptPayload).mockRejectedValueOnce(
+          new RemoteSessionPromptPolicyError(DEVICE_IN_ALLOWED, 'statement timeout'),
+        );
+
+        const res = await offer();
+
+        expect(res.status).toBe(503);
+        const body = await res.json();
+        expect(body.code).toBe('REMOTE_PROMPT_POLICY_UNAVAILABLE');
+        expect(db.update).not.toHaveBeenCalled();
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+      });
     });
   });
 

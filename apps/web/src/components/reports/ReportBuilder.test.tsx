@@ -33,6 +33,56 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
+describe('ReportBuilder filter/grouping selects accessible name (#7156)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { rows: [] } }));
+  });
+
+  it('gives the group-by select a real accessible name', async () => {
+    render(<ReportBuilder mode="builder" />);
+    expect(await screen.findByRole('combobox', { name: 'Group by' })).toBeInTheDocument();
+  });
+
+  it('gives the default report type\'s data-source selects a real accessible name', async () => {
+    render(<ReportBuilder mode="builder" />);
+    expect(await screen.findByRole('combobox', { name: 'Device scope' })).toBeInTheDocument();
+  });
+
+  it('gives the aggregation and aggregation-field selects a real accessible name once a numeric aggregation is chosen', async () => {
+    render(<ReportBuilder mode="builder" defaultValues={{ aggregation: { type: 'sum', field: 'duration' } }} />);
+    expect(await screen.findByRole('combobox', { name: 'Aggregation' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Aggregation field' })).toBeInTheDocument();
+  });
+
+  it('gives the weekly schedule day-of-week select a real accessible name', async () => {
+    render(<ReportBuilder mode="builder" defaultValues={{ schedule: 'weekly' }} />);
+    expect(await screen.findByRole('combobox', { name: 'Day of week' })).toBeInTheDocument();
+  });
+
+  it('gives the monthly schedule day-of-month select a real accessible name', async () => {
+    render(<ReportBuilder mode="builder" defaultValues={{ schedule: 'monthly' }} />);
+    expect(await screen.findByRole('combobox', { name: 'Day of month' })).toBeInTheDocument();
+  });
+
+  it('gives the filter-condition logic/field/operator selects a real accessible name', async () => {
+    render(
+      <ReportBuilder
+        mode="builder"
+        defaultValues={{
+          filterConditions: [
+            { id: 'c1', field: 'hostname', operator: 'equals', value: 'a', logic: 'and' },
+            { id: 'c2', field: 'hostname', operator: 'equals', value: 'b', logic: 'and' },
+          ],
+        }}
+      />
+    );
+    expect(await screen.findByRole('combobox', { name: 'Filter logic' })).toBeInTheDocument();
+    expect(screen.getAllByRole('combobox', { name: 'Filter field' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('combobox', { name: 'Filter operator' }).length).toBeGreaterThan(0);
+  });
+});
+
 describe('ReportBuilder live preview', () => {
   beforeEach(() => {
     vi.clearAllMocks();

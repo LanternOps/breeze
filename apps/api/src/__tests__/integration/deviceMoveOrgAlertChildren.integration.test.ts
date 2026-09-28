@@ -40,6 +40,8 @@ import {
   alerts,
   auditLogs,
   devices,
+  ticketAlertLinks,
+  tickets,
 } from '../../db/schema';
 import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -203,7 +205,7 @@ async function seed() {
     });
 
   return {
-    adminDb, orgA, orgB, siteB,
+    adminDb, orgA, orgB, siteA, siteB, partner, user, run,
     deviceMoved, deviceStays,
     alertA1, alertA2, alertA4, alertB1,
     gTravelling, gSpanning,
@@ -315,6 +317,35 @@ describe('POST /devices/:id/move-org — alert-axis children (#4867)', () => {
     expect(after.memberB1).toBe(f.orgA.id);
     // A group-level verdict follows its group, so it stays too.
     expect(after.verdictOnSpanningGroup).toBe(f.orgA.id);
+  });
+
+  it('leaves a SITE-OWNED topology alert and its ticket link + verdict in the source org (M3-D6, PR #7117 T2)', async () => {
+    const f = await seed();
+    // A topology policy alert owned by siteA whose origin (provenance) is the
+    // moving device: the ownership guard keeps the alert with its site, so its
+    // alert-keyed children must not be re-stamped into the target org either.
+    const [owned] = await f.adminDb.insert(alerts).values({
+      orgId: f.orgA.id, deviceId: f.deviceMoved.id, severity: 'high', status: 'active', title: 'site-owned',
+      topologySiteId: f.siteA.id, topologySourceKey: `topology:${'e'.repeat(64)}`,
+    }).returning();
+    const [ticket] = await f.adminDb.insert(tickets).values({
+      orgId: f.orgA.id, partnerId: f.partner.id, ticketNumber: `OWN-${owned.id.slice(0, 8)}`,
+      subject: 'site-owned alert ticket', source: 'manual', priority: 'normal',
+    }).returning();
+    const [link] = await f.adminDb.insert(ticketAlertLinks).values({ ticketId: ticket.id, orgId: f.orgA.id, alertId: owned.id }).returning();
+    const [verdict] = await f.adminDb.insert(aiAlertVerdicts).values({
+      orgId: f.orgA.id, runId: f.run.id, alertId: owned.id, classification: 'actionable', confidence: '0.80', rationale: 'site-owned',
+    }).returning();
+
+    const res = await f.move();
+    expect(res.status).toBe(200);
+
+    const orgOf = async (table: any, id: string) => (await f.adminDb.select({ orgId: table.orgId }).from(table).where(eq(table.id, id)))[0]?.orgId;
+    expect(await orgOf(alerts, owned.id)).toBe(f.orgA.id);
+    expect(await orgOf(ticketAlertLinks, link.id)).toBe(f.orgA.id);
+    expect(await orgOf(aiAlertVerdicts, verdict.id)).toBe(f.orgA.id);
+    // The device-bound alert-level verdict still follows its moved alert.
+    expect((await readOrgIds(f)).verdictOnAlert).toBe(f.orgB.id);
   });
 
   it('records the moved and held-back counts, split by hold-back reason, on BOTH audit rows', async () => {

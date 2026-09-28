@@ -157,7 +157,8 @@
       "itsOwningOrganization": "son organisation propriétaire",
       "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}",
       "summary": "{{filtered}} de {{total}} politiques",
-      "inheritsBadge": "Hérite"
+      "inheritsBadge": "Hérite",
+      "statusFilterLabel": "État"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossible de récupérer les politiques de configuration",
@@ -711,7 +712,7 @@
         "timezone2": "Fuseau horaire",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Masquer les alertes",
-        "muteAlertNotificationsDuringWindow": "Mettez en sourdine les notifications d’alerte pendant la fenêtre.",
+        "muteAlertNotificationsDuringWindow": "Pendant la fenêtre, aucune nouvelle alerte n’est créée.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suspendre l’application des correctifs",
         "delayPatchInstallationsDuringWindow": "Retardez l’installation des correctifs pendant la fenêtre.",
@@ -947,7 +948,8 @@
         "promptNotify": "Notifier — afficher un avis de connexion",
         "promptConsent": "Consentement requis — l'utilisateur doit approuver",
         "consentUnavailable": "Si personne ne peut répondre",
-        "consentUnavailableHelp": "S'applique lorsque le consentement est requis mais qu'aucun utilisateur n'est connecté pour répondre.",
+        "consentUnavailableHelp": "S'applique lorsque personne n'est connecté, lorsque la demande de consentement ne peut pas être affichée (par exemple, Breeze Assist n'est pas en cours d'exécution ou ne répond pas) ou lorsque l'utilisateur connecté ne répond pas dans les 30 secondes.",
+        "consentVncNote": "VNC ne peut pas demander de consentement : les sessions VNC sont donc refusées sur les appareils qui exigent un consentement. Utilisez plutôt la visionneuse de bureau à distance.",
         "unavailableProceed": "Poursuivre la session",
         "unavailableBlock": "Bloquer la session",
         "showIndicator": "Indicateur de session active",
@@ -1371,6 +1373,12 @@
       "cancelled": "Annulé",
       "downloading": "Téléchargement en cours",
       "installing": "Installation en cours",
+      "sentToAgent": "Envoyé à l'agent",
+      "stageElapsed_one": "depuis {{count}} minute",
+      "stageElapsed_other": "depuis {{count}} minutes",
+      "stageElapsedJustNow": "à l'instant",
+      "noAgentUpdate_one": "Aucune nouvelle de l'agent depuis {{count}} minute, plus longtemps que ne dure normalement cette étape. Sans réponse, l'installation sera marquée en échec {{timeoutMinutes}} minutes après son envoi.",
+      "noAgentUpdate_other": "Aucune nouvelle de l'agent depuis {{count}} minutes, plus longtemps que ne dure normalement cette étape. Sans réponse, l'installation sera marquée en échec {{timeoutMinutes}} minutes après son envoi.",
       "exitCode": "Code de sortie",
       "retryStarted": "Nouvelle tentative lancée",
       "failedToRetryDeployment": "Échec de la nouvelle tentative du déploiement",
@@ -1628,7 +1636,8 @@
       "bulkSoftwareDeployment": "Déploiement logiciel en masse",
       "catalogTab": "Catalogue",
       "summaryCompleted7d": "Terminés (7 j)",
-      "summaryFailed7d": "Échoués (7 j)"
+      "summaryFailed7d": "Échoués (7 j)",
+      "categoryFilterLabel": "Catégorie"
     },
     "softwareInventory": {
       "allowed": "Autorisé",

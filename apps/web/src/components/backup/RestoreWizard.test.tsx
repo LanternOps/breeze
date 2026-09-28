@@ -55,6 +55,7 @@ describe('RestoreWizard', () => {
               id: 'restore-1',
               snapshotId: 'snap-1',
               deviceId: 'device-1',
+              deviceName: 'FRONT-DESK-01',
               restoreType: 'full',
               status: 'completed',
               targetPath: null,
@@ -98,7 +99,8 @@ describe('RestoreWizard', () => {
 
     await screen.findByText('Restore Wizard');
     expect(await screen.findByText('Recent restore history')).toBeTruthy();
-    expect(screen.getByText('restore-1')).toBeTruthy();
+    expect(screen.getByText('FRONT-DESK-01')).toBeTruthy();
+    expect(screen.queryByText('restore-1')).toBeNull();
 
     for (let index = 0; index < 4; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
@@ -513,5 +515,95 @@ describe('RestoreWizard', () => {
     await waitFor(() => expect(start.disabled).toBe(false));
     expect(showToastMock).not.toHaveBeenCalled();
     expect(screen.queryByText('Unauthorized')).toBeNull();
+  });
+
+  describe('names the device and drops raw internals (#7213)', () => {
+    const historyRow = (over: Record<string, unknown>) => ({
+      id: '6f1c2b1e-0000-4000-8000-00000000abcd',
+      snapshotId: 'snap-1',
+      deviceId: 'device-1',
+      deviceName: 'FRONT-DESK-01',
+      restoreType: 'full',
+      restoreMode: null,
+      status: 'completed',
+      targetPath: null,
+      createdAt: '2026-03-31T10:00:00.000Z',
+      updatedAt: '2026-03-31T10:10:00.000Z',
+      startedAt: null,
+      completedAt: null,
+      restoredSize: 2048,
+      restoredFiles: 3,
+      errorSummary: null,
+      resultDetails: { status: 'completed', secretInternalKey: 'raw-json-marker' },
+      ...over,
+    });
+
+    const mockApi = (history: unknown[], browse: unknown[] = []) => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') {
+          return makeJsonResponse({
+            data: [
+              { id: 'snap-1', label: 'Nightly', deviceId: 'device-1', deviceName: 'FRONT-DESK-01', sizeBytes: 1024 },
+              { id: 'snap-2', label: 'Nightly', deviceId: 'device-2', deviceName: 'ACCOUNTING-02', sizeBytes: 1024 },
+            ],
+          });
+        }
+        if (url.startsWith('/backup/snapshots/') && url.endsWith('/browse')) return makeJsonResponse({ data: browse });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: history });
+        return makeJsonResponse({}, false, 404);
+      });
+    };
+
+    it('names the device on each snapshot card', async () => {
+      mockApi([]);
+      render(<RestoreWizard />);
+      await screen.findByText('Restore Wizard');
+      expect(await screen.findByText('FRONT-DESK-01')).toBeTruthy();
+      expect(screen.getByText('ACCOUNTING-02')).toBeTruthy();
+    });
+
+    it('titles history rows with the device, not the restore job UUID', async () => {
+      const row = historyRow({});
+      mockApi([row]);
+      render(<RestoreWizard />);
+      await screen.findByText('Restore Wizard');
+      await waitFor(() => expect(screen.getAllByText(/FRONT-DESK-01/).length).toBeGreaterThan(0));
+      expect(screen.queryByText(row.id)).toBeNull();
+    });
+
+    it('labels VM restores and instant boots by what they are, not "full restore"', async () => {
+      mockApi([
+        historyRow({ id: 'r-vm', restoreMode: 'vm' }),
+        historyRow({ id: 'r-ib', restoreMode: 'instant_boot' }),
+      ]);
+      render(<RestoreWizard />);
+      await screen.findByText('Restore Wizard');
+      expect(await screen.findByText(/Restore as VM/i)).toBeTruthy();
+      expect(screen.getByText(/Instant boot/i)).toBeTruthy();
+    });
+
+    it('does not dump the raw result payload JSON', async () => {
+      mockApi([historyRow({})]);
+      render(<RestoreWizard />);
+      await screen.findByText('Restore Wizard');
+      await waitFor(() => expect(screen.getAllByText(/FRONT-DESK-01/).length).toBeGreaterThan(0));
+      expect(screen.queryByText('Result payload')).toBeNull();
+      expect(screen.queryByText(/raw-json-marker/)).toBeNull();
+    });
+
+    it('uses the singular for a single selected file on Review', async () => {
+      mockApi([], [{ name: 'a.txt', path: '/a.txt', type: 'file', sizeBytes: 1 }]);
+      render(<RestoreWizard />);
+      await screen.findByText('Restore Wizard');
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      fireEvent.click(await screen.findByRole('checkbox', { name: /a\.txt/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      expect(await screen.findByText('1 file selected')).toBeTruthy();
+      expect(screen.queryByText('1 files selected')).toBeNull();
+    });
   });
 });

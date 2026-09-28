@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/heartbeat"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -132,6 +133,9 @@ func TestExecute_EnrolledPath_SignalsRunningAfterStartFn(t *testing.T) {
 	if second.State != svc.Running {
 		t.Errorf("second state = %v, want Running", second.State)
 	}
+	if second.Accepts&svc.AcceptPowerEvent == 0 {
+		t.Errorf("Running accepts = %#x, want AcceptPowerEvent (#6762)", second.Accepts)
+	}
 
 	// Tell Execute to stop so the goroutine terminates.
 	requests <- svc.ChangeRequest{Cmd: svc.Stop}
@@ -159,6 +163,9 @@ func TestExecute_UnenrolledPath_SignalsRunningBeforeWait(t *testing.T) {
 	second := <-changes
 	if second.State != svc.Running {
 		t.Errorf("second state = %v, want Running", second.State)
+	}
+	if second.Accepts&svc.AcceptPowerEvent == 0 {
+		t.Errorf("Running accepts = %#x, want AcceptPowerEvent (#6762)", second.Accepts)
 	}
 
 	// Now the stub should record that it entered waitForEnrollment.
@@ -231,5 +238,30 @@ func TestExecute_StopWhileWaiting(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Execute did not return within 1s of Stop")
+	}
+}
+
+// TestRunServiceLoop_PowerEventIsHandled pins #6762: once AcceptPowerEvent is
+// advertised, SERVICE_CONTROL_POWEREVENT requests reach the loop and must be
+// handled (logged as a sleep boundary), not dropped into the "unexpected SCM
+// control request" warning.
+func TestRunServiceLoop_PowerEventIsHandled(t *testing.T) {
+	var got []uint32
+	orig := servicePowerEventFn
+	servicePowerEventFn = func(eventType uint32) { got = append(got, eventType) }
+	t.Cleanup(func() { servicePowerEventFn = orig })
+
+	requests := make(chan svc.ChangeRequest, 4)
+	changes := make(chan svc.Status, 4)
+	requests <- svc.ChangeRequest{Cmd: svc.PowerEvent, EventType: 0x0004} // PBT_APMSUSPEND
+	requests <- svc.ChangeRequest{Cmd: svc.PowerEvent, EventType: 0x0012} // PBT_APMRESUMEAUTOMATIC
+	close(requests)
+
+	comps := &agentComponents{hb: &heartbeat.Heartbeat{}}
+	if stop, code := runServiceLoop(comps, requests, changes); stop || code != 0 {
+		t.Fatalf("runServiceLoop = (%v, %d), want (false, 0)", stop, code)
+	}
+	if len(got) != 2 || got[0] != 0x0004 || got[1] != 0x0012 {
+		t.Fatalf("power events handled = %#v, want [0x4 0x12]", got)
 	}
 }

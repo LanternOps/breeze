@@ -9,7 +9,7 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { deriveS3RegionFromEndpoint } from '@breeze/shared';
-import { buildS3Client } from './recoveryMediaService';
+import { buildS3Client, type S3ClientOverrides } from './recoveryMediaService';
 import { asRecord, getStringValue } from './recoveryBootstrap';
 
 type SnapshotStorageInput = {
@@ -57,7 +57,7 @@ export type ProviderCapabilityStatus = {
   };
 };
 
-function buildS3StorageClient(providerConfig: Record<string, unknown>) {
+export function buildS3StorageClient(providerConfig: Record<string, unknown>, overrides: S3ClientOverrides = {}) {
   const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName');
   const region =
     getStringValue(providerConfig, 'region')?.trim() ||
@@ -82,7 +82,7 @@ function buildS3StorageClient(providerConfig: Record<string, unknown>) {
         getStringValue(providerConfig, 'secretAccessKey') ||
         '',
       sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
-    } as any),
+    } as any, overrides),
   };
 }
 

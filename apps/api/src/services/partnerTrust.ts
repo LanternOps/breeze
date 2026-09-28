@@ -174,6 +174,7 @@ export const GATED_COMMAND_TYPES = [
   'terminal_start',
   'tunnel_data',
   'tunnel_open',
+  'topology_interface_poll',
   'tray_update',
   'update',
   'vault_configure',

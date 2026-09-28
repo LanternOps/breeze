@@ -164,7 +164,8 @@
       "command": "Comando",
       "whenOffline": "Si el dispositivo está sin conexión",
       "software": "Software",
-      "failureNotificationChannel": "Canal de notificación de fallos"
+      "failureNotificationChannel": "Canal de notificación de fallos",
+      "actionType": "Tipo de acción"
     },
     "options": {
       "whenOffline": {
@@ -224,7 +225,9 @@
     "searchPlaceholder": "Buscar automatizaciones...",
     "filters": {
       "allTriggers": "Todos los desencadenantes",
-      "allStatus": "Todo el estado"
+      "allStatus": "Todo el estado",
+      "triggerLabel": "Disparador",
+      "statusLabel": "Estado"
     },
     "trigger": {
       "schedule": "Cronograma",
@@ -572,7 +575,8 @@
       "configFilePath": "Ruta del archivo de configuración",
       "configKey": "Clave de configuración",
       "remediationScript": "Script de remediación",
-      "evaluateEvery": "Evaluar cada"
+      "evaluateEvery": "Evaluar cada",
+      "ruleType": "Tipo de regla"
     },
     "placeholders": {
       "name": "Política básica de seguridad",
@@ -629,7 +633,9 @@
     "searchPlaceholder": "Buscar políticas...",
     "filters": {
       "allEnforcement": "Todo el cumplimiento",
-      "allStatus": "Todo el estado"
+      "allStatus": "Todo el estado",
+      "enforcementLabel": "Cumplimiento",
+      "statusLabel": "Estado"
     },
     "enforcement": {
       "monitor": {
@@ -743,7 +749,9 @@
       "lastHour": "Última hora",
       "lastDay": "Últimas 24 horas",
       "lastWeek": "Últimos 7 días",
-      "lastMonth": "Últimos 30 días"
+      "lastMonth": "Últimos 30 días",
+      "statusLabel": "Estado",
+      "dateLabel": "Rango de fechas"
     },
     "status": {
       "pending": "Pendiente",
@@ -1455,7 +1463,8 @@
       "notStarted": "La ejecución no se inició (el dispositivo puede estar en mantenimiento).",
       "pollDeadline": "Aún sin resultado — revisa el historial de ejecuciones.",
       "pollFailed": "No se pudo leer el resultado — la ejecución pudo haber sido eliminada o tu acceso cambió."
-    }
+    },
+    "deviceSelectLabel": "Dispositivo de prueba"
   },
   "provenance": {
     "origin": "Origen",

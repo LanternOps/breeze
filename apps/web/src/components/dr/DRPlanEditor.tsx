@@ -11,6 +11,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { scrollErrorIntoView, useScrollToError } from '../../lib/scrollToError';
 import { runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import { isAbsoluteRebuildPath } from '../../lib/rebuildPaths';
 import DRPlanGroupCard, {
   DEFAULT_REBUILD_OUTPUT_DIR,
   DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES,
@@ -58,7 +59,12 @@ function stepFieldsFromRestoreConfig(
     stepType,
     rebuildHostDeviceId:
       typeof config.rebuildHostDeviceId === 'string' && config.rebuildHostDeviceId ? config.rebuildHostDeviceId : null,
-    outputDir: typeof config.outputDir === 'string' && config.outputDir ? config.outputDir : DEFAULT_REBUILD_OUTPUT_DIR,
+    // The stored default is the "unset" sentinel (dispatch maps it to the
+    // host's per-OS default, W06d); show it as blank so the placeholder can.
+    outputDir:
+      typeof config.outputDir === 'string' && config.outputDir && config.outputDir !== DEFAULT_REBUILD_OUTPUT_DIR
+        ? config.outputDir
+        : '',
     waitTimeoutMinutes:
       typeof config.waitTimeoutMinutes === 'number' && Number.isFinite(config.waitTimeoutMinutes)
         ? `${config.waitTimeoutMinutes}`
@@ -132,7 +138,7 @@ function createEmptyGroup(): DRGroupForm {
     dependsOnGroupKey: null,
     stepType: '',
     rebuildHostDeviceId: null,
-    outputDir: DEFAULT_REBUILD_OUTPUT_DIR,
+    outputDir: '',
     waitTimeoutMinutes: `${DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES}`,
   };
 }
@@ -296,12 +302,13 @@ export default function DRPlanEditor({
     // has already been committed. Mirroring the server's rule here means the
     // save is refused before anything is written, instead of half-applied.
     // Keep in sync with `drBareMetalRebuildConfigSchema` in
-    // apps/api/src/services/drBareMetalRebuildStep.ts.
+    // apps/api/src/services/drBareMetalRebuildStep.ts: POSIX `/…` or a Windows
+    // drive-absolute `X:\…` (W06d), never UNC.
     if (
       groups.some((group) => {
         if (group.stepType !== 'BARE_METAL_REBUILD') return false;
         const outputDir = group.outputDir.trim() || DEFAULT_REBUILD_OUTPUT_DIR;
-        return !outputDir.startsWith('/') || outputDir.length > REBUILD_OUTPUT_DIR_MAX_LENGTH;
+        return !isAbsoluteRebuildPath(outputDir) || outputDir.length > REBUILD_OUTPUT_DIR_MAX_LENGTH;
       })
     ) {
       fail(

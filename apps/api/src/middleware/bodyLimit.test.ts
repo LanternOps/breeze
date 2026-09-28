@@ -7,6 +7,10 @@ const MB = 1024 * 1024;
 const KB = 1024;
 
 describe('bodyLimitForPath', () => {
+  it('keeps the 1MB default on the public Xero webhook (Xero W05 refinement 8)', () => {
+    expect(bodyLimitForPath('/api/v1/webhooks/xero')).toMatchObject({ rule: 'default', maxSize: 1 * MB });
+  });
+
   it('applies the tight 1MB default to ordinary routes', () => {
     expect(bodyLimitForPath('/api/v1/devices')).toEqual({
       rule: 'default',

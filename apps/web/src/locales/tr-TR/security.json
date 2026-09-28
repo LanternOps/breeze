@@ -142,7 +142,9 @@
     "weakPasswords": "Zayıf Şifreler",
     "windows": "Windows",
     "withIssues": "Sorunlu",
-    "yes": "Evet"
+    "yes": "Evet",
+    "issueFilterLabel": "Sorun filtresi",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityAntivirusPage": {
     "active": "Aktif",
@@ -172,7 +174,9 @@
     "totalDevices": "Toplam Cihaz Sayısı",
     "unknown": "Bilinmiyor",
     "unprotected": "Korumasız",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Koruma durumu",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Temsilci/Tanımlar",
@@ -247,7 +251,10 @@
     "unencrypted": "Şifrelenmemiş",
     "volume": "Ses seviyesi",
     "windows": "Windows",
-    "yes": "Evet"
+    "yes": "Evet",
+    "statusFilterLabel": "Şifreleme durumu",
+    "osFilterLabel": "İşletim sistemi",
+    "escrowFilterLabel": "Anahtar emaneti"
   },
   "securityFirewallPage": {
     "active": "Aktif",
@@ -276,7 +283,9 @@
     "searchDevices": "Cihazları arayın...",
     "status": "Durum",
     "totalDevices": "Toplam Cihaz Sayısı",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Güvenlik duvarı durumu",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityHuntressIncidentList": {
     "actions": "Eylemler",
@@ -336,7 +345,9 @@
     "searchDevices": "Cihazları arayın...",
     "status": "Durum",
     "totalDevices": "Toplam Cihaz Sayısı",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Uyumluluk",
+    "osFilterLabel": "İşletim sistemi"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Yönetici Hesapları",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Öncelikli düzeltme kılavuzu",
     "securityRecommendations": "Güvenlik Önerileri",
     "total": "Toplam",
-    "vulnMgmt": "Vuln. Yönetim"
+    "vulnMgmt": "Vuln. Yönetim",
+    "priorityFilterLabel": "Öncelik",
+    "categoryFilterLabel": "Kategori",
+    "statusFilterLabel": "Öneri durumu"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
@@ -430,7 +444,9 @@
     "status": "Durum",
     "threat": "Tehdit",
     "threatsMatchYourFilters": "{{count}} tehditler filtrelerinizle eşleşiyor",
-    "unknownThreat": "Bilinmeyen tehdit"
+    "unknownThreat": "Bilinmeyen tehdit",
+    "severityFilterLabel": "Önem derecesi",
+    "statusFilterLabel": "Durum"
   },
   "securityScoreDetailPage": {
     "a": "A",
@@ -768,7 +784,10 @@
     "threat": "Tehdit",
     "total": "Toplam",
     "trojan": "Truva Atı",
-    "vulnerabilities": "Güvenlik Açıkları"
+    "vulnerabilities": "Güvenlik Açıkları",
+    "severityFilterLabel": "Önem derecesi",
+    "statusFilterLabel": "Tehdit durumu",
+    "categoryFilterLabel": "Kategori"
   },
   "pamPamAuditTab": {
     "errors": {
@@ -938,6 +957,25 @@
       "submitting": "Gönderiliyor…",
       "approveElevation": "Yükseltmeyi onayla",
       "denyRequest": "İsteği reddet"
+    },
+    "reauth": {
+      "title": "Kritik istek: sizin olduğunuzu doğrulayın",
+      "why": "Kritik düzeyde bir yükseltmeyi onaylamak, onaylayıcı cihazınıza ek olarak yeni bir yeniden kimlik doğrulama gerektirir. Yalnızca bir kez kontrol edilir ve asla saklanmaz.",
+      "unavailable": "Hesabınız parolasız oturum açıyor ve bir kimlik doğrulayıcı uygulamanız yok, bu nedenle kritik onaylar için yeniden kimlik doğrulaması yapamaz. Geçiş anahtarları bu adım için henüz kabul edilmiyor. Profil → Güvenlik altından bir kimlik doğrulayıcı uygulaması kurun veya parolası olan bir onaylayıcıdan yardım isteyin.",
+      "codeLabel": "Kimlik doğrulayıcı uygulaması kodu",
+      "passwordLabel": "Hesap parolası",
+      "codeHelp": "Oturum açtığınız kimlik doğrulayıcı uygulamasından alınan 6 haneli kod. Geçiş anahtarları ve SMS kodları bu adım için henüz kabul edilmiyor.",
+      "passwordHelp": "Breeze'de oturum açmak için kullandığınız parola.",
+      "useCode": "Bunun yerine bir kimlik doğrulayıcı uygulaması kodu kullan",
+      "usePassword": "Bunun yerine parolamı kullan",
+      "errors": {
+        "codeRequired": "Bu kritik isteği onaylamak için kimlik doğrulayıcı uygulamanızdaki kodu girin.",
+        "passwordRequired": "Bu kritik isteği onaylamak için hesap parolanızı girin.",
+        "invalid": "Bu parola veya kod kabul edilmedi. Kontrol edip tekrar deneyin.",
+        "required": "Bu kritik bir istek. Parolanızı (veya kimlik doğrulayıcı kodunu) yeniden girin ve tekrar onaylayın.",
+        "assertionFailed": "Onaylayıcı cihazınızın doğrulaması kabul edilmedi. Tekrar deneyin.",
+        "stepUpRequired": "Kuruluşunuz bu isteği onaylamak için kayıtlı bir onaylayıcı cihaz (Windows Hello veya Touch ID) gerektiriyor. Profil → Güvenlik altından bir tane kaydedin."
+      }
     }
   },
   "pamPamRevokeModal": {
@@ -1658,7 +1696,8 @@
       "lastScanned": "Son Taranan"
     },
     "loading": "Uyumluluk verileri yükleniyor...",
-    "empty": "Uyumluluk sonucu bulunamadı."
+    "empty": "Uyumluluk sonucu bulunamadı.",
+    "osFilterLabel": "İşletim sistemi"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1759,7 +1798,8 @@
     "title": "Düzeltmeler",
     "tooltip": "Başarısız CIS kontrolleri için otomatik düzeltmeler. Hedef cihazda yürütülmeden önce her birinin onaylanması gerekir.",
     "filters": {
-      "allStatuses": "Tüm durumlar"
+      "allStatuses": "Tüm durumlar",
+      "statusFilterLabel": "Durum"
     },
     "status": {
       "pendingApproval": "Onay Bekleniyor",

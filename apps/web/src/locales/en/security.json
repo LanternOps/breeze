@@ -142,7 +142,9 @@
     "weakPasswords": "Weak Passwords",
     "windows": "Windows",
     "withIssues": "With Issues",
-    "yes": "Yes"
+    "yes": "Yes",
+    "issueFilterLabel": "Issue filter",
+    "osFilterLabel": "Operating system"
   },
   "securityAntivirusPage": {
     "active": "Active",
@@ -172,7 +174,9 @@
     "totalDevices": "Total Devices",
     "unknown": "Unknown",
     "unprotected": "Unprotected",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Status",
+    "osFilterLabel": "Operating system"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Agent/Definitions",
@@ -247,7 +251,10 @@
     "unencrypted": "Unencrypted",
     "volume": "Volume",
     "windows": "Windows",
-    "yes": "Yes"
+    "yes": "Yes",
+    "statusFilterLabel": "Status",
+    "osFilterLabel": "Operating system",
+    "escrowFilterLabel": "Key escrow"
   },
   "securityFirewallPage": {
     "active": "Active",
@@ -276,7 +283,9 @@
     "searchDevices": "Search devices...",
     "status": "Status",
     "totalDevices": "Total Devices",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Status",
+    "osFilterLabel": "Operating system"
   },
   "securityHuntressIncidentList": {
     "actions": "Actions",
@@ -336,7 +345,9 @@
     "searchDevices": "Search devices...",
     "status": "Status",
     "totalDevices": "Total Devices",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Compliance",
+    "osFilterLabel": "Operating system"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Admin Accounts",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Prioritized remediation guidance",
     "securityRecommendations": "Security Recommendations",
     "total": "Total",
-    "vulnMgmt": "Vuln. Mgmt"
+    "vulnMgmt": "Vuln. Mgmt",
+    "priorityFilterLabel": "Priority",
+    "categoryFilterLabel": "Category",
+    "statusFilterLabel": "Status"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
@@ -405,6 +419,8 @@
     "actions": "Actions",
     "active": "Active",
     "all": "all",
+    "severityFilterLabel": "Severity",
+    "statusFilterLabel": "Status",
     "allSeverities": "All severities",
     "allStatuses": "All statuses",
     "critical": "Critical",
@@ -768,7 +784,10 @@
     "threat": "Threat",
     "total": "Total",
     "trojan": "Trojan",
-    "vulnerabilities": "Vulnerabilities"
+    "vulnerabilities": "Vulnerabilities",
+    "severityFilterLabel": "Severity",
+    "statusFilterLabel": "Status",
+    "categoryFilterLabel": "Category"
   },
   "pamPamAuditTab": {
     "errors": {
@@ -938,6 +957,25 @@
       "submitting": "Submitting…",
       "approveElevation": "Approve elevation",
       "denyRequest": "Deny request"
+    },
+    "reauth": {
+      "title": "Critical request: confirm it is you",
+      "why": "Approving a critical-tier elevation requires fresh re-authentication in addition to your approver device. It is checked once and never stored.",
+      "unavailable": "Your account signs in without a password and has no authenticator app, so it cannot re-authenticate for critical approvals. Passkeys are not accepted for this step yet. Set up an authenticator app under Profile → Security, or ask an approver who has a password.",
+      "codeLabel": "Authenticator app code",
+      "passwordLabel": "Account password",
+      "codeHelp": "The 6-digit code from the authenticator app you sign in with. Passkeys and SMS codes are not accepted for this step yet.",
+      "passwordHelp": "The password you use to sign in to Breeze.",
+      "useCode": "Use an authenticator app code instead",
+      "usePassword": "Use my password instead",
+      "errors": {
+        "codeRequired": "Enter the code from your authenticator app to approve this critical request.",
+        "passwordRequired": "Enter your account password to approve this critical request.",
+        "invalid": "That password or code was not accepted. Check it and try again.",
+        "required": "This is a critical request. Re-enter your password (or authenticator code) and approve again.",
+        "assertionFailed": "Your approver-device verification was not accepted. Try again.",
+        "stepUpRequired": "Your organization requires a registered approver device (Windows Hello or Touch ID) to approve this request. Register one under Profile → Security."
+      }
     }
   },
   "pamPamRevokeModal": {
@@ -1643,6 +1681,7 @@
   },
   "cisHardeningCisComplianceTab": {
     "searchPlaceholder": "Search hostname or baseline...",
+    "osFilterLabel": "Operating system",
     "os": {
       "all": "All OS types",
       "windows": "Windows",
@@ -1759,7 +1798,8 @@
     "title": "Remediations",
     "tooltip": "Automated fixes for failed CIS checks. Each must be approved before execution on the target device.",
     "filters": {
-      "allStatuses": "All statuses"
+      "allStatuses": "All statuses",
+      "statusFilterLabel": "Status"
     },
     "status": {
       "pendingApproval": "Pending Approval",

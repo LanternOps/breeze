@@ -12,6 +12,12 @@ import {
 // device stats build inArray(devices.siteId, allowedSiteIds) and alert stats
 // build inArray(alerts.deviceId, resolvedDeviceIds). Removing either production
 // narrowing line makes the matching assertion fail.
+// Topology M4-D2: the admin/session reads resolve the caller's pinned-site visibility.
+vi.mock('../services/topology/aiSessionAccess', () => ({
+  resolveTopologySessionVisibility: vi.fn(async () => ({ kind: 'all' })),
+  topologySessionAccessCondition: vi.fn(async () => undefined),
+  topologySessionCondition: vi.fn(() => undefined),
+}));
 vi.mock('drizzle-orm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('drizzle-orm')>();
   return {
@@ -2872,25 +2878,24 @@ describe('mobile routes', () => {
         expect(inArray).toHaveBeenCalledWith(alerts.deviceId, ['dev-1']);
       });
 
-      it('returns zero alerts (but real device counts) when resolveSiteAllowedDeviceIds returns empty', async () => {
+      it('still counts alerts OWNED by an allowed site when that site has no devices (M3-D6)', async () => {
         authState.permissions = { allowedSiteIds: ['site-1'] };
 
         const selectMock = vi.mocked(db.select);
-        // Device stats: some devices returned
         selectMock
           .mockReturnValueOnce(mockAggregateChain({ total: 2, online: 1, offline: 1, maintenance: 0 }) as any)
           // resolveSiteAllowedDeviceIds: no devices in the allowed site
-          .mockReturnValueOnce(mockDeviceSiteChain([]) as any);
+          .mockReturnValueOnce(mockDeviceSiteChain([]) as any)
+          .mockReturnValueOnce(mockAggregateChain({ total: 1, active: 1, acknowledged: 0, resolved: 0, critical: 1 }) as any);
 
         const res = await app.request('/mobile/summary', { method: 'GET' });
         expect(res.status).toBe(200);
         const body = await res.json();
-        // Device stats already computed before the site-device resolution
         expect(body.devices.total).toBe(2);
-        // Alert stats zeroed because no in-scope device IDs
-        expect(body.alerts.total).toBe(0);
-        // Only two db.select calls: no alert-agg issued (short-circuited)
-        expect(selectMock).toHaveBeenCalledTimes(2);
+        // A topology policy alert owned by site-1 counts, though site-1 has no devices.
+        expect(body.alerts.total).toBe(1);
+        expect(selectMock).toHaveBeenCalledTimes(3);
+        expect(inArray).toHaveBeenCalledWith(alerts.topologySiteId, ['site-1']);
       });
     });
 

@@ -17,6 +17,21 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
+describe('SessionHistory filter selects accessible name (#7156)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('gives the type/user/date filter selects a real accessible name', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [], pagination: { page: 1, limit: 100, total: 0 } }));
+    render(<SessionHistory />);
+
+    expect(await screen.findByRole('combobox', { name: 'Session type' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'User' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Date range' })).toBeInTheDocument();
+  });
+});
+
 describe('SessionHistory', () => {
   beforeEach(() => {
     vi.clearAllMocks();

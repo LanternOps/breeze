@@ -264,7 +264,11 @@
       "moreFilters": "Più filtri",
       "lessFilters": "Meno filtri",
       "allSources": "Tutte le fonti",
-      "allOs": "Tutti gli OS"
+      "allOs": "Tutti gli OS",
+      "severityLabel": "Gravità",
+      "statusLabel": "Stato di approvazione",
+      "sourceLabel": "Origine",
+      "osLabel": "Sistema operativo"
     },
     "actions": {
       "deploy": "Distribuisci",
@@ -315,6 +319,7 @@
     "tabs": {
       "compliance": "Conformità",
       "patches": "Patch",
+      "jobs": "Job",
       "updateRings": "Anelli di aggiornamento"
     },
     "actions": {
@@ -332,6 +337,7 @@
     "errors": {
       "fetchRings": "Impossibile recuperare gli anelli di aggiornamento",
       "fetchPatches": "Impossibile recuperare le patch",
+      "fetchJobs": "Impossibile recuperare i job di patch",
       "partnerLevel": "Le approvazioni delle patch sono gestite a livello di partner",
       "approvePatches": "Impossibile approvare le patch",
       "approveCountOne": "Impossibile approvare {{count}} patch",
@@ -374,6 +380,68 @@
     },
     "truncatedNotice": "Vengono mostrate {{shown}} patch su {{total}}. I filtri qui restringono solo ciò che è già caricato, quindi il resto non è raggiungibile da questa vista: usa l'API delle patch per consultare il catalogo completo.",
     "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto."
+  },
+  "patchJobsList": {
+    "empty": "Nessun job di patch ancora. I job creati da criteri, anelli di aggiornamento o dall'assistente IA appariranno qui.",
+    "loading": "Caricamento dei job di patch...",
+    "columns": {
+      "name": "Job",
+      "status": "Stato",
+      "devices": "Dispositivi",
+      "createdBy": "Creato da",
+      "scheduled": "Pianificato",
+      "started": "Avviato",
+      "completed": "Completato"
+    },
+    "status": {
+      "scheduled": "Pianificato",
+      "running": "In esecuzione",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "cancelled": "Annullato"
+    },
+    "devicesSummary": "{{completed}}/{{total}} completati",
+    "devicesSummaryWithFailed": "{{completed}}/{{total}} completati, {{failed}} non riusciti",
+    "createdBySystem": "Sistema",
+    "notScheduled": "—",
+    "actions": {
+      "tryAgain": "Riprova",
+      "previousPage": "Precedente",
+      "nextPage": "Successivo"
+    },
+    "pagination": "Pagina {{page}} di {{totalPages}}",
+    "filters": {
+      "allStatuses": "Tutti gli stati"
+    }
+  },
+  "patchJobDetail": {
+    "title": "Job di patch",
+    "loading": "Caricamento dei dettagli del job...",
+    "notFound": "Impossibile trovare questo job di patch.",
+    "summary": {
+      "status": "Stato",
+      "source": "Origine",
+      "scheduled": "Pianificato",
+      "started": "Avviato",
+      "completed": "Completato",
+      "createdBy": "Creato da"
+    },
+    "resultsTitle": "Risultati per dispositivo ({{count}})",
+    "resultsEmpty": "Nessun risultato per dispositivo ancora.",
+    "columns": {
+      "device": "Dispositivo",
+      "patch": "Patch",
+      "status": "Stato",
+      "started": "Avviato",
+      "completed": "Completato",
+      "reboot": "Riavvio"
+    },
+    "rebootRequired": "Richiesto",
+    "rebootDone": "Completato",
+    "rebootNotRequired": "—",
+    "errors": {
+      "load": "Impossibile caricare il job di patch"
+    }
   },
   "ringSelector": {
     "label": "Anello di aggiornamento:",

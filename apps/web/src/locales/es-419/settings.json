@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Intente ajustar su búsqueda o filtros.",
     "active": "Activo",
     "revoked": "Revocado",
-    "expired": "Vencido"
+    "expired": "Vencido",
+    "statusFilterLabel": "Estado de la clave"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Cargando claves API...",
@@ -3827,7 +3828,9 @@
     "verifyYourIdentity": "Verifica tu identidad",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor para comenzar a configurar una aplicación de autenticación.",
     "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",
-    "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar tu aplicación de autenticación."
+    "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar tu aplicación de autenticación.",
+    "ssoReauthManageHint": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Verifícate con tu proveedor para confirmar este cambio.",
+    "ssoReauthManageVerified": "Identidad verificada con tu proveedor. Completa el paso siguiente para confirmar este cambio."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar desde Pax8",
@@ -3944,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "La verificación expiró. Vuelve a verificar.",
     "passkeyRegistrationServerError": "No se pudo registrar la clave de acceso. Vuelve a intentarlo.",
     "deletePasskeyVerifyHeading": "Verificar para eliminar una clave de acceso",
-    "deletePasskeyVerifyHint": "Ingresa aquí un código MFA actual antes de eliminar una de las claves de acceso anteriores. Este código no afecta la adición de una nueva clave de acceso."
+    "deletePasskeyVerifyHint": "Ingresa aquí un código MFA actual antes de eliminar una de las claves de acceso anteriores. Este código no afecta la adición de una nueva clave de acceso.",
+    "ssoReauthManageProofExpired": "La verificación con tu proveedor de identidad expiró. Vuelve a verificarte para confirmar este cambio.",
+    "verifyWithIdpToDeletePasskey": "Esta cuenta no tiene contraseña. Verifícate con tu proveedor de identidad antes de quitar una clave de acceso.",
+    "deletePasskeySsoReauth": "Verificar identidad para quitar una clave de acceso",
+    "deletePasskeySsoVerified": "Identidad verificada. Elige Eliminar en la clave de acceso que quieres quitar."
   },
   "roleManager": {
     "roles": "Roles",
@@ -4012,13 +4019,18 @@
     "createANewCustomRoleBasedOnThisOne": "Cree un nuevo rol personalizado basado en este.",
     "saving": "Guardando...",
     "cloneRole2": "Función de clonación",
+    "mfaRequired": "MFA obligatoria",
+    "mfaRequiredTooltip": "Los miembros de este rol deben configurar la autenticación multifactor.",
+    "requireMfaForThisRole": "Exigir MFA para este rol",
+    "requireMfaForThisRoleHelp": "Los miembros con este rol deben configurar la autenticación multifactor antes de poder usar Breeze.",
     "saveChanges": "Guardar cambios",
     "deleting": "Eliminando...",
     "networkErrorLoadingPermissions": "Error de red al cargar permisos",
     "cannotDeleteAssignedRole": "No se puede eliminar el rol con usuarios asignados",
     "inheritedFromParentRole": "Heredado del rol de padre",
     "waitingForPermissionCatalog": "Esperando a que se cargue el catálogo de permisos",
-    "summary": "{{filtered}} de {{total}} roles"
+    "summary": "{{filtered}} de {{total}} roles",
+    "typeFilterLabel": "Tipo de rol"
   },
   "roleSelector": {
     "currentRole": "Rol actual",
@@ -4067,6 +4079,9 @@
     "thisOrganization": "esta organización",
     "partnerTechnicianLogin": "Socio (inicio de sesión de técnico)",
     "yourOwnTeamSignsInWithThis": "(su propio equipo inicia sesión con esto)",
+    "selectAnOrganizationToCreateAnOrgProvider": "Selecciona una organización en el selector de organizaciones para crear un proveedor para esa organización.",
+    "partnerProviderRequiresFullPartnerAccess": "Los proveedores para todo el socio requieren acceso a todas las organizaciones.",
+    "selectAnOrganizationBeforeCreatingAProvider": "Selecciona una organización en el selector de organizaciones antes de crear un proveedor.",
     "basicInformation": "Información básica",
     "providerName": "Nombre del proveedor",
     "eGOktaProduction": "por ejemplo, Okta Production",
@@ -4143,7 +4158,8 @@
     "delete": "Eliminar",
     "allStatuses": "Todos los estados",
     "deactivate": "Desactivar",
-    "activate": "Activar"
+    "activate": "Activar",
+    "statusFilterLabel": "Estado del proveedor"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "No se pudieron recuperar los proveedores SSO",
@@ -4173,6 +4189,7 @@
     "failedToDeleteProvider": "No se pudo eliminar el proveedor",
     "anErrorOccurred": "Se produjo un error",
     "failedToSaveProvider": "No se pudo guardar el proveedor",
+    "providerNeedsOrganization": "Selecciona una organización en el selector de organizaciones, o configura «Se aplica a» como «Socio (inicio de sesión de técnico)» para crear un proveedor para todo el socio.",
     "addSSOProvider": "Agregar proveedor SSO",
     "editSSOProvider": "Editar proveedor SSO",
     "configureANewSSOProviderForYourOrganization": "Configure un nuevo proveedor SSO para su organización.",
@@ -5369,7 +5386,8 @@
       "title": "Eliminar campo personalizado",
       "messagePrefix": "¿Está seguro de que desea eliminar?",
       "messageSuffix": "Esto eliminará la definición del campo y todos los valores almacenados en los dispositivos."
-    }
+    },
+    "typeFilterLabel": "Tipo de campo"
   },
   "knownGuestsSettings": {
     "title": "Invitados conocidos",

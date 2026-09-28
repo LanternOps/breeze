@@ -84,6 +84,9 @@ export const restoreStructuredResultSchema = z.object({
     path: z.string().max(4096),
     imageSizeBytes: z.number().int().nonnegative().optional(),
   }).passthrough().optional(),
+  // W06d: the optional Hyper-V VM step after a Windows rebuild.
+  vmCreated: z.boolean().optional(),
+  vmError: z.string().max(10_000).optional(),
 }).passthrough();
 
 export const backupVerificationStructuredResultSchema = z.object({

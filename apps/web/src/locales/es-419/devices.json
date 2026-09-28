@@ -606,7 +606,8 @@
       "generated": "Generado",
       "noSoftwareData": "Sin datos de software",
       "configuration": "Configuración"
-    }
+    },
+    "timeRangeSelectLabel": "Rango de tiempo"
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "No se pudo cargar el estado de cumplimiento",
@@ -1110,6 +1111,8 @@
     "memoryModules": "Módulos de memoria",
     "memoryNotReported": "Aún no reportado — requiere actualizar el agente",
     "noMemoryModulesReported": "No se reportaron módulos de memoria.",
+    "memoryModulesOnPackage": "La memoria está integrada en el chip (soldada); no hay ranuras extraíbles que informar.",
+    "memoryMaxCapacity": "Capacidad máxima admitida: {{capacity}}",
     "slot": "Ranura",
     "capacity": "Capacidad",
     "memoryType": "Tipo",
@@ -1222,7 +1225,7 @@
     "missing": "Faltante",
     "reason": "Razón",
     "lastChecked": "Última comprobación",
-    "thisMacIsBelowTheMacos": "Esta Mac está por debajo del piso macOS 14+ para la ruta de escritorio de la ventana de inicio de sesión nativa.",
+    "reasonLoginWindow": "Ventana de inicio de sesión (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "La accesibilidad de la ventana de inicio de sesión solo se anuncia para instalaciones administradas con el asistente de escritorio implementado.",
     "theNativeLoginWindowDesktopPath": "La ruta de escritorio de la ventana de inicio de sesión nativa está cerrada tras la aprobación de derechos de Apple.",
     "theNativeLoginWindowDesktopPath2": "La ruta del escritorio de la ventana de inicio de sesión nativa aún no está lista en este dispositivo.",

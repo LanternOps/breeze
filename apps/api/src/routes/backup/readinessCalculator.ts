@@ -418,7 +418,11 @@ export async function recomputeRecoveryReadinessForDevice(
     .map((row) => row.restoreTimeSeconds ?? null)
     .filter((value): value is number => typeof value === 'number' && value > 0);
   const avgRestoreSeconds = average(restoreSamples);
-  const restoreQuality = avgRestoreSeconds === null ? 0 : clamp(1 - ((avgRestoreSeconds - 180) / 3600), 0, 1);
+  // No restore-test evidence at all: treat this band as neutral (full credit)
+  // rather than zeroing it out. MISSING_RESTORE_PROOF_PENALTY already charges
+  // for the lack of restore proof below — zeroing this band too would charge
+  // the same missing evidence twice (see #3970).
+  const restoreQuality = avgRestoreSeconds === null ? 1 : clamp(1 - ((avgRestoreSeconds - 180) / 3600), 0, 1);
 
   const lastRunAt = toEpoch(recent[0]?.completedAt ?? recent[0]?.startedAt);
   const ageDays = Math.max(0, (now - lastRunAt) / DAY_MS);

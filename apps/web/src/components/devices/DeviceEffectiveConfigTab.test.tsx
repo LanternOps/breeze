@@ -150,7 +150,15 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
     // CARD specifically, so this can't pass on the chain alone (the original bug).
     await screen.findByRole('heading', { level: 4, name: 'Warranty' });
     // Inline settings are summarized on the card so the enabled state is visible.
-    expect(screen.getByText(/enabled: yes/i)).toBeInTheDocument();
+    // #7214: label and value render in separate spans (so CSS title-casing
+    // never reaches the value), so match on the containing <li>'s text.
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.tagName.toLowerCase() === 'li' &&
+          /enabled: yes/i.test(element.textContent ?? ''),
+      ),
+    ).toBeInTheDocument();
     // The header counts only the enforced feature, not the baseline fall-through.
     expect(screen.getByText(/1 enforced feature/i)).toBeInTheDocument();
     // Baseline fall-through (backup) is collapsed into the compact strip, not a card.

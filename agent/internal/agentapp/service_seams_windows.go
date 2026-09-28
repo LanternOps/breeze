@@ -14,3 +14,7 @@ var runServiceLoopFn func(
 	r <-chan svc.ChangeRequest,
 	changes chan<- svc.Status,
 ) (bool, uint32) = runServiceLoop
+
+// servicePowerEventFn handles a SERVICE_CONTROL_POWEREVENT in runServiceLoop.
+// Test seam; production logs the sleep boundary (logServicePowerEvent).
+var servicePowerEventFn = logServicePowerEvent

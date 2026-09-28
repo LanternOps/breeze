@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -1027,6 +1028,46 @@ func (c *Client) SendPatchProgress(commandID string, event any) error {
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel full, dropping progress")
+	}
+}
+
+// CommandProgressCapability is the server capability (advertised in the
+// "connected" handshake) that gates SendCommandProgress. Must match
+// COMMAND_PROGRESS_CAPABILITY / AGENT_WS_CAPABILITIES in the API (#3578).
+const CommandProgressCapability = "command_progress"
+
+// ErrServerLacksCapability is returned when a frame was not sent because the
+// connected server did not advertise support for it.
+var ErrServerLacksCapability = errors.New("server does not advertise this capability")
+
+// SendCommandProgress reports the in-flight stage of a command the agent is
+// executing (#3578) — e.g. "downloading" then "installing" for a software
+// install — so the server can show more than "Pending" for a long command.
+//
+// Advisory and fire-and-forget: no ack, never blocks (drops when the send
+// channel is full), and sends nothing to a server that did not advertise
+// CommandProgressCapability, since an older server rejects the unknown frame
+// type with an error frame.
+func (c *Client) SendCommandProgress(commandID, stage string) error {
+	if !c.HasServerCapability(CommandProgressCapability) {
+		return ErrServerLacksCapability
+	}
+	msgBytes, err := json.Marshal(map[string]any{
+		"type":      "command_progress",
+		"commandId": commandID,
+		"stage":     stage,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal command progress: %w", err)
+	}
+
+	select {
+	case c.sendChan <- msgBytes:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full, dropping command progress")
 	}
 }
 

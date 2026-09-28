@@ -10,6 +10,7 @@ describe('PERMISSION_GRANTS topology grants', () => {
   it('exposes topology grants', () => {
     expect(PERMISSION_GRANTS.TOPOLOGY_WRITE).toEqual({ resource: 'topology', action: 'write' });
     expect(PERMISSION_GRANTS.TOPOLOGY_READ).toEqual({ resource: 'topology', action: 'read' });
+    expect(PERMISSION_GRANTS.TOPOLOGY_EXECUTE).toEqual({ resource: 'topology', action: 'execute' });
   });
 });
 

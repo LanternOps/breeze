@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
+import { usePermissions } from "../../lib/permissions";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -830,6 +831,8 @@ export default function DeviceList({
   effectiveAgentVersionByOrgId,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
+  const { can } = usePermissions();
+  const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // Use provided timezone or browser default
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -1883,6 +1886,43 @@ export default function DeviceList({
                 className="inline-block h-2 w-2 shrink-0 rounded-full bg-warning"
               />
             )}
+            {/* #7214 (paper cut #23): the agent-health badges below duplicate
+                the ones in the Agent Version / Helper Version columns, which
+                are opt-in and hidden by default — most users never saw them.
+                Status is default-visible, so mirror the same three badges
+                here as compact pills, matching the agent-silent/logs-silent
+                pattern above. */}
+            {device.updateOfferWithheldReason && (
+              <span
+                data-testid={`device-${device.id}-status-update-withheld`}
+                title={t("deviceList.updateWithheldTooltip")}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.updateWithheld")}
+              </span>
+            )}
+            {isAgentUpdateStuck({
+              targetVersion: device.updateAttemptTargetVersion,
+              startedAt: device.updateAttemptStartedAt,
+              lastAttemptAt: device.updateAttemptLastAt,
+            }) && (
+              <span
+                data-testid={`device-${device.id}-status-update-stuck`}
+                title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.updateStuck")}
+              </span>
+            )}
+            {device.helperInstallIssue && (
+              <span
+                data-testid={`device-${device.id}-status-helper-install-issue`}
+                title={helperInstallIssueTooltip(device.helperInstallIssue)}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.helperNotInstalled")}
+              </span>
+            )}
           </div>
         </td>
       ),
@@ -2860,6 +2900,7 @@ export default function DeviceList({
                   {agentOnlySuffix}
                 </button>
                 <hr className="my-1" />
+                {canWake && (
                 <button
                   type="button"
                   onClick={() => handleBulkAction("wake")}
@@ -2870,6 +2911,7 @@ export default function DeviceList({
                   {t("deviceList.wakeSelected")}
                   {agentOnlySuffix}
                 </button>
+                )}
                 {/* Compare caps at 4 devices (DeviceCompare's selection limit).
                     Above the cap the item stays put but disabled with the cap
                     spelled out — it used to vanish silently (#5023). */}
@@ -3287,7 +3329,7 @@ export default function DeviceList({
                                     <RotateCcw className="h-4 w-4" />
                                     {t("deviceList.reboot")}{" "}
                                   </button>
-                                  {device.status === "offline" && (
+                                  {canWake && device.status === "offline" && (
                                     <button
                                       type="button"
                                       onClick={() => {

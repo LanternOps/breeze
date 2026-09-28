@@ -419,6 +419,21 @@ describe('tier-3 approval scope classification', () => {
     expect(thresholds.approvalScope).toBeUndefined();
   });
 
+  // Topology M4 Task 4 (#6000): one fixed-recipe, same-site observational
+  // diagnostic. Supervised (requester decides) but still an explicit approval,
+  // pinned effect and fresh-MFA release — never four_eyes, never unlisted.
+  it('diagnose_connectivity is a whole-tool supervised tier-3 tool', () => {
+    expect(getToolTier('diagnose_connectivity')).toBe(3);
+    expect(TIER3_SUPERVISED_TOOLS.has('diagnose_connectivity')).toBe(true);
+    expect(TIER3_FOUR_EYES_TOOLS.has('diagnose_connectivity')).toBe(false);
+    expect(TIER3_FOUR_EYES_ACTIONS.diagnose_connectivity).toBeUndefined();
+    expect(TIER3_SUPERVISED_ACTIONS.diagnose_connectivity).toBeUndefined();
+    expect(resolveApprovalScope('diagnose_connectivity', undefined, {})).toBe('supervised');
+    expect(checkGuardrails('diagnose_connectivity', {})).toMatchObject({
+      tier: 3, requiresApproval: true, approvalScope: 'supervised',
+    });
+  });
+
   it('checkGuardrails surfaces the scope on tier-3 results', () => {
     const fourEyes = checkGuardrails('manage_invoices', { action: 'issue' });
     expect(fourEyes.tier).toBe(3);

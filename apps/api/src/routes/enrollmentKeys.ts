@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { zValidator } from '../lib/validation';
 import { z } from "zod";
-import { and, eq, ne, sql, desc, inArray, lt, isNull, isNotNull, or, asc } from "drizzle-orm";
+import { and, eq, ne, sql, desc, inArray, lt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
@@ -266,6 +266,109 @@ function writeEnrollmentKeyAudit(
     userAgent: c.req.header("user-agent"),
     result: "success",
   });
+}
+
+// ============================================================
+// Discard-on-failure for single-purpose parent keys (#7217)
+// ============================================================
+
+const DISCARD_KEY_ON_FAILURE_PARAM = "discardKeyOnFailure";
+const keyIdSchema = z.string().guid();
+
+/**
+ * Add Device mints a fresh parent key (`POST /`) and then asks for the
+ * artifact in a second request. When that second request fails, the key it
+ * minted would otherwise stay live for its whole TTL with nothing to show for
+ * it — five failed clicks left five live credentials (#7217). A caller that
+ * sets `?discardKeyOnFailure=1` asks the route to delete the key whenever it
+ * does not produce the artifact: any status >= 400, or a thrown error.
+ *
+ * Mount right AFTER the permission gate — a caller without write access never
+ * reaches the delete — and BEFORE the rate limiter, MFA gate and validators:
+ * Add Device's create and link calls share the `enroll-write` bucket, so the
+ * request most likely to be refused (a 429 on the link) is exactly the one
+ * whose key must still be discarded. Running ahead of MFA is safe because the
+ * only row it can touch is one this caller created (which itself required
+ * MFA) and never used.
+ *
+ * The delete is one guarded statement (see discardUnusedKeyAfterFailure): only
+ * a key this caller created, that has never been used, inside the caller's
+ * org and site reach. The flag therefore cannot remove a key already in
+ * service, or anyone else's.
+ */
+function discardKeyOnFailure(
+  route: "installer" | "installer-link",
+): MiddlewareHandler {
+  return async (c, next) => {
+    if (c.req.query(DISCARD_KEY_ON_FAILURE_PARAM) !== "1") return next();
+    try {
+      await next();
+    } catch (err) {
+      await discardUnusedKeyAfterFailure(c, route, 500);
+      throw err;
+    }
+    if (c.error || c.res.status >= 400) {
+      await discardUnusedKeyAfterFailure(c, route, c.res.status);
+    }
+  };
+}
+
+async function discardUnusedKeyAfterFailure(
+  c: Context,
+  route: "installer" | "installer-link",
+  status: number,
+): Promise<void> {
+  const auth = c.get("auth") as AuthContext | undefined;
+  const keyId = c.req.param("id");
+  if (!auth?.user?.id || !keyIdSchema.safeParse(keyId).success) return;
+
+  // One try around everything: this runs while the caller's original error is
+  // in flight, and a throw here must never replace it.
+  try {
+    const conditions = [
+      eq(enrollmentKeys.id, keyId!),
+      eq(enrollmentKeys.createdBy, auth.user.id),
+      eq(enrollmentKeys.usageCount, 0),
+    ];
+    const orgScope = auth.orgCondition(enrollmentKeys.orgId);
+    if (orgScope) conditions.push(orgScope as ReturnType<typeof eq>);
+    if (auth.scope === "organization" && auth.allowedSiteIds !== undefined) {
+      if (auth.allowedSiteIds.length === 0) return;
+      conditions.push(
+        inArray(enrollmentKeys.siteId, auth.allowedSiteIds) as ReturnType<typeof eq>,
+      );
+    }
+
+    // Bootstrap tokens issued from this key before the failure go with it
+    // (installer_bootstrap_tokens.parent_enrollment_key_id ON DELETE CASCADE).
+    const [deleted] = await db
+      .delete(enrollmentKeys)
+      .where(and(...conditions))
+      .returning({
+        id: enrollmentKeys.id,
+        orgId: enrollmentKeys.orgId,
+        name: enrollmentKeys.name,
+      });
+    if (!deleted) return;
+    writeEnrollmentKeyAudit(c, auth, {
+      orgId: deleted.orgId,
+      action: "enrollment_key.delete",
+      keyId: deleted.id,
+      keyName: deleted.name,
+      details: { reason: "artifact_not_produced", route, status },
+    });
+  } catch (err) {
+    console.error(
+      "[enrollment-keys] could not discard the key after a failed artifact request; it stays live until it expires or is deleted",
+      {
+        keyId,
+        route,
+        status,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    captureException(err, c);
+  }
 }
 
 // fetchRegularMsi and the macOS installer helpers live in installerBuilder.ts
@@ -1028,8 +1131,16 @@ enrollmentKeyRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
+    // siteName (#7217): Add Device mints keys with identical names, so the
+    // list needs the bound site to tell them apart. A correlated subquery
+    // rather than a join keeps the row shape and every existing filter as is;
+    // it runs under the caller's RLS, so a site the caller cannot see reads
+    // as null rather than leaking its name.
     const keyList = await db
-      .select()
+      .select({
+        ...getTableColumns(enrollmentKeys),
+        siteName: sql<string | null>`(select ${sites.name} from ${sites} where ${sites.id} = ${enrollmentKeys.siteId})`,
+      })
       .from(enrollmentKeys)
       .where(whereCondition)
       .orderBy(desc(enrollmentKeys.createdAt), desc(enrollmentKeys.id))
@@ -1605,6 +1716,7 @@ enrollmentKeyRoutes.get(
     PERMISSIONS.ORGS_WRITE.resource,
     PERMISSIONS.ORGS_WRITE.action,
   ),
+  discardKeyOnFailure("installer"),
   requireMfa(),
   // No requireCapability("installer_distribute") here: this is the console's
   // authenticated own-device installer download (AddDeviceModal,
@@ -2199,6 +2311,7 @@ enrollmentKeyRoutes.post(
     PERMISSIONS.ORGS_WRITE.resource,
     PERMISSIONS.ORGS_WRITE.action,
   ),
+  discardKeyOnFailure("installer-link"),
   userRateLimit("enroll-write", 10, 60),
   requireMfa(),
   requireCapability("installer_distribute"),
@@ -2267,6 +2380,31 @@ enrollmentKeyRoutes.post(
       );
     }
 
+    // Resolve the public URL BEFORE minting the child: a link we cannot build
+    // must not leave a live short-link key behind (#7217).
+    const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
+    if (!serverUrl) {
+      return c.json(
+        { error: "Server URL not configured (set PUBLIC_API_URL or API_URL)" },
+        500,
+      );
+    }
+
+    // A Windows link is answered by the filename-token MSI, which needs a
+    // server URL the agent can redeem over https (#2341). When this server
+    // cannot serve one, every redemption of the link would fail — refuse to
+    // issue it, with the same reason the download route gives (#7217).
+    if (platform === "windows") {
+      try {
+        windowsFilenameApiHost(serverUrl);
+      } catch (err) {
+        if (err instanceof InstallerFilenameHostError) {
+          return c.json({ error: err.message }, 400);
+        }
+        throw err;
+      }
+    }
+
     // For macOS, validate that both architecture PKGs are reachable before
     // creating a child key — prevents links that 500 on every click.
     // Windows uses the bootstrap path (no signing dependency), so no probe needed.
@@ -2331,18 +2469,29 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Failed to generate installer link" }, 500);
     }
 
-    // Build public URL
-    const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
-    if (!serverUrl) {
-      return c.json(
-        { error: "Server URL not configured (set PUBLIC_API_URL or API_URL)" },
-        500,
-      );
-    }
-
     // Issue a one-time download handle so the raw token never appears in the URL.
-    const { issueDownloadHandle } = await import("../services/downloadHandle");
-    const handle = await issueDownloadHandle(rawChildKey);
+    // If that fails the caller never receives the link, so the child row we
+    // just minted — a live, short-coded credential — must go with it (#7217).
+    let handle: string;
+    try {
+      const { issueDownloadHandle } = await import("../services/downloadHandle");
+      handle = await issueDownloadHandle(rawChildKey);
+    } catch (err) {
+      console.error("[installer-link] download handle issuance failed:", err);
+      captureException(err, c);
+      await db
+        .delete(enrollmentKeys)
+        .where(eq(enrollmentKeys.id, childKey.id))
+        .catch((cleanupErr) => {
+          console.error(
+            "[installer-link] could not delete the unissued link key; it stays live until it expires:",
+            childKey.id,
+            cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+          );
+          captureException(cleanupErr, c);
+        });
+      return c.json({ error: "Failed to generate installer link" }, 500);
+    }
 
     const publicUrl = `${serverUrl.replace(/\/$/, "")}/api/v1/enrollment-keys/public-download/${platform}?h=${handle}`;
     const shortUrl = `${serverUrl.replace(/\/$/, "")}/s/${shortCode}`;
@@ -2535,7 +2684,6 @@ async function serveInstaller(
   keyRow: typeof enrollmentKeys.$inferSelect,
   platform: "windows" | "macos",
   rawToken: string,
-  cleanupOnFailure = false,
   signSpendBucketChecked = false,
   linkExpiresAt: Date | null = keyRow.expiresAt,
 ): Promise<Response> {
@@ -2755,19 +2903,9 @@ async function serveInstaller(
     // fire Sentry so operators can still see the underlying cause.
     captureException(err, c);
 
-    if (cleanupOnFailure) {
-      await db
-        .delete(enrollmentKeys)
-        .where(eq(enrollmentKeys.id, keyRow.id))
-        .catch((cleanupErr) => {
-          console.error(
-            "[public-download] Failed to clean up orphaned child key:",
-            keyRow.id,
-            cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
-          );
-        });
-    }
-
+    // The /s/:code caller removes its transport key and refunds the claimed
+    // use on ANY failed serve (see releaseFailedShortLinkClaim), not only
+    // this one.
     return c.json({ error: "Failed to build installer" }, 500);
   }
 }
@@ -2932,61 +3070,125 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       );
     }
 
-    // Only now create the child key — no cleanup needed on failure.
-    // The short-link row holds only the hashed token — the raw token was never stored.
-    // We create a fresh single-use child key so we have something to embed in the installer.
-    // Child gets a FRESH TTL independent of the short-link row's remaining
-    // lifetime so the installer survives the trip to the target machine even
-    // if the short-link row is near its own expiry.
-    const rawToken = generateEnrollmentKey();
-    const tokenHash = hashEnrollmentKey(rawToken);
-    // Clamp (never reject — public, unauthenticated redemption path with no
-    // interactive caller) the child's default TTL to the partner cap (fix
-    // round 3, #2776): the cap bounds KEY LIFETIME, not just interactively-
-    // chosen input, so this short-link download must not hand out a child
-    // key longer-lived than the partner allows just because it uses the
-    // server-constant default.
-    const cappedTtlMinutes = Math.min(
-      await clampTtlToCap(row.orgId, CHILD_ENROLLMENT_KEY_TTL_MINUTES),
-      PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES,
-    );
+    // The use is claimed. From here on, every path that does not hand the
+    // visitor an installer gives it back (#7217): a failed download is not a
+    // use. Before this, a server that could not build the installer burned
+    // one slot of the link per click.
+    const platform = row.installerPlatform;
+    let downloadKeyId: string | null = null;
+    let response: Response;
+    try {
+      // The short-link row holds only the hashed token — the raw token was never stored.
+      // We create a fresh single-use child key so we have something to embed in the installer.
+      // Child gets a FRESH TTL independent of the short-link row's remaining
+      // lifetime so the installer survives the trip to the target machine even
+      // if the short-link row is near its own expiry.
+      const rawToken = generateEnrollmentKey();
+      const tokenHash = hashEnrollmentKey(rawToken);
+      // Clamp (never reject — public, unauthenticated redemption path with no
+      // interactive caller) the child's default TTL to the partner cap (fix
+      // round 3, #2776): the cap bounds KEY LIFETIME, not just interactively-
+      // chosen input, so this short-link download must not hand out a child
+      // key longer-lived than the partner allows just because it uses the
+      // server-constant default.
+      const cappedTtlMinutes = Math.min(
+        await clampTtlToCap(row.orgId, CHILD_ENROLLMENT_KEY_TTL_MINUTES),
+        PUBLIC_DOWNLOAD_KEY_MAX_TTL_MINUTES,
+      );
 
-    const [downloadKey] = await db
-      .insert(enrollmentKeys)
-      .values({
-        orgId: row.orgId,
-        siteId: row.siteId,
-        name: `${row.name} (short-link download)`,
-        key: tokenHash,
-        keySecretHash: row.keySecretHash,
-        maxUsage: 1,
-        expiresAt: freshChildExpiresAt(cappedTtlMinutes),
-        createdBy: null,
-        installerPlatform: row.installerPlatform,
-        // Parent lineage (fix round, #2776 lineage follow-up): lets rotation
-        // find and revoke this child if the parent link is rotated before
-        // it's consumed — see the DELETE below in the /:id/rotate handler.
-        sourceLinkKeyId: row.id,
-        sourceLinkKeyGeneration: row.credentialGeneration,
-      })
-      .returning();
+      const [downloadKey] = await db
+        .insert(enrollmentKeys)
+        .values({
+          orgId: row.orgId,
+          siteId: row.siteId,
+          name: `${row.name} (short-link download)`,
+          key: tokenHash,
+          keySecretHash: row.keySecretHash,
+          maxUsage: 1,
+          expiresAt: freshChildExpiresAt(cappedTtlMinutes),
+          createdBy: null,
+          installerPlatform: platform,
+          // Parent lineage (fix round, #2776 lineage follow-up): lets rotation
+          // find and revoke this child if the parent link is rotated before
+          // it's consumed — see the DELETE below in the /:id/rotate handler.
+          sourceLinkKeyId: row.id,
+          sourceLinkKeyGeneration: row.credentialGeneration,
+        })
+        .returning();
 
-    if (!downloadKey) {
-      return c.json({ error: "Failed to prepare installer" }, 500);
+      if (!downloadKey) {
+        response = c.json({ error: "Failed to prepare installer" }, 500);
+      } else {
+        downloadKeyId = downloadKey.id;
+        response = await serveInstaller(
+          c,
+          downloadKey,
+          platform,
+          rawToken,
+          true, // signSpendBucketChecked — debited against short code above
+          // The SHORT-LINK row's expiry, not downloadKey's: the download key is a
+          // fresh 24h transport container, while `row` is the link the admin
+          // configured — its remaining lifetime is what the Windows bootstrap
+          // token must inherit (#3038).
+          row.expiresAt,
+        );
+      }
+    } catch (err) {
+      await releaseFailedShortLinkClaim(c, row.id, downloadKeyId, 500);
+      throw err;
     }
 
-    return serveInstaller(
-      c,
-      downloadKey,
-      row.installerPlatform,
-      rawToken,
-      true,
-      true, // signSpendBucketChecked — debited against short code above
-      // The SHORT-LINK row's expiry, not downloadKey's: the download key is a
-      // fresh 24h transport container, while `row` is the link the admin
-      // configured — its remaining lifetime is what the Windows bootstrap
-      // token must inherit (#3038).
-      row.expiresAt,
-    );
+    if (response.status >= 400) {
+      await releaseFailedShortLinkClaim(c, row.id, downloadKeyId, response.status);
+    }
+    return response;
   });
 });
+
+/**
+ * Undo a /s/:code redemption that produced no installer (#7217): delete the
+ * transport download key it minted (cascading any bootstrap token issued from
+ * it) and give the claimed use back to the link. Runs inside the route's
+ * system DB context. Failures are logged and reported, never thrown — the
+ * visitor still gets the original error response.
+ */
+async function releaseFailedShortLinkClaim(
+  c: Context,
+  linkKeyId: string,
+  downloadKeyId: string | null,
+  status: number,
+): Promise<void> {
+  if (downloadKeyId) {
+    try {
+      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, downloadKeyId));
+    } catch (err) {
+      console.error(
+        "[short-link] could not delete the download key of a failed redemption; it stays live until it expires",
+        {
+          keyId: downloadKeyId,
+          status,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      captureException(err, c);
+    }
+  }
+
+  try {
+    await db
+      .update(enrollmentKeys)
+      .set({ usageCount: sql`GREATEST(${enrollmentKeys.usageCount} - 1, 0)` })
+      .where(eq(enrollmentKeys.id, linkKeyId))
+      .returning({ id: enrollmentKeys.id });
+  } catch (err) {
+    console.error(
+      "[short-link] could not refund the use claimed by a failed redemption",
+      {
+        keyId: linkKeyId,
+        status,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    captureException(err, c);
+  }
+}

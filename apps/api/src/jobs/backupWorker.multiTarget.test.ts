@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
@@ -69,6 +69,18 @@ const agentRelayMock = {
     async (_agentId: string, _command: { id: string }): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' }),
   ),
 };
+// Brokered write delivery is covered by backupStorageWriteDelivery.test.ts and
+// the write-session integration suites; here the helper never reports it
+// unless a test says otherwise.
+const writeDeliveryMock = vi.hoisted(() => ({
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
+    mode: input.provider === 'local' ? 'local' : 'legacy',
+    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
+    payload: input.payload,
+  })),
+}));
+vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
@@ -85,7 +97,14 @@ const DATA = {
   orgId: 'org-1',
   deviceId: 'device-1',
 };
-const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+const LOCAL_CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+const S3_CONFIG_ROW = {
+  id: 'config-1',
+  provider: 's3',
+  providerConfig: { bucket: 'bucket-a', region: 'us-east-1', endpoint: 'https://storage.example', accessKey: 'AK', secretKey: 'synthetic-secret-value' },
+  encryption: false,
+};
+let CONFIG_ROW: Record<string, unknown> = LOCAL_CONFIG_ROW;
 
 /** Discovered Hyper-V VMs for this run — one dispatch target each. */
 let vmRows: Array<{ vmName: string }> = [];
@@ -193,6 +212,7 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     cancelAfterInsertOnCheck = null;
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }];
     currentDeviceOrgId = 'org-1';
+    CONFIG_ROW = LOCAL_CONFIG_ROW;
     wireDb();
     agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
     agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
@@ -391,5 +411,59 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     expect(updatesFor('child-2')).toContainEqual(
       expect.objectContaining({ payload: expect.objectContaining({ status: 'failed' }) }),
     );
+  });
+
+  describe('write dispatch telemetry', () => {
+    const writeDispatch = vi.fn();
+    beforeEach(async () => {
+      writeDispatch.mockReset();
+      const { setBackupMetricsRecorder } = await import('../services/backupMetrics');
+      setBackupMetricsRecorder({ onWriteDispatch: writeDispatch });
+    });
+    afterEach(async () => {
+      const { setBackupMetricsRecorder } = await import('../services/backupMetrics');
+      setBackupMetricsRecorder(null);
+    });
+
+    it('counts each sent target to a local destination as a local write', async () => {
+      expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+      expect(writeDispatch.mock.calls).toEqual([
+        ['hyperv_backup', 'local', 'no_credential', 1],
+        ['hyperv_backup', 'local', 'no_credential', 1],
+      ]);
+    });
+
+    it('counts a sent target carrying the storage destination as a legacy credential write', async () => {
+      CONFIG_ROW = S3_CONFIG_ROW;
+      vmRows = [{ vmName: 'vm-a' }];
+      expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+      const sent = agentRelayMock.dispatchCommandToAgent.mock.calls[0]![1] as unknown as { payload: Record<string, unknown> };
+      expect(sent.payload.providerConfig).toBeDefined();
+      expect(writeDispatch.mock.calls).toEqual([['hyperv_backup', 'legacy_credential', 'helper_unsupported', 1]]);
+    });
+
+    it('sends a brokered target with its write session and no storage destination, counted as brokered', async () => {
+      CONFIG_ROW = S3_CONFIG_ROW;
+      vmRows = [{ vmName: 'vm-a' }];
+      writeDeliveryMock.broker.mockImplementationOnce(async (input) => {
+        const { providerConfig: _p, ...rest } = input.payload;
+        return { mode: 'brokered', reason: 'ok', payload: { ...rest, storageSession: { scope: 'snapshot_write' } } };
+      });
+      expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+      const sent = agentRelayMock.dispatchCommandToAgent.mock.calls[0]![1] as unknown as { payload: Record<string, unknown> };
+      expect(sent.payload.providerConfig).toBeUndefined();
+      expect(sent.payload.storageSession).toEqual({ scope: 'snapshot_write' });
+      expect(writeDispatch.mock.calls).toEqual([['hyperv_backup', 'brokered', 'ok', 1]]);
+    });
+
+    it('does not count a target that was not sent', async () => {
+      agentRelayMock.dispatchCommandToAgent
+        .mockResolvedValueOnce({ status: 'sent', via: 'local' })
+        .mockResolvedValueOnce({ status: 'offline' });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await __testOnly.processDispatchBackup(DATA as never);
+      warn.mockRestore();
+      expect(writeDispatch).toHaveBeenCalledTimes(1);
+    });
   });
 });

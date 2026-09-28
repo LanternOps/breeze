@@ -81,8 +81,35 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     lineageRows.length = 0;
-    lineageRows.push([{ orgId: 'org-1', deviceId: 'device-1' }]);
+    lineageRows.push([{ orgId: 'org-1', deviceId: 'device-1', keyLayout: 'legacy_flat' }]);
   });
+
+  it.each([['device_scoped'], [undefined]])(
+    'refuses a snapshot whose key layout (%s) this server cannot read, before loading provider credentials',
+    async (keyLayout) => {
+      lineageRows[0] = [{ orgId: 'org-1', deviceId: 'device-1', keyLayout }];
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(
+        {
+          id: 'token-layout',
+          orgId: 'org-1',
+          deviceId: 'device-1',
+          snapshotId: 'snapshot-db-layout',
+          status: 'authenticated',
+          authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+          expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+          negotiatedCapabilities: null,
+        },
+        'snapshots/snap-ext-001/manifest.json'
+      );
+
+      expect(result).toEqual({
+        unavailable: true,
+        reason: 'This backup was written in a storage format this server version cannot read.',
+      });
+      expect(resolveSnapshotProviderConfigMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a token whose pinned snapshot lineage changed before loading provider credentials', async () => {
     lineageRows[0] = [{ orgId: 'org-2', deviceId: 'device-2' }];

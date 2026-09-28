@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -32,7 +31,7 @@ func winBreezeDir(r *run) string {
 // machine SID is not changed (Part 0 §4).
 //
 // The hives are (re)loaded through ensureWinHives — a resumed run skipped
-// the restore phase that loads them, and winBoot closes them before DISM and
+// the restore phase that loads them, and winBoot closes them before
 // bcdboot — and left loaded: validateOSState closes them (ruling C5).
 func winIdentity(_ context.Context, r *run) error {
 	if r.rootVolume == "" {
@@ -72,8 +71,8 @@ func winIdentity(_ context.Context, r *run) error {
 		if _, err := winhive.NewMachineGuid(r.hives["SOFTWARE"].Root()); err != nil {
 			return fmt.Errorf("identity: rotate MachineGuid: %w", err)
 		}
-		if err := os.Remove(filepath.Join(breeze, "secrets.yaml")); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("identity: delete secrets.yaml: %w", err)
+		if err := removeSecretsAndTemps(breeze); err != nil {
+			return fmt.Errorf("identity: %w", err)
 		}
 		return stripEnrollment(filepath.Join(breeze, "agent.yaml"))
 	default:

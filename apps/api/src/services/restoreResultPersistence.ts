@@ -99,6 +99,9 @@ export function buildRestoreResultMetadata(
     'phaseReached',
     'refusal',
     'target',
+    // W06d: bare_metal_rebuild's optional Hyper-V VM outcome (Windows host)
+    'vmCreated',
+    'vmError',
   ]) {
     if (restoreData[key] !== undefined) {
       metadata[key] = restoreData[key];
@@ -115,7 +118,7 @@ export function buildRestoreResultMetadata(
     metadata.durationMs = result.durationMs;
   }
 
-  // #2434: error/stderr/warnings are agent-supplied free text persisted into
+  // #2434: error/stderr/warnings (and vmError) are agent-supplied free text persisted into
   // restore_jobs.targetConfig.result and surfaced in the restore UI — redact
   // secrets before persistence (whichever source populated them above).
   if (typeof metadata.error === 'string') {
@@ -123,6 +126,9 @@ export function buildRestoreResultMetadata(
   }
   if (typeof metadata.stderr === 'string') {
     metadata.stderr = redactSecretsFromOutput(metadata.stderr);
+  }
+  if (typeof metadata.vmError === 'string') {
+    metadata.vmError = redactSecretsFromOutput(metadata.vmError);
   }
   if (Array.isArray(metadata.warnings)) {
     metadata.warnings = metadata.warnings.map((warning) =>

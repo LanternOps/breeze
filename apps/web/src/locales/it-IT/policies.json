@@ -157,7 +157,8 @@
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
       "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
       "summary": "{{filtered}} di {{total}} criteri",
-      "inheritsBadge": "Eredita"
+      "inheritsBadge": "Eredita",
+      "statusFilterLabel": "Stato"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -711,7 +712,7 @@
         "timezone2": "timezone",
         "notifyBeforeMinutes2": "notifyBeforeMinutes",
         "suppressAlerts": "Sopprimi avvisi",
-        "muteAlertNotificationsDuringWindow": "Disattiva le notifiche degli avvisi durante la finestra.",
+        "muteAlertNotificationsDuringWindow": "Durante la finestra non vengono create nuove segnalazioni.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Sopprimi patching",
         "delayPatchInstallationsDuringWindow": "Ritarda le installazioni delle patch durante la finestra.",
@@ -947,7 +948,8 @@
         "promptNotify": "Notifica: mostra un avviso di connessione",
         "promptConsent": "Richiedi consenso: l'utente deve approvare",
         "consentUnavailable": "Se nessuno può rispondere",
-        "consentUnavailableHelp": "Si applica quando è richiesto il consenso ma nessun utente ha effettuato l'accesso per rispondere.",
+        "consentUnavailableHelp": "Si applica quando nessuno ha effettuato l'accesso, quando la richiesta di consenso non può essere mostrata (ad esempio, Breeze Assist non è in esecuzione o non risponde) o quando l'utente connesso non risponde entro 30 secondi.",
+        "consentVncNote": "VNC non può richiedere il consenso, quindi le sessioni VNC vengono rifiutate sui dispositivi che richiedono il consenso. Usa invece il visualizzatore desktop remoto.",
         "unavailableProceed": "Procedi con la sessione",
         "unavailableBlock": "Blocca la sessione",
         "showIndicator": "Indicatore sessione attiva",
@@ -1371,6 +1373,12 @@
       "cancelled": "Annullata",
       "downloading": "Download in corso",
       "installing": "Installazione in corso",
+      "sentToAgent": "Inviato all'agente",
+      "stageElapsed_one": "da {{count}} minuto",
+      "stageElapsed_other": "da {{count}} minuti",
+      "stageElapsedJustNow": "proprio ora",
+      "noAgentUpdate_one": "Nessun aggiornamento dall'agente da {{count}} minuto, più di quanto richieda normalmente questo passaggio. Se non arriva nulla, l'installazione verrà contrassegnata come non riuscita {{timeoutMinutes}} minuti dopo l'invio.",
+      "noAgentUpdate_other": "Nessun aggiornamento dall'agente da {{count}} minuti, più di quanto richieda normalmente questo passaggio. Se non arriva nulla, l'installazione verrà contrassegnata come non riuscita {{timeoutMinutes}} minuti dopo l'invio.",
       "exitCode": "Codice di uscita",
       "retryStarted": "Nuovo tentativo avviato",
       "failedToRetryDeployment": "Impossibile ripetere la distribuzione",
@@ -1628,7 +1636,8 @@
       "bulkSoftwareDeployment": "Distribuzione software massiva",
       "catalogTab": "Catalogo",
       "summaryCompleted7d": "Completate (7 gg)",
-      "summaryFailed7d": "Non riuscite (7 gg)"
+      "summaryFailed7d": "Non riuscite (7 gg)",
+      "categoryFilterLabel": "Categoria"
     },
     "softwareInventory": {
       "allowed": "Consentito",

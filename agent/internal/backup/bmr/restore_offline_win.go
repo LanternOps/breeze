@@ -26,9 +26,11 @@ var offlineRequiredHives = []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
 
 // selectOfflineHives: the VSS file tree is authoritative. If ANY required
 // hive is missing from <root>\Windows\System32\config, all four are
-// replaced from <stagingDir>\registry\<HIVE> and their .LOG1/.LOG2 deleted
-// — never a mix of capture points (LSA secrets vs machine password). Every
-// artifact is confirmed present before anything is overwritten.
+// replaced from <stagingDir>\registry\<HIVE>: the tree's .LOG1/.LOG2 are
+// deleted and replaced by the artifact's own logs when it carries them (a
+// VSS-copied hive does, a reg-save hive does not) — never a mix of capture
+// points (LSA secrets vs machine password). Every artifact is confirmed
+// present before anything is overwritten.
 func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 	cfg := filepath.Join(root, "Windows", "System32", "config")
 	var treeMissing []string
@@ -67,19 +69,43 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 	if err := os.MkdirAll(cfg, 0o755); err != nil {
 		return "", err
 	}
-	// Copy all four artifacts to temp names first; the tree is touched only
-	// once every copy succeeded, so a failed copy can never leave a mix of
-	// artifact and tree hives (which a retry would then see as "complete").
-	tmp := func(h string) string { return filepath.Join(cfg, h+".brz-fallback-tmp") }
+	// Copy all four artifacts — and whichever .LOG1/.LOG2 each artifact
+	// carries — to temp names first; the tree is touched only once every copy
+	// succeeded, so a failed copy can never leave a mix of artifact and tree
+	// hives (which a retry would then see as "complete"). An artifact taken
+	// from a VSS shadow copy is the raw hive file, which on Windows 8.1+ can
+	// lag its own transaction logs; RegLoadKey replays <hive>.LOG1/.LOG2 found
+	// next to the file, so those logs travel with it (#5397). A reg-save
+	// artifact has none, and the tree's logs are deleted either way.
+	tmp := func(name string) string { return filepath.Join(cfg, name+".brz-fallback-tmp") }
+	var staged []string
 	removeTemps := func() {
-		for _, h := range offlineRequiredHives {
-			_ = os.Remove(tmp(h))
+		for _, name := range staged {
+			_ = os.Remove(tmp(name))
 		}
 	}
 	for _, h := range offlineRequiredHives {
+		staged = append(staged, h)
 		if err := copyHiveFile(filepath.Join(stagingDir, "registry", h), tmp(h)); err != nil {
 			removeTemps()
 			return "", fmt.Errorf("replace %s from the system-state artifact: %w", h, err)
+		}
+		for _, ext := range []string{".LOG1", ".LOG2"} {
+			name := h + ext
+			src := filepath.Join(stagingDir, "registry", name)
+			present, err := hiveFilePresent(src)
+			if err != nil {
+				removeTemps()
+				return "", fmt.Errorf("check system-state artifact %s: %w", name, err)
+			}
+			if !present {
+				continue
+			}
+			staged = append(staged, name)
+			if err := copyHiveFile(src, tmp(name)); err != nil {
+				removeTemps()
+				return "", fmt.Errorf("replace %s from the system-state artifact: %w", name, err)
+			}
 		}
 	}
 	// Stale transaction logs go before the swap: a tree log left next to an
@@ -92,13 +118,55 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 			}
 		}
 	}
-	for _, h := range offlineRequiredHives {
-		if err := os.Rename(tmp(h), filepath.Join(cfg, h)); err != nil {
+	// Every rename goes through the single renameHive seam, in renameOrder:
+	// artifact logs, then tree-present primaries, then tree-missing primaries
+	// strictly LAST. A rename failure partway through must never leave a
+	// tree-missing hive's slot filled — that would read as "complete" to a
+	// retry (selectOfflineHives treats the tree as authoritative) and stop it
+	// re-entering the fallback, stranding the temp files this same failure
+	// leaves behind.
+	for _, name := range renameOrder(staged, treeMissing) {
+		if err := renameHive(tmp(name), filepath.Join(cfg, name)); err != nil {
 			removeTemps()
-			return "", fmt.Errorf("replace %s from the system-state artifact: %w", h, err)
+			return "", fmt.Errorf("replace %s from the system-state artifact: %w", name, err)
 		}
 	}
 	return "registry hives restored from the system-state artifacts, not the file tree", nil
+}
+
+// renameHive is os.Rename, a seam so tests can inject a failure at any
+// rename of the swap (18b row 3) and prove it never leaves a tree-missing
+// hive's slot filled.
+var renameHive = os.Rename
+
+// renameOrder orders the fallback swap so an interrupted swap is always
+// retried: every artifact log first, then the primaries of hives the tree
+// still had, and the primaries the tree was MISSING strictly last. Until the
+// last rename lands, at least one tree-missing hive is still absent, so a
+// retry of selectOfflineHives sees an incomplete tree and redoes the whole
+// fallback — it can never accept an artifact primary (from a VSS copy, lagging
+// its logs) that was installed without them.
+func renameOrder(staged, treeMissing []string) []string {
+	missing := make(map[string]bool, len(treeMissing))
+	for _, h := range treeMissing {
+		missing[h] = true
+	}
+	isPrimary := make(map[string]bool, len(offlineRequiredHives))
+	for _, h := range offlineRequiredHives {
+		isPrimary[h] = true
+	}
+	var logs, present, absent []string
+	for _, name := range staged {
+		switch {
+		case !isPrimary[name]:
+			logs = append(logs, name)
+		case missing[name]:
+			absent = append(absent, name)
+		default:
+			present = append(present, name)
+		}
+	}
+	return append(append(logs, present...), absent...)
 }
 
 // hiveFilePresent fails closed: only a confirmed-absent file
@@ -167,12 +235,13 @@ func RestoreSystemStateOfflineWindows(ctx context.Context, root, stagingDir, roo
 		}
 	}()
 	if !allowDC {
-		isDC, err := winhive.HasNTDS(system.Root())
+		dc, err := winhive.IsDomainController(system.Root())
 		if err != nil {
-			return nil, warnings, fmt.Errorf(`check Services\NTDS: %w`, err)
+			return nil, warnings, fmt.Errorf("domain-controller check: %w", err)
 		}
-		if isDC {
-			return nil, warnings, errors.New(`source is a domain controller (Services\NTDS present); pass --allow-domain-controller and read the DC recovery guidance`)
+		warnings = append(warnings, dc.Warnings...)
+		if dc.IsDC {
+			return nil, warnings, fmt.Errorf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)
 		}
 	}
 	sets, err := winhive.ControlSets(system.Root())

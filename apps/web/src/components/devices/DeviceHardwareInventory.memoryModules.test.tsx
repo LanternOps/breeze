@@ -80,6 +80,12 @@ describe('DeviceHardwareInventory memory modules (#5351)', () => {
     expect(rows[0]).toHaveTextContent('Samsung');
     expect(rows[0]).toHaveTextContent('M378A2K43DB1-CTD');
     expect(rows[0]).toHaveTextContent('SN0');
+    // #7214 (paper cut #21): Serial/Part Number no longer force the table
+    // wider than its scroll container at narrow viewports — they truncate
+    // with a full-value tooltip instead of an unconditional nowrap cell.
+    const serialCell = within(rows[0]!).getByText('SN0');
+    expect(serialCell.className).toMatch(/truncate/);
+    expect(serialCell.closest('td')).toHaveAttribute('title', 'SN0');
     expect(within(rows[1]!).getByText('DIMM_A2')).toBeInTheDocument();
     expect(within(rows[1]!).getByTestId('memory-module-empty')).toHaveTextContent('Empty');
   });
@@ -93,6 +99,24 @@ describe('DeviceHardwareInventory memory modules (#5351)', () => {
 
     expect(await screen.findByTestId('memory-on-package')).toHaveTextContent('On-package memory');
     expect(screen.queryByTestId('memory-slots-used')).not.toBeInTheDocument();
+  });
+
+  it('#7214 (paper cut #21): reads "on-package" not "no modules reported" when soldered memory has no rows', async () => {
+    m.payload = payload({ memorySoldered: true, memoryObservedAt: OBSERVED, memorySlotsTotal: null }, []);
+    render(<DeviceHardwareInventory deviceId={DEVICE_ID} />);
+
+    expect(await screen.findByTestId('memory-modules-on-package')).toBeInTheDocument();
+    expect(screen.queryByText('No memory modules reported.')).not.toBeInTheDocument();
+  });
+
+  it('#7214 (paper cut #21): shows the reported max capacity when available', async () => {
+    m.payload = payload(
+      { memorySlotsTotal: 4, memoryMaxCapacityMb: 65536, memoryObservedAt: OBSERVED, memorySoldered: false },
+      [dimm(0), empty(1), dimm(2), empty(3)],
+    );
+    render(<DeviceHardwareInventory deviceId={DEVICE_ID} />);
+
+    expect(await screen.findByTestId('memory-max-capacity')).toHaveTextContent('64.0 GB');
   });
 
   it('explains that an agent update is needed when memory was never reported', async () => {

@@ -142,7 +142,9 @@
     "weakPasswords": "Password deboli",
     "windows": "Windows",
     "withIssues": "Con problemi",
-    "yes": "Sì"
+    "yes": "Sì",
+    "issueFilterLabel": "Filtro problemi",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityAntivirusPage": {
     "active": "Attivo",
@@ -172,7 +174,9 @@
     "totalDevices": "Dispositivi totali",
     "unknown": "Sconosciuto",
     "unprotected": "Non protetto",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Stato della protezione",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityDeviceSecurityStatus": {
     "agentDefinitions": "Agent/definizioni",
@@ -247,7 +251,10 @@
     "unencrypted": "Non crittografato",
     "volume": "Volume",
     "windows": "Windows",
-    "yes": "Sì"
+    "yes": "Sì",
+    "statusFilterLabel": "Stato di crittografia",
+    "osFilterLabel": "Sistema operativo",
+    "escrowFilterLabel": "Deposito della chiave"
   },
   "securityFirewallPage": {
     "active": "Attivo",
@@ -276,7 +283,9 @@
     "searchDevices": "Cerca dispositivi...",
     "status": "Stato",
     "totalDevices": "Dispositivi totali",
-    "windows": "Windows"
+    "windows": "Windows",
+    "statusFilterLabel": "Stato del firewall",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityHuntressIncidentList": {
     "actions": "Azioni",
@@ -336,7 +345,9 @@
     "searchDevices": "Cerca dispositivi...",
     "status": "Stato",
     "totalDevices": "Dispositivi totali",
-    "windows": "Windows"
+    "windows": "Windows",
+    "complianceFilterLabel": "Conformità",
+    "osFilterLabel": "Sistema operativo"
   },
   "securityRecommendationsPage": {
     "adminAccounts": "Account amministratori",
@@ -370,7 +381,10 @@
     "prioritizedRemediationGuidance": "Indicazioni di remediation con priorità",
     "securityRecommendations": "Raccomandazioni di sicurezza",
     "total": "Totale",
-    "vulnMgmt": "Gest. vuln."
+    "vulnMgmt": "Gest. vuln.",
+    "priorityFilterLabel": "Priorità",
+    "categoryFilterLabel": "Categoria",
+    "statusFilterLabel": "Stato del suggerimento"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Verrà generata e depositata una nuova password di ripristino BitLocker; quella precedente verrà rimossa dopo l'attivazione della nuova chiave.",
@@ -430,7 +444,9 @@
     "status": "Stato",
     "threat": "Minaccia",
     "threatsMatchYourFilters": "{{count}} minacce corrispondono ai filtri",
-    "unknownThreat": "Minaccia sconosciuta"
+    "unknownThreat": "Minaccia sconosciuta",
+    "severityFilterLabel": "Gravità",
+    "statusFilterLabel": "Stato"
   },
   "securityScoreDetailPage": {
     "a": "A",
@@ -768,7 +784,10 @@
     "threat": "Minaccia",
     "total": "Totale",
     "trojan": "Trojan",
-    "vulnerabilities": "Vulnerabilità"
+    "vulnerabilities": "Vulnerabilità",
+    "severityFilterLabel": "Gravità",
+    "statusFilterLabel": "Stato della minaccia",
+    "categoryFilterLabel": "Categoria"
   },
   "pamPamAuditTab": {
     "errors": {
@@ -938,6 +957,25 @@
       "submitting": "Invio…",
       "approveElevation": "Approva elevazione",
       "denyRequest": "Nega richiesta"
+    },
+    "reauth": {
+      "title": "Richiesta critica: conferma che sei tu",
+      "why": "Approvare un'elevazione di livello critico richiede una nuova autenticazione oltre al tuo dispositivo di approvazione. Viene verificata una sola volta e non viene mai memorizzata.",
+      "unavailable": "Il tuo account accede senza password e non ha un'app authenticator, quindi non può autenticarsi di nuovo per le approvazioni critiche. Le passkey non sono ancora accettate per questo passaggio. Configura un'app authenticator in Profilo → Sicurezza, oppure chiedi a un approvatore che abbia una password.",
+      "codeLabel": "Codice dell'app authenticator",
+      "passwordLabel": "Password dell'account",
+      "codeHelp": "Il codice a 6 cifre dell'app authenticator con cui accedi. Le passkey e i codici SMS non sono ancora accettati per questo passaggio.",
+      "passwordHelp": "La password che usi per accedere a Breeze.",
+      "useCode": "Usa invece un codice dell'app authenticator",
+      "usePassword": "Usa invece la mia password",
+      "errors": {
+        "codeRequired": "Inserisci il codice della tua app authenticator per approvare questa richiesta critica.",
+        "passwordRequired": "Inserisci la password del tuo account per approvare questa richiesta critica.",
+        "invalid": "Quella password o quel codice non è stato accettato. Controllalo e riprova.",
+        "required": "Questa è una richiesta critica. Reinserisci la tua password (o il codice authenticator) e approva di nuovo.",
+        "assertionFailed": "La verifica del tuo dispositivo di approvazione non è stata accettata. Riprova.",
+        "stepUpRequired": "La tua organizzazione richiede un dispositivo di approvazione registrato (Windows Hello o Touch ID) per approvare questa richiesta. Registrane uno in Profilo → Sicurezza."
+      }
     }
   },
   "pamPamRevokeModal": {
@@ -1658,7 +1696,8 @@
       "lastScanned": "Ultima scansione"
     },
     "loading": "Caricamento dati di conformità...",
-    "empty": "Nessun risultato di conformità trovato."
+    "empty": "Nessun risultato di conformità trovato.",
+    "osFilterLabel": "Sistema operativo"
   },
   "cisHardeningCisComplianceRow": {
     "severity": {
@@ -1759,7 +1798,8 @@
     "title": "Remediation",
     "tooltip": "Correzioni automatiche per controlli CIS falliti. Ognuna deve essere approvata prima dell'esecuzione sul dispositivo di destinazione.",
     "filters": {
-      "allStatuses": "Tutti gli stati"
+      "allStatuses": "Tutti gli stati",
+      "statusFilterLabel": "Stato"
     },
     "status": {
       "pendingApproval": "Approvazione in sospeso",

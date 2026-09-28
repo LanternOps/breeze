@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { providerMeta, type PsaProvider } from './PsaConnectionList';
 import { useTranslation } from 'react-i18next';
+import { FilterSelect } from '../shared/FilterSelect';
 
 export type PsaTicketStatus = 'open' | 'in_progress' | 'waiting' | 'resolved' | 'closed';
 
@@ -90,17 +91,18 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
-          <select
+          <FilterSelect
+            label={t('longTail.psa.PsaTicketList.filters.statusFilterLabel')}
             value={statusFilter}
             onChange={event => setStatusFilter(event.target.value as PsaTicketStatus | 'all')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
+            className="w-full sm:w-40"
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
                 {status === 'all' ? t('longTail.psa.PsaTicketList.filters.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as PsaTicketStatus].labelKey)}
               </option>
             ))}
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

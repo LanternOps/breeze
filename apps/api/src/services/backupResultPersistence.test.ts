@@ -126,6 +126,17 @@ vi.mock('./sentry', () => ({
 }));
 
 const findForeignSnapshotClaimMock = vi.fn();
+// Snapshot id reservations are exercised against real Postgres
+// (backupStorageWriteSessions / backupSnapshotIdReservations integration
+// suites); here no job has a write session unless a test says otherwise.
+const allowedSnapshotIdsForJobMock = vi.hoisted(() => vi.fn(async (): Promise<string[] | null> => null));
+vi.mock('./backupSnapshotIdReservations', () => ({
+  SNAPSHOT_ID_RESERVATION_CONSTRAINT: 'backup_snapshot_id_reservations_pkey',
+  allowedSnapshotIdsForJob: allowedSnapshotIdsForJobMock,
+}));
+const createAuditLogMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./auditService', () => ({ createAuditLog: createAuditLogMock }));
+
 vi.mock('./backupSnapshotOwnership', () => ({
   findForeignSnapshotClaim: (...args: unknown[]) => findForeignSnapshotClaimMock(...(args as [])),
 }));
@@ -158,6 +169,15 @@ vi.mock('./backupSnapshotStorage', () => ({
 const enqueueSnapshotFileIndexHydrationMock = vi.hoisted(() => vi.fn());
 vi.mock('../jobs/backupSnapshotFileIndexWorker', () => ({
   enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueSnapshotFileIndexHydrationMock(...(args as [])),
+}));
+
+const attestAgentResultSnapshotMock = vi.hoisted(() => vi.fn());
+const attestLateAgentResultMock = vi.hoisted(() => vi.fn());
+const attestedJobIdForSnapshotMock = vi.hoisted(() => vi.fn());
+vi.mock('./backupAttestation', () => ({
+  attestAgentResultSnapshot: (...args: unknown[]) => attestAgentResultSnapshotMock(...(args as [])),
+  attestLateAgentResult: (...args: unknown[]) => attestLateAgentResultMock(...(args as [])),
+  attestedJobIdForSnapshot: (...args: unknown[]) => attestedJobIdForSnapshotMock(...(args as [])),
 }));
 
 const resolveBackupProtectionForDeviceMock = vi.fn();
@@ -2611,5 +2631,178 @@ describe('sanitizeVssMetadata (#3027)', () => {
     } as any) as Record<string, unknown>;
 
     expect(JSON.stringify(sanitized)).not.toContain('MIIsecret');
+  });
+});
+
+describe('snapshot attestation hand-off', () => {
+  const ATTESTATION = { statement: '{"v":1}' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    afterContextExitWork.length = 0;
+    __resetBackupPredicateMissDiagnosticGuardForTests();
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
+    attestLateAgentResultMock.mockResolvedValue(null);
+    attestedJobIdForSnapshotMock.mockResolvedValue(null);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  });
+
+  function arrange(opts: { existing?: Record<string, unknown> | null; baseSnapshotId?: string | null } = {}) {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{
+        id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file',
+        baseSnapshotId: opts.baseSnapshotId ?? null, storageIdentity: 's3::::bucket',
+      }]) as any)
+      .mockReturnValue(chainMock(opts.existing ? [{ id: 'snapshot-db-1', jobId: 'job-1', fileIndexStatus: 'none' }] : []) as any);
+    // (No lineage lookup: these results name no base in `snapshot`.)
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock(opts.existing ? [opts.existing] : []) as any)
+      .mockReturnValue(chainMock([]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(
+      chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1', fileIndexStatus: 'none' }]) as any,
+    );
+  }
+
+  it('hands an agent result to the attestation step with the job pin and the expectation flag', async () => {
+    arrange({ baseSnapshotId: 'base-snap' });
+    const result = { snapshotId: 'provider-snap-1', filesBackedUp: 1, referencedFiles: 2, attestation: ATTESTATION } as any;
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result, dispatchExpectationVerified: true,
+    });
+
+    expect(attestAgentResultSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(attestAgentResultSnapshotMock).toHaveBeenCalledWith(expect.objectContaining({
+      snapshotDbId: 'snapshot-db-1',
+      orgId: 'org-1',
+      jobId: 'job-1',
+      deviceId: 'device-1',
+      providerSnapshotId: 'provider-snap-1',
+      storageIdentity: 's3::::bucket',
+      pinnedBaseProviderSnapshotId: 'base-snap',
+      dispatchExpectationVerified: true,
+      result: expect.objectContaining({ attestation: ATTESTATION, referencedFiles: 2 }),
+    }));
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ resultProvenance: 'agent_result' }));
+    expect(insertValues).not.toHaveBeenCalledWith(expect.objectContaining({ integrityStatus: expect.anything() }));
+  });
+
+  it('passes dispatchExpectationVerified=false unless the caller vouches for the dispatch', async () => {
+    arrange();
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+    });
+    expect(attestAgentResultSnapshotMock).toHaveBeenCalledWith(expect.objectContaining({ dispatchExpectationVerified: false }));
+  });
+
+  it('never records an attestation from reconciliation, even if the synthesized result carries one', async () => {
+    arrange();
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed', source: 'reconcile',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(attestAgentResultSnapshotMock).not.toHaveBeenCalled();
+    expect(attestLateAgentResultMock).not.toHaveBeenCalled();
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      resultProvenance: 'reconcile',
+      integrityStatus: 'unattested',
+    }));
+  });
+
+  it('does not rewrite provenance or the integrity projection when it updates an existing row', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' } });
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed', source: 'reconcile',
+      result: { snapshotId: 'provider-snap-1' } as any,
+    });
+    const setCalls = vi.mocked(db.update).mock.results.flatMap((r) => (r.value?.set?.mock?.calls ?? []) as unknown[][]);
+    for (const [values] of setCalls) {
+      expect(values).not.toHaveProperty('resultProvenance');
+      expect(values).not.toHaveProperty('integrityStatus');
+    }
+  });
+
+  it('does not attest through the normal path a row that reconciliation created', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'reconcile' } });
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(attestAgentResultSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('attests again through the normal path a row an earlier agent result created (CAS decides)', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' } });
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(attestAgentResultSnapshotMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to rewrite a snapshot row whose attestation belongs to another job', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' } });
+    attestedJobIdForSnapshotMock.mockResolvedValue('job-earlier');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed', source: 'reconcile',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 9 } as any,
+    });
+    expect(attestedJobIdForSnapshotMock).toHaveBeenCalledWith('snapshot-db-1');
+    expect(result).toEqual({ applied: true, snapshotDbId: null, providerSnapshotId: 'provider-snap-1' });
+    // Only the job UPDATE ran; the snapshot row was not rewritten.
+    expect(vi.mocked(db.update)).toHaveBeenCalledTimes(1);
+    expect(attestAgentResultSnapshotMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates a snapshot row whose attestation belongs to the same job', async () => {
+    arrange({ existing: { id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' } });
+    attestedJobIdForSnapshotMock.mockResolvedValue('job-1');
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(result.snapshotDbId).toBe('snapshot-db-1');
+    expect(attestAgentResultSnapshotMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers a result for a job reconciliation already completed to the late attestation step only', async () => {
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    attestLateAgentResultMock.mockResolvedValueOnce({ snapshotDbId: 'reconciled-db-1', outcome: 'recorded' });
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(attestLateAgentResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: 'job-1', deviceId: 'device-1', providerSnapshotId: 'provider-snap-1', dispatchExpectationVerified: true,
+    }));
+    expect(result).toEqual({ applied: false, snapshotDbId: 'reconciled-db-1', providerSnapshotId: 'provider-snap-1' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(attestAgentResultSnapshotMock).not.toHaveBeenCalled();
+    // Not an orphan: the snapshot has a row.
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('does not offer a failed result to the late attestation step', async () => {
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'failed',
+      result: { snapshotId: 'provider-snap-1', error: 'x', attestation: ATTESTATION } as any,
+      dispatchExpectationVerified: true,
+    });
+    expect(attestLateAgentResultMock).not.toHaveBeenCalled();
   });
 });

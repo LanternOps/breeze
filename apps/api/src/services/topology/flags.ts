@@ -44,7 +44,6 @@ export interface TopologyAgentCapabilities {
   physical?: boolean;
   interfaceHealth?: boolean;
   diagnostics?: boolean;
-  ai?: boolean;
 }
 
 export interface TopologyCapabilities {
@@ -197,6 +196,14 @@ export function topologyPhysicalExposed(flags: Pick<TopologyFlags, 'materializat
   return flags.materialization && flags.physical;
 }
 
+/**
+ * M3 Task 6: interface measurement (port health and history) is exposed only
+ * with the physical capability (interfaces are physical evidence) AND the
+ * `interfaceHealth` flag. Like `physical`, it gates EXPOSURE only.
+ */
+export function topologyInterfaceHealthExposed(flags: Pick<TopologyFlags, 'materialization' | 'physical' | 'interfaceHealth'>): boolean {
+  return topologyPhysicalExposed(flags) && flags.interfaceHealth === true;
+}
 function capability(
   available: boolean,
   reason: TopologyCapabilityReason,
@@ -216,10 +223,16 @@ function dependentCapability(
   return capability(supported, unavailableReason);
 }
 
+/**
+ * `aiReady` (M4-D4, #6000) is the server/provider/org AI policy answer
+ * (`topologyAiAvailable` minus the flags, see `aiToolGate.ts`) — AI readiness
+ * is never an agent capability bit.
+ */
 export function getTopologyCapabilities(
   flags: TopologyFlags,
   siteGraphReady: boolean,
   agentCapabilities: TopologyAgentCapabilities,
+  aiReady = false,
 ): TopologyCapabilities {
   const effectiveUi = flags.ui && flags.materialization && siteGraphReady;
   const uiReason: TopologyCapabilityReason = !flags.materialization
@@ -258,7 +271,7 @@ export function getTopologyCapabilities(
     ai: dependentCapability(
       flags.materialization,
       flags.ai,
-      agentCapabilities.ai === true,
+      aiReady,
       'ai_disabled',
       'ai_unavailable',
     ),

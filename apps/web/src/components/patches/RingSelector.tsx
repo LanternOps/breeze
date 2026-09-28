@@ -30,11 +30,12 @@ export default function RingSelector({
 
   return (
     <div className={cn('flex items-center gap-2', className)}>
-      <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">
+      <label htmlFor="patch-ring-selector" className="text-sm font-medium text-muted-foreground whitespace-nowrap">
         {t('ringSelector.label')}
       </label>
       <div className="relative">
         <select
+          id="patch-ring-selector"
           value={selectedRingId ?? ''}
           onChange={(e) => onChange(e.target.value || null)}
           disabled={loading}

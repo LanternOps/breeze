@@ -125,6 +125,14 @@ vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => 
   };
 });
 
+// Device-name enrichment is covered in deviceNames.test.ts; keep these list
+// tests focused on scoping (they assert exact select() call counts).
+const attachNamesMock = vi.hoisted(() => vi.fn(async (_orgId: string, rows: unknown[]) => rows));
+vi.mock('./deviceNames', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./deviceNames')>()),
+  attachDeviceNames: (...args: [string, unknown[]]) => attachNamesMock(...args),
+}));
+
 import { restoreRoutes } from './restore';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';
@@ -283,6 +291,24 @@ describe('restore routes', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data).toHaveLength(2);
     expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the device-name-enriched rows, with restoreMode, from the list and get routes (#7213)', async () => {
+    attachNamesMock.mockImplementationOnce(async (_orgId, rows) =>
+      (rows as Array<{ deviceId: string }>).map((r) => ({ ...r, deviceName: 'FRONT-DESK-01' })));
+    selectMock.mockReturnValueOnce(chainMock([
+      makeRestoreJob({ id: 'restore-vm', deviceId: 'device-in', targetConfig: { hypervisor: 'hyperv', vmName: 'x' } }),
+    ]));
+
+    const res = await app.request('/restore');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data[0].deviceName).toBe('FRONT-DESK-01');
+    expect(body.data[0].restoreMode).toBe('vm');
+    expect(attachNamesMock).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining([
+      expect.objectContaining({ deviceId: 'device-in', restoreMode: 'vm' }),
+    ]));
   });
 
   it('denies restore creation without backup read permission even when device execution is allowed', async () => {

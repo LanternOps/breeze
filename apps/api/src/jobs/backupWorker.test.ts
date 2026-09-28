@@ -66,6 +66,18 @@ const agentRelayMock = {
   isAgentConnectedAnywhere: vi.fn(async () => true),
   dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
 };
+// Brokered write delivery is covered by backupStorageWriteDelivery.test.ts and
+// the write-session integration suites; here the helper never reports it
+// unless a test says otherwise.
+const writeDeliveryMock = vi.hoisted(() => ({
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
+    mode: input.provider === 'local' ? 'local' : 'legacy',
+    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
+    payload: input.payload,
+  })),
+}));
+vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
@@ -795,6 +807,8 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         // #6351: stampDispatchPinAndIdentity's fallback-reason probe — runs
         // only when no base was selected, and only feeds the log line.
         rows = [];
+      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+        rows = []; // helper-capability read: an older helper (legacy base selection)
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
@@ -1109,6 +1123,8 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
         rows = [];
       } else if (keys.length === 1 && keys[0] === 'id') {
         rows = [];
+      } else if (keys.length === 1 && keys[0] === 'integrityVersion') {
+        rows = []; // helper-capability read: an older helper (legacy base selection)
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }

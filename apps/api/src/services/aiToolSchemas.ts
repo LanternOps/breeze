@@ -23,6 +23,7 @@ import { aiRunContextInputShape } from './scriptRunRequest';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
+import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import {
   peripheralDeviceClassEnum,
@@ -277,6 +278,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_network_asset_reachability: z.object({
     asset_id: uuid,
   }),
+  // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
+  ...topologyToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

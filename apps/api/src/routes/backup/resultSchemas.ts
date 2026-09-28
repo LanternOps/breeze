@@ -149,6 +149,12 @@ export const backupCommandResultSchema = z.object({
   vssMetadata: z.unknown().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   snapshot: backupSnapshotResultSchema.optional(),
+  // Snapshot attestation envelope `{ statement: string }` from a capable
+  // helper (services/backupAttestation.ts). `z.unknown()` for the same reason
+  // as vssMetadata: this parse decides whether the whole run is recorded, and
+  // a malformed attestation must cost only the attestation (it is recorded
+  // as a failed one), never the snapshot.
+  attestation: z.unknown().optional(),
 });
 
 export type ParsedBackupCommandResult = z.infer<typeof backupCommandResultSchema>;

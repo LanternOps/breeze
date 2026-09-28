@@ -176,9 +176,9 @@ type Options struct {
 
 	WinSystem             WinSystem // nil → NewWinSystem() (real on windows, nil elsewhere)
 	WorkRoot              string    // restore scratch; "" → platform default (Windows vhdx: only — see Run's defaulting)
-	DriverDirs            []string  // DISM /Add-Driver sources (Part C)
+	DriverDirs            []string  // not supported yet: Run refuses any non-empty value (DriverInjectionUnsupportedReason)
 	ForceDisk             bool      // Windows disk targets: overwrite a disk holding a Windows installation (CLI only)
-	AllowDomainController bool      // Windows: allow a source whose SYSTEM hive has Services\NTDS (CLI only)
+	AllowDomainController bool      // Windows: allow a domain-controller source (winhive.IsDomainController; CLI only)
 }
 
 // Result is Run's structured outcome.
@@ -216,6 +216,10 @@ type Result struct {
 
 	Platform  string `json:"platform"`
 	VMCreated bool   `json:"vmCreated,omitempty"`
+	// VMError is why the optional Hyper-V VM (bare_metal_rebuild's hyperv
+	// block, set by cmd/breeze-backup after a completed run) was not
+	// created. The rebuild itself still completed; the VHDX is left in place.
+	VMError string `json:"vmError,omitempty"`
 }
 
 // FailedFilesLen and CloneWithTrimmedFailedFiles satisfy bmr's
@@ -346,6 +350,12 @@ type ObjectAdmission interface {
 // RefusalError carries an operator-facing reason; Run maps it to Status
 // "refused" without touching the target.
 type RefusalError struct{ Reason string }
+
+// DriverInjectionUnsupportedReason is the refusal for a non-empty
+// Options.DriverDirs (and the CLI's --drivers). It is operator-facing: the
+// restored machine boots with inbox drivers and the operator installs the
+// rest from Windows.
+const DriverInjectionUnsupportedReason = "driver injection is not supported yet; boot the restored machine and install drivers from Windows"
 
 func (e *RefusalError) Error() string { return "refused: " + e.Reason }
 

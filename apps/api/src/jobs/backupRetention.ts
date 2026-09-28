@@ -22,7 +22,7 @@ import {
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { backupChains } from '../db/schema/applicationBackup';
-import { eq, and, or, lt, gt, gte, desc, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, or, lt, gt, gte, desc, inArray, notInArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import {
   resolveMsKnob,
   resolveBackupRestorePinLingerMs,
@@ -31,6 +31,7 @@ import {
   resolveBackupOrphanManifestMaxAgeMs,
 } from '../services/backupGcKnobs';
 import { backupHelperSupportsServerBase } from '../services/backupHelperCapabilities';
+import { BACKUP_KEY_LAYOUTS, isSupportedKeyLayout } from '../services/backupKeyLayout';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -48,6 +49,12 @@ import {
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
 import { captureException } from '../services/sentry';
+import {
+  loadReservationGcState,
+  markReservationRetired,
+  reclaimAbandonedReservations,
+  tombstoneRetiredReservations,
+} from '../services/backupSnapshotIdReservations';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { createHash } from 'node:crypto';
 import { getRedis, isRedisAvailable } from '../services/redis';
@@ -206,6 +213,10 @@ export type RetentionCleanupResult = {
   // the whole pass. It is retried on the next run -- nothing here is a
   // permanent skip.
   failed: number;
+  // A row written in an object-key layout this server does not understand
+  // (services/backupKeyLayout.ts) is never retired: retiring it would hand
+  // its prefix to storage GC. Left in place, and in its max-versions slot.
+  skippedUnsupportedLayout: number;
 };
 
 type DeleteSnapshotOutcome = 'deleted' | 'pinned' | 'chainBase' | 'legalHold' | 'immutable' | 'unresolved';
@@ -393,6 +404,9 @@ async function deleteSnapshotRow(params: {
   });
 
   await db.delete(backupSnapshots).where(eq(backupSnapshots.id, params.id));
+  // The id's owner row follows: retired once no snapshot row carries the id,
+  // then tombstoned when the sweep confirms the prefix gone.
+  await markReservationRetired(params.snapshotId, params.orgId);
   return 'deleted';
 }
 
@@ -478,6 +492,7 @@ export async function cleanupExpiredSnapshots(
     skippedChainBase: 0,
     prunedByMaxVersions: 0,
     failed: 0,
+    skippedUnsupportedLayout: 0,
   };
 
   // D18 section 3.7: this read runs with no ambient context
@@ -493,6 +508,7 @@ export async function cleanupExpiredSnapshots(
         deviceId: backupSnapshots.deviceId,
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
+        keyLayout: backupSnapshots.keyLayout,
         backupType: backupSnapshots.backupType,
       })
       .from(backupSnapshots)
@@ -505,6 +521,10 @@ export async function cleanupExpiredSnapshots(
   );
 
   for (const snap of expired) {
+    if (!isSupportedKeyLayout(snap.keyLayout)) {
+      result.skippedUnsupportedLayout++;
+      continue;
+    }
     const outcome = await tryDeleteSnapshotRow({
       id: snap.id,
       snapshotId: snap.snapshotId,
@@ -527,6 +547,7 @@ export async function cleanupExpiredSnapshots(
         deviceId: backupSnapshots.deviceId,
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
+        keyLayout: backupSnapshots.keyLayout,
         backupType: backupSnapshots.backupType,
         retention: configPolicyBackupSettings.retention,
       })
@@ -558,6 +579,10 @@ export async function cleanupExpiredSnapshots(
     if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) continue;
 
     for (const snap of groupRows.slice(maxVersions)) {
+      if (!isSupportedKeyLayout(snap.keyLayout)) {
+        result.skippedUnsupportedLayout++;
+        continue;
+      }
       const outcome = await tryDeleteSnapshotRow({
         id: snap.id,
         snapshotId: snap.snapshotId,
@@ -576,7 +601,7 @@ export async function cleanupExpiredSnapshots(
   if (
     result.deleted > 0 || result.skippedLegalHold > 0 || result.skippedImmutable > 0 ||
     result.skippedPinned > 0 || result.skippedUnresolved > 0 || result.skippedChainBase > 0 ||
-    result.prunedByMaxVersions > 0 || result.failed > 0
+    result.prunedByMaxVersions > 0 || result.failed > 0 || result.skippedUnsupportedLayout > 0
   ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
@@ -584,6 +609,9 @@ export async function cleanupExpiredSnapshots(
       `${result.skippedPinned} (pinned), ${result.skippedUnresolved} (unresolved identity), ` +
       `${result.skippedChainBase} (active chain base), ` +
       `pruned ${result.prunedByMaxVersions} by maxVersions` +
+      (result.skippedUnsupportedLayout > 0
+        ? `, kept ${result.skippedUnsupportedLayout} written in a key layout this server cannot read`
+        : '') +
       (result.failed > 0 ? `, FAILED ${result.failed} delete(s) (see prior per-row errors -- will retry next run)` : '')
     );
   }
@@ -1063,10 +1091,95 @@ type BackupGcSnapshotSummary = {
   // directory would fail with ENOTDIR).
   bareItem: BackupObjectListing | null;
   hasPathKeys: boolean;
+  // Root pass only (#6843 gap 4). A fixed-size, order-independent digest of
+  // every key listed under this group EXCEPT the layout key, plus whether the
+  // layout key was listed. sweepRootedLoose compares it with the same digest
+  // of the group's live keys to prove "every listed key is live" without
+  // holding the keys — see listedKeysProvablyAllLive.
+  listedKeys: KeySetFingerprint;
+  hasLayoutKey: boolean;
 };
 
 function emptySnapshotSummary(): BackupGcSnapshotSummary {
-  return { manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: false };
+  return {
+    manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: false,
+    listedKeys: emptyKeySetFingerprint(), hasLayoutKey: false,
+  };
+}
+
+// ── #6843 gap 4: skip the rooted re-list when nothing can be deleted ────────
+//
+// A rooted group's re-list exists only to find keys that are (a) not live and
+// (b) older than the grace window. When the root pass listed EXACTLY the
+// group's live keys, (a) is empty and the re-list is pure cost: one more LIST
+// of every object in every rooted snapshot, on every run.
+//
+// "Exactly" is checked with a count plus two 32-bit lane sums of a SHA-256
+// of each key — a multiset digest, O(1) memory per group, independent of
+// listing order. Equal digests are taken as equal sets. That is sound in the
+// only direction that matters: a false "equal" (a 2^-64 collision) SKIPS the
+// group, so its garbage survives this run; it can never cause a delete. Any
+// mismatch — a non-live key, a live key missing from storage, a key listed
+// twice — falls back to the re-list, i.e. to exactly the pre-#6843 behaviour.
+//
+// The layout key (`snapshots/<id>/layout.json`) is marked live for every root
+// WITHOUT being fetched, so it is live whether or not it exists. It is left
+// out of both digests and checked on its own: listed ⇒ must be in the live
+// set; not listed ⇒ nothing to delete either way.
+
+type KeySetFingerprint = { count: number; lane0: number; lane1: number };
+
+function emptyKeySetFingerprint(): KeySetFingerprint {
+  return { count: 0, lane0: 0, lane1: 0 };
+}
+
+function addKeyToFingerprint(fp: KeySetFingerprint, key: string): void {
+  const digest = createHash('sha256').update(key).digest();
+  fp.count++;
+  fp.lane0 = (fp.lane0 + digest.readUInt32BE(0)) >>> 0;
+  fp.lane1 = (fp.lane1 + digest.readUInt32BE(4)) >>> 0;
+}
+
+function sameKeySetFingerprint(a: KeySetFingerprint, b: KeySetFingerprint): boolean {
+  return a.count === b.count && a.lane0 === b.lane0 && a.lane1 === b.lane1;
+}
+
+function isLayoutKeyOf(snapshotId: string, key: string): boolean {
+  return key === backupLayoutManifestKey(snapshotId);
+}
+
+/** Digest of the live keys that group under each snapshot id (same grouping rule as the root pass). */
+export function fingerprintLiveKeysBySnapshotId(liveSet: ReadonlySet<string>): Map<string, KeySetFingerprint> {
+  const bySnapshotId = new Map<string, KeySetFingerprint>();
+  for (const key of liveSet) {
+    const snapshotId = snapshotIdOfKey(key);
+    if (!snapshotId || isLayoutKeyOf(snapshotId, key)) continue;
+    let fp = bySnapshotId.get(snapshotId);
+    if (!fp) {
+      fp = emptyKeySetFingerprint();
+      bySnapshotId.set(snapshotId, fp);
+    }
+    addKeyToFingerprint(fp, key);
+  }
+  return bySnapshotId;
+}
+
+/**
+ * True only when the root pass proves every key it listed under `snapshotId`
+ * is live, so the group has no deletion candidate of any age. False means
+ * "not proven" (the caller re-lists), never "has garbage". Exported for a
+ * direct test of the layout-key guard, which sweepUnreferencedBackupObjects
+ * cannot reach today (every root's layout key is marked live).
+ */
+export function listedKeysProvablyAllLive(
+  snapshotId: string,
+  summary: BackupGcSnapshotSummary,
+  liveSet: ReadonlySet<string>,
+  liveFingerprints: ReadonlyMap<string, KeySetFingerprint>,
+): boolean {
+  if (summary.hasLayoutKey && !liveSet.has(backupLayoutManifestKey(snapshotId))) return false;
+  const live = liveFingerprints.get(snapshotId) ?? emptyKeySetFingerprint();
+  return sameKeySetFingerprint(summary.listedKeys, live);
 }
 
 function bareSnapshotKey(snapshotId: string): string {
@@ -1120,6 +1233,8 @@ async function summarizeListingBySnapshotId(
       }
       if (item.key === bareSnapshotKey(snapshotId)) summary.bareItem = item;
       else summary.hasPathKeys = true;
+      if (isLayoutKeyOf(snapshotId, item.key)) summary.hasLayoutKey = true;
+      else addKeyToFingerprint(summary.listedKeys, item.key);
       foldIntoSnapshotSummary(summary, snapshotId, item);
     }
   }
@@ -1707,10 +1822,18 @@ async function sweepStorageIdentity(
     return result.deletedKeys;
   }
 
-  async function sweepRootedLoose(snapshotId: string, summary: BackupGcSnapshotSummary, liveSet: Set<string>): Promise<void> {
+  async function sweepRootedLoose(
+    snapshotId: string,
+    summary: BackupGcSnapshotSummary,
+    liveSet: Set<string>,
+    liveFingerprints: ReadonlyMap<string, KeySetFingerprint>,
+  ): Promise<void> {
     // A candidate needs a known last-modified at/before the grace threshold;
     // if no object in the root pass was that old, there is none to find.
     if (summary.oldestMs === null || summary.oldestMs > graceThreshold) return;
+    // #6843 gap 4: a candidate must also be non-live; if the root pass listed
+    // only live keys there is none to find either (see listedKeysProvablyAllLive).
+    if (listedKeysProvablyAllLive(snapshotId, summary, liveSet, liveFingerprints)) return;
     const remainingAtGroupStart = remaining;
     const groupCap = candidateBufferCap(remaining);
     const candidates = new OldestFirstCandidates(groupCap, skipSet);
@@ -1811,11 +1934,12 @@ async function sweepStorageIdentity(
     const rootsForMark = new Set([...alwaysRootedIds, ...everyListedManifestIds]);
     const liveSet = await markLiveBackupObjects(identity, rootsForMark);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
+    const liveFingerprints = fingerprintLiveKeysBySnapshotId(liveSet);
 
     for (const [snapshotId, group] of ownGroups) {
       if (remaining <= 0) break;
       const ok = await runGroup(() => (group.manifestItem
-        ? sweepRootedLoose(snapshotId, group, liveSet)
+        ? sweepRootedLoose(snapshotId, group, liveSet, liveFingerprints)
         : sweepManifestless(snapshotId, group, liveSet)));
       if (!ok) break;
     }
@@ -1824,6 +1948,7 @@ async function sweepStorageIdentity(
     const rootsForMark = new Set([...alwaysRootedIds, ...orphanIds]);
     const liveSet = await markLiveBackupObjects(identity, rootsForMark);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
+    const liveFingerprints = fingerprintLiveKeysBySnapshotId(liveSet);
 
     // Review round 1 (suggestion, accepted as a known limitation rather than
     // fixed): the per-run cap is spent in LISTING order across groups here
@@ -1844,7 +1969,7 @@ async function sweepStorageIdentity(
       if (remaining <= 0) break;
       let step: (() => Promise<void>) | null = null;
       let countsAsOrphan = false;
-      if (rootsForMark.has(snapshotId)) step = () => sweepRootedLoose(snapshotId, group, liveSet);
+      if (rootsForMark.has(snapshotId)) step = () => sweepRootedLoose(snapshotId, group, liveSet, liveFingerprints);
       else if (retiredSnapshotIds.has(snapshotId)) step = () => reclaimUnrooted(snapshotId, group, liveSet);
       else if (!group.manifestItem) step = () => sweepManifestless(snapshotId, group, liveSet);
       else if (manifestOlderThanWindow(group.manifestItem, nowMs, orphanWindowMs)) {
@@ -1983,9 +2108,15 @@ async function applyIdentityGcWriteBacks(
 ): Promise<void> {
   if (writeBacks.retiredSweptIds.length === 0 && writeBacks.selfHealRowIds.length === 0) return;
   await withSystemDbAccessContext(async () => {
+    const sweptSnapshotIds: string[] = [];
     for (const retirementId of writeBacks.retiredSweptIds) {
-      await db.update(backupSnapshotRetirements).set({ sweptAt: new Date() }).where(eq(backupSnapshotRetirements.id, retirementId));
+      const [row] = await db.update(backupSnapshotRetirements).set({ sweptAt: new Date() })
+        .where(eq(backupSnapshotRetirements.id, retirementId))
+        .returning({ snapshotId: backupSnapshotRetirements.snapshotId });
+      if (row?.snapshotId) sweptSnapshotIds.push(row.snapshotId);
     }
+    // A retired id whose prefix is confirmed gone is tombstoned for good.
+    await tombstoneRetiredReservations(sweptSnapshotIds);
     if (writeBacks.selfHealRowIds.length > 0) {
       // P1 fix: heal by PRIMARY ROW ID, guarded by storage_identity IS NULL —
       // matching on snapshot_id alone could re-stamp a DIFFERENT identity's
@@ -2032,7 +2163,9 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   const orphanWindowMs = Math.max(resolveBackupOrphanManifestMaxAgeMs(), resolveBackupBaseLeaseMs() + graceMs);
   const manifestlessWindowMs = resolveBackupManifestlessPrefixMaxAgeMs();
 
-  const { unattributedCount, identities, snapshotOwnersByIdentityKey, unreachableIdentities, unreachableIdentityKeys } =
+  const {
+    unattributedCount, identities, snapshotOwnersByIdentityKey, unreachableIdentities, unreachableIdentityKeys, layoutBlockedIdentityKeys,
+  } =
     await withSystemDbAccessContext(async () => {
       const unattributedRows = await db.select({ id: backupSnapshots.id }).from(backupSnapshots).where(isNull(backupSnapshots.configId));
       const destinations = await db
@@ -2074,12 +2207,43 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         }
       }
 
+      // Snapshot key-layout barrier: every row (any org, any identity string,
+      // or none yet) whose object-key layout this server does not understand.
+      // Its objects cannot be told apart from unreferenced ones in a listing,
+      // so the physical identity it lives on is not swept at all this run.
+      // A row is attributed both to its recorded identity and to the identity
+      // its configuration maps to now (NULL identity, or a stale string left
+      // by a config edit). Only offending rows are returned.
+      const layoutBlockedIdentityKeys = new Set<string>();
+      if (identityKeys.length > 0) {
+        const identityKeyByConfigId = new Map<string, string>();
+        for (const identity of identitiesInner.values()) {
+          for (const configId of identity.configIds) identityKeyByConfigId.set(configId, identity.key);
+        }
+        const unsupportedLayoutRows = await db
+          .select({ storageIdentity: backupSnapshots.storageIdentity, configId: backupSnapshots.configId, keyLayout: backupSnapshots.keyLayout })
+          .from(backupSnapshots)
+          // The redundant `<> 'legacy_flat'` lets the planner use the partial
+          // index instead of scanning every snapshot row each run.
+          .where(and(
+            sql`${backupSnapshots.keyLayout} <> 'legacy_flat'`,
+            notInArray(backupSnapshots.keyLayout, [...BACKUP_KEY_LAYOUTS]),
+          ));
+        for (const row of unsupportedLayoutRows) {
+          if (isSupportedKeyLayout(row.keyLayout)) continue;
+          if (row.storageIdentity !== null) layoutBlockedIdentityKeys.add(row.storageIdentity);
+          const configKey = row.configId ? identityKeyByConfigId.get(row.configId) : undefined;
+          if (configKey) layoutBlockedIdentityKeys.add(configKey);
+        }
+      }
+
       return {
         unattributedCount: unattributedRows.length,
         identities: identitiesInner,
         snapshotOwnersByIdentityKey,
         unreachableIdentities: unreachable.count,
         unreachableIdentityKeys: unreachable.keys,
+        layoutBlockedIdentityKeys,
       };
     });
 
@@ -2169,6 +2333,15 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     if (coarse.unresolved && coarse.unresolved.code !== 'ENOENT') unresolvedLocalKeys.push(key);
   }
 
+  // Snapshot id reservations, across EVERY organization: an id still being
+  // written or sealed (or abandoned more recently than the orphan window) is
+  // never a candidate on any identity, whoever's storage it sits in. Loaded
+  // system-scoped — RLS visibility must not decide what is protected.
+  const reservationState = await withSystemDbAccessContext(() => loadReservationGcState(nowMs, orphanWindowMs));
+  // Snapshot ids present in each identity's fresh (pre-sweep) listing, for
+  // confirming an abandoned prefix is gone before its reservation is deleted.
+  const listedIdsByIdentityKey = new Map<string, Set<string>>();
+
   let deleted = 0;
   let skippedIdentities = 0;
   let blockedIdentities = 0;
@@ -2200,6 +2373,17 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
 
     if (suspiciousIdentityKeys.has(physicalKey)) {
       skippedIdentities += orgIdentities.length;
+      continue;
+    }
+
+    if (layoutBlockedIdentityKeys.has(physicalKey)) {
+      skippedIdentities += orgIdentities.length;
+      const message =
+        `[BackupGC] identity ${physicalKey}: unsupported_key_layout — a snapshot on this storage was written in an ` +
+        `object-key layout this server cannot read; sweep skipped for every organization on it (fail-closed). ` +
+        `Update the server before storage on this identity is reclaimed again.`;
+      console.error(message);
+      captureException(new Error(message));
       continue;
     }
 
@@ -2252,6 +2436,8 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       continue;
     }
 
+    for (const identity of orgIdentities) listedIdsByIdentityKey.set(identity.key, new Set(groups.keys()));
+
     for (const identity of orgIdentities) {
       if (deletesRemaining <= 0) {
         console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
@@ -2300,9 +2486,14 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         }
 
         const owners = snapshotOwnersByIdentityKey.get(identity.key);
-        const foreignOwnedSnapshotIds: ReadonlySet<string> = owners
-          ? new Set([...owners].filter(([, ownerOrgId]) => ownerOrgId !== identity.orgId).map(([snapshotId]) => snapshotId))
-          : new Set();
+        const foreignOwnedSnapshotIds: ReadonlySet<string> = new Set([
+          ...(owners
+            ? [...owners].filter(([, ownerOrgId]) => ownerOrgId !== identity.orgId).map(([snapshotId]) => snapshotId)
+            : []),
+          // Reserved / sealing / recently abandoned ids: skipped entirely,
+          // exactly like another org's snapshot.
+          ...reservationState.protectedIds,
+        ]);
 
         const identityResult = await sweepStorageIdentity(
           identity, groups, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
@@ -2362,6 +2553,22 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
         captureException(error instanceof Error ? error : new Error(String(error)));
       }
+    }
+  }
+
+  // Abandoned ids past the orphan window whose prefix this run's listing no
+  // longer shows (the previous run reclaimed it): the reservation goes, the
+  // id is tombstoned. Re-checked at delete time.
+  const reclaimable = reservationState.reclaimable
+    .filter((r) => listedIdsByIdentityKey.get(r.storageIdentity)?.has(r.snapshotId) === false)
+    .map((r) => r.snapshotId);
+  if (reclaimable.length > 0) {
+    try {
+      const n = await withSystemDbAccessContext(() => reclaimAbandonedReservations(reclaimable));
+      if (n > 0) console.log(`[BackupGC] Released ${n} abandoned snapshot id reservation(s) whose storage was reclaimed`);
+    } catch (error) {
+      console.error('[BackupGC] Could not release abandoned snapshot id reservations:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
     }
   }
 

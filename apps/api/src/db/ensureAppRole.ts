@@ -197,6 +197,13 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='breeze_version_history') THEN
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE breeze_version_history FROM breeze_app;
         END IF;
+        -- Backup snapshot id tombstones: ids that may never be issued again.
+        -- Only ever appended (by triggers on backup_snapshot_id_reservations
+        -- and by storage reclaim); nothing may rewrite or remove one, or an
+        -- id could be handed out twice.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_snapshot_id_tombstones') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_snapshot_id_tombstones FROM breeze_app;
+        END IF;
         -- #4371 — WRITER-PATH MATRIX for the six tables re-revoked below.
         --
         -- The original bug: pam_actuation_results shipped a migration REVOKE

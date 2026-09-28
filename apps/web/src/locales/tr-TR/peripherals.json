@@ -31,7 +31,8 @@
       "policy": "Politika"
     },
     "pagination": "{{from}}–{{to}} / {{total}} gösteriliyor",
-    "prev": "Önceki"
+    "prev": "Önceki",
+    "eventFilterLabel": "Olay türü"
   },
   "peripheralPoliciesList": {
     "errors": {
@@ -62,7 +63,10 @@
       "created": "Oluşturuldu"
     },
     "partnerWideTitle": "İş ortağı çapında politika — her kuruluştaki cihazlarda uygulanır",
-    "allOrgs": "İş ortağı çapında"
+    "allOrgs": "İş ortağı çapında",
+    "classFilterLabel": "Cihaz sınıfı",
+    "actionFilterLabel": "Eylem",
+    "statusFilterLabel": "Durum"
   },
   "peripheralPolicyForm": {
     "errors": {

@@ -315,6 +315,31 @@ describe('enrollment key routes — list & create', () => {
       expect(body.data[0].usageCount).toBe(0);
     });
 
+    // #7217 — Add Device mints keys with identical names; the bound site is
+    // what tells them apart, so the list must select it.
+    it('selects the bound site name for each row', async () => {
+      mockSelectFromWhere([{ count: 1 }]);
+      mockSelectFromWhereOrderByLimitOffset([
+        makeEnrollmentKey({ siteName: 'Branch Office' }),
+      ]);
+      mockSelectFromWhereGroupBy([]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      // The page query (second select) carries an explicit siteName column.
+      const pageSelection = vi.mocked(db.select).mock.calls[1]?.[0] as
+        | Record<string, unknown>
+        | undefined;
+      expect(pageSelection).toBeDefined();
+      expect(pageSelection).toHaveProperty('siteName');
+      const body = await res.json();
+      expect(body.data[0].siteName).toBe('Branch Office');
+    });
+
     it('sums capacity across several tokens minted from one key', async () => {
       mockSelectFromWhere([{ count: 1 }]);
       mockSelectFromWhereOrderByLimitOffset([makeEnrollmentKey()]);

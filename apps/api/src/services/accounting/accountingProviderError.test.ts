@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACCOUNTING_REFUSAL_CODES,
   AccountingProviderError, DEFAULT_RATE_LIMIT_DELAY_MS, providerErrorKindOf, providerFaultSuffix,
   providerRateLimitedMessage, providerRateLimitedRetryLaterMessage, providerRateLimitedTryAgainMessage,
-  providerTelemetryTags, rateLimitRetryAfterMs, rateLimitSourceOf,
+  providerTelemetryTags, rateLimitRetryAfterMs, rateLimitSourceOf, refusalCodeOf,
 } from './accountingProviderError';
 import { qboErrorToProviderError } from './quickbooksFault';
 
@@ -128,5 +129,48 @@ describe('rateLimitRetryAfterMs guards (F4)', () => {
         .toBe(DEFAULT_RATE_LIMIT_DELAY_MS);
       expect(rateLimitRetryAfterMs(Object.assign(new Error('x'), { code: 'rate_limited', retryAfterMs: bad }))).toBe(DEFAULT_RATE_LIMIT_DELAY_MS);
     }
+  });
+});
+
+describe('refusalCodeOf (Xero W03)', () => {
+  const err = (kind: 'validation' | 'not_found' | 'transient' | 'rate_limited', providerCode?: string) =>
+    new AccountingProviderError({ kind, provider: 'xero', operation: 'op', providerCode });
+
+  it.each(ACCOUNTING_REFUSAL_CODES)('returns %s for a validation error carrying it', (code) => {
+    expect(refusalCodeOf(err('validation', code))).toBe(code);
+  });
+  it('returns remote_missing for a not_found error carrying it', () => {
+    expect(refusalCodeOf(err('not_found', 'remote_missing'))).toBe('remote_missing');
+  });
+  it('ignores a bare not_found (a QuickBooks 610 carries its own fault code)', () => {
+    expect(refusalCodeOf(err('not_found', '610'))).toBeNull();
+    expect(refusalCodeOf(err('not_found'))).toBeNull();
+  });
+  it('ignores a provider fault code that is not a neutral validation code (e.g. a QuickBooks 6240)', () => {
+    expect(refusalCodeOf(err('validation', '6240'))).toBeNull();
+  });
+  it('ignores the code on any non-validation kind (a 429 carries X-Rate-Limit-Problem in providerCode)', () => {
+    expect(refusalCodeOf(err('rate_limited', 'minute'))).toBeNull();
+    expect(refusalCodeOf(err('transient', 'duplicate_name'))).toBeNull();
+  });
+  it('returns null for a non-provider error', () => {
+    expect(refusalCodeOf(new Error('duplicate_name'))).toBeNull();
+    expect(refusalCodeOf(null)).toBeNull();
+  });
+});
+
+describe('remote_locked refusal code (Xero W04)', () => {
+  it('is a neutral refusal code on a validation error', () => {
+    expect(ACCOUNTING_REFUSAL_CODES).toContain('remote_locked');
+    expect(refusalCodeOf(new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'op', providerCode: 'remote_locked' })))
+      .toBe('remote_locked');
+  });
+});
+
+describe('remote_batched refusal code (#7300)', () => {
+  it('is a neutral refusal code on a validation error', () => {
+    expect(ACCOUNTING_REFUSAL_CODES).toContain('remote_batched');
+    expect(refusalCodeOf(new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'op', providerCode: 'remote_batched' })))
+      .toBe('remote_batched');
   });
 });

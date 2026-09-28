@@ -739,8 +739,14 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_provider_devices",
   "backup_sla_configs",
   "backup_sla_events",
+  // Snapshot attestations travel with their device and snapshot.
+  "backup_snapshot_attestations",
+  // Snapshot id ownership moves with the org; the id itself never changes.
+  "backup_snapshot_id_reservations",
   "backup_snapshot_retirements",
   "backup_snapshots",
+  // Multipart uploads of write sessions travel with their session.
+  "backup_storage_session_uploads",
   // Short-lived storage sessions travel with their device and snapshot.
   "backup_storage_sessions",
   "backup_verifications",
@@ -1059,6 +1065,7 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_config_templates",
   "topology_diagnostic_runs",
   "topology_diagnostic_steps",
+  "topology_interface_samples",
   "topology_interfaces",
   "topology_layout",
   "topology_layouts",
@@ -1075,6 +1082,7 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_relationships",
   "topology_site_state",
   "topology_site_template_bindings",
+  "topology_telemetry_arms",
   "topology_view_exclusions",
   "tunnel_sessions",
   "unifi_clients",

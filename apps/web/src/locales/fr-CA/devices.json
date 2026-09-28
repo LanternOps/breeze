@@ -606,7 +606,8 @@
       "generated": "Généré",
       "noSoftwareData": "Aucune donnée logicielle",
       "configuration": "Configuration"
-    }
+    },
+    "timeRangeSelectLabel": "Plage de temps"
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "Impossible de charger le statut de conformité",
@@ -1110,6 +1111,8 @@
     "memoryModules": "Modules de mémoire",
     "memoryNotReported": "Pas encore rapporté — mise à jour de l’agent requise",
     "noMemoryModulesReported": "Aucun module de mémoire rapporté.",
+    "memoryModulesOnPackage": "La mémoire est intégrée (soudée) — il n'y a aucun emplacement amovible à signaler.",
+    "memoryMaxCapacity": "Capacité maximale prise en charge : {{capacity}}",
     "slot": "Emplacement",
     "capacity": "Capacité",
     "memoryType": "Type de mémoire",
@@ -1222,7 +1225,7 @@
     "missing": "Manquants",
     "reason": "Raison",
     "lastChecked": "Dernière vérification",
-    "thisMacIsBelowTheMacos": "Ce Mac utilise une version antérieure à macOS 14, version minimale requise pour l’accès natif au bureau à partir de la fenêtre d’ouverture de session.",
+    "reasonLoginWindow": "Fenêtre d’ouverture de session (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "L’accès à partir de la fenêtre d’ouverture de session est indiqué seulement pour les installations gérées sur lesquelles l’assistant de bureau est déployé.",
     "theNativeLoginWindowDesktopPath": "L’accès natif au bureau à partir de la fenêtre d’ouverture de session dépend de l’approbation des droits par Apple.",
     "theNativeLoginWindowDesktopPath2": "L’accès natif au bureau à partir de la fenêtre d’ouverture de session n’est pas encore prêt sur cet appareil.",

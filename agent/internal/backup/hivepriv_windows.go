@@ -43,3 +43,11 @@ func acquirePrivileges(names ...string) (release func(), err error) {
 	}
 	return sync.OnceFunc(releaseAll), nil
 }
+
+// acquireBackupReadPrivilege enables SeBackupPrivilege alone, through the same
+// ref-counted acquirePrivilege every other scope uses, for system-state's
+// copy of the registry hive files out of a VSS shadow copy
+// (systemstate.CollectOptions.AcquireBackupPrivilege).
+func acquireBackupReadPrivilege() (release func(), err error) {
+	return acquirePrivileges("SeBackupPrivilege")
+}

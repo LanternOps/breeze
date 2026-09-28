@@ -68,3 +68,10 @@ describe('DeviceList — Breeze Assist install issue badge (#6925)', () => {
     expect(screen.getByTestId(`device-${dev.id}-helper-version`).textContent).toContain('0.116.0');
   });
 });
+
+// #7215: Wake is gated on devices:execute; grant everything here (role-aware
+// behaviour is covered in DeviceList.permissions.test.tsx).
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));

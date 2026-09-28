@@ -141,6 +141,30 @@ describe('runAction', () => {
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
 
+  it('treatUnauthorizedAsError predicate: a matching 401 body is toasted as an error', async () => {
+    const onUnauthorized = vi.fn();
+    await expect(runAction({
+      request: async () => res({ error: 'reauth_required' }, 401),
+      errorFallback: 'fb',
+      onUnauthorized,
+      treatUnauthorizedAsError: (body) => (body as { error?: string } | null)?.error === 'reauth_required',
+    })).rejects.toMatchObject({ status: 401, message: 'reauth_required' });
+    expect(showToast).toHaveBeenCalledWith({ message: 'reauth_required', type: 'error' });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('treatUnauthorizedAsError predicate: a non-matching 401 stays a silent session expiry', async () => {
+    const onUnauthorized = vi.fn();
+    await expect(runAction({
+      request: async () => res({ error: 'Invalid or expired token' }, 401),
+      errorFallback: 'fb',
+      onUnauthorized,
+      treatUnauthorizedAsError: (body) => (body as { error?: string } | null)?.error === 'reauth_required',
+    })).rejects.toMatchObject({ status: 401 });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
   it('friendly falls back to body.error when the body carries no code', async () => {
     await expect(runAction({
       request: async () => res({ error: 'step_up_required', requiredLevel: 3 }, 403),

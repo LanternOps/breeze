@@ -38,6 +38,7 @@ type SnapshotFile = {
 type Snapshot = {
   id: string;
   label: string;
+  deviceName?: string | null;
   size?: string;
   sizeBytes?: number | null;
   // /backup/snapshots carries no status (a snapshot row only exists once its
@@ -61,6 +62,9 @@ type RestoreJob = {
   snapshotId: string;
   deviceId: string;
   restoreType: RestoreType | string;
+  deviceName?: string | null;
+  // 'vm' / 'instant_boot' restores persist restoreType 'full' (#7213).
+  restoreMode?: 'vm' | 'instant_boot' | null;
   selectedPaths?: string[];
   status: string;
   targetPath?: string | null;
@@ -121,15 +125,6 @@ function formatBytes(bytes?: number | null): string {
 
 function formatTimestamp(value?: string | null): string {
   return formatDateTime(value, { fallback: '--' });
-}
-
-function renderJson(value: unknown): string {
-  if (value == null) return '-';
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
 async function readApiError(response: Response, fallback: string): Promise<string> {
@@ -298,6 +293,12 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       }
       return next;
     });
+  };
+
+  const restoreKindLabel = (job: RestoreJob): string => {
+    if (job.restoreMode === 'vm') return t('restoreWizard.kindVm');
+    if (job.restoreMode === 'instant_boot') return t('restoreWizard.kindInstantBoot');
+    return job.restoreType === 'selective' ? t('restoreWizard.kindSelective') : t('restoreWizard.kindFull');
   };
 
   const selectedSnapshot = useMemo(
@@ -478,6 +479,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                       <div className="mt-2 text-sm font-semibold text-foreground">
                         {snapshot.label}
                       </div>
+                      {snapshot.deviceName ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{snapshot.deviceName}</div>
+                      ) : null}
                     </button>
                   ))}
                 </div>
@@ -662,7 +666,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   <p className="mt-2 text-xs text-muted-foreground">
                     {restoreType === 'full'
                       ? 'All files from snapshot'
-                      : `${selectedFiles.size} files selected`}
+                      : t('restoreWizard.filesSelected', { count: selectedFiles.size })}
                   </p>
                 </div>
               </div>
@@ -771,18 +775,12 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   </div>
                 ) : null}
 
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-3">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.commandTarget')}</p>
                     <p className="mt-2 text-xs text-foreground">{t('restoreWizard.command')} {latestKnownRestore.commandId ?? '--'}</p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? t('restoreWizard.stagingFolder')}</p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
-                  </div>
-                  <div className="rounded-md border border-dashed bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.resultPayload')}</p>
-                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word chart-legend-xs text-foreground">
-                      {renderJson(latestKnownRestore.resultDetails)}
-                    </pre>
                   </div>
                 </div>
               </div>
@@ -814,9 +812,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     <div key={job.id} className="rounded-md border px-4 py-3">
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-foreground">{job.id}</p>
+                          <p className="truncate text-sm font-semibold text-foreground">
+                            {job.deviceName ?? t('restoreWizard.unknownDevice')}
+                          </p>
                           <p className="text-xs text-muted-foreground">
-                            {job.restoreType} {t('restoreWizard.restore')} {formatTimestamp(job.createdAt)}
+                            {restoreKindLabel(job)} · {formatTimestamp(job.createdAt)}
                           </p>
                         </div>
                         <span className={cn(

@@ -31,6 +31,14 @@ func newWinIdentityRun(t *testing.T, sysFake *fakeWinSystem) *run {
 	if err := os.WriteFile(filepath.Join(breeze, "secrets.yaml"), []byte("auth_token: t\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// 18b row 4: temp files a crashed writer (config.writeYAMLFile /
+	// atomicWriteFile) can leave behind must be swept along with the real
+	// files, or a leaked secrets.yaml.tmp survives an "identity: new" pass.
+	for _, name := range []string{"secrets.yaml.tmp", "secrets.yaml.partial", "agent.yaml.tmp", "agent.yaml.partial"} {
+		if err := os.WriteFile(filepath.Join(breeze, name), []byte("leftover"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	rootDir := filepath.Join(dir, "mnt", "root")
 	if err := os.MkdirAll(rootDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -88,11 +96,19 @@ func TestWinIdentity_NewRenamesRotatesMachineGuidStripsEnrollment(t *testing.T) 
 		}
 	}
 	crypto, _ := sys.hives["SOFTWARE"].OpenKey(`Microsoft\Cryptography`)
-	if v, _ := crypto.GetString("MachineGuid"); len(v) != 36 {
-		t.Fatalf("MachineGuid = %q", v)
+	// 18b row 9c: assert the GUID actually rotated, not just that some
+	// 36-char value is present — seedFakeHives seeds a real (all-zero)
+	// MachineGuid so a mutation that stops rotating shows up here.
+	if v, _ := crypto.GetString("MachineGuid"); len(v) != 36 || v == "00000000-0000-0000-0000-000000000000" {
+		t.Fatalf("MachineGuid = %q, want a rotated (non-seed) GUID", v)
 	}
 	if _, err := os.Stat(filepath.Join(breezeDir(r), "secrets.yaml")); !os.IsNotExist(err) {
 		t.Fatal("secrets.yaml must be deleted")
+	}
+	for _, name := range []string{"secrets.yaml.tmp", "secrets.yaml.partial", "agent.yaml.tmp", "agent.yaml.partial"} {
+		if _, err := os.Stat(filepath.Join(breezeDir(r), name)); !os.IsNotExist(err) {
+			t.Fatalf("%s must be deleted", name)
+		}
 	}
 	b, _ := os.ReadFile(filepath.Join(breezeDir(r), "agent.yaml"))
 	var doc map[string]any

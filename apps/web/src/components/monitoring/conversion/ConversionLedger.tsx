@@ -5,8 +5,8 @@ import { ActionError, runAction } from '@/lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { showToast } from '../../shared/Toast';
 import { conversionFriendly, conversionPaths, fetchLedgerPage, type ConversionLedgerEntry } from './conversionApi';
-export default function ConversionLedger({ orgId, policyId, revision = 0, onChanged }: {
-  orgId?: string; policyId?: string; revision?: number; onChanged?: () => void;
+export default function ConversionLedger({ orgId, policyId, sourceTable, revision = 0, onChanged }: {
+  orgId?: string; policyId?: string; sourceTable?: ConversionLedgerEntry['sourceTable']; revision?: number; onChanged?: () => void;
 }) {
   const { t } = useTranslation(['monitoring', 'common']);
   const [rows, setRows] = useState<ConversionLedgerEntry[]>([]);
@@ -19,13 +19,13 @@ export default function ConversionLedger({ orgId, policyId, revision = 0, onChan
     const current = ++generation.current;
     setLoading(true); setError(false);
     try {
-      const page = await fetchLedgerPage({ orgId, policyId, cursor: next, limit: 25 });
+      const page = await fetchLedgerPage({ orgId, policyId, sourceTable, cursor: next, limit: 25 });
       if (current !== generation.current) return;
       const items = page.items ?? [];
       setRows((old) => next ? [...old, ...items] : items); setCursor(page.nextCursor ?? null);
     } catch { if (current === generation.current) setError(true); }
     finally { if (current === generation.current) setLoading(false); }
-  }, [orgId, policyId]);
+  }, [orgId, policyId, sourceTable]);
   useEffect(() => { setRows([]); void load(); return () => { generation.current++; }; }, [load, revision]);
   const undo = async (row: ConversionLedgerEntry) => {
     if (!row.revertable || row.revertedAt || busy) return;

@@ -10,7 +10,9 @@ type AiPageContext =
   | { type: 'device'; id: string; hostname: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
-  | { type: 'custom'; label: string; data: Record<string, unknown> };
+  | { type: 'custom'; label: string; data: Record<string, unknown> }
+  // Topology M4 (#6000): IDs only; mirrors @breeze/shared AiTopologyPageContext.
+  | { type: 'topology'; siteId: string; subject: { kind: 'node' | 'relationship'; id: string }; view: 'overview' | 'physical' | 'logical'; graphRevision: string };
 
 export interface SanitizeResult {
   sanitized: string;
@@ -148,6 +150,18 @@ export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPag
       clone.label = sanitizeField(clone.label, 200, sink);
       clone.data = sanitizeRecord(clone.data, sink);
       break;
+
+    case 'topology':
+      // IDs only (validated upstream by aiTopologyPageContextSchema). Rebuild
+      // from the known fields so nothing extra — no label, org or evidence —
+      // can ride along into the prompt or the persisted snapshot.
+      return {
+        type: 'topology',
+        siteId: clone.siteId,
+        subject: { kind: clone.subject.kind, id: clone.subject.id },
+        view: clone.view,
+        graphRevision: clone.graphRevision,
+      };
   }
 
   return clone;

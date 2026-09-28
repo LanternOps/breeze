@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -15,6 +15,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -301,6 +302,24 @@ export const TOOL_TIERS = {
   list_network_assets: 1,
   get_network_asset: 1,
   get_network_asset_reachability: 1,
+  // M3 Task 6 (M3-D12) — thin bounded topology reads; tier and tool() both
+  // wired so they are callable (#2605).
+  get_interface_history: 1,
+  get_link_health: 1,
+  // M3 Task 10 — cautious impact and topology change history (read-only).
+  get_topology_impact: 1,
+  get_recent_network_changes: 1,
+  // M3-D12 (#5999): read-only topology monitoring status for one site.
+  get_topology_monitoring_status: 1,
+  // M4 Task 1 (#6000): bounded topology graph, link evidence and diagnostic
+  // run reads. Like every topology tool they run only under the M4-D1
+  // site-pinned gate in executeTool.
+  get_topology: 1,
+  get_link_evidence: 1,
+  get_diagnostic_run: 1,
+  // M4 Task 4 (#6000): the one topology action — approval-gated (supervised,
+  // fresh second factor, pinned effect digest); runs only as a release.
+  diagnose_connectivity: 3,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -544,6 +563,9 @@ function registryDescription(toolName: string): string {
   return description;
 }
 
+/** The topology investigation's one approval-gated action (aiInvestigation.ts). */
+const TOPOLOGY_PROPOSAL_TOOL = 'diagnose_connectivity';
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -641,9 +663,17 @@ function makeToolHandler(
       // An absent member means no KEY at all, and an empty bag means no FOURTH
       // ARGUMENT at all — both are behaviour changes for an ordinary chat tool
       // call, and `aiAgentSdkTools.verifiedContext.test.ts` pins the arity.
+      // Topology M4-D1 (#6000): a topology tool names the ACTIVE session as
+      // its binding — a pointer to the server-owned ai_sessions row, whose
+      // pinned site the gate re-reads on every call. Name-gated so every other
+      // tool's options bag is unchanged.
+      const topologyBinding: TopologyToolBinding | undefined = captureSession && isTopologyAiToolName(toolName)
+        ? { kind: 'ai_session', sessionId: captureSession.breezeSessionId }
+        : undefined;
       const execOptions: ExecuteToolOptions = {
         ...(verifiedContext ? { context: verifiedContext } : {}),
         ...(capture ? { capture } : {}),
+        ...(topologyBinding ? { topologyBinding } : {}),
       };
       const runTool = () =>
         Object.keys(execOptions).length > 0
@@ -656,10 +686,23 @@ function makeToolHandler(
       // the handler open their own short contexts built from the same `auth`.
       // This whole handler already runs under `runOutsideDbContext`, so there
       // is no ambient context for the tool to join by accident.
-      const result = await withToolTimeout(
+      const runInToolContext = () =>
         aiTools.get(toolName)?.selfManagedDbContext
           ? runTool()
-          : withDbAccessContext(dbContext, runTool),
+          : withDbAccessContext(dbContext, runTool);
+      // Review R1 (#6671 shape): a topology tool's gate needs the org's
+      // topology flags and AI readiness — partner-axis reads the tool's
+      // org-scoped transaction cannot see. Resolve them HERE, outside any held
+      // context, for the SESSION's org, and carry them in, so nothing inside
+      // the tool transaction reaches for a second pooled connection. The gate
+      // still re-checks the session pin and the caller's live permissions.
+      const topologyOrgId = captureSession && (isTopologyAiToolName(toolName) || toolName === TOPOLOGY_PROPOSAL_TOOL)
+        ? captureSession.orgId
+        : null;
+      const result = await withToolTimeout(
+        topologyOrgId
+          ? loadTopologyAiPreconditions(topologyOrgId).then((pre) => withTopologyAiPreconditions(pre, runInToolContext))
+          : runInToolContext(),
         toolTimeout,
         toolName,
       );
@@ -941,7 +984,7 @@ const makeHandler = (
   onPostToolUse?: PostToolUseCallback,
 ) => makeToolHandler(toolName, getAuth, undefined, onPreToolUse, onPostToolUse);
 
-export const __test__ = { makeSessionAwareHandler, makeHandler };
+export const __test__ = { makeSessionAwareHandler, makeHandler, makeToolHandler };
 
 // ============================================
 // SDK MCP Server Factory
@@ -2670,6 +2713,116 @@ export function buildBreezeSdkTools(
         asset_id: uuid,
       },
       makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // M3 Task 6 (M3-D12) — bounded topology port history and link health.
+    tool(
+      'get_interface_history',
+      registryDescription('get_interface_history'),
+      {
+        site_id: uuid,
+        interface_id: uuid,
+        series: z.array(z.enum(TOPOLOGY_INTERFACE_METRIC_SERIES)).min(1).max(4),
+        from: z.string().datetime(),
+        to: z.string().datetime(),
+        resolution: z.enum(['auto', 'raw', '5m', '1h']).optional(),
+        max_buckets: z.number().int().min(1).max(120).optional(),
+      },
+      makeHandler('get_interface_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_link_health',
+      registryDescription('get_link_health'),
+      {
+        site_id: uuid,
+        relationship_id: uuid,
+      },
+      makeHandler('get_link_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M3 Task 10 — cautious incident impact and bounded topology change history.
+    tool(
+      'get_topology_impact',
+      registryDescription('get_topology_impact'),
+      {
+        site_id: uuid,
+        subject_kind: z.enum(['node', 'relationship']),
+        subject_id: uuid,
+        window_minutes: z.number().int().min(1).max(30).optional(),
+        graph_revision: z.string().regex(/^(0|[1-9]\d*)$/).optional(),
+      },
+      makeHandler('get_topology_impact', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_recent_network_changes',
+      registryDescription('get_recent_network_changes'),
+      {
+        site_id: uuid,
+        since: z.string().datetime(),
+        until: z.string().datetime(),
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.string().max(2048).optional(),
+      },
+      makeHandler('get_recent_network_changes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M3-D12 (#5999): bounded, read-only recurring monitoring status for one
+    // site. Arming is human-only and has no tool.
+    tool(
+      'get_topology_monitoring_status',
+      registryDescription('get_topology_monitoring_status'),
+      {
+        site_id: uuid,
+      },
+      makeHandler('get_topology_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M4 Task 1 (#6000) — bounded topology reads under the M4-D1 site pin.
+    tool(
+      'get_topology',
+      registryDescription('get_topology'),
+      {
+        site_id: uuid,
+        view: z.enum(['overview', 'physical', 'logical']).optional(),
+        focus_node_id: uuid.optional(),
+        graph_revision: z.string().regex(/^(0|[1-9]\d{0,19})$/).optional(),
+        limit: z.number().int().min(1).max(150).optional(),
+      },
+      makeHandler('get_topology', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_link_evidence',
+      registryDescription('get_link_evidence'),
+      {
+        site_id: uuid,
+        relationship_id: uuid,
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.string().max(2048).optional(),
+      },
+      makeHandler('get_link_evidence', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'get_diagnostic_run',
+      registryDescription('get_diagnostic_run'),
+      {
+        site_id: uuid,
+        run_id: uuid,
+      },
+      makeHandler('get_diagnostic_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    // M4 Task 4 (#6000) — same strict shape as aiToolSchemasTopology.ts.
+    tool(
+      'diagnose_connectivity',
+      registryDescription('diagnose_connectivity'),
+      {
+        site_id: uuid,
+        subject: z.object({ kind: z.enum(['node', 'relationship', 'destination']), id: uuid }).strict(),
+        recipe_id: z.enum(['gateway_basic', 'dns_basic', 'internet_basic', 'target_connectivity', 'trace_route']),
+        recipe_version: z.literal(1),
+        graph_revision: z.string().regex(/^(0|[1-9]\d*)$/),
+        origin_device_id: uuid.optional(),
+        context_key: z.string().min(1).max(255).optional(),
+        family: z.enum(['ipv4', 'ipv6']).optional(),
+        proposal_expires_at: z.string().datetime().optional(),
+      },
+      makeHandler('diagnose_connectivity', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

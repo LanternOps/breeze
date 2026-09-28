@@ -572,6 +572,7 @@
         "enabledMeaning": "Activé signifie configuré. Breeze ne contacte pas le service pour vérifier qu'il répond.",
         "footnote": "Affiche uniquement l'environnement du conteneur de l'API. Les conteneurs web, portail et worker ne sont pas inclus.",
         "meta": "Version en cours {{version}} · {{mode}}",
+        "versionMismatch": "Cette image d’API est {{running}}, mais BREEZE_VERSION est {{configured}}. Modifier BREEZE_VERSION ne change pas une image épinglée par empreinte, et les agents se voient proposer la version BREEZE_VERSION. Mettez à niveau avec guided-setup.sh --upgrade, ou remettez BREEZE_VERSION à {{running}}.",
         "deployMode": {
           "hosted": "Hébergé",
           "self_host": "Auto-hébergé"
@@ -633,6 +634,11 @@
       "user.logout": "Déconnecté",
       "session_initiated": "Session amorcée",
       "session_offer_submitted": "Offre de session soumise",
+      "session_consent_granted": "Consentement à la session à distance accordé",
+      "session_consent_denied": "Session à distance refusée par l'utilisateur",
+      "session_consent_blocked_unanswered": "Session à distance bloquée : demande de consentement sans réponse",
+      "session_consent_blocked_unavailable": "Session à distance bloquée : demande de consentement indisponible",
+      "session_consent_bypassed": "Session à distance démarrée sans réponse à la demande de consentement",
       "device.wake_on_lan": "Wake-on-LAN envoyé",
       "device.create": "Appareil ajouté",
       "device.update": "Appareil mis à jour",

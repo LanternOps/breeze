@@ -591,3 +591,45 @@ runDb('refuses a file snapshot as a system_image base and says so (#6351)', asyn
   expect(outcome!.baseSnapshotId).toBe('');
   expect(warnings.find((w) => w.includes('will upload a FULL copy'))).toContain('reason=backup_type_mismatch');
 });
+
+// Snapshot key layout: retention is row-driven and never retires a row whose
+// object-key layout this server does not understand (that would hand its
+// prefix to storage GC). Legal hold and immutability keep working exactly as
+// before for ordinary rows.
+runDb('never retires an expired snapshot written in an unsupported key layout; legal hold and immutability are unchanged', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const identity = `local::/tmp/gc-test-${unique}`;
+  const past = new Date(Date.now() - 60 * 60 * 1000);
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const insert = async (snapshotId: string, extra: Record<string, unknown>) => {
+      const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+      const [row] = await db.insert(backupSnapshots).values({
+        orgId, jobId: job!.id, deviceId, configId, snapshotId, backupType: 'file', storageIdentity: identity, expiresAt: past, ...extra,
+      }).returning({ id: backupSnapshots.id });
+      return row!.id;
+    };
+    return {
+      orgId,
+      otherLayoutId: await insert(`other-layout-${unique}`, { keyLayout: 'device_scoped' }),
+      heldId: await insert(`held-${unique}`, { legalHold: true, legalHoldReason: 'litigation' }),
+      immutableId: await insert(`immutable-${unique}`, { isImmutable: true, immutableUntil: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+      plainId: await insert(`plain-${unique}`, {}),
+    };
+  });
+
+  const result = await cleanupExpiredSnapshots(ctx.orgId);
+  expect(result.skippedUnsupportedLayout).toBe(1);
+  expect(result.skippedLegalHold).toBe(1);
+  expect(result.skippedImmutable).toBe(1);
+  expect(result.deleted).toBe(1);
+
+  await withSystemDbAccessContext(async () => {
+    for (const [id, kept] of [[ctx.otherLayoutId, true], [ctx.heldId, true], [ctx.immutableId, true], [ctx.plainId, false]] as const) {
+      const rows = await db.select({ id: backupSnapshots.id }).from(backupSnapshots).where(eq(backupSnapshots.id, id));
+      expect(rows.length, id).toBe(kept ? 1 : 0);
+    }
+    const retirements = await db.select().from(backupSnapshotRetirements).where(eq(backupSnapshotRetirements.storageIdentity, identity));
+    expect(retirements.map((r) => r.snapshotId)).toEqual([`plain-${unique}`]);
+  });
+});

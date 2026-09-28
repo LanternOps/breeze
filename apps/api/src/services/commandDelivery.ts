@@ -1,7 +1,5 @@
-import {
-  BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES,
-  materializeBackupStorageCredentials,
-} from './backupCommandCredentials';
+import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredentials';
+import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
 import { hasDbAccessContext, withDbTransaction } from '../db';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
@@ -9,6 +7,7 @@ import {
   isCommandDeliveryDeferral,
   isCommandDeliveryRefusal,
   type DeliveryRefreshContext,
+  type ReportedBackupHelperProtocols,
 } from './commandDeliveryRefusal';
 import { getPresignedUrl, isS3Configured } from './s3Storage';
 import { failClaimedSecretCommandsForUnsupportedAgent } from './scriptSecretDelivery';
@@ -101,8 +100,12 @@ registerDeliveryRefresher('software_install', async (payload) => {
 for (const type of BROKERED_READ_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBrokeredReadCommand);
 }
+// Backup WRITES queued as commands (on-demand MSSQL / Hyper-V): a helper that
+// reports brokered writes gets a write-scoped storage session; any other
+// delivery resolves the destination reference as before
+// (services/backupStorageWriteDelivery.ts).
 for (const type of BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES) {
-  registerDeliveryRefresher(type, materializeBackupStorageCredentials);
+  registerDeliveryRefresher(type, deliverBackupWriteCommand);
 }
 
 /**
@@ -119,6 +122,13 @@ export type ClaimedCommand = {
   payload: unknown;
   executedAt: Date | null;
 };
+
+/** Backup helper protocol fields a heartbeat may hand to delivery refreshers. */
+const REPORTED_BACKUP_HELPER_PROTOCOL_FIELDS = [
+  'reportedBackupReadProtocolVersion',
+  'reportedBackupIntegrityProtocolVersion',
+  'reportedBackupWriteProtocolVersion',
+] as const satisfies ReadonlyArray<keyof ReportedBackupHelperProtocols>;
 
 /**
  * Decrypt a batch of JUST-CLAIMED commands for delivery, releasing any that
@@ -166,17 +176,19 @@ export type ClaimedCommand = {
  * `opts.reportedScriptSecretEnvVersion` lets a caller that just received the
  * agent's own capability report (the heartbeat) hand it to the gate as
  * authoritative, avoiding both the extra select and the race against the
- * heartbeat's own non-sticky device write.
+ * heartbeat's own non-sticky device write. The backup helper protocol
+ * fields are passed to every delivery refresher the same way.
  */
 export async function prepareClaimedCommandsForDelivery(
   claimed: ClaimedCommand[],
-  opts?: { reportedScriptSecretEnvVersion?: number; reportedBackupReadProtocolVersion?: number },
+  opts?: { reportedScriptSecretEnvVersion?: number } & ReportedBackupHelperProtocols,
 ): Promise<DeliverableCommand[]> {
-  const refreshed = await refreshClaimedCommandPayloads(claimed, {
-    ...(typeof opts?.reportedBackupReadProtocolVersion === 'number'
-      ? { reportedBackupReadProtocolVersion: opts.reportedBackupReadProtocolVersion }
-      : {}),
-  });
+  const helperProtocols: ReportedBackupHelperProtocols = {};
+  for (const field of REPORTED_BACKUP_HELPER_PROTOCOL_FIELDS) {
+    const value = opts?.[field];
+    if (typeof value === 'number') helperProtocols[field] = value;
+  }
+  const refreshed = await refreshClaimedCommandPayloads(claimed, helperProtocols);
 
   const deliverable = await failClaimedSecretCommandsForUnsupportedAgent(refreshed, {
     ...(typeof opts?.reportedScriptSecretEnvVersion === 'number'
@@ -319,7 +331,7 @@ function runRefresher(
  */
 async function refreshClaimedCommandPayloads(
   claimed: ClaimedCommand[],
-  extraCtx: Pick<DeliveryRefreshContext, 'reportedBackupReadProtocolVersion'> = {},
+  extraCtx: ReportedBackupHelperProtocols = {},
 ): Promise<ClaimedCommand[]> {
   const out: ClaimedCommand[] = [];
   for (const cmd of claimed) {

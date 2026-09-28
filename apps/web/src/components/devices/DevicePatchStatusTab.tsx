@@ -247,8 +247,13 @@ function readPatchIds(patches: PatchItem[]): string[] {
 // The device-patches endpoint sends approvalStatus for current payloads. Any
 // explicit non-approved status blocks install controls; an absent value (older
 // payloads / tests) is treated as installable.
+//
+// #7214 (paper cut #24): a patch whose latest install attempt failed is no
+// longer meaningfully "awaiting approval" — PatchApprovalCell below already
+// suppresses the "Pending Approval" badge for exactly this case (#4223), so
+// the "Patch Controls" count must agree with what the row actually shows.
 function isAwaitingApproval(patch: PatchItem): boolean {
-  return !isPatchApprovedForInstall(patch);
+  return !isPatchApprovedForInstall(patch) && !readInstallFailure(patch.installFailure);
 }
 
 // #2727 — per-user installs are detected but not yet remediable. The agent runs

@@ -83,7 +83,14 @@ describe('script-verify enqueue at result ingest (W03)', () => {
   });
 
   it('does not enqueue when no CAS rung matched (a late duplicate frame)', async () => {
-    updateMock.mockReturnValueOnce(updateReturning([])).mockReturnValueOnce(updateReturning([]));
+    // Three CAS rungs run before the "matched nothing" fallback: cancel-
+    // unconfirmed-cas, primary-cas, and the #3607 recovery rung — all three
+    // must miss here, so three queued `db.update` return values are needed,
+    // not two.
+    updateMock
+      .mockReturnValueOnce(updateReturning([]))
+      .mockReturnValueOnce(updateReturning([]))
+      .mockReturnValueOnce(updateReturning([]));
     selectMock.mockReturnValueOnce(selectRows([{ status: 'completed', exitCode: 0 }]));
     await commandResultHandlers.script!(scriptInput());
     expect(enqueueScriptVerifyMock).not.toHaveBeenCalled();

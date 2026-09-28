@@ -4,7 +4,7 @@
 //
 // Every hive path here goes through r.rootVolume, the root partition's
 // VOLUME path, never the r.rootDir folder mount (Part B as-built rule, ruling
-// B1/C1): rootDir exists only for external tool arguments (bcdboot, DISM).
+// B1/C1): rootDir exists only for external tool arguments (bcdboot).
 package rebuild
 
 import (
@@ -82,8 +82,8 @@ func (r *run) diskPartitionGUIDs() (root string, all []string, err error) {
 
 // ensureWinHives loads whichever of SYSTEM and SOFTWARE is not already
 // loaded from the restored root volume — a resumed run skipped the restore
-// phase that normally loads them, and winBoot closes them before DISM and
-// bcdboot (which open the offline hives themselves). Safe to call
+// phase that normally loads them, and winBoot closes them before bcdboot.
+// Safe to call
 // repeatedly: loaded hives are left alone. On a load failure the hives
 // this call loaded are unloaded again.
 func (r *run) ensureWinHives() error {
@@ -123,7 +123,7 @@ func (r *run) ensureWinHives() error {
 }
 
 // closeWinHives flushes and unloads every loaded hive (validate does this
-// FIRST — Part 0 §2; winBoot before DISM/bcdboot). Every hive is attempted;
+// FIRST — Part 0 §2; winBoot before bcdboot). Every hive is attempted;
 // the first unload failure (a leaked key handle) is returned, and r.hives
 // is cleared either way so a later ensureWinHives starts clean.
 func (r *run) closeWinHives() error {

@@ -56,7 +56,7 @@ var allCommandTypes = []string{
 	tools.CmdScheduleReboot, tools.CmdCancelReboot, tools.CmdGetRebootStatus,
 
 	// handlers_network.go init()
-	tools.CmdNetworkDiscovery, tools.CmdSnmpPoll,
+	tools.CmdNetworkDiscovery, tools.CmdSnmpPoll, tools.CmdTopologyInterfacePoll,
 	tools.CmdNetworkDiagnostic, tools.CmdNetworkDiagnosticCancel,
 	tools.CmdNetworkPing, tools.CmdNetworkTcpCheck,
 	tools.CmdNetworkHttpCheck, tools.CmdNetworkDnsCheck,

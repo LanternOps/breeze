@@ -196,6 +196,11 @@ type Manager struct {
 	// two separate isOurProcess()+stopByPID() opens.
 	stopIfOursFunc func(pid int, binaryPath string) (bool, error)
 
+	// keptBackup is the pre-update backup a failed rollback kept because it
+	// is the only good copy of the helper (#7357); the zero value means none.
+	// Mirrored on disk by keptBackupRecordPath. Guarded by mu.
+	keptBackup helperBackup
+
 	// downloadFunc fetches and INTEGRITY-VERIFIES the helper package for the
 	// given version, returning the path to a verified temp file. In production
 	// this is the updater-backed verified downloader (defaultHelperDownloader)
@@ -982,6 +987,10 @@ func (m *Manager) applyPendingUpdate() {
 		return
 	}
 
+	// A kept backup (#7357) is deliberately not released here: a build that
+	// installed but would not start, with a rollback that could not replace
+	// it, is at the target version too. Releasing would expose the only good
+	// copy to the next update's backup.
 	if installed := m.installedVersionLocked(); installed == m.pendingHelperVersion || helperVersionsMatch(installed, m.pendingHelperVersion) {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
@@ -997,6 +1006,12 @@ func (m *Manager) applyPendingUpdate() {
 		log.Debug("helper update deferred, chat active", "targetVersion", m.pendingHelperVersion)
 		return
 	}
+	// The install stops every helper, including ones in sessions the
+	// console-only enumerator does not track (RDP), so the chat gate has to
+	// cover them too (#7113).
+	if m.untrackedChatActiveLocked() {
+		return
+	}
 	lease, acquired := updater.TryBeginProcessMutation("helper-update")
 	if !acquired {
 		log.Debug("helper update deferred, another component mutation is active", "targetVersion", m.pendingHelperVersion)
@@ -1007,14 +1022,33 @@ func (m *Manager) applyPendingUpdate() {
 	log.Info("helper is idle, applying update", "targetVersion", m.pendingHelperVersion)
 
 	var stopped []*sessionState
+	tracked := make(map[string]bool, len(m.sessions))
 	for _, state := range m.sessions {
 		state.refreshPID()
 		m.stopSessionWatcher(state)
+		// Listed before the stop so a session whose stop fails gets its
+		// watcher back below.
+		stopped = append(stopped, state)
+		tracked[state.key] = true
 		if err := m.ensureStoppedSession(state); err != nil {
-			log.Error("failed to stop helper session for update", "session", state.key, "error", err.Error())
+			m.abortUpdateBeforeInstallLocked(stopped, fmt.Errorf("stop helper in session %s: %w", state.key, err))
 			return
 		}
-		stopped = append(stopped, state)
+	}
+	// A helper in a session the enumerator does not track (RDP, or one started
+	// outside the agent) still maps breeze-helper.exe. Left running, msiexec
+	// meets a file in use: it fails (1603) or defers the replacement to a
+	// reboot (#7113).
+	if _, busy, err := m.stopHelperInstancesLocked(tracked); err != nil {
+		m.abortUpdateBeforeInstallLocked(stopped, fmt.Errorf("stop helper in untracked session: %w", err))
+		return
+	} else if len(busy) > 0 {
+		// A chat started after the gate above. Not a failed attempt: retry on
+		// a later heartbeat, as the gate would have.
+		log.Info("helper update deferred, chat started in an untracked session", "pids", busy,
+			"targetVersion", m.pendingHelperVersion)
+		m.restartSessionsLocked(stopped)
+		return
 	}
 
 	// The rollback below restores only the file. On Windows, an msiexec that
@@ -1023,20 +1057,11 @@ func (m *Manager) applyPendingUpdate() {
 	// working old helper beats a new one that will not start), and the next
 	// retry recovers from it: installMSI forces a file reinstall when the
 	// product is registered at the target (#6868).
-	backupPath := m.binaryPath + ".backup"
-	if err := copyFile(m.binaryPath, backupPath); err != nil {
-		log.Warn("failed to backup helper binary", "error", err.Error())
-	}
-	// The pre-update version lets a rollback that cannot replace the exe tell
-	// "nothing to restore" (msiexec rolled its own change back) from "the good
-	// copy is only in the backup" (#6869). "" when unknown.
-	preVersion, err := m.readBinaryVersion()
-	if err != nil {
-		if !errors.Is(err, errBinaryVersionUnsupported) {
-			log.Warn("failed to read pre-update helper version", "path", m.binaryPath, "error", err.Error())
-		}
-		preVersion = ""
-	}
+	//
+	// After a rollback that kept the backup, the backup is the only good copy
+	// and this attempt restores it on failure instead of backing up the
+	// current (broken) binary (#7357).
+	backup := m.backupForUpdateLocked()
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 		m.recordInstallFailureLocked(m.pendingHelperVersion)
@@ -1044,7 +1069,7 @@ func (m *Manager) applyPendingUpdate() {
 		key, value := updater.SafeDownloadErrorFields(err)
 		log.Error("failed to install helper update", key, value,
 			"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
-		m.rollbackBinaryLocked(backupPath, preVersion)
+		m.rollbackBinaryLocked(backup)
 		m.restartSessionsLocked(stopped)
 		return
 	}
@@ -1069,7 +1094,7 @@ func (m *Manager) applyPendingUpdate() {
 				}
 				started.pid = 0
 			}
-			m.rollbackBinaryLocked(backupPath, preVersion)
+			m.rollbackBinaryLocked(backup)
 			// The install already told the broker about the new build, and
 			// the rollback just put the previous one back. Refresh again
 			// before respawning it, or the broker rejects it (#7043).
@@ -1083,7 +1108,22 @@ func (m *Manager) applyPendingUpdate() {
 	log.Info("helper updated successfully", "requestedVersion", m.pendingHelperVersion)
 	m.pendingHelperVersion = ""
 	m.clearInstallFailuresLocked()
-	_ = os.Remove(backupPath)
+	// The new build installed and started: it supersedes any kept copy.
+	_ = os.Remove(m.backupPath())
+	m.releaseKeptBackupLocked()
+}
+
+// abortUpdateBeforeInstallLocked gives up on this update attempt before the
+// installer ran, because a helper holding the binary could not be stopped. It
+// is a failed attempt and counts toward the retry cap (#7113): uncounted, a
+// stop that keeps failing is retried on every heartbeat for good. The sessions
+// already stopped get their helper and watcher back. Must be called with m.mu
+// held.
+func (m *Manager) abortUpdateBeforeInstallLocked(stopped []*sessionState, err error) {
+	m.recordInstallFailureLocked(m.pendingHelperVersion)
+	log.Error("failed to stop breeze assist for update", "error", err.Error(),
+		"targetVersion", m.pendingHelperVersion, "failures", m.updateFailures)
+	m.restartSessionsLocked(stopped)
 }
 
 // Shutdown stops all session watchers gracefully. Unlike the Apply/update
@@ -1150,12 +1190,4 @@ func (m *Manager) stopSessionWatcherBounded(state *sessionState, d time.Duration
 		log.Warn("session watcher shutdown timed out, abandoning", "session", state.key)
 	}
 	m.mu.Lock()
-}
-
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0755)
 }

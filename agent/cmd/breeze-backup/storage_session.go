@@ -41,7 +41,9 @@ var brokeredReadCommands = map[string]bool{
 // from the installed binary and reports it in its heartbeat.
 func printProtocolInfo(w io.Writer) error {
 	return json.NewEncoder(w).Encode(backupipc.ProtocolInfo{
-		BackupReadProtocolVersion: storagesession.ProtocolVersion,
+		BackupReadProtocolVersion:      storagesession.ProtocolVersion,
+		BackupIntegrityProtocolVersion: backup.IntegrityProtocolVersion,
+		BackupWriteProtocolVersion:     storagesession.WriteProtocolVersion,
 	})
 }
 

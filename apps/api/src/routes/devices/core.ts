@@ -288,8 +288,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
-  'backup_snapshots', 'backup_storage_sessions', 'backup_verifications', 'bare_metal_recoveries',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
+  'backup_snapshot_retirements', 'backup_snapshots', 'backup_storage_session_uploads', 'backup_storage_sessions',
+  'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
@@ -526,7 +527,14 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'recovery_tokens', 'backup_chains',
   // Brokered storage sessions reference the snapshot, the command and the
   // device (executing = device_id; the snapshot's source device cascades by FK).
+  // A write session's multipart upload rows go first, then the session, then
+  // the snapshot id reservations it names (deleting a reservation tombstones
+  // its id).
+  'backup_storage_session_uploads',
   'backup_storage_sessions',
+  // Snapshot attestations reference the snapshot, the job and the device.
+  'backup_snapshot_attestations',
+  'backup_snapshot_id_reservations',
   'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
@@ -2319,6 +2327,7 @@ coreRoutes.delete(
     // #2787 review — omits the whole spread while the dissolve ran anyway.
     let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
+    let removedTopologyAlerts = 0;
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
     // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
@@ -2380,6 +2389,7 @@ coreRoutes.delete(
       );
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
+      removedTopologyAlerts = purge.removedTopologyAlerts;
     } catch (err: unknown) {
       if (err instanceof DeviceLifecycleError) {
         return c.json({ error: err.message, code: err.code }, err.status);
@@ -2449,6 +2459,9 @@ coreRoutes.delete(
         // trail would show only "device deleted" while sibling devices
         // silently lost their grouping.
         ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
+        // Site-owned topology alerts this device originated (M3-D6) — after a
+        // move-org they belong to ANOTHER org, so record that they went.
+        ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
       }
     });
 

@@ -8,7 +8,7 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { findConnectionByRealmFingerprint } from './accountingConnectionService';
 import { providerSupports } from './providerRegistry';
-import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
+import { enqueueAccountingReconcile, type ReconcileEnqueueOptions } from '../../jobs/accountingReconcileWorker';
 import type { AccountingProviderId } from './types';
 import { assertNoAmbientDbContext } from './dbContextGuard';
 
@@ -18,6 +18,7 @@ export type WebhookRouteOutcome = 'enqueued' | 'enqueue_failed' | 'no_connection
 export async function routeWebhookToConnection(
   provider: AccountingProviderId,
   realmFingerprint: string,
+  opts?: ReconcileEnqueueOptions,
 ): Promise<WebhookRouteOutcome> {
   assertNoAmbientDbContext('routeWebhookToConnection');
   const conn = await withSystemDbAccessContext(
@@ -25,6 +26,10 @@ export async function routeWebhookToConnection(
   );
   if (!conn) return 'no_connection';
   if (!providerSupports(conn.provider, 'paymentPull')) return 'capability_unavailable';
-  const ok = await runOutsideDbContext(() => enqueueAccountingReconcile(conn.id, conn.partnerId, 'webhook'));
+  // Three arguments exactly when no options were given: the QuickBooks route's
+  // enqueue call stays byte-identical (a pinned test).
+  const ok = await runOutsideDbContext(() => (opts === undefined
+    ? enqueueAccountingReconcile(conn.id, conn.partnerId, 'webhook')
+    : enqueueAccountingReconcile(conn.id, conn.partnerId, 'webhook', opts)));
   return ok ? 'enqueued' : 'enqueue_failed';
 }

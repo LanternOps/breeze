@@ -3,6 +3,7 @@
 package hyperv
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -145,5 +146,12 @@ func TestEmptyVHDPaths(t *testing.T) {
 	// Ensure nil serializes as null, not as an error
 	if len(data) == 0 {
 		t.Fatal("empty marshalled output")
+	}
+}
+
+func TestCreateVMFromVHDX_ReturnsNotSupported(t *testing.T) {
+	err := CreateVMFromVHDX(context.Background(), CreateVMRequest{VMName: "vm", VHDXPath: "/tmp/x.vhdx"})
+	if !errors.Is(err, ErrHyperVNotSupported) {
+		t.Errorf("expected ErrHyperVNotSupported, got %v", err)
 	}
 }

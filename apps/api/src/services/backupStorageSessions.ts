@@ -51,7 +51,8 @@ import {
   PROVIDER_CONFIG_REF_FIELD,
   materializeBackupStorageCredentials,
 } from './backupCommandCredentials';
-import { recordBackupReadDispatch } from './backupMetrics';
+import { recordBackupReadDispatch, recordStorageSessionMint } from './backupMetrics';
+import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
   STORAGE_SESSION_CALL_BURST,
@@ -119,6 +120,8 @@ export type StorageSnapshotRow = {
   configId: string | null;
   snapshotId: string;
   storageIdentity: string | null;
+  /** Object-key layout (services/backupKeyLayout.ts); only a supported one is ever read. */
+  keyLayout: string;
   fileIndexStatus: string;
   metadata: unknown;
 };
@@ -126,13 +129,15 @@ export type StorageSnapshotRow = {
 export type StorageSessionRow = {
   id: string;
   orgId: string;
-  commandId: string;
+  /** Read scope only (a write session is bound to its backup job instead). */
+  commandId: string | null;
   deviceId: string;
   sourceDeviceId: string;
-  snapshotId: string;
+  /** Read scope only: the internal id of the snapshot being read. */
+  snapshotId: string | null;
   configId: string;
   storageIdentity: string;
-  scope: 'snapshot_read';
+  scope: 'snapshot_read' | 'snapshot_write';
   controlKeys: string[];
   useFileIndex: boolean;
   tokenHash: string;
@@ -147,6 +152,14 @@ export type StorageSessionRow = {
   rateCallsAvailable: number;
   rateObjectsAvailable: number;
   rateRefilledAt: Date;
+  // Write scope only (services/backupStorageWriteSessions.ts).
+  jobId?: string | null;
+  reservationSnapshotId?: string | null;
+  reservationGeneration?: number | null;
+  urlHorizonAt?: Date | null;
+  conditionalWrites?: boolean;
+  readOnly?: boolean;
+  resumedAt?: Date | null;
 };
 
 export type VerifiedOriginRow = {
@@ -197,6 +210,11 @@ export interface BrokeredReadStore {
   ): Promise<StorageSessionBudgetDecision | null>;
   /** Raise expires_at to at least `expiresAt`; returns the stored value, or null when revoked/absent. */
   extendLease(sessionId: string, expiresAt: Date): Promise<Date | null>;
+  /**
+   * True while a brokered write of this snapshot id may still change its
+   * bytes (sealing, or a completion or delete in flight), so they are not final.
+   */
+  isSnapshotSealing?(snapshotId: string): Promise<boolean>;
 }
 
 export interface BrokeredReadDeps {
@@ -211,6 +229,8 @@ export interface BrokeredReadDeps {
   /** Resolves a LOCAL destination reference into the command (a path, never a credential). */
   materializeLocalDestination(payload: Record<string, unknown>, ctx: DeliveryRefreshContext): Promise<Record<string, unknown>>;
   recordDispatch(commandType: string, mode: BackupReadDispatchMode, reason: string): void;
+  /** One storage-session issuance decision (minted, or why not). */
+  recordMint(scope: 'snapshot_read', outcome: 'minted' | 'refused' | 'deferred' | 'legacy', reason: string): void;
   /** Run `fn` inside the delivery path's DB context, or an org-scoped one when none is held. */
   inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T>;
   lookupDeviceOrg(deviceId: string): Promise<string | null>;
@@ -264,6 +284,7 @@ export const defaultBrokeredReadDeps: BrokeredReadDeps = {
   publicOrigins: () => defaultPublicOrigins(),
   materializeLocalDestination: (payload, ctx) => materializeBackupStorageCredentials(payload, ctx),
   recordDispatch: (commandType, mode, reason) => recordBackupReadDispatch(commandType, mode, reason),
+  recordMint: (scope, outcome, reason) => recordStorageSessionMint(scope, outcome, reason),
   inOrgContext: (orgId, fn) => defaultInOrgContext(orgId, fn),
   lookupDeviceOrg: (deviceId) => defaultLookupDeviceOrg(deviceId),
 };
@@ -275,11 +296,11 @@ export function hashStorageSessionToken(token: string): string {
 }
 
 /** RFC 3339, second precision, UTC — truncated, so never later than `d`. */
-function rfc3339(d: Date): string {
+export function rfc3339(d: Date): string {
   return new Date(Math.floor(d.getTime() / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function originOf(raw: string | null | undefined): string | null {
+export function originOf(raw: string | null | undefined): string | null {
   if (!raw || typeof raw !== 'string') return null;
   try {
     const u = new URL(raw.trim());
@@ -327,7 +348,7 @@ function stripDestination(payload: Record<string, unknown>): Record<string, unkn
   return out;
 }
 
-function httpsEndpoint(providerConfig: Record<string, unknown>): boolean {
+export function httpsEndpoint(providerConfig: Record<string, unknown>): boolean {
   const raw = providerConfig.endpoint;
   if (raw === undefined || raw === null || raw === '') return true; // AWS default endpoint is https
   if (typeof raw !== 'string') return false;
@@ -361,6 +382,8 @@ const REFUSAL_MESSAGES: Record<string, string> = {
     'Restoring or verifying backups requires agents to reach Breeze over HTTPS. Serve the agent API over HTTPS.',
   snapshot_unresolved: 'The backup could not be found for this organization, or its backup destination no longer exists.',
   invalid_snapshot_key: 'This backup has an identifier that cannot be read from storage.',
+  key_layout_unsupported:
+    'This backup was written in a storage format this server version cannot read. Update the server, then try again.',
   provider_not_s3: 'This backup is stored with a provider that restores do not support.',
   provider_changed: 'The backup destination changed provider after this command was queued. Start it again.',
   insecure_endpoint:
@@ -375,6 +398,7 @@ const REFUSAL_MESSAGES: Record<string, string> = {
 };
 
 const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
+const SEALING_DEFERRAL_MESSAGE = 'The backup was still being finalized in storage.';
 
 function refusalMessage(reason: string): string {
   return REFUSAL_MESSAGES[reason] ?? 'This backup cannot be read securely.';
@@ -401,18 +425,24 @@ export async function deliverBrokeredReadCommand(
 
   const decision = await decide(payload, ctx, deps);
   if (decision.mode === 'brokered') {
+    deps.recordMint('snapshot_read', 'minted', 'ok');
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
     return decision.payload;
   }
-  if (decision.reason === 'index_unavailable') {
+  if (decision.reason === 'index_unavailable' || decision.reason === 'snapshot_sealing') {
+    deps.recordMint('snapshot_read', 'deferred', decision.reason);
     deps.recordDispatch(ctx.type, 'deferred', decision.reason);
-    throw new CommandDeliveryDeferredError(DEFERRAL_MESSAGE);
+    throw new CommandDeliveryDeferredError(
+      decision.reason === 'snapshot_sealing' ? SEALING_DEFERRAL_MESSAGE : DEFERRAL_MESSAGE,
+    );
   }
   if (REF_TYPES.has(ctx.type)) {
+    deps.recordMint('snapshot_read', 'refused', decision.reason);
     deps.recordDispatch(ctx.type, 'refused', decision.reason);
     throw new CommandDeliveryRefusedError(refusalMessage(decision.reason));
   }
   // VM commands name no destination; they go as queued.
+  deps.recordMint('snapshot_read', 'legacy', decision.reason);
   deps.recordDispatch(ctx.type, 'legacy', decision.reason);
   return payload;
 }
@@ -493,9 +523,16 @@ async function mint(
   if (candidates.length !== 1) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const snapshot = candidates[0]!;
   if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
+  // A layout this server does not understand is a permanent property of the
+  // snapshot: its keys cannot be derived, so it is refused, never guessed.
+  if (!isSupportedKeyLayout(snapshot.keyLayout)) return { mode: 'unbrokered', reason: 'key_layout_unsupported' };
   // The snapshot id is agent-reported and every authorized key is built from
   // it: it must be a single segment of the object-key grammar.
   if (!isObjectKeySnapshotId(snapshot.snapshotId)) return { mode: 'unbrokered', reason: 'invalid_snapshot_key' };
+  // Not final yet: an upload URL issued for this snapshot may still be usable.
+  if (store.isSnapshotSealing && (await store.isSnapshotSealing(snapshot.snapshotId))) {
+    return { mode: 'unbrokered', reason: 'snapshot_sealing' };
+  }
 
   const destination = await store.resolveConfig(snapshot.configId, orgId);
   if (!destination) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
@@ -632,7 +669,12 @@ export async function authenticateStorageSession(
     return { ok: false, status: 410, error: 'Storage session has expired' };
   }
 
-  const command = await deps.store.loadCommand(session.commandId);
+  // A write session is bound to its backup job, not to a command; the write
+  // endpoints check the job and the snapshot id reservation on every call
+  // (backupStorageWriteSessions.ensureWriteSessionLive).
+  if (session.scope === 'snapshot_write') return { ok: true, session };
+
+  const command = session.commandId ? await deps.store.loadCommand(session.commandId) : null;
   if (!command || !LIVE_COMMAND_STATUSES.has(command.status) || command.deviceId !== session.deviceId) {
     await deps.store.revokeSession(session.id, command ? `command_${command.status}` : 'command_missing');
     return { ok: false, status: 410, error: 'Storage session has ended with its command' };
@@ -664,6 +706,9 @@ export async function resolveStorageSessionObjects(
 ): Promise<ResolveResult> {
   const { store } = deps;
   const keys = [...new Set(requestedKeys)];
+  if (session.scope !== 'snapshot_read' || !session.snapshotId) {
+    return { status: 410, error: 'Storage session is not a read session' };
+  }
 
   // Re-validate what the session was pinned to on every call: a snapshot or
   // destination that moved, disappeared or was re-pointed ends the session.
@@ -674,6 +719,7 @@ export async function resolveStorageSessionObjects(
     || snapshot.orgId !== session.orgId
     || snapshot.deviceId !== session.sourceDeviceId
     || snapshot.storageIdentity !== session.storageIdentity
+    || !isSupportedKeyLayout(snapshot.keyLayout)
     || !destination
     || destination.provider !== 's3'
     || !httpsEndpoint(destination.providerConfig)
@@ -696,7 +742,7 @@ export async function resolveStorageSessionObjects(
   }
 
   if (indexCandidates.length > 0 && snapshot.fileIndexStatus === 'complete') {
-    const members = await store.filterIndexedKeys(session.snapshotId, indexCandidates);
+    const members = await store.filterIndexedKeys(snapshot.id, indexCandidates);
     const external = new Map<string, string[]>();
     for (const key of indexCandidates) {
       if (!members.has(key)) continue;
@@ -714,7 +760,7 @@ export async function resolveStorageSessionObjects(
       external.set(scope.originSnapshotId, list);
     }
     if (external.size > 0) {
-      const origins = await store.loadVerifiedOrigins(session.snapshotId, [...external.keys()]);
+      const origins = await store.loadVerifiedOrigins(snapshot.id, [...external.keys()]);
       for (const origin of origins) {
         if (
           origin.originOrgId !== session.orgId

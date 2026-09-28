@@ -572,6 +572,7 @@
         "enabledMeaning": "Etkin, yapılandırılmış anlamına gelir. Breeze, yanıt verip vermediğini kontrol etmek için hizmete bağlanmaz.",
         "footnote": "Yalnızca API kapsayıcısının ortamını gösterir. Web, portal ve worker kapsayıcıları dahil değildir.",
         "meta": "Çalışan sürüm {{version}} · {{mode}}",
+        "versionMismatch": "Bu API imajı {{running}}, ancak BREEZE_VERSION {{configured}}. BREEZE_VERSION değerini değiştirmek digest ile sabitlenmiş imajı değiştirmez ve ajanlara BREEZE_VERSION sürümü sunulur. guided-setup.sh --upgrade ile yükseltin veya BREEZE_VERSION değerini {{running}} olarak geri ayarlayın.",
         "deployMode": {
           "hosted": "Barındırılan",
           "self_host": "Kendi sunucusunda"
@@ -633,6 +634,11 @@
       "user.logout": "Oturum kapatıldı",
       "session_initiated": "Oturum başlatıldı",
       "session_offer_submitted": "Oturum teklifi gönderildi",
+      "session_consent_granted": "Uzak oturum onayı verildi",
+      "session_consent_denied": "Uzak oturum kullanıcı tarafından reddedildi",
+      "session_consent_blocked_unanswered": "Uzak oturum engellendi: onay istemi yanıtlanmadı",
+      "session_consent_blocked_unavailable": "Uzak oturum engellendi: onay istemi kullanılamıyor",
+      "session_consent_bypassed": "Uzak oturum, onay istemine yanıt verilmeden başlatıldı",
       "device.wake_on_lan": "Wake-on-LAN gönderildi",
       "device.create": "Cihaz eklendi",
       "device.update": "Cihaz güncellendi",

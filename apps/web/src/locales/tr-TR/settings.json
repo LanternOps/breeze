@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "active": "Aktif",
     "revoked": "İptal edildi",
-    "expired": "Süresi dolmuş"
+    "expired": "Süresi dolmuş",
+    "statusFilterLabel": "Anahtar durumu"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API anahtarlar yükleniyor...",
@@ -3827,7 +3828,9 @@
     "verifyYourIdentity": "Kimliğinizi doğrulayın",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Kimlik doğrulayıcı uygulama kurulumuna başlamak için sağlayıcınızda kimliğinizi yeniden doğrulayın.",
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
-    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın."
+    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın.",
+    "ssoReauthManageHint": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Bu değişikliği onaylamak için sağlayıcınızla doğrulayın.",
+    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -3944,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın.",
     "passkeyRegistrationServerError": "Geçiş anahtarı kaydı başarısız oldu. Lütfen tekrar deneyin.",
     "deletePasskeyVerifyHeading": "Bir geçiş anahtarını silmek için doğrulayın",
-    "deletePasskeyVerifyHint": "Yukarıdaki geçiş anahtarlarından birini kaldırmadan önce buraya güncel bir MFA kodu girin. Bu kod yeni bir geçiş anahtarı eklemeyi etkilemez."
+    "deletePasskeyVerifyHint": "Yukarıdaki geçiş anahtarlarından birini kaldırmadan önce buraya güncel bir MFA kodu girin. Bu kod yeni bir geçiş anahtarı eklemeyi etkilemez.",
+    "ssoReauthManageProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Bu değişikliği onaylamak için yeniden doğrulayın.",
+    "verifyWithIdpToDeletePasskey": "Bu hesabın parolası yok. Bir geçiş anahtarını kaldırmadan önce kimlik sağlayıcınızla doğrulayın.",
+    "deletePasskeySsoReauth": "Bir geçiş anahtarını kaldırmak için kimliği doğrulayın",
+    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin."
   },
   "roleManager": {
     "roles": "Roller",
@@ -4012,13 +4019,18 @@
     "createANewCustomRoleBasedOnThisOne": "Buna dayalı olarak yeni bir özel rol oluşturun.",
     "saving": "Kaydediliyor...",
     "cloneRole2": "Klon Rolü",
+    "mfaRequired": "MFA zorunlu",
+    "mfaRequiredTooltip": "Bu roldeki üyelerin çok faktörlü kimlik doğrulamayı etkinleştirmesi gerekir.",
+    "requireMfaForThisRole": "Bu rol için MFA zorunlu olsun",
+    "requireMfaForThisRoleHelp": "Bu role atanan üyeler Breeze'i kullanabilmek için önce çok faktörlü kimlik doğrulamayı etkinleştirmelidir.",
     "saveChanges": "Değişiklikleri Kaydet",
     "deleting": "Siliniyor...",
     "networkErrorLoadingPermissions": "İzinler yüklenirken ağ hatası",
     "cannotDeleteAssignedRole": "Atanan kullanıcılarla rol silinemiyor",
     "inheritedFromParentRole": "Üst rolden devralındı",
     "waitingForPermissionCatalog": "İzin kataloğunun yüklenmesi bekleniyor",
-    "summary": "{{filtered}} / {{total}} rol"
+    "summary": "{{filtered}} / {{total}} rol",
+    "typeFilterLabel": "Rol türü"
   },
   "roleSelector": {
     "currentRole": "Mevcut görev",
@@ -4067,6 +4079,9 @@
     "thisOrganization": "Bu kuruluş",
     "partnerTechnicianLogin": "Ortak (teknisyen girişi)",
     "yourOwnTeamSignsInWithThis": "(kendi ekibiniz bununla oturum açar)",
+    "selectAnOrganizationToCreateAnOrgProvider": "O kuruluş için sağlayıcı oluşturmak üzere kuruluş değiştiriciden bir kuruluş seçin.",
+    "partnerProviderRequiresFullPartnerAccess": "Ortak genelindeki sağlayıcılar tüm kuruluşlara erişim gerektirir.",
+    "selectAnOrganizationBeforeCreatingAProvider": "Sağlayıcı oluşturmadan önce kuruluş değiştiriciden bir kuruluş seçin.",
     "basicInformation": "Temel Bilgiler",
     "providerName": "Sağlayıcı adı",
     "eGOktaProduction": "örneğin Okta Üretimi",
@@ -4143,7 +4158,8 @@
     "delete": "Sil",
     "allStatuses": "Tüm durumlar",
     "deactivate": "Devre dışı bırak",
-    "activate": "Etkinleştir"
+    "activate": "Etkinleştir",
+    "statusFilterLabel": "Sağlayıcı durumu"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "SSO sağlayıcıları getirilemedi",
@@ -4173,6 +4189,7 @@
     "failedToDeleteProvider": "Sağlayıcı silinemedi",
     "anErrorOccurred": "Bir hata oluştu",
     "failedToSaveProvider": "Sağlayıcı kaydedilemedi",
+    "providerNeedsOrganization": "Kuruluş değiştiriciden bir kuruluş seçin veya ortak genelinde bir sağlayıcı oluşturmak için “Şunlar için geçerlidir” seçeneğini “Ortak (teknisyen girişi)” olarak ayarlayın.",
     "addSSOProvider": "SSO Sağlayıcısı Ekle",
     "editSSOProvider": "SSO Sağlayıcısını Düzenle",
     "configureANewSSOProviderForYourOrganization": "Kuruluşunuz için yeni bir SSO sağlayıcısı yapılandırın.",
@@ -5422,7 +5439,8 @@
       "title": "Özel Alanı Sil",
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu, alan tanımını ve cihazlarda depolanan tüm değerleri kaldıracaktır."
-    }
+    },
+    "typeFilterLabel": "Alan türü"
   },
   "knownGuestsSettings": {
     "title": "Bilinen Misafirler",

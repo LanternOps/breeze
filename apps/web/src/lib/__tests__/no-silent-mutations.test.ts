@@ -461,6 +461,11 @@ const TARGET_GLOBS = [
   // Topology M2 (#5998 Task 9): hide/restore of a connection in one view. A
   // silent failure leaves a tech believing a false cable is hidden (or back).
   'src/components/topology/RelationshipExclusionAction.tsx',
+  // Topology M3 (#5999 Task 11): arming recurring monitoring and port
+  // measurement. A silent failure leaves a tech believing a site is being
+  // measured (or no longer is) when it is not.
+  'src/components/topology/MonitoringPolicyPanel.tsx',
+  'src/components/topology/InterfaceTelemetrySettings.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -838,9 +843,10 @@ describe('no silent mutations in targeted set', () => {
     // Xero W01 renames the two QuickBooks components and adds the previously
     // unlisted AccountingCustomerImport.tsx: 193 → 194.
     // 194 -> 195: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
-    // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 195 → 196.
-    // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 196 → 197.
-    expect(absoluteFiles.length).toBe(197);
+    // 195 -> 197: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
+    // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 197 → 198.
+    // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 198 → 199.
+    expect(absoluteFiles.length).toBe(199);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

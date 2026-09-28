@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -143,5 +144,27 @@ func TestRebuildCommand_WindowsFlags(t *testing.T) {
 	}
 	if v, err := cmd.Flags().GetString("work-root"); err != nil || v != `D:\scratch` {
 		t.Fatalf("work-root = %q, %v", v, err)
+	}
+}
+
+// D20: --drivers stays parseable (an old script gets the clear refusal,
+// not "unknown flag"), but any value fails fast — before the provider
+// config is even read — with the engine's own operator-facing reason.
+func TestRebuildCommand_DriversRefusedFast(t *testing.T) {
+	dir := t.TempDir()
+	cmd := newRebuildCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--drivers", `X:\a`,
+		"--provider-config", filepath.Join(dir, "missing.json"), "--snapshot", "s1",
+		"--target", "vhdx:" + filepath.Join(dir, "t.vhdx"),
+	})
+	err := cmd.Execute()
+	if err == nil || err.Error() != rebuild.DriverInjectionUnsupportedReason {
+		t.Fatalf("err = %v, want %q", err, rebuild.DriverInjectionUnsupportedReason)
+	}
+	if usage := cmd.Flags().Lookup("drivers").Usage; !strings.Contains(usage, "not supported yet") {
+		t.Fatalf("--drivers help = %q, want it to say driver injection is not supported yet", usage)
 	}
 }

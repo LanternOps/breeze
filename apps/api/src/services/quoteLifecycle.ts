@@ -36,7 +36,7 @@ import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
-import { resolveDocumentFooter } from './documentFooter';
+import { freezeDocumentFooter, resolveDocumentFooter } from './documentFooter';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs, type ContractBlockRenderData } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
@@ -143,7 +143,8 @@ export interface QuoteSentSnapshot {
   presentationSnapshot: unknown;
   documentLocale: string;
   termsAndConditions: string | null;
-  terms: string | null;
+  /** Frozen footer line — never NULL; `''` = frozen "no footer" (#7216, freezeDocumentFooter). */
+  terms: string;
   partnerRow: typeof partners.$inferSelect | undefined;
   org: { name: string | null; billingContact: unknown; taxId: string | null } | undefined;
 }
@@ -240,12 +241,17 @@ export async function freezeQuoteSentSnapshot(
   // stamped NULL and then followed later portal-footer edits instead of
   // freezing. Read last, after the partner/org reads — a plain SELECT on a
   // table this transaction takes no lock on.
+  //
+  // freezeDocumentFooter, not resolveDocumentFooter: with no footer at any
+  // level it stamps '' (frozen "none"), never NULL — NULL means "not frozen"
+  // to every render path, so a footer added after send would otherwise print
+  // on the already-sent quote (#7216).
   const [brandRow] = await db
     .select({ footerText: portalBranding.footerText })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, quote.orgId))
     .limit(1);
-  const terms = resolveDocumentFooter({
+  const terms = freezeDocumentFooter({
     documentTerms: quote.terms,
     partnerFooter: partnerRow?.invoiceFooter ?? null,
     brandingFooter: brandRow?.footerText ?? null,

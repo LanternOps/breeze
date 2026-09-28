@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
 import { getOrgScope, useOrgScope } from '@/hooks/useOrgScope';
 import { navigateTo } from '@/lib/navigation';
@@ -62,6 +62,11 @@ export default function SsoProvidersPage() {
   // providers. Gate on the JWT scope, never partners.length (known-broken).
   const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
   const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  // #7252: partner scope alone is not permission to author partner-wide state
+  // (org_access = 'selected' users are 403'd). Absent = capable; the server
+  // enforces regardless — this only keeps the form from offering a create the
+  // API is guaranteed to refuse.
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -403,9 +408,17 @@ export default function SsoProvidersPage() {
         // The raw 409 message is written for API callers ("resend with
         // acknowledgeLockout: true") — the web user gets the confirm dialog
         // instead (below), so soften the toast to match.
-        friendly: (code) => code === 'sso_enforcement_lockout_confirmation_required'
-          ? t('ssoProvidersPage.enforceLockoutConfirmationNeeded')
-          : undefined,
+        friendly: (code) => {
+          if (code === 'sso_enforcement_lockout_confirmation_required') {
+            return t('ssoProvidersPage.enforceLockoutConfirmationNeeded');
+          }
+          // #7252: the API could not resolve an org for an org-owned create
+          // (no org selected). Tell the user what to do next.
+          if (code === 'sso_provider_org_required') {
+            return t('ssoProvidersPage.providerNeedsOrganization');
+          }
+          return undefined;
+        },
         onUnauthorized: () => navigateTo('/login', { replace: true })
       });
 
@@ -569,6 +582,8 @@ export default function SsoProvidersPage() {
               isEditing={modalMode === 'edit'}
               hasClientSecret={selectedProviderDetails?.hasClientSecret}
               showOwnerScope={isPartnerScope}
+              noOrgSelected={orgScope.scope === 'all'}
+              canManagePartnerWide={canManagePartnerWide}
             />
           </div>
         </div>

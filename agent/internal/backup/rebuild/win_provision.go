@@ -220,6 +220,41 @@ func (r *run) winReattach(ctx context.Context) error {
 		}
 		r.volumes = live
 		r.state.Volumes = live
+		// 18b row 1: reclaim any drive letter a crashed earlier process left
+		// attached to OUR disk (winBoot's ESP letter, or a Format retry's
+		// temporary letter) — this process never held the release func for
+		// them, so unlike winTeardown's espLetterRelease path, the only way
+		// to find them is the live volume list itself. Warn-only: a letter
+		// that fails to release does not block the resume.
+		//
+		// Fix round 1 / MINOR 1: WaitForVolumes' DriveLetter snapshot can go
+		// stale by the time this loop runs (the OS could reassign the
+		// letter between the two calls), so confirm on the real seam that
+		// the letter still maps to the volume we saw before unmounting it —
+		// unmounting a letter that has since moved onto some other volume
+		// would rip that volume's mount out from under it instead.
+		for _, v := range vols {
+			if v.DriveLetter == "" {
+				continue
+			}
+			letter := v.DriveLetter + ":"
+			current, err := r.opts.WinSystem.VolumeForLetter(letter)
+			if err != nil {
+				r.warn("reclaim leaked drive letter %s: confirm current volume: %v", letter, err)
+				continue
+			}
+			if current != v.GUIDPath {
+				r.warn("drive letter %s no longer maps to the volume we saw (now %s); not reclaiming it", letter, current)
+				continue
+			}
+			if err := r.opts.WinSystem.UnmountVolume(letter); err != nil {
+				r.warn("reclaim leaked drive letter %s: %v", letter, err)
+				continue
+			}
+			// One line per reclaimed letter, so a resume that needed it is
+			// observable in the result (lab L2: it was silent).
+			r.warn("reclaimed drive letter %s left on the rebuild disk by an earlier, interrupted run", letter)
+		}
 	}
 	if r.rootDir == "" && r.state.Completed[PhaseProvision] {
 		return r.winMountTree(ctx)
@@ -230,8 +265,10 @@ func (r *run) winReattach(ctx context.Context) error {
 // winTeardown releases every Windows-host resource this run holds except
 // the VHDX itself (teardown's r.detach, which runs after this): loaded
 // hives, the ESP's temporary letter, then the folder mount points —
-// ESP/Recovery first, root last; a root that will not unmount sets
-// r.releaseErr (the VHDX would still be in use). No-op on Linux runs.
+// Recovery first, root last (the ESP is never folder-mounted, ruling C1, so
+// there is no ESP mount to unmount here — see row 7's removal of the dead
+// espDir field); a root that will not unmount sets r.releaseErr (the VHDX
+// would still be in use). No-op on Linux runs.
 func (r *run) winTeardown() {
 	if r.opts.WinSystem == nil {
 		return
@@ -248,14 +285,11 @@ func (r *run) winTeardown() {
 		}
 		r.espLetterRelease = nil
 	}
-	for _, d := range []*string{&r.espDir, &r.recoveryDir} {
-		if *d == "" {
-			continue
+	if r.recoveryDir != "" {
+		if err := r.opts.WinSystem.UnmountVolume(r.recoveryDir); err != nil {
+			r.warn("unmount %s: %v", r.recoveryDir, err)
 		}
-		if err := r.opts.WinSystem.UnmountVolume(*d); err != nil {
-			r.warn("unmount %s: %v", *d, err)
-		}
-		*d = ""
+		r.recoveryDir = ""
 	}
 	if r.rootDir != "" {
 		if err := r.opts.WinSystem.UnmountVolume(r.rootDir); err != nil {

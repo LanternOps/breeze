@@ -21,6 +21,9 @@ type VMRestoreConfirmStepProps = {
   vmName: string;
   /** Rebuild engine only: absolute .vhdx path on the rebuild host. */
   outputPath?: string;
+  /** Rebuild engine only (W06d): name of the Hyper-V VM the Windows rebuild
+   * host creates after the image validates; unset → attach manually. */
+  hypervVmName?: string;
 };
 
 export default function VMRestoreConfirmStep({
@@ -32,6 +35,7 @@ export default function VMRestoreConfirmStep({
   mode,
   vmName,
   outputPath,
+  hypervVmName,
 }: VMRestoreConfirmStepProps) {
   const { t } = useTranslation('backup');
   const isRebuild = mode === 'rebuild';
@@ -87,7 +91,13 @@ export default function VMRestoreConfirmStep({
           data-testid="vm-restore-rebuild-manual-attach-note"
           className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
         >
-          <p>{t('vMRestoreConfirmStep.manualAttachNote')}</p>
+          {hypervVmName ? (
+            <p data-testid="vm-restore-rebuild-hyperv-note">
+              {t('vMRestoreConfirmStep.hypervVmNote', { vmName: hypervVmName })}
+            </p>
+          ) : (
+            <p>{t('vMRestoreConfirmStep.manualAttachNote')}</p>
+          )}
           <p className="mt-1 text-muted-foreground">{t('vMRestoreConfirmStep.newIdentityNote')}</p>
         </div>
       )}

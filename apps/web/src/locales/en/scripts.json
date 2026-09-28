@@ -151,6 +151,7 @@
     },
     "fields": {
       "name": "Automation name",
+      "actionType": "Action type",
       "cronExpression": "Cron Expression",
       "eventType": "Event Type",
       "webhookUrl": "Webhook URL",
@@ -224,7 +225,9 @@
     "searchPlaceholder": "Search automations...",
     "filters": {
       "allTriggers": "All Triggers",
-      "allStatus": "All Status"
+      "allStatus": "All Status",
+      "triggerLabel": "Trigger",
+      "statusLabel": "Status"
     },
     "trigger": {
       "schedule": "Schedule",
@@ -558,6 +561,7 @@
     },
     "fields": {
       "name": "Policy name",
+      "ruleType": "Rule type",
       "targetType": "Target Type",
       "softwareName": "Software Name",
       "versionCheck": "Version Check",
@@ -629,7 +633,9 @@
     "searchPlaceholder": "Search policies...",
     "filters": {
       "allEnforcement": "All Enforcement",
-      "allStatus": "All Status"
+      "allStatus": "All Status",
+      "enforcementLabel": "Enforcement",
+      "statusLabel": "Status"
     },
     "enforcement": {
       "monitor": {
@@ -743,7 +749,9 @@
       "lastHour": "Last Hour",
       "lastDay": "Last 24 Hours",
       "lastWeek": "Last 7 Days",
-      "lastMonth": "Last 30 Days"
+      "lastMonth": "Last 30 Days",
+      "statusLabel": "Status",
+      "dateLabel": "Date range"
     },
     "status": {
       "pending": "Pending",
@@ -1423,6 +1431,7 @@
   },
   "testRunner": {
     "title": "Test run",
+    "deviceSelectLabel": "Test device",
     "devicePlaceholder": "Select a test device…",
     "noDevices": "No compatible devices",
     "devicesLoadFailed": "Couldn't load devices",

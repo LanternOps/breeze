@@ -207,6 +207,7 @@ export default defineConfig({
       // fail it on connect. Belongs to vitest.integration.config.ts.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
       'src/routes/enrollmentKeysSiteScope.integration.test.ts',
+      'src/routes/enrollmentKeysFailureCleanup.integration.test.ts',
       // Real-DB suites owned by vitest.integration.config.ts (#3778).
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',

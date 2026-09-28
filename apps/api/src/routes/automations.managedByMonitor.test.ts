@@ -141,6 +141,7 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: any, fn: () => Promise<unknown>) => fn()),
 }));
 
 const AUTOMATION_ID = '11111111-1111-4111-8111-111111111111';

@@ -20,6 +20,7 @@ import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore, type AiRestoreAuthorization } from './aiToolsRestoreAuthorization';
 import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
+import type { HypervOptions } from './bareMetalRebuildSchemas';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -73,14 +74,14 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 3,
     domain: 'backup',
-    searchHint: 'backup snapshot recovery as a Hyper-V virtual machine or Linux rebuild to a VHDX image',
+    searchHint: 'backup snapshot recovery as a Hyper-V virtual machine or whole-machine rebuild to a VHDX image (Linux or Windows)',
     // Both engines' hosts are device args: the central gate (enforceDeviceArgs)
     // runs the org+site check on whichever one the call carries.
     deviceArgs: ['targetDeviceId', 'rebuildHostDeviceId'],
     definition: {
       name: 'restore_as_vm',
       description:
-        'Restore a snapshot as a VM. hyperv (default) creates a Hyper-V VM on Windows; rebuild turns a Linux whole-machine snapshot with a disk layout manifest into VHDX on Linux. Rebuilt images always get a NEW machine identity and require manual attachment to Hyper-V.',
+        'Restore a snapshot as a VM. hyperv (default) creates a Hyper-V VM on a Windows host from a Hyper-V backup; rebuild turns a whole-machine snapshot with a disk layout into a VHDX on a rebuild host, always with a NEW machine identity.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -107,9 +108,26 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
             },
             description: 'Optional VM resource overrides (engine "hyperv")',
           },
-          rebuildHostDeviceId: { type: 'string', description: 'Linux device UUID that runs the rebuild (required for engine "rebuild")' },
-          outputPath: { type: 'string', description: 'Absolute .vhdx output path on the rebuild host (required for engine "rebuild")' },
+          rebuildHostDeviceId: {
+            type: 'string',
+            description: 'Device UUID that runs the rebuild; same platform as the snapshot (Linux on Linux, Windows on Windows). Required for engine "rebuild"',
+          },
+          outputPath: {
+            type: 'string',
+            description: 'Absolute .vhdx output path on the rebuild host: /… on Linux, a drive-letter path like C:\\… on Windows; no UNC shares (required for engine "rebuild")',
+          },
           imageSizeGb: { type: 'number', description: 'Optional virtual disk size in GB (engine "rebuild")' },
+          hyperv: {
+            type: 'object',
+            properties: {
+              vmName: { type: 'string', description: 'Name of the Hyper-V VM to create (required inside hyperv)' },
+              switchName: { type: 'string', description: 'Optional virtual switch; without it the VM has no network adapter' },
+              memoryMb: { type: 'number', description: 'Optional startup memory in MB (min 512)' },
+              cpuCount: { type: 'number', description: 'Optional virtual processor count' },
+            },
+            required: ['vmName'],
+            description: 'Optional, engine "rebuild" on a Windows host only: create (not start) a Gen2 Hyper-V VM from the VHDX. Omit to attach the VHDX to a VM manually',
+          },
         },
         required: ['snapshotId'],
       },
@@ -121,6 +139,9 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       if (engine === 'rebuild') {
         const rebuildHostDeviceId = input.rebuildHostDeviceId as string;
         const outputPath = input.outputPath as string;
+        const hyperv = input.hyperv && typeof input.hyperv === 'object'
+          ? input.hyperv as HypervOptions
+          : undefined;
         if (!snapshotId || !rebuildHostDeviceId || !outputPath) {
           return JSON.stringify({ error: 'snapshotId, rebuildHostDeviceId, and outputPath are required for engine "rebuild"' });
         }
@@ -145,10 +166,16 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           rebuildHostDeviceId,
           outputPath,
           ...(typeof input.imageSizeGb === 'number' ? { imageSizeGb: input.imageSizeGb } : {}),
+          // Shape already validated by aiToolSchemasBackup (hypervOptionsSchema).
+          ...(hyperv ? { hyperv } : {}),
           userId: auth.user?.id ?? null,
         });
         if (!result.ok) {
-          return JSON.stringify({ error: result.error, ...(result.details ? { details: result.details } : {}) });
+          return JSON.stringify({
+            error: result.error,
+            ...(result.message ? { message: result.message } : {}),
+            ...(result.details ? { details: result.details } : {}),
+          });
         }
         return JSON.stringify({
           success: true,
@@ -160,7 +187,10 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           rebuildHostDeviceId,
           outputPath,
           identity: 'new',
-          note: 'Attach the VHDX to a Hyper-V VM manually; automatic VM creation for Linux guests arrives with the Windows engine.',
+          ...(hyperv ? { hyperv } : {}),
+          note: hyperv
+            ? `The rebuild host creates the Hyper-V VM "${hyperv.vmName}" from the VHDX after the rebuild validates.`
+            : 'Attach the VHDX to a VM manually, or pass hyperv on a Windows rebuild host to have the VM created.',
         });
       }
 

@@ -606,7 +606,8 @@
       "generated": "Généré",
       "noSoftwareData": "Aucune donnée logicielle",
       "configuration": "Configuration"
-    }
+    },
+    "timeRangeSelectLabel": "Plage de temps"
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "Impossible de charger le statut de conformité",
@@ -1110,6 +1111,8 @@
     "memoryModules": "Modules de mémoire",
     "memoryNotReported": "Pas encore rapporté — mise à jour de l’agent requise",
     "noMemoryModulesReported": "Aucun module de mémoire rapporté.",
+    "memoryModulesOnPackage": "La mémoire est intégrée (soudée) — il n'y a aucun emplacement amovible à signaler.",
+    "memoryMaxCapacity": "Capacité maximale prise en charge : {{capacity}}",
     "slot": "Emplacement",
     "capacity": "Capacité",
     "memoryType": "Type de mémoire",
@@ -1222,7 +1225,7 @@
     "missing": "Manquants",
     "reason": "Raison",
     "lastChecked": "Dernière vérification",
-    "thisMacIsBelowTheMacos": "Ce Mac se trouve sous le macOS 14+ étage pour le chemin natif de la fenêtre de connexion du bureau.",
+    "reasonLoginWindow": "Fenêtre de connexion (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "La portée des fenêtres de connexion n’est annoncée que pour les installations gérées avec l’assistant de bureau déployé.",
     "theNativeLoginWindowDesktopPath": "Le chemin de bureau de la fenêtre de connexion natif est verrouillé derrière l’approbation des droits Apple.",
     "theNativeLoginWindowDesktopPath2": "Le chemin natif de la fenêtre de connexion sur le bureau n’est pas encore prêt sur cet appareil.",

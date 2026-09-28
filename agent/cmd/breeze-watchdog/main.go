@@ -129,7 +129,7 @@ var runCmd = &cobra.Command{
 			}
 			return
 		}
-		runWatchdog(nil)
+		runWatchdog(nil, nil)
 	},
 }
 
@@ -326,6 +326,8 @@ func failoverRecoveryIntent(cmdType string) (intent watchdog.RecoveryIntent, res
 // stopCh is an optional channel that, when closed, triggers a clean shutdown.
 // On Unix this is nil (signal handling is used instead). On Windows the SCM
 // handler closes it on Stop/Shutdown.
+// powerCh carries suspend/resume power events from the Windows SCM handler
+// (#6762); nil everywhere else, which blocks its select case forever.
 // osExecutableFn, verifyTrustedExecutableOwnerFn, and geteuidFn are
 // package-level vars so tests can exercise
 // verifyOwnExecutableTrustedIfPrivileged's branching without needing to run
@@ -372,7 +374,7 @@ func reportExecutableTrustWarning(err error) {
 	slog.Warn(msg, "error", err.Error())
 }
 
-func runWatchdog(stopCh <-chan struct{}) {
+func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	if err := verifyOwnExecutableTrustedIfPrivileged(); err != nil {
 		reportExecutableTrustWarning(err)
 		if enforceExecutableTrustAtStartup {
@@ -686,6 +688,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 		case <-runCtx.Done():
 			shutdown()
 			return
+
+		case n := <-powerCh:
+			applyPowerNotice(n, healthChecker, journal)
 
 		case <-processTicker.C:
 			// Re-read state file for fresh PID. Journal read failures on

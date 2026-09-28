@@ -66,6 +66,14 @@
     },
     "launching": "Lancement...",
     "launchingViewer": "Lancement du visionnement...",
+    "loginWindow": {
+      "connectVnc": "Se connecter avec le relais VNC",
+      "description": "macOS bloque la saisie clavier et souris à distance dans la fenêtre de connexion : le Bureau à distance n’a donc pas été lancé.",
+      "enableVncRelay": "Activez le relais VNC dans la politique de configuration de cet appareil pour ouvrir une session à l’écran de connexion, ou reconnectez-vous après qu’un utilisateur a ouvert une session.",
+      "title": "Ce Mac est à la fenêtre de connexion",
+      "unavailableTitle": "Bureau à distance non disponible",
+      "useVncRelay": "Utilisez le relais VNC pour ouvrir une session à l’écran de connexion."
+    },
     "openInBrowser": "Ouvrir dans le navigateur",
     "policyDisabled": "Le bureau à distance est désactivé par la politique",
     "policyDisabledNamed": "Le bureau à distance est désactivé par la politique « {{name}} »",
@@ -84,6 +92,10 @@
         "default": "La session a été terminée par une politique de sécurité. Reconnectez-vous pour réessayer."
       }
     },
+    "startFailed": {
+      "description": "L’agent n’a pas pu démarrer la session. Réessayez ou consultez les journaux de diagnostic de l’appareil.",
+      "title": "Le Bureau à distance n’a pas pu démarrer"
+    },
     "unavailable": {
       "default": "Le mode de bureau n’est pas disponible sur cet appareil",
       "headless": "Cet appareil n’a pas d’affichage — le bureau à distance n’est pas disponible",
@@ -92,7 +104,7 @@
       "missingEntitlement": "Le bureau de la fenêtre de connexion est bloqué jusqu’à ce que le droit requis Apple soit approuvé",
       "missingPermission": "Les autorisations macOS requises pour l’accès au bureau sans surveillance sont toujours manquantes",
       "noDisplaySession": "Aucune session graphique active — connectez-vous d’abord via RDP ou la console",
-      "unsupportedOs": "Le bureau de la fenêtre de connexion nécessite macOS 14 (Sonoma) ou une version ultérieure. Activez le relais VNC dans la politique de configuration de l’appareil pour se connecter à l’écran de connexion.",
+      "unsupportedOs": "macOS bloque la saisie clavier et souris à distance dans la fenêtre de connexion : le Bureau à distance ne peut donc pas contrôler ce Mac à cet endroit. Activez le relais VNC dans la politique de configuration de l’appareil pour vous connecter à l’écran de connexion.",
       "virtualDisplay": "Aucun écran pouvant être capturé n’est disponible sur ce Mac. Activez le relais VNC pour vous connecter au moyen du partage d’écran macOS.",
       "waylandUnsupported": "Il s’agit d’un bureau Wayland — le bureau à distance nécessite un agent plus récent",
       "x11AuthFailed": "Impossible de s’authentifier auprès du serveur d’affichage (autorité X)",
@@ -639,7 +651,10 @@
       "lastSevenDays": "Sept derniers jours",
       "lastThirtyDays": "Trente derniers jours",
       "today": "Aujourd’hui",
-      "yesterday": "Hier"
+      "yesterday": "Hier",
+      "typeFilterLabel": "Type de session",
+      "userFilterLabel": "Utilisateur",
+      "dateFilterLabel": "Plage de dates"
     },
     "noSessions": "Pas de sessions",
     "page": "Page {{current}} de {{total}}",

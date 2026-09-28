@@ -582,6 +582,7 @@
       "6h": "Last 6 hours",
       "24h": "Last 24 hours"
     },
+    "timeRangeSelectLabel": "Time range",
     "labels": {
       "os": "OS",
       "cpu": "CPU",
@@ -1110,6 +1111,8 @@
     "memoryModules": "Memory Modules",
     "memoryNotReported": "Not reported yet — needs agent update",
     "noMemoryModulesReported": "No memory modules reported.",
+    "memoryModulesOnPackage": "Memory is on-package (soldered) — there are no removable slots to report.",
+    "memoryMaxCapacity": "Max supported capacity: {{capacity}}",
     "slot": "Slot",
     "capacity": "Capacity",
     "memoryType": "Type",
@@ -1222,7 +1225,7 @@
     "missing": "Missing",
     "reason": "Reason",
     "lastChecked": "Last Checked",
-    "thisMacIsBelowTheMacos": "This Mac is below the macOS 14+ floor for the native login-window desktop path.",
+    "reasonLoginWindow": "Login Window (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "Login-window reachability is only advertised for managed installs with the desktop helper deployed.",
     "theNativeLoginWindowDesktopPath": "The native login-window desktop path is gated behind Apple entitlement approval.",
     "theNativeLoginWindowDesktopPath2": "The native login-window desktop path is not ready on this device yet.",

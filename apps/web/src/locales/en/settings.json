@@ -3423,7 +3423,8 @@
     "tryAdjustingYourSearchOrFilters": "Try adjusting your search or filters.",
     "active": "Active",
     "revoked": "Revoked",
-    "expired": "Expired"
+    "expired": "Expired",
+    "statusFilterLabel": "Status"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -3827,7 +3828,9 @@
     "verifyYourIdentity": "Verify your identity",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
-    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app."
+    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app.",
+    "ssoReauthManageHint": "This account signs in through an identity provider and has no password. Verify with your provider to confirm this change.",
+    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -3944,7 +3947,11 @@
     "passkeyStepUpVerificationExpired": "Verification expired. Please verify again.",
     "passkeyRegistrationServerError": "Passkey registration failed. Please try again.",
     "deletePasskeyVerifyHeading": "Verify to delete a passkey",
-    "deletePasskeyVerifyHint": "Enter a current MFA code here before removing one of the passkeys above. This code has no effect on adding a new passkey."
+    "deletePasskeyVerifyHint": "Enter a current MFA code here before removing one of the passkeys above. This code has no effect on adding a new passkey.",
+    "ssoReauthManageProofExpired": "Your identity provider verification has expired. Verify again to confirm this change.",
+    "verifyWithIdpToDeletePasskey": "This account has no password. Verify with your identity provider before removing a passkey.",
+    "deletePasskeySsoReauth": "Verify identity to remove a passkey",
+    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove."
   },
   "roleManager": {
     "roles": "Roles",
@@ -4012,13 +4019,18 @@
     "createANewCustomRoleBasedOnThisOne": "Create a new custom role based on this one.",
     "saving": "Saving...",
     "cloneRole2": "Clone Role",
+    "mfaRequired": "MFA required",
+    "mfaRequiredTooltip": "Members of this role must enroll in multi-factor authentication.",
+    "requireMfaForThisRole": "Require MFA for this role",
+    "requireMfaForThisRoleHelp": "Members assigned this role must enroll in multi-factor authentication before they can use Breeze.",
     "saveChanges": "Save Changes",
     "deleting": "Deleting...",
     "networkErrorLoadingPermissions": "Network error while loading permissions",
     "cannotDeleteAssignedRole": "Cannot delete role with assigned users",
     "inheritedFromParentRole": "Inherited from parent role",
     "waitingForPermissionCatalog": "Waiting for permission catalog to load",
-    "summary": "{{filtered}} of {{total}} roles"
+    "summary": "{{filtered}} of {{total}} roles",
+    "typeFilterLabel": "Role type"
   },
   "roleSelector": {
     "currentRole": "Current role",
@@ -4067,6 +4079,9 @@
     "thisOrganization": "This organization",
     "partnerTechnicianLogin": "Partner (technician login)",
     "yourOwnTeamSignsInWithThis": "(your own team signs in with this)",
+    "selectAnOrganizationToCreateAnOrgProvider": "Select an organization in the organization switcher to create a provider for that organization.",
+    "partnerProviderRequiresFullPartnerAccess": "Partner-wide providers require access to all organizations.",
+    "selectAnOrganizationBeforeCreatingAProvider": "Select an organization in the organization switcher before creating a provider.",
     "basicInformation": "Basic Information",
     "providerName": "Provider name",
     "eGOktaProduction": "e.g., Okta Production",
@@ -4143,7 +4158,8 @@
     "delete": "Delete",
     "allStatuses": "All statuses",
     "deactivate": "Deactivate",
-    "activate": "Activate"
+    "activate": "Activate",
+    "statusFilterLabel": "Status"
   },
   "ssoProvidersPage": {
     "failedToFetchSSOProviders": "Failed to fetch SSO providers",
@@ -4173,6 +4189,7 @@
     "failedToDeleteProvider": "Failed to delete provider",
     "anErrorOccurred": "An error occurred",
     "failedToSaveProvider": "Failed to save provider",
+    "providerNeedsOrganization": "Select an organization in the organization switcher, or set “Applies to” to Partner (technician login) to create a partner-wide provider.",
     "addSSOProvider": "Add SSO Provider",
     "editSSOProvider": "Edit SSO Provider",
     "configureANewSSOProviderForYourOrganization": "Configure a new SSO provider for your organization.",
@@ -5417,7 +5434,8 @@
       "title": "Delete Custom Field",
       "messagePrefix": "Are you sure you want to delete",
       "messageSuffix": " This will remove the field definition and all stored values on devices."
-    }
+    },
+    "typeFilterLabel": "Field type"
   },
   "knownGuestsSettings": {
     "title": "Known Guests",

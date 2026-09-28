@@ -3,12 +3,14 @@
 package hyperv
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // psVMPayload is the JSON shape returned by Get-VM | ConvertTo-Json.
@@ -202,6 +204,13 @@ func runPS(command string) (string, error) {
 		return "", fmt.Errorf("powershell failed: %w: %s", err, string(out))
 	}
 	return string(out), nil
+}
+
+// runPSContext executes a PowerShell script under ctx, bounded by timeout, and
+// returns its output. Unlike runPS, a cancelled ctx (the rebuild watchdog) or
+// the timeout kills powershell.exe instead of waiting on it forever.
+func runPSContext(ctx context.Context, script string, timeout time.Duration) (string, error) {
+	return runCmdContext(ctx, timeout, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 }
 
 // escapePSString and psQuote live in restore_identity.go (platform-neutral).

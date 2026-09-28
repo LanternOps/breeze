@@ -126,6 +126,11 @@ func (c *backupRunProviderConfig) credentials() (accessKey, secretKey string) {
 // command's VSS-by-default flip) is excluded from the Windows CI job, so a
 // runtime.GOOS-only assertion would be vacuous on the Linux runners that
 // actually run these tests.
+//
+// This decides the run-wide session only. Windows system-state collection
+// takes its own short-lived shadow copy of the system volume when no session
+// covers it, so a pathless system_image run still captures the registry hives
+// from a shadow copy rather than `reg.exe save` (#5397).
 func defaultVSS(goos string, systemImage bool, hasPaths bool) bool {
 	return goos == "windows" && (!systemImage || hasPaths)
 }

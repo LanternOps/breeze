@@ -188,7 +188,7 @@ describe('deleteDeviceCascade lock ordering', () => {
     };
 
     sentry.captureMessage.mockClear();
-    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toBeUndefined();
+    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ removedTopologyAlerts: 0 });
 
     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('lock_timeout');
@@ -397,7 +397,7 @@ describe('deleteDeviceCascade when the parent lock is not acquired', () => {
     sentry.captureMessage.mockClear();
     const { tx, statements } = captureTx(0);
 
-    await expect(deleteDeviceCascade(tx, 'device-gone')).resolves.toBeUndefined();
+    await expect(deleteDeviceCascade(tx, 'device-gone')).resolves.toEqual({ removedTopologyAlerts: 0 });
 
     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('without holding');

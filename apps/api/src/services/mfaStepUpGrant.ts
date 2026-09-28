@@ -38,6 +38,16 @@ export type StepUpOperation =
   | 'register_approver_device'
   | 'agent_rollback'
   | 'enroll_first_factor'
+  // #4045: the SSO re-auth callback's OTHER output. A passwordless account
+  // that already holds a factor proves "user at the keyboard" through a fresh,
+  // forced IdP round-trip instead of the password it does not have. It
+  // replaces ONLY the password leg of recovery-code rotation, passkey deletion
+  // and MFA disable — each of which still demands its own existing-factor
+  // proof (an operation-bound step-up grant, or a live MFA code). Minted only
+  // by GET /sso/callback (reauth mode) for an MFA-protected account, and
+  // compiler-excluded from the client-requestable STEP_UP_OPERATIONS in
+  // routes/auth/schemas.ts exactly like `enroll_first_factor`.
+  | 'sso_reauth_manage_factor'
   // RMM-QA-176: entering or EXTENDING device maintenance mode. Bound by
   // resourceDigest to the exact { deviceIds, reason, durationHours } the
   // technician was shown, so a grant can never be replayed against a
@@ -80,7 +90,13 @@ export type StepUpOperation =
   // STEP_UP_OPERATIONS in routes/auth/schemas.ts, by the compiler. Letting a
   // client mint one would turn an ordinary TOTP step-up into a bypass of the
   // enforcing-partner L3 passkey floor on supervised rows.
-  | 'approval_decide';
+  | 'approval_decide'
+  // Topology M3 (#5999, amendments M3-D2/D3): arming a recurring monitoring
+  // policy or a standing interface-telemetry poll hands unattended, repeating
+  // execution on customer machines to a stored frozen actor. Bound by
+  // resourceDigest to the exact { siteId, action, subjectId } the operator saw,
+  // so a grant for one policy/target can never arm another.
+  | 'topology_arm';
 
 export interface StepUpGrant {
   id: string;
@@ -271,6 +287,20 @@ export function partnerScriptCeilingResourceDigest(input: {
     widening: input.widening
       ? { ...input.widening, unattendedAllowedClasses: [...input.widening.unattendedAllowedClasses].sort() }
       : null,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** Topology arm step-up binding (M3-D2/D3): one site, one action, one subject. */
+export function topologyArmResourceDigest(input: {
+  siteId: string;
+  action: 'arm_policy' | 'arm_telemetry';
+  subjectId: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    action: input.action,
+    siteId: input.siteId.toLowerCase(),
+    subjectId: input.subjectId.toLowerCase(),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

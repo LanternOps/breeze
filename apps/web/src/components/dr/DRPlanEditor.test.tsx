@@ -369,3 +369,99 @@ describe('DRPlanEditor save atomicity (#6382)', () => {
     await waitFor(() => expect(onPartialSave).toHaveBeenCalled());
   });
 });
+
+// W06d (Task 22, ruling D7): the API accepts a POSIX `/…` or a Windows
+// drive-absolute `X:\…` output dir (no UNC), so the editor's pre-write check
+// mirrors that instead of requiring a leading "/".
+describe('DRPlanEditor rebuild output dir platforms (W06d)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  const planWithOutputDir = (outputDir: string) => ({
+    data: {
+      id: 'plan-1',
+      name: 'Plan A',
+      description: null,
+      status: 'draft',
+      rpoTargetMinutes: 60,
+      rtoTargetMinutes: 240,
+      groups: [
+        {
+          id: 'group-1',
+          name: 'Tier 1',
+          sequence: 0,
+          dependsOnGroupId: null,
+          devices: ['d-99'],
+          estimatedDurationMinutes: 30,
+          restoreConfig: {
+            commandType: 'BARE_METAL_REBUILD',
+            snapshotSelection: 'latest_restorable',
+            outputDir,
+            waitTimeoutMinutes: 90,
+          },
+        },
+      ],
+    },
+  });
+
+  function mockPlan(outputDir: string) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans/plan-1' && method === 'GET') return makeJsonResponse(planWithOutputDir(outputDir));
+      if (url === '/dr/plans/plan-1' && method === 'PATCH') return makeJsonResponse({ data: { id: 'plan-1' } });
+      if (url === '/dr/plans/plan-1/groups/group-1' && method === 'PATCH') return makeJsonResponse({ data: { id: 'group-1' } });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  async function openAndSave(onSaved = vi.fn()) {
+    render(<DRPlanEditor open planId="plan-1" onClose={vi.fn()} onSaved={onSaved} />);
+    const save = (await screen.findByText('Save plan')).closest('button')!;
+    await waitFor(() => expect(save).not.toBeDisabled());
+    return { save, onSaved };
+  }
+
+  const groupPatchBody = () => {
+    const call = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/dr/plans/plan-1/groups/group-1' && (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    return call ? JSON.parse(String((call[1] as RequestInit).body)) : undefined;
+  };
+
+  it('saves a Windows drive-absolute output dir', async () => {
+    mockPlan('/srv/rebuild');
+    const { save, onSaved } = await openAndSave();
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-output-dir'), {
+      target: { value: 'D:\\Rebuild\\out' },
+    });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(groupPatchBody()?.restoreConfig.outputDir).toBe('D:\\Rebuild\\out');
+  });
+
+  it('refuses a UNC output dir before issuing any write', async () => {
+    mockPlan('/srv/rebuild');
+    const { save } = await openAndSave();
+    fireEvent.change(screen.getByTestId('dr-group-rebuild-output-dir'), {
+      target: { value: '\\\\fileserver\\rebuild' },
+    });
+    fireEvent.click(save);
+
+    expect(await screen.findByText(/output directory must be an absolute path/i)).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false);
+  });
+
+  it('shows the stored default as blank (the host default) and saves it back unchanged', async () => {
+    mockPlan('/var/lib/breeze/rebuild/out');
+    const { save, onSaved } = await openAndSave();
+    expect((screen.getByTestId('dr-group-rebuild-output-dir') as HTMLInputElement).value).toBe('');
+    fireEvent.click(save);
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(groupPatchBody()?.restoreConfig.outputDir).toBe('/var/lib/breeze/rebuild/out');
+  });
+});

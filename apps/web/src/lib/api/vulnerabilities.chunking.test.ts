@@ -118,7 +118,7 @@ describe('#3694 bulk id chunking', () => {
     expect(fetchWithAuth).toHaveBeenCalledTimes(2);   // the third batch must never fire
   });
 
-  it('the partial message warns about duplicate installs rather than inviting a blind retry', async () => {
+  it('the partial message states a lower bound and that a retry reuses installs already queued (#3750)', async () => {
     fetchWithAuth
       .mockImplementationOnce(() => Promise.resolve(new Response(JSON.stringify({ scheduled: 200, skipped: [] }))))
       .mockImplementationOnce(() => Promise.resolve(new Response(JSON.stringify({ error: 'boom' }), { status: 500 })));
@@ -127,7 +127,48 @@ describe('#3694 bulk id chunking', () => {
       .filter((c) => (c[0] as { type: string }).type === 'error')
       .map((c) => (c[0] as { message: string }).message);
     // "At least N" not "exactly N": the failed batch may also have applied work.
-    expect(errs.some((m) => m.includes('At least 200') && /duplicate/i.test(m))).toBe(true);
+    expect(errs.some((m) => m.includes('At least 200'))).toBe(true);
+    // The server now collapses a retry onto installs still queued, so the copy
+    // must no longer warn that retrying queues duplicates.
+    expect(errs.some((m) => /duplicate/i.test(m))).toBe(false);
+    expect(errs.some((m) => /already queued/i.test(m))).toBe(true);
+  });
+
+  it('carries the server\'s alreadyQueued ids through every batch and names the count (#3750)', async () => {
+    // A retried selection: the server reports the first 150 of each batch as
+    // already queued.
+    fetchWithAuth.mockImplementation((_u: string, opts: { body: string }) => {
+      const batch = JSON.parse(opts.body).deviceVulnerabilityIds as string[];
+      return Promise.resolve(new Response(JSON.stringify({
+        success: true, scheduled: batch.length, alreadyQueued: batch.slice(0, 150), skipped: [],
+      })));
+    });
+
+    const result = await remediateVuln(ids(400));
+
+    expect(result.scheduled).toBe(400);
+    expect(result.alreadyQueued).toHaveLength(300);
+    const successes = showToast.mock.calls.filter((c) => (c[0] as { type: string }).type === 'success');
+    expect((successes[0][0] as { message: string }).message).toMatch(/300 already queued/);
+  });
+
+  it('single-batch summary names findings that were already queued', async () => {
+    fetchWithAuth.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      success: true, scheduled: 3, alreadyQueued: ['id-0', 'id-1'], skipped: [],
+    }))));
+
+    const result = await remediateVuln(ids(3));
+
+    expect(result.alreadyQueued).toEqual(['id-0', 'id-1']);
+    const successes = showToast.mock.calls.filter((c) => (c[0] as { type: string }).type === 'success');
+    expect((successes[0][0] as { message: string }).message).toMatch(/2 already queued/);
+  });
+
+  it('treats a response without alreadyQueued as none already queued', async () => {
+    const result = await remediateVuln(ids(5));
+    expect(result.alreadyQueued).toEqual([]);
+    const successes = showToast.mock.calls.filter((c) => (c[0] as { type: string }).type === 'success');
+    expect((successes[0][0] as { message: string }).message).not.toMatch(/already queued/);
   });
 
   // Tickets are the exception: the server creates ONE ticket per org, so three

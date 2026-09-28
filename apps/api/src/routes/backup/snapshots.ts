@@ -11,6 +11,7 @@ import {
   backupLayoutManifestKey,
   checkBackupProviderCapabilities,
 } from '../../services/backupSnapshotStorage';
+import { resolveSnapshotPlatform } from '../../services/bareMetalRebuildSchemas';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
@@ -19,6 +20,7 @@ import {
   snapshotProtectionReasonSchema,
 } from './schemas';
 import type { SnapshotTreeItem } from './types';
+import { attachDeviceNames } from './deviceNames';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -256,7 +258,7 @@ snapshotsRoutes.get(
       .where(and(...conditions))
       .orderBy(desc(backupSnapshots.timestamp));
 
-    return c.json({ data: rows.map(toSnapshotResponse) });
+    return c.json({ data: await attachDeviceNames(orgId, rows.map(toSnapshotResponse)) });
   }
 );
 
@@ -707,6 +709,10 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     // run captured none. Restore-as-VM offers the rebuild engine only for
     // snapshots that carry one (W05a); the manifest body stays off the list.
     layoutManifestKey: row.layoutManifest ? backupLayoutManifestKey(row.snapshotId) : null,
+    // W06d: the layout's platform ('linux' | 'windows', null when absent or
+    // unknown). The rebuild engine is platform-matched, so Restore-as-VM
+    // filters rebuild hosts by it; a null platform cannot be rebuilt.
+    layoutPlatform: resolveSnapshotPlatform(row.layoutManifest),
     sizeBytes: row.size ?? null,
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,

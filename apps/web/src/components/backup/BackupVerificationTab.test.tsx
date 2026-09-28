@@ -139,6 +139,20 @@ describe('BackupVerificationTab', () => {
     expect(await screen.findByText('manifest not found: snapshot snap-1')).toBeTruthy();
   });
 
+  it('formats sizes with the same auto units as the rest of the tab, not "5,120.0 MB" (#7213)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/backup/verifications')) {
+        return makeJsonResponse({ data: [{ ...mockVerifications[0], sizeBytes: 5 * 1024 ** 3 }] });
+      }
+      if (url.includes('/backup/recovery-readiness')) return makeJsonResponse(mockReadiness);
+      return makeJsonResponse({});
+    });
+    render(<BackupVerificationTab deviceId={deviceId} />);
+    expect(await screen.findByText('5 GB')).toBeTruthy();
+    expect(screen.queryByText(/MB/)).toBeNull();
+  });
+
   it('shows loading state initially', () => {
     render(<BackupVerificationTab deviceId={deviceId} />);
     expect(screen.getByText('Loading verification data...')).toBeTruthy();

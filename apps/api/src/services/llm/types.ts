@@ -1,3 +1,4 @@
+import type { TopologyTurnRuntime } from '../topology/aiInvestigation';
 /**
  * LLM provider abstraction - chat-only PoC (no tool-calling).
  *
@@ -78,4 +79,12 @@ export interface OpenAISession {
   auditSnapshot: AuditSnapshot;
   /** Aborts the in-flight HTTP turn, if any */
   abortController: AbortController;
+  /**
+   * Topology M4 Task 3 (#6000): the host-owned investigation runtime for the
+   * current turn. While set, provider text goes to its output gate (never the
+   * event bus), and the turn ends with one validated `topology_explanation`.
+   * This transport is chat-only: the evidence is already in the prompt and no
+   * tool can run.
+   */
+  topologyInvestigation?: TopologyTurnRuntime;
 }

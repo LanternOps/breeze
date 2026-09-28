@@ -248,6 +248,18 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Topology M4-D2 (2026-11-06-220000): BEFORE UPDATE OF topology_site_id only;
+  // RAISEs when the site pin changes. Merge repoints org_id (never the pin),
+  // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
+  // separate ai_sessions/sites re-points commit together.
+  'ai_sessions.breeze_ai_sessions_topology_site_guard': 'fires only on UPDATE OF topology_site_id and blocks a pin change; never reads or blocks org_id',
+  // Brokered backup writes (2026-11-08-120000 / 120100): parent-org guards that
+  // check only the references (device, job, reservation, session, snapshot,
+  // configuration) an INSERT sets or an UPDATE changes. An UPDATE that changes
+  // org_id alone — a repoint or a device-move restamp — is never checked.
+  'backup_snapshot_id_reservations.backup_snapshot_id_reservations_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  'backup_storage_sessions.backup_storage_sessions_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  'backup_storage_session_uploads.backup_storage_session_uploads_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
   // Partner alerts feed (2026-10-30-130000): BEFORE INSERT OR UPDATE, only sets
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.
@@ -258,6 +270,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // RAISEs and never reverts org_id — a merge repoint is exactly the case it
   // exists for.
   'backup_snapshots.backup_snapshots_file_index_tenancy_reset': 'only resets file_index_status on an org/device change; never reads-to-block or reverts org_id',
+  // Snapshot attestations (2026-11-08-110000): the BEFORE UPDATE guard freezes
+  // the attested/binding columns and the status transition, and deliberately
+  // leaves org_id out of both, so a device move or merge repoint passes.
+  'backup_snapshot_attestations.backup_snapshot_attestations_guard': 'freezes attested columns and status transitions; org_id is excluded and may change',
   // Recipe library E2 (2026-10-26-160000): fires only on UPDATE OF
   // device_id/ticket_id/contact_id and only stamps detached_at/_reason/state
   // when the last pointer goes null. Never reads or writes org_id; the table is
@@ -268,11 +284,21 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',
   'topology_collection_runs.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
   'topology_observations.topology_evidence_immutable': 'permits org_id ownership and physical reference migration (relationship/subject node/interface) while preserving historical content',
+  // M3 interface samples: raw readings are immutable, org_id (and updated_at)
+  // are excluded from the compared set so a merge repoint passes.
+  'topology_interface_samples.topology_interface_sample_immutable': 'permits org_id ownership updates while preserving raw readings',
   'topology_config_template_versions.breeze_topology_template_content_guard': 'published payload immutable but owner org may move',
   'topology_site_template_bindings.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_probe_targets.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_monitoring_policies.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_diagnostic_runs.breeze_topology_diagnostic_run_guard': 'guards accepted content and terminal state, permits org-only ownership transfer',
+  'topology_diagnostic_runs.breeze_topology_diagnostic_run_authority_guard': 'fires only on requester_authority changes (UPDATE OF requester_authority); an org-only merge never rewrites it — the frozen requester org is re-checked live and fences the run instead (also for scheduled policy occurrences, M3-D13)',
+  // M3 Task 7: validates alert_state entries on UPDATE OF alert_state only; never reads or reverts org_id.
+  // M3 Task 8 (M3-D6): pins org_id of a SITE-OWNED topology alert only when the
+  // source org is NOT fenced 'merging' (a device move-org re-stamp); during a
+  // merge the site and the alert move together under deferred constraints.
+  'alerts.breeze_alerts_topology_ownership_guard': 'reverts org_id only for topology site-owned alerts outside a merge (source org status merging passes)',
+  'topology_monitoring_policies.breeze_topology_policy_alert_state_guard': 'validates alert_state shape on UPDATE OF alert_state only; org_id repoint untouched',
   'devices.breeze_topology_authority_detach': 'same-site org-only merge keeps bindings; prepare hook fences authority',
   'discovered_assets.breeze_topology_authority_detach': 'same-site org-only merge keeps bindings; collision executor detaches before deletion',
   'network_monitors.breeze_topology_monitor_site': 'only asset/site updates bind monitor scope; org-only merge uses deferred composite FKs',
@@ -580,6 +606,12 @@ describe('Org merge policy registry contract', () => {
         JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
        WHERE NOT t.tgisinternal
+         -- A row trigger declared on a partitioned table is cloned onto every
+         -- partition (tgparentid <> 0). The clone runs the parent's function,
+         -- so it is classified once, under the parent; runtime-created leaves
+         -- (daily interface-sample partitions) would otherwise make this list
+         -- change every day, like conparentid in orgCascadeFkOnDelete.
+         AND t.tgparentid = 0
          AND (t.tgtype & 2)  <> 0   -- BEFORE
          AND (t.tgtype & 16) <> 0   -- UPDATE
          AND (t.tgtype & 1)  <> 0   -- FOR EACH ROW

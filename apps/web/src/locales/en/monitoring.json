@@ -155,7 +155,8 @@
     },
     "composite": {
       "children": "Child conditions",
-      "add": "Add condition"
+      "add": "Add condition",
+      "matchLabel": "Match"
     },
     "restart": {
       "label": "Restart service on the device",

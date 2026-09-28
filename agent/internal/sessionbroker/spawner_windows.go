@@ -280,8 +280,15 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 		// a real RDS host. Proceed without job membership instead: the helper is
 		// still tracked and terminated through its process handle on logoff,
 		// shutdown, and reconcile. Only OS-enforced KILL_ON_JOB_CLOSE cleanup
-		// after an agent *crash* is lost, and the single-instance guard plus
-		// reconcile reclaim such orphans on the next start.
+		// after an agent *crash* is lost. There is no process-table sweep for
+		// such an orphan (#6762); it is bounded by IPC admission instead. Its
+		// reconnect supervisor dials the restarted agent's broker, which
+		// admits at most one helper per {Windows session, role}
+		// (reserveWindowsHelper). The orphan is either adopted as that key's
+		// owner, so reconcile spawns no second one, or refused with
+		// duplicate_key / not_desired, both permanent, and it exits.
+		// Only an orphan that never reconnects (a wedged helper) outlives
+		// this, and that path is not bounded here.
 		jobOwned = false
 		log.Warn("helper not assigned to job object; using handle-based ownership only",
 			"helperKey", key.String(), "pid", pending.pid, "error", err.Error())

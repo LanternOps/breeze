@@ -116,6 +116,49 @@ func downloadWithDeadline(ctx context.Context, provider providers.BackupProvider
 	return err
 }
 
+// downloadClockInterface abstracts wall time for downloadWithStallTimeout so
+// its tests can drive the passage of time explicitly instead of racing real
+// scheduling (#7255): the provider's chunk pacing and the watchdog's
+// no-progress window are two independently-scheduled real-time waits, and on
+// a loaded CI runner the gap between them could shrink enough to trip a false
+// stall even though nothing was actually stalled. Production always uses
+// realDownloadClock; this is a seam, not a behaviour change.
+type downloadClockInterface interface {
+	Now() time.Time
+	NewTimer(d time.Duration) downloadTimerInterface
+}
+
+// downloadTimerInterface is the subset of *time.Timer that
+// downloadWithStallTimeout uses.
+type downloadTimerInterface interface {
+	C() <-chan time.Time
+	Reset(d time.Duration) bool
+	Stop() bool
+}
+
+type realDownloadClock struct{}
+
+func (realDownloadClock) Now() time.Time { return time.Now() }
+func (realDownloadClock) NewTimer(d time.Duration) downloadTimerInterface {
+	return realDownloadTimer{time.NewTimer(d)}
+}
+
+type realDownloadTimer struct{ t *time.Timer }
+
+func (r realDownloadTimer) C() <-chan time.Time        { return r.t.C }
+func (r realDownloadTimer) Reset(d time.Duration) bool { return r.t.Reset(d) }
+func (r realDownloadTimer) Stop() bool                 { return r.t.Stop() }
+
+var downloadClock downloadClockInterface = realDownloadClock{}
+
+// setDownloadClockForTest overrides downloadClock. Call the returned func
+// (typically via defer) to restore it.
+func setDownloadClockForTest(c downloadClockInterface) (restore func()) {
+	old := downloadClock
+	downloadClock = c
+	return func() { downloadClock = old }
+}
+
 // errDownloadStalled is matched (errors.Is) by a downloadStallError.
 var errDownloadStalled = errors.New("download stalled")
 
@@ -177,13 +220,13 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 
 	var received atomic.Int64
 	var lastProgress atomic.Int64 // UnixNano of the last observed progress
-	lastProgress.Store(time.Now().UnixNano())
+	lastProgress.Store(downloadClock.Now().UnixNano())
 
 	fileCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	fileCtx = providers.WithDownloadProgress(fileCtx, func(n int64) {
 		received.Add(n)
-		advanceProgress(&lastProgress, time.Now().UnixNano())
+		advanceProgress(&lastProgress, downloadClock.Now().UnixNano())
 	})
 
 	done := make(chan struct{})
@@ -194,7 +237,7 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 		// shrinks (re-created by a retry or by FallbackProvider's next
 		// candidate) and regrows to an old size delivered no new data.
 		maxSize := max(localFileSize(localPath), 0)
-		timer := time.NewTimer(window)
+		timer := downloadClock.NewTimer(window)
 		defer timer.Stop()
 		for {
 			select {
@@ -202,9 +245,9 @@ func downloadWithStallTimeout(ctx context.Context, provider providers.BackupProv
 				return
 			case <-fileCtx.Done():
 				return
-			case <-timer.C:
+			case <-timer.C():
 			}
-			now := time.Now()
+			now := downloadClock.Now()
 			if size := localFileSize(localPath); size > maxSize {
 				maxSize = size
 				// A reporting provider's bytes were stamped by the callback

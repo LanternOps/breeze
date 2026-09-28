@@ -221,7 +221,11 @@
       "resolved": "Résolu",
       "suppressed": "Masqué",
       "dismissed": "Ignoré"
-    }
+    },
+    "filterStatusLabel": "Filtre de statut",
+    "filterSeverityLabel": "Filtre de gravité",
+    "filterDeviceLabel": "Filtre d'appareil",
+    "filterDateRangeLabel": "Filtre de plage de dates"
   },
   "alertRuleEditPage": {
     "loadingAlertRule": "Règle d’alerte de chargement...",
@@ -868,7 +872,8 @@
       "webhook": "Webhook",
       "sms": "SMS",
       "pushover": "Pushover"
-    }
+    },
+    "typeLabel": "Type"
   },
   "notificationChannelsPage": {
     "loadingNotificationChannels": "Chargement des canaux de notification...",

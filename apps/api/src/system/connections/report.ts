@@ -1,3 +1,4 @@
+import { getVersionMismatch } from '../../services/versionMismatch';
 import { CONNECTION_REGISTRY } from './registry';
 import { isFlagOn, isSet } from './statusHelpers';
 import {
@@ -91,6 +92,7 @@ export function buildConnectionsReport(
 
   return {
     version: env.APP_VERSION?.trim() || 'unknown',
+    versionMismatch: getVersionMismatch(env),
     deployMode: isFlagOn(env, 'IS_HOSTED') ? 'hosted' : 'self_host',
     scope: 'api',
     summary,

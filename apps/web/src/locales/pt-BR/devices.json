@@ -606,7 +606,8 @@
       "generated": "Gerado em",
       "noSoftwareData": "Sem dados de software",
       "configuration": "Configuração"
-    }
+    },
+    "timeRangeSelectLabel": "Intervalo de tempo"
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "Falha ao carregar o status de conformidade",
@@ -1110,6 +1111,8 @@
     "memoryModules": "Módulos de memória",
     "memoryNotReported": "Ainda não informado — requer atualização do agente",
     "noMemoryModulesReported": "Nenhum módulo de memória informado.",
+    "memoryModulesOnPackage": "A memória é integrada ao chip (soldada) — não há slots removíveis para informar.",
+    "memoryMaxCapacity": "Capacidade máxima suportada: {{capacity}}",
     "slot": "Soquete",
     "capacity": "Capacidade",
     "memoryType": "Tipo",
@@ -1222,7 +1225,7 @@
     "missing": "Ausente",
     "reason": "Motivo",
     "lastChecked": "Última verificação",
-    "thisMacIsBelowTheMacos": "Este Mac não atende ao requisito mínimo do macOS 14+ para o acesso nativo à área de trabalho pela janela de login.",
+    "reasonLoginWindow": "Janela de login (macOS)",
     "loginWindowReachabilityIsOnlyAdvertised": "A acessibilidade da janela de login só é informada em instalações gerenciadas que tenham o auxiliar de área de trabalho implantado.",
     "theNativeLoginWindowDesktopPath": "O acesso nativo à área de trabalho pela janela de login depende da aprovação do direito de acesso pela Apple.",
     "theNativeLoginWindowDesktopPath2": "O acesso nativo à área de trabalho pela janela de login ainda não está pronto neste dispositivo.",

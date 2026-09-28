@@ -1,4 +1,7 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation } from '@breeze/shared';
+// Subpath, not the barrel: this module loads on the topology island, whose CSP
+// forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
+import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
 
 export interface AiMessage {
   id: string;
@@ -16,8 +19,31 @@ export interface AiMessage {
    * AiToolCallCard falls back to the payload shape gated on `!isError`.
    */
   handoff?: string;
+  /**
+   * Topology M4 (#6000): the server-validated, cited structured answer of a
+   * topology investigation turn. Present only when the server published one;
+   * `content` then holds its plain-text rendering (never raw model output).
+   */
+  topologyExplanation?: TopologyAiExplanation;
+  /**
+   * A stored topology answer that failed client-side validation on reload.
+   * Its body is never shown; the Explain panel renders its deterministic
+   * fallback instead.
+   */
+  topologyExplanationInvalid?: boolean;
   isStreaming?: boolean;
   createdAt: Date;
+}
+
+/** Plain-text rendering of a validated topology explanation for the chat transcript. */
+export function renderTopologyExplanation(explanation: TopologyAiExplanation): string {
+  const lines: string[] = [];
+  for (const finding of explanation.findings) {
+    lines.push(finding.kind === 'hypothesis' ? `Hypothesis: ${finding.text}` : finding.text);
+  }
+  for (const item of explanation.missingData) lines.push(`Missing data: ${item}`);
+  for (const check of explanation.nextChecks) lines.push(`Suggested check (${check.recipeId}): ${check.rationale}`);
+  return lines.join('\n');
 }
 
 export interface DeviceContext {
@@ -120,6 +146,10 @@ export interface StreamableState {
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   /** Analysis runs launched from this conversation, keyed by run id. */
   chatRuns: Record<string, ChatRunState>;
+  /** Topology M4: fixed phase of the running investigation turn (aiStore only). */
+  topologyPhase?: AiTopologyProgressPhase | null;
+  /** Topology M4: accepted run of an approved diagnostic proposal (aiStore only). */
+  topologyRunId?: string | null;
 }
 
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;
@@ -403,6 +433,41 @@ export function processStreamEvent(
       set(() => ({ isStreaming: false }));
       return null;
 
+    // Topology M4 (#6000): progress phases are status only; the explanation
+    // is the ONLY answer a topology turn ever sends, already validated.
+    case 'topology_progress':
+      set(() => ({ topologyPhase: event.phase }));
+      return currentAssistantId;
+
+    case 'topology_explanation': {
+      // Defense in depth: the server validated it; an answer that does not
+      // parse here is shown as nothing but the invalid marker.
+      const parsed = topologyAiExplanationSchema.safeParse(event.explanation);
+      const patch: Partial<AiMessage> = parsed.success
+        ? { content: renderTopologyExplanation(parsed.data), topologyExplanation: parsed.data }
+        : { content: '', topologyExplanationInvalid: true };
+      // The explanation is published AFTER the transport's message_end (which
+      // clears the current id), and a cached answer arrives with no
+      // message_start at all. Attach it to this turn's assistant message —
+      // the last one after the last user message — or start one.
+      set((s) => {
+        const lastUser = s.messages.map((m) => m.role).lastIndexOf('user');
+        const targetIndex = currentAssistantId
+          ? s.messages.findIndex((m) => m.id === currentAssistantId)
+          : s.messages.findIndex((m, i) => i > lastUser && m.role === 'assistant');
+        if (targetIndex >= 0) {
+          return { topologyPhase: null, messages: s.messages.map((m, i) => (i === targetIndex ? { ...m, ...patch, isStreaming: false } : m)) };
+        }
+        const message: AiMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', createdAt: new Date(), ...patch };
+        return { topologyPhase: null, messages: [...s.messages, message] };
+      });
+      return currentAssistantId;
+    }
+
+    case 'topology_diagnostic_run':
+      set(() => ({ topologyRunId: event.runId }));
+      return currentAssistantId;
+
     // Deliberate no-ops, named so the exhaustiveness guard below can be exact.
     // Each of these is handled by a DIFFERENT surface, not by this technician
     // chat store: `warning` and `tool_completed`/`tool_request`/
@@ -439,6 +504,23 @@ export function processStreamEvent(
 }
 
 /** Map raw API message objects to typed AiMessage array */
+/**
+ * A stored topology investigation answer (M4 #6000) is persisted as
+ * `contentBlocks: [{ type: 'topology_explanation', explanation }]` with the
+ * JSON in `content`. Map it to the structured answer — never the raw body.
+ */
+function storedTopologyExplanation(m: Record<string, unknown>): Pick<AiMessage, 'content' | 'topologyExplanation' | 'topologyExplanationInvalid'> | null {
+  const blocks = m.contentBlocks;
+  if (m.role !== 'assistant' || !Array.isArray(blocks)) return null;
+  const block = blocks.find((b): b is { type: string; explanation?: unknown } =>
+    !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'topology_explanation');
+  if (!block) return null;
+  const parsed = topologyAiExplanationSchema.safeParse(block.explanation);
+  return parsed.success
+    ? { content: renderTopologyExplanation(parsed.data), topologyExplanation: parsed.data }
+    : { content: '', topologyExplanationInvalid: true };
+}
+
 export function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMessage[] {
   return rawMessages.map((m) => ({
     id: m.id as string,
@@ -448,6 +530,7 @@ export function mapMessagesFromApi(rawMessages: Record<string, unknown>[]): AiMe
     toolInput: m.toolInput as Record<string, unknown> | undefined,
     toolOutput: m.toolOutput,
     toolUseId: m.toolUseId as string | undefined,
-    createdAt: new Date(m.createdAt as string)
+    createdAt: new Date(m.createdAt as string),
+    ...storedTopologyExplanation(m),
   }));
 }

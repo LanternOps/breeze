@@ -92,6 +92,8 @@
     "fleetOrchestration": "Filo Orkestrasyonu",
     "aiAssistant": "Yapay Zeka Asistanı",
     "software": "Yazılım",
+    "softwareInventory": "Yazılım Envanteri",
+    "softwarePolicies": "Yazılım Politikaları",
     "securityOverview": "Genel Bakış",
     "aiRisk": "Yapay Zeka Riski",
     "deviceBackup": "Cihaz Yedekleme",
@@ -1136,7 +1138,8 @@
           "title": "Yapılandırılmış PSA bağlantısı yok"
         },
         "filters": {
-          "allStatuses": "Tüm durumlar"
+          "allStatuses": "Tüm durumlar",
+          "statusFilterLabel": "Bağlantı durumu"
         },
         "headers": {
           "connection": "Bağlantı",
@@ -1205,7 +1208,8 @@
           "title": "Senkronize edilen PSA bileti yok"
         },
         "filters": {
-          "allStatuses": "Tüm durumlar"
+          "allStatuses": "Tüm durumlar",
+          "statusFilterLabel": "Bilet durumu"
         },
         "headers": {
           "linkedAlert": "Bağlantılı Uyarı",
@@ -1341,7 +1345,8 @@
         "empty": "Web kancası bulunamadı.",
         "failedCount": "{{count}} başarısız oldu",
         "filters": {
-          "allStatuses": "Tüm durumlar"
+          "allStatuses": "Tüm durumlar",
+          "statusFilterLabel": "Webhook durumu"
         },
         "headers": {
           "events": "Etkinlikler",
@@ -2119,7 +2124,8 @@
         "description": "Kuruluşlarınız genelinde takip edilen olaylar ve EDR bulguları.",
         "filters": {
           "tracked": "Takip edildi",
-          "findings": "Bulgular"
+          "findings": "Bulgular",
+          "kindLabel": "Tür"
         },
         "emptyTitle": "Hiçbir olay bulunamadı",
         "emptyFiltered": "Mevcut filtrelerle eşleşen olay yok.",
@@ -2342,7 +2348,9 @@
           "unknown": "Bilinmiyor"
         },
         "lastSeen": "Son görülme",
-        "noDeviceInventory": "Henüz müşterilerden gelen cihaz envanteri yok."
+        "noDeviceInventory": "Henüz müşterilerden gelen cihaz envanteri yok.",
+        "healthFilterLabel": "Sağlık",
+        "sortFilterLabel": "Sırala"
       }
     },
     "remediation": {

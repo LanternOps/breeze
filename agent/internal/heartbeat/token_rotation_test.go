@@ -452,6 +452,9 @@ func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 		rawBody string
 		// true => the staged credentials must be gone from disk afterwards.
 		wantDiscarded bool
+		// Defaults to 1. A staged-token 401 adds a second call: the probe of
+		// the CURRENT credential (#2773).
+		wantConfirmCalls int
 	}{
 		{
 			name:          "expired staged set is terminal",
@@ -466,12 +469,16 @@ func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 			wantDiscarded: true,
 		},
 		{
-			name:   "staged token rejected outright is terminal",
-			status: http.StatusUnauthorized,
-			body:   map[string]any{"error": "unauthorized"},
-			// A 401 means the server would not accept the staged token at all, so
-			// it can never be promoted.
-			wantDiscarded: true,
+			// #2773 — this stub 401s EVERY token, current included, so nothing
+			// proves the current credential is live (a suspended device or an
+			// inactive tenant looks exactly like this). The staged copy may be
+			// the server's current credential; keep it. The discard-after-proof
+			// cases are in TestConfirmRotationStagedTokenRejected.
+			name:             "staged token rejected while the current token is also rejected is retryable",
+			status:           http.StatusUnauthorized,
+			body:             map[string]any{"error": "unauthorized"},
+			wantDiscarded:    false,
+			wantConfirmCalls: 2,
 		},
 		{
 			name:   "compare-and-swap conflict is retryable",
@@ -538,8 +545,12 @@ func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 
 			h.reconcilePendingRotation()
 
-			if confirmCalls != 1 {
-				t.Fatalf("confirm calls = %d, want 1", confirmCalls)
+			wantCalls := tc.wantConfirmCalls
+			if wantCalls == 0 {
+				wantCalls = 1
+			}
+			if confirmCalls != wantCalls {
+				t.Fatalf("confirm calls = %d, want %d", confirmCalls, wantCalls)
 			}
 
 			persisted, err := config.ReadPersistedCredentials()

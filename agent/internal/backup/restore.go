@@ -167,23 +167,17 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 	result.StagingDir = stagingDir
 
-	// 4. Load resume state if it exists
-	resumeState, err := LoadResumeState(stagingDir)
-	if err != nil {
-		slog.Warn("failed to load resume state, starting fresh", "error", err.Error())
-	}
-	if resumeState == nil {
-		resumeState = &ResumeState{
-			SnapshotID:     cfg.SnapshotID,
-			CompletedFiles: make(map[string]bool),
-		}
-	}
+	// 4. Load resume state (snapshot + journal) if it exists. Progress is
+	// journaled per file and compacted when the run ends without completing
+	// (restore_resume.go, #7333); a completed run discards it below.
+	resume := openResumeTracker(stagingDir, cfg.SnapshotID)
+	defer resume.close()
 
 	// Tell a batching provider which objects are coming, in order, so it
 	// can authorize them a window at a time rather than one per download.
 	pending := make([]SnapshotFile, 0, len(files))
 	for _, f := range files {
-		if !resumeState.CompletedFiles[f.BackupPath] {
+		if !resume.completed(f.BackupPath) {
 			pending = append(pending, f)
 		}
 	}
@@ -211,7 +205,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		targetPath := filepath.Join(targetBase, relativeTarget)
 
 		// Skip already-completed files (resume)
-		if resumeState.CompletedFiles[file.BackupPath] {
+		if resume.completed(file.BackupPath) {
 			if info, statErr := securefs.StatFile(targetBase, relativeTarget); statErr == nil && info.Size() == file.Size {
 				result.FilesRestored++
 				result.BytesRestored += file.Size
@@ -221,7 +215,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				}
 				continue
 			}
-			delete(resumeState.CompletedFiles, file.BackupPath)
+			resume.forget(file.BackupPath)
 		}
 
 		// Download to staging
@@ -337,13 +331,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 		result.FilesRestored++
 		result.BytesRestored += file.Size
-		resumeState.CompletedFiles[file.BackupPath] = true
-		resumeState.BytesRestored += file.Size
-
-		// Save resume state after each successful file
-		if saveErr := SaveResumeState(stagingDir, resumeState); saveErr != nil {
-			slog.Warn("failed to save resume state", "error", saveErr.Error())
-		}
+		// One journal append per file — not a rewrite of the whole state.
+		resume.markCompleted(file.BackupPath, file.Size)
 
 		if progressFn != nil {
 			progressFn("restoring", current, total,
@@ -484,6 +473,9 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 	// 7. Clean up staging on success
 	if result.Status == "completed" {
+		// Nothing left to resume. Release the journal handle first: an open
+		// handle would block removing the staging dir on Windows.
+		resume.discard()
 		if err := os.RemoveAll(stagingDir); err != nil {
 			slog.Warn("failed to clean up staging dir", "dir", stagingDir, "error", err.Error())
 		} else {
@@ -857,7 +849,7 @@ func validateSnapshotID(snapshotID string) error {
 // hex chars + ".gz" = 67, comfortably under any filesystem limit) and
 // collision-resistant, so distinct BackupPaths never share a staging file.
 // The ".gz" suffix is cosmetic only — nothing parses this name back into a
-// BackupPath; resume state (ResumeState.CompletedFiles, restore_resume.go)
+// BackupPath; resume state (resumeTracker, restore_resume.go)
 // and every restore-loop lookup key off file.BackupPath directly, never off
 // the staging filename, so this stays consistent with resume behavior.
 func stagingFileName(backupPath string) string {

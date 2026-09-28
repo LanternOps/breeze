@@ -18,6 +18,7 @@ import {
 } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
+import { FilterSelect } from "../shared/FilterSelect";
 import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
@@ -298,7 +299,8 @@ export default function VulnerabilitiesPage() {
           />
         </div>
         <div className="flex flex-wrap gap-2">
-          <select
+          <FilterSelect
+            label={t("securityVulnerabilitiesPage.severityFilterLabel")}
             value={severity}
             onChange={(e) => {
               const value = e.target.value;
@@ -309,7 +311,7 @@ export default function VulnerabilitiesPage() {
                 value ? `#severity=${value}` : window.location.pathname,
               );
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm"
+            className="h-10"
           >
             <option value="">
               {t("securityVulnerabilitiesPage.allSeverities")}
@@ -324,11 +326,12 @@ export default function VulnerabilitiesPage() {
               {t("securityVulnerabilitiesPage.medium")}
             </option>
             <option value="low">{t("securityVulnerabilitiesPage.low")}</option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t("securityVulnerabilitiesPage.statusFilterLabel")}
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="h-10 rounded-md border bg-background px-3 text-sm"
+            className="h-10"
           >
             <option value="">
               {t("securityVulnerabilitiesPage.allStatuses")}
@@ -342,11 +345,12 @@ export default function VulnerabilitiesPage() {
             <option value="removed">
               {t("securityVulnerabilitiesPage.removed")}
             </option>
-          </select>
-          <select
+          </FilterSelect>
+          <FilterSelect
+            label={t("securityVulnerabilitiesPage.categoryFilterLabel")}
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="h-10 rounded-md border bg-background px-3 text-sm"
+            className="h-10"
           >
             <option value="">
               {t("securityVulnerabilitiesPage.allCategories")}
@@ -364,7 +368,7 @@ export default function VulnerabilitiesPage() {
               {t("securityVulnerabilitiesPage.spyware")}
             </option>
             <option value="pup">{t("securityVulnerabilitiesPage.pup")}</option>
-          </select>
+          </FilterSelect>
         </div>
       </div>
 

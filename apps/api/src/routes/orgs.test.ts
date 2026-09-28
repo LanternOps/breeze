@@ -1,5 +1,6 @@
 const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
 vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
+import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
 import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
@@ -47,6 +48,14 @@ vi.mock('../services/enrollmentDefaults', () => ({
     deviceCount: 25,
     maxTtlMinutes: 43200
   }))
+}));
+
+// PR #7117 T3 — site delete removes the site's owned topology alerts under a
+// site row lock first; the SQL itself is proven against real Postgres in
+// __tests__/integration/siteDeleteTopologyAlerts.integration.test.ts.
+vi.mock('../services/siteOwnedAlerts', () => ({
+  lockSiteForDelete: vi.fn(async () => true),
+  deleteSiteOwnedTopologyAlerts: vi.fn(async () => 0),
 }));
 
 // #6475 — GET /organizations/:id/effective-settings folds in the interactive
@@ -215,7 +224,14 @@ vi.mock('../db', () => ({
           values: vi.fn(() => ({
             returning: vi.fn(() => Promise.resolve([]))
           }))
-        }))
+        })),
+        // Site delete (#6000): the topology-investigation cleanup reads the
+        // site's pinned sessions (none here) before deleting the site row.
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
+        delete: vi.fn(() => ({
+          where: vi.fn(() => Promise.resolve())
+        })),
+        execute: vi.fn(() => Promise.resolve([]))
       };
       return fn(tx);
     })
@@ -249,6 +265,8 @@ vi.mock('../services/orgImport', () => ({
 
 vi.mock('../db/schema', () => ({
   partners: {},
+  // Site delete's topology-investigation cleanup (#6000) names these tables.
+  aiSessions: {}, aiMessages: {}, aiToolExecutions: {}, aiActionPlans: {}, aiScreenshots: {},
   // #2879 — sentinel columns (same pattern as sites.id below) so the
   // suspended-org override tests can assert the UPDATE's WHERE re-asserts
   // eq(organizations.status,'suspended') / eq(organizations.partnerId,...)
@@ -446,9 +464,28 @@ describe('org routes', () => {
     permissionMockState.denied.clear();
     selectedOrgIds.current = [];
     setAuthContext();
+    siteDeleteTransaction();
     app = new Hono();
     app.route('/orgs', orgRoutes);
   });
+
+  /**
+   * Site delete (#6000 + PR #7117 T3) runs the owned-alert cleanup, the pinned
+   * topology-session cleanup and the site delete in ONE db.transaction. Routes
+   * a test's transaction through its own db doubles, except the session read,
+   * which finds no pinned investigations.
+   */
+  const siteDeleteTxOver = (base: any) => ({
+    ...base,
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
+  });
+
+  /** Site delete (#6000) runs its cleanup + delete in db.transaction; earlier tests override that mock. */
+  const siteDeleteTransaction = () => vi.mocked(db.transaction).mockImplementation(async (fn: (tx: any) => any) => fn({
+    insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) })),
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
+    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+  }));
 
   describe('MFA policy activation safety', () => {
     const id = '00000000-0000-4000-8000-000000000167';
@@ -5835,6 +5872,9 @@ describe('org routes', () => {
           })
         })
       } as any);
+      // Earlier suites install a persistent transaction double without
+      // delete; route this one through the db mock.
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(siteDeleteTxOver(db)));
 
       const res = await app.request('/orgs/sites/site-1', {
         method: 'DELETE'
@@ -5843,6 +5883,9 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // The site's owned topology alerts are removed first, under its row lock.
+      expect(lockSiteForDelete).toHaveBeenCalledWith(expect.anything(), 'site-1');
+      expect(deleteSiteOwnedTopologyAlerts).toHaveBeenCalledWith(expect.anything(), '11111111-1111-1111-1111-111111111111', 'site-1');
     });
   });
 
@@ -5963,6 +6006,7 @@ describe('org routes', () => {
         const deleteSpy = vi.mocked(db.delete).mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
         } as any);
+ vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(siteDeleteTxOver(db)));
 
         const res = await app.request('/orgs/sites/site-y', { method: 'DELETE' });
 
@@ -5976,6 +6020,7 @@ describe('org routes', () => {
         vi.mocked(db.delete).mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
         } as any);
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(siteDeleteTxOver(db)));
 
         const res = await app.request('/orgs/sites/site-x', { method: 'DELETE' });
 
@@ -5988,6 +6033,7 @@ describe('org routes', () => {
         vi.mocked(db.delete).mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
         } as any);
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(siteDeleteTxOver(db)));
 
         const res = await app.request('/orgs/sites/site-y', { method: 'DELETE' });
 

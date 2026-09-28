@@ -233,6 +233,30 @@ describe('cloneQuote', () => {
     expect(quoteInsert.currencyCode).toBe('EUR');
   });
 
+  it.each<[string, string | null, string | null]>([
+    // #7216: '' on a SENT source is the frozen "no footer" marker, not a
+    // choice the tech made — the new draft inherits live like any draft whose
+    // footer field is blank (the editor shows blank as "inherit").
+    ["frozen '' → NULL (inherit)", '', null],
+    ['a real footer line carries over as the override', 'Net 30', 'Net 30'],
+    ['NULL stays NULL', null, null],
+  ])('clone footer line: %s', async (_name, sourceTerms, expected) => {
+    state.selectResults.push(
+      [{ ...sourceQuote(), terms: sourceTerms }],
+      [], // no blocks
+      [], // no lines
+      [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
+      [], // no images
+    );
+
+    await cloneQuote('quote-1', actor);
+
+    const [quoteInsert] = state.insertedValues as [Record<string, unknown>];
+    expect(quoteInsert.terms).toBe(expected);
+  });
+
   it('rejects a cross-org retarget onto an org billed in another currency (CURRENCY_MISMATCH, nothing created)', async () => {
     state.selectResults.push(
       [{ ...sourceQuote(), currencyCode: 'EUR' }],

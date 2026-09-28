@@ -29,6 +29,17 @@ const baseVerdict: AlertAiVerdictSummaryDto = {
   createdAt: '2026-08-28T00:00:00Z',
 };
 
+describe('AlertList filter selects accessible name (#7156)', () => {
+  it('gives the status/severity/date-range filter selects a real accessible name once expanded', () => {
+    render(<AlertList alerts={[baseAlert]} />);
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+
+    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Severity' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Date range' })).toBeInTheDocument();
+  });
+});
+
 describe('AlertList — Organization column follows fleet view', () => {
   it('hides the Organization column in single-org scope', () => {
     render(<AlertList alerts={[baseAlert]} showOrgColumn={false} />);
@@ -117,3 +128,11 @@ describe('AlertList blocked scope (RMM-QA-153)', () => {
     expect(onBulkAction).not.toHaveBeenCalled();
   });
 });
+
+// #7215: write actions are now gated on the caller's permissions. These suites
+// exercise the actions themselves, so grant everything; the role-aware
+// behaviour is covered in the *.permissions.test.tsx suites.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));

@@ -28,6 +28,9 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   siteAccessCheck: (allowed?: string[]) => (siteId?: string | null) => allowed === undefined || (typeof siteId === 'string' && allowed.includes(siteId)),
+  // Route-construction middleware of the M3 arming routes mounted on the same hub.
+  requireInteractiveSession: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
 }));
 vi.mock('../../services/permissions', async () => ({ ...await vi.importActual<object>('../../services/permissions'), getUserPermissions: m.getUserPermissions }));
 vi.mock('../../db', () => ({ db: { select: m.select }, withDbTransaction: vi.fn(), assertInTransaction: vi.fn() }));

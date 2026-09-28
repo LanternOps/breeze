@@ -24,6 +24,7 @@ import { resolveBackupProviderConfig, resolveBackupWriteCommandDestination } fro
 import { CommandTypes } from './commandTypes';
 import { CommandDeliveryRefusedError, type DeliveryRefreshContext } from './commandDeliveryRefusal';
 import { BACKUP_READ_CREDENTIAL_COMMAND_TYPES } from './backupReadHelperGate';
+import { recordBackupWriteDispatch } from './backupMetrics';
 
 export const PROVIDER_CONFIG_REF_FIELD = 'providerConfigRef';
 
@@ -150,6 +151,8 @@ async function inReferencedOrg<T>(orgId: string, fn: () => Promise<T>): Promise<
 export async function materializeBackupStorageCredentials(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
+  /** Why a backup write was not delivered through a storage session (dispatch telemetry). */
+  opts: { legacyReason?: string } = {},
 ): Promise<Record<string, unknown>> {
   if (!(PROVIDER_CONFIG_REF_FIELD in payload)) return payload;
 
@@ -189,6 +192,11 @@ export async function materializeBackupStorageCredentials(
         throw new CommandDeliveryRefusedError(
           'The backup destination encryption settings changed after this command was queued; run it again.',
         );
+      }
+      if (destination.provider === 'local') {
+        recordBackupWriteDispatch(ctx.type, 'local', 'no_credential');
+      } else {
+        recordBackupWriteDispatch(ctx.type, 'legacy_credential', opts.legacyReason ?? 'delivery_refresher');
       }
       return {
         ...rest,

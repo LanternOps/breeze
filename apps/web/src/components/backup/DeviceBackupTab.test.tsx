@@ -266,6 +266,47 @@ describe('DeviceBackupTab', () => {
     expect(runButton).toBeDisabled();
   });
 
+  it('shows, as visible text, why Run backup now is disabled on an unprotected device (#7213)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/status/device-1') return makeJsonResponse({ data: { protected: false } });
+      if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+      if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    expect(await screen.findByRole('button', { name: /Run backup now/i })).toBeDisabled();
+    // A title tooltip is invisible on a disabled button — the reason must be text.
+    expect(screen.getByText(/Assign a backup policy to protect this device/i, { selector: 'p,span' })).toBeTruthy();
+  });
+
+  it('keeps line breaks in the completed-with-errors file list (#7213)', async () => {
+    const errorLog = '2 file(s) could not be read:\nC:\\a.txt: permission denied\nC:\\b.txt: in use';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: true,
+            lastJob: { id: 'j', deviceId: 'device-1', type: 'file', status: 'completed_with_errors', startedAt: '2026-03-30T00:00:00Z', errorCount: 2, errorLog },
+          },
+        });
+      }
+      if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+      if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const banner = await screen.findByTestId('backup-last-job-diagnostic');
+    const body = banner.querySelector('p.mt-1');
+    expect(body?.textContent).toContain('C:\\a.txt: permission denied\nC:\\b.txt: in use');
+    expect(body?.className).toContain('whitespace-pre-line');
+  });
+
   it('shows the provider fallback warning on a restore point', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

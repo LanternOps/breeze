@@ -73,7 +73,7 @@ vi.mock('../../middleware/auth', async () => ({
   siteAccessCheck: (await vi.importActual<typeof import('../../middleware/auth')>('../../middleware/auth')).siteAccessCheck,
 }));
 
-import { filterAlertsBySiteScope } from './siteScope';
+import { alertInSiteScope, filterAlertsBySiteScope } from './siteScope';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const SITE_A = '5a5a5a5a-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -82,7 +82,7 @@ const DEVICE_A = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd';
 const DEVICE_B = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd';
 const MISSING_DEVICE = 'deadbeef-0000-4000-8000-000000000000';
 
-type AlertRow = { id: string; deviceId: string | null };
+type AlertRow = { id: string; deviceId: string | null; topologySiteId: string | null };
 
 describe('filterAlertsBySiteScope', () => {
   beforeEach(() => {
@@ -94,21 +94,21 @@ describe('filterAlertsBySiteScope', () => {
   });
 
   it('DROPS a row whose device no longer exists for a site-restricted caller (fail-closed)', async () => {
-    const rows: AlertRow[] = [{ id: 'alert-missing', deviceId: MISSING_DEVICE }];
+    const rows: AlertRow[] = [{ id: 'alert-missing', deviceId: MISSING_DEVICE, topologySiteId: null }];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [SITE_A], orgId: ORG }, rows);
     expect(out).toEqual([]);
   });
 
   it('KEEPS a deviceless (org-wide) alert for a site-restricted caller', async () => {
-    const rows: AlertRow[] = [{ id: 'alert-orgwide', deviceId: null }];
+    const rows: AlertRow[] = [{ id: 'alert-orgwide', deviceId: null, topologySiteId: null }];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [SITE_A], orgId: ORG }, rows);
     expect(out.map((r) => r.id)).toEqual(['alert-orgwide']);
   });
 
   it('KEEPS in-site device alerts and DROPS out-of-site ones for a site-restricted caller', async () => {
     const rows: AlertRow[] = [
-      { id: 'alert-a', deviceId: DEVICE_A },
-      { id: 'alert-b', deviceId: DEVICE_B },
+      { id: 'alert-a', deviceId: DEVICE_A, topologySiteId: null },
+      { id: 'alert-b', deviceId: DEVICE_B, topologySiteId: null },
     ];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [SITE_A], orgId: ORG }, rows);
     expect(out.map((r) => r.id)).toEqual(['alert-a']);
@@ -116,10 +116,10 @@ describe('filterAlertsBySiteScope', () => {
 
   it('passes every row through unchanged for an unrestricted caller (allowedSiteIds undefined)', async () => {
     const rows: AlertRow[] = [
-      { id: 'alert-a', deviceId: DEVICE_A },
-      { id: 'alert-b', deviceId: DEVICE_B },
-      { id: 'alert-orgwide', deviceId: null },
-      { id: 'alert-missing', deviceId: MISSING_DEVICE },
+      { id: 'alert-a', deviceId: DEVICE_A, topologySiteId: null },
+      { id: 'alert-b', deviceId: DEVICE_B, topologySiteId: null },
+      { id: 'alert-orgwide', deviceId: null, topologySiteId: null },
+      { id: 'alert-missing', deviceId: MISSING_DEVICE, topologySiteId: null },
     ];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: undefined, orgId: ORG }, rows);
     expect(out).toBe(rows);
@@ -129,8 +129,8 @@ describe('filterAlertsBySiteScope', () => {
 
   it('an empty allowlist keeps deviceless alerts but drops all device-bound ones', async () => {
     const rows: AlertRow[] = [
-      { id: 'alert-a', deviceId: DEVICE_A },
-      { id: 'alert-orgwide', deviceId: null },
+      { id: 'alert-a', deviceId: DEVICE_A, topologySiteId: null },
+      { id: 'alert-orgwide', deviceId: null, topologySiteId: null },
     ];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [], orgId: ORG }, rows);
     expect(out.map((r) => r.id)).toEqual(['alert-orgwide']);
@@ -140,8 +140,34 @@ describe('filterAlertsBySiteScope', () => {
     // Same device id, but it belongs to a different org than the caller — must not
     // resolve to an in-site match even if its siteId is in the allowlist.
     state.devices = [{ id: DEVICE_A, siteId: SITE_A, orgId: 'other-org' }];
-    const rows: AlertRow[] = [{ id: 'alert-a', deviceId: DEVICE_A }];
+    const rows: AlertRow[] = [{ id: 'alert-a', deviceId: DEVICE_A, topologySiteId: null }];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [SITE_A], orgId: ORG }, rows);
     expect(out).toEqual([]);
+  });
+});
+
+describe('site-owned topology alerts follow their TOPOLOGY site (M3-D6, PR #7117 T1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.devices = [
+      { id: DEVICE_A, siteId: SITE_A, orgId: ORG },
+      { id: DEVICE_B, siteId: SITE_B, orgId: ORG },
+    ];
+  });
+
+  it('batch filter keeps/drops by the owning topology site whatever the origin device site', async () => {
+    const rows: AlertRow[] = [
+      { id: 'owned-by-b-origin-a', deviceId: DEVICE_A, topologySiteId: SITE_B },
+      { id: 'owned-by-a-origin-b', deviceId: DEVICE_B, topologySiteId: SITE_A },
+    ];
+    const out = await filterAlertsBySiteScope({ allowedSiteIds: [SITE_A], orgId: ORG }, rows);
+    expect(out.map((r) => r.id)).toEqual(['owned-by-a-origin-b']);
+  });
+
+  it('by-id gate: owning site decides the site axis; the exact-device axis still binds', async () => {
+    expect(await alertInSiteScope({ allowedSiteIds: [SITE_A] }, { deviceId: DEVICE_A, topologySiteId: SITE_B })).toBe(false);
+    expect(await alertInSiteScope({ allowedSiteIds: [SITE_A] }, { deviceId: DEVICE_B, topologySiteId: SITE_A })).toBe(true);
+    expect(await alertInSiteScope({ allowedDeviceIds: [DEVICE_A] }, { deviceId: DEVICE_B, topologySiteId: SITE_A })).toBe(false);
+    expect(await alertInSiteScope({}, { deviceId: DEVICE_A, topologySiteId: SITE_B })).toBe(true);
   });
 });

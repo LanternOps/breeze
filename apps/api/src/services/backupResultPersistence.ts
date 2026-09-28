@@ -28,6 +28,10 @@ import { resolveBackupProtectionForDevice } from './featureConfigResolver';
 import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
+import { recordBackupAttestation } from './backupMetrics';
+import { SNAPSHOT_ID_RESERVATION_CONSTRAINT, allowedSnapshotIdsForJob } from './backupSnapshotIdReservations';
+import { createAuditLog } from './auditService';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -918,12 +922,21 @@ export async function applyBackupCommandResultToJob(params: {
    * must NOT resurrect a `cancelled` job — see the guard below.
    */
   source?: 'agent' | 'reconcile';
+  /**
+   * True only when the caller bound this result to its dispatch: the WS
+   * handler consumed the job's dispatch expectation, or the result arrived on
+   * the dispatched command's own channel. Snapshot attestations are recorded
+   * only for such results (services/backupAttestation.ts). Ignored for
+   * `source: 'reconcile'`, which never records one.
+   */
+  dispatchExpectationVerified?: boolean;
 }): Promise<{
   applied: boolean;
   snapshotDbId: string | null;
   providerSnapshotId: string | null;
 }> {
   const { jobId, orgId, deviceId, resultStatus, agentStatus, result, source = 'agent' } = params;
+  const dispatchExpectationVerified = source === 'agent' && params.dispatchExpectationVerified === true;
   const providerSnapshotId = result.snapshot?.id ?? result.snapshotId ?? null;
   // The agent (or, on this leg, a synthesized reconcile result already vetted
   // against reconcile's own `foreignClaimed` check) is authoritative for the
@@ -938,12 +951,27 @@ export async function applyBackupCommandResultToJob(params: {
   // DEVICE IN THE SAME ORG (RLS restricts by org, not by device) — but it is
   // NOT a guard against a different org's row on a destination shared across
   // orgs; that row is invisible to this SELECT by design. The actual cross-org guarantee is the
-  // `backup_snapshots_storage_identity_snapshot_id_uq` DB constraint
-  // enforced at INSERT time below (see `isPgUniqueViolation` handling) —
+  // snapshot id reservation (`backup_snapshot_id_reservations`, keyed by the
+  // id alone, whatever storage identity or endpoint spelling a row names),
+  // which the backup_snapshots insert trigger reserves or matches at INSERT
+  // time below, backed by the `backup_snapshots_storage_identity_snapshot_id_uq`
+  // constraint (see `isPgUniqueViolation` handling) —
   // Postgres refuses the conflicting row regardless of what this session's
   // RLS context can see, with no need to escalate to system scope (which
   // would double-hold a pooled connection under this request's own
   // transaction, the #2417/#6671 shape) to find out who holds it.
+  // A brokered write may only publish the snapshot id its write session was
+  // issued (or resumed onto). A result naming any other id is refused
+  // outright — the job fails and the refusal is audited — before anything is
+  // recorded for it.
+  if (resultStatus === 'completed' && providerSnapshotId) {
+    const allowed = await allowedSnapshotIdsForJob(jobId);
+    if (allowed && !allowed.includes(providerSnapshotId)) {
+      await refuseSnapshotReservationMismatch({ jobId, orgId, deviceId, reportedSnapshotId: providerSnapshotId, source });
+      return { applied: true, snapshotDbId: null, providerSnapshotId };
+    }
+  }
+
   const snapshotOwnershipConflict = providerSnapshotId
     ? await findForeignSnapshotClaim({ snapshotId: providerSnapshotId, callerDeviceId: deviceId, callerOrgId: orgId })
     : null;
@@ -1334,6 +1362,27 @@ export async function applyBackupCommandResultToJob(params: {
   }
 
   if (!updatedJob) {
+    // A successful result for a job storage reconciliation already completed:
+    // the job stays as it is, but the producing device's own statement may
+    // still attest the reconciled snapshot row (services/backupAttestation.ts).
+    if (source === 'agent' && isSuccessResult && providerSnapshotId && !snapshotOwnershipConflict) {
+      const late = await attestLateAgentResult({
+        jobId,
+        deviceId,
+        providerSnapshotId,
+        dispatchExpectationVerified,
+        resultReceivedAt: now,
+        result,
+      });
+      if (late) {
+        console.log(
+          `[BackupPersistence] Late result for job ${jobId} (device ${deviceId}) matched reconciled snapshot ` +
+            `${late.snapshotDbId}; attestation outcome: ${late.outcome ?? 'not recorded'}.`,
+        );
+        return { applied: false, snapshotDbId: late.snapshotDbId, providerSnapshotId };
+      }
+    }
+
     // Narrowing the predicate above means a 0-row result now has one more
     // possible cause, so disambiguate it rather than letting a device mismatch
     // hide inside the pre-existing "not in an adoptable status" path. Diagnostic
@@ -1504,7 +1553,11 @@ export async function applyBackupCommandResultToJob(params: {
   // (WHERE storage_identity IS NOT NULL) scope — there is no DB-level
   // protection for that case either way.
   const [existingSnapshot] = await db
-    .select({ id: backupSnapshots.id, deviceId: backupSnapshots.deviceId })
+    .select({
+      id: backupSnapshots.id,
+      deviceId: backupSnapshots.deviceId,
+      resultProvenance: backupSnapshots.resultProvenance,
+    })
     .from(backupSnapshots)
     .where(
       updatedJob.storageIdentity
@@ -1532,6 +1585,36 @@ export async function applyBackupCommandResultToJob(params: {
     captureException(new Error(msg));
     return { applied: true, snapshotDbId: null, providerSnapshotId };
   }
+
+  // A snapshot row that carries an attestation describes the run that
+  // attestation was recorded for. Rewriting it for another job (its job,
+  // lineage, size, manifests and file index) would leave that attestation and
+  // its projection describing a row that is no longer the attested run, so
+  // refuse, like the sibling-device claim above.
+  if (existingSnapshot) {
+    const attestedJobId = await attestedJobIdForSnapshot(existingSnapshot.id);
+    if (attestedJobId && attestedJobId !== jobId) {
+      recordBackupAttestation('job_reuse_refused');
+      const msg =
+        `[BackupPersistence] Refused to update backup_snapshots row ${existingSnapshot.id} for snapshot ` +
+        `${providerSnapshotId} from job ${jobId} (device ${deviceId}) — its attestation was recorded for job ${attestedJobId}.`;
+      console.warn(msg);
+      captureException(new Error(msg));
+      return { applied: true, snapshotDbId: null, providerSnapshotId };
+    }
+  }
+
+  // Provenance and the integrity projection are written once, when the row is
+  // created, and never by a later revisit: a reconciled row did not witness
+  // the upload, so it starts `unattested` and only the producing device's own
+  // later result can attest it (attestLateAgentResult). An agent-created row
+  // keeps the `unattested_legacy` default until the attestation step below
+  // decides.
+  const insertValues = {
+    ...snapshotValues,
+    resultProvenance: source === 'reconcile' ? ('reconcile' as const) : ('agent_result' as const),
+    ...(source === 'reconcile' ? { integrityStatus: 'unattested' as const } : {}),
+  };
 
   // Set when the INSERT below lost a race against a row this session's RLS
   // context cannot see (the cross-org case) — distinguishes a deliberate
@@ -1562,14 +1645,19 @@ export async function applyBackupCommandResultToJob(params: {
           // fail with 25P02 "current transaction is aborted". The SAVEPOINT
           // is what lets the catch below swallow the conflict and leave the
           // rest of this request's transaction usable.
-          return await db.transaction((tx) => tx.insert(backupSnapshots).values(snapshotValues).returning());
+          return await db.transaction((tx) => tx.insert(backupSnapshots).values(insertValues).returning());
         } catch (err) {
-          if (!isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')) {
+          if (
+            !isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')
+            && !isPgUniqueViolation(err, SNAPSHOT_ID_RESERVATION_CONSTRAINT)
+          ) {
             throw err;
           }
-          // A row this session cannot see (a different org's, under this
-          // request's own org-scoped RLS context) already claims this
-          // (storage_identity, snapshot_id) pair. Postgres refused the
+          // The snapshot id is owned by another backup: a row this session
+          // cannot see (a different org's, under this request's own
+          // org-scoped RLS context) already claims this (storage_identity,
+          // snapshot_id) pair, or the id is reserved to — or retired by —
+          // another owner (backup_snapshot_id_reservations, any identity). Postgres refused the
           // INSERT regardless of what this session's RLS context can see —
           // the DB-level guarantee the app-layer ownership check above
           // cannot provide across orgs. Deliberately NOT escalating to a
@@ -1586,6 +1674,28 @@ export async function applyBackupCommandResultToJob(params: {
           return [];
         }
       })();
+
+  // Snapshot attestation (agent results only). A row this call updated rather
+  // than created is attested only when an earlier AGENT result created it; a
+  // reconciled row speaks only through attestLateAgentResult's narrower rules.
+  if (
+    snapshot &&
+    source === 'agent' &&
+    (!existingSnapshot || existingSnapshot.resultProvenance === 'agent_result')
+  ) {
+    await attestAgentResultSnapshot({
+      snapshotDbId: snapshot.id,
+      orgId: effectiveOrgId,
+      jobId,
+      deviceId,
+      providerSnapshotId,
+      storageIdentity: updatedJob.storageIdentity ?? null,
+      pinnedBaseProviderSnapshotId: updatedJob.baseSnapshotId ?? null,
+      dispatchExpectationVerified,
+      resultReceivedAt: now,
+      result,
+    });
+  }
 
   if (snapshot && result.snapshot?.files && snapshot.fileIndexStatus !== 'complete') {
     // W09 (#6464): once the server has hydrated a verified-complete index
@@ -1845,4 +1955,42 @@ export async function markBackupJobFailedIfInFlight(
     .returning({ id: backupJobs.id });
 
   return rows.length > 0;
+}
+
+export const RESERVATION_MISMATCH_MESSAGE = 'The backup reported a different snapshot than it was allowed to write.';
+
+async function refuseSnapshotReservationMismatch(params: {
+  jobId: string;
+  orgId: string;
+  deviceId: string;
+  reportedSnapshotId: string;
+  source: 'agent' | 'reconcile';
+}): Promise<void> {
+  const now = new Date();
+  await db
+    .update(backupJobs)
+    .set({ status: 'failed', completedAt: now, updatedAt: now, errorLog: RESERVATION_MISMATCH_MESSAGE })
+    .where(and(
+      eq(backupJobs.id, params.jobId),
+      eq(backupJobs.deviceId, params.deviceId),
+      inArray(backupJobs.status, ['pending', 'running']),
+    ));
+  console.warn(
+    `[BackupPersistence] Refused a ${params.source} result for job ${params.jobId} (device ${params.deviceId}): `
+    + `it names snapshot ${params.reportedSnapshotId}, which its write session was not issued.`,
+  );
+  try {
+    await createAuditLog({
+      orgId: params.orgId,
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'backup.result.reservation_mismatch',
+      resourceType: 'backup_job',
+      resourceId: params.jobId,
+      result: 'failure',
+      details: { deviceId: params.deviceId, reportedSnapshotId: params.reportedSnapshotId, source: params.source },
+    });
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
 }

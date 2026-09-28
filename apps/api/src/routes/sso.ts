@@ -79,6 +79,7 @@ import {
   auditUserLoginFailure,
   userHasUsablePasskey,
   userRequiresSetup,
+  userIsMfaProtected,
   installAuthorizedUserSessionCookies,
   type PendingMfaRecord,
 } from './auth/helpers';
@@ -791,13 +792,34 @@ function getClientIP(c: any): string {
   return getTrustedClientIp(c);
 }
 
+type OrgResolutionError = { error: string; status: 400 | 403; code?: string };
+
+const ORG_REQUIRED: Omit<OrgResolutionError, 'status'> = { error: 'Organization ID required' };
+
+/**
+ * #7252: the org-required refusal for creating a provider. A partner admin in
+ * the All-organizations view (no org in the body or auth context, several
+ * accessible orgs) got the bare 'Organization ID required' with no hint that
+ * the fix is to pick an org or create a partner-wide provider instead. Same
+ * status and same authorization outcome — only the wording and a stable
+ * `code` for the web to localize.
+ */
+const PROVIDER_CREATE_ORG_REQUIRED: Omit<OrgResolutionError, 'status'> = {
+  error:
+    "Select an organization (pass orgId), or set ownerScope to 'partner' to create a partner-wide provider",
+  code: 'sso_provider_org_required',
+};
+
 function resolveOrgIdForProviderRoute(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
-  requestedOrgId?: string
-): { orgId: string } | { error: string; status: 400 | 403 } {
+  requestedOrgId?: string,
+  // Only the partner-scope branch uses this: that is the one caller that can
+  // actually act on a suggestion to create a partner-wide provider instead.
+  partnerMissingOrg: Omit<OrgResolutionError, 'status'> = ORG_REQUIRED
+): { orgId: string } | OrgResolutionError {
   if (auth.scope === 'organization') {
     if (!auth.orgId) {
-      return { error: 'Organization ID required', status: 400 };
+      return { ...ORG_REQUIRED, status: 400 };
     }
     if (requestedOrgId && requestedOrgId !== auth.orgId) {
       return { error: 'Access to this organization denied', status: 403 };
@@ -822,7 +844,7 @@ function resolveOrgIdForProviderRoute(
       return { orgId: orgIds[0] };
     }
 
-    return { error: 'Organization ID required', status: 400 };
+    return { ...partnerMissingOrg, status: 400 };
   }
 
   if (requestedOrgId) {
@@ -838,7 +860,7 @@ function resolveOrgIdForProviderRoute(
     return { orgId: orgIds[0] };
   }
 
-  return { error: 'Organization ID required', status: 400 };
+  return { ...ORG_REQUIRED, status: 400 };
 }
 
 type ProviderOwnerRow = { orgId: string | null; partnerId: string | null };
@@ -981,9 +1003,9 @@ ssoRoutes.post(
     }
     ownerColumns = { orgId: null, partnerId: auth.partnerId };
   } else {
-    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId, PROVIDER_CREATE_ORG_REQUIRED);
     if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
+      return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
     }
     // SR2-10: the org axis validated NOTHING here — and it is the ONLY axis that
     // JIT-provisions, so an org admin could delegate a role broader than their
@@ -1752,9 +1774,10 @@ ssoRoutes.post(
       }
       axis = { scope: 'partner', partnerId: auth.partnerId };
     } else {
-      const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+      // Create-flow preflight: same axis derivation, so the same refusal as POST /providers.
+      const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId, PROVIDER_CREATE_ORG_REQUIRED);
       if ('error' in orgResult) {
-        return c.json({ error: orgResult.error }, orgResult.status);
+        return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
       }
       // Every other branch proves authority against an RLS-visible row before
       // the system-context PII read below. This branch's checks are app-layer
@@ -2902,8 +2925,9 @@ ssoRoutes.get('/callback', async (c) => {
 
     // #4018 reauth mode: an already-authenticated, PASSWORDLESS user proving
     // identity through a fresh IdP round-trip so they can enroll a first MFA
-    // factor. Mints NO tokens, creates NO users, links NO identities — its only
-    // output is a single-use step-up grant.
+    // factor or (#4045) manage one they already hold. Mints NO tokens, creates
+    // NO users, links NO identities — its only output is a single-use step-up
+    // grant.
     if (session.reauthUserId) {
       const reauthUserId = session.reauthUserId;
 
@@ -2967,6 +2991,32 @@ ssoRoutes.get('/callback', async (c) => {
           return { ok: false as const, error: 'password_set' as const };
         }
 
+        // #4045: the grant's PURPOSE follows the account's factor state, via
+        // the SAME predicate both redemption sites use (resolveEnrollmentStepUp
+        // refuses a protected account; resolveFactorManagementStepUp refuses an
+        // unprotected one), so the three can never drift apart. An account with
+        // no factor can only enroll one; an account holding one gets a grant
+        // that stands in for the PASSWORD leg of factor management and nothing
+        // else. Deciding here rather than at /reauth/start is safe because the
+        // grant is bound to the INITIATING epochs: a factor added or removed in
+        // between bumps mfa_epoch and kills the grant whichever purpose it got.
+        //
+        // userIsMfaProtected THROWS rather than guess when it cannot read the
+        // row. Contained here: left to the callback's generic catch it would
+        // put its internal message (with the user id) into a /login URL and
+        // drop an already-signed-in user off the profile page. Fail closed
+        // like a mint failure — no grant, profile-page error, audited.
+        let accountIsProtected: boolean;
+        try {
+          accountIsProtected = await userIsMfaProtected(reauthUserId);
+        } catch (err) {
+          console.error(`[sso] reauth protection probe failed for user ${reauthUserId}:`, err);
+          return { ok: false as const, error: 'reauth_unavailable' as const, auditReason: 'protection_probe_failed' };
+        }
+        const operation = accountIsProtected
+          ? 'sso_reauth_manage_factor' as const
+          : 'enroll_first_factor' as const;
+
         // Taken from the binding result, NOT re-read off the session row with
         // `!`. validateSessionBinding is where the null check lives (it rejects
         // `link_binding_missing` -> the public `session_invalid`), so consuming
@@ -2980,6 +3030,7 @@ ssoRoutes.get('/callback', async (c) => {
           authEpoch: binding.initiating.authEpoch,
           mfaEpoch: binding.initiating.mfaEpoch,
           sid: binding.initiating.sid,
+          operation,
         };
       });
 
@@ -3006,7 +3057,7 @@ ssoRoutes.get('/callback', async (c) => {
 
       const grantId = await mintStepUpGrant({
         userId: reauthUserId,
-        operation: 'enroll_first_factor',
+        operation: outcome.operation,
         authEpoch: outcome.authEpoch,
         mfaEpoch: outcome.mfaEpoch,
         sid: outcome.sid,

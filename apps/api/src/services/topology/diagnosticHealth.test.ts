@@ -188,6 +188,48 @@ describe('assessTopologyDiagnostic', () => {
     expect(result.reasons).toEqual(expect.arrayContaining(['dns_check_failed', 'tcp_succeeded']));
   });
 
+  // PR #7117 review C2: target_connectivity plans a local route lookup plus the
+  // TCP probe. A successful local read is not "a working protocol": when every
+  // on-the-wire probe failed the target is down, so the run is a failed check
+  // (a 'degraded' result would reset the recurring failure streak every time).
+  it.each(['timeout', 'failed_check'] as const)('is a failed check when every probe %s even though a local route lookup succeeded', (state) => {
+    const route = identifier();
+    const tcp = identifier();
+    const result = assessTopologyDiagnostic(
+      plan([{ id: route, method: 'route_lookup' }, { id: tcp, method: 'tcp' }]),
+      [
+        step({ id: route, state: 'succeeded', method: 'route_lookup' }),
+        step({ id: tcp, state, method: 'tcp' }),
+      ],
+      { now: NOW },
+    );
+
+    expect(result).toMatchObject({ status: 'failed_check', coverage: 'monitored' });
+  });
+
+  // A resolved neighbor entry is an answered ARP/NDP exchange — L2 evidence the
+  // gateway is alive — so a silent ICMP probe beside it stays degraded
+  // (icmp_no_response), while a gateway that answers neither is a failed check.
+  it.each([
+    ['succeeded', 'degraded'],
+    ['failed_check', 'failed_check'],
+  ] as const)('with a %s neighbor lookup and a silent gateway ICMP probe the run is %s', (neighborState, expected) => {
+    const route = identifier();
+    const neighbor = identifier();
+    const icmp = identifier();
+    const result = assessTopologyDiagnostic(
+      plan([{ id: route, method: 'route_lookup' }, { id: neighbor, method: 'neighbor_lookup', required: false }, { id: icmp, method: 'icmp' }]),
+      [
+        step({ id: route, state: 'succeeded', method: 'route_lookup' }),
+        step({ id: neighbor, state: neighborState, method: 'neighbor_lookup' }),
+        step({ id: icmp, state: 'timeout', method: 'icmp' }),
+      ],
+      { now: NOW },
+    );
+
+    expect(result.status).toBe(expected);
+  });
+
   it('is a failed check only when every required probe actually failed', () => {
     const icmp = identifier();
     const tcp = identifier();
@@ -279,5 +321,35 @@ describe('assessTopologyDiagnosticRun', () => {
 
     expect(assessment.coverage).toBe('complete');
     expect(assessment.summary.status).toBe('unknown');
+  });
+});
+
+describe('routed trace evidence (M3 Task 9)', () => {
+  it('treats an unconfirmed trace as missing evidence, never as a failed path', () => {
+    const route = identifier();
+    const trace = identifier();
+    for (const state of ['failed_check', 'timeout'] as const) {
+      const summary = assessTopologyDiagnostic(
+        plan([{ id: route, method: 'route_lookup' }, { id: trace, method: 'trace' }]),
+        [step({ id: route, state: 'succeeded', method: 'route_lookup' }), step({ id: trace, state, method: 'trace' })],
+        { now: NOW },
+      );
+      expect(summary.status).toBe('unknown');
+      expect(summary.reasons).toContain('trace_destination_not_confirmed');
+      expect(summary.reasons).not.toContain('trace_check_failed');
+      expect(summary.evidenceRefs).toEqual([route]);
+    }
+  });
+
+  it('counts a trace that confirmed its destination as fresh success', () => {
+    const route = identifier();
+    const trace = identifier();
+    const summary = assessTopologyDiagnostic(
+      plan([{ id: route, method: 'route_lookup' }, { id: trace, method: 'trace' }]),
+      [step({ id: route, state: 'succeeded', method: 'route_lookup' }), step({ id: trace, state: 'succeeded', method: 'trace' })],
+      { now: NOW },
+    );
+    expect(summary).toMatchObject({ status: 'healthy', coverage: 'monitored', evidenceRefs: [route, trace] });
+    expect(summary.reasons).toContain('trace_succeeded');
   });
 });

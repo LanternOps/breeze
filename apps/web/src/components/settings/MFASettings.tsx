@@ -30,6 +30,18 @@ type MFASettingsProps = {
    */
   ssoSetupReady?: boolean;
   /**
+   * #4045: starts the IdP round-trip for a factor-MANAGEMENT action (recovery-
+   * code rotation, MFA disable) of a passwordless account that already holds a
+   * factor. The grant that comes back stands in for the password on that
+   * action only; the existing-factor proof the view also asks for is unchanged.
+   */
+  onSsoReauthManage?: (intent: 'recovery_codes' | 'disable_mfa') => void | Promise<void>;
+  /**
+   * #4045: the parent picked up a management grant from the redirect fragment
+   * for this action, so reopen the view the user left from.
+   */
+  ssoResumeView?: 'recovery' | 'disable';
+  /**
    * #4018: is the parent still holding the single-use SSO re-auth grant that
    * the terminal `/mfa/enable` call has to present?
    *
@@ -91,7 +103,9 @@ export default function MFASettings({
   mfaMethod,
   hasPassword,
   onSsoReauth,
+  onSsoReauthManage,
   ssoSetupReady = false,
+  ssoResumeView,
   ssoReauthGrantAvailable = true,
   phoneVerified = false,
   phoneLast4,
@@ -176,6 +190,12 @@ export default function MFASettings({
   useEffect(() => {
     if (ssoSetupReady) setView('setup');
   }, [ssoSetupReady]);
+
+  // #4045: same idea for the management actions — the user left for the IdP
+  // from the recovery-code or disable view, so put them back on it.
+  useEffect(() => {
+    if (ssoResumeView) setView(ssoResumeView);
+  }, [ssoResumeView]);
 
   // G4-14: registering the FIRST passkey (first-factor enrollment) is driven
   // entirely from outside this component — ProfilePage's own passkey card —
@@ -361,7 +381,10 @@ export default function MFASettings({
   };
 
   const handleDisableSubmit = async () => {
-    if (isLoading || isSubmitting || code.length !== DIGIT_COUNT || !disablePassword) {
+    // #4045: a passwordless account proves itself with the SSO grant the parent
+    // holds, not a password; without one there is nothing to submit.
+    if (isLoading || isSubmitting || code.length !== DIGIT_COUNT
+      || (isPasswordless ? needsSsoReVerify : !disablePassword)) {
       return;
     }
     // Same verdict contract as enable: only `false`/throw means rejected.
@@ -384,8 +407,10 @@ export default function MFASettings({
   };
 
   const handleRegenerateCodes = async () => {
-    if (!recoveryPassword) {
-      setLocalError(t('mFASettings.currentPasswordIsRequired'));
+    if (isPasswordless ? needsSsoReVerify : !recoveryPassword) {
+      setLocalError(isPasswordless
+        ? t('mFASettings.ssoReauthManageHint')
+        : t('mFASettings.currentPasswordIsRequired'));
       setConfirmRegenerateOpen(false);
       return;
     }
@@ -867,6 +892,31 @@ export default function MFASettings({
     );
   }
 
+  // #4045: the "user at the keyboard" proof of a factor-MANAGEMENT view for an
+  // account with no password. It is a fresh IdP round-trip, not something to
+  // type — so the view explains which state it is in instead of rendering a
+  // password field the account can never fill.
+  const renderSsoManageProof = () => (
+    <div
+      data-testid="mfa-sso-manage-proof"
+      className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+    >
+      {needsSsoReVerify ? t('mFASettings.ssoReauthManageHint') : t('mFASettings.ssoReauthManageVerified')}
+    </div>
+  );
+
+  const renderSsoManageButton = (intent: 'recovery_codes' | 'disable_mfa', testId: string) => (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={() => { void onSsoReauthManage?.(intent); }}
+      disabled={isLoading || isSubmitting}
+      className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {t('mFASettings.verifyWithYourIdentityProvider')}
+    </button>
+  );
+
   // Confirm-password gate before /mfa/setup. The server requires the user's
   // current password to attach a new TOTP factor; we collect it here and reuse
   // it for the subsequent /mfa/enable call without re-prompting.
@@ -1112,21 +1162,23 @@ export default function MFASettings({
           </p>
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium" htmlFor="mfa-disable-password">
-            {t('mFASettings.currentPassword')}</label>
-          <input
-            id="mfa-disable-password"
-            type="password"
-            autoComplete="current-password"
-            value={disablePassword}
-            onChange={e => setDisablePassword(e.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            disabled={isLoading}
-          />
-          <p className="text-xs text-muted-foreground">
-            {t('mFASettings.reEnterYourAccountPasswordToConfirmThisChange')}</p>
-        </div>
+        {isPasswordless ? renderSsoManageProof() : (
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="mfa-disable-password">
+              {t('mFASettings.currentPassword')}</label>
+            <input
+              id="mfa-disable-password"
+              type="password"
+              autoComplete="current-password"
+              value={disablePassword}
+              onChange={e => setDisablePassword(e.target.value)}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isLoading}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t('mFASettings.reEnterYourAccountPasswordToConfirmThisChange')}</p>
+          </div>
+        )}
 
         {renderError()}
 
@@ -1141,14 +1193,16 @@ export default function MFASettings({
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
             {t('mFASettings.cancel')}</button>
-          <button
-            type="button"
-            onClick={handleDisableSubmit}
-            disabled={isLoading || code.length !== DIGIT_COUNT || !disablePassword}
-            className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoading ? t('mFASettings.disabling') : t('mFASettings.disableMFA')}
-          </button>
+          {needsSsoReVerify ? renderSsoManageButton('disable_mfa', 'mfa-disable-sso-reauth') : (
+            <button
+              type="button"
+              onClick={handleDisableSubmit}
+              disabled={isLoading || code.length !== DIGIT_COUNT || (!isPasswordless && !disablePassword)}
+              className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? t('mFASettings.disabling') : t('mFASettings.disableMFA')}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1243,19 +1297,21 @@ export default function MFASettings({
           )}
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium" htmlFor="mfa-recovery-password">
-            {t('mFASettings.currentPassword')}</label>
-          <input
-            id="mfa-recovery-password"
-            type="password"
-            autoComplete="current-password"
-            value={recoveryPassword}
-            onChange={e => setRecoveryPassword(e.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            disabled={isLoading}
-          />
-        </div>
+        {isPasswordless ? renderSsoManageProof() : (
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="mfa-recovery-password">
+              {t('mFASettings.currentPassword')}</label>
+            <input
+              id="mfa-recovery-password"
+              type="password"
+              autoComplete="current-password"
+              value={recoveryPassword}
+              onChange={e => setRecoveryPassword(e.target.value)}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isLoading}
+            />
+          </div>
+        )}
 
         {renderError()}
         {renderSuccess()}
@@ -1274,18 +1330,23 @@ export default function MFASettings({
           {/* #4414: one action, and it is honestly named. The label no longer
               flips to a read verb before the first press — that flip is what
               made a regeneration look like a way to look your codes up. */}
-          <button
-            type="button"
-            data-testid="mfa-recovery-regenerate"
-            onClick={() => setConfirmRegenerateOpen(true)}
-            disabled={isLoading || !recoveryPassword || (
-              (currentMethod === 'totp' || currentMethod === 'sms')
-              && recoveryFactorCode.length !== DIGIT_COUNT
-            )}
-            className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}
-          </button>
+          {/* #4045: a passwordless account without a live grant gets the one
+              action that can unblock it, not a button that waits forever on a
+              password field it cannot fill. */}
+          {needsSsoReVerify ? renderSsoManageButton('recovery_codes', 'mfa-recovery-sso-reauth') : (
+            <button
+              type="button"
+              data-testid="mfa-recovery-regenerate"
+              onClick={() => setConfirmRegenerateOpen(true)}
+              disabled={isLoading || (!isPasswordless && !recoveryPassword) || (
+                (currentMethod === 'totp' || currentMethod === 'sms')
+                && recoveryFactorCode.length !== DIGIT_COUNT
+              )}
+              className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}
+            </button>
+          )}
         </div>
 
         <ConfirmDialog

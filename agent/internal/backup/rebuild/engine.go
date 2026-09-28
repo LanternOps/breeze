@@ -66,8 +66,7 @@ type run struct {
 	// folder mount point IS one.
 	rootVolume  string
 	espVolume   string                    // the ESP's volume path (W06c boot/validate)
-	espDir      string                    // W06c: folder mount point of the ESP (<staging>\esp) while mounted
-	rootDir     string                    // Windows root folder mount (<staging>\root) for external tools (bcdboot, DISM); Linux uses rootMount instead
+	rootDir     string                    // Windows root folder mount (<staging>\root) for external tools (bcdboot); Linux uses rootMount instead
 	recoveryDir string                    // Windows Recovery folder mount (<staging>\recovery), "" if the layout has none
 	hives       map[string]winhive.Handle // W06c: loaded SYSTEM/SOFTWARE hives, kept open from restore until validate closes them
 	controlSets []string                  // W06c: ControlSet00N names identity edits (Select\Default first, then Current)
@@ -165,6 +164,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	if opts.Identity == "" {
 		opts.Identity = IdentityOriginal
+	}
+	// Driver injection is not supported yet. Refuse it here, before
+	// leftover cleanup, ForceReprovision's state-file removal, the layout
+	// fetch or anything else with a side effect — on every host.
+	if len(opts.DriverDirs) > 0 {
+		ref := &RefusalError{Reason: DriverInjectionUnsupportedReason}
+		now := time.Now().UTC()
+		return &Result{
+			SnapshotID: opts.SnapshotID, Target: opts.Target, Identity: opts.Identity,
+			Status: "refused", Refusal: ref.Reason, PhaseReached: PhasePreflight,
+			Phases:     []PhaseResult{{Phase: PhasePreflight, Status: PhaseRefused, Message: ref.Reason, StartedAt: now, CompletedAt: now}},
+			DurationMs: time.Since(start).Milliseconds(),
+		}, ref
 	}
 	if opts.StateDir == "" {
 		if hostPlatform() == "windows" {

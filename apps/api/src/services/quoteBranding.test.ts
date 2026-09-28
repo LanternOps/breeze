@@ -52,6 +52,18 @@ describe('resolveQuoteBranding', () => {
     expect(b.footer).toBe('portal footer');
   });
 
+  it("#7216: a quote sent with no footer (terms frozen as '') prints none after a footer is added later", async () => {
+    // Both inherited levels now carry a footer that did not exist at send.
+    queue(basePartner, baseBrand);
+    const b = await resolveQuoteBranding(source({ terms: '' }));
+    expect(b.footer).toBe('');
+  });
+
+  it('#7216: an unfrozen quote (terms NULL — draft or pre-#7216 sent row) still resolves the footer live', async () => {
+    queue({ ...basePartner, invoiceFooter: null }, baseBrand);
+    expect((await resolveQuoteBranding(source({ terms: null }))).footer).toBe('portal footer');
+  });
+
   it('inheritedFooter reports the partner footer + source even when quote.terms overrides (#6648)', async () => {
     queue(basePartner, baseBrand);
     const b = await resolveQuoteBranding(source({ terms: 'quote terms' }));

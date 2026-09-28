@@ -15,6 +15,11 @@ func NewCollector() Collector {
 	return &StubCollector{}
 }
 
+// newCollector ignores opts: only the Windows collector uses them.
+func newCollector(_ CollectOptions) Collector {
+	return &StubCollector{}
+}
+
 func (c *StubCollector) CollectState(_ string) (*SystemStateManifest, error) {
 	return nil, ErrUnsupportedPlatform
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { usePermissions } from '../../lib/permissions';
 import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
@@ -38,6 +39,7 @@ const formatPayloadPreview = (payload: string | null | undefined, t: (key: strin
 
 export default function WebhooksPage() {
   const { t } = useTranslation('common');
+  const { can } = usePermissions(); // UX gate; webhook writes require organizations.write
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
@@ -403,6 +405,7 @@ export default function WebhooksPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t('longTail.webhooks.WebhooksPage.title')}</h1>
           <p className="text-muted-foreground">{t('longTail.webhooks.WebhooksPage.subtitle')}</p>
         </div>
+        {can('organizations', 'write') && (
         <button
           type="button"
           onClick={handleCreate}
@@ -411,6 +414,7 @@ export default function WebhooksPage() {
           <Plus className="h-4 w-4" />
           {t('longTail.webhooks.WebhooksPage.actions.newWebhook')}
         </button>
+        )}
       </div>
 
       {error && modalMode === 'closed' && (
@@ -465,8 +469,9 @@ export default function WebhooksPage() {
                   </div>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.testEvent')}</label>
+                  <label htmlFor="webhook-test-event" className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.testEvent')}</label>
                   <select
+                    id="webhook-test-event"
                     value={testEvent}
                     onChange={event => setTestEvent(event.target.value)}
                     className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

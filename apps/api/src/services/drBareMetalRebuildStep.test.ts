@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
+  DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX,
+  DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_WINDOWS,
+  defaultRebuildOutputDir,
   drBareMetalRebuildConfigSchema,
   drRestoreConfigSchema,
   isBareMetalRebuildConfig,
+  joinRebuildOutputPath,
+  resolveLatestRestorableSnapshot,
   resolveLatestRestorableSnapshotId,
 } from './drBareMetalRebuildStep';
 
@@ -28,6 +33,50 @@ describe('drBareMetalRebuildConfigSchema', () => {
     ['other snapshotSelection', { snapshotSelection: 'pinned' }],
   ])('rejects %s', (_label, extra) => {
     expect(drBareMetalRebuildConfigSchema.safeParse({ commandType: 'BARE_METAL_REBUILD', ...extra }).success).toBe(false);
+  });
+});
+
+// W06d (Task 20): the default output dir is host-OS-dependent at DISPATCH; the
+// stored config keeps the Linux default (normalised) and dispatch maps it.
+describe('per-OS rebuild output paths (W06d)', () => {
+  it('defaults outputDir per host OS when omitted', () => {
+    expect(defaultRebuildOutputDir('windows')).toBe('C:\\ProgramData\\Breeze\\rebuild\\out');
+    expect(defaultRebuildOutputDir('linux')).toBe('/var/lib/breeze/rebuild/out');
+    expect(DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_WINDOWS).toBe('C:\\ProgramData\\Breeze\\rebuild\\out');
+    expect(DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX).toBe('/var/lib/breeze/rebuild/out');
+    // The legacy name stays the Linux default so stored, normalised configs keep matching it.
+    expect(DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR).toBe(DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX);
+  });
+
+  it('joins a Windows output dir with a backslash and a POSIX dir with a slash', () => {
+    expect(joinRebuildOutputPath('C:\\ProgramData\\Breeze\\rebuild\\out', 'dev-1-rec-1.vhdx')).toBe(
+      'C:\\ProgramData\\Breeze\\rebuild\\out\\dev-1-rec-1.vhdx',
+    );
+    expect(joinRebuildOutputPath('/var/lib/breeze/rebuild/out', 'dev-1-rec-1.vhdx')).toBe(
+      '/var/lib/breeze/rebuild/out/dev-1-rec-1.vhdx',
+    );
+  });
+
+  it('does not double a trailing separator (one or many)', () => {
+    expect(joinRebuildOutputPath('D:\\out\\', 'x.vhdx')).toBe('D:\\out\\x.vhdx');
+    expect(joinRebuildOutputPath('D:\\', 'x.vhdx')).toBe('D:\\x.vhdx');
+    expect(joinRebuildOutputPath('/srv/out//', 'x.vhdx')).toBe('/srv/out/x.vhdx');
+    expect(joinRebuildOutputPath('/', 'x.vhdx')).toBe('/x.vhdx');
+  });
+
+  it('accepts a Windows drive-letter outputDir', () => {
+    const parsed = drBareMetalRebuildConfigSchema.safeParse({ commandType: 'BARE_METAL_REBUILD', outputDir: 'D:\\rebuild\\out' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a relative outputDir the same way it does today, for both separators', () => {
+    expect(drBareMetalRebuildConfigSchema.safeParse({ commandType: 'BARE_METAL_REBUILD', outputDir: 'out' }).success).toBe(false);
+    expect(drBareMetalRebuildConfigSchema.safeParse({ commandType: 'BARE_METAL_REBUILD', outputDir: 'out\\x' }).success).toBe(false);
+    expect(drBareMetalRebuildConfigSchema.safeParse({ commandType: 'BARE_METAL_REBUILD', outputDir: '\\\\srv\\share' }).success).toBe(false);
+  });
+
+  it('carries no hyperv field — DR rehearsals stop at the VHDX', () => {
+    expect(drBareMetalRebuildConfigSchema.parse({ commandType: 'BARE_METAL_REBUILD', hyperv: { vmName: 'x' } })).not.toHaveProperty('hyperv');
   });
 });
 
@@ -122,5 +171,32 @@ describe('resolveLatestRestorableSnapshotId', () => {
   it('returns null when the device has no restorable snapshot', async () => {
     const tx = txReturning([]);
     await expect(resolveLatestRestorableSnapshotId('org-1', 'dev-1', tx as any)).resolves.toBeNull();
+  });
+});
+
+describe('resolveLatestRestorableSnapshot (W06d — id + platform for the dispatcher)', () => {
+  function txReturning(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    chain.limit = vi.fn(() => Promise.resolve(rows));
+    return { select: vi.fn(() => chain), chain };
+  }
+
+  it('returns the newest restorable snapshot with the platform from its layout manifest', async () => {
+    const tx = txReturning([{ id: 'snap-newest', layoutManifest: { schemaVersion: 1, platform: 'windows', disks: [] } }]);
+    await expect(resolveLatestRestorableSnapshot('org-1', 'dev-1', tx as any)).resolves.toEqual({ id: 'snap-newest', platform: 'windows' });
+    expect(tx.chain.limit).toHaveBeenCalledWith(1);
+  });
+
+  it('returns platform null when the layout has no platform', async () => {
+    const tx = txReturning([{ id: 'snap-old', layoutManifest: { schemaVersion: 1, disks: [] } }]);
+    await expect(resolveLatestRestorableSnapshot('org-1', 'dev-1', tx as any)).resolves.toEqual({ id: 'snap-old', platform: null });
+  });
+
+  it('returns null when the device has no restorable snapshot', async () => {
+    const tx = txReturning([]);
+    await expect(resolveLatestRestorableSnapshot('org-1', 'dev-1', tx as any)).resolves.toBeNull();
   });
 });

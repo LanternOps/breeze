@@ -6,6 +6,7 @@ import type {
   AccountingEntityMapping,
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
+  AccountingInvoicePreflightRefusal,
   AccountingItemPayload,
   AccountingPaymentPayload,
   AccountingPaymentMethod,
@@ -20,6 +21,8 @@ import type {
   ProviderTenantSelection,
   RateLimitSpec,
   RealmSettings,
+  RemoteCustomer,
+  RemoteItem,
   RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
@@ -157,5 +160,37 @@ describe('tenant selection and settings options (Xero W02)', () => {
     expectTypeOf<AccountingProvider['listSettingsOptions']>().toEqualTypeOf<((conn: AccountingConnection) => Promise<ProviderSettingsOptions>) | undefined>();
     expectTypeOf<AccountingProvider['releaseConnection']>().toEqualTypeOf<((conn: AccountingConnection) => Promise<void>) | undefined>();
     expectTypeOf<ProviderSettingsOptions['organisation']['isDemoCompany']>().toEqualTypeOf<boolean | null>();
+  });
+});
+
+describe('single-record lookups and supplierOnly (Xero W03)', () => {
+  it('declares the optional lookups', () => {
+    expectTypeOf<AccountingProvider['getRemoteCustomer']>()
+      .toEqualTypeOf<((conn: AccountingConnection, id: string) => Promise<RemoteCustomer | null>) | undefined>();
+    expectTypeOf<AccountingProvider['getRemoteItem']>()
+      .toEqualTypeOf<((conn: AccountingConnection, id: string) => Promise<RemoteItem | null>) | undefined>();
+  });
+  it('declares supplierOnly as an optional boolean', () => {
+    expectTypeOf<RemoteCustomer['supplierOnly']>().toEqualTypeOf<boolean | undefined>();
+  });
+});
+
+describe('invoice push preflight (Xero W04)', () => {
+  it('declares an optional synchronous preflight', () => {
+    expectTypeOf<AccountingProvider['invoicePushPreflight']>().toEqualTypeOf<
+      | ((
+        conn: AccountingConnection,
+        invoice: Pick<AccountingInvoicePayload, 'currencyCode' | 'taxTotal' | 'lines'>,
+      ) => AccountingInvoicePreflightRefusal | null)
+      | undefined
+    >();
+  });
+  it('declares an optional lookup of a pushed invoice by its Breeze id (refinement 22)', () => {
+    expectTypeOf<AccountingProvider['findRemoteInvoice']>().toEqualTypeOf<
+      ((conn: AccountingConnection, invoiceId: string) => Promise<{ id: string; remoteVersion?: string } | null>) | undefined
+    >();
+  });
+  it('a refusal carries a reason and an operator message', () => {
+    expectTypeOf<AccountingInvoicePreflightRefusal>().toEqualTypeOf<{ reason: 'settings' | 'totals'; message: string }>();
   });
 });

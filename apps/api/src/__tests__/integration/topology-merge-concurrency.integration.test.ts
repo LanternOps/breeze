@@ -60,21 +60,32 @@ async function fixture(alias: boolean) {
 }
 
 /** Prove the requested SQL is genuinely waiting for the other transaction,
- * rather than relying on scheduling sleeps to claim a concurrency test. */
+ * rather than relying on scheduling sleeps to claim a concurrency test.
+ *
+ * pg_blocking_pids() (lock-manager state) and wait_event_type (the backend's
+ * own, asynchronously-updated pg_stat_activity field) are two different data
+ * sources read in the same query but not guaranteed to update in lockstep:
+ * a backend can already be registered as blocked before it has reported
+ * wait_event_type='Lock' for that instant. Asserting on the first
+ * `blocked === true` sample can therefore observe a transient null and fail
+ * spuriously on a loaded runner (#7174). Poll until BOTH conditions are
+ * observed together in the same row instead of asserting on the first
+ * partial match. */
 async function waitForBlocking(waiter: number, holder: number, query: RegExp) {
   const deadline = Date.now() + 8000;
+  let last: { blocked?: unknown; query?: unknown; wait_event_type?: unknown } | undefined;
   while (Date.now() < deadline) {
     const rows = await getTestDb().execute(sql`SELECT ${holder}::int = ANY(pg_blocking_pids(pid)) AS blocked,
       query, wait_event_type FROM pg_stat_activity WHERE pid=${waiter}::int`);
     const row = rows[0];
-    if (row?.blocked === true) {
-      expect(row.wait_event_type).toBe('Lock');
-      expect(row.query).toMatch(query);
+    last = row;
+    if (row?.blocked === true && row.wait_event_type === 'Lock' && typeof row.query === 'string' && query.test(row.query)) {
       return;
     }
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, 25));
   }
-  throw new Error(`Backend ${waiter} never reached its expected lock barrier`);
+  throw new Error(`Backend ${waiter} never reached its expected lock barrier on holder ${holder} ` +
+    `(last observed: ${JSON.stringify(last)})`);
 }
 
 async function readyBeforeCompletion<T>(ready: Promise<T>, running: Promise<unknown>) {

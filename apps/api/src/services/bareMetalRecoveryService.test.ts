@@ -278,6 +278,52 @@ describe('createBareMetalRecovery', () => {
     });
     expect(JSON.stringify(entry)).not.toContain(normalizeRecoveryCode(out.code));
   });
+
+  // R36: platform is copied from the selected snapshot's layoutManifest.platform
+  describe('createBareMetalRecovery — platform', () => {
+    it('sets platform from a Windows layout manifest', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ ...restorableSnapshot, layoutManifest: { schemaVersion: 1, platform: 'windows', bootMode: 'uefi', disks: [] } }]))
+        .mockReturnValueOnce(chainMock([])); // in-flight check
+      insertMock.mockReturnValueOnce(chainMock([recoveryRow({ platform: 'windows' })]));
+
+      const out = await createBareMetalRecovery({
+        orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'vm_restore',
+      });
+
+      expect(out.row.platform).toBe('windows');
+      const inserted = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(inserted.platform).toBe('windows');
+    });
+
+    it('sets platform to null when the layout manifest has no platform field', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ ...restorableSnapshot, layoutManifest: { schemaVersion: 1, disks: [] } }]))
+        .mockReturnValueOnce(chainMock([]));
+      insertMock.mockReturnValueOnce(chainMock([recoveryRow({ platform: null })]));
+
+      const out = await createBareMetalRecovery({
+        orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'vm_restore',
+      });
+
+      expect(out.row.platform).toBeNull();
+      const inserted = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(inserted.platform).toBeNull();
+    });
+
+    it('sets platform to null when the snapshot has no layout manifest at all', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ ...restorableSnapshot, layoutManifest: null }]))
+        .mockReturnValueOnce(chainMock([]));
+      insertMock.mockReturnValueOnce(chainMock([recoveryRow({ platform: null })]));
+
+      const out = await createBareMetalRecovery({
+        orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'vm_restore',
+      });
+
+      expect(out.row.platform).toBeNull();
+    });
+  });
 });
 
 describe('mintRecoveryTokenForRecovery', () => {

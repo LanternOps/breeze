@@ -23,6 +23,7 @@ import {
   ChevronsLeft,
   ChevronsDownUp,
   ShieldCheck,
+  ClipboardList,
   KeyRound,
   LayoutTemplate,
   Package,
@@ -269,9 +270,11 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
-      // One page with Inventory + Policies tabs; /software-inventory and
-      // /software-policies are aliases (see pathAliases).
+      // Three distinct pages: /software is the catalog (Catalog + Deployments),
+      // /software-inventory and /software-policies mount SoftwarePage (#7123).
       { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Software Inventory', labelKey: 'nav.softwareInventory', href: '/software-inventory', icon: ClipboardList, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Software Policies', labelKey: 'nav.softwarePolicies', href: '/software-policies', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       // The Network page: assets, SNMP templates and check results;
       // checks are authored under Alerts → Monitors (W05e).
       { name: 'Network', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
@@ -470,8 +473,6 @@ const allNavItems: NavItem[] = [
 
 // Path aliases (highlight a different nav item for certain paths)
 const pathAliases: Record<string, string> = {
-  '/software-inventory': '/software',
-  '/software-policies': '/software',
   // The Agreements nav item points at the Templates tab; the Signed tab is a
   // sibling route, not a child, so prefix matching would leave the item
   // unhighlighted there.

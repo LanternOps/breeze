@@ -152,6 +152,14 @@ vi.mock('../services/backupSnapshotStorage', async (importOriginal) => {
 
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
+// Snapshot id reservations are proven against real Postgres
+// (backupGcReclamation.integration.test.ts); here nothing is reserved.
+vi.mock('../services/backupSnapshotIdReservations', () => ({
+  loadReservationGcState: vi.fn(async () => ({ protectedIds: new Set<string>(), reclaimable: [] })),
+  markReservationRetired: vi.fn(async () => undefined),
+  reclaimAbandonedReservations: vi.fn(async () => 0),
+  tombstoneRetiredReservations: vi.fn(async () => 0),
+}));
 
 // `fs.realpath` fault injection for coarseStorageSignatureFromKey (review
 // round 2 HOLD item): when `realpathFailWith` is set, the module under test's
@@ -188,6 +196,8 @@ const {
   normalizeStorageIdentity,
   orphanManifestSnapshotIds,
   BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP,
+  fingerprintLiveKeysBySnapshotId,
+  listedKeysProvablyAllLive,
 } = await import('./backupRetention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -268,7 +278,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     selectQueue.push([
       {
         id: 'snap-expired-1', snapshotId: 'snap-1', deviceId: 'device-1', configId: 'config-1',
-        storageIdentity: 's3::e::b', backupType: 'file',
+        storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file',
       },
     ]); // expired query (enumeration pass)
     selectQueue.push([{ id: 'snap-expired-1', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
@@ -292,7 +302,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('skips a row pinned by an in-flight backup_jobs base pin and counts it as skippedPinned (no retirement written)', async () => {
     selectQueue.push([
-      { id: 'snap-pinned', snapshotId: 'snap-pinned-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-pinned', snapshotId: 'snap-pinned-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-pinned', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([{ id: 'job-1' }]); // backup pin -- found, short-circuits
@@ -311,7 +321,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     // reporting active/healthy until the next differential noticed. An active
     // chain's base is a retention hold: not deleted, no retirement written.
     selectQueue.push([
-      { id: 'snap-chain-base', snapshotId: 'snap-chain-base-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'application' },
+      { id: 'snap-chain-base', snapshotId: 'snap-chain-base-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'application' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-chain-base', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // backup pin -- none
@@ -331,7 +341,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('deletes an expired full whose only chain rows are INACTIVE -- a broken/superseded chain is not a hold (#5421)', async () => {
     selectQueue.push([
-      { id: 'snap-dead-chain', snapshotId: 'snap-dead-chain-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'application' },
+      { id: 'snap-dead-chain', snapshotId: 'snap-dead-chain-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'application' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-dead-chain', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // backup pin -- none
@@ -351,7 +361,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('re-reads legal hold under the FOR UPDATE lock, ignoring a stale enumeration-pass value (the enumeration select no longer even fetches it)', async () => {
     selectQueue.push([
-      { id: 'snap-hold', snapshotId: 'snap-hold-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-hold', snapshotId: 'snap-hold-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-hold', legalHold: true, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock -- held
     selectQueue.push([]); // versionBoundSnapshots query
@@ -365,7 +375,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('skips (does not retire) a row with an unresolved storage_identity and counts it as skippedUnresolved', async () => {
     selectQueue.push([
-      { id: 'snap-unresolved', snapshotId: 'snap-unresolved-provider', deviceId: 'device-1', configId: null, storageIdentity: null, backupType: 'file' },
+      { id: 'snap-unresolved', snapshotId: 'snap-unresolved-provider', deviceId: 'device-1', configId: null, storageIdentity: null, keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-unresolved', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // versionBoundSnapshots query
@@ -390,7 +400,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     const future = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);
     const retention = { maxVersions: 2 };
     const base = {
-      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'file' as const, retention,
+      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' as const, retention,
     };
     selectQueue.push([
       { ...base, id: 's1', snapshotId: 'snap-1', timestamp: new Date('2026-05-05') }, // kept (within maxVersions)
@@ -430,7 +440,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
     const retention = { maxVersions: 1 };
     const base = {
-      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'application' as const, retention,
+      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'application' as const, retention,
     };
     selectQueue.push([
       { ...base, id: 'mv1', snapshotId: 'snap-mv-1', timestamp: new Date('2026-05-05') }, // kept (within cap)
@@ -461,8 +471,8 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     // means the bad row is logged and skipped while the next expired row is
     // still deleted.
     selectQueue.push([
-      { id: 'snap-fk-blocked', snapshotId: 'snap-blocked', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
-      { id: 'snap-ok', snapshotId: 'snap-2', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-fk-blocked', snapshotId: 'snap-blocked', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
+      { id: 'snap-ok', snapshotId: 'snap-2', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     // Row 1 (snap-fk-blocked): lock + 4 pin checks, all clear, then the
     // delete itself throws.
@@ -517,6 +527,42 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     expect(captureExceptionMock).toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it('never retires an expired row written in a key layout this server cannot read, and counts it', async () => {
+    selectQueue.push([
+      { id: 'snap-other-layout', snapshotId: 'snap-other-layout-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'device_scoped', backupType: 'file' },
+      { id: 'snap-no-layout', snapshotId: 'snap-no-layout-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+    ]); // expired query
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(result.skippedUnsupportedLayout).toBe(2);
+    expect(result.deleted).toBe(0);
+    expect(mockDb.delete).not.toHaveBeenCalled();
+    expect(insertedRows).toEqual([]);
+    // No per-row lock/pin reads were even attempted for either row.
+    expect(selectQueue).toEqual([]);
+  });
+
+  it('keeps a max-versions candidate in an unsupported key layout in its slot, without pruning it or the rows behind it', async () => {
+    selectQueue.push([]); // expired query -- nothing expired by date
+    const base = { deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'file' as const, retention: { maxVersions: 1 } };
+    selectQueue.push([
+      { ...base, keyLayout: 'legacy_flat', id: 'n1', snapshotId: 'snap-n1', timestamp: new Date('2026-05-05') }, // kept (within cap)
+      { ...base, keyLayout: 'device_scoped', id: 'n2', snapshotId: 'snap-n2', timestamp: new Date('2026-05-04') }, // over cap, unsupported layout
+    ]); // versionBoundSnapshots query
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(result.skippedUnsupportedLayout).toBe(1);
+    expect(result.prunedByMaxVersions).toBe(0);
+    expect(mockDb.delete).not.toHaveBeenCalled();
   });
 });
 
@@ -660,7 +706,7 @@ describe('sweepUnreferencedBackupObjects', () => {
   function pushRunLevel(
     dests: unknown[],
     unattributed: unknown[] = [],
-    owners: { live?: unknown[]; retired?: unknown[] } = {},
+    owners: { live?: unknown[]; retired?: unknown[]; unsupportedLayouts?: unknown[] } = {},
   ) {
     selectQueue.push(unattributed);
     selectQueue.push(dests);
@@ -669,6 +715,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     if (dests.length > 0) {
       selectQueue.push(owners.live ?? []);
       selectQueue.push(owners.retired ?? []);
+      selectQueue.push(owners.unsupportedLayouts ?? []);
     }
   }
 
@@ -685,6 +732,49 @@ describe('sweepUnreferencedBackupObjects', () => {
     selectQueue.push(opts.retirements ?? []);
     selectQueue.push(opts.capability ?? []);
   }
+
+  describe('snapshot key layout barrier', () => {
+    const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
+
+    it.each([
+      ['recorded under the identity', () => ({ storageIdentity: identityKeyFor(destination), configId: 'cfg-9', keyLayout: 'device_scoped' })],
+      ['with a NULL identity whose config maps to it', () => ({ storageIdentity: null, configId: 'cfg-1', keyLayout: 'device_scoped' })],
+      ['recorded under a stale identity string, whose config now maps to it', () => ({ storageIdentity: 's3::stale::backups', configId: 'cfg-1', keyLayout: 'device_scoped' })],
+    ])('skips the whole identity — no listing, no deletes — for a row in an unsupported key layout %s', async (_name, row) => {
+      pushRunLevel([destination], [], { unsupportedLayouts: [row()] });
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.skippedIdentities).toBe(1);
+        expect(result.deleted).toBe(0);
+        expect(rootListingMock).not.toHaveBeenCalled();
+        expect(iterateBackupObjectsMock).not.toHaveBeenCalled();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(error.mock.calls.some(([msg]) =>
+          String(msg).includes('unsupported_key_layout') && String(msg).includes(identityKeyFor(destination)),
+        )).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('still sweeps an identity with no such row', async () => {
+      pushRunLevel([destination, second], [], {
+        unsupportedLayouts: [{ storageIdentity: identityKeyFor(destination), configId: 'cfg-1', keyLayout: 'device_scoped' }],
+      });
+      pushIdentity(); // only the second identity loads its state
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.skippedIdentities).toBe(1);
+        expect(iterateBackupObjectsMock).toHaveBeenCalledTimes(1);
+      } finally {
+        error.mockRestore();
+      }
+    });
+  });
 
   // #6834 regression: the sweep used to materialise the identity's ENTIRE
   // `snapshots/` listing (one flat array + a grouped copy) and hold it for
@@ -775,7 +865,11 @@ describe('sweepUnreferencedBackupObjects', () => {
       const match = /^snapshots\/([^/]+)\/manifest\.json$/.exec(key);
       if (!match) throw notFoundError(); // system-state manifest: routine absence
       const id = match[1]!;
-      return manifestJson(Array.from({ length: FILES_PER_GROUP }, (_, f) => ({ backupPath: fileKey(id, f) })));
+      // One extra entry per manifest (f = FILES_PER_GROUP) that is never
+      // listed: the live set then differs from the listing, so #6843 gap 4's
+      // "every listed key is provably live" skip cannot fire and every group
+      // still takes the re-list path this test measures. Nothing is deleted.
+      return manifestJson(Array.from({ length: FILES_PER_GROUP + 1 }, (_, f) => ({ backupPath: fileKey(id, f) })));
     });
 
     const result = await sweepUnreferencedBackupObjects();
@@ -1481,6 +1575,195 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
     expect(result.deleted).toBe(0);
+  });
+
+  // #6843 gap 4: a rooted snapshot older than the grace window used to be
+  // re-listed on EVERY run, even when every object under it is live. The
+  // re-list is now skipped only when the root pass + mark phase PROVE the
+  // group holds no non-live key at all (listed key set == live key set for
+  // that group). Anything short of proof falls back to the re-list, so the
+  // skip can only ever mean "delete nothing", never "delete something else".
+  describe('rooted re-list skip when every listed key is provably live (#6843 gap 4)', () => {
+    const old = () => new Date(Date.now() - 30 * DAY_MS);
+
+    function relistPrefixes(): string[] {
+      return iterateBackupObjectsMock.mock.calls
+        .map((c) => (c[0] as { prefix: string }).prefix)
+        .filter((p) => p !== 'snapshots');
+    }
+
+    function manifestsByKey(byKey: Record<string, string>) {
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        const body = byKey[input.key];
+        if (body !== undefined) return body;
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+    }
+
+    function deleteAll() {
+      deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
+    }
+
+    function deletedKeys(): string[] {
+      return deleteBackupObjectKeysMock.mock.calls.flatMap((c) => (c[0] as { keys: string[] }).keys);
+    }
+
+    it('skips the re-list for an aged rooted snapshot whose every listed key is live (layout.json absent)', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({ 'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }, { backupPath: 'snapshots/R/files/b' }]) });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/files/b', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual([]);
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('skips the re-list when layout.json, system-state manifest and artifacts are all present and live', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }]),
+        'snapshots/R/system-state/manifest.json': JSON.stringify({ artifacts: [{ path: 'registry/SYSTEM' }] }),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/layout.json', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+        { key: 'snapshots/R/system-state/manifest.json', lastModified: old() },
+        { key: 'snapshots/R/system-state/registry/SYSTEM', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual([]);
+      expect(result.deleted).toBe(0);
+    });
+
+    it('skips a group whose keys are live only because ANOTHER rooted manifest references them', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }, { snapshotId: 'S' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([]),
+        'snapshots/S/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/shared' }]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/shared', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+        { key: 'snapshots/S/manifest.json', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual([]);
+      expect(result.deleted).toBe(0);
+    });
+
+    it('still re-lists and deletes an aged non-live key, and never deletes a live one', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({ 'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }]) });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/files/junk', lastModified: old() },
+        { key: 'snapshots/R/layout.json', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/R']);
+      expect(deletedKeys()).toEqual(['snapshots/R/files/junk']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('same key COUNT but different keys (a missing live file + an extra junk key) still re-lists and deletes the junk', async () => {
+      // live_R = {manifest.json, files/a, files/missing} (layout.json absent, so not counted)
+      // listed = {manifest.json, files/a, files/junk}: equal counts, different sets.
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }, { backupPath: 'snapshots/R/files/missing' }]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/files/junk', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/R']);
+      expect(deletedKeys()).toEqual(['snapshots/R/files/junk']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('a manifest that references a file missing from storage falls back to the re-list (no proof, no skip) and deletes nothing', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({
+        'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }, { backupPath: 'snapshots/R/files/missing' }]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/R']);
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('an aged non-live BARE key beside a fully-live rooted prefix is still reclaimed', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'R' }] });
+      manifestsByKey({ 'snapshots/R/manifest.json': manifestJson([{ backupPath: 'snapshots/R/files/a' }]) });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/R', lastModified: old() },
+        { key: 'snapshots/R/files/a', lastModified: old() },
+        { key: 'snapshots/R/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deletedKeys()).toEqual(['snapshots/R']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('deferred mode (every listed manifest is a root) skips a fully-live group too, and still sweeps its non-live sibling', async () => {
+      pushRunLevel([destination]);
+      // An unresolved NULL-identity row defers the identity to the pre-D18 algorithm.
+      pushIdentity({ nullRows: [{ id: 'row-null', snapshotId: 'NEVER-WRITTEN' }] });
+      manifestsByKey({
+        'snapshots/L/manifest.json': manifestJson([{ backupPath: 'snapshots/L/files/a' }]),
+        'snapshots/M/manifest.json': manifestJson([]),
+      });
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/L/files/a', lastModified: old() },
+        { key: 'snapshots/L/manifest.json', lastModified: old() },
+        { key: 'snapshots/M/files/junk', lastModified: old() },
+        { key: 'snapshots/M/manifest.json', lastModified: old() },
+      ]);
+      deleteAll();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(relistPrefixes()).toEqual(['snapshots/M']);
+      expect(deletedKeys()).toEqual(['snapshots/M/files/junk']);
+      expect(result.deleted).toBe(1);
+    });
   });
 
   describe('manifest-less prefix protection', () => {
@@ -2915,6 +3198,29 @@ describe('sweepUnreferencedBackupObjects', () => {
 // normalizeStorageIdentity must collapse cosmetic differences between configs
 // describing the SAME physical bucket, or two configs on one bucket split into
 // two identities and cross-config deletion comes back via the back door.
+describe('listedKeysProvablyAllLive layout-key guard (#6843 gap 4)', () => {
+  // Unreachable through sweepUnreferencedBackupObjects today (every root's
+  // layout key is marked live), so pinned directly: a LISTED layout.json that
+  // is not live must defeat the skip even when the digests match.
+  const manifestKey = 'snapshots/R/manifest.json';
+  const layoutKey = 'snapshots/R/layout.json';
+  const summaryWithLayout = () => ({
+    manifestItem: null, newestMs: null, oldestMs: null, hasUnknownAge: false, bareItem: null, hasPathKeys: true,
+    listedKeys: fingerprintLiveKeysBySnapshotId(new Set([manifestKey])).get('R')!,
+    hasLayoutKey: true,
+  });
+
+  it('is false when layout.json was listed but is not in the live set', () => {
+    const liveSet = new Set([manifestKey]);
+    expect(listedKeysProvablyAllLive('R', summaryWithLayout(), liveSet, fingerprintLiveKeysBySnapshotId(liveSet))).toBe(false);
+  });
+
+  it('control: is true when the listed layout.json is live and the rest matches', () => {
+    const liveSet = new Set([manifestKey, layoutKey]);
+    expect(listedKeysProvablyAllLive('R', summaryWithLayout(), liveSet, fingerprintLiveKeysBySnapshotId(liveSet))).toBe(true);
+  });
+});
+
 describe('normalizeStorageIdentity', () => {
   it('treats a blank S3 endpoint as identical to an explicit default AWS endpoint', () => {
     const blank = normalizeStorageIdentity('s3', { bucket: 'my-bucket' });

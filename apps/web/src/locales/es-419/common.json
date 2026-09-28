@@ -92,6 +92,8 @@
     "fleetOrchestration": "Orquestación de flota",
     "aiAssistant": "Asistente de IA",
     "software": "Software",
+    "softwareInventory": "Inventario de software",
+    "softwarePolicies": "Políticas de software",
     "securityOverview": "Resumen",
     "aiRisk": "Riesgo de IA",
     "deviceBackup": "Respaldo de dispositivos",
@@ -1136,7 +1138,8 @@
           "title": "No hay conexiones PSA configuradas"
         },
         "filters": {
-          "allStatuses": "Todos los estados"
+          "allStatuses": "Todos los estados",
+          "statusFilterLabel": "Estado de la conexión"
         },
         "headers": {
           "connection": "Conexión",
@@ -1205,7 +1208,8 @@
           "title": "No hay tickets PSA sincronizados"
         },
         "filters": {
-          "allStatuses": "Todos los estados"
+          "allStatuses": "Todos los estados",
+          "statusFilterLabel": "Estado del ticket"
         },
         "headers": {
           "linkedAlert": "Alerta vinculada",
@@ -1341,7 +1345,8 @@
         "empty": "No se encontraron webhooks.",
         "failedCount": "{{count}} falló",
         "filters": {
-          "allStatuses": "Todos los estados"
+          "allStatuses": "Todos los estados",
+          "statusFilterLabel": "Estado del webhook"
         },
         "headers": {
           "events": "Eventos",
@@ -2119,7 +2124,8 @@
         "description": "Seguimiento de incidentes y hallazgos de EDR en todas sus organizaciones.",
         "filters": {
           "tracked": "Rastreado",
-          "findings": "Hallazgos"
+          "findings": "Hallazgos",
+          "kindLabel": "Tipo"
         },
         "emptyTitle": "No se encontraron incidentes",
         "emptyFiltered": "Ningún incidente coincide con los filtros actuales.",
@@ -2342,7 +2348,9 @@
           "unknown": "Desconocido"
         },
         "lastSeen": "visto por última vez",
-        "noDeviceInventory": "Aún no hay inventario de dispositivos disponible de los clientes."
+        "noDeviceInventory": "Aún no hay inventario de dispositivos disponible de los clientes.",
+        "healthFilterLabel": "Estado de salud",
+        "sortFilterLabel": "Ordenar por"
       }
     },
     "remediation": {

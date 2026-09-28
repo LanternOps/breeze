@@ -41,6 +41,18 @@ function customField(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe('CustomFieldsPage type filter select accessible name (#7156)', () => {
+  beforeEach(() => {
+    mockedFetchWithAuth.mockReset();
+    mockedFetchWithAuth.mockResolvedValue(jsonResponse({ data: [] }));
+  });
+
+  it('gives the field-type filter select a real accessible name', async () => {
+    render(<CustomFieldsPage />);
+    expect(await screen.findByRole('combobox', { name: 'Field type' })).toBeInTheDocument();
+  });
+});
+
 describe('CustomFieldsPage script-write toggle', () => {
   beforeEach(() => {
     mockedFetchWithAuth.mockReset();

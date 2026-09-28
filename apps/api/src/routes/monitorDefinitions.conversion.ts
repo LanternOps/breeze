@@ -98,6 +98,7 @@ monitorConversionRoutes.post('/partner/preview', read, governance, async (c) => 
 });
 monitorConversionRoutes.get('/ledger', read,
   zValidator('query', z.object({ orgId: z.string().uuid().optional(), policyId: z.string().uuid().optional(),
+    sourceTable: z.enum(MONITOR_CONVERSION_SOURCE_TABLES).optional(),
     cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(25) })), async (c) => {
     return c.json(await listConversionLedger(c.req.valid('query'), c.get('auth')));
   });

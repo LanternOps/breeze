@@ -295,9 +295,9 @@ describe('Xero W02 connection races (real DB)', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
 
     // Forged partnerId = B, under A's RLS context.
-    expect(await asPartner(a.id, () => deletePendingTenantRow(db, { partnerId: b.id, provider: 'xero' }))).toBeNull();
+    expect(await asPartner(a.id, () => deletePendingTenantRow(db, { partnerId: b.id, provider: 'xero', reason: 'cancel' }))).toBeNull();
     // A's own partnerId, but B's row id.
-    expect(await asPartner(a.id, () => deletePendingTenantRow(db, { partnerId: a.id, provider: 'xero', connectionId: pendingB.id }))).toBeNull();
+    expect(await asPartner(a.id, () => deletePendingTenantRow(db, { partnerId: a.id, provider: 'xero', connectionId: pendingB.id, reason: 'cancel' }))).toBeNull();
     expect(await asPartner(a.id, () => loadPendingTenantRow(db, b.id, 'xero'))).toBeNull();
     expect(await asPartner(a.id, () => claimPendingTenant(db, {
       connectionId: pendingB.id, partnerId: b.id, provider: 'xero', realmId: 'forged-tenant', providerConnectionRef: 'conn-forged',
@@ -318,7 +318,7 @@ describe('Xero W02 connection races (real DB)', () => {
     expect(await discardPendingTenantSelection({
       partnerId: a.id, provider: 'xero', connectionId: pendingA.id, reason: 'cancel',
       runInDbContext: (fn) => asPartner(a.id, fn),
-    })).toEqual({ discarded: true });
+    })).toEqual({ discarded: true, connectionId: pendingA.id, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
     expect(await readRow(pendingA.id)).toBeNull();
     expect((await readRow(pendingB.id))?.status).toBe('pending_tenant');
   });
@@ -326,7 +326,7 @@ describe('Xero W02 connection races (real DB)', () => {
   runDb('the pending-row delete never removes a CONNECTED row, even the partner\'s own', async () => {
     const partner = await createPartner();
     const conn = await asSystem(() => upsertConnection(db, partner.id, 'xero', { realmId: `own-${partner.id}`, status: 'connected' }));
-    expect(await asPartner(partner.id, () => deletePendingTenantRow(db, { partnerId: partner.id, provider: 'xero' }))).toBeNull();
+    expect(await asPartner(partner.id, () => deletePendingTenantRow(db, { partnerId: partner.id, provider: 'xero', reason: 'cancel' }))).toBeNull();
     expect((await readRow(conn.id))?.status).toBe('connected');
   });
 
@@ -362,7 +362,7 @@ describe('Xero W02 connection races (real DB)', () => {
     // The reaper is instance-wide, so this exact {0,0} holds only because setup.ts
     // TRUNCATEs before every test and the integration config runs files serially.
     const out = await reapStalePendingTenants();
-    expect(out).toEqual({ stale: 0, reaped: 0 });
+    expect(out).toEqual({ stale: 0, reaped: 0, kept: 0 });
     expect((await readRow(pending.id))?.status).toBe('pending_tenant');
   });
 

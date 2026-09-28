@@ -1,0 +1,1813 @@
+{
+ "version": 1,
+ "description": "Interface measurement transport v1 (M3 Task 1). `valid` must parse unchanged in TS and Go; `normalization` maps an input sample to its parsed form (absent measurements become null with the not_reported reason, never 0); every `invalid` envelope must be rejected by both parsers.",
+ "valid": {
+  "schemaVersion": 1,
+  "family": "if_metrics",
+  "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sequence": "18446744073709551615",
+  "commandId": "33333333-3333-4333-8333-333333333333",
+  "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "startedAt": "2026-11-02T10:00:00Z",
+  "finishedAt": "2026-11-02T10:00:03Z",
+  "captureAgeAtSendMs": 250,
+  "expectedIntervalSeconds": 60,
+  "outcome": "partial",
+  "reasonCode": "port_timeout",
+  "samples": [
+   {
+    "interfaceId": "11111111-1111-4111-8111-111111111111",
+    "interfaceEpoch": "gen:1",
+    "sampledAt": "2026-11-02T10:00:01Z",
+    "counterWidth": 64,
+    "inOctets": "18446744073709551615",
+    "outOctets": "0",
+    "inErrors": "4294967295",
+    "outErrors": "0",
+    "inDiscards": "12",
+    "outDiscards": "0",
+    "inPackets": "9007199254740993",
+    "outPackets": "42",
+    "capacityBps": "10000000000",
+    "discontinuityTicks": "0",
+    "deviceUptimeTicks": "4294967295",
+    "reportedInBps": null,
+    "reportedOutBps": null,
+    "adminStatus": "up",
+    "operStatus": "up",
+    "unavailable": {
+     "reportedInBps": "unsupported",
+     "reportedOutBps": "unsupported"
+    }
+   },
+   {
+    "interfaceId": "22222222-2222-4222-8222-222222222222",
+    "interfaceEpoch": "gen:3",
+    "sampledAt": "2026-11-02T10:00:02Z",
+    "counterWidth": 32,
+    "inOctets": "4294967295",
+    "outOctets": "0",
+    "inErrors": null,
+    "outErrors": null,
+    "inDiscards": "0",
+    "outDiscards": "0",
+    "inPackets": null,
+    "outPackets": null,
+    "capacityBps": null,
+    "discontinuityTicks": null,
+    "deviceUptimeTicks": "100",
+    "reportedInBps": 0,
+    "reportedOutBps": 8000.5,
+    "adminStatus": "down",
+    "operStatus": "lower_layer_down",
+    "unavailable": {
+     "inErrors": "timeout",
+     "outErrors": "timeout",
+     "inPackets": "unsupported",
+     "outPackets": "unsupported",
+     "capacityBps": "unsupported",
+     "discontinuityTicks": "unsupported"
+    }
+   }
+  ]
+ },
+ "normalization": [
+  {
+   "name": "absent measurements parse as null with a reason",
+   "sample": {
+    "interfaceId": "11111111-1111-4111-8111-111111111111",
+    "interfaceEpoch": "gen:1",
+    "sampledAt": "2026-11-02T10:00:01Z",
+    "adminStatus": "unknown",
+    "operStatus": "unknown"
+   },
+   "expected": {
+    "interfaceId": "11111111-1111-4111-8111-111111111111",
+    "interfaceEpoch": "gen:1",
+    "sampledAt": "2026-11-02T10:00:01Z",
+    "counterWidth": null,
+    "inOctets": null,
+    "outOctets": null,
+    "inErrors": null,
+    "outErrors": null,
+    "inDiscards": null,
+    "outDiscards": null,
+    "inPackets": null,
+    "outPackets": null,
+    "capacityBps": null,
+    "discontinuityTicks": null,
+    "deviceUptimeTicks": null,
+    "reportedInBps": null,
+    "reportedOutBps": null,
+    "adminStatus": "unknown",
+    "operStatus": "unknown",
+    "unavailable": {
+     "inOctets": "not_reported",
+     "outOctets": "not_reported",
+     "inErrors": "not_reported",
+     "outErrors": "not_reported",
+     "inDiscards": "not_reported",
+     "outDiscards": "not_reported",
+     "inPackets": "not_reported",
+     "outPackets": "not_reported",
+     "capacityBps": "not_reported",
+     "discontinuityTicks": "not_reported",
+     "deviceUptimeTicks": "not_reported",
+     "reportedInBps": "not_reported",
+     "reportedOutBps": "not_reported"
+    }
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "unknown schema version",
+   "envelope": {
+    "schemaVersion": 2,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "counter sent as a JSON number",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": 1844674407370955,
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "uint64 overflow",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551616",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "negative counter",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "-1",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "leading zero counter",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "01",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "32-bit width with a 64-bit value",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 32,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "unsupported counter width",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 16,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "octets without a counter width",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": null,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "error counter above Counter32",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967296",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "uptime ticks above uint32",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967296",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "negative reported rate",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": -1,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "reported rate as a string",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": "8000",
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "sample before the collection window",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T09:59:59Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "sample after the collection window",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:04Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "empty interface epoch",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "oversize interface epoch",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "empty producer epoch",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "invalid interface id",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "not-a-uuid",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown sample field",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      },
+      "ifIndex": 7
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown envelope field",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ],
+    "extra": true
+   }
+  },
+  {
+   "name": "uploaded site authority",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ],
+    "siteId": "22222222-2222-4222-8222-222222222222"
+   }
+  },
+  {
+   "name": "duplicate interface sample",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "unavailable reason for a measured value",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "inOctets": "timeout"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown admin status",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "enabled",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "unknown oper status",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "complete",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "running",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "failed collection with samples",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "failed",
+    "reasonCode": "auth_failed",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "incomplete collection without a reason",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": null,
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "interval below the minimum",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 10,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "window longer than the interval",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:01:01Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "invalid sequence",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "if_metrics",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "1.5",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "family other than if_metrics",
+   "envelope": {
+    "schemaVersion": 1,
+    "family": "adjacency",
+    "producerEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sequence": "18446744073709551615",
+    "commandId": "33333333-3333-4333-8333-333333333333",
+    "configurationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "startedAt": "2026-11-02T10:00:00Z",
+    "finishedAt": "2026-11-02T10:00:03Z",
+    "captureAgeAtSendMs": 250,
+    "expectedIntervalSeconds": 60,
+    "outcome": "partial",
+    "reasonCode": "port_timeout",
+    "samples": [
+     {
+      "interfaceId": "11111111-1111-4111-8111-111111111111",
+      "interfaceEpoch": "gen:1",
+      "sampledAt": "2026-11-02T10:00:01Z",
+      "counterWidth": 64,
+      "inOctets": "18446744073709551615",
+      "outOctets": "0",
+      "inErrors": "4294967295",
+      "outErrors": "0",
+      "inDiscards": "12",
+      "outDiscards": "0",
+      "inPackets": "9007199254740993",
+      "outPackets": "42",
+      "capacityBps": "10000000000",
+      "discontinuityTicks": "0",
+      "deviceUptimeTicks": "4294967295",
+      "reportedInBps": null,
+      "reportedOutBps": null,
+      "adminStatus": "up",
+      "operStatus": "up",
+      "unavailable": {
+       "reportedInBps": "unsupported",
+       "reportedOutBps": "unsupported"
+      }
+     },
+     {
+      "interfaceId": "22222222-2222-4222-8222-222222222222",
+      "interfaceEpoch": "gen:3",
+      "sampledAt": "2026-11-02T10:00:02Z",
+      "counterWidth": 32,
+      "inOctets": "4294967295",
+      "outOctets": "0",
+      "inErrors": null,
+      "outErrors": null,
+      "inDiscards": "0",
+      "outDiscards": "0",
+      "inPackets": null,
+      "outPackets": null,
+      "capacityBps": null,
+      "discontinuityTicks": null,
+      "deviceUptimeTicks": "100",
+      "reportedInBps": 0,
+      "reportedOutBps": 8000.5,
+      "adminStatus": "down",
+      "operStatus": "lower_layer_down",
+      "unavailable": {
+       "inErrors": "timeout",
+       "outErrors": "timeout",
+       "inPackets": "unsupported",
+       "outPackets": "unsupported",
+       "capacityBps": "unsupported",
+       "discontinuityTicks": "unsupported"
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

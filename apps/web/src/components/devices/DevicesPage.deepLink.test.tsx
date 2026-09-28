@@ -13,6 +13,10 @@ vi.mock('@/lib/featureFlags', () => ({
 }));
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// The Add menu reads the caller's grants (#7217); this suite is not about them.
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(async () => []),
   fetchAllNetworkDevices: vi.fn(async () => []),

@@ -13,7 +13,15 @@ import {
   devices,
   deviceCommands,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess, type AuthContext } from '../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  requireSiteAccess,
+  withAuthDbAccessContext,
+  type AuthContext,
+} from '../middleware/auth';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
@@ -1796,6 +1804,36 @@ export function pickInstallMethodForPlatform<
   return ofPlatform[0]!;
 }
 
+/**
+ * #7347 — the pushes a deferred fan-out hands back, run once its transaction
+ * has committed. Each entry is a `deliver()` from `createSoftwareDeployment` /
+ * `buildAndDispatchSoftwareInstalls` with `deferDelivery`; none rejects.
+ */
+type PendingInstallDeliveries = Array<() => Promise<unknown>>;
+
+/**
+ * #7347 — the deployment create routes (`POST /deployments`, `POST /deploy`)
+ * and `POST /deployments/:id/retry` are registered in
+ * middleware/selfManagedDbContextRoutes.ts: they run with NO ambient request
+ * transaction. `admit` does all the route's DB work in ONE short
+ * withAuthDbAccessContext block — the same single-transaction semantics the
+ * request transaction gave it — with every software_install push deferred;
+ * the pushes go out only after that block commits. The agent result path reads
+ * `device_commands` on its own connection, so a push made inside the
+ * transaction let a fast agent answer a row it could not see yet, and its
+ * result was dropped as an orphan. A block that throws (including a failed
+ * commit) propagates before anything is pushed.
+ */
+async function commitThenDeliver(
+  c: Context,
+  admit: (deliveries: PendingInstallDeliveries) => Promise<Response>,
+): Promise<Response> {
+  const deliveries: PendingInstallDeliveries = [];
+  const response = await withAuthDbAccessContext(c.get('auth'), () => admit(deliveries));
+  for (const deliver of deliveries) await deliver();
+  return response;
+}
+
 type ManagerDeploymentPayload = {
   name: string;
   catalogId: string;
@@ -1828,6 +1866,7 @@ async function createManagerDeployments(
   c: Context,
   orgId: string,
   payload: ManagerDeploymentPayload,
+  deliveries: PendingInstallDeliveries,
 ) {
   const auth = c.get('auth');
 
@@ -1938,7 +1977,9 @@ async function createManagerDeployments(
         payload.targetType === 'filter'
           ? { ...(payload.options ?? {}), targetFilter: payload.targetFilter ?? null }
           : payload.options ?? undefined,
+      deferDelivery: true,
     });
+    if (result.deliver) deliveries.push(result.deliver);
     results.push(result);
 
     writeRouteAudit(c, {
@@ -1978,7 +2019,8 @@ softwareRoutes.post(
   requireSoftwareExecute,
   requireMfa(),
   zValidator('json', createDeploymentSchema),
-  async (c) => {
+  // #7347 — self-managed: every row commits before any push (commitThenDeliver).
+  async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -1988,7 +2030,7 @@ softwareRoutes.post(
 
     // Package-manager path: the request names a catalog item, not a version.
     if (payload.catalogId) {
-      return createManagerDeployments(c, orgId, payload as ManagerDeploymentPayload);
+      return createManagerDeployments(c, orgId, payload as ManagerDeploymentPayload, deliveries);
     }
 
     // Verify version exists and get catalog info
@@ -2035,7 +2077,9 @@ softwareRoutes.post(
         payload.targetType === 'filter'
           ? { ...(payload.options ?? {}), targetFilter: payload.targetFilter ?? null }
           : payload.options ?? undefined,
+      deferDelivery: true,
     });
+    if (result.deliver) deliveries.push(result.deliver);
 
     if (result.status === 'failed') {
       return c.json({ data: { id: result.deploymentId, status: result.status, message: result.message } }, 200);
@@ -2055,7 +2099,7 @@ softwareRoutes.post(
     });
 
     return c.json({ data: result.deployment }, 201);
-  }
+  })
 );
 
 // POST /deploy - Legacy deployment endpoint (used by DeploymentWizard)
@@ -2097,7 +2141,8 @@ softwareRoutes.post(
       }
     })
   ),
-  async (c) => {
+  // #7347 — self-managed: every row commits before any push (commitThenDeliver).
+  async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -2171,7 +2216,9 @@ softwareRoutes.post(
       name: `Deploy ${catalogItem.name} v${version}`,
       targetType: 'devices',
       targetIds: resolvedDeviceIds,
+      deferDelivery: true,
     });
+    if (result.deliver) deliveries.push(result.deliver);
 
     // Preserve the legacy failure contract: HTTP 200 with a failed status body
     // (EDR resolution error / no installer available), no audit write.
@@ -2199,7 +2246,7 @@ softwareRoutes.post(
 
     // Legacy response shape: full row under `data` plus a top-level `id`.
     return c.json({ data: result.deployment, id: result.deploymentId }, 201);
-  }
+  })
 );
 
 // GET /deployments/:id - Get deployment
@@ -2368,8 +2415,10 @@ async function redispatchSoftwareInstall(opts: {
   createdBy: string | null;
   /** Post-bump retryCount per device, keyed by deviceId — see the caller. */
   deviceRetryCounts: Record<string, number>;
+  /** #7347 — collects the fan-out's deferred push; the route runs it after commit. */
+  deliveries: PendingInstallDeliveries;
 }): Promise<{ dispatchedDeviceIds: string[]; error?: string }> {
-  const { deployment, orgId, deviceIds, createdBy, deviceRetryCounts } = opts;
+  const { deployment, orgId, deviceIds, createdBy, deviceRetryCounts, deliveries } = opts;
 
   const failTargets = async (errorMessage: string) => {
     await db.update(deploymentResults)
@@ -2426,7 +2475,9 @@ async function redispatchSoftwareInstall(opts: {
       createdBy,
       markDispatched: false,
       deviceRetryCounts,
+      deferDelivery: true,
     });
+    if (fanout.deliver) deliveries.push(fanout.deliver);
     return {
       dispatchedDeviceIds: fanout.dispatchedDeviceIds,
       ...(fanout.status === 'failed' && fanout.message ? { error: fanout.message } : {}),
@@ -2477,7 +2528,9 @@ async function redispatchSoftwareInstall(opts: {
     createdBy,
     markDispatched: false,
     deviceRetryCounts,
+    deferDelivery: true,
   });
+  if (fanout.deliver) deliveries.push(fanout.deliver);
 
   return {
     dispatchedDeviceIds: fanout.dispatchedDeviceIds,
@@ -2493,7 +2546,8 @@ softwareRoutes.post(
   requireMfa(),
   zValidator('param', deploymentIdParamSchema),
   optionalJsonValidator(retryDeploymentSchema),
-  async (c) => {
+  // #7347 — self-managed: every row commits before any push (commitThenDeliver).
+  async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -2598,6 +2652,7 @@ softwareRoutes.post(
         deviceIds: retriedDeviceIds,
         createdBy: auth.user?.id ?? null,
         deviceRetryCounts,
+        deliveries,
       });
       dispatchError = dispatchResult.error;
     }
@@ -2620,7 +2675,7 @@ softwareRoutes.post(
       skippedDeviceIds,
       ...(dispatchError ? { message: dispatchError } : {}),
     });
-  }
+  })
 );
 
 // GET /deployments/:id/results - Get per-device results (enriched)
@@ -2702,6 +2757,14 @@ softwareRoutes.get(
         deviceCommandId: deploymentResults.deviceCommandId,
         hostname: devices.hostname,
         queuedOffline: sql<boolean>`coalesce(${deploymentResults.status} = 'pending' and ${deploymentResults.deviceCommandId} is not null and ${deviceCommands.status} = 'pending', false)`,
+        // #3578 in-flight signals, read off the same join. sentAt is when the
+        // command was handed to the agent (WS push or poll claim) — the
+        // server's own stamp, so it works for every agent version. agentStage/
+        // agentStageAt are the last stage the agent reported
+        // (services/commandProgress.ts); NULL from agents that predate it.
+        sentAt: deviceCommands.executedAt,
+        agentStage: deviceCommands.progressStage,
+        agentStageAt: deviceCommands.progressAt,
       })
         .from(deploymentResults)
         .leftJoin(devices, eq(deploymentResults.deviceId, devices.id))

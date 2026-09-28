@@ -44,6 +44,7 @@ import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
+import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
@@ -230,8 +231,9 @@ import {
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
-import { partnerGuard, isPartnerGuardExemptPath } from './middleware/partnerGuard';
+import { partnerGuardWithExemptions } from './middleware/partnerGuard';
 import { buildHealthPayload } from './services/versionInfo';
+import { warnOnVersionMismatch } from './services/versionMismatch';
 import {
   setWorkerReadinessTransitionHandler,
   workerReadinessRegistry,
@@ -254,7 +256,11 @@ import {
 // event-dispatch/relay consumers, which have their own role gating distinct
 // from the registry's placement filter.
 import { getWebhookWorker } from './workers/webhookDelivery';
-import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/workerRegistry';
+import {
+  startRegisteredWorkers,
+  startRedisIndependentWorkers,
+  buildWorkerShutdownTasks,
+} from './services/workerRegistry';
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
@@ -779,10 +785,7 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 // any Response (403 PARTNER_INACTIVE, 403 PARTNER_NOT_FOUND, 503 PARTNER_LOOKUP_UNAVAILABLE)
 // propagates back through Hono's compose chain. Discarding the return causes
 // Hono to throw "Context is not finalized" and the request collapses to 500.
-api.use('*', async (c, next) => {
-  if (isPartnerGuardExemptPath(c.req.path)) return next();
-  return partnerGuard(c, next);
-});
+api.use('*', partnerGuardWithExemptions);
 
 api.use('*', async (c, next) => {
   const auditWritten = await runWithAuditRequestTracking(next);
@@ -953,11 +956,19 @@ api.route('/webhooks/tickets', emailWebhookRoutes);
 // via c.req.text(), so no body-consuming middleware sits in front of it.
 api.route('/webhooks', stripeWebhookRoutes);
 // Intuit QuickBooks webhook — no session auth, HMAC-gated with the app-level
-// verifier token. partnerGuard passes through (no Authorization header); the
-// route reads the raw body itself via c.req.text(), so no body-consuming
+// verifier token. partnerGuard skips this exact path (isPartnerGuardExemptPath),
+// so even a request carrying a bearer token does no partner read before the
+// HMAC check (#7296); the route reads the raw body itself via c.req.text(), so no body-consuming
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);
+// Xero webhook (W05) — no session auth, HMAC-gated with XERO_WEBHOOK_KEY.
+// partnerGuard skips this exact path (isPartnerGuardExemptPath), so even a
+// request carrying a bearer token does no partner read before the HMAC check.
+// The route reads the raw body itself via c.req.text(), so no body-consuming
+// middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
+// there is no ambient auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', xeroWebhookRoutes);
 // Resend delivery webhook for partner sending domains (W06) — no session auth,
 // Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
 // is unset. partnerGuard passes through (no Authorization header); the route
@@ -1242,6 +1253,16 @@ async function initializeWorkers(): Promise<void> {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
+    // #7105: the few entries that need only Postgres (the stale command
+    // reaper) keep running on their Redis-less fallback. Readiness is
+    // unchanged — this process still consumes no queues.
+    await startRedisIndependentWorkers(breezeRole(), {
+      onResult: (name, ok, error) => {
+        if (ok) return;
+        console.error(`[CRITICAL] Failed to start ${name} without Redis:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      },
+    });
     return;
   }
 
@@ -1606,6 +1627,8 @@ async function bootstrap(): Promise<void> {
   }
 
   console.log(`Breeze API starting on port ${port}...`);
+  // #7024: BREEZE_VERSION edited without new image digests — say so at boot.
+  warnOnVersionMismatch();
 
   // Initialize error reporting first so failures during the rest of startup
   // (migrations, seeds, self-tests) and the global onError/unhandledRejection

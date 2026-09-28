@@ -526,6 +526,37 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // Brokered storage sessions call object storage over the network; the
+  // handlers open one short org-scoped context per database phase
+  // (routes/agents/storageSessions.ts), so no request-long wrap.
+  it('skips the request-long org wrap for storage-session operations, and only at the exact depth', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    for (const path of [
+      '/api/v1/agents/agent-1/storage-sessions/0b6f0c7e-3d2a-4f5b-9e1c-8a7d6c5b4a39/multipart:complete',
+      '/api/v1/agents/agent-1/storage-sessions/0b6f0c7e-3d2a-4f5b-9e1c-8a7d6c5b4a39/object',
+    ]) {
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn().mockResolvedValue(undefined);
+      await agentAuthMiddleware(c, next);
+      expect(next).toHaveBeenCalledTimes(1);
+    }
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+
+    buildSelectMock([makeDevice()]);
+    const deeper = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/storage-sessions/x/y/z' });
+    await agentAuthMiddleware(deeper, vi.fn().mockResolvedValue(undefined));
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the request-long org wrap for a different action at the storage-session path depth', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/other-action/x/multipart:complete' });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // M2 #5998 D14 — the topology adjacency ingest route parses a 4 MiB body
   // and resolves topology flags before its own short admission transaction.
   it('skips the request-long org wrap for the self-managed topology/adjacency route', async () => {

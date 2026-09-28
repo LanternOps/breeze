@@ -188,7 +188,9 @@ chmod +x guided-setup.sh
 #
 # The setup verifies the selected release's Ed25519-signed image inventory and
 # writes exact repository@sha256 refs. Do not replace those refs with tags or
-# copy digests from the package page. Rerun setup to resolve an upgrade.
+# copy digests from the package page. To upgrade, run
+# `./guided-setup.sh --upgrade [VERSION]`: `docker compose pull` alone re-fetches
+# the same pinned digests.
 
 # Optional — for remote desktop (WebRTC TURN relay):
 #   TURN_HOST            public IP of your TURN server

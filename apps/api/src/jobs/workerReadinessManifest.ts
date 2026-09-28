@@ -30,6 +30,8 @@ export type WorkerInitializerClassification =
         | 'topologyTemplateApplyWorker'
         | 'topologyDiagnosticWorker'
         | 'topologyDiagnosticSweeper'
+        | 'topologyMonitoringWorker'
+        | 'topologyTelemetryMaintenance'
         | 'incidentCorrelationWorker'
         | 'incidentTimelineEnricher'
         | 'incidentSlaMonitor';
@@ -122,6 +124,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   { kind: 'non_consumer', initializer: 'topologyTemplateApplyWorker' },
   { kind: 'non_consumer', initializer: 'topologyDiagnosticWorker' },
   { kind: 'non_consumer', initializer: 'topologyDiagnosticSweeper' },
+  { kind: 'non_consumer', initializer: 'topologyMonitoringWorker' },
+  { kind: 'non_consumer', initializer: 'topologyTelemetryMaintenance' },
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),
@@ -152,6 +156,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('maintenanceRebootWorker'),
   consumers('backupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
+  consumers('backupSnapshotAttestationWorker'),
+  consumers('backupWriteSessionJanitor'),
   consumers('sensitiveDataWorker'),
   consumers('securityScanWorker'),
   consumers('peripheralJobs', ['peripheralAnomalyWorker', 'peripheralPolicyDistributionWorker']),

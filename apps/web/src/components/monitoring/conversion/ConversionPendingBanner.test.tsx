@@ -147,6 +147,13 @@ describe('retirement report', () => {
     expect(localStorage.getItem('breeze.legacyAlertingRetirement.dismissed:viewer-1:org-1:s1')).toBe('1');
   });
 
+  it('links a refused row to its policy so it can be acted on (#7212)', async () => {
+    fetchPendingCounts.mockResolvedValue(retirementReport());
+    render(<ConversionPendingBanner orgId="org-1" onReview={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /review/i }));
+    expect(screen.getByRole('link', { name: 'Servers' }).getAttribute('href')).toBe('/configuration-policies/p');
+  });
+
   it('honors persisted dismissal, but reappears for a new sweep, viewer or scope', async () => {
     localStorage.setItem('breeze.legacyAlertingRetirement.dismissed:viewer-1:org-1:s1', '1');
     fetchPendingCounts.mockResolvedValue(retirementReport());

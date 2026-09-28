@@ -29,6 +29,16 @@ export type McpExemptReason =
    */
   | 'human_only_migration'
   /**
+   * Topology recurring-monitoring ARMING (#5999, amendments M3-D2/D3/D12).
+   * Arming a policy or a standing interface poll hands unattended, repeating
+   * execution on customer machines to a stored frozen actor, so every write
+   * here is an interactive user session with a satisfied second factor and a
+   * fresh `topology_arm` step-up grant bound to the exact site/action/subject.
+   * The operations spec forbids AI scheduling; an agent-reachable tool would
+   * be exactly that. The read side (`topology/monitoringStatus.ts`) has a tool.
+   */
+  | 'human_only_arming'
+  /**
    * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
    * the tenant bookkeeping it requires: storing/rotating the vendor login,
    * mapping a discovered vendor customer onto a Breeze organization, and
@@ -566,12 +576,21 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'timeEntries/suggestions.ts': { gap: '#6776' },
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
-  // Collector selection and diagnostic run lifecycle have no registered AI tool.
-  'topology/diagnostics.ts': { gap: '#6778' },
+  // M4-D5 (#6000): run reads and the ONE approval-gated start are the M4 tools.
+  // NOT covered, deliberately (no implicit parity): collector selection and
+  // cancel have no tool, and the tool path is not the public POST — it starts
+  // only an approved, digest-pinned proposal from a site-pinned session.
+  'topology/diagnostics.ts': { tools: ['get_diagnostic_run', 'diagnose_connectivity'] },
   'topology/exclusions.ts': { exempt: 'internal_plumbing', note: 'Per-view presentation state (hide/restore one connection in one topology view), the same class as topology/layouts.ts; no canonical graph, evidence, alert or monitor effect. Topology tool surface is tracked in #6778.' },
-  'topology/graphs.ts': { gap: '#6778' },
+  // M4-D5 (#6000): the graph/evidence/link-health reads are the M4 tools; layout,
+  // exclusion and manual writes live in their own route modules.
+  'topology/graphs.ts': { tools: ['get_topology', 'get_link_evidence', 'get_link_health'] },
+  'topology/history.ts': { tools: ['get_interface_history', 'get_link_health'] },
+  'topology/investigation.ts': { tools: ['get_topology_impact', 'get_recent_network_changes'] },
   'topology/layouts.ts': { exempt: 'internal_plumbing' },
   'topology/manual.ts': { gap: '#6778' },
+  'topology/monitoringArms.ts': { exempt: 'human_only_arming' },
+  'topology/monitoringStatus.ts': { tools: ['get_topology_monitoring_status'] },
   'topology/middleware.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'topology/mutations.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   // Shared permission middleware and response/error wrappers register no endpoints.
@@ -598,4 +617,5 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'webhooks/emailProvider.ts': { exempt: 'inbound_integration' },
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
+  'webhooks/xero.ts': { exempt: 'inbound_integration' },
 };

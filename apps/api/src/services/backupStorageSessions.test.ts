@@ -71,6 +71,7 @@ function makeSnapshot(overrides: Partial<StorageSnapshotRow> = {}): StorageSnaps
     configId: CONFIG,
     snapshotId: SNAP,
     storageIdentity: IDENTITY,
+    keyLayout: 'legacy_flat',
     fileIndexStatus: 'complete',
     metadata: {},
     ...overrides,
@@ -146,6 +147,7 @@ function makeDeps(state: FakeState, overrides: Partial<BrokeredReadDeps> = {}) {
   const deps: BrokeredReadDeps & {
     materializeLocalDestination: ReturnType<typeof vi.fn>;
     recordDispatch: ReturnType<typeof vi.fn>;
+    recordMint: ReturnType<typeof vi.fn>;
     requestIndexHydration: ReturnType<typeof vi.fn>;
     presignGet: ReturnType<typeof vi.fn>;
   } = {
@@ -164,6 +166,7 @@ function makeDeps(state: FakeState, overrides: Partial<BrokeredReadDeps> = {}) {
       return { ...rest, providerConfig: { bucket: 'bucket-a', secretKey: 'synthetic-secret-value' } };
     }),
     recordDispatch: vi.fn(),
+    recordMint: vi.fn(),
     inOrgContext: async <T,>(_orgId: string, fn: () => Promise<T>) => fn(),
     lookupDeviceOrg: async () => ORG,
     ...overrides,
@@ -193,6 +196,67 @@ beforeEach(() => {
 });
 
 describe('brokered read delivery', () => {
+  it.each(['backup_restore', 'mssql_restore'])(
+    'refuses %s for a snapshot written in a key layout this server cannot read',
+    async (type) => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ keyLayout: 'device_scoped', metadata: { backupFileName: 'db.bak' } })];
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx({ type }), deps))
+        .rejects.toThrow('This backup was written in a storage format this server version cannot read. Update the server, then try again.');
+      expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'refused', 'key_layout_unsupported');
+      expect(state.sessions.size).toBe(0);
+    },
+  );
+
+  describe('storage session issuance telemetry', () => {
+    it('counts a minted session once', async () => {
+      const deps = makeDeps(makeState());
+      await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'minted', 'ok']]);
+    });
+
+    it('counts a refusal with its reason and mints nothing', async () => {
+      const state = makeState();
+      state.device!.backupReadProtocolVersion = 0;
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'refused', 'helper_unsupported']]);
+      expect(state.sessions.size).toBe(0);
+    });
+
+    it('counts a deferral while the file index is not ready', async () => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ fileIndexStatus: 'agent' })];
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'index_unavailable']]);
+    });
+
+    it('defers a read of a snapshot whose brokered write is still sealing', async () => {
+      const state = makeState();
+      const deps = makeDeps(state);
+      (deps.store as BrokeredReadStore).isSnapshotSealing = vi.fn(async (id: string) => id === SNAP);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'snapshot_sealing']]);
+      expect(state.sessions.size).toBe(0);
+    });
+
+    it('counts a VM command delivered as queued', async () => {
+      const state = makeState();
+      state.device!.backupReadProtocolVersion = 0;
+      const deps = makeDeps(state);
+      await deliverBrokeredReadCommand({ restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' }, ctx({ type: 'vm_instant_boot' }), deps);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'legacy', 'helper_unsupported']]);
+    });
+
+    it('does not count a local destination, which never needs a session', async () => {
+      const deps = makeDeps(makeState());
+      await deliverBrokeredReadCommand({ ...restorePayload(), provider: 'local' }, ctx(), deps);
+      expect(deps.recordMint).not.toHaveBeenCalled();
+    });
+  });
+
   it('covers exactly the eight restore-shaped command types', () => {
     expect([...BROKERED_READ_COMMAND_TYPES].sort()).toEqual([
       'backup_restore', 'backup_test_restore', 'backup_verify', 'hyperv_restore',
@@ -633,6 +697,7 @@ describe('storage session per-call revalidation', () => {
     ['the snapshot now belongs to another source device', (s: FakeState) => { s.snapshots = [makeSnapshot({ deviceId: OTHER_DEVICE })]; }],
     ['the snapshot pinned storage identity changed', (s: FakeState) => { s.snapshots = [makeSnapshot({ storageIdentity: 's3::storage.example::bucket-z' })]; }],
     ['the destination endpoint is no longer https', (s: FakeState) => { s.config!.providerConfig.endpoint = 'http://storage.example'; }],
+    ['the snapshot reports a key layout this server cannot read', (s: FakeState) => { s.snapshots = [makeSnapshot({ keyLayout: 'device_scoped' })]; }],
   ])('ends the session when %s', async (_name, mutate) => {
     const state = makeState();
     const { deps, row } = await mintSession(state);

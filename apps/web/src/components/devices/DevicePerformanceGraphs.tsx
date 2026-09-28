@@ -71,6 +71,24 @@ const rangeLabels: Record<TimeRange, string> = {
   '30d': '30d'
 };
 
+// #7214 (paper cut #25): kept as a module-level export so nearby tick values
+// can be exercised directly, without rendering the full chart.
+export function formatBandwidthTick(value: number): string {
+  // Below 10 units, keep one decimal — otherwise nearby-but-distinct raw
+  // values (e.g. 1.4M and 1.6M) round to the same integer label and the axis
+  // prints a duplicate ("… 1M 2M 2M"). At 10+ units the extra precision adds
+  // clutter without disambiguating anything, so it drops back to whole numbers.
+  const scale = (divisor: number, suffix: string) => {
+    const scaled = value / divisor;
+    const digits = scaled < 10 ? 1 : 0;
+    return `${formatNumber(scaled, { maximumFractionDigits: digits })}${suffix}`;
+  };
+  if (value >= 1_000_000_000) return scale(1_000_000_000, 'G');
+  if (value >= 1_000_000) return scale(1_000_000, 'M');
+  if (value >= 1_000) return scale(1_000, 'K');
+  return `${value}`;
+}
+
 const rangeIntervals: Record<TimeRange, string> = {
   '24h': '5m',
   '7d': '1h',
@@ -191,24 +209,6 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
     return [0, Math.ceil(maxVal * 1.1)];
   }, [data, hasDiskActivity]);
 
-  function formatBandwidthTick(value: number): string {
-    if (value >= 1_000_000_000) return `${formatNumber(value / 1_000_000_000, { maximumFractionDigits: 0 })}G`;
-    if (value >= 1_000_000) return `${formatNumber(value / 1_000_000, { maximumFractionDigits: 0 })}M`;
-    if (value >= 1_000) return `${formatNumber(value / 1_000, { maximumFractionDigits: 0 })}K`;
-    return `${value}`;
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
-        <div className="text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">{t('devicePerformanceGraphs.loading')}</p>
-        </div>
-      </div>
-    );
-  }
-
   if (error) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
@@ -254,6 +254,18 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
         </div>
       </div>
 
+      {/* #7214 (paper cut #25): the range buttons above stay mounted and
+          clickable during a load — only the chart/stat area below swaps to a
+          spinner, so switching ranges mid-load is always possible. */}
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+            <p className="mt-3 text-sm text-muted-foreground">{t('devicePerformanceGraphs.loading')}</p>
+          </div>
+        </div>
+      ) : (
+        <>
       <div className={compact ? 'mt-4 h-56' : 'mt-6 h-80'}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} onClick={handleChartClick}>
@@ -469,6 +481,8 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
               </div>
             </div>
           )}
+        </>
+      )}
         </>
       )}
 
