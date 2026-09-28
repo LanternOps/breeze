@@ -1147,7 +1147,8 @@
       "saveFailed": "Impossible d'enregistrer les paramètres {{provider}}.",
       "loadFailed": "Impossible de charger les paramètres de {{provider}}.",
       "retry": "Réessayer",
-      "pickDefaults": "Choisissez les valeurs par défaut que Breeze utilise avec {{provider}}. Si vous avez changé d'organisation, choisissez-les à nouveau — les choix de l'ancienne organisation ont été effacés."
+      "pickDefaults": "Choisissez les valeurs par défaut que Breeze utilise avec {{provider}}. Si vous avez changé d'organisation, choisissez-les à nouveau — les choix de l'ancienne organisation ont été effacés.",
+      "paymentAccountMissing": "Les paiements enregistrés dans Breeze ne sont pas envoyés à {{provider}} tant que vous n'avez pas choisi de compte bancaire."
     }
   },
   "accountingMapping": {
@@ -1170,6 +1171,9 @@
     "syncFailed": "Échec de la synchronisation",
     "incomeAccount": "Compte de produits",
     "incomeAccountRequired": "Définissez un compte de produits par défaut avant de créer ou de synchroniser des articles dans {{provider}}.",
+    "incomeAccountInSettings": "Définissez le compte de revenus {{provider}} dans l'étape des paramètres ci-dessus avant de créer des articles.",
+    "archived": "Archivé",
+    "duplicateNameHint": "Choisissez ci-dessous l'enregistrement {{provider}} existant, puis confirmez la correspondance.",
     "saveIncomeAccount": "Enregistrer le compte de produits",
     "mappingSaved": "Association enregistrée.",
     "entitySynced": "Synchronisé avec {{provider}}.",
@@ -1202,6 +1206,9 @@
     "importing": "Importer...",
     "importSelected": "Importation {{count}} sélectionnée",
     "customerFailedCount_one": "{{count}} client n’a pas importé",
-    "customerFailedCount_other": "{{count}} les clients n’ont pas importé"
+    "customerFailedCount_other": "{{count}} les clients n’ont pas importé",
+    "showAllContacts_one": "Afficher tous les contacts ({{count}} fournisseur uniquement masqué)",
+    "showAllContacts_other": "Afficher tous les contacts ({{count}} fournisseurs uniquement masqués)",
+    "archived": "Archivé"
   }
 }

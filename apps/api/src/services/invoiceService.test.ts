@@ -2659,6 +2659,14 @@ describe('listPayments source tagging + accountingSync', () => {
     expect(rows[0]).toMatchObject({ source: 'manual', accountingSync: { status: 'synced', lastError: null } });
   });
 
+  it("a Breeze-origin payment's sync state names the provider it was pushed to (Xero W04)", async () => {
+    queueListPayments([{ id: 'pay1', method: 'check' }], [], [mapping({ syncStatus: 'synced', provider: 'xero' })]);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]!.accountingSync).toEqual({ status: 'synced', lastError: null, provider: 'xero' });
+  });
+
   it('surfaces a push failure on a Stripe payment without changing its source', async () => {
     queueListPayments(
       [{ id: 'pay1', method: 'card' }],

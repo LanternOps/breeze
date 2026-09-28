@@ -1147,7 +1147,8 @@
       "saveFailed": "{{provider}} ayarları kaydedilemedi.",
       "loadFailed": "{{provider}} tarafından ayarlar yüklenemedi.",
       "retry": "Tekrar dene",
-      "pickDefaults": "Breeze uygulamasının {{provider}} ile kullandığı varsayılanları seçin. Kuruluş değiştirdiyseniz bunları yeniden seçin — önceki kuruluşun seçimleri temizlendi."
+      "pickDefaults": "Breeze uygulamasının {{provider}} ile kullandığı varsayılanları seçin. Kuruluş değiştirdiyseniz bunları yeniden seçin — önceki kuruluşun seçimleri temizlendi.",
+      "paymentAccountMissing": "Bir banka hesabı seçilene kadar Breeze'de kaydedilen ödemeler {{provider}} hizmetine gönderilmez."
     }
   },
   "accountingMapping": {
@@ -1170,6 +1171,9 @@
     "syncFailed": "Eşitleme başarısız",
     "incomeAccount": "Gelir hesabı",
     "incomeAccountRequired": "{{provider}} tarafında ürün oluşturmadan veya senkronize etmeden önce varsayılan bir gelir hesabı belirleyin.",
+    "incomeAccountInSettings": "Ürün oluşturmadan önce yukarıdaki ayarlar adımında {{provider}} gelir hesabını belirleyin.",
+    "archived": "Arşivlendi",
+    "duplicateNameHint": "Aşağıdan mevcut {{provider}} kaydını seçin, ardından eşleşmeyi onaylayın.",
     "saveIncomeAccount": "Gelir hesabını kaydet",
     "mappingSaved": "Eşleme kaydedildi.",
     "entitySynced": "{{provider}} ile senkronize edildi.",
@@ -1202,6 +1206,9 @@
     "importing": "İçe aktarılıyor…",
     "importSelected": "İçe aktar {{count}} seçildi",
     "customerFailedCount_one": "{{count}} müşterisi içe aktarılamadı",
-    "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu"
+    "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu",
+    "showAllContacts_one": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
+    "showAllContacts_other": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
+    "archived": "Arşivlendi"
   }
 }

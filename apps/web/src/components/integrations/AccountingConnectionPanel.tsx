@@ -688,6 +688,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
             defaultExemptTaxCodeRef: status.defaultExemptTaxCodeRef ?? null,
             defaultPaymentAccountRef: status.defaultPaymentAccountRef ?? null,
           }}
+          paymentPushOn={status?.pushPayments === true && caps.paymentPush}
           onSaved={(v) => setStatus((prev) => (prev ? { ...prev, ...v } : prev))}
           onUnauthorized={onUnauthorized}
         />
@@ -979,6 +980,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
           provider={provider}
           onUnauthorized={onUnauthorized}
           defaultIncomeAccountRef={status.defaultIncomeAccountRef ?? null}
+          incomeAccountHome={status?.features?.settingsOptions ? "settings" : "workbench"}
           onSettingsChanged={(settings) =>
             setStatus((prev) =>
               prev ? { ...prev, defaultIncomeAccountRef: settings.defaultIncomeAccountRef } : prev,

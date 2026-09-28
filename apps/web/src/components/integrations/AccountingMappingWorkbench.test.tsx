@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 
 // SEC-2026-09-05-057: every mutating control here is gated on
@@ -1257,5 +1257,362 @@ describe("AccountingMappingWorkbench provider wiring", () => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith("/accounting/xero/mappings?entityType=catalog_item"),
     );
     expect(fetchWithAuthMock).toHaveBeenCalledWith("/accounting/xero/income-accounts");
+  });
+});
+
+describe("Xero W03", () => {
+  it("hides the income-account picker and does not fetch income accounts when the settings step owns it", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      String(url).includes("/mappings") ? jsonResponse({ data: [itemProposal] }) : jsonResponse({}, 404),
+    );
+    render(
+      <AccountingMappingWorkbench
+        provider="xero"
+        onUnauthorized={vi.fn()}
+        defaultIncomeAccountRef={null}
+        incomeAccountHome="settings"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ITEM_ID}`);
+
+    expect(screen.queryByTestId("xero-income-account-select")).toBeNull();
+    expect(screen.getByTestId("xero-income-account-in-settings")).toHaveTextContent("settings step");
+    expect(
+      fetchWithAuthMock.mock.calls.some((c) => String(c[0]).includes("/accounting/xero/income-accounts")),
+    ).toBe(false);
+    expect(screen.getAllByTestId(/^xero-mapping-create-/)[0]).toBeDisabled();
+  });
+
+  it("re-enables Create new when the parent's income account arrives after mount", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      String(url).includes("/mappings") ? jsonResponse({ data: [itemProposal] }) : jsonResponse({}, 404),
+    );
+    const { rerender } = render(
+      <AccountingMappingWorkbench
+        provider="xero"
+        onUnauthorized={vi.fn()}
+        defaultIncomeAccountRef={null}
+        incomeAccountHome="settings"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ITEM_ID}`);
+    expect(screen.getAllByTestId(/^xero-mapping-create-/)[0]).toBeDisabled();
+
+    rerender(
+      <AccountingMappingWorkbench
+        provider="xero"
+        onUnauthorized={vi.fn()}
+        defaultIncomeAccountRef="200"
+        incomeAccountHome="settings"
+      />,
+    );
+
+    expect(screen.getAllByTestId(/^xero-mapping-create-/)[0]).toBeEnabled();
+    expect(screen.queryByTestId("xero-income-account-in-settings")).toBeNull();
+  });
+
+  it("keeps the QuickBooks income-account picker exactly as before (default home)", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      String(url).includes("/mappings") ? jsonResponse({ data: [itemProposal] }) : jsonResponse({ data: [] }),
+    );
+    render(
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`);
+
+    expect(screen.getByTestId("quickbooks-income-account-select")).toBeInTheDocument();
+  });
+
+  it("labels archived candidates and lists them after live ones", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/remote-candidates")) {
+        return jsonResponse({
+          data: [
+            { id: "old", displayName: "Acme", archived: true },
+            { id: "live", displayName: "Acme Ltd", archived: false },
+          ],
+        });
+      }
+      if (u.includes("/mappings")) return jsonResponse({ data: [ambiguousOrgProposal] });
+      return jsonResponse({ data: [] });
+    });
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+
+    fireEvent.change(screen.getByTestId(`xero-mapping-search-${ORG_ID}`), { target: { value: "acme" } });
+
+    const select = await screen.findByTestId(`xero-mapping-remote-${ORG_ID}`);
+    await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1));
+    const options = within(select).getAllByRole("option").map((o) => o.textContent);
+    expect(options.indexOf("Acme Ltd")).toBeLessThan(options.findIndex((t) => t?.startsWith("Acme · Archived")));
+    expect(screen.getByTestId("xero-candidate-archived-old")).toBeInTheDocument();
+  });
+
+  it("on duplicate_name, shows the hint, seeds the row search with the name and preselects the one exact match", async () => {
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse(
+          {
+            error: 'Xero already has a customer named "Acme" — link it instead.',
+            code: "duplicate_name",
+            details: { remoteName: "Acme" },
+          },
+          409,
+        );
+      }
+      if (u.includes("/remote-candidates") && u.includes("q=Acme")) {
+        return jsonResponse({
+          data: [
+            { id: "xc-7", displayName: "acme", archived: false },
+            { id: "xc-8", displayName: "Acme Holdings", archived: false },
+          ],
+        });
+      }
+      if (u.includes("/mappings") && init?.method === "PUT") {
+        return jsonResponse({
+          data: {
+            breezeEntityType: "org",
+            breezeEntityId: ORG_ID,
+            remoteEntityType: "Customer",
+            remoteEntityId: "xc-7",
+            linkStatus: "confirmed",
+            syncStatus: "pending",
+            lastSyncedAt: null,
+            lastError: null,
+          },
+        });
+      }
+      if (u.includes("/mappings")) return jsonResponse({ data: [{ ...ambiguousOrgProposal, linkStatus: "create_new" }] });
+      return jsonResponse({ data: [] });
+    });
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+
+    fireEvent.click(screen.getByTestId(`xero-mapping-sync-${ORG_ID}`));
+
+    expect(await screen.findByTestId(`xero-mapping-duplicate-hint-${ORG_ID}`)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId(`xero-mapping-search-${ORG_ID}`)).toHaveValue("Acme"),
+    );
+
+    const select = screen.getByTestId(`xero-mapping-remote-${ORG_ID}`);
+    await waitFor(() => expect(select).toHaveValue("xc-7"));
+
+    fireEvent.click(screen.getByTestId(`xero-mapping-confirm-${ORG_ID}`));
+
+    await waitFor(() => {
+      const call = fetchWithAuthMock.mock.calls.find(
+        (c) => String(c[0]).includes("/accounting/xero/mappings") && (c[1] as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse((call![1] as RequestInit).body as string);
+      expect(body).toMatchObject({ decision: "confirmed", remoteEntityId: "xc-7" });
+    });
+  });
+
+  it("a duplicate_name WITHOUT details.remoteName shows the error but no hint and no seed", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse(
+          { error: 'A record with this name already exists — rename it and try again.', code: "duplicate_name" },
+          409,
+        );
+      }
+      if (u.includes("/mappings")) return jsonResponse({ data: [{ ...ambiguousOrgProposal, linkStatus: "confirmed", proposedRemoteId: "qb-1" }] });
+      return jsonResponse({ data: [] });
+    });
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+
+    fireEvent.click(screen.getByTestId(`xero-mapping-sync-${ORG_ID}`));
+
+    expect(await screen.findByTestId(`xero-mapping-error-${ORG_ID}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`xero-mapping-duplicate-hint-${ORG_ID}`)).toBeNull();
+    expect(screen.getByTestId(`xero-mapping-search-${ORG_ID}`)).toHaveValue("");
+  });
+
+  it("a seeded search runs exactly once — no request loop from the preselect (quorum 7)", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse(
+          { error: 'dup', code: "duplicate_name", details: { remoteName: "Acme" } },
+          409,
+        );
+      }
+      if (u.includes("/remote-candidates") && u.includes("q=Acme")) {
+        return jsonResponse({ data: [{ id: "xc-7", displayName: "acme", archived: false }] });
+      }
+      if (u.includes("/mappings")) return jsonResponse({ data: [{ ...ambiguousOrgProposal, linkStatus: "create_new" }] });
+      return jsonResponse({ data: [] });
+    });
+    const { rerender } = render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`xero-mapping-sync-${ORG_ID}`));
+    await screen.findByTestId(`xero-mapping-duplicate-hint-${ORG_ID}`);
+    await waitFor(() =>
+      expect(screen.getByTestId(`xero-mapping-remote-${ORG_ID}`)).toHaveValue("xc-7"),
+    );
+
+    rerender(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    rerender(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+
+    const calls = fetchWithAuthMock.mock.calls.filter(
+      (c) => String(c[0]).includes("/remote-candidates") && String(c[0]).includes("q=Acme"),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("an ordinary QuickBooks search does not refetch when the parent re-renders", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/remote-candidates")) return jsonResponse({ data: [{ id: "qb-77", displayName: "Acme Corporation" }] });
+      if (u.includes("/mappings")) return jsonResponse({ data: [ambiguousOrgProposal] });
+      return jsonResponse({ data: [] });
+    });
+    const { rerender } = render(
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.change(screen.getByTestId(`quickbooks-mapping-search-${ORG_ID}`), { target: { value: "acme" } });
+    await waitFor(() => {
+      const calls = fetchWithAuthMock.mock.calls.filter((c) => String(c[0]).includes("/remote-candidates"));
+      expect(calls).toHaveLength(1);
+    });
+
+    rerender(
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+
+    const calls = fetchWithAuthMock.mock.calls.filter((c) => String(c[0]).includes("/remote-candidates"));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not preselect when two candidates match the name exactly", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse({ error: "dup", code: "duplicate_name", details: { remoteName: "Acme" } }, 409);
+      }
+      if (u.includes("/remote-candidates") && u.includes("q=Acme")) {
+        return jsonResponse({
+          data: [
+            { id: "xc-7", displayName: "Acme", archived: false },
+            { id: "xc-8", displayName: "acme", archived: false },
+          ],
+        });
+      }
+      if (u.includes("/mappings")) return jsonResponse({ data: [{ ...ambiguousOrgProposal, linkStatus: "create_new" }] });
+      return jsonResponse({ data: [] });
+    });
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`xero-mapping-sync-${ORG_ID}`));
+    await screen.findByTestId(`xero-mapping-duplicate-hint-${ORG_ID}`);
+
+    const select = screen.getByTestId(`xero-mapping-remote-${ORG_ID}`);
+    await waitFor(() => {
+      const calls = fetchWithAuthMock.mock.calls.filter(
+        (c) => String(c[0]).includes("/remote-candidates") && String(c[0]).includes("q=Acme"),
+      );
+      expect(calls).toHaveLength(1);
+    });
+    expect(select).toHaveValue("");
+  });
+
+  it("seeds the search box with the normalised name and preselects the candidate whose displayed name matches once normalised", async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse(
+          { error: "dup", code: "duplicate_name", details: { remoteName: "  Acme   <Ltd>  " } },
+          409,
+        );
+      }
+      if (u.includes("/remote-candidates") && u.includes("q=Acme%20Ltd")) {
+        return jsonResponse({ data: [{ id: "xc-9", displayName: "acme ltd", archived: false }] });
+      }
+      if (u.includes("/mappings")) return jsonResponse({ data: [{ ...ambiguousOrgProposal, linkStatus: "create_new" }] });
+      return jsonResponse({ data: [] });
+    });
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`xero-mapping-sync-${ORG_ID}`));
+
+    await screen.findByTestId(`xero-mapping-duplicate-hint-${ORG_ID}`);
+    await waitFor(() =>
+      expect(screen.getByTestId(`xero-mapping-search-${ORG_ID}`)).toHaveValue("Acme Ltd"),
+    );
+    await waitFor(() => expect(screen.getByTestId(`xero-mapping-remote-${ORG_ID}`)).toHaveValue("xc-9"));
+  });
+
+  it("never renders remoteName as HTML — it is text-only, even when it looks like a tag", async () => {
+    const evil = '<img src=x onerror="alert(1)">Evil';
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse({ error: "dup", code: "duplicate_name", details: { remoteName: evil } }, 409);
+      }
+      if (u.includes("/remote-candidates")) return jsonResponse({ data: [] });
+      if (u.includes("/mappings")) return jsonResponse({ data: [{ ...ambiguousOrgProposal, linkStatus: "create_new" }] });
+      return jsonResponse({ data: [] });
+    });
+    const { container } = render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("xero-mapping-load"));
+    await screen.findByTestId(`xero-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`xero-mapping-sync-${ORG_ID}`));
+
+    await screen.findByTestId(`xero-mapping-duplicate-hint-${ORG_ID}`);
+    expect(container.querySelector("img")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId(`xero-mapping-search-${ORG_ID}`)).toHaveValue(
+        'img src=x onerror="alert(1)"Evil',
+      ),
+    );
+  });
+
+  it("the #xero-items hash opens the Items tab", async () => {
+    window.location.hash = "#xero-items";
+    fetchWithAuthMock.mockImplementation(() => jsonResponse({ data: [] }));
+    render(
+      <AccountingMappingWorkbench provider="xero" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("xero-mapping-tab-items")).toHaveAttribute("aria-selected", "true"),
+    );
   });
 });

@@ -2156,7 +2156,7 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
       ...r,
       source,
       accountingSync: mapping && mapping.breezeOrigin
-        ? { status: mapping.syncStatus, lastError: mapping.lastError }
+        ? { status: mapping.syncStatus, lastError: mapping.lastError, provider: mapping.provider as AccountingProviderId }
         : null,
     };
   });

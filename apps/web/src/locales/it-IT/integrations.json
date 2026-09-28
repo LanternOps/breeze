@@ -1147,7 +1147,8 @@
       "saveFailed": "Impossibile salvare le impostazioni di {{provider}}.",
       "loadFailed": "Impossibile caricare le impostazioni da {{provider}}.",
       "retry": "Riprova",
-      "pickDefaults": "Scegli i valori predefiniti che Breeze usa con {{provider}}. Se hai cambiato organizzazione, sceglili di nuovo — le scelte dell'organizzazione precedente sono state cancellate."
+      "pickDefaults": "Scegli i valori predefiniti che Breeze usa con {{provider}}. Se hai cambiato organizzazione, sceglili di nuovo — le scelte dell'organizzazione precedente sono state cancellate.",
+      "paymentAccountMissing": "I pagamenti registrati in Breeze non vengono inviati a {{provider}} finché non scegli un conto bancario."
     }
   },
   "accountingMapping": {
@@ -1170,6 +1171,9 @@
     "syncFailed": "Sincronizzazione non riuscita",
     "incomeAccount": "Conto di ricavo",
     "incomeAccountRequired": "Imposta un conto di ricavo predefinito prima di creare o sincronizzare articoli in {{provider}}.",
+    "incomeAccountInSettings": "Imposta il conto ricavi di {{provider}} nel passaggio delle impostazioni qui sopra prima di creare articoli.",
+    "archived": "Archiviato",
+    "duplicateNameHint": "Scegli qui sotto il record {{provider}} esistente, poi conferma l'abbinamento.",
     "saveIncomeAccount": "Salva conto di ricavo",
     "mappingSaved": "Mappatura salvata.",
     "entitySynced": "Sincronizzato con {{provider}}.",
@@ -1202,6 +1206,9 @@
     "importing": "Importazione...",
     "importSelected": "Importa {{count}} selezionati",
     "customerFailedCount_one": "Importazione di {{count}} cliente non riuscita",
-    "customerFailedCount_other": "Importazione di {{count}} clienti non riuscita"
+    "customerFailedCount_other": "Importazione di {{count}} clienti non riuscita",
+    "showAllContacts_one": "Mostra tutti i contatti ({{count}} solo fornitore nascosto)",
+    "showAllContacts_other": "Mostra tutti i contatti ({{count}} solo fornitori nascosti)",
+    "archived": "Archiviato"
   }
 }

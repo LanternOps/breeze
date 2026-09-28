@@ -1147,7 +1147,8 @@
       "saveFailed": "Não foi possível salvar as configurações do {{provider}}.",
       "loadFailed": "Não foi possível carregar as configurações do {{provider}}.",
       "retry": "Tentar novamente",
-      "pickDefaults": "Escolha os padrões que o Breeze usa com o {{provider}}. Se você trocou de organização, escolha-os novamente — as escolhas da organização anterior foram apagadas."
+      "pickDefaults": "Escolha os padrões que o Breeze usa com o {{provider}}. Se você trocou de organização, escolha-os novamente — as escolhas da organização anterior foram apagadas.",
+      "paymentAccountMissing": "Os pagamentos registrados no Breeze não são enviados ao {{provider}} até que você escolha uma conta bancária."
     }
   },
   "accountingMapping": {
@@ -1170,6 +1171,9 @@
     "syncFailed": "Falha na sincronização",
     "incomeAccount": "Conta de receita",
     "incomeAccountRequired": "Defina uma conta de receita padrão antes de criar ou sincronizar itens no {{provider}}.",
+    "incomeAccountInSettings": "Defina a conta de receita do {{provider}} na etapa de configurações acima antes de criar itens.",
+    "archived": "Arquivado",
+    "duplicateNameHint": "Escolha abaixo o registro existente do {{provider}} e confirme a correspondência.",
     "saveIncomeAccount": "Salvar conta de receita",
     "mappingSaved": "Mapeamento salvo.",
     "entitySynced": "Sincronizado com o {{provider}}.",
@@ -1202,6 +1206,9 @@
     "importing": "Importando…",
     "importSelected": "Importar {{count}} selecionados",
     "customerFailedCount_one": "{{count}} cliente não pôde ser importado",
-    "customerFailedCount_other": "{{count}} clientes não puderam ser importados"
+    "customerFailedCount_other": "{{count}} clientes não puderam ser importados",
+    "showAllContacts_one": "Mostrar todos os contatos ({{count}} apenas fornecedor oculto)",
+    "showAllContacts_other": "Mostrar todos os contatos ({{count}} apenas fornecedores ocultos)",
+    "archived": "Arquivado"
   }
 }

@@ -1147,7 +1147,8 @@
       "saveFailed": "{{provider}}-Einstellungen konnten nicht gespeichert werden.",
       "loadFailed": "Einstellungen von {{provider}} konnten nicht geladen werden.",
       "retry": "Erneut versuchen",
-      "pickDefaults": "Wählen Sie die Standardwerte, die Breeze mit {{provider}} verwendet. Wenn Sie die Organisation gewechselt haben, wählen Sie sie erneut — die Auswahl der vorherigen Organisation wurde gelöscht."
+      "pickDefaults": "Wählen Sie die Standardwerte, die Breeze mit {{provider}} verwendet. Wenn Sie die Organisation gewechselt haben, wählen Sie sie erneut — die Auswahl der vorherigen Organisation wurde gelöscht.",
+      "paymentAccountMissing": "In Breeze erfasste Zahlungen werden erst an {{provider}} übertragen, wenn Sie ein Bankkonto auswählen."
     }
   },
   "accountingMapping": {
@@ -1170,6 +1171,9 @@
     "syncFailed": "Synchronisierung fehlgeschlagen",
     "incomeAccount": "Ertragskonto",
     "incomeAccountRequired": "Legen Sie ein Standard-Ertragskonto fest, bevor Sie Artikel in {{provider}} erstellen oder synchronisieren.",
+    "incomeAccountInSettings": "Legen Sie vor dem Anlegen von Artikeln im Einstellungsschritt oben das {{provider}}-Erlöskonto fest.",
+    "archived": "Archiviert",
+    "duplicateNameHint": "Wählen Sie unten den vorhandenen {{provider}}-Datensatz aus und bestätigen Sie die Zuordnung.",
     "saveIncomeAccount": "Ertragskonto speichern",
     "mappingSaved": "Zuordnung gespeichert.",
     "entitySynced": "Mit {{provider}} synchronisiert.",
@@ -1202,6 +1206,9 @@
     "importing": "Importieren…",
     "importSelected": "Import {{count}} ausgewählt",
     "customerFailedCount_one": "{{count}} Kunde konnte nicht importieren",
-    "customerFailedCount_other": "{{count}} Kunden konnten nicht importiert werden"
+    "customerFailedCount_other": "{{count}} Kunden konnten nicht importiert werden",
+    "showAllContacts_one": "Alle Kontakte anzeigen ({{count}} reiner Lieferant ausgeblendet)",
+    "showAllContacts_other": "Alle Kontakte anzeigen ({{count}} reine Lieferanten ausgeblendet)",
+    "archived": "Archiviert"
   }
 }

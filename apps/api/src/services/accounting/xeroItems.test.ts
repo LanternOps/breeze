@@ -95,7 +95,8 @@ describe('toRemoteItem', () => {
       id: 'xi-1', displayName: 'Managed Firewall', sku: `fw-100-${H}`, description: 'Per site, monthly',
       unitPrice: 49.995, active: true, remoteVersion: new Date(1790000000000).toISOString(),
     });
-    expect(toRemoteItem(xitem({ IsSold: false }))).toMatchObject({ active: false });
+    // Xero items have no archived state; IsSold: false means purchase-only, not archived.
+    expect(toRemoteItem(xitem({ IsSold: false }))).toMatchObject({ active: true });
     expect(toRemoteItem(xitem({ ItemID: undefined }))).toBeNull();
   });
 });
