@@ -260,12 +260,26 @@ describe('releaseConnection (disconnect)', () => {
   });
 });
 
+describe('contacts (Xero W03)', () => {
+  it('listRemoteCustomers delegates with the connection tenant and query', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(json({ pagination: { pageCount: 1 }, Contacts: [] }));
+    await xeroProvider.listRemoteCustomers(conn(), 'ac');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/Contacts?page=1&pageSize=1000&includeArchived=true&searchTerm=ac');
+    expect(init.headers).toMatchObject({ 'xero-tenant-id': 'ten-A', Authorization: 'Bearer at' });
+  });
+  it('declares getRemoteCustomer', () => {
+    expect(typeof xeroProvider.getRemoteCustomer).toBe('function');
+  });
+  it('still declares only the connect capability through W03a', () => {
+    expect(xeroProvider.capabilities).toMatchObject({ connect: true, mapping: false, customerImport: false });
+  });
+});
+
 describe('methods behind later waves', () => {
   it.each([
-    ['listRemoteCustomers', () => xeroProvider.listRemoteCustomers(conn())],
     ['listRemoteItems', () => xeroProvider.listRemoteItems(conn())],
     ['listRemoteIncomeAccounts', () => xeroProvider.listRemoteIncomeAccounts(conn())],
-    ['upsertCustomer', () => xeroProvider.upsertCustomer(conn(), {} as any, null)],
     ['upsertItem', () => xeroProvider.upsertItem(conn(), {} as any, null)],
     ['pushInvoice', () => xeroProvider.pushInvoice(conn(), {} as any, [])],
     ['voidInvoice', () => xeroProvider.voidInvoice(conn(), {} as any, {} as any)],

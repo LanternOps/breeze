@@ -1,10 +1,11 @@
 /**
- * Xero AccountingProvider (spec Phase E). W02 ships CONNECT only: OAuth,
- * tokens, tenant selection, organisation settings, pickers and targeted
- * disconnect. Every other method refuses with capability_unavailable until its
- * wave flips the capability (W03 mapping/customerImport, W04 invoicePush,
+ * Xero AccountingProvider (spec Phase E). W02 ships CONNECT: OAuth, tokens,
+ * tenant selection, organisation settings, pickers and targeted disconnect.
+ * W03 implements contacts and items; the `mapping`/`customerImport`
+ * capabilities flip in W03b. Every other method refuses with
+ * capability_unavailable until its wave flips the capability (W04 invoicePush,
  * W05 paymentPull/paymentPush). The capability gates in routes, producers and
- * workers mean none of them is reachable today; the refusal is the backstop.
+ * workers keep them unreachable; the refusal is the backstop.
  */
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
 import { AccountingProviderError } from './accountingProviderError';
@@ -12,6 +13,7 @@ import {
   decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections, requestXeroTokens, requireXeroBody, xeroApiGet,
   xeroArray, XERO_AUTHORIZE_URL, XERO_SCOPES, type XeroCallContext,
 } from './xeroHttp';
+import { getXeroContact, listXeroContacts, upsertXeroContact } from './xeroContacts';
 import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import type {
   AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
@@ -166,15 +168,26 @@ export class XeroProvider implements AccountingProvider {
     await deleteXeroConnection(conn.accessToken, conn.providerConnectionRef);
   }
 
+  // --- contacts (Xero W03) ---
+  async listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]> {
+    return listXeroContacts(callContext(conn), query);
+  }
+
+  async getRemoteCustomer(conn: AccountingConnection, id: string): Promise<RemoteCustomer | null> {
+    return getXeroContact(callContext(conn), id);
+  }
+
+  async upsertCustomer(
+    conn: AccountingConnection,
+    customer: AccountingCustomerPayload,
+    mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef> {
+    return upsertXeroContact(callContext(conn), customer, mapping);
+  }
+
   // --- later waves (capability false; unreachable behind the gates) ---
-  async listRemoteCustomers(_conn: AccountingConnection, _query?: string): Promise<RemoteCustomer[]> { return notYet('contact listing', 'W03'); }
   async listRemoteItems(_conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> { return notYet('item listing', 'W03'); }
   async listRemoteIncomeAccounts(_conn: AccountingConnection): Promise<RemoteIncomeAccount[]> { return notYet('income account listing', 'W03'); }
-  async upsertCustomer(
-    _conn: AccountingConnection,
-    _customer: AccountingCustomerPayload,
-    _mapping: AccountingEntityMapping | null,
-  ): Promise<RemoteRef> { return notYet('contact sync', 'W03'); }
   async upsertItem(
     _conn: AccountingConnection,
     _item: AccountingItemPayload,
