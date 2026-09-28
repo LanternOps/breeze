@@ -211,6 +211,10 @@ it('browses persistent ledger entries with an opaque cursor and lifecycle availa
   expect(await response.json()).toEqual({ items: [entry], nextCursor: SOURCE });
   expect(m.ledger).toHaveBeenCalledWith({ orgId: ORG, policyId: POLICY, limit: 1 }, expect.anything());
   expect((await request('/ledger?limit=101')).status).toBe(400);
+  // #7212: sourceTable reaches the service; unknown tables are rejected.
+  await request(`/ledger?orgId=${ORG}&sourceTable=network_monitors`);
+  expect(m.ledger).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: ORG, sourceTable: 'network_monitors' }), expect.anything());
+  expect((await request('/ledger?sourceTable=bogus')).status).toBe(400);
 });
 it('rejects unavailable revert before mutation or success audit', async () => {
   m.revert.mockRejectedValueOnce(new ConversionError('conversion_revert_unavailable', 'Legacy runtime retired'));
