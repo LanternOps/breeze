@@ -29,13 +29,24 @@ type AiToolTier = 1 | 2 | 3 | 4;
 const FLEET_HEALTH_DEFAULT_LIMIT = 15;
 const FLEET_HEALTH_MAX_LIMIT = 100;
 
-/** topIssues (a jsonb list per device) is opt-in; its size is always reported. */
+/**
+ * topIssues (a jsonb list per device) is opt-in; its size is always reported.
+ *
+ * #7131: `topIssueCount`/`topIssues` lead, ahead of the `rest` spread. The
+ * chat compactor's tightest tier caps an object at a fixed number of keys
+ * (`Object.entries(...).slice(0, maxObjectKeys)`), keeping only the first N
+ * in insertion order — with these appended last (as before), an 18-field
+ * device row silently lost both to that cap under the tightest tier's 15-key
+ * limit, dropping exactly the "what's wrong" data this tool exists to
+ * answer. Leading with them means a lower-priority reliability stat (e.g.
+ * `mtbfHours`) gets dropped instead.
+ */
 function shapeReliabilityRow(row: ReliabilityListItem, includeTopIssues: boolean): Record<string, unknown> {
   const { topIssues, drivers: _drivers, enrolledAt: _enrolledAt, ...rest } = row;
   return {
-    ...rest,
     topIssueCount: Array.isArray(topIssues) ? topIssues.length : 0,
     ...(includeTopIssues ? { topIssues } : {}),
+    ...rest,
   };
 }
 
