@@ -504,7 +504,7 @@ describe('connectionOwesUnresolvedPaymentDelete (Xero W05, quorum finding 3)', (
 });
 ```
 
-(If the file's `mappingMatches` fake cannot evaluate `isNull(remote_entity_id)`, extend it the way it already handles the other `IS NULL` predicates in `listOwedPaymentMappings`' tests.)
+(The fake already evaluates `IS NULL` on `remote_entity_id` and `integration_id`; this test needs no fake change. Task 6 adds `push_generation`.)
 
 In the existing test `'stamps a truncated-window one-liner when the CDC window overflowed (finding H)'`, **add** a stricter assertion after the existing regex. The old assertion stays:
 
@@ -1915,7 +1915,7 @@ In `middleware/partnerGuard.ts` `isPartnerGuardExemptPath`, before `return false
   if (path === '/api/v1/webhooks/xero') return true;
 ```
 
-File a follow-up issue for the same exposure on `/api/v1/webhooks/quickbooks` (left byte-identical here): `gh issue create --title "partnerGuard runs before the QuickBooks webhook signature check" --label security --body "Found by the Xero W05 plan quorum (finding 10). A request with any valid Breeze bearer token reaches partnerGuard's system-scoped partners read and activation path before quickbooks.ts verifies intuit-signature. Xero W05 exempts /api/v1/webhooks/xero in isPartnerGuardExemptPath; apply the same to QuickBooks."`. Link it in the W05a PR body.
+File a follow-up issue for the same exposure on `/api/v1/webhooks/quickbooks` (left byte-identical here): `gh issue create --title "partnerGuard runs before the QuickBooks webhook signature check" --label bug --body "Found by the Xero W05 plan quorum (finding 10). A request with any valid Breeze bearer token reaches partnerGuard's system-scoped partners read and activation path before quickbooks.ts verifies intuit-signature. Xero W05 exempts /api/v1/webhooks/xero in isPartnerGuardExemptPath; apply the same to QuickBooks."`. Link it in the W05a PR body. It is filed without a `security` label on purpose. The exposure needs a valid Breeze bearer token, and the guard already runs on every authenticated route, so it is hardening, not a vulnerability. Per the repo's disclosure rule, anything worse goes to a private advisory.
 
 Registries:
 - `__tests__/routerAuthGate.contract.test.ts` `EXEMPT`: add `xeroWebhookRoutes: 'Xero webhook authenticates provider signatures.',` after `quickbooksWebhookRoutes`.
@@ -2095,7 +2095,7 @@ Run `/pr-review-toolkit:review-pr`, fix confirmed findings in one round, and pos
     | 'remote_ambiguous' | 'provider_permission' | 'amount_exceeds_due' | 'remote_deleted';
   // accountingPaymentMessages.ts (all take the provider display label)
   paymentPushDisabledMessage(label), paymentInvoiceNotSyncedMessage(label), paymentRecordFailedOrphanMessage(label),
-  paymentRecordFailedRetryMessage(remoteId, label), paymentNotConnectedMessage(label), paymentPushGaveUpMessage(previous, label),
+  paymentRecordFailedRetryMessage(remoteId, label), paymentNotConnectedMessage(label), paymentPushGaveUpMessageFor(previous, label),
   paymentCurrencyMismatchSuffix(home, label), paymentSyncInProgressMessage(label, op: 'sync' | 'delete'),
   paymentInvoiceVoidMessage(label), paymentCustomerNotMappedMessage(label), paymentRecordConflictRetryMessage(label),
   paymentDeleteRecordFailedMessage(remoteId, label),
@@ -2119,7 +2119,7 @@ describe('payment push operator text — QuickBooks byte-identical (Xero W05 ref
       'QuickBooks accepted the payment (remote id 181) but Breeze could not record it yet; '
       + 'Breeze is retrying briefly and will stop rather than create a second payment'],
     ['not connected', paymentNotConnectedMessage(Q), 'QuickBooks is not connected'],
-    ['gave up', paymentPushGaveUpMessage('boom', Q),
+    ['gave up', paymentPushGaveUpMessageFor('boom', Q),
       'QuickBooks payment push gave up after 100 attempts: boom. Fix the cause and push the invoice again.'],
     ['currency suffix', paymentCurrencyMismatchSuffix('USD', Q), ' Record this payment in USD or reconcile it in QuickBooks by hand.'],
     ['currency suffix, no home', paymentCurrencyMismatchSuffix(null, Q),
@@ -2274,6 +2274,8 @@ describe('Xero W05: preflight park, provider refusals, labels', () => {
 
 (`AccountingProviderError` import: add `import { AccountingProviderError } from './accountingProviderError';` if the file lacks it. If `connRow`'s `provider` type is a literal union, widen the fixture type to `AccountingProviderId`.)
 
+3. **Teach the fake DB `push_generation`** (review finding). `markPaymentRefusedIfStillOwed` filters on it, and the fake throws `fake DB: the condition references accounting_entity_mappings columns this fake does not evaluate (push_generation)` for any column missing from `HANDLED_MAPPING_COLUMNS` (`accountingPaymentPush.test.ts:395-413`). Add `'push_generation'` to `HANDLED_MAPPING_COLUMNS`, and add `if (!eqOn('push_generation', row.pushGeneration)) return false;` to `mappingMatches`, next to its other `eqOn` checks. Without this, every create-refusal test fails with the fake's error, not the expected `AccountingPaymentPushError`.
+
 In `jobs/accountingSyncWorker.test.ts`, extend the payment-jobs describe:
 
 ```ts
@@ -2311,7 +2313,7 @@ Expected: FAIL:
 export function paymentPushDisabledMessage(label: string): string {
   return `Payment push is disabled for this ${label} connection`;
 }
-export function paymentPushGaveUpMessage(previous: string, label: string): string {
+export function paymentPushGaveUpMessageFor(previous: string, label: string): string {
   return `${label} payment push gave up after ${PAYMENT_PUSH_MAX_ATTEMPTS} attempts: ${previous}. `
     + 'Fix the cause and push the invoice again.';
 }
@@ -2345,7 +2347,8 @@ export function paymentRemoteLockedMessage(label: string): string {
 
 2. **`accountingPaymentPush.ts`**:
    - Keep the exported constants (`PAYMENT_PUSH_DISABLED_MESSAGE`, `PAYMENT_INVOICE_NOT_SYNCED_MESSAGE`, `PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE`, `PAYMENT_NOT_CONNECTED_MESSAGE`) as `/** @deprecated QuickBooks text; use the labelled function. */` aliases of `fn('QuickBooks')`. Existing tests import them.
-   - `paymentPushGaveUpMessage(previous)` becomes `paymentPushGaveUpMessage(previous, label)`. Update its callers to pass `accountingProviderDisplayName(provider)`. The row's provider is already read where the give-up is stamped; if it is not in scope, add the provider to that helper's parameters, like W03 refinement 21.
+   - The exported `paymentPushGaveUpMessage(previous)` **keeps its one-argument signature** as a `/** @deprecated QuickBooks text */` alias of `paymentPushGaveUpMessageFor(previous, 'QuickBooks')`, because four existing QuickBooks assertions call it: `accountingPaymentPush.test.ts:1165`, `:1973` and `:2063`, and `accountingPaymentPush.integration.test.ts:1016`. They stay unedited.
+   - The give-up is stamped inside `markPaymentMappingError` (`:995-1012`), which has no provider in scope. Its callers include `notePaymentJobSkipped`, which the worker calls with no connection resolved. So **do not thread a label through its callers.** Inside the give-up branch only (after the attempt count crosses `PAYMENT_PUSH_MAX_ATTEMPTS`), read the row's own provider in the same context: `const provider = await getConnectionProviderForMapping(db, mappingId, partnerId);`. That function is already imported (`:96`) and reads only the provider column, never tokens. Build the message with `paymentPushGaveUpMessageFor(previous, accountingProviderDisplayName((provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) as AccountingProviderId))`. A QuickBooks row yields the byte-identical text, and one extra read happens at most once per row, on the give-up.
    - Replace each M13 literal with its function, called with `accountingProviderDisplayName(conn.provider)` (the connection is in scope at every refusal after `resolveConnection`).
    - Where no connection exists (`not_connected` before any resolve), keep `PAYMENT_NOT_CONNECTED_MESSAGE`.
    - Label the log-only and Sentry-only QuickBooks lines listed in Task 0 inline with the same label.
