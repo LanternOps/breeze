@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
+import { usePermissions } from "../../lib/permissions";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -830,6 +831,8 @@ export default function DeviceList({
   effectiveAgentVersionByOrgId,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
+  const { can } = usePermissions();
+  const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // Use provided timezone or browser default
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -2860,6 +2863,7 @@ export default function DeviceList({
                   {agentOnlySuffix}
                 </button>
                 <hr className="my-1" />
+                {canWake && (
                 <button
                   type="button"
                   onClick={() => handleBulkAction("wake")}
@@ -2870,6 +2874,7 @@ export default function DeviceList({
                   {t("deviceList.wakeSelected")}
                   {agentOnlySuffix}
                 </button>
+                )}
                 {/* Compare caps at 4 devices (DeviceCompare's selection limit).
                     Above the cap the item stays put but disabled with the cap
                     spelled out — it used to vanish silently (#5023). */}
@@ -3287,7 +3292,7 @@ export default function DeviceList({
                                     <RotateCcw className="h-4 w-4" />
                                     {t("deviceList.reboot")}{" "}
                                   </button>
-                                  {device.status === "offline" && (
+                                  {canWake && device.status === "offline" && (
                                     <button
                                       type="button"
                                       onClick={() => {

@@ -262,3 +262,10 @@ describe('DeviceList — unified agent + network (#1322)', () => {
     });
   });
 });
+
+// #7215: Wake is gated on devices:execute; grant everything here (role-aware
+// behaviour is covered in DeviceList.permissions.test.tsx).
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));

@@ -194,3 +194,10 @@ describe('DeviceList — logs silent badge (#7067)', () => {
     expect(screen.queryByTestId(`device-${dev.id}-logs-silent-badge`)).toBeNull();
   });
 });
+
+// #7215: Wake is gated on devices:execute; grant everything here (role-aware
+// behaviour is covered in DeviceList.permissions.test.tsx).
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+  hasPermission: () => true,
+}));
