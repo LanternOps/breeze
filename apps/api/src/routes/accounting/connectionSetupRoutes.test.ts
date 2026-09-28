@@ -259,6 +259,26 @@ describe('POST /:provider/tenants/cancel', () => {
     expect(m.audit).not.toHaveBeenCalled();
   });
 
+  it('a discard failure answers a typed JSON body, reported, not the global 500 (review L)', async () => {
+    m.discard.mockRejectedValueOnce(new Error('db down'));
+    const res = await post('/xero/tenants/cancel');
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'Could not cancel the Xero connection; try again', code: 'cancel_failed' });
+    expect(m.capture).toHaveBeenCalledTimes(1);
+    expect(m.audit).not.toHaveBeenCalled();
+  });
+
+  it('a typed error from the discard goes through the shared mapper like the sibling routes (review L)', async () => {
+    m.discard.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'rate_limited', provider: 'xero', operation: 'Xero connections list', message: 'x', retryAfterMs: 9000,
+    }));
+    const res = await post('/xero/tenants/cancel');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('9');
+    expect((await res.json()).code).toBe('rate_limited');
+    expect(m.capture).not.toHaveBeenCalled();
+  });
+
   it('requires MFA', async () => {
     mfaPasses = false;
     expect((await post('/xero/tenants/cancel')).status).toBe(403);

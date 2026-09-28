@@ -21,6 +21,7 @@ import {
 } from '../../services/accounting/accountingTenantSelection';
 import { claimPendingTenant } from '../../services/accounting/accountingTenantSelectionStore';
 import { listProviderSettingsOptions } from '../../services/accounting/accountingSettingsOptions';
+import { AccountingMappingError } from '../../services/accounting/accountingMappingService';
 import { isAccountingProviderError, rateLimitRetryAfterMs } from '../../services/accounting/accountingProviderError';
 import { accountingProviderDisplayName } from '../../services/accounting/providerRegistry';
 import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
@@ -64,11 +65,19 @@ function chain(handlers: readonly MiddlewareHandler[]): MiddlewareHandler {
  * by the options service) goes through the SHARED mapper (429 + Retry-After,
  * ruling F7); any other provider failure is a 502 that leaks no upstream text.
  */
-function setupErrorResponse(c: Context, provider: AccountingProviderId, err: unknown): Response {
+function setupErrorResponse(
+  c: Context, provider: AccountingProviderId, err: unknown,
+  /** When set, an error no mapper recognises answers this typed 500 (reported) instead of the global 500. */
+  unmapped?: { error: string; code: string },
+): Response {
   if (err instanceof AccountingTenantSelectionError) return c.json({ error: err.message, code: err.code }, err.status);
   if (isAccountingProviderError(err) && rateLimitRetryAfterMs(err) === null) {
     captureException(err, c);
     return c.json({ error: `${accountingProviderDisplayName(provider)} returned an error; try again shortly`, code: 'provider_error' }, 502);
+  }
+  if (unmapped && !isAccountingProviderError(err) && !(err instanceof AccountingMappingError)) {
+    captureException(err instanceof Error ? err : new Error(String(err)), c);
+    return c.json(unmapped, 500);
   }
   return handleMappingError(c, err);
 }
@@ -185,7 +194,15 @@ export function registerConnectionSetupRoutes(router: Hono, deps: ConnectionSetu
     const { provider } = c.req.valid('param');
     const s = setup(c, provider, { requireConfigured: false });
     if ('refused' in s) return s.refused;
-    const { discarded } = await discardPendingTenantSelection({ partnerId: s.partnerId, provider, reason: 'cancel', runInDbContext: s.runInDb });
+    let discarded: boolean;
+    try {
+      ({ discarded } = await discardPendingTenantSelection({ partnerId: s.partnerId, provider, reason: 'cancel', runInDbContext: s.runInDb }));
+    } catch (err) {
+      // Review L: a typed body like the sibling routes, never the global 500.
+      return setupErrorResponse(c, provider, err, {
+        error: `Could not cancel the ${accountingProviderDisplayName(provider)} connection; try again`, code: 'cancel_failed',
+      });
+    }
     if (!discarded) {
       return c.json({ error: 'There is no connection waiting for an organisation', code: 'no_pending_selection' }, 404);
     }

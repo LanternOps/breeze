@@ -39,7 +39,9 @@ import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../servi
 import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../../jobs/accountingSyncWorker';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports } from '../../services/accounting/providerRegistry';
+import {
+  findAccountingProvider, getAccountingProvider, LEGACY_UNTARGETED_JOB_PROVIDER, providerSupports,
+} from '../../services/accounting/providerRegistry';
 import { captureException } from '../../services/sentry';
 import { ACCOUNTING_PROVIDER_IDS } from '../../services/accounting/types';
 import { discardPendingTenantSelection } from '../../services/accounting/accountingTenantSelection';
@@ -156,7 +158,8 @@ const callbackQuerySchema = z.object({
   realmId: z.string().min(1).optional(),
   state: z.string().min(1).optional(),
   // The provider's own OAuth error (e.g. access_denied when the user cancels consent).
-  error: z.string().max(100).optional(),
+  // Truncated, never refused: any value redirects consent_denied and is never reflected.
+  error: z.string().transform((v) => v.slice(0, 100)).optional(),
 });
 const settingsSchema = z.object({
   pushMode: z.enum(['auto', 'manual']).optional(),
@@ -430,9 +433,11 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
 
   if (query.error) {
     // Consent cancelled or refused at the provider: no grant exists, nothing to
-    // exchange or clean up. Only this browser's own verified flow clears the
-    // binding cookie, so a crafted link cannot cancel an in-flight connect.
-    if (query.state && verifyState(query.state) && bindingValid(query.state)) {
+    // exchange or clean up. Only this browser's own verified flow FOR THIS
+    // provider clears the binding cookie, so a crafted link cannot cancel an
+    // in-flight connect.
+    const denied = query.state ? verifyState(query.state) : null;
+    if (denied && (denied.provider ?? LEGACY_UNTARGETED_JOB_PROVIDER) === provider && bindingValid(query.state!)) {
       deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
     }
     return c.redirect(connectRedirectPath(provider, { kind: 'error', error: 'consent_denied' }));
@@ -503,35 +508,49 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   const runInDb: DbContextRunner = (fn) => withAuthDbAccessContext(auth, fn);
   const ref = await runInDb(() => getPartnerConnectionRef(db, partner.partnerId));
   if (!ref || ref.provider !== provider) return c.json({ error: 'Accounting connection not found' }, 404);
-  const audit = (resourceId: string, details: Record<string, unknown>) => writeRouteAudit(c, {
+  // `status` is the status of the row actually removed (review I), not the first read's.
+  const audit = (resourceId: string, status: string, details: Record<string, unknown>) => writeRouteAudit(c, {
     orgId: null, action: 'accounting.connection.disconnected', resourceType: 'accounting_connection', resourceId,
-    details: { provider, status: ref.status, ...details },
+    details: { provider, status, ...details },
   });
-  // A row still waiting for an organisation is a cancel: no chosen link to
-  // release, and this flow's links go through the held-checked cleanup. If it was
-  // claimed in the meantime, fall through and disconnect the now-connected row.
-  if (ref.status === PENDING_TENANT_STATUS) {
-    const { discarded } = await discardPendingTenantSelection({ partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb });
-    if (discarded) {
-      audit(ref.id, {});
-      return c.json({ disconnected: true });
-    }
+  // A row waiting for an organisation is a cancel: no chosen link to release,
+  // and this flow's links go through the held-checked cleanup. False = it was
+  // claimed (or removed) in the meantime.
+  const discardPending = async () => (await discardPendingTenantSelection({
+    partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
+  })).discarded;
+  if (ref.status === PENDING_TENANT_STATUS && await discardPending()) {
+    audit(ref.id, PENDING_TENANT_STATUS, {});
+    return c.json({ disconnected: true });
   }
   // Best-effort provider-side release BEFORE the row and its tokens are gone
-  // (spec W02 "Disconnect"; never token revocation). A row whose tokens cannot
-  // be decrypted skips the release but still disconnects.
+  // (spec W02 "Disconnect"; never token revocation). Only a provider with a
+  // release hook needs the decrypting read (review K). A row whose tokens
+  // cannot be decrypted skips the release but still disconnects.
   let full: AccountingConnection | null = null;
-  try {
-    full = await runInDb(() => getConnection(db, partner.partnerId, provider));
-  } catch (err) {
-    console.warn('[accounting] disconnect could not read the connection; skipping the provider-side release', {
-      partnerId: partner.partnerId, provider, error: err instanceof Error ? err.message : String(err),
-    });
+  if (findAccountingProvider(provider)?.releaseConnection) {
+    try {
+      full = await runInDb(() => getConnection(db, partner.partnerId, provider));
+    } catch (err) {
+      console.warn('[accounting] disconnect could not read the connection; skipping the provider-side release', {
+        partnerId: partner.partnerId, provider, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    // A concurrent reconnect re-parked the row (review H): its new grant's links
+    // need the held-checked cleanup, and a pending row is never refreshed. If
+    // it was claimed yet again, disconnect it without a release (best-effort).
+    if (full?.status === PENDING_TENANT_STATUS) {
+      if (await discardPending()) {
+        audit(full.id, PENDING_TENANT_STATUS, {});
+        return c.json({ disconnected: true });
+      }
+      full = null;
+    }
   }
   const providerRelease = full ? await releaseProviderConnection(full) : 'skipped';
   const { removed, connectionId, owedPaymentDeletes } = await runInDb(() => deleteConnection(db, partner.partnerId, provider));
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
-  audit(connectionId ?? ref.id, { providerRelease });
+  audit(connectionId ?? ref.id, full?.status ?? ref.status, { providerRelease });
   // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
   // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
   // — the only thing that lets a human find those Payments afterwards (review

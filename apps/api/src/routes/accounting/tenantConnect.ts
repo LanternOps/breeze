@@ -11,7 +11,9 @@
  * each write opens its own short system context (the callback has no request auth).
  */
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { AccountingProviderConflictError, upsertConnection } from '../../services/accounting/accountingConnectionService';
+import {
+  AccountingProviderConflictError, AccountingTenantHeldError, upsertConnection,
+} from '../../services/accounting/accountingConnectionService';
 import { releaseUnchosenTenants } from '../../services/accounting/accountingTenantSelection';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import type { AccountingProviderId, ConnectionTokens, ProviderTenant } from '../../services/accounting/types';
@@ -135,6 +137,8 @@ export async function completeTenantSelectingCallback(c: RouteCtx, input: {
   } catch (err) {
     await release(grant, null);
     if (err instanceof AccountingProviderConflictError) return fail('provider_conflict');
+    // Same user outcome as finalizeConnection's, not an incident (review F).
+    if (err instanceof AccountingTenantHeldError) return fail('tenant_held');
     captureException(asError(err), c);
     console.error(`[accounting] ${label} pending connection persist failed`, { partnerId, provider });
     return fail('persist_failed');

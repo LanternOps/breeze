@@ -1395,6 +1395,29 @@ describe('accounting routes', () => {
       expect(mocks.exchangeCode).not.toHaveBeenCalled();
     });
 
+    it('an over-long provider error value still redirects consent_denied (never a JSON 400, never reflected) (review E)', async () => {
+      const long = 'x'.repeat(150);
+      const res = await app.request(`/accounting/quickbooks/callback?error=${long}&state=anything`);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/integrations?accounting=quickbooks&error=consent_denied#accounting');
+      expect(res.headers.get('location')).not.toContain(long);
+    });
+
+    it('consent cancelled on one provider\'s callback with a state issued for ANOTHER provider does not clear the binding cookie (review G)', async () => {
+      allowXeroConnect();
+      const { state, cookie } = mintState(authState.partnerId!, USER_ID, Date.now() + 60_000, 'quickbooks');
+      const res = await app.request(`/accounting/xero/callback?error=access_denied&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(res.headers.get('location')).toBe('/integrations?accounting=xero&error=consent_denied#accounting');
+      expect(res.headers.get('set-cookie')).toBeNull();
+      // Control: the same state on its own provider's callback does clear it.
+      const own = await app.request(`/accounting/quickbooks/callback?error=access_denied&state=${encodeURIComponent(state)}`, {
+        headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` },
+      });
+      expect(own.headers.get('set-cookie')).toContain('breeze_accounting_oauth_state=;');
+    });
+
     it('a callback with neither code nor error is still a 400', async () => {
       const { state, cookie } = mintState(authState.partnerId!, USER_ID);
       const res = await app.request(`/accounting/quickbooks/callback?realmId=realm-A&state=${encodeURIComponent(state)}`, {
@@ -1557,6 +1580,45 @@ describe('accounting routes', () => {
       expect(res.status).toBe(200);
       expect(mocks.releaseProviderConnection).toHaveBeenCalledTimes(1);
       expect(mocks.deleteConnection).toHaveBeenCalledTimes(1);
+    });
+
+    it('a connected row RE-PARKED to pending_tenant before the full read goes through the held-checked discard, not release + plain delete (review H)', async () => {
+      mocks.getConnection.mockResolvedValue(xeroConnection({ status: 'pending_tenant', providerConnectionRef: null }));
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: true });
+      const res = await disconnect();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ disconnected: true });
+      expect(mocks.discardPendingTenantSelection).toHaveBeenCalledWith(expect.objectContaining({
+        partnerId: authState.partnerId, provider: 'xero', reason: 'cancel',
+      }));
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.deleteConnection).not.toHaveBeenCalled();
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { provider: 'xero', status: 'pending_tenant' },
+      });
+    });
+
+    it('the audit names the status actually deleted: a pending row claimed meanwhile is audited as connected (review I)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      mocks.discardPendingTenantSelection.mockResolvedValue({ discarded: false });
+      mocks.releaseProviderConnection.mockResolvedValue('released');
+      await disconnect();
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { provider: 'xero', status: 'connected', providerRelease: 'released' },
+      });
+    });
+
+    it('a provider with no release hook (QuickBooks) skips the decrypting full read: two DB contexts, not three (review K)', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'quickbooks', status: 'connected' });
+      const res = await disconnect('quickbooks');
+      expect(res.status).toBe(200);
+      expect(mocks.getConnection).not.toHaveBeenCalled();
+      expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(2);
+      expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'quickbooks');
+      expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
+        details: { provider: 'quickbooks', status: 'connected', providerRelease: 'skipped' },
+      });
     });
 
     it('a token that cannot be decrypted still disconnects (release skipped)', async () => {

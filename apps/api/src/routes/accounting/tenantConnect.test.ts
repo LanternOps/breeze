@@ -36,7 +36,7 @@ vi.mock('../../services/accounting/accountingTenantSelection', async (orig) => (
 vi.mock('../../services/sentry', () => ({ captureException: m.captureException, captureMessage: vi.fn() }));
 
 import { completeTenantSelectingCallback } from './tenantConnect';
-import { AccountingProviderConflictError } from '../../services/accounting/accountingConnectionService';
+import { AccountingProviderConflictError, AccountingTenantHeldError } from '../../services/accounting/accountingConnectionService';
 
 const EVT = 'evt-00001';
 const tokens = { realmId: '', accessToken: 'at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 1_800_000), refreshTokenExpiresAt: new Date(Date.now() + 86_400_000) };
@@ -145,6 +145,36 @@ describe('completeTenantSelectingCallback', () => {
     await expect(completeTenantSelectingCallback(c, input)).resolves.toEqual({ kind: 'error', error: 'provider_conflict' });
     expect(m.releaseUnchosenTenants).toHaveBeenCalledWith(expect.objectContaining({ keepConnectionRef: null }));
     expect(m.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a pending park that trips the held-tenant index → tenant_held, NOT captured (symmetry with the connect path) (review F)', async () => {
+    m.selection.listGrantTenants.mockResolvedValue([t('A'), t('B')]);
+    m.upsertConnection.mockRejectedValue(new AccountingTenantHeldError('xero'));
+    await expect(completeTenantSelectingCallback(c, input)).resolves.toEqual({ kind: 'error', error: 'tenant_held' });
+    expect(m.releaseUnchosenTenants).toHaveBeenCalledWith(expect.objectContaining({ keepConnectionRef: null }));
+    expect(m.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a reconnect whose own tenant is found keeps own\'s ref, and every other org in this grant is a release candidate (review O)', async () => {
+    m.readPriorRealm.mockResolvedValue({ known: true, realmId: 'ten-OWN' });
+    m.selection.listGrantTenants.mockResolvedValue([t('NEW1'), t('NEW2')]);
+    m.selection.listAllTenants.mockResolvedValue([t('NEW1'), t('NEW2'), { ...t('OWN'), authEventId: 'evt-OLD00' }]);
+    await expect(completeTenantSelectingCallback(c, input)).resolves.toEqual({ kind: 'connected' });
+    expect(m.upsertConnection).toHaveBeenCalledWith(expect.anything(), 'p1', 'xero', expect.objectContaining({ realmId: 'ten-OWN', providerConnectionRef: 'conn-OWN' }));
+    expect(m.releaseUnchosenTenants).toHaveBeenCalledWith(expect.objectContaining({
+      keepConnectionRef: 'conn-OWN', tenants: [t('NEW1'), t('NEW2')],
+    }));
+  });
+
+  it('a same-tenant reconnect leaves homeCurrency UNDEFINED (kept), never null (review O)', async () => {
+    m.readPriorRealm.mockResolvedValue({ known: true, realmId: 'ten-OWN' });
+    m.selection.listGrantTenants.mockResolvedValue([]);
+    m.selection.listAllTenants.mockResolvedValue([t('OWN')]);
+    await completeTenantSelectingCallback(c, input);
+    const fields = m.upsertConnection.mock.calls[0]![3] as Record<string, unknown>;
+    expect(fields.realmId).toBe('ten-OWN');
+    expect('homeCurrency' in fields).toBe(true);
+    expect(fields.homeCurrency).toBeUndefined();
   });
 
   it('a pending park that fails unexpectedly → persist_failed, reported, links released', async () => {
