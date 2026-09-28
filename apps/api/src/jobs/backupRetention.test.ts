@@ -268,7 +268,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     selectQueue.push([
       {
         id: 'snap-expired-1', snapshotId: 'snap-1', deviceId: 'device-1', configId: 'config-1',
-        storageIdentity: 's3::e::b', backupType: 'file',
+        storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file',
       },
     ]); // expired query (enumeration pass)
     selectQueue.push([{ id: 'snap-expired-1', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
@@ -292,7 +292,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('skips a row pinned by an in-flight backup_jobs base pin and counts it as skippedPinned (no retirement written)', async () => {
     selectQueue.push([
-      { id: 'snap-pinned', snapshotId: 'snap-pinned-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-pinned', snapshotId: 'snap-pinned-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-pinned', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([{ id: 'job-1' }]); // backup pin -- found, short-circuits
@@ -311,7 +311,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     // reporting active/healthy until the next differential noticed. An active
     // chain's base is a retention hold: not deleted, no retirement written.
     selectQueue.push([
-      { id: 'snap-chain-base', snapshotId: 'snap-chain-base-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'application' },
+      { id: 'snap-chain-base', snapshotId: 'snap-chain-base-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'application' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-chain-base', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // backup pin -- none
@@ -331,7 +331,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('deletes an expired full whose only chain rows are INACTIVE -- a broken/superseded chain is not a hold (#5421)', async () => {
     selectQueue.push([
-      { id: 'snap-dead-chain', snapshotId: 'snap-dead-chain-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'application' },
+      { id: 'snap-dead-chain', snapshotId: 'snap-dead-chain-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'application' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-dead-chain', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // backup pin -- none
@@ -351,7 +351,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('re-reads legal hold under the FOR UPDATE lock, ignoring a stale enumeration-pass value (the enumeration select no longer even fetches it)', async () => {
     selectQueue.push([
-      { id: 'snap-hold', snapshotId: 'snap-hold-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-hold', snapshotId: 'snap-hold-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-hold', legalHold: true, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock -- held
     selectQueue.push([]); // versionBoundSnapshots query
@@ -365,7 +365,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
   it('skips (does not retire) a row with an unresolved storage_identity and counts it as skippedUnresolved', async () => {
     selectQueue.push([
-      { id: 'snap-unresolved', snapshotId: 'snap-unresolved-provider', deviceId: 'device-1', configId: null, storageIdentity: null, backupType: 'file' },
+      { id: 'snap-unresolved', snapshotId: 'snap-unresolved-provider', deviceId: 'device-1', configId: null, storageIdentity: null, keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     selectQueue.push([{ id: 'snap-unresolved', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // versionBoundSnapshots query
@@ -390,7 +390,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     const future = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);
     const retention = { maxVersions: 2 };
     const base = {
-      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'file' as const, retention,
+      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' as const, retention,
     };
     selectQueue.push([
       { ...base, id: 's1', snapshotId: 'snap-1', timestamp: new Date('2026-05-05') }, // kept (within maxVersions)
@@ -430,7 +430,7 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
 
     const retention = { maxVersions: 1 };
     const base = {
-      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'application' as const, retention,
+      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'application' as const, retention,
     };
     selectQueue.push([
       { ...base, id: 'mv1', snapshotId: 'snap-mv-1', timestamp: new Date('2026-05-05') }, // kept (within cap)
@@ -461,8 +461,8 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     // means the bad row is logged and skipped while the next expired row is
     // still deleted.
     selectQueue.push([
-      { id: 'snap-fk-blocked', snapshotId: 'snap-blocked', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
-      { id: 'snap-ok', snapshotId: 'snap-2', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-fk-blocked', snapshotId: 'snap-blocked', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
+      { id: 'snap-ok', snapshotId: 'snap-2', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', backupType: 'file' },
     ]); // expired query
     // Row 1 (snap-fk-blocked): lock + 4 pin checks, all clear, then the
     // delete itself throws.
@@ -517,6 +517,42 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     expect(captureExceptionMock).toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it('never retires an expired row written in a key layout this server cannot read, and counts it', async () => {
+    selectQueue.push([
+      { id: 'snap-other-layout', snapshotId: 'snap-other-layout-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'device_scoped', backupType: 'file' },
+      { id: 'snap-no-layout', snapshotId: 'snap-no-layout-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+    ]); // expired query
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(result.skippedUnsupportedLayout).toBe(2);
+    expect(result.deleted).toBe(0);
+    expect(mockDb.delete).not.toHaveBeenCalled();
+    expect(insertedRows).toEqual([]);
+    // No per-row lock/pin reads were even attempted for either row.
+    expect(selectQueue).toEqual([]);
+  });
+
+  it('keeps a max-versions candidate in an unsupported key layout in its slot, without pruning it or the rows behind it', async () => {
+    selectQueue.push([]); // expired query -- nothing expired by date
+    const base = { deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'file' as const, retention: { maxVersions: 1 } };
+    selectQueue.push([
+      { ...base, keyLayout: 'legacy_flat', id: 'n1', snapshotId: 'snap-n1', timestamp: new Date('2026-05-05') }, // kept (within cap)
+      { ...base, keyLayout: 'device_scoped', id: 'n2', snapshotId: 'snap-n2', timestamp: new Date('2026-05-04') }, // over cap, unsupported layout
+    ]); // versionBoundSnapshots query
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(result.skippedUnsupportedLayout).toBe(1);
+    expect(result.prunedByMaxVersions).toBe(0);
+    expect(mockDb.delete).not.toHaveBeenCalled();
   });
 });
 
@@ -660,7 +696,7 @@ describe('sweepUnreferencedBackupObjects', () => {
   function pushRunLevel(
     dests: unknown[],
     unattributed: unknown[] = [],
-    owners: { live?: unknown[]; retired?: unknown[] } = {},
+    owners: { live?: unknown[]; retired?: unknown[]; unsupportedLayouts?: unknown[] } = {},
   ) {
     selectQueue.push(unattributed);
     selectQueue.push(dests);
@@ -669,6 +705,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     if (dests.length > 0) {
       selectQueue.push(owners.live ?? []);
       selectQueue.push(owners.retired ?? []);
+      selectQueue.push(owners.unsupportedLayouts ?? []);
     }
   }
 
@@ -685,6 +722,49 @@ describe('sweepUnreferencedBackupObjects', () => {
     selectQueue.push(opts.retirements ?? []);
     selectQueue.push(opts.capability ?? []);
   }
+
+  describe('snapshot key layout barrier', () => {
+    const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
+
+    it.each([
+      ['recorded under the identity', () => ({ storageIdentity: identityKeyFor(destination), configId: 'cfg-9', keyLayout: 'device_scoped' })],
+      ['with a NULL identity whose config maps to it', () => ({ storageIdentity: null, configId: 'cfg-1', keyLayout: 'device_scoped' })],
+      ['recorded under a stale identity string, whose config now maps to it', () => ({ storageIdentity: 's3::stale::backups', configId: 'cfg-1', keyLayout: 'device_scoped' })],
+    ])('skips the whole identity — no listing, no deletes — for a row in an unsupported key layout %s', async (_name, row) => {
+      pushRunLevel([destination], [], { unsupportedLayouts: [row()] });
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.skippedIdentities).toBe(1);
+        expect(result.deleted).toBe(0);
+        expect(rootListingMock).not.toHaveBeenCalled();
+        expect(iterateBackupObjectsMock).not.toHaveBeenCalled();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(error.mock.calls.some(([msg]) =>
+          String(msg).includes('unsupported_key_layout') && String(msg).includes(identityKeyFor(destination)),
+        )).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('still sweeps an identity with no such row', async () => {
+      pushRunLevel([destination, second], [], {
+        unsupportedLayouts: [{ storageIdentity: identityKeyFor(destination), configId: 'cfg-1', keyLayout: 'device_scoped' }],
+      });
+      pushIdentity(); // only the second identity loads its state
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.skippedIdentities).toBe(1);
+        expect(iterateBackupObjectsMock).toHaveBeenCalledTimes(1);
+      } finally {
+        error.mockRestore();
+      }
+    });
+  });
 
   // #6834 regression: the sweep used to materialise the identity's ENTIRE
   // `snapshots/` listing (one flat array + a grouped copy) and hold it for

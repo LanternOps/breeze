@@ -3,7 +3,7 @@ import './setup';
 import { mkdtemp, mkdir, writeFile, utimes, readdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -452,4 +452,96 @@ runDb('scenario 9: a second org sharing the same physical storage identity can n
   // org's objects as its own to reclaim.
   expect(remaining).toContain('snapshots/B-LIVE/manifest.json');
   expect(remaining).toContain('snapshots/B-LIVE/files/b.dat');
+});
+
+// ---------------------------------------------------------------------------
+// Snapshot key layout: a storage identity holding ANY snapshot row whose
+// key_layout this server does not understand is not swept at all this run —
+// not even orphan reclamation of other snapshot prefixes — because the
+// listing cannot tell that snapshot's objects apart from unreferenced ones.
+// Checked across every org sharing the identity, and for rows whose
+// storage_identity is still NULL but whose config maps to the identity.
+// ---------------------------------------------------------------------------
+
+const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
+
+async function insertLayoutRow(params: {
+  orgId: string; deviceId: string; configId: string; snapshotId: string; identity: string | null; keyLayout: string;
+}) {
+  const [job] = await db.insert(backupJobs).values({
+    orgId: params.orgId, configId: params.configId, deviceId: params.deviceId, status: 'completed', snapshotId: params.snapshotId,
+  }).returning({ id: backupJobs.id });
+  await db.insert(backupSnapshots).values({
+    orgId: params.orgId, jobId: job!.id, deviceId: params.deviceId, configId: params.configId,
+    snapshotId: params.snapshotId, storageIdentity: params.identity, keyLayout: params.keyLayout, backupType: 'file',
+  });
+}
+
+/** One identity with a retained flat snapshot and an old orphan prefix the sweep would normally reclaim. */
+async function seedLayoutIdentity(unique: string, root: string) {
+  const seed = await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+    await writeAged(root, 'snapshots/KEPT/manifest.json', 1000, JSON.stringify({ files: [{ backupPath: 'snapshots/KEPT/files/k.dat' }] }));
+    await writeAged(root, 'snapshots/KEPT/files/k.dat', 1000);
+    await insertSnapshotRow({ ...seed, snapshotId: 'KEPT' });
+    await writeAged(root, 'snapshots/ORPHAN/manifest.json', TEN_DAYS_MS, JSON.stringify({ files: [] }));
+    await writeAged(root, 'snapshots/ORPHAN/files/o.dat', TEN_DAYS_MS);
+    return seed;
+  });
+  return seed;
+}
+
+runDb.each([
+  ['with its storage identity recorded', 'recorded'],
+  ['with its storage identity still NULL (config maps to the identity)', 'null'],
+] as const)('an identity holding a snapshot in an unsupported key layout %s is not swept at all', async (_name, identityShape) => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rootX = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-x-'));
+  const rootY = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-y-'));
+
+  const seedX = await seedLayoutIdentity(`${unique}-x`, rootX);
+  await seedLayoutIdentity(`${unique}-y`, rootY);
+  await withSystemDbAccessContext(async () => {
+    await insertLayoutRow({
+      ...seedX, snapshotId: 'OTHERLAYOUT', identity: identityShape === 'recorded' ? seedX.identity : null, keyLayout: 'device_scoped',
+    });
+  });
+
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await sweepUnreferencedBackupObjects();
+    expect(error.mock.calls.some((args) => String(args[0]).includes('unsupported_key_layout') && String(args[0]).includes(seedX.identity))).toBe(true);
+  } finally {
+    error.mockRestore();
+  }
+
+  // X: nothing deleted, the orphan included.
+  expect((await listAll(rootX)).sort()).toEqual([
+    'snapshots/KEPT/files/k.dat', 'snapshots/KEPT/manifest.json',
+    'snapshots/ORPHAN/files/o.dat', 'snapshots/ORPHAN/manifest.json',
+  ]);
+  // Y: an ordinary identity still sweeps its orphan.
+  expect((await listAll(rootY)).sort()).toEqual(['snapshots/KEPT/files/k.dat', 'snapshots/KEPT/manifest.json']);
+});
+
+runDb('an unsupported key layout in ANOTHER org sharing the physical identity stops the sweep for every org on it', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-shared-'));
+
+  const seedA = await seedLayoutIdentity(`${unique}-a`, root);
+  const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-b`, root));
+  expect(seedA.identity).toBe(seedB.identity);
+  await withSystemDbAccessContext(async () => {
+    await insertLayoutRow({ ...seedB, snapshotId: 'B-OTHERLAYOUT', identity: seedB.identity, keyLayout: 'device_scoped' });
+  });
+
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await sweepUnreferencedBackupObjects();
+  } finally {
+    error.mockRestore();
+  }
+
+  expect(await listAll(root)).toContain('snapshots/ORPHAN/manifest.json');
+  expect(await listAll(root)).toContain('snapshots/ORPHAN/files/o.dat');
 });

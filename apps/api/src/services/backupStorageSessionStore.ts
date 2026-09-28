@@ -28,6 +28,7 @@ const snapshotColumns = () => ({
   configId: backupSnapshots.configId,
   snapshotId: backupSnapshots.snapshotId,
   storageIdentity: backupSnapshots.storageIdentity,
+  keyLayout: backupSnapshots.keyLayout,
   fileIndexStatus: backupSnapshots.fileIndexStatus,
   metadata: backupSnapshots.metadata,
 });

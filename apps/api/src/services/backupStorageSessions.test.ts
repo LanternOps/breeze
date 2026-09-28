@@ -71,6 +71,7 @@ function makeSnapshot(overrides: Partial<StorageSnapshotRow> = {}): StorageSnaps
     configId: CONFIG,
     snapshotId: SNAP,
     storageIdentity: IDENTITY,
+    keyLayout: 'legacy_flat',
     fileIndexStatus: 'complete',
     metadata: {},
     ...overrides,
@@ -195,6 +196,19 @@ beforeEach(() => {
 });
 
 describe('brokered read delivery', () => {
+  it.each(['backup_restore', 'mssql_restore'])(
+    'refuses %s for a snapshot written in a key layout this server cannot read',
+    async (type) => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ keyLayout: 'device_scoped', metadata: { backupFileName: 'db.bak' } })];
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx({ type }), deps))
+        .rejects.toThrow('This backup was written in a storage format this server version cannot read. Update the server, then try again.');
+      expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'refused', 'key_layout_unsupported');
+      expect(state.sessions.size).toBe(0);
+    },
+  );
+
   describe('storage session issuance telemetry', () => {
     it('counts a minted session once', async () => {
       const deps = makeDeps(makeState());
@@ -674,6 +688,7 @@ describe('storage session per-call revalidation', () => {
     ['the snapshot now belongs to another source device', (s: FakeState) => { s.snapshots = [makeSnapshot({ deviceId: OTHER_DEVICE })]; }],
     ['the snapshot pinned storage identity changed', (s: FakeState) => { s.snapshots = [makeSnapshot({ storageIdentity: 's3::storage.example::bucket-z' })]; }],
     ['the destination endpoint is no longer https', (s: FakeState) => { s.config!.providerConfig.endpoint = 'http://storage.example'; }],
+    ['the snapshot reports a key layout this server cannot read', (s: FakeState) => { s.snapshots = [makeSnapshot({ keyLayout: 'device_scoped' })]; }],
   ])('ends the session when %s', async (_name, mutate) => {
     const state = makeState();
     const { deps, row } = await mintSession(state);

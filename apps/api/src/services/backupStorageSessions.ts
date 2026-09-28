@@ -52,6 +52,7 @@ import {
   materializeBackupStorageCredentials,
 } from './backupCommandCredentials';
 import { recordBackupReadDispatch, recordStorageSessionMint } from './backupMetrics';
+import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
   STORAGE_SESSION_CALL_BURST,
@@ -119,6 +120,8 @@ export type StorageSnapshotRow = {
   configId: string | null;
   snapshotId: string;
   storageIdentity: string | null;
+  /** Object-key layout (services/backupKeyLayout.ts); only a supported one is ever read. */
+  keyLayout: string;
   fileIndexStatus: string;
   metadata: unknown;
 };
@@ -364,6 +367,8 @@ const REFUSAL_MESSAGES: Record<string, string> = {
     'Restoring or verifying backups requires agents to reach Breeze over HTTPS. Serve the agent API over HTTPS.',
   snapshot_unresolved: 'The backup could not be found for this organization, or its backup destination no longer exists.',
   invalid_snapshot_key: 'This backup has an identifier that cannot be read from storage.',
+  key_layout_unsupported:
+    'This backup was written in a storage format this server version cannot read. Update the server, then try again.',
   provider_not_s3: 'This backup is stored with a provider that restores do not support.',
   provider_changed: 'The backup destination changed provider after this command was queued. Start it again.',
   insecure_endpoint:
@@ -500,6 +505,9 @@ async function mint(
   if (candidates.length !== 1) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const snapshot = candidates[0]!;
   if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
+  // A layout this server does not understand is a permanent property of the
+  // snapshot: its keys cannot be derived, so it is refused, never guessed.
+  if (!isSupportedKeyLayout(snapshot.keyLayout)) return { mode: 'unbrokered', reason: 'key_layout_unsupported' };
   // The snapshot id is agent-reported and every authorized key is built from
   // it: it must be a single segment of the object-key grammar.
   if (!isObjectKeySnapshotId(snapshot.snapshotId)) return { mode: 'unbrokered', reason: 'invalid_snapshot_key' };
@@ -681,6 +689,7 @@ export async function resolveStorageSessionObjects(
     || snapshot.orgId !== session.orgId
     || snapshot.deviceId !== session.sourceDeviceId
     || snapshot.storageIdentity !== session.storageIdentity
+    || !isSupportedKeyLayout(snapshot.keyLayout)
     || !destination
     || destination.provider !== 's3'
     || !httpsEndpoint(destination.providerConfig)
