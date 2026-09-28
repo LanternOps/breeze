@@ -118,6 +118,18 @@ const agentRelayMock = {
   isAgentConnectedAnywhere: vi.fn(async () => true),
   dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
 };
+// Brokered write delivery is covered by backupStorageWriteDelivery.test.ts and
+// the write-session integration suites; here the helper never reports it
+// unless a test says otherwise.
+const writeDeliveryMock = vi.hoisted(() => ({
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
+    mode: input.provider === 'local' ? 'local' : 'legacy',
+    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
+    payload: input.payload,
+  })),
+}));
+vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,

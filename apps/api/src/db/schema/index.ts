@@ -183,5 +183,6 @@ export * from './emailSendingDomains';
 export * from './backupProviders';
 export * from './callerVerification';
 export * from './hardwareAlertRetirementOutbox';
+export * from './backupSnapshotIdReservations';
 export * from './backupStorageSessions';
 export * from './backupSnapshotAttestations';

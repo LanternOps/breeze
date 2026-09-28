@@ -7,6 +7,7 @@ import { createReadStream } from 'node:fs';
 import {
   GetObjectCommand,
   PutObjectCommand,
+  type S3ClientConfig,
 } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -381,7 +382,13 @@ async function createBundleArchive(bundleDir: string, archivePath: string): Prom
   await execFileAsync('tar', ['-czf', archivePath, '-C', bundleDir, '.']);
 }
 
-export function buildS3Client(config: Extract<RecoveryMediaStorageConfig, { provider: 's3' }>) {
+/** Client options a caller may add on top of the destination (e.g. checksum behaviour for presigning). */
+export type S3ClientOverrides = Pick<S3ClientConfig, 'requestChecksumCalculation' | 'responseChecksumValidation'>;
+
+export function buildS3Client(
+  config: Extract<RecoveryMediaStorageConfig, { provider: 's3' }>,
+  overrides: S3ClientOverrides = {},
+) {
   // Shared by backupSnapshotStorage.ts (retention/GC/immutability) and
   // recoveryBootMediaService.ts. These configs may have been persisted
   // before endpoint validation existed (validateS3Details in
@@ -399,6 +406,7 @@ export function buildS3Client(config: Extract<RecoveryMediaStorageConfig, { prov
       secretAccessKey: config.secretAccessKey,
       sessionToken: config.sessionToken,
     },
+    ...overrides,
   });
 }
 

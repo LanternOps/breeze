@@ -30,6 +30,8 @@ import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
 import { recordBackupAttestation } from './backupMetrics';
+import { SNAPSHOT_ID_RESERVATION_CONSTRAINT, allowedSnapshotIdsForJob } from './backupSnapshotIdReservations';
+import { createAuditLog } from './auditService';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -949,12 +951,27 @@ export async function applyBackupCommandResultToJob(params: {
   // DEVICE IN THE SAME ORG (RLS restricts by org, not by device) — but it is
   // NOT a guard against a different org's row on a destination shared across
   // orgs; that row is invisible to this SELECT by design. The actual cross-org guarantee is the
-  // `backup_snapshots_storage_identity_snapshot_id_uq` DB constraint
-  // enforced at INSERT time below (see `isPgUniqueViolation` handling) —
+  // snapshot id reservation (`backup_snapshot_id_reservations`, keyed by the
+  // id alone, whatever storage identity or endpoint spelling a row names),
+  // which the backup_snapshots insert trigger reserves or matches at INSERT
+  // time below, backed by the `backup_snapshots_storage_identity_snapshot_id_uq`
+  // constraint (see `isPgUniqueViolation` handling) —
   // Postgres refuses the conflicting row regardless of what this session's
   // RLS context can see, with no need to escalate to system scope (which
   // would double-hold a pooled connection under this request's own
   // transaction, the #2417/#6671 shape) to find out who holds it.
+  // A brokered write may only publish the snapshot id its write session was
+  // issued (or resumed onto). A result naming any other id is refused
+  // outright — the job fails and the refusal is audited — before anything is
+  // recorded for it.
+  if (resultStatus === 'completed' && providerSnapshotId) {
+    const allowed = await allowedSnapshotIdsForJob(jobId);
+    if (allowed && !allowed.includes(providerSnapshotId)) {
+      await refuseSnapshotReservationMismatch({ jobId, orgId, deviceId, reportedSnapshotId: providerSnapshotId, source });
+      return { applied: true, snapshotDbId: null, providerSnapshotId };
+    }
+  }
+
   const snapshotOwnershipConflict = providerSnapshotId
     ? await findForeignSnapshotClaim({ snapshotId: providerSnapshotId, callerDeviceId: deviceId, callerOrgId: orgId })
     : null;
@@ -1630,12 +1647,17 @@ export async function applyBackupCommandResultToJob(params: {
           // rest of this request's transaction usable.
           return await db.transaction((tx) => tx.insert(backupSnapshots).values(insertValues).returning());
         } catch (err) {
-          if (!isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')) {
+          if (
+            !isPgUniqueViolation(err, 'backup_snapshots_storage_identity_snapshot_id_uq')
+            && !isPgUniqueViolation(err, SNAPSHOT_ID_RESERVATION_CONSTRAINT)
+          ) {
             throw err;
           }
-          // A row this session cannot see (a different org's, under this
-          // request's own org-scoped RLS context) already claims this
-          // (storage_identity, snapshot_id) pair. Postgres refused the
+          // The snapshot id is owned by another backup: a row this session
+          // cannot see (a different org's, under this request's own
+          // org-scoped RLS context) already claims this (storage_identity,
+          // snapshot_id) pair, or the id is reserved to — or retired by —
+          // another owner (backup_snapshot_id_reservations, any identity). Postgres refused the
           // INSERT regardless of what this session's RLS context can see —
           // the DB-level guarantee the app-layer ownership check above
           // cannot provide across orgs. Deliberately NOT escalating to a
@@ -1933,4 +1955,42 @@ export async function markBackupJobFailedIfInFlight(
     .returning({ id: backupJobs.id });
 
   return rows.length > 0;
+}
+
+export const RESERVATION_MISMATCH_MESSAGE = 'The backup reported a different snapshot than it was allowed to write.';
+
+async function refuseSnapshotReservationMismatch(params: {
+  jobId: string;
+  orgId: string;
+  deviceId: string;
+  reportedSnapshotId: string;
+  source: 'agent' | 'reconcile';
+}): Promise<void> {
+  const now = new Date();
+  await db
+    .update(backupJobs)
+    .set({ status: 'failed', completedAt: now, updatedAt: now, errorLog: RESERVATION_MISMATCH_MESSAGE })
+    .where(and(
+      eq(backupJobs.id, params.jobId),
+      eq(backupJobs.deviceId, params.deviceId),
+      inArray(backupJobs.status, ['pending', 'running']),
+    ));
+  console.warn(
+    `[BackupPersistence] Refused a ${params.source} result for job ${params.jobId} (device ${params.deviceId}): `
+    + `it names snapshot ${params.reportedSnapshotId}, which its write session was not issued.`,
+  );
+  try {
+    await createAuditLog({
+      orgId: params.orgId,
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'backup.result.reservation_mismatch',
+      resourceType: 'backup_job',
+      resourceId: params.jobId,
+      result: 'failure',
+      details: { deviceId: params.deviceId, reportedSnapshotId: params.reportedSnapshotId, source: params.source },
+    });
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
 }

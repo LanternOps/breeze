@@ -17,6 +17,7 @@ import {
 } from '../db/schema';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
+import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
 
 // Built lazily: some unit suites mock '../db/schema' with a partial table set,
@@ -57,6 +58,13 @@ const sessionColumns = () => ({
   rateCallsAvailable: backupStorageSessions.rateCallsAvailable,
   rateObjectsAvailable: backupStorageSessions.rateObjectsAvailable,
   rateRefilledAt: backupStorageSessions.rateRefilledAt,
+  jobId: backupStorageSessions.jobId,
+  reservationSnapshotId: backupStorageSessions.reservationSnapshotId,
+  reservationGeneration: backupStorageSessions.reservationGeneration,
+  urlHorizonAt: backupStorageSessions.urlHorizonAt,
+  conditionalWrites: backupStorageSessions.conditionalWrites,
+  readOnly: backupStorageSessions.readOnly,
+  resumedAt: backupStorageSessions.resumedAt,
 });
 
 export const drizzleBrokeredReadStore: BrokeredReadStore = {
@@ -210,6 +218,10 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
       .set({ ...decision.next, lastUsedAt: now })
       .where(eq(backupStorageSessions.id, sessionId));
     return decision;
+  },
+
+  async isSnapshotSealing(snapshotId) {
+    return isSnapshotWriteInFlight(snapshotId);
   },
 
   async extendLease(sessionId, expiresAt) {

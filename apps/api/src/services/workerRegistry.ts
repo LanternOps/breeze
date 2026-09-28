@@ -996,6 +996,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Brokered backup writes: durable multipart aborts, sealing completion
+    // and abandonment of snapshot id reservations (every 5 minutes).
+    name: 'backupWriteSessionJanitor',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupWriteSessionJanitor');
+      return { init: m.initializeBackupWriteSessionJanitor, shutdown: m.shutdownBackupWriteSessionJanitor };
+    },
+  },
+  {
     name: 'sensitiveDataWorker',
     placement: 'socket-owner',
     load: async () => {

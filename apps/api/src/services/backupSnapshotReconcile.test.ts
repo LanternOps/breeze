@@ -40,6 +40,11 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 
+const snapshotIdClaims = vi.hoisted(() => ({ foreign: new Set<string>(), live: new Set<string>() }));
+vi.mock('./backupSnapshotIdReservations', () => ({
+  loadSnapshotIdClaims: vi.fn(async () => ({ foreign: new Set(snapshotIdClaims.foreign), live: new Set(snapshotIdClaims.live) })),
+}));
+
 vi.mock('../db', () => ({
   db: { select: (...args: unknown[]) => selectMock(...(args as [])) },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -255,6 +260,31 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID })
     ).rejects.toBeInstanceOf(BackupReconcileError);
     expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
+  });
+
+  it('never adopts an id still reserved to a live backup, and refuses one reserved to another org', async () => {
+    oneManifest('snap-1');
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(baseSelects([claimingJob({ status: 'running' })]));
+    snapshotIdClaims.live.add('snap-1');
+    try {
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+      expect(result.adopted).toBe(0);
+      expect(result.candidates[0]).toMatchObject({ snapshotId: 'snap-1', skipReason: 'reserved-for-active-backup' });
+    } finally {
+      snapshotIdClaims.live.clear();
+    }
+
+    oneManifest('snap-1');
+    queueSelects(baseSelects([claimingJob()]));
+    snapshotIdClaims.foreign.add('snap-1');
+    try {
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+      expect(result.candidates[0]).toMatchObject({ skipReason: 'claimed-by-another-organization' });
+    } finally {
+      snapshotIdClaims.foreign.clear();
+    }
+    expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
   });
 
   it('adopts a snapshot the job already recorded mid-run', async () => {

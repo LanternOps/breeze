@@ -151,6 +151,8 @@ async function inReferencedOrg<T>(orgId: string, fn: () => Promise<T>): Promise<
 export async function materializeBackupStorageCredentials(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
+  /** Why a backup write was not delivered through a storage session (dispatch telemetry). */
+  opts: { legacyReason?: string } = {},
 ): Promise<Record<string, unknown>> {
   if (!(PROVIDER_CONFIG_REF_FIELD in payload)) return payload;
 
@@ -194,7 +196,7 @@ export async function materializeBackupStorageCredentials(
       if (destination.provider === 'local') {
         recordBackupWriteDispatch(ctx.type, 'local', 'no_credential');
       } else {
-        recordBackupWriteDispatch(ctx.type, 'legacy_credential', 'delivery_refresher');
+        recordBackupWriteDispatch(ctx.type, 'legacy_credential', opts.legacyReason ?? 'delivery_refresher');
       }
       return {
         ...rest,

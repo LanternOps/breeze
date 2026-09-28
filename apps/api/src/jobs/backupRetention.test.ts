@@ -152,6 +152,14 @@ vi.mock('../services/backupSnapshotStorage', async (importOriginal) => {
 
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
+// Snapshot id reservations are proven against real Postgres
+// (backupGcReclamation.integration.test.ts); here nothing is reserved.
+vi.mock('../services/backupSnapshotIdReservations', () => ({
+  loadReservationGcState: vi.fn(async () => ({ protectedIds: new Set<string>(), reclaimable: [] })),
+  markReservationRetired: vi.fn(async () => undefined),
+  reclaimAbandonedReservations: vi.fn(async () => 0),
+  tombstoneRetiredReservations: vi.fn(async () => 0),
+}));
 
 // `fs.realpath` fault injection for coarseStorageSignatureFromKey (review
 // round 2 HOLD item): when `realpathFailWith` is set, the module under test's

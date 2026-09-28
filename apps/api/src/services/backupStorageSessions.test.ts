@@ -233,6 +233,15 @@ describe('brokered read delivery', () => {
       expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'index_unavailable']]);
     });
 
+    it('defers a read of a snapshot whose brokered write is still sealing', async () => {
+      const state = makeState();
+      const deps = makeDeps(state);
+      (deps.store as BrokeredReadStore).isSnapshotSealing = vi.fn(async (id: string) => id === SNAP);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'snapshot_sealing']]);
+      expect(state.sessions.size).toBe(0);
+    });
+
     it('counts a VM command delivered as queued', async () => {
       const state = makeState();
       state.device!.backupReadProtocolVersion = 0;

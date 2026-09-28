@@ -126,6 +126,17 @@ vi.mock('./sentry', () => ({
 }));
 
 const findForeignSnapshotClaimMock = vi.fn();
+// Snapshot id reservations are exercised against real Postgres
+// (backupStorageWriteSessions / backupSnapshotIdReservations integration
+// suites); here no job has a write session unless a test says otherwise.
+const allowedSnapshotIdsForJobMock = vi.hoisted(() => vi.fn(async (): Promise<string[] | null> => null));
+vi.mock('./backupSnapshotIdReservations', () => ({
+  SNAPSHOT_ID_RESERVATION_CONSTRAINT: 'backup_snapshot_id_reservations_pkey',
+  allowedSnapshotIdsForJob: allowedSnapshotIdsForJobMock,
+}));
+const createAuditLogMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./auditService', () => ({ createAuditLog: createAuditLogMock }));
+
 vi.mock('./backupSnapshotOwnership', () => ({
   findForeignSnapshotClaim: (...args: unknown[]) => findForeignSnapshotClaimMock(...(args as [])),
 }));

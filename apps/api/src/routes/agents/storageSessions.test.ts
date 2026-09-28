@@ -1,12 +1,48 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { authenticateMock, resolveMock, renewMock, callMetric, objectsMetric } = vi.hoisted(() => ({
+const { authenticateMock, resolveMock, renewMock, callMetric, objectsMetric, write } = vi.hoisted(() => ({
   authenticateMock: vi.fn(),
   resolveMock: vi.fn(),
   renewMock: vi.fn(),
   callMetric: vi.fn(),
   objectsMetric: vi.fn(),
+  write: {
+    live: vi.fn(),
+    resolve: vi.fn(),
+    resume: vi.fn(),
+    create: vi.fn(),
+    complete: vi.fn(),
+    abort: vi.fn(),
+    list: vi.fn(),
+    del: vi.fn(),
+  },
+}));
+
+vi.mock('../../services/backupStorageWriteSessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/backupStorageWriteSessions')>();
+  return {
+    STORAGE_WRITE_DELETE_MAX_KEYS: 1000,
+    validateCompletedParts: actual.validateCompletedParts,
+    ensureWriteSessionLive: write.live,
+    resolveWriteSessionObjects: write.resolve,
+    resumeWriteSession: write.resume,
+    createWriteSessionMultipart: write.create,
+    completeWriteSessionMultipart: write.complete,
+    abortWriteSessionMultipart: write.abort,
+    listWriteSessionPrefix: write.list,
+    deleteWriteSessionKeys: write.del,
+  };
+});
+
+const contexts = vi.hoisted(() => ({ opened: [] as unknown[] }));
+// The routes self-manage their DB context: one short org-scoped context per
+// database phase, none held across a storage call.
+vi.mock('../../db', () => ({
+  withDbAccessContext: vi.fn(async (ctx: unknown, fn: () => Promise<unknown>) => {
+    contexts.opened.push(ctx);
+    return fn();
+  }),
 }));
 
 vi.mock('../../services/backupMetrics', () => ({
@@ -53,6 +89,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = { '
 
 beforeEach(() => {
   vi.clearAllMocks();
+  contexts.opened.length = 0;
   authenticateMock.mockResolvedValue({ ok: true, session: SESSION_ROW });
   resolveMock.mockResolvedValue({
     status: 200,
@@ -72,6 +109,9 @@ describe('storage session resolve endpoint', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(authenticateMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, token: TOKEN, agent: { deviceId: DEVICE, orgId: ORG } });
+    expect(contexts.opened).toEqual([
+      expect.objectContaining({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [] }),
+    ]);
     expect(resolveMock).toHaveBeenCalledWith(SESSION_ROW, keys);
     expect(await res.json()).toMatchObject({ objects: [{ key: 'snapshots/s/manifest.json' }], denied: [] });
   });
@@ -115,7 +155,7 @@ describe('storage session resolve endpoint', () => {
   });
 
   it('answers 404 for an unknown operation', async () => {
-    const res = await post(`/agent-7c1d/storage-sessions/${SESSION_ID}/objects:list`, { keys: ['k'] });
+    const res = await post(`/agent-7c1d/storage-sessions/${SESSION_ID}/objects:copy`, { keys: ['k'] });
     expect(res.status).toBe(404);
     expect(authenticateMock).not.toHaveBeenCalled();
   });
@@ -223,7 +263,98 @@ describe('storage session call telemetry', () => {
   });
 
   it('does not count an unknown operation', async () => {
-    await post(`/agent-7c1d/storage-sessions/${SESSION_ID}/objects:list`, { keys: ['k'] });
+    await post(`/agent-7c1d/storage-sessions/${SESSION_ID}/objects:copy`, { keys: ['k'] });
     expect(callMetric).not.toHaveBeenCalled();
+  });
+});
+
+describe('write-scoped storage session endpoints', () => {
+  const WRITE_ROW = { id: SESSION_ID, scope: 'snapshot_write' };
+  const RESERVATION = { snapshotId: 'snapshot-20261108T120000Z-0123456789abcdef01234567', state: 'reserved' };
+  const base = `/agent-7c1d/storage-sessions/${SESSION_ID}`;
+
+  beforeEach(() => {
+    authenticateMock.mockResolvedValue({ ok: true, session: WRITE_ROW });
+    write.live.mockResolvedValue({ ok: true, reservation: RESERVATION });
+  });
+
+  it('refuses every write operation on a read session', async () => {
+    authenticateMock.mockResolvedValue({ ok: true, session: SESSION_ROW });
+    for (const op of ['snapshot:resume', 'multipart:create', 'multipart:complete', 'multipart:abort', 'objects:list', 'objects:delete']) {
+      const res = await post(`${base}/${op}`, { key: 'k' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'scope_mismatch' });
+    }
+    const res = await post(`${base}/objects:resolve`, { requests: [{ method: 'PUT', key: 'k', size: 1 }] });
+    expect(res.status).toBe(403);
+    expect(write.resolve).not.toHaveBeenCalled();
+    expect(write.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a read-shaped resolve on a write session', async () => {
+    const res = await post(`${base}/objects:resolve`, { keys: ['k'] });
+    expect(res.status).toBe(403);
+    expect(resolveMock).not.toHaveBeenCalled();
+  });
+
+  it('re-checks the job and reservation on every call', async () => {
+    write.live.mockResolvedValue({ ok: false, status: 410, error: 'gone' });
+    const res = await post(`${base}/multipart:create`, { key: 'k' });
+    expect(res.status).toBe(410);
+    expect(write.create).not.toHaveBeenCalled();
+  });
+
+  it('resolves write requests against the live reservation and counts URLs by method', async () => {
+    write.resolve.mockResolvedValue({
+      status: 200,
+      body: { objects: [{ key: 'k', method: 'PUT', url: 'https://s/o', headers: { 'content-length': '1' }, expiresAt: 'x' }], denied: [] },
+    });
+    const requests = [
+      { method: 'PUT', key: 'k', size: 1 },
+      { method: 'UPLOAD_PART', key: 'k2', uploadId: 'u', partNumber: 2, size: 5 },
+      { method: 'GET', key: 'k3' },
+    ];
+    const res = await post(`${base}/objects:resolve`, { requests });
+    expect(res.status).toBe(200);
+    expect(write.resolve).toHaveBeenCalledWith(WRITE_ROW, RESERVATION, requests);
+    expect(objectsMetric).toHaveBeenCalledWith('snapshot_write', 'PUT', 1);
+    expect(callMetric).toHaveBeenCalledWith('snapshot_write', 'resolve', 200);
+  });
+
+  it('rejects malformed write requests before touching storage', async () => {
+    for (const requests of [[], [{ method: 'DELETE', key: 'k' }], [{ method: 'PUT', key: 'k' }], [{ method: 'UPLOAD_PART', key: 'k', size: 1 }]]) {
+      const res = await post(`${base}/objects:resolve`, { requests });
+      expect(res.status).toBe(400);
+    }
+    expect(write.resolve).not.toHaveBeenCalled();
+  });
+
+  it('forwards throttling with Retry-After', async () => {
+    write.list.mockResolvedValue({ status: 429, code: 'throttled', retryAfterSeconds: 7 });
+    const res = await post(`${base}/objects:list`, { prefix: 'snapshots/x/' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('7');
+  });
+
+  it('validates multipart completion parts', async () => {
+    const res = await post(`${base}/multipart:complete`, { key: 'k', uploadId: 'u', parts: [{ partNumber: 1, etag: 'a' }, { partNumber: 1, etag: 'b' }] });
+    expect(res.status).toBe(400);
+    write.complete.mockResolvedValue({ status: 412, code: 'object_exists' });
+    const ok = await post(`${base}/multipart:complete`, { key: 'k', uploadId: 'u', parts: [{ partNumber: 1, etag: 'a' }] });
+    expect(ok.status).toBe(412);
+    expect(write.complete).toHaveBeenCalledWith(WRITE_ROW, 'k', 'u', [{ partNumber: 1, etag: 'a' }], expect.any(Function));
+    expect(callMetric).toHaveBeenCalledWith('snapshot_write', 'multipart_complete', 412);
+  });
+
+  it('passes resume, abort and delete through', async () => {
+    write.resume.mockResolvedValue({ status: 200, body: { snapshotId: 'j', mode: 'write' } });
+    expect((await post(`${base}/snapshot:resume`, { snapshotId: 'j' })).status).toBe(200);
+    expect(write.resume).toHaveBeenCalledWith(WRITE_ROW, 'j', expect.any(Function));
+    write.abort.mockResolvedValue({ status: 200, body: {} });
+    expect((await post(`${base}/multipart:abort`, { key: 'k', uploadId: 'u' })).status).toBe(200);
+    write.del.mockResolvedValue({ status: 200, body: { deleted: ['k'], denied: [], failed: [] } });
+    expect((await post(`${base}/objects:delete`, { keys: ['k'] })).status).toBe(200);
+    expect(write.del).toHaveBeenCalledWith(WRITE_ROW, ['k'], expect.any(Function));
+    expect((await post(`${base}/objects:delete`, { keys: [] })).status).toBe(400);
   });
 });

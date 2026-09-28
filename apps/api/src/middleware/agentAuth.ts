@@ -1040,12 +1040,21 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
       && pathSegments[CORE_AGENT_ACTION_INDEX] === segment0
       && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === segment1,
   );
+  // Brokered storage sessions (`storage-sessions/<sessionId>/<op>` and the
+  // `…/object` compatibility read): write operations call object storage over
+  // the network (multipart create/complete/abort, list, delete), which must
+  // never run inside a held transaction — the handlers open one short
+  // org-scoped context per database phase (routes/agents/storageSessions.ts).
+  const isStorageSessionPath =
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'storage-sessions';
   if (
     (
       isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
       && SELF_MANAGED_DB_CONTEXT_ACTIONS.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
     )
     || isSelfManagedTwoSegmentAction
+    || isStorageSessionPath
   ) {
     await next();
     return;
