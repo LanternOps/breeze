@@ -698,7 +698,7 @@ export const deviceCommands = pgTable('device_commands', {
   // reported it. NULL on every row from an agent that predates the frame, and
   // until the first report. Advisory only: nothing gates on it -- terminal
   // state is still owned by `status`. See
-  // 2026-11-08-103300-device-commands-progress-stage.sql.
+  // 2026-11-08-113300-device-commands-progress-stage.sql.
   progressStage: varchar('progress_stage', { length: 32 }),
   progressAt: timestamp('progress_at', { withTimezone: true }),
   // #5128 -- the device's org at enqueue. PROVENANCE, not tenancy: compared at
