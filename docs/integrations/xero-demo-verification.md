@@ -15,7 +15,7 @@ Spec: `docs/superpowers/specs/billing/2026-09-26-xero-accounting-integration-des
 
 - **X14 — scope strings on the consent screen. BLOCKS MERGE of W02c.** The
   pinned scopes `offline_access accounting.contacts accounting.invoices
-  accounting.payments accounting.settings.read` were taken from Xero's own
+  accounting.payments accounting.settings` (was `accounting.settings.read` until lab X16 on 2026-09-28 showed Items cannot be written under it, #7387) were taken from Xero's own
   repositories, not confirmed on the developer portal; a wrong string fails
   every connect at the consent screen.
 - **X7 — `authentication_event_id` claim present. BLOCKS MERGE** unless a
@@ -66,6 +66,9 @@ pnpm test-stack down
 Record PASS / FAIL and the visible Breeze state after each step. "Connected
 apps" means Xero → Settings → Connected apps for that organisation.
 
+> **2026-09-28:** Xero's consent screen now offers a **single-select** organisation dropdown, so one consent links one organisation. Rows that tick two organisations in one consent (X2, X3, X4, X6, X67, X68) can no longer be driven from the UI; the tenant picker remains the defensive path for a `/connections` response with more than one link. Run them only if Xero restores multi-select, or reach the picker by forging a second link another way.
+
+
 | # | Step | Expected |
 |---|---|---|
 | X1 | P1: Integrations → Accounting → **Connect to Xero**; tick **only** Demo Company | Returns connected; card shows Demo Company + **Demo company** badge; Connected apps lists the Breeze app once |
@@ -83,44 +86,44 @@ apps" means Xero → Settings → Connected apps for that organisation.
 | X13 | Load the settings step 3× and check Redis `acct-rl:xero:day-remaining:<connectionId>` | Present and decreasing (X-DayLimit-Remaining recorded) |
 | X14 | On the consent screen, read the requested permissions | Contacts, invoices (incl. items), payments, settings (read) + offline access; **no "transactions" broad scope** — **settles open item 3 (merge blocker)** |
 | X15 | Certification UI pass against Xero's current app-partner checklist: branded **Connect to Xero** button, org name shown when connected, **Disconnect** with confirmation, clear error on consent cancel (press Cancel on Xero's consent screen → "You cancelled the Xero sign-in"), no dead ends | All pass; screenshot each |
-| X16 | Picker deadline: connect ticking two organisations; the picker shows "Choose an organisation before <time>" ≈ 29 minutes after the redirect; leave it past that time | The picker switches to the expired message with only **Cancel connection** |
-| X17 | With the row in `reauth_required`, the Xero panel shows "Reconnecting keeps your current Xero organisation. Any other organisation you tick on the Xero screen is released." Reconnect ticking the current org plus T2 | Still connected to the current org; T2 no longer lists the Breeze app |
-| X18 | After X11 values are saved, disconnect, connect to T2 | Settings step shows the "Choose the defaults…" notice and all four pickers are "Not set" |
-| X19 | QuickBooks regression: QuickBooks panel (sandbox) looks and behaves exactly as before | No settings step, no confirmation on disconnect, push/pull/owed controls present |
+| X67 | Picker deadline: connect ticking two organisations; the picker shows "Choose an organisation before <time>" ≈ 29 minutes after the redirect; leave it past that time | The picker switches to the expired message with only **Cancel connection** |
+| X68 | With the row in `reauth_required`, the Xero panel shows "Reconnecting keeps your current Xero organisation. Any other organisation you tick on the Xero screen is released." Reconnect ticking the current org plus T2 | Still connected to the current org; T2 no longer lists the Breeze app |
+| X69 | After X11 values are saved, disconnect, connect to T2 | Settings step shows the "Choose the defaults…" notice and all four pickers are "Not set" |
+| X70 | QuickBooks regression: QuickBooks panel (sandbox) looks and behaves exactly as before | No settings step, no confirmation on disconnect, push/pull/owed controls present |
 
 ### Evidence header (fill in per run)
 
 | Field | Value |
 |---|---|
-| Date | |
-| Breeze build SHA | |
-| Tester | |
-| Xero app (client id prefix) | |
-| Organisations used | |
+| Date | 2026-09-28 |
+| Breeze build SHA | feature/7167-xero/wave-7172-c-web on main 4bc6093a44 (+ #7387 scope change) |
+| Tester | Todd + Claude (Xero calls made as the stack's connection; writes guarded to demo organisations) |
+| Xero app (client id prefix) | Web app "Breeze Lab local (7167)", created 2026-09-28 (granular scopes only) |
+| Organisations used | Demo Company (US); OliveTech LLC connected once for X7 and disconnected, no data touched |
 
 ### Results
 
 | # | Result | Notes |
 |---|---|---|
-| X1 | | |
+| X1 | PASS | Demo Company (US) connected; card shows org name + Demo company badge; Xero Connection management lists one tenant. |
 | X2 | | |
 | X3 | | |
 | X4 | | |
 | X5 | | |
 | X6 | | |
-| X7 | | |
+| X7 | PASS | Callback 302 → status connected with tenant + access + refresh token; the callback fails closed with auth_event_missing without the claim. |
 | X8 | | |
 | X9 | | |
 | X10 | | |
-| X11 | | |
+| X11 | PASS | 400 · Sales / Tax on Sales (9.25%) / Tax Exempt (0%) / Checking Account saved and survive reload. Note: taxable pickers also list purchase-side rates (Tax on Purchases, BOE Use Tax). |
 | X12 | | |
 | X13 | | |
-| X14 | | |
+| X14 | PASS | Consent: View and manage Contacts, Invoices and related documents, Payments; View Organisation settings (after #7387: View and manage Organisation settings). No transactions scope. Refresh token stored (offline_access). |
 | X15 | | |
-| X16 | | |
-| X17 | | |
-| X18 | | |
-| X19 | | |
+| X67 | | |
+| X68 | | |
+| X69 | PASS | First connect shows the "Choose the defaults…" notice with all four pickers Not set. |
+| X70 | | |
 
 ## 3. W03 checklist — contacts, items, import
 
@@ -151,8 +154,8 @@ Run on a `worktree-stack` of the W03b branch **with Task 10's capability flip ap
 
 | # | Result | Notes / raw Xero text |
 |---|---|---|
-| X16 | | |
-| X17 | | |
+| X16 | PASS (after #7387) | Under accounting.settings.read: Xero item create 401 insufficient_scope → terminal provider_permission. Under accounting.settings: item created, mapping synced. |
+| X17 | PASS | Contact created; Contact details → Contact code breeze:<orgId>. |
 | X18 | | |
 | X19 | | |
 | X20 | | |
@@ -163,9 +166,9 @@ Run on a `worktree-stack` of the W03b branch **with Task 10's capability flip ap
 | X25 | | |
 | X26 | | |
 | X27 | | |
-| X28 | | |
+| X28 | PASS | Income account set in the settings step → no per-row income-account picker; Create new enabled. |
 | X29 | | |
-| X30 | | |
+| X30 | PASS | remote_sync_token is an ISO UpdatedDateUTC for contact and item mappings. |
 | X31 | | |
 | X65 | | |
 | X66 | | |
@@ -196,13 +199,13 @@ Run on a `worktree-stack` of the W04b branch **with Task 10's capability flip ap
 
 | # | Result | Notes / raw Xero text |
 |---|---|---|
-| X32 | | |
+| X32 | PASS | AUTHORISED ACCREC INV-2026-0001, same contact/dates/USD, account 400, TaxType OUTPUT / NONE, SubTotal 150.00, Tax 20.00, Total 170.00, Reference breeze:<id>. |
 | X33 | | |
-| X34 | | |
-| X35 | | |
+| X34 | PASS | 3 × 1.00 at 3.333% → line tax 0.04 / 0.03 / 0.03, Tax 0.10, no warning. Pair +100.00 / −99.99 with TaxAmount 100.00 / −99.99 (Breeze allocator output) accepted and AUTHORISED, Tax 0.01. |
+| X35 | PASS | 10 × 0.50 at 20% → TaxAmount 1.00 accepted; Tax 1.00, Total 6.00. |
 | X36 | | |
 | X37 | | |
-| X38 | | |
+| X38 | PASS | Hand-made INV-2026-0004 → Breeze push retried numberless → Xero INV-0042 recorded. Raw: "Invoice # must be unique." Reference search found the new invoice on the first GET 5/5 (266–824 ms). |
 | X39 | | |
 | X40 | | |
 | X41 | | |
@@ -250,24 +253,24 @@ Record each result, with Xero's raw text where asked.
 - X47/X62: record the webhook response time from Xero's delivery log. The route fingerprints and routes up to 50 tenants sequentially inside Xero's 5-second budget; note the timing (a single-tenant delivery is expected; flag anything above ~1 s).
 - X55/X56: the refusal-classification regexes in `xeroHttp.ts` (reconciled-delete → `remote_locked`, amount over due → `amount_exceeds_due`) are unconfirmed until these rows record Xero's raw text. If a message does not match, the error falls back to the loud, retryable path — record the raw text for a fix.
 - A delete refused for missing scope stays parked and is re-read once per 15-minute sweep until the partner reconnects. If you can reproduce it (connect with a scope removed), record `X-DayLimit-Remaining` across two sweeps to measure the per-sweep call cost.
-- #7300: Xero's refusal to delete a payment that is a member of a batch payment is not yet classified. If the Demo Company allows creating a batch payment, void a Breeze payment whose Xero payment is in a batch and record Xero's raw message. The paymentPush flip is also held on #7300 merging.
+- #7300: Xero's refusal to delete a payment that is a member of a batch payment is not yet classified. If the Demo Company allows creating a batch payment, void a Breeze payment whose Xero payment is in a batch and record Xero's raw message. #7300 is merged (#7303), so the refusal is now classified; record the raw message anyway.
 
 ### W05 Results
 
 | # | Result | Notes / raw Xero text |
 |---|---|---|
-| X47 | | |
-| X48 | | |
+| X47 | PASS | Intent to receive → Status OK; valid probe 200, invalid probes 401, 13–84 ms. |
+| X48 | PASS | 401, no Set-Cookie. |
 | X49 | | |
-| X50 | | |
-| X51 | | |
-| X52 | | |
+| X50 | PASS (webhook) | INVOICE webhook fired for the payment (categories.INVOICE 1, matched 1, enqueued 1) → run trigger=webhook applied=1; Breeze payment 50.00, method other, reference as typed; ~45 s. Tenant-id casing matched. |
+| X51 | PASS | Delete in Xero → run trigger=webhook reversed=1. GET Payments If-Modified-Since returned the payment with Status DELETED. |
+| X52 | PASS | Breeze cash 25.00 ref CHQ 1001 → Xero AUTHORISED 25.00 on Checking Account, dated as in Breeze, Reference "Breeze payment <uuid> \| CHQ 1001"; ~5 s. |
 | X53 | | |
 | X54 | | |
 | X55 | | |
 | X56 | | |
 | X57 | | |
-| X58 | | |
+| X58 | PASS | 118-char Reference round-trips unchanged; 255 and 300 also accepted and returned unchanged. |
 | X59 | | |
 | X60 | | |
 | X61 | | |
@@ -277,7 +280,7 @@ Record each result, with Xero's raw text where asked.
 
 **If X51 fails** (a deleted payment never comes back from `If-Modified-Since`): stop, do not flip, and escalate. The pull would then need an invoice-level allocation diff (the invoice's `Payments[]` against Breeze's mappings), which is a plan change. **If X58 fails** (Xero alters the 118-character Reference): lower `XERO_PAYMENT_REF_MAX` until the round-trip holds, and re-run X52 and X54.
 
-The capability flip commit is held until X47, X50, X51, X52 and X58 pass AND #7300 is merged.
+The capability flip commit is held until X47, X50, X51, X52 and X58 pass (#7300 is merged).
 
 ## Change log
 
@@ -285,3 +288,4 @@ The capability flip commit is held until X47, X50, X51, X52 and X58 pass AND #73
 - W03 — contacts, items and import (X16–X31, plus X65–X66, numbered after W05 to avoid colliding with W04 X32–X46 and W05 X47–X64); X16 gates the mapping capability flip.
 - W04 — invoice push and void (X32–X46); X32, X34/X35 and X38 gate the invoicePush capability flip.
 - W05 — payments (X47–X64); X47, X50, X51, X52 and X58 (and #7300) gate the paymentPull/paymentPush flip.
+- 2026-09-28 — W02 rows X16–X19 renumbered X67–X70 (W03 owns X16–X31); first full lab run recorded; all flip gates pass (X16 after #7387).
