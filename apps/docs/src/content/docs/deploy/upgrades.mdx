@@ -22,23 +22,56 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 2. **Diff your Compose files against the tagged release** and merge the required changes before pulling images; follow [Compose file changes](#compose-file-changes), preserving your local configuration. Back up `.env`, the active Compose files, and overrides alongside the database backup.
 
-3. **Update the version in `.env`**
+3. **Check how your images are pinned**
 
    ```bash
-   # Set to the version you want (e.g. 0.11.3)
-   BREEZE_VERSION=0.11.3
+   grep '^BREEZE_API_IMAGE_REF=' .env
    ```
 
-   This also selects the agent release your fleet is offered, so set it to a version that is **published** on GitHub, not one that has only been tagged. See [Binary Distribution](/deploy/binaries/#github-mode-default).
+   - **Digest-pinned** — the value ends in `@sha256:…`. Every install made with `guided-setup.sh` for v0.112.0 or later looks like this. Follow step 4a.
+   - **Tag-form** — the value ends in `:${BREEZE_VERSION}` (older installs, and manual installs that never switched). Follow step 4b.
 
-4. **Pull and restart**
+   <Aside type="caution" title="On a digest-pinned install, `docker compose pull` does not upgrade">
+     The image refs name exact digests, so `docker compose pull` fetches the release you already run, and editing `BREEZE_VERSION` alone leaves the old images running. `BREEZE_VERSION` also selects the agent release your fleet is offered, so a hand-edited value can move agents ahead of the server.
+   </Aside>
+
+4. **Move to the new release**
+
+   **4a. Digest-pinned: run `guided-setup.sh --upgrade`**
+
+   ```bash
+   # Fetch the current installer. --upgrade is new; an older copy does not have it.
+   curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/scripts/guided-setup.sh
+
+   # Run from the directory that holds docker-compose.yml and .env, or pass --work-dir.
+   bash guided-setup.sh --upgrade 0.118.2   # omit the version to use the latest release
+   ```
+
+   The script:
+   - downloads the target release's signed image inventory and verifies it against `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, the same fail-closed check as a fresh install;
+   - backs up `.env`, then rewrites `BREEZE_VERSION` and the four `BREEZE_*_IMAGE_REF` digests together. If verification fails, `.env` is left unchanged and nothing is pulled;
+   - prints links to the target release's `docker-compose.yml` and `.env.example`. It never edits your Compose file, so complete step 2 for the target release;
+   - pulls the verified images, runs `docker compose up -d`, and waits for the API to report healthy.
+
+   Add `-y` to run it without prompts, for example from a script. Add `--no-up` to update `.env` only and restart later. The script refuses a target older than your current `BREEZE_VERSION`. Migrations are forward-only, so restore the matching database backup before you pass `--allow-downgrade`. It also re-pins the digests when `BREEZE_VERSION` already names the target, which repairs an install where only `BREEZE_VERSION` was edited.
+
+   If you run the manual verifier instead, follow [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later) and update `BREEZE_VERSION` and all four refs together.
+
+   **4b. Tag-form: set the version, then pull and restart**
+
+   ```bash
+   # In .env: set to the version you want (e.g. 0.118.2)
+   BREEZE_VERSION=0.118.2
+   ```
 
    ```bash
    docker compose pull
    docker compose up -d
    ```
 
-   This pulls the new API, web, and binaries images and restarts all services.
+   `BREEZE_VERSION` also selects the agent release your fleet is offered, so set it to a version that is **published** on GitHub, not one that has only been tagged. See [Binary Distribution](/deploy/binaries/#github-mode-default).
+
+   Either path pulls the new API, web, and binaries images and restarts all services.
    Database migrations run automatically on API startup when `AUTO_MIGRATE=true` (the default).
 
    **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically.
@@ -55,6 +88,8 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    # Check agent version (on the device)
    breeze-agent version
    ```
+
+   `/health` reports the version baked into the running API image. If it does not match `BREEZE_VERSION` in `.env`, the image was not upgraded. The API logs `[version] BREEZE_VERSION=… but this API image is …` at startup, and **Administration → System → Connections** shows the same warning. This requires the Compose change described in [APP_VERSION comes from the image](#next-release--app_version-comes-from-the-image).
 
    Also sign in through your public URL and confirm agents resume checking in. `/health` bypasses the HTTPS redirect and can stay healthy while a stale proxy address sends other requests into a redirect loop.
 
@@ -104,7 +139,7 @@ curl --fail --show-error --location \
 
 `diff` exits with status 1 when differences exist; a failed download must be resolved before continuing. If you deploy `deploy/docker-compose.prod.yml` or additional override files, compare those same paths at the same tag too. Review the tagged `.env.example` and any configuration files referenced by changed services.
 
-Merge the required changes into your backed-up local files, preserving custom services, domains, mounts, secrets, and proxy topology. Do not overwrite `.env` with `.env.example`. Add required variables to both `.env` and the appropriate service's `environment:` mapping; setting `.env` alone does not pass a variable to the container. For digest-pinned deployments, update the image references to the target release as well as `BREEZE_VERSION`.
+Merge the required changes into your backed-up local files, preserving custom services, domains, mounts, secrets, and proxy topology. Do not overwrite `.env` with `.env.example`. Add required variables to both `.env` and the appropriate service's `environment:` mapping; setting `.env` alone does not pass a variable to the container. For digest-pinned deployments, update the image references to the target release as well as `BREEZE_VERSION`. `guided-setup.sh --upgrade` does this for you (step 4a).
 
 Validate the merged configuration before the pull/restart step:
 
@@ -113,6 +148,14 @@ docker compose config --quiet
 ```
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
+
+### Next release — `APP_VERSION` comes from the image
+
+Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environment. That value replaced the version baked into the image, so `/health`, the upgrade preflight, and the recorded version history reported whatever `.env` said, even when the running image was older. The shipped `docker-compose.yml` and `deploy/docker-compose.prod.yml` no longer set it.
+
+| Change | Required action |
+|---|---|
+| The `APP_VERSION:` line is removed from the shared API environment block (`x-api-env` in `docker-compose.yml`, the API environment in `deploy/docker-compose.prod.yml`). | Delete the `APP_VERSION:` line from your own Compose file. Keep `BREEZE_VERSION:`, which still selects the agent release. Until you remove the line, `/health` keeps reporting `BREEZE_VERSION` and the version-mismatch warning cannot fire. |
 
 ### v0.118.0 — coturn peer restrictions and API stop grace
 
@@ -694,6 +737,7 @@ falls back to tag-tracking refs for older releases. **Existing installs whose
 upgrade steps at the top of this page.** If you have already switched to digest
 pins, update the four `BREEZE_*_IMAGE_REF` lines from the new release's
 inventory on every upgrade — bumping `BREEZE_VERSION` alone changes nothing.
+`guided-setup.sh --upgrade` does this in one command (step 4a above).
 See [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later).
 
 Rotating `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is a fleet re-enrollment:
@@ -1304,8 +1348,11 @@ For production deployments where any downtime is unacceptable, you can perform a
 ## Checking Versions
 
 ```bash
-# API version
+# API version (the running image's baked version)
 curl -s https://breeze.yourdomain.com/health | jq .version
+
+# The version .env says is deployed; must match the line above
+grep '^BREEZE_VERSION=' .env
 
 # Agent version (on the device)
 breeze-agent version
