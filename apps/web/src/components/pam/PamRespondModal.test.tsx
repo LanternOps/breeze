@@ -281,6 +281,19 @@ describe('PamRespondModal critical-tier (L4) re-authentication (#4052)', () => {
     expect(screen.queryByTestId('pam-respond-reauth-mode-toggle')).toBeNull();
   });
 
+  it('does not offer the authenticator-code toggle to a password account with no MFA', () => {
+    authState.user = { id: 'u-1', mfaEnabled: false, hasPassword: true };
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 4 })}
+        onClose={() => {}}
+        onActioned={() => {}}
+      />,
+    );
+    expect((screen.getByTestId('pam-respond-reauth-input') as HTMLInputElement).type).toBe('password');
+    expect(screen.queryByTestId('pam-respond-reauth-mode-toggle')).toBeNull();
+  });
+
   it('explains the dead end for an account with neither a password nor MFA, and still lets the server decide', async () => {
     authState.user = { id: 'u-1', mfaEnabled: false, hasPassword: false };
     render(
@@ -380,5 +393,68 @@ describe('PamRespondModal critical-tier (L4) re-authentication (#4052)', () => {
     );
     submit();
     await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true }));
+    // A redirect IS the feedback for an expired session — no error toast on top.
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a server-rejected approver-device assertion inline instead of redirecting', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ success: false, error: 'assertion_failed' }, false, 401),
+    );
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 2 })}
+        onClose={() => {}}
+        onActioned={onActioned}
+      />,
+    );
+    submit();
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/approver-device verification was not accepted/i),
+    );
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(onActioned).not.toHaveBeenCalled();
+  });
+
+  it('drops a typed password when the approver switches to deny', async () => {
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 4 })}
+        onClose={() => {}}
+        onActioned={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('pam-respond-reauth-input'), {
+      target: { value: 'hunter2' },
+    });
+    fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+    submit();
+    await waitFor(() => expect(respondCalled()).toBe(true));
+    const body = respondBody();
+    expect(body.decision).toBe('deny');
+    expect(body.reauthPassword).toBeUndefined();
+    expect(body.reauthMfaCode).toBeUndefined();
+    expect(JSON.stringify(fetchWithAuthMock.mock.calls)).not.toContain('hunter2');
+  });
+
+  it('explains an enforced step-up (403 step_up_required) in plain words', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ success: false, error: 'step_up_required', requiredLevel: 4 }, false, 403),
+    );
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 4 })}
+        onClose={() => {}}
+        onActioned={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('pam-respond-reauth-input'), {
+      target: { value: 'hunter2' },
+    });
+    submit();
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/registered approver device/i),
+    );
   });
 });

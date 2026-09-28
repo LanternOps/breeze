@@ -36,10 +36,15 @@ const CRITICAL_RISK_TIER = 4;
  */
 const FACTOR_REJECTION_TOKENS = new Set(['invalid_credentials', 'reauth_required', 'assertion_failed']);
 
-function rejectionToken(err: ActionError): string | undefined {
-  if (err.code) return err.code;
-  const body = err.body as { error?: unknown } | null | undefined;
-  return typeof body?.error === 'string' ? body.error : undefined;
+function rejectionToken(body: unknown): string | undefined {
+  const b = body as { code?: unknown; error?: unknown } | null | undefined;
+  if (typeof b?.code === 'string') return b.code;
+  return typeof b?.error === 'string' ? b.error : undefined;
+}
+
+function isFactorRejection(body: unknown): boolean {
+  const token = rejectionToken(body);
+  return token !== undefined && FACTOR_REJECTION_TOKENS.has(token);
 }
 
 type ReauthMode = 'password' | 'totp';
@@ -178,9 +183,9 @@ export default function PamRespondModal({
             : t('pamPamRespondModal.toasts.denied', { defaultValue: 'Elevation denied' }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
         // On approve a 401 is usually a rejected factor (wrong password/code,
-        // missing re-auth, failed assertion), not an expired session. Let it
-        // reach the catch below instead of silently redirecting to /login.
-        treatUnauthorizedAsError: decision === 'approve',
+        // missing re-auth, failed assertion), not an expired session: surface
+        // those as errors. Any other 401 keeps the silent /login redirect.
+        treatUnauthorizedAsError: decision === 'approve' ? isFactorRejection : false,
         friendly: (token) => {
           switch (token) {
             case 'invalid_credentials':
@@ -210,13 +215,9 @@ export default function PamRespondModal({
     } catch (err) {
       if (err instanceof ActionError) {
         if (err.status === 401) {
-          const token = rejectionToken(err);
-          if (!token || !FACTOR_REJECTION_TOKENS.has(token)) {
-            // A genuine session expiry: keep the pre-existing redirect.
-            void navigateTo('/login', { replace: true });
-            return;
-          }
-          if (token === 'reauth_required') setReauthRequested(true);
+          // Session expiry: onUnauthorized already redirected, no body.
+          if (!isFactorRejection(err.body)) return;
+          if (rejectionToken(err.body) === 'reauth_required') setReauthRequested(true);
           setError(err.message);
           return;
         }
@@ -390,7 +391,10 @@ export default function PamRespondModal({
                         defaultValue: 'The password you use to sign in to Breeze.',
                       })}
                 </p>
-                {!passwordless && (
+                {/* Offer the switch only when both factors can exist: a
+                    passwordless account has no password, and an account with
+                    MFA explicitly off has no authenticator code. */}
+                {!passwordless && user?.mfaEnabled !== false && (
                   <button
                     type="button"
                     onClick={() => {

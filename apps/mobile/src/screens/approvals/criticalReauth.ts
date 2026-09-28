@@ -27,6 +27,12 @@ export function reauthErrorMessage(code: string): string | undefined {
       return 'That password or code was not accepted. Check it and try again.';
     case 'REAUTH_THROTTLED':
       return 'Too many attempts. Wait a few minutes and try again.';
+    case 'REAUTH_UNAVAILABLE':
+      return 'Re-authentication is temporarily unavailable. Try again in a moment.';
+    case 'REAUTH_METHOD_NOT_PERMITTED':
+      return "Your organization doesn't allow authenticator codes for this. Use your password instead.";
+    case 'STEP_UP_REQUIRED':
+      return 'Your organization requires a verified approver device for this request. Register this phone as an approver device, then try again.';
     default:
       return undefined;
   }

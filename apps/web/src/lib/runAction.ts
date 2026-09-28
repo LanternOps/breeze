@@ -40,8 +40,13 @@ export interface RunActionOptions<T> {
    * and `reauth_required`, which are WebAuthn-proof rejections, not session
    * expiry. Without this the failure is swallowed silently (see the 401 branch
    * below). Default false, so every pre-existing caller is unchanged.
+   *
+   * Pass a predicate over the parsed 401 body when the same route can answer
+   * BOTH kinds of 401 (e.g. PAM respond: a rejected re-auth factor vs a
+   * genuinely expired bearer token). A matching body is treated as an error; a
+   * non-matching one keeps the session-expiry path (onUnauthorized, no toast).
    */
-  treatUnauthorizedAsError?: boolean;
+  treatUnauthorizedAsError?: boolean | ((body: unknown) => boolean);
 }
 
 function isZodValidationFailure(data: unknown): boolean {
@@ -93,12 +98,22 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   // WebAuthn assertion failed) would be silently swallowed here — such callers
   // must pass `treatUnauthorizedAsError` so the body-based branch below toasts
   // the real reason.
-  if (response.status === 401 && !opts.treatUnauthorizedAsError) {
+  const unauthorizedAsError = opts.treatUnauthorizedAsError;
+  if (response.status === 401 && !unauthorizedAsError) {
     if (opts.onUnauthorized) opts.onUnauthorized();
     throw new ActionError('Unauthorized', 401);
   }
 
   const data: unknown = await response.json().catch(() => null);
+
+  if (
+    response.status === 401 &&
+    typeof unauthorizedAsError === 'function' &&
+    !unauthorizedAsError(data)
+  ) {
+    if (opts.onUnauthorized) opts.onUnauthorized();
+    throw new ActionError('Unauthorized', 401);
+  }
 
   if (isApiFailure(data, response.status)) {
     let message = extractApiError(data, opts.errorFallback);

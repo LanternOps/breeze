@@ -127,6 +127,24 @@ async function approveUnauthorizedCode(res: Response, sentReauth: boolean): Prom
   return 'STEP_UP_FAILED';
 }
 
+/**
+ * 403s the approve route answers:
+ *   - `{ error: 'step_up_required' }`: an enforcing partner policy wants a
+ *     higher assurance than this approve reached.
+ *   - `{ error, message }` from requireFreshMfaStepUp when the partner's MFA
+ *     policy does not permit TOTP. It is the only 403 on this route that
+ *     carries `message`; the decide-path 403s are bare snake_case tokens
+ *     (services/approvals/decideApprovalRequest.ts), so this is told apart by
+ *     shape, never by matching the human text.
+ * Anything else keeps the generic `Approve failed: 403`.
+ */
+async function approveForbiddenCode(res: Response, reauth: ReauthFactor | undefined): Promise<string> {
+  const data = (await res.json().catch(() => null)) as { error?: unknown; message?: unknown } | null;
+  if (data?.error === 'step_up_required') return 'STEP_UP_REQUIRED';
+  if (reauth?.kind === 'totp' && typeof data?.message === 'string') return 'REAUTH_METHOD_NOT_PERMITTED';
+  return `Approve failed: ${res.status}`;
+}
+
 export async function approveRequest(
   id: string,
   stepUp?: ApproveStepUp,
@@ -154,8 +172,11 @@ export async function approveRequest(
   if (res.status === 409) throw new Error('ALREADY_DECIDED');
   if (res.status === 410) throw new Error('EXPIRED');
   if (res.status === 401) throw new Error(await approveUnauthorizedCode(res, !!reauth));
-  // The re-auth helpers rate-limit per user (5 per 5 min) and answer 429.
+  // The re-auth helpers rate-limit per user (5 per 5 min) and answer 429, and
+  // answer 503 when their rate-limit store is down.
   if (res.status === 429 && reauth) throw new Error('REAUTH_THROTTLED');
+  if (res.status === 503 && reauth) throw new Error('REAUTH_UNAVAILABLE');
+  if (res.status === 403) throw new Error(await approveForbiddenCode(res, reauth));
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
   const json = await res.json();
   return json.approval;

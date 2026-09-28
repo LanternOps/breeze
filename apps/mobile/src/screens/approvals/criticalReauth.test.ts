@@ -27,6 +27,9 @@ describe('criticalReauth (#4052)', () => {
     expect(reauthErrorMessage('REAUTH_REQUIRED')).toMatch(/password or authenticator code/i);
     expect(reauthErrorMessage('REAUTH_INVALID')).toMatch(/not accepted/i);
     expect(reauthErrorMessage('REAUTH_THROTTLED')).toMatch(/too many attempts/i);
+    expect(reauthErrorMessage('REAUTH_UNAVAILABLE')).toMatch(/temporarily unavailable/i);
+    expect(reauthErrorMessage('REAUTH_METHOD_NOT_PERMITTED')).toMatch(/use your password/i);
+    expect(reauthErrorMessage('STEP_UP_REQUIRED')).toMatch(/approver device/i);
   });
 
   it('leaves unrelated decision errors to the caller', () => {

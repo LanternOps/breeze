@@ -85,6 +85,40 @@ describe('approveRequest critical-tier re-auth (#4052)', () => {
     ).rejects.toThrow('REAUTH_THROTTLED');
   });
 
+  it('maps an unavailable re-auth service (503) to REAUTH_UNAVAILABLE', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(
+      jsonResponse(503, { error: 'Service temporarily unavailable', message: 'Service temporarily unavailable' }),
+    );
+    await expect(
+      approveRequest('a1', { reauth: { kind: 'password', value: 'hunter2' } }),
+    ).rejects.toThrow('REAUTH_UNAVAILABLE');
+  });
+
+  it('maps a policy-refused authenticator code (403 with a message) to REAUTH_METHOD_NOT_PERMITTED', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(
+      jsonResponse(403, { error: 'This MFA method is not permitted', message: 'This MFA method is not permitted' }),
+    );
+    await expect(
+      approveRequest('a1', { reauth: { kind: 'totp', value: '123456' } }),
+    ).rejects.toThrow('REAUTH_METHOD_NOT_PERMITTED');
+  });
+
+  it('maps an enforced step-up (403 step_up_required) to STEP_UP_REQUIRED', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(
+      jsonResponse(403, { error: 'step_up_required', requiredLevel: 4 }),
+    );
+    await expect(
+      approveRequest('a1', { reauth: { kind: 'totp', value: '123456' } }),
+    ).rejects.toThrow('STEP_UP_REQUIRED');
+  });
+
+  it('keeps a decide-path 403 token generic even with an authenticator code', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(jsonResponse(403, { error: 'not_requester' }));
+    await expect(
+      approveRequest('a1', { reauth: { kind: 'totp', value: '123456' } }),
+    ).rejects.toThrow('Approve failed: 403');
+  });
+
   it('keeps any other 401 as STEP_UP_FAILED', async () => {
     fetchWithAuthRefreshMock.mockResolvedValue(jsonResponse(401, { success: false, error: 'assertion_failed' }));
     await expect(approveRequest('a1', { proof: { sig: 'x' } })).rejects.toThrow('STEP_UP_FAILED');
