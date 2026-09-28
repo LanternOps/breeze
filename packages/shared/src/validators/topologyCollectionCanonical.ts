@@ -1,16 +1,16 @@
 import type { NetworkContextFull, TopologyContextSection } from '../types/topologyCollection';
-function compareUtf8(a: string, b: string): number {
+export function compareUtf8(a: string, b: string): number {
   const left = new TextEncoder().encode(a), right = new TextEncoder().encode(b);
   for (let i = 0; i < Math.min(left.length, right.length); i++) if (left[i] !== right[i]) return left[i]! - right[i]!;
   return left.length - right.length;
 }
 /** Browser-safe bytes only. Hash these UTF-8 bytes with SHA-256 in the platform adapter. */
-function stable(value: unknown): string {
+export function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => compareUtf8(a, b)).map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(',')}}`;
   return JSON.stringify(value);
 }
-function sorted<T>(values: T[], identity: (value: T) => string): T[] {
+export function sorted<T>(values: T[], identity: (value: T) => string): T[] {
   return [...values].sort((a, b) => compareUtf8(identity(a), identity(b)));
 }
 function semanticSection(section: TopologyContextSection, capturedAt: string): unknown {

@@ -155,5 +155,124 @@
       "body": "The topology view cannot be shown for this site right now. Try again later or contact support if it persists.",
       "details": "Technical details"
     }
+  },
+  "physicalView": {
+    "meaning": {
+      "physical_link": "Physical connection",
+      "attachment": "Attachment",
+      "network_member": "Network membership",
+      "default_route": "Default route",
+      "egress_path": "Egress path"
+    },
+    "directness": {
+      "direct": "Direct connection",
+      "via_unmanaged": "Through an unmanaged device",
+      "unknown": "Direct connection not established"
+    },
+    "portRole": {
+      "identified": "Identified port",
+      "learned": "Learned through this port",
+      "shared": "Shared or upstream port",
+      "unresolved": "Port not identified"
+    },
+    "association": {
+      "wired": "Wired connection",
+      "wireless": "Wireless association (reported by controller)",
+      "vpn": "VPN or tunnel association",
+      "uplink": "Uplink reported by controller"
+    },
+    "method": {
+      "lldp": "LLDP neighbor",
+      "cdp": "CDP neighbor",
+      "fdb": "Learned MAC address table (FDB)",
+      "unifi": "UniFi controller",
+      "manual": "Manual assertion",
+      "legacy": "Legacy discovery",
+      "other": "Other collector"
+    },
+    "freshness": {
+      "fresh": "Fresh",
+      "stale": "Stale",
+      "unknown": "Unknown"
+    },
+    "confidence": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "asserted": "Asserted"
+    },
+    "observationStatus": {
+      "current": "Current",
+      "expired": "Expired",
+      "withdrawn": "Withdrawn"
+    },
+    "details": {
+      "expired": "Observation detail has expired; the connection was still confirmed.",
+      "unavailable": "No observation detail is available for this connection."
+    },
+    "meaningLabel": "Meaning",
+    "directnessLabel": "Directness",
+    "portRoleLabel": "Port",
+    "associationLabel": "Association",
+    "methodLabel": "Reported by",
+    "sourcePort": "From",
+    "targetPort": "To",
+    "portNotIdentified": "Port not identified",
+    "reportedPort": "Reported as {{namespace}} {{value}}",
+    "retiredPort": "(earlier port identity)",
+    "lastConfirmed": "Last confirmed",
+    "evidenceExpires": "Evidence expires",
+    "alternatives": "Other candidate ports",
+    "hiddenFrom": "Hidden from: {{views}}",
+    "observations": "Observations",
+    "moreEvidence": "Load more observations",
+    "loadingDetail": "Loading connection detail\u2026",
+    "detailFailed": "Unable to load connection detail",
+    "viewOverview": "View network overview",
+    "empty": "No physical connections have been reported for this site yet."
+  },
+  "coveragePanel": {
+    "title": "Collection coverage",
+    "state": {
+      "complete": "Complete",
+      "limited": "Limited",
+      "unknown": "Unknown"
+    },
+    "reasons": {
+      "topology_preparing": "No topology snapshot has been published yet.",
+      "legacy_evidence_only": "Inventory and legacy data only; discovery coverage and health are not established.",
+      "projection_bounded": "Some devices or connections are outside this view.",
+      "physical_disabled": "Physical topology is turned off for this organization.",
+      "no_collector": "No collector reports physical connections for this site.",
+      "collection_pending": "A physical collection is still running.",
+      "collection_not_received": "An authorized collection did not report before its deadline.",
+      "collection_complete_empty": "A collection completed but found no neighbors. This does not mean the whole site is covered.",
+      "collection_unsupported": "A device does not support a requested protocol.",
+      "collection_timeout": "A collection timed out.",
+      "collection_failed": "A collection failed.",
+      "collection_partial_limit": "A collection hit its row limit; some rows were left out.",
+      "collection_partial": "A collection returned only part of its tables.",
+      "collection_not_attempted": "A requested scope was not attempted.",
+      "collection_stale": "Physical evidence has not been confirmed recently.",
+      "credentials_missing": "No usable SNMP credentials are configured for a device.",
+      "credentials_rejected": "A device rejected the configured SNMP credentials.",
+      "interface_unresolved": "Some connections were reported on ports that could not be identified.",
+      "controller_site_unmapped": "A UniFi controller site is not mapped to a Breeze site.",
+      "controller_site_other_org": "A UniFi controller site is mapped to another organization."
+    },
+    "scopeCount": "({{count}} affected)"
+  },
+  "exclusions": {
+    "reasonLabel": "Why hide this connection?",
+    "hide": "Hide from this view",
+    "restore": "Restore to this view",
+    "hidden": "Connection hidden from this view",
+    "restored": "Connection restored",
+    "hideFailed": "Unable to hide connection",
+    "restoreFailed": "Unable to restore connection",
+    "hiddenSection": "Hidden ({{count}})",
+    "hiddenReason": "Reason",
+    "hiddenLoadFailed": "Unable to load hidden connections",
+    "unknownConnection": "Connection {{id}}"
   }
 }

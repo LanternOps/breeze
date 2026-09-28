@@ -56,3 +56,52 @@ describe('fenced topology publication', () => {
     expect(structuralFingerprint('relationship', { ...before, confidence: 'high' })).not.toBe(structuralFingerprint('relationship', before));
   });
 });
+
+describe('physical relationship publication variants (D15.4)', () => {
+  const physicalRow = (over: Record<string, unknown> = {}, kind: 'physical_link' | 'attachment' = 'physical_link') => {
+    const sourceKey = `physical-link-v1:${kind}:${JSON.stringify(over).length}`;
+    return {
+      id: '00000000-0000-4000-8000-0000000000aa', ...scope, kind, canonicalKey: canonicalIdentityKey(scope, kind, sourceKey),
+      identityMaterial: { version: 1 as const, kind, sourceKey },
+      sourceNodeId: '00000000-0000-4000-8000-0000000000b1', targetNodeId: '00000000-0000-4000-8000-0000000000b2',
+      evidenceClass: 'observed' as const, confidence: 'high' as const, ...over,
+    };
+  };
+  const publishRows = (...relationships: ReturnType<typeof physicalRow>[]) =>
+    validatePublicationInput(scope, { ...input, relationships: relationships as never });
+  it.each(['lldp', 'cdp', 'unifi'])('accepts a measured %s physical link with bounded physical attributes', method => {
+    const parsed = publishRows(physicalRow({ attributes: { method, physical: {
+      resolution: 'resolved', remoteChassis: { subtype: 'mac_address', value: '02:00:00:00:00:01' },
+      localPort: { namespace: 'lldp_local', value: '7', resolvedInterfaceKey: 'if:7' }, remotePort: { subtype: 'interface_name', value: 'Gi0/1' },
+    } } }));
+    expect(parsed.relationships[0]!.attributes.method).toBe(method);
+  });
+  it('accepts an inferred FDB attachment candidate with selection metadata and physical context', () => {
+    const parsed = publishRows(physicalRow({
+      evidenceClass: 'inferred', confidence: 'low', directness: 'unknown',
+      logicalContext: { bridgeContext: 'default', vlanIds: [10, 20] },
+      attributes: { method: 'fdb', physical: { resolution: 'unresolved', bridgeContext: 'default', fdbSelection: 'competing',
+        alternativeRelationshipIds: ['00000000-0000-4000-8000-0000000000c1'] } },
+    }, 'attachment'));
+    expect(parsed.relationships[0]!.logicalContext).toEqual({ bridgeContext: 'default', vlanIds: [10, 20] });
+  });
+  it('never lets FDB evidence mint a physical link or claim observed evidence', () => {
+    expect(() => publishRows(physicalRow({ attributes: { method: 'fdb' } }))).toThrow();
+    expect(() => publishRows(physicalRow({ attributes: { method: 'fdb' } }, 'attachment'))).toThrow();
+  });
+  it('keeps physical methods off logical relationship kinds', () => {
+    const sourceKey = 'os:x:y';
+    expect(() => validatePublicationInput(scope, { ...input, relationships: [{
+      id: '00000000-0000-4000-8000-0000000000ab', ...scope, kind: 'default_route', canonicalKey: canonicalIdentityKey(scope, 'default_route', sourceKey),
+      identityMaterial: { version: 1, kind: 'default_route', sourceKey }, sourceNodeId: '00000000-0000-4000-8000-0000000000b1',
+      targetNodeId: '00000000-0000-4000-8000-0000000000b2', evidenceClass: 'observed', confidence: 'high', attributes: { method: 'lldp' },
+    }] as never })).toThrow();
+  });
+  it('rejects unknown, oversized or misplaced physical attributes', () => {
+    expect(() => publishRows(physicalRow({ attributes: { method: 'lldp', physical: { resolution: 'resolved', extra: 1 } } }))).toThrow();
+    expect(() => publishRows(physicalRow({ attributes: { method: 'lldp', physical: { bridgeContext: 'x'.repeat(256) } } }))).toThrow();
+    expect(() => publishRows(physicalRow({ attributes: { method: 'fdb', physical: { alternativeRelationshipIds: Array.from({ length: 65 }, () => '00000000-0000-4000-8000-0000000000c1') } } }, 'attachment'))).toThrow();
+    expect(() => publishRows(physicalRow({ attributes: { method: 'os_network_context', physical: { resolution: 'resolved' } } }))).toThrow();
+    expect(() => publishRows(physicalRow({ logicalContext: { vlanIds: [0] }, attributes: { method: 'lldp' } }))).toThrow();
+  });
+});

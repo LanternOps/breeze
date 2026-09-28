@@ -194,6 +194,22 @@ describe('bodyLimitForPath', () => {
     expect(bodyLimitForPath('/api/v1/contracts/contract-templates/tpl-1/versions').maxSize).toBe(1 * MB);
   });
 
+  it('allows a 4 MiB adjacency report plus envelope on topology/adjacency only', () => {
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/topology/adjacency')).toEqual({
+      rule: 'agent-topology-adjacency', maxSize: 4 * MB + 64 * KB, error: 'Adjacency report too large (max 4 MiB)',
+    });
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/topology/adjacency/extra').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/topology').maxSize).toBe(1 * MB);
+  });
+
+  it('allows the 8 MiB topologyV1 companion plus the legacy telemetry body on unifi-telemetry only', () => {
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/unifi-telemetry')).toEqual({
+      rule: 'agent-unifi-telemetry', maxSize: 9 * MB, error: 'UniFi telemetry too large (max 8 MiB topology + 1 MiB telemetry)',
+    });
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/unifi-telemetry/extra').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/unifi-collectors').maxSize).toBe(1 * MB);
+  });
+
   it('allows exactly 2 MiB on hardware-health without widening sibling paths', () => {
     expect(bodyLimitForPath('/api/v1/agents/agent-1/hardware-health')).toEqual({
       rule: 'agent-hardware-health',

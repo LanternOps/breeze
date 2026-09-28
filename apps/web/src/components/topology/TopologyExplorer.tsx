@@ -9,7 +9,9 @@ import { LAYOUT_VERSION, type LayoutBox, type LayoutPosition } from './layoutTyp
 import { useTopologyGraph } from './useTopologyGraph';
 import { parseTopologyHash, writeTopologyHash, type TopologyNavigation } from './topologyHash';
 import { isPresentation, selectedTopologyEntity, type TopologySelection } from './topologyPresentation';
-import { topologyRead, topologyNodeListSchema, type TopologySettings } from './topologyApi';
+import { topologyApi, topologyRead, topologyNodeListSchema, type HiddenConnection, type TopologySettings } from './topologyApi';
+import PhysicalCoveragePanel from './PhysicalCoveragePanel';
+import { restoreTopologyRelationship } from './RelationshipExclusionAction';
 import TopologyCanvas from './TopologyCanvas';
 import TopologyList from './TopologyList';
 import TopologyInspector from './TopologyInspector';
@@ -33,6 +35,24 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   const navigate = useCallback((next: TopologyNavigation) => { const value = { ...next, siteId }; setNavigation(value); writeTopologyHash(value); }, [siteId]);
   const selection = navigation.selection;
   const selected = graph ? selectedTopologyEntity(graph, selection) : undefined;
+  // D17: connections hidden from this view, listed (and restorable) from the accessible list.
+  const [hidden, setHidden] = useState<HiddenConnection[]>([]), [hiddenError, setHiddenError] = useState<string>(), [hiddenRefresh, setHiddenRefresh] = useState(0);
+  const hiddenIds = useMemo(() => new Set(hidden.map((item) => item.relationshipId)), [hidden]);
+  const hiddenSelected = selection?.kind === 'edge' && hiddenIds.has(selection.id);
+  useEffect(() => {
+    if (!list || !graph) return;
+    const abort = new AbortController(); setHiddenError(undefined);
+    void topologyApi.exclusions(siteId, view, undefined, abort.signal).then((result) => { if (!abort.signal.aborted) setHidden(result.items); })
+      .catch(() => { if (!abort.signal.aborted) { setHidden([]); setHiddenError(t('exclusions.hiddenLoadFailed')); } });
+    return () => abort.abort();
+  }, [list, siteId, view, graph?.revisions.graph, hiddenRefresh]);
+  const changed = () => { refreshGraph(); setHiddenRefresh((n) => n + 1); };
+  const restore = async (item: HiddenConnection) => {
+    try {
+      await restoreTopologyRelationship({ siteId, relationshipId: item.relationshipId, exclusionId: item.id, errorFallback: t('exclusions.restoreFailed'), successMessage: t('exclusions.restored') });
+      changed();
+    } catch (cause) { handleActionError(cause, t('exclusions.restoreFailed')); }
+  };
   // A bounded expansion can change the visible projection without changing the
   // site's structural revision. Health-only updates keep this key unchanged.
   const measurementKey = JSON.stringify(graph ? [...graph.nodes, ...graph.presentation.nodes].map(node => [node.id, node.label, 'kind' in node ? node.kind : node.role]) : []);
@@ -53,7 +73,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     setPositions([]); setBoxes([]); setConflict(false); setWarning(undefined); setDiagnostic(undefined);
   }, [siteId, view]);
   useEffect(() => {
-    if (graph && selection && !selected) { navigate({ ...navigation, selection: undefined }); setAnnouncement(t('selectionRemoved')); }
+    if (graph && selection && !selected && !hiddenSelected) { navigate({ ...navigation, selection: undefined }); setAnnouncement(t('selectionRemoved')); }
   }, [graph?.revisions.graph]);
   useEffect(() => {
     if (!graph) return;
@@ -75,7 +95,9 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     if (!graph || !boxes.length) return;
     const result = await controller.run({ requestId: crypto.randomUUID(), graphRevision: graph.revisions.graph, layoutRevision: draft.revision,
       measurementRevision: JSON.stringify(boxes), algorithmVersion: LAYOUT_VERSION, nodes: boxes,
-      edges: [...graph.relationships, ...graph.presentation.edges].map((edge) => ({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId })),
+      edges: [...graph.relationships, ...graph.presentation.edges].map((edge) => ({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId,
+        ...('sourceInterfaceId' in edge && edge.sourceInterfaceId ? { sourcePort: edge.sourceInterfaceId } : {}),
+        ...('targetInterfaceId' in edge && edge.targetInterfaceId ? { targetPort: edge.targetInterfaceId } : {}) })),
       positions: [...draft.positions.values()], mode });
     if (!result) return;
     draft.preview(result.positions); setPositions(result.positions); setWarning(result.warning); setAnnouncement(t('arranged'));
@@ -111,8 +133,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
     {graph && <>
-      <div className="flex flex-wrap items-center gap-3 text-sm"><span data-testid="topology-coverage">{t('coverage', { state: graph.coverage.state })}</span><span data-testid="topology-counts">{t('counts', { nodes: graph.counts.visibleNodes, edges: graph.counts.visibleRelationships })}</span><span>{t('omitted', { nodes: graph.counts.omittedNodes, edges: graph.counts.omittedRelationships })}</span></div>
-      {graph.coverage.reasons.map((reason) => <p className="text-sm text-muted-foreground" key={reason.code}>{reason.message}</p>)}
+      <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: graph.counts.visibleNodes, edges: graph.counts.visibleRelationships })}</span><span>{t('omitted', { nodes: graph.counts.omittedNodes, edges: graph.counts.omittedRelationships })}</span></div>
       <p data-testid="topology-health-internet" className="text-sm">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</p>
       <div className="flex flex-wrap items-center gap-2">
         <button data-testid="topology-fit" className="rounded border px-3 py-2 text-sm" onClick={() => fitRef.current?.()}>{t('fit')}</button>
@@ -123,9 +144,13 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       </div>
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
       {warning && <p data-testid="topology-layout-warning" role="status">{t(/* i18n-dynamic */ warning)}</p>}
-      {!nodes.length ? <p className="py-12 text-center text-muted-foreground">{t('empty')}</p> : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
-        <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
-        {selection && selected && <TopologyInspector graph={graph} selection={selection} canDiagnose={!isPresentation(selected) && graph.permissions.canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
+      {!nodes.length ? (view === 'physical'
+        ? <div data-testid="topology-physical-empty" className="py-12 text-center text-muted-foreground"><p>{t('physicalView.empty')}</p>
+          <button data-testid="topology-view-overview" className="mt-3 rounded border px-3 py-2" onClick={() => navigate({ ...navigation, view: 'overview', selection: undefined })}>{t('physicalView.viewOverview')}</button></div>
+        : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
+        <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
+          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
+        {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && graph.permissions.canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
       </div>}
       <p className="text-xs text-muted-foreground">{t('legend')}</p>
       {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className="mr-2 rounded border px-3 py-2 text-sm" onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}

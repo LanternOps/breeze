@@ -186,6 +186,17 @@ export async function loadTopologyFlags(
   });
 }
 
+/**
+ * D9/D15.4: the deployed physical-view capability. It gates EXPOSURE only
+ * (graphs, counts, neighborhoods, detail/evidence/health, cursors); canonical
+ * publication, support and aging keep running while it is off, so re-enabling
+ * needs no reprojection. Independent of whether any collector is present —
+ * collectability is reported through graph coverage instead.
+ */
+export function topologyPhysicalExposed(flags: Pick<TopologyFlags, 'materialization' | 'physical'>): boolean {
+  return flags.materialization && flags.physical;
+}
+
 function capability(
   available: boolean,
   reason: TopologyCapabilityReason,

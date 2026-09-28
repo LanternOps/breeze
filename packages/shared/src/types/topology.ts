@@ -1,6 +1,11 @@
 import type { z } from 'zod';
 import type {
   collectionOutcomeSchema,
+  coverageReasonCodeSchema,
+  coverageReasonSchema,
+  relationshipDetailResponseSchema,
+  relationshipEvidenceResponseSchema,
+  relationshipExclusionSummarySchema,
   confidenceSchema,
   diagnosticStateSchema,
   directnessSchema,
@@ -51,3 +56,8 @@ export type Position = z.infer<typeof positionSchema>;
 export type LayoutPatch = z.infer<typeof layoutPatchSchema>;
 export type LayoutWriteResult = z.infer<typeof layoutWriteResultSchema>;
 export type GraphResponse = z.infer<typeof graphResponseSchema>;
+export type CoverageReasonCode = z.infer<typeof coverageReasonCodeSchema>;
+export type CoverageReason = z.infer<typeof coverageReasonSchema>;
+export type RelationshipDetailResponse = z.infer<typeof relationshipDetailResponseSchema>;
+export type RelationshipEvidenceResponse = z.infer<typeof relationshipEvidenceResponseSchema>;
+export type RelationshipExclusionSummary = z.infer<typeof relationshipExclusionSummarySchema>;

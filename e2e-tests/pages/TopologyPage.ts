@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 /** DOM access is exclusively through the repository's data-testid contract. */
 export class TopologyPage {
   constructor(readonly page: Page) {}
+  private selectedOrg: string | undefined;
   entry = () => this.page.getByTestId('topology-entry');
   explorer = () => this.page.getByTestId('topology-explorer');
   canvas = () => this.page.getByTestId('topology-canvas');
@@ -63,6 +64,49 @@ export class TopologyPage {
     if (!(await this.list().isVisible())) await this.listToggle().click();
     await this.node(nodeId).click();
     await this.inspector().waitFor();
+  }
+
+  // M2 physical evidence (PhysicalEvidencePanel / PhysicalCoveragePanel).
+  physicalEvidence = () => this.page.getByTestId('topology-physical-evidence');
+  relationshipMeaning = () => this.page.getByTestId('topology-relationship-meaning');
+  sourcePort = () => this.page.getByTestId('topology-source-port');
+  targetPort = () => this.page.getByTestId('topology-target-port');
+  directness = () => this.page.getByTestId('topology-directness');
+  portRole = () => this.page.getByTestId('topology-port-role');
+  association = () => this.page.getByTestId('topology-association');
+  evidenceMethod = () => this.page.getByTestId('topology-evidence-method');
+  alternatives = () => this.page.getByTestId('topology-alternatives');
+  coveragePanel = () => this.page.getByTestId('topology-coverage-panel');
+
+  /** Entry point 3 with an explicit view (and org for a partner login). */
+  async openDiscoveryView(siteId: string, view: 'overview' | 'physical' | 'logical', orgId?: string) {
+    if (orgId && this.selectedOrg !== orgId) {
+      // A partner login lands on its first organization; select the fixture's
+      // org in the persisted org store (key `breeze-org`) before the app boots.
+      await this.page.addInitScript((id) => {
+        let stored: { state?: Record<string, unknown>; version?: number } = {};
+        try { stored = JSON.parse(localStorage.getItem('breeze-org') ?? '{}'); } catch { /* fresh */ }
+        localStorage.setItem('breeze-org', JSON.stringify({ state: { ...stored.state, currentOrgId: id, lastOrgId: id, allOrgs: false }, version: stored.version ?? 0 }));
+      }, orgId);
+      this.selectedOrg = orgId;
+    }
+    await this.page.goto(`/discovery#topology/site/${siteId}/view/${view}`);
+    // A dev-mode stack compiles the page and its islands on first hit.
+    await this.explorer().waitFor({ timeout: 60_000 });
+  }
+
+  /** Open one relationship from the keyboard-reachable list and wait for its physical evidence. */
+  async showList() {
+    await this.counts().waitFor();
+    if (!(await this.list().isVisible())) await this.listToggle().click();
+    await this.list().waitFor();
+  }
+
+  async inspectRelationship(id: string) {
+    await this.showList();
+    await this.edge(id).click();
+    await this.inspector().waitFor();
+    await this.physicalEvidence().waitFor();
   }
 
   recipeSelect = () => this.page.getByTestId('topology-recipe');

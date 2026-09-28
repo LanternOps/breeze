@@ -1075,6 +1075,7 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_relationships",
   "topology_site_state",
   "topology_site_template_bindings",
+  "topology_view_exclusions",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

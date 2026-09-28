@@ -2,6 +2,7 @@ import * as dbModule from '../db';
 import { networkTopology, discoveredAssets } from '../db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { DiscoveredHostResult, DeviceAdjacency, FdbEntry } from './discoveryWorker';
+import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
 
 const { db } = dbModule;
 
@@ -431,7 +432,7 @@ async function ageOutMeasuredEdges(
     .filter((r) => !keep.has(r.id))
     .map((r) => r.id);
   if (toDelete.length > 0) {
-    await db.delete(networkTopology).where(inArray(networkTopology.id, toDelete));
+    await withLegacyCollectorAbsence(() => db.delete(networkTopology).where(inArray(networkTopology.id, toDelete)));
   }
 }
 
@@ -496,6 +497,6 @@ async function ageOutFdbEdges(
     .filter((r) => !keep.has(r.id))
     .map((r) => r.id);
   if (toDelete.length > 0) {
-    await db.delete(networkTopology).where(inArray(networkTopology.id, toDelete));
+    await withLegacyCollectorAbsence(() => db.delete(networkTopology).where(inArray(networkTopology.id, toDelete)));
   }
 }

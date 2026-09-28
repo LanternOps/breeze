@@ -145,39 +145,6 @@ func querySNMPWith(target string, cred SNMPCredential, timeout time.Duration) (*
 	return info, nil
 }
 
-// collectFdbForDevice walks the bridge-FDB tables for a single SNMP device and
-// returns the assembled MAC→port adjacency entries. It tries each credential
-// in turn and returns nil on any SNMP error so a failing device degrades to no
-// adjacency without aborting the scan (mirroring querySNMP's nil-on-failure
-// pattern). No live SNMP server is contacted in tests — unreachable targets
-// degrade to an empty slice.
-func collectFdbForDevice(target string, creds []SNMPCredential, timeout time.Duration) []snmppoll.FdbEntry {
-	for _, cred := range creds {
-		if !cred.usable() {
-			continue
-		}
-		client, err := snmppoll.NewClient(cred.clientConfig(target, timeout))
-		if err != nil {
-			slog.Debug("SNMP FDB connect failed", "target", target, "credential", cred.Describe(),
-				"class", classifySNMPProbeError(err), "error", err)
-			continue
-		}
-		fdbPort, err := client.BulkWalk("1.3.6.1.2.1.17.4.3.1.2")
-		if err != nil {
-			client.Close()
-			slog.Debug("SNMP FDB walk failed", "target", target, "credential", cred.Describe(),
-				"class", classifySNMPProbeError(err), "error", err)
-			continue
-		}
-		basePort, _ := client.BulkWalk("1.3.6.1.2.1.17.1.4.1.2")
-		ifNames, _ := client.BulkWalk("1.3.6.1.2.1.31.1.1.1.1")
-		qBridge, _ := client.BulkWalk("1.3.6.1.2.1.17.7.1.2.2.1.2")
-		client.Close()
-		return snmppoll.AssembleFdbEntries(fdbPort, basePort, ifNames, qBridge)
-	}
-	return nil
-}
-
 func snmpToString(variable gosnmp.SnmpPDU) string {
 	if variable.Value == nil {
 		return ""

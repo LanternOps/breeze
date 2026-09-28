@@ -267,7 +267,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // retain bindings; topology's ambient merge hooks fence and rekey them.
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',
   'topology_collection_runs.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
-  'topology_observations.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
+  'topology_observations.topology_evidence_immutable': 'permits org_id ownership and physical reference migration (relationship/subject node/interface) while preserving historical content',
   'topology_config_template_versions.breeze_topology_template_content_guard': 'published payload immutable but owner org may move',
   'topology_site_template_bindings.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',
   'topology_probe_targets.breeze_topology_template_unbind_guard': 'org-only merge preserves version fields',

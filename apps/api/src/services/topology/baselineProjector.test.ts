@@ -1,7 +1,7 @@
 import { describe,expect,it } from 'vitest';
 import { networkContextFixture } from '../../../../../packages/shared/src/testing/topologyFixtures';
 import { projectBaselineTopology } from './baselineProjector';
-import type { TopologyProjectionInput } from './reconciliationTypes';
+import type { BaselineProjectionInput as TopologyProjectionInput } from './reconciliationTypes';
 const scope={orgId:'10000000-0000-4000-8000-000000000001',siteId:'20000000-0000-4000-8000-000000000001'};
 function fixture():TopologyProjectionInput{
  const report=networkContextFixture();

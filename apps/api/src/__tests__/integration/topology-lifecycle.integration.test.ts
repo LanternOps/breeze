@@ -11,6 +11,11 @@ import { detachTopologyInventoryBinding } from '../../services/topology/tenantLi
 import { createOrganization, createSite } from './db-utils';
 import { createTopologyGraph, orgContext, TOPOLOGY_TABLES } from './topology-fixtures';
 
+// M2 view exclusions are a graph child of topology_relationships; they must
+// follow every lifecycle path the M0 tables do.
+const LIFECYCLE_TABLES = [...TOPOLOGY_TABLES, 'topology_view_exclusions'] as const;
+const exclusionRow = (id: string) => db.execute(sql`SELECT org_id,site_id,relationship_id,view,reason,revoked_at FROM topology_view_exclusions WHERE id=${id}::uuid`);
+
 const scopeOf = (scope: { orgId:string;siteId:string }) => ({ orgId:scope.orgId,siteId:scope.siteId });
 const actor = '00000000-0000-0000-0000-000000000000';
 const scoped = <T>(orgId: string, fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId), fn);
@@ -18,6 +23,8 @@ async function fixture() {
   const f = await createTopologyGraph();
   const assetNode = randomUUID();
   const manualNode = randomUUID();
+  const exclusionId = randomUUID();
+  let relationshipId = '';
   await scoped(f.orgId, async () => {
     for (const [id, kind] of [[f.nodeId, 'endpoint'], [f.targetNodeId, 'endpoint'], [assetNode, 'endpoint'], [manualNode, 'manual']] as const) {
       const material = { version: 1, kind, sourceKey: id };
@@ -31,15 +38,18 @@ async function fixture() {
     await db.execute(sql`INSERT INTO topology_node_bindings (org_id,site_id,node_id,manual_node_id)
       VALUES (${f.orgId}::uuid,${f.siteId}::uuid,${manualNode}::uuid,${f.manualId}::uuid)`);
     const [relationship] = await db.execute(sql`SELECT id FROM topology_relationships WHERE org_id=${f.orgId}::uuid`);
+    relationshipId = relationship!.id as string;
     const sourceKey = `manual:${relationship!.id}`;
     await db.execute(sql`UPDATE topology_relationships SET canonical_key=${canonicalIdentityKey(scopeOf(f), 'attachment', sourceKey)},
       identity_material=${JSON.stringify({ version: 1, kind: 'attachment', sourceKey })}::jsonb WHERE id=${relationship!.id}::uuid`);
     await db.execute(sql`UPDATE topology_node_positions SET pinned=true WHERE node_id=${f.nodeId}::uuid`);
+    await db.execute(sql`INSERT INTO topology_view_exclusions (id,org_id,site_id,relationship_id,view,reason,created_by)
+      VALUES (${exclusionId}::uuid,${f.orgId}::uuid,${f.siteId}::uuid,${relationship!.id}::uuid,'physical','Retain exclusion',${actor}::uuid)`);
     // The foundation helper's synthetic outbox row predates the typed capture
     // protocol. Keep only real captured envelopes for merge-normalization proof.
     await db.execute(sql`DELETE FROM topology_change_outbox WHERE org_id=${f.orgId}::uuid AND event_kind='fixture'`);
   });
-  return { ...f, assetNode, manualNode };
+  return { ...f, assetNode, manualNode, exclusionId, relationshipId };
 }
 
 beforeEach(() => { vi.stubEnv('ORG_MERGE_FENCE_DRAIN_MS', '0'); });
@@ -58,6 +68,7 @@ describe('topology inventory and tenant lifecycle', () => {
         .toEqual({ site_id: f.siteId, label_override: 'Retain label' });
       expect((await db.execute(sql`SELECT x,y,pinned FROM topology_node_positions WHERE node_id=${f.nodeId}::uuid`))[0])
         .toEqual({ x: 1, y: 2, pinned: true });
+      expect(await exclusionRow(f.exclusionId)).toEqual([{ org_id:f.orgId,site_id:f.siteId,relationship_id:f.relationshipId,view:'physical',reason:'Retain exclusion',revoked_at:null }]);
       expect(await db.execute(sql`SELECT id FROM audit_logs WHERE action='topology.binding_detached' AND resource_id=${f.nodeId}::uuid`)).toHaveLength(1);
       const events = await db.execute(sql`SELECT site_id,payload->'data' AS data FROM topology_change_outbox WHERE aggregate_id=${f.deviceId}::uuid ORDER BY created_at`);
       expect(events.filter(e => e.site_id === f.siteId && e.data === null)).toHaveLength(1);
@@ -106,6 +117,9 @@ describe('topology inventory and tenant lifecycle', () => {
         .toEqual({ label_override:'Retain label',attributes:{ notes:'Retain notes' } });
       expect((await db.execute(sql`SELECT layout_id,x,y,pinned FROM topology_node_positions WHERE node_id=${f.nodeId}::uuid`))[0])
         .toEqual({ layout_id:f.layoutId,x:1,y:2,pinned:true });
+      // Relationship UUIDs survive the merge (only canonical keys are re-keyed),
+      // so the exclusion keeps its UUID, view and reason under the survivor org.
+      expect(await exclusionRow(f.exclusionId)).toEqual([{ org_id:survivor.id,site_id:f.siteId,relationship_id:f.relationshipId,view:'physical',reason:'Retain exclusion',revoked_at:null }]);
       const events = await db.execute(sql`SELECT source_revision::text,payload FROM topology_change_outbox WHERE org_id=${survivor.id}::uuid`);
       expect(events.length).toBeGreaterThan(0);
       for (const event of events) {
@@ -137,7 +151,7 @@ describe('topology inventory and tenant lifecycle', () => {
     if (kind==='organization') await cascadeDeleteOrg(f.orgId,actor);
     else await cascadeDeletePartner(f.partnerId,actor);
     await withSystemDbAccessContext(async () => {
-      for (const name of TOPOLOGY_TABLES) {
+      for (const name of LIFECYCLE_TABLES) {
         expect(await db.execute(sql`SELECT * FROM ${sql.identifier(name)} WHERE org_id=${f.orgId}::uuid`)).toHaveLength(0);
         expect((await db.execute(sql`SELECT * FROM ${sql.identifier(name)} WHERE org_id=${keep.orgId}::uuid`)).length).toBeGreaterThan(0);
       }

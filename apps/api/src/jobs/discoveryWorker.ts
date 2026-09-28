@@ -51,6 +51,9 @@ import {
   withQueueMeta,
 } from './queueSchemas';
 import { reconcileTopology } from './reconcileTopology';
+import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
+import { markTopologyIdentityDirty } from '../services/topology/identityDirty';
+import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -556,6 +559,7 @@ type DispatchScanInputs =
       agentId: string;
       requestedAgentId: string | null;
       selectionSource: 'requested' | 'site-auto';
+      topology: DiscoveryTopologyCommandBlock | null;
     };
 
 /**
@@ -638,7 +642,18 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
     return { status: 'no-agent' };
   }
 
-  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource };
+  // M2 D7: persist the topology dispatch authorization snapshot in this same
+  // short context, BEFORE the command can leave the server. A failure here
+  // degrades to a legacy-only dispatch; it never blocks discovery.
+  let topology: DiscoveryTopologyCommandBlock | null = null;
+  try {
+    topology = await prepareDiscoveryTopologyDispatch({ jobId: data.jobId, orgId: data.orgId, siteId: data.siteId, profile, agentId });
+  } catch (err) {
+    console.error(`[DiscoveryWorker] Topology dispatch snapshot failed for job ${data.jobId}; dispatching legacy-only:`, err);
+    captureException(err);
+  }
+
+  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource, topology };
 }
 
 /**
@@ -660,7 +675,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource } = inputs;
+  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource, topology } = inputs;
 
   // Phase 2 — connectivity check with NO DB context open (#1105).
   if (!(await isAgentConnectedAnywhere(agentId))) {
@@ -692,7 +707,9 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       identifyOS: profile.identifyOS ?? false,
       resolveHostnames: profile.resolveHostnames ?? false,
       timeout: profile.timeout ?? 2,
-      concurrency: profile.concurrency ?? 128
+      concurrency: profile.concurrency ?? 128,
+      // Advertised only when the authorization snapshot was persisted above.
+      ...(topology ? { topology } : {}),
     }
   };
 
@@ -1523,6 +1540,19 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     console.error(`[DiscoveryWorker] Topology reconciliation failed for job ${data.jobId}:`, err);
   }
 
+  // M2 D15.2: a new discovered asset can become the subject of an SNMP target
+  // (`snmp:<ip>` resolves to the scoped asset at that address), so the physical
+  // publisher must re-resolve. Refreshes of existing rows keep the IP (the
+  // lookup key) and change no identity the publisher uses.
+  if (newCount > 0) {
+    try {
+      await markTopologyIdentityDirty(db, { orgId: data.orgId, siteId: data.siteId });
+    } catch (err) {
+      console.error(`[DiscoveryWorker] Topology identity dirty mark failed for job ${data.jobId}:`, err);
+      captureException(err);
+    }
+  }
+
   // Update the job record
   await db
     .update(discoveryJobs)
@@ -1616,7 +1646,8 @@ export async function cleanupSpeculativeTopologyLinks(
   orgId: string,
   siteId: string
 ): Promise<number> {
-  const deleted = await db
+  // M2 D5: collector-absence cleanup, not a user/inventory delete.
+  const deleted = await withLegacyCollectorAbsence(() => db
     .delete(networkTopology)
     .where(
       and(
@@ -1630,7 +1661,7 @@ export async function cleanupSpeculativeTopologyLinks(
         )!
       )
     )
-    .returning({ id: networkTopology.id });
+    .returning({ id: networkTopology.id }));
 
   return deleted.length;
 }

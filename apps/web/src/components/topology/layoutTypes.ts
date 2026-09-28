@@ -10,7 +10,8 @@ export type LayoutFence = {
 };
 export type LayoutRequest = LayoutFence & {
   nodes: LayoutBox[];
-  edges: { id: string; source: string; target: string }[];
+  /** Physical edges carry their interface IDs as ports; parallel cables keep distinct IDs (M2). */
+  edges: { id: string; source: string; target: string; sourcePort?: string; targetPort?: string }[];
   positions: LayoutPosition[];
   mode: 'incremental' | 'reflow';
 };

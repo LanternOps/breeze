@@ -239,29 +239,6 @@ func TestParseIfName(t *testing.T) {
 	}
 }
 
-func TestParseQBridgeVlanByMac(t *testing.T) {
-	pdus := []gosnmp.SnmpPDU{
-		// vlan 100, mac 00:50:56:ab:cd:ef
-		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(3)},
-		// malformed suffix (mac too short) → dropped
-		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.80.86", Type: gosnmp.Integer, Value: big.NewInt(7)},
-		// same mac under a second vlan 200 → first-wins keeps vlan 100
-		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.200.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(9)},
-		// non-matching prefix → dropped
-		{Name: ".1.3.6.1.2.1.99.9.9.9.9.100.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(1)},
-	}
-	got := parseQBridgeVlanByMac(pdus)
-	want := map[string]int{"00:50:56:ab:cd:ef": 100}
-	if len(got) != len(want) {
-		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
-	}
-	for mac, vlan := range want {
-		if got[mac] != vlan {
-			t.Errorf("mac %s: got vlan %d, want %d (first-wins)", mac, got[mac], vlan)
-		}
-	}
-}
-
 func TestAssembleFdbEntries_Golden(t *testing.T) {
 	// FDB-port golden (Task 2): 00:50:56:ab:cd:ef→3, 00:1e:67:01:02:03→5,
 	// aa:bb:cc:dd:ee:ff→5. Add one extra row on bridge port 99 whose ifIndex has
@@ -285,7 +262,9 @@ func TestAssembleFdbEntries_Golden(t *testing.T) {
 		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10003", Type: gosnmp.OctetString, Value: []byte("Gi0/5")},
 	}
 
-	// Q-BRIDGE golden (Task 4): vlan 100 only for 00:50:56:ab:cd:ef.
+	// Q-BRIDGE golden (Task 4): FDB id 100 for 00:50:56:ab:cd:ef. The FDB id is
+	// not a VLAN, and this legacy signature has no dot1qVlanFdbId table, so the
+	// projection reports no VLAN (it used to report 100).
 	qBridgePDUs := []gosnmp.SnmpPDU{
 		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(3)},
 	}
@@ -301,9 +280,9 @@ func TestAssembleFdbEntries_Golden(t *testing.T) {
 		byMac[e.MAC] = e
 	}
 
-	// 00:50:56:ab:cd:ef → port 3, ifName Gi0/3, vlan 100
-	if e := byMac["00:50:56:ab:cd:ef"]; e.BridgePort != 3 || e.IfName != "Gi0/3" || e.VLAN != 100 {
-		t.Errorf("00:50:56:ab:cd:ef: got %+v, want {bridgePort:3 ifName:Gi0/3 vlan:100}", e)
+	// 00:50:56:ab:cd:ef → port 3, ifName Gi0/3, no vlan (FDB id is not a VLAN)
+	if e := byMac["00:50:56:ab:cd:ef"]; e.BridgePort != 3 || e.IfName != "Gi0/3" || e.VLAN != 0 {
+		t.Errorf("00:50:56:ab:cd:ef: got %+v, want {bridgePort:3 ifName:Gi0/3 vlan:0}", e)
 	}
 	// 00:1e:67:01:02:03 → port 5, ifName Gi0/5, no vlan
 	if e := byMac["00:1e:67:01:02:03"]; e.BridgePort != 5 || e.IfName != "Gi0/5" || e.VLAN != 0 {

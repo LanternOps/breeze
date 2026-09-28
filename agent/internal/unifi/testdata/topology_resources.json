@@ -1,0 +1,28 @@
+{
+  "_comment": "Controller responses in the UniFi Network Integration API v1 shape (camelCase envelopes). The site/device/client rows mirror packages/shared/src/testing/topology-unifi-v1.json vector single-site so the Go-built device_list/client_list digests can be checked against the shared contract. deviceDetails follows the documented getDeviceDetails schema (uplink.deviceId, interfaces.ports[].idx/state/speedMbps/poe); it is schema-derived, not captured from a live controller. A null detail means the controller answers 404 for that device.",
+  "controllerSiteId": "88f7af54-98f8-306a-a1c7-c9349722b1f6",
+  "sites": {"data": [{"id": "88f7af54-98f8-306a-a1c7-c9349722b1f6", "name": "Default"}], "offset": 0, "limit": 25, "count": 1, "totalCount": 1},
+  "devices": {"data": [
+    {"id": "dev-switch-1", "name": "USW Lite 8", "model": "USL8LP", "state": "ONLINE", "ipAddress": "192.0.2.20", "macAddress": "02:00:00:00:02:01", "features": ["switching"], "interfaces": ["ports"], "supported": true},
+    {"id": "dev-ap-1", "name": "U6 Lite", "model": "UAL6", "state": "ONLINE", "ipAddress": "192.0.2.21", "macAddress": "02-00-00-00-02-02", "features": ["accessPoint"], "interfaces": ["radios"], "supported": true}
+  ], "offset": 0, "limit": 25, "count": 2, "totalCount": 2},
+  "clients": {"data": [
+    {"id": "client-wifi-1", "name": "laptop", "type": "WIRELESS", "ipAddress": "192.0.2.31", "macAddress": "02:00:00:00:03:02", "uplinkDeviceId": "dev-ap-1", "connectedAt": "2026-09-15T11:00:00Z", "access": {"type": "DEFAULT"}},
+    {"id": "client-vpn-1", "name": "remote-user", "type": "VPN", "ipAddress": "198.51.100.5", "connectedAt": "2026-09-15T11:00:00Z"},
+    {"id": "client-wired-1", "name": "printer", "type": "WIRED", "ipAddress": "192.0.2.30", "macAddress": "02:00:00:00:03:01", "uplinkDeviceId": "dev-switch-1", "connectedAt": "2026-09-15T11:00:00Z", "access": {"type": "DEFAULT"}}
+  ], "offset": 0, "limit": 25, "count": 3, "totalCount": 3},
+  "deviceDetails": {
+    "dev-switch-1": {
+      "id": "dev-switch-1", "name": "USW Lite 8", "model": "USL8LP", "supported": true, "macAddress": "02:00:00:00:02:01", "ipAddress": "192.0.2.20", "state": "ONLINE",
+      "firmwareVersion": "7.1.26", "firmwareUpdatable": false,
+      "uplink": {"deviceId": "dev-gateway-1"},
+      "features": {"switching": {}},
+      "interfaces": {"ports": [
+        {"idx": 2, "state": "DOWN", "connector": "RJ45", "maxSpeedMbps": 1000},
+        {"idx": 1, "state": "UP", "connector": "RJ45", "maxSpeedMbps": 1000, "speedMbps": 1000, "poe": {"standard": "802.3at", "type": 2, "enabled": true, "state": "UP"}},
+        {"idx": 8, "state": "UNKNOWN", "connector": "RJ45", "maxSpeedMbps": 1000}
+      ]}
+    },
+    "dev-ap-1": null
+  }
+}

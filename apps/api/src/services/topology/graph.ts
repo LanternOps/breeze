@@ -5,7 +5,12 @@ import { graphQuerySchema, type GraphQuery, type GraphResponse, type Position } 
 import { db } from '../../db';
 import type { TopologyRequestContext } from './access';
 import { GraphReadError, graphAuthority, issueGraphToken, verifyGraphToken, nodeListQuerySchema, topologyReadEtag, type GraphTokenClaims, type NodeListQuery } from './graphCursor';
-import { scoped, nodeFilter, listFilter, relationshipFilter, nodeColumns, relationshipColumns, presentNode, presentRelationship, unknownHealth, safeCount, missingSubject, type NodeRow, type RelationshipRow } from './graphRead';
+import { scoped, nodeFilter, listFilter, relationshipFilter, nodeColumns, relationshipColumns, presentNode, presentRelationship, safeCount, missingSubject,
+  nodeExposure, relationshipExposure, type NodeRow, type ReadExposure, type RelationshipRow } from './graphRead';
+import { loadActiveExclusions } from './exclusions';
+import { readGraphCoverage } from './physicalCoverage';
+import { projectPhysicalView } from './physicalProjection';
+import { readRelationshipDetail, readRelationshipEvidence, type DetailRow } from './relationshipDetail';
 import { overlayHealthSummary, readTopologyMonitorOverlays, type TopologyMonitorOverlay, type TopologyOverlaySubject } from './monitorOverlays';
 
 type ReadTx = Pick<typeof db, 'execute'>;
@@ -68,6 +73,9 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     if (query.focusNodeId) throw missingSubject();
     return response(graph, authority, { query, claims });
   }
+  // Per-view exclusions and the physical gate apply to every row, count,
+  // neighborhood and frontier of this projection (D9, D17).
+  const exposure: ReadExposure = { physical: authority.physical, excluded: await loadActiveExclusions(ctx.scope, query.view, tx) };
   const [layout] = await tx.execute<{ id: string; revision: string; algorithm: string | null; version: string | null }>(sql`
     SELECT l.id, l.revision::text AS revision, l.algorithm, l.algorithm_version AS version FROM topology_layouts l
     WHERE ${scoped(ctx.scope, 'l')} AND l.view = ${query.view} FOR SHARE`);
@@ -79,7 +87,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
       throw new GraphReadError('invalid_topology_group', 400, 'Node is not a network or infrastructure group');
     }
   }
-  const filter = nodeFilter(ctx.scope, query);
+  const filter = nodeFilter(ctx.scope, query, 'n', exposure);
   // A fresh focus reserves the first slot. Continuations visit the remaining
   // UUID-ordered members once, including members whose UUID precedes the focus.
   // Keeping the focus on every page would prevent progress when limit is one.
@@ -92,9 +100,9 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     : sql`n.id`;
   const [count] = await tx.execute<{ count: string; remaining: string }>(sql`SELECT count(*)::text AS count,
     count(*) FILTER (WHERE ${after})::text AS remaining FROM topology_nodes n WHERE ${filter}`);
-  const relationshipScope = sql`${relationshipFilter(ctx.scope, query.view)}
-    AND EXISTS (SELECT 1 FROM topology_nodes ns WHERE ns.id = r.source_node_id AND ${nodeFilter(ctx.scope, query, 'ns')})
-    AND EXISTS (SELECT 1 FROM topology_nodes nt WHERE nt.id = r.target_node_id AND ${nodeFilter(ctx.scope, query, 'nt')})`;
+  const relationshipScope = sql`${relationshipFilter(ctx.scope, query.view, 'r', exposure)}
+    AND EXISTS (SELECT 1 FROM topology_nodes ns WHERE ns.id = r.source_node_id AND ${nodeFilter(ctx.scope, query, 'ns', exposure)})
+    AND EXISTS (SELECT 1 FROM topology_nodes nt WHERE nt.id = r.target_node_id AND ${nodeFilter(ctx.scope, query, 'nt', exposure)})`;
   const [relationshipCount] = await tx.execute<{ count: string }>(sql`SELECT count(*)::text AS count FROM topology_relationships r WHERE ${relationshipScope}`);
   const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n
     WHERE ${filter} AND ${after} ORDER BY ${nodeOrder} LIMIT ${query.limit}`);
@@ -124,6 +132,10 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     : undefined;
   graph.nodes = rows.map((row) => presentNode(row, authority.canEdit, subjectHealth(overlays, 'node', row.id)));
   graph.relationships = visibleRelationships.map((row) => presentRelationship(row, authority.canEdit, subjectHealth(overlays, 'relationship', row.id)));
+  if (query.view === 'physical') {
+    const projected = projectPhysicalView({ nodes: graph.nodes, relationships: graph.relationships, excludedRelationshipIds: exposure.excluded });
+    graph.nodes = projected.nodes; graph.relationships = projected.relationships;
+  }
   graph.revisions = { graph: state.graph, health: state.health, layout: layout?.revision ?? '0' };
   const version = Number(layout?.version ?? 0);
   graph.layout = { algorithm: layout?.algorithm ?? 'none', version: Number.isSafeInteger(version) && version >= 0 ? version : 0, positions: [...positions] };
@@ -131,7 +143,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     visibleNodes: graph.nodes.length, visibleRelationships: graph.relationships.length,
     omittedNodes: safeCount(count?.count) - graph.nodes.length,
     omittedRelationships: safeCount(relationshipCount?.count) - graph.relationships.length };
-  graph.coverage = { state: 'limited', reasons: [{ code: 'legacy_evidence_only', message: 'This snapshot contains inventory and legacy assertions; discovery coverage and health have not been established.' }] };
+  graph.coverage = await readGraphCoverage(tx, ctx.scope, query.view, authority.physical);
   if (safeCount(count?.remaining ?? count?.count) > rows.length && rows.length) {
     graph.frontier.push({ token: token(ctx, authority, state.graph, { kind: 'graph', filter: query, after: rows.at(-1)!.id }),
       label: 'More devices', memberCount: safeCount(count?.remaining ?? count?.count) - rows.length });
@@ -161,7 +173,10 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
         frontierToken: token(ctx, authority, state.graph, { kind: 'graph', filter: { ...query, focusNodeId: outside } }) };
     });
   }
-  if (graph.counts.omittedNodes || graph.counts.omittedRelationships) graph.coverage.reasons.push({ code: 'projection_bounded', message: 'Some canonical nodes or connections are outside this bounded projection.' });
+  if (graph.counts.omittedNodes || graph.counts.omittedRelationships) {
+    graph.coverage = { state: graph.coverage.state === 'complete' ? 'limited' : graph.coverage.state,
+      reasons: [...graph.coverage.reasons, { code: 'projection_bounded', message: 'Some canonical nodes or connections are outside this bounded projection.' }] };
+  }
   return response(graph, authority, { query, after: claims?.after, edgeAfter: claims?.edgeAfter, boundaryAfter: claims?.boundaryAfter, boundaryOnly: claims?.boundaryOnly });
 }
 export async function getTopologyGraph(ctx: TopologyRequestContext, query: GraphQuery): Promise<GraphResponse> {
@@ -181,7 +196,7 @@ export async function listTopologyNodes(ctx: TopologyRequestContext, query: Node
   if (claims && (claims.kind !== 'nodes' || JSON.stringify(claims.filter) !== JSON.stringify(filter))) throw new GraphReadError('invalid_topology_cursor', 400, 'Cursor filters do not match');
   return db.transaction(async (tx) => {
     const state = await readState(tx, ctx, claims);
-    const where = listFilter(ctx.scope, filter);
+    const where = listFilter(ctx.scope, filter, { physical: authority.physical });
     const [count] = await tx.execute<{ count: string }>(sql`SELECT count(*)::text AS count FROM topology_nodes n WHERE ${where}`);
     const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n WHERE ${where}
       AND ${claims?.after ? sql`n.id > ${claims.after}::uuid` : sql`true`} ORDER BY n.id LIMIT ${parsed.limit + 1}`);
@@ -190,9 +205,11 @@ export async function listTopologyNodes(ctx: TopologyRequestContext, query: Node
       cursor: rows.length > parsed.limit ? token(ctx, authority, state?.graph ?? '0', { kind: 'nodes', filter, after: visible.at(-1)!.id }) : null }, authority, filter);
   });
 }
-async function relationship(tx: ReadTx, ctx: TopologyRequestContext, id: string) {
-  const [row] = await tx.execute<RelationshipRow>(sql`SELECT ${relationshipColumns} FROM topology_relationships r WHERE ${scoped(ctx.scope, 'r')}
-    AND r.id = ${id}::uuid AND r.deleted_at IS NULL LIMIT 1`);
+/** One scoped relationship for detail/evidence. The physical gate hides it (404);
+ * a view exclusion never does — authorized detail reports the exclusion instead. */
+async function relationship(tx: ReadTx, ctx: TopologyRequestContext, id: string, physical: boolean) {
+  const [row] = await tx.execute<DetailRow>(sql`SELECT ${relationshipColumns}, r.attributes->'physical' AS physical FROM topology_relationships r WHERE ${scoped(ctx.scope, 'r')}
+    AND r.id = ${id}::uuid AND r.deleted_at IS NULL AND ${relationshipExposure({ physical }, 'r')} LIMIT 1`);
   if (!row) throw missingSubject(); return row;
 }
 export async function getTopologyNode(ctx: TopologyRequestContext, nodeId: string) {
@@ -205,10 +222,10 @@ export async function getTopologyNode(ctx: TopologyRequestContext, nodeId: strin
       UNION ALL SELECT a.id, a.alias_target_id, aliases.path || a.id FROM aliases JOIN topology_nodes a ON a.id = aliases.alias_target_id
         WHERE ${scoped(ctx.scope, 'a')} AND a.deleted_at IS NULL AND NOT a.id = ANY(aliases.path) AND cardinality(aliases.path) < 16
     ) SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n WHERE ${scoped(ctx.scope, 'n')}
-      AND n.id IN (SELECT id FROM aliases WHERE alias_target_id IS NULL) AND n.deleted_at IS NULL LIMIT 1`);
+      AND n.id IN (SELECT id FROM aliases WHERE alias_target_id IS NULL) AND n.deleted_at IS NULL AND ${nodeExposure(ctx.scope, authority, 'n')} LIMIT 1`);
     if (!row) throw missingSubject();
     const summaries = await tx.execute<RelationshipRow>(sql`SELECT ${relationshipColumns} FROM topology_relationships r
-      WHERE ${relationshipFilter(ctx.scope, 'logical')} AND (r.source_node_id = ${row.id}::uuid OR r.target_node_id = ${row.id}::uuid)
+      WHERE ${relationshipFilter(ctx.scope, 'logical', 'r', { physical: authority.physical, excluded: new Set() })} AND (r.source_node_id = ${row.id}::uuid OR r.target_node_id = ${row.id}::uuid)
       ORDER BY r.id LIMIT 101`);
     const more = summaries.length > 100;
     return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', requestedNodeId: nodeId, node: presentNode(row, authority.canEdit),
@@ -221,21 +238,27 @@ export async function getTopologyNode(ctx: TopologyRequestContext, nodeId: strin
 export async function getTopologyRelationship(ctx: TopologyRequestContext, relationshipId: string) {
   input(uuid, relationshipId); const authority = await graphAuthority(ctx);
   return db.transaction(async (tx) => {
-    const state = await readState(tx, ctx); const row = await relationship(tx, ctx, relationshipId);
-    return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', relationship: presentRelationship(row, authority.canEdit),
-      alternatives: [], detailCoverage: { state: 'limited', reason: 'legacy_evidence_only' } }, authority, { relationshipId });
+    const state = await readState(tx, ctx); const row = await relationship(tx, ctx, relationshipId, authority.physical);
+    const detail = await readRelationshipDetail(tx, ctx.scope, row, { canEdit: authority.canEdit, physical: authority.physical });
+    return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', ...detail }, authority, { relationshipId });
   });
 }
 export const evidenceQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), cursor: z.string().max(2048).optional() }).strict();
 export async function getTopologyRelationshipEvidence(ctx: TopologyRequestContext, relationshipId: string, query: z.input<typeof evidenceQuerySchema>) {
   input(uuid, relationshipId); const parsed = input(evidenceQuerySchema, query); const authority = await graphAuthority(ctx);
-  // M0 has compact summaries only, never fabricated observation IDs or raw payloads.
-  if (parsed.cursor) throw new GraphReadError('invalid_topology_cursor', 400, 'This evidence summary has no further pages');
+  // Evidence cursors are bound to authority, relationship and graph revision.
+  const claims = parsed.cursor ? verifyGraphToken(parsed.cursor, authority.digest, ctx.scope) : undefined;
+  if (claims && (claims.kind !== 'evidence' || claims.relationshipId?.toLowerCase() !== relationshipId.toLowerCase() || !claims.after)) {
+    throw new GraphReadError('invalid_topology_cursor', 400, 'Cursor does not belong to this relationship');
+  }
   return db.transaction(async (tx) => {
-    const state = await readState(tx, ctx); const row = await relationship(tx, ctx, relationshipId);
-    return { siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', relationshipId, cursor: null,
-      observations: [], summary: presentRelationship(row, authority.canEdit).evidence,
-      details: { state: 'unavailable', reason: row.legacy ? 'legacy_summary_only' : 'observation_collection_unavailable' } };
+    const state = await readState(tx, ctx, claims); const row = await relationship(tx, ctx, relationshipId, authority.physical);
+    const page = await readRelationshipEvidence(tx, ctx.scope, row, { limit: parsed.limit, ...(claims?.after ? { after: claims.after } : {}) });
+    const { nextAfter, ...body } = page;
+    return { siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', relationshipId,
+      cursor: nextAfter ? token(ctx, authority, state?.graph ?? '0', { kind: 'evidence', relationshipId, after: nextAfter,
+        filter: { view: 'overview', hops: 1, includeHealth: false, limit: parsed.limit } }) : null,
+      summary: presentRelationship(row, authority.canEdit).evidence, ...body };
   });
 }
 export async function getTopologyGroupMembers(ctx: TopologyRequestContext, nodeId: string, query: GraphQuery, cursor?: string) {
@@ -262,8 +285,9 @@ export async function getTopologyHealth(ctx: TopologyRequestContext, query: z.in
       ['topology_nodes', parsed.nodeIds, 'nodes', 'node'], ['topology_relationships', parsed.relationshipIds, 'relationships', 'relationship'],
     ] as const) {
       const unique = [...new Set(ids)]; if (!unique.length) continue;
+      const exposed = kind === 'node' ? nodeExposure(ctx.scope, authority, 'e') : relationshipExposure({ physical: authority.physical }, 'e');
       const rows = await tx.execute<{ id: string }>(sql`SELECT e.id FROM ${sql.identifier(table)} e WHERE ${scoped(ctx.scope, 'e')}
-        AND e.deleted_at IS NULL AND e.id IN (${sql.join(unique.map((id) => sql`${id}::uuid`), sql`, `)}) LIMIT ${unique.length}`);
+        AND e.deleted_at IS NULL AND ${exposed} AND e.id IN (${sql.join(unique.map((id) => sql`${id}::uuid`), sql`, `)}) LIMIT ${unique.length}`);
       if (rows.length !== unique.length) throw missingSubject();
       found[key] = rows.map(({ id }) => id);
       present.push(...rows.map(({ id }) => ({ kind, id })));

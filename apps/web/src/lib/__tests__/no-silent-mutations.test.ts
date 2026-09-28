@@ -449,6 +449,9 @@ const TARGET_GLOBS = [
   // from a Breeze device; a silent failure leaves the tech believing the link
   // is gone while alerts keep firing against it.
   'src/components/backup/ExternalBackupCard.tsx',
+  // Topology M2 (#5998 Task 9): hide/restore of a connection in one view. A
+  // silent failure leaves a tech believing a false cable is hidden (or back).
+  'src/components/topology/RelationshipExclusionAction.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -825,7 +828,8 @@ describe('no silent mutations in targeted set', () => {
     // Network results replace the deleted create form with three mutation adopters: 191 → 193.
     // Xero W01 renames the two QuickBooks components and adds the previously
     // unlisted AccountingCustomerImport.tsx: 193 → 194.
-    expect(absoluteFiles.length).toBe(194);
+    // 194 -> 195: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
+    expect(absoluteFiles.length).toBe(195);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

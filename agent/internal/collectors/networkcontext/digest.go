@@ -8,6 +8,8 @@ import (
 	"errors"
 	"sort"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/topologycanon"
 )
 
 type Report struct {
@@ -26,29 +28,8 @@ type Report struct {
 	Sections                []json.RawMessage `json:"sections,omitempty"`
 }
 
-func stableJSON(v any) ([]byte, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var generic any
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&generic); err != nil {
-		return nil, err
-	}
-	var b bytes.Buffer
-	e := json.NewEncoder(&b)
-	e.SetEscapeHTML(false)
-	if err := e.Encode(generic); err != nil {
-		return nil, err
-	}
-	// JSON.stringify leaves these two separators unescaped; encoding/json does not.
-	out := bytes.TrimSuffix(b.Bytes(), []byte("\n"))
-	out = bytes.ReplaceAll(out, []byte(`\u2028`), []byte("\u2028"))
-	out = bytes.ReplaceAll(out, []byte(`\u2029`), []byte("\u2029"))
-	return out, nil
-}
+// stableJSON is the shared topology byte rule (single-sourced in topologycanon).
+func stableJSON(v any) ([]byte, error) { return topologycanon.StableJSON(v) }
 func canonicalObject(v any) (map[string]any, error) {
 	b, e := stableJSON(v)
 	if e != nil {

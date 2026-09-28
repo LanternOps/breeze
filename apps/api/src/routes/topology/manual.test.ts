@@ -38,9 +38,13 @@ describe('manual topology routes', () => {
     mocks.updateNode.mockRejectedValue(new TopologyWriteError('topology_revision_conflict', 409, 'Refresh', { currentRevision: '2', affectedIds: [id] }));
     expect((await request('PATCH', `manual-nodes/${id}`, { label: 'x', expectedRevision: '1' })).status).toBe(409);
   });
-  it('returns capability unavailable for a valid interface binding', async () => {
-    mocks.createRelationship.mockRejectedValue(new TopologyWriteError('capability_unavailable', 409, 'Unavailable'));
+  it('passes interface bindings to the scoped service and hides a foreign interface as 404', async () => {
+    const created = await request('POST', 'manual-relationships', { sourceNodeId: id, targetNodeId: second, kind: 'physical_link', sourceInterfaceId: id, targetInterfaceId: second });
+    expect(created.status).toBe(201);
+    expect(mocks.createRelationship).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ kind: 'physical_link', sourceInterfaceId: id, targetInterfaceId: second }));
+    mocks.createRelationship.mockRejectedValue(new TopologyWriteError('topology_entity_not_found', 404, 'Topology entity not found'));
     const response = await request('POST', 'manual-relationships', { sourceNodeId: id, targetNodeId: second, kind: 'attachment', sourceInterfaceId: id });
-    expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: 'capability_unavailable' });
+    expect(response.status).toBe(404); expect(await response.json()).toMatchObject({ code: 'topology_entity_not_found' });
+    expect((await request('POST', 'manual-relationships', { sourceNodeId: id, targetNodeId: second, kind: 'physical_link', evidenceClass: 'observed' })).status).toBe(400);
   });
 });

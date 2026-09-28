@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,23 @@ import (
 
 func pdu(name string, v interface{}, t gosnmp.Asn1BER) gosnmp.SnmpPDU {
 	return gosnmp.SnmpPDU{Name: name, Value: v, Type: t}
+}
+
+// macChassis declares lldpRemChassisIdSubtype = macAddress(4) for one row.
+func macChassis(index string) gosnmp.SnmpPDU {
+	return pdu(".1.0.8802.1.1.2.1.4.1.1.4"+index, 4, gosnmp.Integer)
+}
+
+// parseLLDPNeighbors runs the V2 parser and the legacy projection, which is
+// the only path that produces legacy LLDP rows now.
+func parseLLDPNeighbors(chassis, portID, sysName []gosnmp.SnmpPDU, chassisSubtype ...gosnmp.SnmpPDU) []LldpNeighbor {
+	rows := ParseLLDPV2(LLDPColumns{RemoteChassis: chassis, RemoteChassisSubtype: chassisSubtype, RemotePort: portID, RemoteSysName: sysName}, nil)
+	return LegacyAdjacencyFromSections("", []PhysicalSection{{Kind: SectionLLDP, Lldp: rows}}).Lldp
+}
+
+func parseCDPNeighbors(deviceID, devicePort, address []gosnmp.SnmpPDU) []CdpNeighbor {
+	rows := ParseCDPV2(CDPColumns{DeviceID: deviceID, DevicePort: devicePort, Address: address}, nil)
+	return LegacyAdjacencyFromSections("", []PhysicalSection{{Kind: SectionCDP, Cdp: rows}}).Cdp
 }
 
 func TestParseLLDPNeighbors(t *testing.T) {
@@ -22,7 +40,7 @@ func TestParseLLDPNeighbors(t *testing.T) {
 	sysName := []gosnmp.SnmpPDU{
 		pdu(".1.0.8802.1.1.2.1.4.1.1.9.0.1.1", []byte("core-sw"), gosnmp.OctetString),
 	}
-	got := parseLLDPNeighbors(chassis, portID, sysName)
+	got := parseLLDPNeighbors(chassis, portID, sysName, macChassis(".0.1.1"))
 	if len(got) != 1 {
 		t.Fatalf("expected 1 neighbor, got %d", len(got))
 	}
@@ -36,8 +54,9 @@ func TestParseLLDPNeighbors(t *testing.T) {
 	if n.RemoteSysName != "core-sw" {
 		t.Errorf("sys name = %q", n.RemoteSysName)
 	}
-	if n.LocalPort != "0.1" {
-		t.Errorf("local port (lldp index prefix) = %q", n.LocalPort)
+	// The local port is the lldpRemLocalPortNum, never "<timeMark>.<port>".
+	if n.LocalPort != "1" {
+		t.Errorf("local port (lldp_local port number) = %q", n.LocalPort)
 	}
 }
 
@@ -123,7 +142,7 @@ func TestParseLLDPNeighborsSanitizesRawOctetStrings(t *testing.T) {
 			portID := []gosnmp.SnmpPDU{pdu(".1.0.8802.1.1.2.1.4.1.1.7.0.1.1", tt.portID, gosnmp.OctetString)}
 			sysName := []gosnmp.SnmpPDU{pdu(".1.0.8802.1.1.2.1.4.1.1.9.0.1.1", tt.sysName, gosnmp.OctetString)}
 
-			got := parseLLDPNeighbors(chassis, portID, sysName)
+			got := parseLLDPNeighbors(chassis, portID, sysName, macChassis(".0.1.1"))
 			if len(got) != 1 {
 				t.Fatalf("expected 1 neighbor, got %d", len(got))
 			}
@@ -133,9 +152,9 @@ func TestParseLLDPNeighborsSanitizesRawOctetStrings(t *testing.T) {
 			if got[0].RemoteSysName != tt.wantSysName {
 				t.Errorf("RemoteSysName = %q, want %q", got[0].RemoteSysName, tt.wantSysName)
 			}
-			// The chassis id keeps its colon-separated MAC formatting — that
-			// path knows it is formatting a MAC and is deliberately different
-			// from the unseparated hex fallback.
+			// A chassis id whose subtype says macAddress keeps colon-separated
+			// MAC formatting — deliberately different from the unseparated hex
+			// fallback used for opaque ids.
 			if got[0].RemoteChassisID != "00:11:22:33:44:55" {
 				t.Errorf("RemoteChassisID = %q, want colon-separated MAC", got[0].RemoteChassisID)
 			}
@@ -148,26 +167,10 @@ func TestParseLLDPNeighborsSanitizesRawOctetStrings(t *testing.T) {
 	}
 }
 
-// macFromBytes falls back to snmpValueToString when the payload is not exactly
-// 6 bytes, so that fallback must be sanitised too.
-func TestMacFromBytesNonSixByteFallbackIsSanitized(t *testing.T) {
-	got := macFromBytes(pdu(".1.0.8802.1.1.2.1.4.1.1.5.0.1.1", []byte{0x78, 0x8a, 0x00, 0xd4, 0xe1}, gosnmp.OctetString))
-	if got != "788a00d4e1" {
-		t.Errorf("macFromBytes(5-byte payload) = %q, want %q", got, "788a00d4e1")
-	}
-}
-
-// ipFromBytes falls back the same way when the address is not 4 bytes.
-func TestIPFromBytesNonFourByteFallbackIsSanitized(t *testing.T) {
-	got := ipFromBytes(pdu(".1.3.6.1.4.1.9.9.23.1.2.1.1.4.3.1", []byte{0x20, 0x01, 0x00, 0x0d, 0xb8}, gosnmp.OctetString))
-	if got != "2001000db8" {
-		t.Errorf("ipFromBytes(non-IPv4 payload) = %q, want %q", got, "2001000db8")
-	}
-}
-
 func TestParseCDPNeighborsSanitizesRawDeviceID(t *testing.T) {
 	deviceID := []gosnmp.SnmpPDU{pdu(".1.3.6.1.4.1.9.9.23.1.2.1.1.6.3.1", []byte{0x78, 0x8a, 0x20, 0x00, 0xd4, 0xe1}, gosnmp.OctetString)}
-	got := parseCDPNeighbors(deviceID, nil, nil)
+	devicePort := []gosnmp.SnmpPDU{pdu(".1.3.6.1.4.1.9.9.23.1.2.1.1.7.3.1", []byte("Gi0/2"), gosnmp.OctetString)}
+	got := parseCDPNeighbors(deviceID, devicePort, nil)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 cdp neighbor, got %d", len(got))
 	}
@@ -203,32 +206,37 @@ func TestParseCDPNeighbors(t *testing.T) {
 }
 
 func TestCollectAdjacencyFiltersAndStubs(t *testing.T) {
-	orig := collectAdjacencyFor
-	t.Cleanup(func() { collectAdjacencyFor = orig })
+	orig := collectPhysicalFor
+	t.Cleanup(func() { collectPhysicalFor = orig })
 
-	collectAdjacencyFor = func(ip string, creds []SNMPCredential, timeout time.Duration) DeviceAdjacency {
-		if ip == "10.0.0.1" {
-			return DeviceAdjacency{
-				SourceDeviceIP: ip,
-				Lldp:           []LldpNeighbor{{LocalPort: "1", RemoteChassisID: "aa:bb:cc:dd:ee:ff", RemotePortID: "Gi0/1"}},
-				Cdp:            []CdpNeighbor{},
-				Fdb:            []FdbEntry{},
-			}
+	collectPhysicalFor = func(_ context.Context, ip string, _ []SNMPCredential, _ time.Duration, req PhysicalRequest) TargetPhysical {
+		lldp := newSection(SectionLLDP, req.ContextKey)
+		fdb := newSection(SectionFDB, req.ContextKey)
+		switch ip {
+		case "10.0.0.1":
+			lldp.Lldp = []LldpRow{{RowKey: "1.1", LocalPort: PortRef{Namespace: PortNamespaceLLDPLocal, Value: "1"},
+				RemoteChassis: TypedID{Subtype: "mac_address", Value: "aa:bb:cc:dd:ee:ff"}, RemotePort: TypedID{Subtype: "interface_name", Value: "Gi0/1"}}}
+		case "10.0.0.4": // neighbour-free switch with FDB rows is still reported
+			fdb.Fdb = []FdbRow{{BridgeContext: "default", MAC: "02:00:00:00:00:01", BridgePort: 3, Status: "learned", VLANMapping: "unknown"}}
 		}
-		return DeviceAdjacency{SourceDeviceIP: ip, Lldp: []LldpNeighbor{}, Cdp: []CdpNeighbor{}, Fdb: []FdbEntry{}}
+		return TargetPhysical{Target: ip, Sections: []PhysicalSection{lldp, fdb}}
 	}
 
 	s := NewScanner(ScanConfig{SNMPCommunities: []string{"public"}})
 	hosts := []DiscoveredHost{
 		{IP: "10.0.0.1", Methods: []string{"snmp"}, SNMPData: &SNMPInfo{SysName: "core"}},
-		{IP: "10.0.0.2", Methods: []string{"snmp"}, SNMPData: &SNMPInfo{SysName: "edge"}}, // no neighbors → dropped
+		{IP: "10.0.0.2", Methods: []string{"snmp"}, SNMPData: &SNMPInfo{SysName: "edge"}}, // no rows → dropped
 		{IP: "10.0.0.3", Methods: []string{"ping"}},                                       // not snmp → skipped
+		{IP: "10.0.0.4", Methods: []string{"snmp"}, SNMPData: &SNMPInfo{SysName: "access"}},
 	}
 	got := s.CollectAdjacency(hosts)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 adjacency block, got %d", len(got))
+	if len(got) != 2 {
+		t.Fatalf("expected 2 adjacency blocks, got %d: %+v", len(got), got)
 	}
 	if got[0].SourceDeviceIP != "10.0.0.1" || len(got[0].Lldp) != 1 {
 		t.Fatalf("unexpected adjacency: %+v", got[0])
+	}
+	if got[1].SourceDeviceIP != "10.0.0.4" || len(got[1].Fdb) != 1 || len(got[1].Lldp) != 0 {
+		t.Fatalf("FDB-only block must survive: %+v", got[1])
 	}
 }

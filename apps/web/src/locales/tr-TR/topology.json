@@ -155,5 +155,124 @@
       "body": "Topoloji görünümü şu anda bu site için gösterilemiyor. Daha sonra tekrar deneyin veya sorun devam ederse destek ekibiyle iletişime geçin.",
       "details": "Teknik ayrıntılar"
     }
+  },
+  "physicalView": {
+    "meaning": {
+      "physical_link": "Fiziksel bağlantı",
+      "attachment": "İlişkilendirme",
+      "network_member": "Ağ üyeliği",
+      "default_route": "Varsayılan rota",
+      "egress_path": "Çıkış yolu"
+    },
+    "directness": {
+      "direct": "Doğrudan bağlantı",
+      "via_unmanaged": "Yönetilmeyen bir cihaz üzerinden",
+      "unknown": "Doğrudan bağlantı doğrulanmadı"
+    },
+    "portRole": {
+      "identified": "Tanımlanan bağlantı noktası",
+      "learned": "Bu bağlantı noktası üzerinden öğrenildi",
+      "shared": "Paylaşılan veya üst bağlantı noktası",
+      "unresolved": "Bağlantı noktası tanımlanamadı"
+    },
+    "association": {
+      "wired": "Kablolu bağlantı",
+      "wireless": "Kablosuz ilişkilendirme (denetleyici bildirdi)",
+      "vpn": "VPN veya tünel ilişkilendirmesi",
+      "uplink": "Denetleyicinin bildirdiği yukarı bağlantı"
+    },
+    "method": {
+      "lldp": "LLDP komşusu",
+      "cdp": "CDP komşusu",
+      "fdb": "Öğrenilen MAC adresi tablosu (FDB)",
+      "unifi": "UniFi denetleyicisi",
+      "manual": "Elle beyan",
+      "legacy": "Eski keşif",
+      "other": "Diğer toplayıcı"
+    },
+    "freshness": {
+      "fresh": "Güncel",
+      "stale": "Eski",
+      "unknown": "Bilinmiyor"
+    },
+    "confidence": {
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "asserted": "Beyan edilen"
+    },
+    "observationStatus": {
+      "current": "Geçerli",
+      "expired": "Süresi doldu",
+      "withdrawn": "Geri çekildi"
+    },
+    "details": {
+      "expired": "Gözlem ayrıntısının süresi doldu; bağlantı yine de doğrulandı.",
+      "unavailable": "Bu bağlantı için gözlem ayrıntısı yok."
+    },
+    "meaningLabel": "Anlam",
+    "directnessLabel": "Doğrudanlık",
+    "portRoleLabel": "Bağlantı noktası",
+    "associationLabel": "İlişkilendirme",
+    "methodLabel": "Bildiren",
+    "sourcePort": "Kaynak",
+    "targetPort": "Hedef",
+    "portNotIdentified": "Bağlantı noktası tanımlanamadı",
+    "reportedPort": "{{namespace}} {{value}} olarak bildirildi",
+    "retiredPort": "(önceki bağlantı noktası kimliği)",
+    "lastConfirmed": "Son doğrulama",
+    "evidenceExpires": "Kanıtın süresi dolacağı zaman",
+    "alternatives": "Diğer aday bağlantı noktaları",
+    "hiddenFrom": "Gizlendiği görünümler: {{views}}",
+    "observations": "Gözlemler",
+    "moreEvidence": "Daha fazla gözlem yükle",
+    "loadingDetail": "Bağlantı ayrıntısı yükleniyor…",
+    "detailFailed": "Bağlantı ayrıntısı yüklenemedi",
+    "viewOverview": "Ağ genel görünümünü göster",
+    "empty": "Bu site için henüz fiziksel bağlantı bildirilmedi."
+  },
+  "coveragePanel": {
+    "title": "Toplama kapsamı",
+    "state": {
+      "complete": "Tam",
+      "limited": "Sınırlı",
+      "unknown": "Bilinmiyor"
+    },
+    "reasons": {
+      "topology_preparing": "Henüz topoloji anlık görüntüsü yayımlanmadı.",
+      "legacy_evidence_only": "Yalnızca envanter ve eski veriler; keşif kapsamı ve durum belirlenmedi.",
+      "projection_bounded": "Bazı cihazlar veya bağlantılar bu görünümün dışında.",
+      "physical_disabled": "Fiziksel topoloji bu kuruluş için kapalı.",
+      "no_collector": "Bu site için fiziksel bağlantı bildiren toplayıcı yok.",
+      "collection_pending": "Fiziksel bir toplama hâlâ sürüyor.",
+      "collection_not_received": "Yetkili bir toplama süresi dolmadan rapor göndermedi.",
+      "collection_complete_empty": "Bir toplama tamamlandı ancak komşu bulamadı. Bu, tüm sitenin kapsandığı anlamına gelmez.",
+      "collection_unsupported": "Bir cihaz istenen bir protokolü desteklemiyor.",
+      "collection_timeout": "Bir toplama zaman aşımına uğradı.",
+      "collection_failed": "Bir toplama başarısız oldu.",
+      "collection_partial_limit": "Bir toplama satır sınırına ulaştı; bazı satırlar atlandı.",
+      "collection_partial": "Bir toplama tablolarının yalnızca bir kısmını döndürdü.",
+      "collection_not_attempted": "İstenen bir kapsam denenmedi.",
+      "collection_stale": "Fiziksel kanıt son zamanlarda doğrulanmadı.",
+      "credentials_missing": "Bir cihaz için kullanılabilir SNMP kimlik bilgisi yapılandırılmadı.",
+      "credentials_rejected": "Bir cihaz yapılandırılan SNMP kimlik bilgilerini reddetti.",
+      "interface_unresolved": "Bazı bağlantılar tanımlanamayan bağlantı noktalarında bildirildi.",
+      "controller_site_unmapped": "Bir UniFi denetleyici sitesi bir Breeze sitesiyle eşlenmedi.",
+      "controller_site_other_org": "Bir UniFi denetleyici sitesi başka bir kuruluşla eşlendi."
+    },
+    "scopeCount": "({{count}} etkilenen)"
+  },
+  "exclusions": {
+    "reasonLabel": "Bu bağlantı neden gizlensin?",
+    "hide": "Bu görünümde gizle",
+    "restore": "Bu görünüme geri getir",
+    "hidden": "Bağlantı bu görünümde gizlendi",
+    "restored": "Bağlantı geri getirildi",
+    "hideFailed": "Bağlantı gizlenemedi",
+    "restoreFailed": "Bağlantı geri getirilemedi",
+    "hiddenSection": "Gizlenen ({{count}})",
+    "hiddenReason": "Neden",
+    "hiddenLoadFailed": "Gizlenen bağlantılar yüklenemedi",
+    "unknownConnection": "Bağlantı {{id}}"
   }
 }

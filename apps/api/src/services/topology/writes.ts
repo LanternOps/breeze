@@ -37,7 +37,11 @@ export async function drainWriteBarrier(scope: TopologyScope) {
   // indefinitely or skip an older edit to make a new one appear successful.
   for (let batch = 0; batch < 10; batch++) {
     const result = await drainTopologyOutbox(scope, { throughRevision: barrier, batchSize: 1000 });
-    if (result.complete) return;
+    // Collection ingest/aging/revocation bump dirty_revision without an outbox
+    // row, so `complete` (deliveredThrough >= barrier) may never hold. Capturing
+    // writers allocate their revision under the site-state lock this caller
+    // holds, so zero pending events through the barrier means it is drained.
+    if (result.complete || result.pendingThroughBarrier === 0) return;
   }
   throw new TopologyWriteError('topology_backlog_busy', 503, 'Topology is catching up; retry shortly');
 }
@@ -103,6 +107,6 @@ export async function bumpStructuralRevision(scope: TopologyScope): Promise<bigi
 }
 export async function auditTopologyWrite(ctx: TopologyRequestContext, action: string, resourceId: string, details: Record<string, unknown> = {}) {
   await db.insert(auditLogs).values({ orgId: ctx.scope.orgId, actorType: 'user', actorId: ctx.auth.user.id, actorEmail: ctx.auth.user.email,
-    action: `topology.${action}`, resourceType: action.startsWith('layout') ? 'topology_layout' : action.startsWith('relationship') ? 'topology_relationship' : 'topology_node',
+    action: `topology.${action}`, resourceType: action.startsWith('layout') ? 'topology_layout' : action.startsWith('relationship') ? 'topology_relationship' : action.startsWith('exclusion') ? 'topology_view_exclusion' : 'topology_node',
     resourceId, result: 'success', initiatedBy: 'manual', details: { siteId: ctx.scope.siteId, ...details } });
 }

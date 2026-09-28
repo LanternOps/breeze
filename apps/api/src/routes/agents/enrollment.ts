@@ -49,6 +49,7 @@ import {
   admitPartnerDeviceCapacity,
   PartnerDeviceCapacityError,
 } from '../../services/partnerDeviceCapacity';
+import { markTopologyIdentityDirty } from '../../services/topology/identityDirty';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -970,6 +971,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
               isPrimary: nic.isPrimary ?? false
             });
         }
+        // M2 D15.2/D16: NIC MACs are the physical topology publisher's trusted
+        // MAC binding source. A re-enrolled (in-place) device may have new NICs
+        // that the next inventory report will then see as unchanged, so mark
+        // here; a fresh row has no topology binding yet.
+        if (!insertFreshRow) await markTopologyIdentityDirty(tx, { orgId: dev.orgId, siteId: dev.siteId });
       }
 
       // #946: consume the enrollment key ONLY after the device row has

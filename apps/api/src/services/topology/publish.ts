@@ -1,13 +1,15 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { nodeKindSchema, relationshipKindSchema, lifecycleSchema, confidenceSchema, evidenceClassSchema, directnessSchema, type TopologyScope } from '@breeze/shared';
+import { nodeKindSchema, relationshipKindSchema, lifecycleSchema, confidenceSchema, evidenceClassSchema, directnessSchema, PORT_REF_NAMESPACES, type TopologyScope } from '@breeze/shared';
 import { db, assertInTransaction } from '../../db';
 import { topologyNodes, topologyRelationships, topologyNodeBindings, topologyNodePositions, topologyLayouts, topologySiteState, auditLogs, discoveredAssets } from '../../db/schema';
 import { canonicalIdentityKey, normalizedTopologyScope, planAliasClusterPosition } from './identity';
 import { planAcceptedAliasClusters } from './aliasClusters';
 import { lockTopologyInventoryReferences } from './inventoryLocks';
 import { prepareCollectionPublication, publishCollectionInterfaces, publishCollectionEvidence } from './collectionPublication';
+import { applyMergedInterfaces, isPhysicalRelationship, markTopologyIdentityDirty, planMergedInterfaces } from './physicalPublication';
+import { topologyInterfaces } from '../../db/schema';
 
 type Owned = 'createdAt' | 'updatedAt' | 'revision';
 export type NodePublication = Omit<typeof topologyNodes.$inferInsert, Owned> & { id: string };
@@ -26,13 +28,45 @@ const nodeSchema = z.object({ ...scoped, identityKey: z.string().max(256), ident
   attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), prefix: z.string().max(128).optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional() }).strict().default({}),
   firstObservedAt: z.date().nullable().optional(), lastObservedAt: z.date().nullable().optional(), lifecycle: lifecycleSchema.default('active'), aliasTargetId: uuid.nullable().optional(), ...legacy,
 }).strict();
+const PHYSICAL_METHODS = ['lldp', 'cdp', 'fdb', 'unifi'] as const;
+const boundedKey = z.string().min(1).max(255);
+const vlanIds = z.array(z.number().int().min(1).max(4094)).max(64);
+/** Physical resolution material (D15): typed ids and tagged ports only, all bounded. */
+const physicalTypedId = z.object({ subtype: z.string().regex(/^[a-z][a-z0-9_]*$/).max(64), value: boundedKey }).strict();
+const physicalPortRef = z.object({ namespace: z.enum(PORT_REF_NAMESPACES), value: boundedKey, resolvedInterfaceKey: boundedKey.nullable() }).strict();
+const physicalAttributes = z.object({
+  resolution: z.enum(['resolved', 'unresolved']).optional(),
+  // Durable re-resolution material (D15.2): the authorized target the row was reported for.
+  subjectAuthority: boundedKey.optional(),
+  remoteChassis: physicalTypedId.optional(), remotePort: physicalTypedId.optional(),
+  localPort: physicalPortRef.optional(), remotePortRef: physicalPortRef.optional(),
+  bridgeContext: boundedKey.optional(), fdbId: z.number().int().min(0).max(4294967295).nullable().optional(), vlanIds: vlanIds.optional(),
+  controllerSiteId: boundedKey.optional(), controllerDeviceId: boundedKey.optional(), uplinkPortIndex: z.number().int().min(0).max(4294967295).optional(),
+  // UniFi (D16): what the controller association means, and the scoped endpoint keys it joins.
+  association: z.enum(['wired', 'wireless', 'vpn', 'teleport', 'unknown', 'uplink']).optional(),
+  endpointKey: z.string().min(1).max(1024).optional(), uplinkEndpointKey: z.string().min(1).max(1024).optional(),
+  fdbSelection: z.enum(['selected', 'competing', 'excluded', 'none']).optional(),
+  alternativeRelationshipIds: z.array(uuid).max(64).optional(),
+  /** Competing alternatives beyond the 64 retained ids (MAX_FDB_ALTERNATIVES). */
+  alternativeRelationshipsOmitted: z.number().int().min(1).max(200000).optional(),
+}).strict();
 const relationshipSchema = z.object({ ...scoped, canonicalKey: z.string().max(256), identityMaterial, kind: relationshipKindSchema,
   sourceNodeId: uuid, targetNodeId: uuid, sourceInterfaceId: uuid.nullable().optional(), targetInterfaceId: uuid.nullable().optional(),
-  logicalContext: z.object({ routingDomainId: uuid.optional(), interfaceId: uuid.optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional(), destinationPrefix: z.string().max(128).optional(), contextKey: z.string().max(8192).optional() }).strict().default({}),
+  logicalContext: z.object({ routingDomainId: uuid.optional(), interfaceId: uuid.optional(), addressFamily: z.union([z.literal(4), z.literal(6)]).optional(), destinationPrefix: z.string().max(128).optional(), contextKey: z.string().max(8192).optional(),
+    bridgeContext: boundedKey.optional(), vlanIds: vlanIds.optional(), controllerSiteId: boundedKey.optional() }).strict().default({}),
   directness: directnessSchema.default('unknown'), confidence: confidenceSchema.default('asserted'), evidenceClass: evidenceClassSchema.default('manual'), lifecycle: lifecycleSchema.default('active'),
   firstSupportedAt: z.date().nullable().optional(), lastSupportedAt: z.date().nullable().optional(), supportCount: counter.default(0n),
-  attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy', 'os_network_context']).optional(), createdBy: uuid.optional() }).strict().default({}), ...legacy,
-}).strict().refine(row => (row.evidenceClass === 'manual') === (row.confidence === 'asserted'), 'Manual evidence requires asserted confidence');
+  attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy', 'os_network_context', ...PHYSICAL_METHODS]).optional(), createdBy: uuid.optional(),
+    physical: physicalAttributes.optional() }).strict().default({}), ...legacy,
+}).strict().refine(row => (row.evidenceClass === 'manual') === (row.confidence === 'asserted'), 'Manual evidence requires asserted confidence')
+  .superRefine((row, ctx) => {
+    const method = row.attributes.method;
+    const physicalMethod = (PHYSICAL_METHODS as readonly string[]).includes(method ?? '');
+    if (physicalMethod && row.kind !== 'physical_link' && row.kind !== 'attachment') ctx.addIssue({ code: 'custom', message: 'Physical evidence only publishes physical relationships' });
+    // FDB membership is inference: it never mints a physical link or claims observation.
+    if (method === 'fdb' && (row.kind !== 'attachment' || row.evidenceClass !== 'inferred')) ctx.addIssue({ code: 'custom', message: 'FDB evidence publishes inferred attachments only' });
+    if (row.attributes.physical && !physicalMethod && method !== 'manual') ctx.addIssue({ code: 'custom', message: 'Physical attributes require a physical method' });
+  });
 const bindingSchema = z.object({ ...scoped, nodeId: uuid, deviceId: uuid.nullable().optional(), discoveredAssetId: uuid.nullable().optional(), manualNodeId: uuid.nullable().optional(),
   provenance: z.object({ method: z.enum(['inventory', 'accepted_link', 'manual', 'legacy']).optional(), sourceId: uuid.optional(), createdBy: uuid.optional() }).strict().default({}),
 }).strict().refine(row => [row.deviceId, row.discoveredAssetId, row.manualNodeId].filter(Boolean).length === 1, 'Inventory binding requires exactly one reference');
@@ -102,14 +136,22 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     const nodes = await tx.select().from(topologyNodes).where(scopedWhere(topologyNodes, normalized));
     const relationships = await tx.select().from(topologyRelationships).where(scopedWhere(topologyRelationships, normalized));
     const bindings = await tx.select().from(topologyNodeBindings).where(scopedWhere(topologyNodeBindings, normalized));
+    // A binding delta is an identity change: physical re-resolution runs (D15.2).
+    const priorBindings = new Map(bindings.map(b => [bindingKey(b), b.nodeId]));
+    const identityChanged = staged.bindings.some(b => priorBindings.get(bindingKey(b)) !== b.nodeId);
     const collection = await prepareCollectionPublication(tx, normalized, BigInt(staged.inputRevision), {
       nodes: [...new Map([...nodes, ...staged.nodes].map(row => [row.id, row])).values()],
       relationships: [...new Map([...relationships, ...staged.relationships].map(row => [row.id, row])).values()],
       bindings: [...new Map([...bindings, ...staged.bindings].map(row => [bindingKey(row), row])).values()],
+      identityChanged,
     });
+    // Collection binding deltas (controller enrichment) are published, not dropped (D15.5).
+    const stagedBindingKeys = new Set(staged.bindings.map(bindingKey));
     staged = validatePublicationInput(normalized, { ...staged,
       nodes: [...staged.nodes, ...collection.nodes], relationships: [...staged.relationships, ...collection.relationships],
+      bindings: [...staged.bindings, ...collection.bindings.filter(b => !stagedBindingKeys.has(bindingKey(b)))],
     });
+    const rekeyed = new Set(collection.rekeyed);
     // Shared with layout reads/writes: site state, sorted layout headers, then
     // positions. A merge's pin-conflict decision must see protected positions.
     await tx.select().from(topologyLayouts).where(scopedWhere(topologyLayouts, normalized)).orderBy(topologyLayouts.id).for('update');
@@ -211,8 +253,11 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       else { nodeWriteIndexes.set(old.id, nodeWrites.length); nodeWrites.push(next); }
     }
     for (const row of staged.relationships) {
-      const old = oldRelationshipsByIdentity.get(row.canonicalKey);
-      if (oldRelationshipsById.has(row.id) && oldRelationshipsById.get(row.id)!.canonicalKey !== row.canonicalKey) throw new Error('Relationship ID cannot change identity');
+      // Only the physical re-resolution pass may rekey an existing id (a merge
+      // changed its endpoint identity; exclusions and pins keep the id).
+      const rekey = rekeyed.has(row.id) && oldRelationshipsById.get(row.id)?.kind === row.kind;
+      const old = oldRelationshipsByIdentity.get(row.canonicalKey) ?? (rekey ? oldRelationshipsById.get(row.id) : undefined);
+      if (oldRelationshipsById.has(row.id) && oldRelationshipsById.get(row.id)!.canonicalKey !== row.canonicalKey && !rekey) throw new Error('Relationship ID cannot change identity');
       if (old?.legacySourceRevision != null) {
         if (row.legacySourceRevision == null || old.legacySourceId !== row.legacySourceId || old.legacySourceType !== row.legacySourceType) throw new Error('Legacy source identity and revision are required');
         if (old.legacySourceRevision >= row.legacySourceRevision) continue;
@@ -222,6 +267,21 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     }
     for (const row of relationships) {
       if ((resolve(row.sourceNodeId) !== row.sourceNodeId || resolve(row.targetNodeId) !== row.targetNodeId) && !relationshipWrites.some(r => r.id === row.id)) relationshipWrites.push({ ...row, sourceNodeId: resolve(row.sourceNodeId), targetNodeId: resolve(row.targetNodeId), revision: row.revision + 1n, updatedAt: now });
+    }
+    // D15.5: a merge re-owns the loser's interfaces (coalescing only on
+    // corroborated continuity) and migrates their parent/observation references.
+    let mergedInterfaces: ReturnType<typeof planMergedInterfaces> | null = null;
+    if (clusters.length) {
+      const members = clusters.flatMap(c => [c.canonicalId, ...c.aliasIds]);
+      const stored = await tx.select().from(topologyInterfaces).where(and(scopedWhere(topologyInterfaces, normalized), sql`${topologyInterfaces.ownerNodeId} IN (${sql.join(members.map(id => sql`${id}::uuid`), sql`,`)})`));
+      const batch = collection.interfaces.filter(i => members.includes(i.ownerNodeId));
+      mergedInterfaces = planMergedInterfaces(clusters, [...new Map([...stored, ...batch].map(i => [i.id, i])).values()], now);
+      const reowned = new Map(mergedInterfaces.reowned.map(i => [i.id, i]));
+      const coalesced = mergedInterfaces.coalesced;
+      collection.interfaces = collection.interfaces.filter(i => !coalesced.has(i.id)).map(i => reowned.get(i.id) ?? i);
+      const iface = (id: string | null | undefined) => (id && coalesced.get(id)) || id || null;
+      for (const row of relationshipWrites) { row.sourceInterfaceId = iface(row.sourceInterfaceId); row.targetInterfaceId = iface(row.targetInterfaceId); }
+      for (const row of collection.observations) row.subjectInterfaceId = iface(row.subjectInterfaceId);
     }
     for (const row of relationshipWrites) {
       for (const id of [row.sourceNodeId, row.targetNodeId]) if (!nodeMap.has(id) || nodeMap.get(id)!.aliasTargetId) throw new Error('Relationship endpoint is outside canonical scope');
@@ -251,6 +311,18 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       else await tx.insert(topologyNodes).values({ ...row, aliasTargetId: null });
     }
     for (const row of nodeWrites.filter(n => n.aliasTargetId)) await tx.update(topologyNodes).set({ aliasTargetId: row.aliasTargetId }).where(and(scopedWhere(topologyNodes, normalized), eq(topologyNodes.id, row.id!)));
+    if (mergedInterfaces) {
+      // A coalescence destination may be created by this very publication
+      // (collection.interfaces, upserted below): its owner comes from the batch.
+      const owners = new Map((await tx.select({ id: topologyInterfaces.id, owner: topologyInterfaces.ownerNodeId }).from(topologyInterfaces).where(scopedWhere(topologyInterfaces, normalized))).map(r => [r.id, resolve(r.owner)]));
+      for (const i of collection.interfaces) owners.set(i.id, resolve(i.ownerNodeId));
+      await applyMergedInterfaces(tx, normalized, mergedInterfaces, owners);
+      // Physical keys still name the loser; the next publication rekeys them.
+      // Merges that touch no physical evidence leave the M0 revision contract alone.
+      const losers = new Set(clusters.flatMap(c => c.aliasIds));
+      if (mergedInterfaces.reowned.length || mergedInterfaces.coalesced.size
+        || relationships.some(r => isPhysicalRelationship(r) && (losers.has(r.sourceNodeId) || losers.has(r.targetNodeId)))) await markTopologyIdentityDirty(tx, normalized);
+    }
     await publishCollectionInterfaces(tx, normalized, collection, resolve);
     for (const row of relationshipWrites) {
       const { id, ...changes } = row;

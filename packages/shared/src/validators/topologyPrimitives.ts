@@ -40,19 +40,26 @@ export const topologyHostnameSchema = z.string().min(1).max(253).regex(/^(?:[a-z
 export function topologyJsonBytes(value: unknown): number {
   try { return new TextEncoder().encode(JSON.stringify(value)).length; } catch { return Infinity; }
 }
-/** Run before stripping minor fields so unknown content cannot evade transport limits. */
-export function topologyWireGuard(maxBytes: number) {
+const UPLOADED_AUTHORITY_KEYS = ['orgId', 'siteId', 'agentId', 'deviceId', 'producerId', 'partnerId'];
+/** Run before stripping minor fields so unknown content cannot evade transport limits.
+ * `rowFieldExemptions` names typed row fields that merely share a name with an
+ * authority key (UniFi rows carry the CONTROLLER's `deviceId`); they are allowed
+ * only directly on an element of a `rows` array, nowhere else. */
+export function topologyWireGuard(maxBytes: number, options: { rowFieldExemptions?: readonly string[] } = {}) {
+  const exempt = new Set(options.rowFieldExemptions ?? []);
   return z.unknown().superRefine((value, ctx) => {
     if (topologyJsonBytes(value) > maxBytes) ctx.addIssue({ code: 'custom', message: 'Payload byte limit exceeded' });
     const seen = new WeakSet<object>();
-    const visit = (v: unknown): boolean => {
+    const visit = (v: unknown, isRow: boolean): boolean => {
       if (!v || typeof v !== 'object') return false;
       if (seen.has(v)) return true;
       seen.add(v);
-      const forbidden = Object.entries(v).some(([k, child]) => ['orgId', 'siteId', 'agentId', 'deviceId', 'producerId', 'partnerId'].includes(k) || visit(child));
+      const forbidden = Array.isArray(v)
+        ? v.some(child => visit(child, isRow))
+        : Object.entries(v).some(([k, child]) => (UPLOADED_AUTHORITY_KEYS.includes(k) && !(isRow && exempt.has(k))) || visit(child, k === 'rows'));
       seen.delete(v);
       return forbidden;
     };
-    if (visit(value)) ctx.addIssue({ code: 'custom', message: 'Uploaded authority is forbidden' });
+    if (visit(value, false)) ctx.addIssue({ code: 'custom', message: 'Uploaded authority is forbidden' });
   });
 }

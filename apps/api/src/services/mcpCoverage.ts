@@ -189,6 +189,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/state.ts': { exempt: 'agent_transport' },
   'agents/storageSessions.ts': { exempt: 'agent_transport' },
   'agents/token.ts': { exempt: 'agent_transport' },
+  'agents/topologyAdjacency.ts': { exempt: 'agent_transport' },
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
@@ -566,6 +567,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
   // Collector selection and diagnostic run lifecycle have no registered AI tool.
   'topology/diagnostics.ts': { gap: '#6778' },
+  'topology/exclusions.ts': { exempt: 'internal_plumbing', note: 'Per-view presentation state (hide/restore one connection in one topology view), the same class as topology/layouts.ts; no canonical graph, evidence, alert or monitor effect. Topology tool surface is tracked in #6778.' },
   'topology/graphs.ts': { gap: '#6778' },
   'topology/layouts.ts': { exempt: 'internal_plumbing' },
   'topology/manual.ts': { gap: '#6778' },

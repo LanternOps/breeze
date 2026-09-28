@@ -42,7 +42,7 @@ The user approved the corrected specification and requested planning/registratio
 | --- | --- | --- | --- |
 | W01 | [M0 — Foundation](2026-09-15-intelligent-network-topology-m0-foundation.md) | Approved specification/quorum | Additive core schema, authorization, passive API, capture-before-backfill, drain/shadow tooling; default UI unchanged. |
 | W02 | [M1 — Baseline](2026-09-15-intelligent-network-topology-m1-baseline.md) | W01; [monitor bug #5987](https://github.com/LanternOps/breeze/issues/5987) merged and verified | Useful logical map, endpoint collection/digest suppression, templates/bulk application, browser layout, explicit diagnostics; zero management protocols required. |
-| W03 | [M2 — Physical enrichment](2026-09-15-intelligent-network-topology-m2-physical.md) | W02 | Correct LLDP/CDP/FDB/UniFi evidence and physical/attachment projections with manual/exclusion support. |
+| W03 | [M2 — Physical enrichment](2026-09-15-intelligent-network-topology-m2-physical.md) ([amendments](2026-09-25-intelligent-network-topology-m2-amendments.md), [verification record](2026-09-15-intelligent-network-topology-m2-verification.md)) | W02 | Correct LLDP/CDP/FDB/UniFi evidence and physical/attachment projections with manual/exclusion support. |
 | W04 | [M3 — Operations](2026-09-15-intelligent-network-topology-m3-operations.md) | W03 | Attributed interface history, authorized recurring checks, operational health, traces and cautious incident evidence. |
 | W05 | [M4 — AI](2026-09-15-intelligent-network-topology-m4-ai.md) | W04 | Scoped cited explanations and approved bounded diagnostics through existing AI policy. |
 

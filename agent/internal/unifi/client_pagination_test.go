@@ -225,10 +225,11 @@ func TestGetStopsAtHardPageCapWhenControllerNeverAdvances(t *testing.T) {
 	// totalCount.
 	const totalCount = (maxListPages + 50) * pageItems
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requests, 1)
+		n := atomic.AddInt32(&requests, 1)
+		// Distinct pages every time, so only the cap (not loop detection) stops it.
 		elems := make([]string, pageItems)
 		for i := range elems {
-			elems[i] = fmt.Sprintf(`{"id":"d%d","macAddress":"aa:bb:cc:dd:ee:%02d"}`, i, i)
+			elems[i] = fmt.Sprintf(`{"id":"d%d-%d","macAddress":"aa:bb:cc:dd:ee:%02d"}`, n, i, i)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"data":[%s],"offset":0,"limit":%d,"count":%d,"totalCount":%d}`,
@@ -257,5 +258,70 @@ func TestGetStopsAtHardPageCapWhenControllerNeverAdvances(t *testing.T) {
 	}
 	if int(requests) != maxListPages {
 		t.Fatalf("made %d requests, want exactly the cap (%d) — pagination did not stop where expected", requests, maxListPages)
+	}
+}
+
+// Page one succeeds, page two times out: the list is partial and page one's
+// validated rows survive (Collection §8) instead of the whole list vanishing.
+func TestPollKeepsFirstPageWhenSecondPageTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/proxy/network/integration/v1/sites":
+			_, _ = w.Write([]byte(`{"data":[{"id":"s1"}]}`))
+		case "/proxy/network/integration/v1/sites/s1/devices":
+			_, _ = w.Write([]byte(`{"data":[{"id":"d1"}],"totalCount":1}`))
+		case "/proxy/network/integration/v1/sites/s1/clients":
+			if r.URL.Query().Get("offset") != "" {
+				select { // hang page two until the client gives up
+				case <-r.Context().Done():
+				case <-release:
+				}
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"id":"c1","type":"WIRED","macAddress":"02:00:00:00:00:01"},{"id":"c2","type":"VPN"}],"offset":0,"limit":2,"count":2,"totalCount":4}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	hc := srv.Client()
+	hc.Timeout = 300 * time.Millisecond
+	snap, err := NewAPIClient(srv.URL, "k", hc).Poll(context.Background())
+	if err == nil {
+		t.Fatal("the page-two failure must still surface in the legacy error")
+	}
+	if len(snap.Clients) != 2 {
+		t.Fatalf("page-one clients lost: %+v", snap.Clients)
+	}
+	var cl Resource
+	for _, r := range snap.Resources {
+		if r.Kind == ResourceClientList {
+			cl = r
+		}
+	}
+	if cl.Outcome != "partial" || cl.ReasonCode != "page_failed" || cl.RowCount != 2 || len(cl.ClientList) != 2 {
+		t.Fatalf("client_list = %+v", cl)
+	}
+}
+
+// A controller that re-serves an identical page (offset ignored) is a loop: stop
+// on the repeat, keep the distinct rows, and report partial page_loop.
+func TestListDetectsLoopedPages(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"d0"},{"id":"d1"}],"offset":0,"limit":2,"count":2,"totalCount":10}`))
+	}))
+	defer srv.Close()
+	res := NewAPIClient(srv.URL, "k", srv.Client()).list(context.Background(), "/devices")
+	if res.outcome != "partial" || res.reason != "page_loop" || len(res.elems) != 2 || res.err == nil {
+		t.Fatalf("looped list = outcome %s reason %s elems %d err %v", res.outcome, res.reason, len(res.elems), res.err)
+	}
+	if requests != 2 {
+		t.Fatalf("loop detection took %d requests, want 2", requests)
 	}
 }

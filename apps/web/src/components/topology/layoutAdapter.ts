@@ -8,8 +8,23 @@ const sorted = (nodes: LayoutBox[]) => [...nodes].sort((a, b) =>
 const intersects = (a: LayoutPosition, ab: LayoutBox, b: LayoutPosition, bb: LayoutBox) =>
   Math.abs(a.x - b.x) < (ab.width + bb.width) / 2 + GAP && Math.abs(a.y - b.y) < (ab.height + bb.height) / 2 + GAP;
 
+const portId = (nodeId: string, port: string) => `${nodeId}:${port}`;
+
 export function toElkGraph(request: LayoutRequest): ElkNode {
-  const children: ElkNode[] = sorted(request.nodes).map((node) => ({ id: node.id, width: node.width, height: node.height }));
+  // Interface ports (M2): an edge with a known endpoint port attaches to an ELK
+  // port on that node, so parallel cables between one pair stay distinct.
+  const known = new Set(request.nodes.map((node) => node.id));
+  const ports = new Map<string, Set<string>>();
+  const endpoint = (nodeId: string, port?: string) => {
+    if (!port || !known.has(nodeId)) return nodeId;
+    if (!ports.has(nodeId)) ports.set(nodeId, new Set());
+    ports.get(nodeId)!.add(portId(nodeId, port));
+    return portId(nodeId, port);
+  };
+  const edges = [...request.edges].sort((a, b) => a.id.localeCompare(b.id, 'en'))
+    .map((edge) => ({ id: edge.id, sources: [endpoint(edge.source, edge.sourcePort)], targets: [endpoint(edge.target, edge.targetPort)] }));
+  const children: ElkNode[] = sorted(request.nodes).map((node) => ({ id: node.id, width: node.width, height: node.height,
+    ...(ports.has(node.id) ? { ports: [...ports.get(node.id)!].sort((a, b) => a.localeCompare(b, 'en')).map((id) => ({ id, width: 1, height: 1 })) } : {}) }));
   const groups = new Map<string, ElkNode>();
   for (const node of sorted(request.nodes)) {
     if (!node.groupId || request.nodes.some((n) => n.id === node.groupId)) continue;
@@ -24,7 +39,7 @@ export function toElkGraph(request: LayoutRequest): ElkNode {
       'elk.spacing.nodeNode': '32', 'elk.layered.spacing.nodeNodeBetweenLayers': '96',
       'elk.hierarchyHandling': 'INCLUDE_CHILDREN', 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
     },
-    edges: [...request.edges].sort((a, b) => a.id.localeCompare(b.id, 'en')).map((edge) => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
+    edges,
   };
 }
 
