@@ -231,7 +231,7 @@ import {
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
-import { partnerGuard, isPartnerGuardExemptPath } from './middleware/partnerGuard';
+import { partnerGuardWithExemptions } from './middleware/partnerGuard';
 import { buildHealthPayload } from './services/versionInfo';
 import {
   setWorkerReadinessTransitionHandler,
@@ -780,10 +780,7 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 // any Response (403 PARTNER_INACTIVE, 403 PARTNER_NOT_FOUND, 503 PARTNER_LOOKUP_UNAVAILABLE)
 // propagates back through Hono's compose chain. Discarding the return causes
 // Hono to throw "Context is not finalized" and the request collapses to 500.
-api.use('*', async (c, next) => {
-  if (isPartnerGuardExemptPath(c.req.path)) return next();
-  return partnerGuard(c, next);
-});
+api.use('*', partnerGuardWithExemptions);
 
 api.use('*', async (c, next) => {
   const auditWritten = await runWithAuditRequestTracking(next);
@@ -954,8 +951,9 @@ api.route('/webhooks/tickets', emailWebhookRoutes);
 // via c.req.text(), so no body-consuming middleware sits in front of it.
 api.route('/webhooks', stripeWebhookRoutes);
 // Intuit QuickBooks webhook — no session auth, HMAC-gated with the app-level
-// verifier token. partnerGuard passes through (no Authorization header); the
-// route reads the raw body itself via c.req.text(), so no body-consuming
+// verifier token. partnerGuard skips this exact path (isPartnerGuardExemptPath),
+// so even a request carrying a bearer token does no partner read before the
+// HMAC check (#7296); the route reads the raw body itself via c.req.text(), so no body-consuming
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);

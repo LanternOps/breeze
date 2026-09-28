@@ -39,7 +39,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { isPartnerGuardExemptPath, partnerGuard } from './partnerGuard';
+import { isPartnerGuardExemptPath, partnerGuard, partnerGuardWithExemptions } from './partnerGuard';
 import { verifyToken } from '../services/jwt';
 
 function makeApp() {
@@ -291,11 +291,55 @@ describe('partnerGuard — wrapper shape (regression for #781 wrapper-discards-R
   });
 });
 
-describe('isPartnerGuardExemptPath — signature-authenticated webhooks (Xero W05, quorum finding 10)', () => {
-  it('exempts exactly the Xero webhook path, so a bearer token cannot trigger partner reads before the HMAC', () => {
-    expect(isPartnerGuardExemptPath('/api/v1/webhooks/xero')).toBe(true);
-    expect(isPartnerGuardExemptPath('/api/v1/webhooks/xero/')).toBe(false);
-    expect(isPartnerGuardExemptPath('/api/v1/webhooks')).toBe(false);          // the CRUD webhook router stays guarded
-    expect(isPartnerGuardExemptPath('/api/v1/webhooks/quickbooks')).toBe(false); // QuickBooks byte-identical (follow-up issue)
+describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
+  const cases: Array<[string, boolean]> = [
+    // signature-authenticated webhooks (Xero W05 quorum finding 10; QuickBooks #7296) — exact match only
+    ['/api/v1/webhooks/xero', true],
+    ['/api/v1/webhooks/quickbooks', true],
+    ['/api/v1/webhooks/xero/', false],
+    ['/api/v1/webhooks/quickbooks/', false],
+    ['/api/v1/webhooks/quickbooks/extra', false],
+    ['/api/v1/webhooks/quickbooksx', false],
+    ['/api/v1/webhooks', false],          // the CRUD webhook router stays guarded
+    ['/api/v1/webhooks/stripe', false],   // unchanged
+    ['/api/v1/webhooks/tickets', false],  // unchanged
+    // pre-existing exemptions, unchanged
+    ['/api/v1/auth/login', true],
+    ['/api/v1/config', true],
+    ['/api/v1/users/me', true],
+    ['/api/v1/partner/me', true],
+    ['/api/v1/agents/abc', true],
+    ['/api/v1/internal/synthetic/x', true],
+    // ordinary guarded paths
+    ['/api/v1/devices', false],
+    ['/api/v1/accounting/quickbooks', false],
+  ];
+  it.each(cases)('%s -> %s', (path, expected) => {
+    expect(isPartnerGuardExemptPath(path)).toBe(expected);
+  });
+
+  it('a bearer token on the QuickBooks webhook path never reaches the partners read or verifyToken (mounted middleware)', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    // The exact middleware index.ts mounts globally.
+    app.use('*', partnerGuardWithExemptions);
+    app.post('/api/v1/webhooks/quickbooks', (c) => c.json({ ok: true }));
+    app.post('/api/v1/devices', (c) => c.json({ ok: true }));
+    const headers = { Authorization: 'Bearer valid-breeze-token' };
+
+    vi.mocked(verifyToken).mockResolvedValue({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValue([{ status: 'active', settings: {} }]);
+
+    const qbo = await app.request('/api/v1/webhooks/quickbooks', { method: 'POST', headers });
+    expect(qbo.status).toBe(200);
+    expect(verifyToken).not.toHaveBeenCalled();
+    expect(limitMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+
+    // Control: a guarded path with the same token DOES hit the guard.
+    const other = await app.request('/api/v1/devices', { method: 'POST', headers });
+    expect(other.status).toBe(200);
+    expect(verifyToken).toHaveBeenCalledTimes(1);
+    expect(limitMock).toHaveBeenCalledTimes(1);
   });
 });
