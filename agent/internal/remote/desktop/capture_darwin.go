@@ -196,7 +196,17 @@ static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID, int conf
         // CGBitmapContext (DeviceRGB) path produced instead of passing the
         // display's native (e.g. P3) values through as if they were sRGB.
         [config setValue:@((unsigned int)kCVPixelFormatType_32BGRA) forKey:@"pixelFormat"];
-        [config setValue:(__bridge NSString *)kCGColorSpaceSRGB forKey:@"colorSpaceName"];
+        // colorSpaceName is not present on SCStreamConfiguration on every
+        // supported OS version; setValue:forKey: on a missing key throws
+        // NSUnknownKeyException, which is fatal (uncaught NSException aborts
+        // the process) — respondsToSelector: is not a reliable predictor of
+        // KVC compliance for this bridged Swift type, so catch the specific
+        // failure and fall back to SCK's default color space.
+        @try {
+            [config setValue:(__bridge NSString *)kCGColorSpaceSRGB forKey:@"colorSpaceName"];
+        } @catch (NSException *colorSpaceException) {
+            // Missing on this OS version; SCK's default color space is used.
+        }
         // Cap delivery at the session's maximum frame rate (maxFrameRate=60).
         SEL mfiSel = NSSelectorFromString(@"setMinimumFrameInterval:");
         if ([config respondsToSelector:mfiSel]) {
