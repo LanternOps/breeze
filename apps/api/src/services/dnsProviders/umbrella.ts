@@ -395,7 +395,7 @@ export class UmbrellaProvider implements DnsProvider {
             `[UmbrellaProvider] ${new Date(cursor).toISOString()}..${new Date(end).toISOString()} holds ` +
             `more than ${result.recordCount} activity records in under ${UMBRELLA_MIN_SLICE_MS} ms — ` +
             `too many to split further and page under Cisco's offset cap of ${UMBRELLA_ACTIVITY_OFFSET_CAP}. ` +
-            `Kept the ${result.recordCount} reachable records; the rest of that window cannot be fetched ` +
+            `Kept the ${result.events.length} DNS events among the reachable records; the rest of that window cannot be fetched ` +
             'and was dropped.'
           );
         }

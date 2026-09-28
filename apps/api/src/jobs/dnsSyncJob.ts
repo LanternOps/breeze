@@ -708,12 +708,23 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
       // Release any provider-held session (best-effort; see
       // DnsProvider.dispose — relevant for the seat-limited Pi-hole v6
       // client). Closing the walk first runs the provider's own cleanup when
-      // a persist failed mid-walk.
+      // a persist failed mid-walk. Cleanup failures are logged, never thrown:
+      // a throw from a `finally` would replace the error that got us here,
+      // and a failed cleanup must not fail a sync that otherwise succeeded.
       await dbModule.runOutsideDbContext(async () => {
-        try {
-          await iterator.return?.();
-        } finally {
-          await provider.dispose?.();
+        for (const [step, cleanup] of [
+          ['close event walk', () => iterator.return?.()],
+          ['dispose provider', () => provider.dispose?.()],
+        ] as const) {
+          try {
+            await cleanup();
+          } catch (cleanupErr) {
+            console.error(
+              `[DnsSyncJob] ${step} failed for integration ${integration.id}:`,
+              redactLogMessage(cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr))
+            );
+            captureException(cleanupErr instanceof Error ? cleanupErr : new Error(String(cleanupErr)));
+          }
         }
       });
     }

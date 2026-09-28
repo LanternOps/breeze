@@ -202,4 +202,22 @@ describe('dnsSyncJob — per-slice persistence and checkpointing (#7207)', () =>
     ).rejects.toThrow('boom');
     expect(dispose).toHaveBeenCalledTimes(1);
   });
+
+  it('a throwing dispose does not mask the error that failed the sync', async () => {
+    selectResults = [[integrationRow()], []];
+    const boom = new Error('slice fetch failed');
+    async function* syncEventSlices() {
+      yield { events: [], until: SLICE_1_END };
+      throw boom;
+    }
+    createDnsProviderMock.mockReturnValue({
+      syncEvents: vi.fn(),
+      syncEventSlices,
+      dispose: vi.fn(async () => { throw new Error('dispose exploded'); }),
+    });
+
+    await expect(
+      processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' }),
+    ).rejects.toBe(boom);
+  });
 });

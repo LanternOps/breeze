@@ -43,7 +43,7 @@ function offsetsSent(): number[] {
  * limit/offset — and the real HTTP 400 for any offset above 10000
  * ("invalid offset: should be integer between 0 and 10000 inclusive", #7207).
  */
-function fakeActivityApi(timestamps: number[]) {
+function fakeActivityApi(timestamps: number[], serverPageCap = Number.POSITIVE_INFINITY) {
   const sorted = [...timestamps].sort((a, b) => b - a);
   requestJsonMock.mockImplementation(async (input) => {
     const url = new URL(String(input));
@@ -52,7 +52,7 @@ function fakeActivityApi(timestamps: number[]) {
     }
     const from = Number(url.searchParams.get('from'));
     const to = Number(url.searchParams.get('to'));
-    const limit = Number(url.searchParams.get('limit'));
+    const limit = Math.min(Number(url.searchParams.get('limit')), serverPageCap);
     const offset = Number(url.searchParams.get('offset'));
     if (!Number.isInteger(offset) || offset < 0 || offset > OFFSET_CAP) {
       throw new DnsProviderHttpError(
@@ -172,6 +172,45 @@ describe('UmbrellaProvider offset cap — time-sliced activity sync (#7207)', ()
     expect(slices[0]!.events).toEqual([]);
     expect(slices[0]!.until.getTime()).toBe(UNTIL.getTime());
     expect(activityCalls()).toHaveLength(1);
+  });
+
+  it('detects an overfull window with the cheap probe, not by walking to the cap', async () => {
+    // 50k events: the 24h, 12h and 6h windows all overflow before a 3h one fits.
+    fakeActivityApi(spread(50_000, SINCE.getTime(), UNTIL.getTime()));
+
+    for await (const slice of makeProvider().syncEventSlices(SINCE, UNTIL)) {
+      expect(slice.events.length).toBeGreaterThan(0);
+      break;
+    }
+
+    // 3 overflows × (first page + probe) + the fitting slice's walk (first
+    // page, probe, 6 more pages, empty page) = 15. Detecting each overflow by
+    // walking to the cap instead would cost 11 requests apiece (~40 total).
+    expect(activityCalls().length).toBeLessThanOrEqual(15);
+  });
+
+  it('still never passes the cap when the server serves pages smaller than asked, so the probe never fires', async () => {
+    const timestamps = spread(12_000, SINCE.getTime(), UNTIL.getTime());
+    // Pages of 400 never look "full" against our limit of 1000.
+    fakeActivityApi(timestamps, 400);
+
+    const events = await makeProvider().syncEvents(SINCE, UNTIL);
+
+    expect(Math.max(...offsetsSent())).toBeLessThanOrEqual(OFFSET_CAP);
+    // No probe (limit=1) request was ever sent: the in-walk guard caught it.
+    expect(activityCalls().some((call) => new URL(urlOf(call)).searchParams.get('limit') === '1')).toBe(false);
+    expect(new Set(events.map((e) => e.timestamp.getTime())).size).toBe(new Set(timestamps).size);
+    expect(warnings()).not.toMatch(/offset cap/);
+  });
+
+  it('handles a zero-width window (since === until) with one request', async () => {
+    fakeActivityApi([SINCE.getTime()]);
+
+    const slices = await collectSlices(makeProvider(), SINCE, SINCE);
+
+    expect(slices).toHaveLength(1);
+    expect(slices[0]!.events).toHaveLength(1);
+    expect(slices[0]!.until.getTime()).toBe(SINCE.getTime());
   });
 
   it('stops splitting at the minimum slice width: takes what the cap allows, warns, and moves on', async () => {
