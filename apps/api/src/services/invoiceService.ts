@@ -18,7 +18,7 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from './invoicePdf';
-import { resolveDocumentFooter } from './documentFooter';
+import { freezeDocumentFooter } from './documentFooter';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
@@ -1519,8 +1519,11 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // Resolved through the SHARED chain (settings audit rule 5, finding 22)
       // so issue time sees the portal-branding fallback the render path always
       // had. `documentTerms: null` because a draft's `terms` is not yet
-      // stamped — this call is what establishes it.
-      terms: resolveDocumentFooter({
+      // stamped — this call is what establishes it. freezeDocumentFooter stamps
+      // '' (frozen "no footer") rather than NULL when no level sets one: NULL
+      // means "not frozen" to the render path, which would then print a footer
+      // added after issue on this invoice (#7216).
+      terms: freezeDocumentFooter({
         documentTerms: null,
         partnerFooter: partner?.invoiceFooter ?? null,
         brandingFooter: issueBranding?.footerText ?? null,

@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
 import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, resolveDraftBillTo, type InvoiceBranding } from './invoicePdf';
+import { resolveDocumentFooter } from './documentFooter';
 import { invoices, invoiceLines } from '../db/schema';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -571,5 +572,34 @@ describe('invoiceTicketNumberSql', () => {
     for (const status of ['sent', 'partially_paid', 'overdue', 'paid', 'void']) {
       expect(dialect.sqlToQuery(invoiceLineTicketNumberSql(status)).sql).toBe('"invoice_lines"."ticket_label"');
     }
+  });
+});
+
+// #7216: an invoice issued with no footer at any level is stamped terms = ''
+// (freezeDocumentFooter). loadInvoiceForRender resolves branding.footerText
+// through resolveDocumentFooter exactly as below, so a footer configured AFTER
+// issue must not reach either renderer. The NULL (unfrozen draft/legacy) case
+// is the control: the same later footer DOES print, proving the assertion bites.
+describe('frozen "no footer" invoice render (#7216)', () => {
+  const LATER = 'Footer added after issue';
+  function renderInputs(terms: string | null) {
+    const invoice = makeInvoice({ terms });
+    const footerText = resolveDocumentFooter({ documentTerms: invoice.terms, partnerFooter: LATER, brandingFooter: 'Portal footer added later' });
+    return { invoice, branding: { ...branding, footerText } };
+  }
+  const pdfText = (pdf: Buffer) => extractPositionedPdfText(pdf).map((f) => f.text).join(' ');
+
+  it("HTML: terms '' prints no footer; terms NULL prints the live one", () => {
+    const frozen = renderInputs('');
+    expect(renderInvoiceHtml(frozen.invoice, [makeLine()], frozen.branding)).not.toContain(LATER);
+    const live = renderInputs(null);
+    expect(renderInvoiceHtml(live.invoice, [makeLine()], live.branding)).toContain(LATER);
+  });
+
+  it("PDF: terms '' prints no footer; terms NULL prints the live one", async () => {
+    const frozen = renderInputs('');
+    expect(pdfText(await renderInvoicePdfBuffer(frozen.invoice, [makeLine()], frozen.branding))).not.toContain(LATER);
+    const live = renderInputs(null);
+    expect(pdfText(await renderInvoicePdfBuffer(live.invoice, [makeLine()], live.branding))).toContain(LATER);
   });
 });

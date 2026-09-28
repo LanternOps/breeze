@@ -1095,14 +1095,16 @@ describe('issueInvoice document_locale stamp', () => {
     expect(issueSet().terms).toBe('Partner footer');
   });
 
-  it('stamps a null terms when neither a partner footer nor a portal footer exists', async () => {
+  it("stamps the explicit empty marker '' (not NULL) when neither a partner footer nor a portal footer exists (#7216)", async () => {
+    // NULL means "not frozen — resolve live" to the render path, so a NULL
+    // stamp let a footer added after issue print on the issued invoice.
     queueIssuePath(
       draft(),
       { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: null },
       [],
     );
     await svc.issueInvoice('inv1', actor);
-    expect(issueSet().terms).toBeNull();
+    expect(issueSet().terms).toBe('');
   });
 });
 
