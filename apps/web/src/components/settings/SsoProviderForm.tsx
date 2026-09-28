@@ -83,6 +83,19 @@ type SsoProviderFormProps = {
   hasClientSecret?: boolean;
   /** Show the ownership-scope selector (create-only, partner-scope users). */
   showOwnerScope?: boolean;
+  /**
+   * #7252: the viewer is in the All-organizations (fleet) view, so there is no
+   * org for an org-owned provider to belong to — the API 400s that create.
+   * Only meaningful alongside `showOwnerScope`.
+   */
+  noOrgSelected?: boolean;
+  /**
+   * Whether the viewer may create partner-wide state (`canManagePartnerWide`
+   * from /users/me — false for `org_access = 'selected'` partner users; absent
+   * is treated as capable, the server enforces regardless). Only meaningful
+   * alongside `showOwnerScope`.
+   */
+  canManagePartnerWide?: boolean;
 };
 
 const presetOptions = [
@@ -105,10 +118,23 @@ export default function SsoProviderForm({
   testingConnection,
   isEditing,
   hasClientSecret,
-  showOwnerScope = false
+  showOwnerScope = false,
+  noOrgSelected = false,
+  canManagePartnerWide = true
 }: SsoProviderFormProps) {
   const { t } = useTranslation('settings');
   const [showSecret, setShowSecret] = useState(false);
+
+  // #7252: never offer (or default to) an owner the API is guaranteed to
+  // refuse. An org-owned create needs a selected org; a partner-wide create
+  // needs full partner org access. Both only apply to the create-time
+  // selector — edits never send ownerScope.
+  const ownerSelectorActive = showOwnerScope && !isEditing;
+  const orgOwnerDisabled = ownerSelectorActive && noOrgSelected;
+  const partnerOwnerDisabled = ownerSelectorActive && !canManagePartnerWide;
+  const noOwnerAvailable = orgOwnerDisabled && partnerOwnerDisabled;
+  const initialOwnerScope: 'organization' | 'partner' =
+    orgOwnerDisabled && !partnerOwnerDisabled ? 'partner' : 'organization';
 
   const {
     register,
@@ -138,7 +164,7 @@ export default function SsoProviderForm({
       allowedDomains: '',
       enforceSSO: false,
       trustsIdpMfa: false,
-      ownerScope: 'organization',
+      ownerScope: initialOwnerScope,
       ...defaultValues
     }
   });
@@ -180,6 +206,8 @@ export default function SsoProviderForm({
   return (
     <form
       onSubmit={handleSubmit(async values => {
+        // Enter in a field submits even while the Save button is disabled.
+        if (noOwnerAvailable) return;
         await onSubmit?.(values);
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
@@ -188,24 +216,38 @@ export default function SsoProviderForm({
       {showOwnerScope && !isEditing && (
         <fieldset className="space-y-2 rounded-md border p-4" data-testid="sso-provider-owner">
           <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('ssoProviderForm.appliesTo')}</legend>
-          <label className="flex items-center gap-2 text-sm">
+          <label className={`flex items-center gap-2 text-sm${orgOwnerDisabled ? ' text-muted-foreground' : ''}`}>
             <input
               type="radio"
               value="organization"
+              disabled={orgOwnerDisabled}
               {...register('ownerScope')}
               data-testid="sso-provider-owner-org"
             />
             {t('ssoProviderForm.thisOrganization')}</label>
-          <label className="flex items-center gap-2 text-sm">
+          {orgOwnerDisabled && !noOwnerAvailable && (
+            <p className="pl-6 text-xs text-muted-foreground" data-testid="sso-provider-owner-org-hint">
+              {t('ssoProviderForm.selectAnOrganizationToCreateAnOrgProvider')}</p>
+          )}
+          <label className={`flex items-center gap-2 text-sm${partnerOwnerDisabled ? ' text-muted-foreground' : ''}`}>
             <input
               type="radio"
               value="partner"
+              disabled={partnerOwnerDisabled}
               {...register('ownerScope')}
               data-testid="sso-provider-owner-partner"
             />
             {t('ssoProviderForm.partnerTechnicianLogin')}{' '}
             <span className="text-muted-foreground">{t('ssoProviderForm.yourOwnTeamSignsInWithThis')}</span>
           </label>
+          {partnerOwnerDisabled && !noOwnerAvailable && (
+            <p className="pl-6 text-xs text-muted-foreground" data-testid="sso-provider-owner-partner-hint">
+              {t('ssoProviderForm.partnerProviderRequiresFullPartnerAccess')}</p>
+          )}
+          {noOwnerAvailable && (
+            <p role="alert" className="text-sm text-destructive" data-testid="sso-provider-owner-blocked">
+              {t('ssoProviderForm.selectAnOrganizationBeforeCreatingAProvider')}</p>
+          )}
         </fieldset>
       )}
 
@@ -548,7 +590,7 @@ export default function SsoProviderForm({
           <button
             type="submit"
             data-testid="provider-save"
-            disabled={isLoading}
+            disabled={isLoading || noOwnerAvailable}
             className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
           >
             {isLoading ? t('ssoProviderForm.saving') : submitLabel}

@@ -791,13 +791,32 @@ function getClientIP(c: any): string {
   return getTrustedClientIp(c);
 }
 
+type OrgResolutionError = { error: string; status: 400 | 403; code?: string };
+
+const ORG_REQUIRED: Omit<OrgResolutionError, 'status'> = { error: 'Organization ID required' };
+
+/**
+ * #7252: the org-required refusal for creating a provider. A partner admin in
+ * the All-organizations view (no org in the body or auth context, several
+ * accessible orgs) got the bare 'Organization ID required' with no hint that
+ * the fix is to pick an org or create a partner-wide provider instead. Same
+ * status and same authorization outcome — only the wording and a stable
+ * `code` for the web to localize.
+ */
+const PROVIDER_CREATE_ORG_REQUIRED: Omit<OrgResolutionError, 'status'> = {
+  error:
+    "Select an organization (pass orgId), or set ownerScope to 'partner' to create a partner-wide provider",
+  code: 'sso_provider_org_required',
+};
+
 function resolveOrgIdForProviderRoute(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
-  requestedOrgId?: string
-): { orgId: string } | { error: string; status: 400 | 403 } {
+  requestedOrgId?: string,
+  missingOrg: Omit<OrgResolutionError, 'status'> = ORG_REQUIRED
+): { orgId: string } | OrgResolutionError {
   if (auth.scope === 'organization') {
     if (!auth.orgId) {
-      return { error: 'Organization ID required', status: 400 };
+      return { ...missingOrg, status: 400 };
     }
     if (requestedOrgId && requestedOrgId !== auth.orgId) {
       return { error: 'Access to this organization denied', status: 403 };
@@ -822,7 +841,7 @@ function resolveOrgIdForProviderRoute(
       return { orgId: orgIds[0] };
     }
 
-    return { error: 'Organization ID required', status: 400 };
+    return { ...missingOrg, status: 400 };
   }
 
   if (requestedOrgId) {
@@ -838,7 +857,7 @@ function resolveOrgIdForProviderRoute(
     return { orgId: orgIds[0] };
   }
 
-  return { error: 'Organization ID required', status: 400 };
+  return { ...missingOrg, status: 400 };
 }
 
 type ProviderOwnerRow = { orgId: string | null; partnerId: string | null };
@@ -981,9 +1000,9 @@ ssoRoutes.post(
     }
     ownerColumns = { orgId: null, partnerId: auth.partnerId };
   } else {
-    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId, PROVIDER_CREATE_ORG_REQUIRED);
     if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
+      return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
     }
     // SR2-10: the org axis validated NOTHING here — and it is the ONLY axis that
     // JIT-provisions, so an org admin could delegate a role broader than their
@@ -1752,9 +1771,10 @@ ssoRoutes.post(
       }
       axis = { scope: 'partner', partnerId: auth.partnerId };
     } else {
-      const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+      // Create-flow preflight: same axis derivation, so the same refusal as POST /providers.
+      const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId, PROVIDER_CREATE_ORG_REQUIRED);
       if ('error' in orgResult) {
-        return c.json({ error: orgResult.error }, orgResult.status);
+        return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
       }
       // Every other branch proves authority against an RLS-visible row before
       // the system-context PII read below. This branch's checks are app-layer
