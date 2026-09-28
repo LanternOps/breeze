@@ -37,6 +37,8 @@ import { AccountingProviderError } from './accountingProviderError';
 import { captureException } from '../sentry';
 
 const runner = async <T>(fn: () => Promise<T>) => fn();
+const NONE_OWED = { count: 0, remoteEntityIds: [] as string[] };
+const OWED_TWO = { count: 2, remoteEntityIds: ['P-181/INV-145', 'P-182/INV-146'] };
 const tenant = (id: string, type = 'ORGANISATION') => ({ tenantId: `ten-${id}`, connectionRef: `conn-${id}`, name: id, tenantType: type, authEventId: 'evt-1' });
 const pendingRow = (over: Record<string, unknown> = {}) => ({
   id: 'row-1', partnerId: 'p1', provider: 'xero', status: 'pending_tenant', realmId: null,
@@ -166,15 +168,15 @@ describe('loadPendingGrant', () => {
 describe('discardPendingTenantSelection (cancel + reaper)', () => {
   it('deletes the row FIRST, then removes every same-authEvent link not held', async () => {
     const order: string[] = [];
-    m.store.deletePendingTenantRow.mockImplementation(async () => { order.push('delete-row'); return { id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) }; });
+    m.store.deletePendingTenantRow.mockImplementation(async () => { order.push('delete-row'); return { kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) }; });
     m.selection.listGrantTenants.mockImplementation(async () => { order.push('list'); return [tenant('A'), tenant('B')]; });
-    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true });
+    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true, connectionId: 'row-1', owedPaymentDeletes: NONE_OWED });
     expect(order).toEqual(['delete-row', 'list']);
     expect(m.selection.removeTenantConnection).toHaveBeenCalledTimes(2);
   });
 
   it('refreshes an expired token for cleanup but decodes the auth event from the ORIGINAL token', async () => {
-    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() - 1) });
+    m.store.deletePendingTenantRow.mockResolvedValue({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() - 1) });
     m.refresh.mockResolvedValue({ accessToken: 'FRESH-at' });
     m.selection.listGrantTenants.mockResolvedValue([tenant('A')]);
     await discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'reaped', runInDbContext: runner });
@@ -189,9 +191,9 @@ describe('discardPendingTenantSelection (cancel + reaper)', () => {
   });
 
   it('an original token with no auth-event claim: row discarded, nothing listed or deleted (never an unfiltered read) (review N)', async () => {
-    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.store.deletePendingTenantRow.mockResolvedValue({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
     m.selection.authEventIdOf.mockReturnValue(null);
-    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true });
+    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true, connectionId: 'row-1', owedPaymentDeletes: NONE_OWED });
     expect(m.selection.listGrantTenants).not.toHaveBeenCalled();
     expect(m.selection.listAllTenants).not.toHaveBeenCalled();
     expect(m.selection.removeTenantConnection).not.toHaveBeenCalled();
@@ -199,25 +201,76 @@ describe('discardPendingTenantSelection (cancel + reaper)', () => {
   });
 
   it('a remote failure never undoes the discard', async () => {
-    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.store.deletePendingTenantRow.mockResolvedValue({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
     m.selection.listGrantTenants.mockRejectedValue(new Error('xero down'));
-    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true });
+    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner })).resolves.toEqual({ discarded: true, connectionId: 'row-1', owedPaymentDeletes: NONE_OWED });
   });
 
   it('a genuine (non-throttle) remote cleanup failure is Sentry-captured', async () => {
-    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.store.deletePendingTenantRow.mockResolvedValue({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
     m.selection.listGrantTenants.mockRejectedValue(new Error('xero down'));
     await discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner });
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it('a throttled remote cleanup failure stays warn-only (no Sentry capture)', async () => {
-    m.store.deletePendingTenantRow.mockResolvedValue({ id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
+    m.store.deletePendingTenantRow.mockResolvedValue({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt', accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000) });
     m.selection.listGrantTenants.mockRejectedValue(new AccountingProviderError({
       kind: 'rate_limited', provider: 'xero', operation: 'listGrantTenants', retryAfterMs: 30_000,
     }));
     await discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner });
     expect(captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe('owed payment deletes on a re-parked row (#7289)', () => {
+  it('cancel: never blocked — the row is discarded and its owed deletes are handed back for the route audit', async () => {
+    m.store.deletePendingTenantRow.mockResolvedValue({
+      kind: 'deleted', owedPaymentDeletes: OWED_TWO, id: 'row-1', accessToken: 'ORIGINAL-at', refreshToken: 'rt',
+      accessTokenExpiresAt: new Date(Date.now() + 20 * 60_000),
+    });
+    m.selection.listGrantTenants.mockResolvedValue([]);
+    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', reason: 'cancel', runInDbContext: runner }))
+      .resolves.toEqual({ discarded: true, connectionId: 'row-1', owedPaymentDeletes: OWED_TWO });
+    // A cancel is the operator's decision: it asks the store to discard, never to keep.
+    expect(m.store.deletePendingTenantRow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: 'cancel', keepIfOwedPaymentDeletes: false,
+    }));
+  });
+
+  it('reaped: asks the store to KEEP a row that owes payment deletes', async () => {
+    m.store.deletePendingTenantRow.mockResolvedValue(null);
+    await discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', connectionId: 'row-1', reason: 'reaped', runInDbContext: runner });
+    expect(m.store.deletePendingTenantRow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: 'reaped', keepIfOwedPaymentDeletes: true,
+    }));
+  });
+
+  it('reaped + kept: not discarded, no remote cleanup, and the refusal is warned and Sentry-captured (never silent)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.store.deletePendingTenantRow.mockResolvedValue({ kind: 'kept_owed_payment_deletes', id: 'row-1', owedPaymentDeletes: OWED_TWO });
+    await expect(discardPendingTenantSelection({ partnerId: 'p1', provider: 'xero', connectionId: 'row-1', reason: 'reaped', runInDbContext: runner }))
+      .resolves.toEqual({ discarded: false, keptOwedPaymentDeletes: OWED_TWO });
+    expect(m.selection.listGrantTenants).not.toHaveBeenCalled();
+    expect(m.refresh).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('owes payment delete'),
+      expect.objectContaining({ connectionId: 'row-1', partnerId: 'p1', provider: 'xero', count: 2, remoteEntityIds: OWED_TWO.remoteEntityIds }),
+    );
+    expect(captureException).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('reapStalePendingTenants counts a kept row as kept, not reaped', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.store.listStalePendingTenantConnections.mockResolvedValue([
+      { id: 'r1', partnerId: 'p1', provider: 'xero' }, { id: 'r2', partnerId: 'p2', provider: 'xero' },
+    ]);
+    m.store.deletePendingTenantRow
+      .mockResolvedValueOnce({ kind: 'kept_owed_payment_deletes', id: 'r1', owedPaymentDeletes: OWED_TWO })
+      .mockResolvedValueOnce({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'r2', accessToken: null, refreshToken: null, accessTokenExpiresAt: null });
+    await expect(reapStalePendingTenants(new Date('2026-10-01T12:00:00Z'))).resolves.toEqual({ stale: 2, reaped: 1, kept: 1 });
+    warn.mockRestore();
   });
 });
 
@@ -229,8 +282,8 @@ describe('reapStalePendingTenants', () => {
     ]);
     m.store.deletePendingTenantRow
       .mockRejectedValueOnce(new Error('boom'))
-      .mockResolvedValueOnce({ id: 'r2', accessToken: null, refreshToken: null, accessTokenExpiresAt: null });
-    await expect(reapStalePendingTenants(now)).resolves.toEqual({ stale: 2, reaped: 1 });
+      .mockResolvedValueOnce({ kind: 'deleted', owedPaymentDeletes: NONE_OWED, id: 'r2', accessToken: null, refreshToken: null, accessTokenExpiresAt: null });
+    await expect(reapStalePendingTenants(now)).resolves.toEqual({ stale: 2, reaped: 1, kept: 0 });
     expect(m.store.listStalePendingTenantConnections).toHaveBeenCalledWith(expect.anything(), new Date('2026-10-01T11:00:00Z'));
     expect(m.store.deletePendingTenantRow).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ connectionId: 'r2', olderThan: new Date('2026-10-01T11:00:00Z') }));
     // One system context for the listing, then one per reaped row (review M).

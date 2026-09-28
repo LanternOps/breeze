@@ -11,8 +11,9 @@ import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { captureException } from '../sentry';
 import {
-  AccountingTenantHeldError, mapConnection, PENDING_TENANT_STATUS, REALM_FINGERPRINT_UNIQUE_INDEX,
-  type AccountingConnection, type DbExecutor,
+  AccountingTenantHeldError, collectOwedPaymentDeletes, mapConnection, owedPaymentDeletesOfConnection, PENDING_TENANT_STATUS,
+  readOwedPaymentDeletes, REALM_FINGERPRINT_UNIQUE_INDEX,
+  type AccountingConnection, type DbExecutor, type OwedPaymentDeletes,
 } from './accountingConnectionService';
 import type { AccountingProviderId, ProviderTenant } from './types';
 
@@ -117,16 +118,39 @@ export async function claimPendingTenant(dbc: DbExecutor, input: {
 }
 
 export interface DeletedPendingRow {
+  kind: 'deleted';
   id: string;
   accessToken: string | null;
   refreshToken: string | null;
   accessTokenExpiresAt: Date | null;
+  /** Payment deletes the row's mappings still owed, discarded by the cascade. Already warned + Sentry-captured; the caller's route writes the audit. */
+  owedPaymentDeletes: OwedPaymentDeletes;
 }
 
-/** Deletes the partner's pending row (optionally only if older than `olderThan`) and hands back its tokens for remote cleanup. */
+/** The reaper's refusal: the row still owes payment deletes, so it was left in place (#7289). */
+export interface KeptPendingRow {
+  kind: 'kept_owed_payment_deletes';
+  id: string;
+  owedPaymentDeletes: OwedPaymentDeletes;
+}
+
+/**
+ * Deletes the partner's pending row (optionally only if older than `olderThan`)
+ * and hands back its tokens for remote cleanup. MUST run inside a transaction
+ * (every runner does).
+ *
+ * A pending row is not always fresh: a `connected` row whose partner reconnects
+ * and ticks several organisations is RE-PARKED as pending_tenant, mappings and
+ * all, and ON DELETE CASCADE drops those mappings with it (#7289). So the owed
+ * payment deletes are counted under the row lock, BEFORE the delete, exactly as
+ * `deleteConnection` does. `keepIfOwedPaymentDeletes` (the unattended reaper)
+ * leaves such a row in place instead: a timer never discards that debt, an
+ * operator's cancel or disconnect does, and is audited.
+ */
 export async function deletePendingTenantRow(dbc: DbExecutor, input: {
   partnerId: string; provider: AccountingProviderId; connectionId?: string; olderThan?: Date;
-}): Promise<DeletedPendingRow | null> {
+  reason: 'cancel' | 'reaped'; keepIfOwedPaymentDeletes?: boolean;
+}): Promise<DeletedPendingRow | KeptPendingRow | null> {
   const conditions = [
     eq(accountingConnections.partnerId, input.partnerId),
     eq(accountingConnections.provider, input.provider),
@@ -134,14 +158,39 @@ export async function deletePendingTenantRow(dbc: DbExecutor, input: {
   ];
   if (input.connectionId) conditions.push(eq(accountingConnections.id, input.connectionId));
   if (input.olderThan) conditions.push(lt(accountingConnections.updatedAt, input.olderThan));
-  const [row] = await dbc.delete(accountingConnections).where(and(...conditions)).returning({
+  // Lock first: a claim racing this delete waits, then finds nothing pending
+  // (or wins, and this finds nothing to lock), so the count below describes the
+  // row that is actually deleted.
+  const [locked] = await dbc.select({ id: accountingConnections.id }).from(accountingConnections)
+    .where(and(...conditions)).limit(1).for('update');
+  if (!locked) return null;
+
+  const owedWhere = owedPaymentDeletesOfConnection(locked.id, input.partnerId);
+  let owedPaymentDeletes: OwedPaymentDeletes;
+  if (input.keepIfOwedPaymentDeletes) {
+    owedPaymentDeletes = await readOwedPaymentDeletes(dbc, owedWhere);
+    if (owedPaymentDeletes.count > 0) return { kind: 'kept_owed_payment_deletes', id: locked.id, owedPaymentDeletes };
+  } else {
+    owedPaymentDeletes = await collectOwedPaymentDeletes(dbc, owedWhere, {
+      connectionId: locked.id, partnerId: input.partnerId, provider: input.provider, reason: `pending_tenant_${input.reason}`,
+    });
+  }
+
+  const [row] = await dbc.delete(accountingConnections).where(and(
+    eq(accountingConnections.id, locked.id),
+    eq(accountingConnections.partnerId, input.partnerId),
+    eq(accountingConnections.status, PENDING_TENANT_STATUS),
+  )).returning({
     id: accountingConnections.id,
     accessTokenEncrypted: accountingConnections.accessTokenEncrypted,
     refreshTokenEncrypted: accountingConnections.refreshTokenEncrypted,
     accessTokenExpiresAt: accountingConnections.accessTokenExpiresAt,
   });
+  // The row is locked and was pending a moment ago, so a miss here is not expected; treat it as gone.
   if (!row) return null;
   return {
+    kind: 'deleted',
+    owedPaymentDeletes,
     id: row.id,
     accessToken: decryptOrNull(row.accessTokenEncrypted, { connectionId: row.id, provider: input.provider, field: 'access_token' }),
     refreshToken: decryptOrNull(row.refreshTokenEncrypted, { connectionId: row.id, provider: input.provider, field: 'refresh_token' }),

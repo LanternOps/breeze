@@ -816,11 +816,18 @@ export interface OwedPaymentDeletes {
 
 const OWED_DELETE_REPORT_CAP = 50;
 
-async function collectOwedPaymentDeletes(
-  dbc: DbExecutor,
-  where: SQL | undefined,
-  context: Record<string, unknown>,
-): Promise<OwedPaymentDeletes> {
+/** The payment deletes one connection still owes (the predicate of every owed-delete read that is scoped to a connection). */
+export function owedPaymentDeletesOfConnection(connectionId: string, partnerId: string): SQL | undefined {
+  return and(
+    eq(accountingEntityMappings.integrationId, connectionId),
+    eq(accountingEntityMappings.partnerId, partnerId),
+    eq(accountingEntityMappings.breezeEntityType, 'payment'),
+    eq(accountingEntityMappings.pendingOp, 'delete'),
+  );
+}
+
+/** Read-only half of `collectOwedPaymentDeletes`: counts, never reports. For a caller that may KEEP the debt instead of discarding it (the pending-tenant reaper, #7289). */
+export async function readOwedPaymentDeletes(dbc: DbExecutor, where: SQL | undefined): Promise<OwedPaymentDeletes> {
   const rows = await dbc
     .select({
       id: accountingEntityMappings.id,
@@ -833,17 +840,34 @@ async function collectOwedPaymentDeletes(
     .map((r) => r.remoteEntityId)
     .filter((v): v is string => typeof v === 'string')
     .slice(0, OWED_DELETE_REPORT_CAP);
-  const owed: OwedPaymentDeletes = { count: rows.length, remoteEntityIds };
+  return { count: rows.length, remoteEntityIds };
+}
+
+/**
+ * Count-and-report, BEFORE the caller's delete: the warning and Sentry capture
+ * every owed-delete discard gets. The audit entry is the caller's route's job
+ * (`accounting.connection.owed_deletes_discarded`). Silent when nothing is owed.
+ */
+export async function collectOwedPaymentDeletes(
+  dbc: DbExecutor,
+  where: SQL | undefined,
+  context: { provider?: AccountingProviderId } & Record<string, unknown>,
+): Promise<OwedPaymentDeletes> {
+  const owed = await readOwedPaymentDeletes(dbc, where);
   if (owed.count === 0) return owed;
+  const { remoteEntityIds } = owed;
+  // Named for the provider when the caller knows it: the Xero pending-tenant
+  // path reaches here too (#7289), and "QuickBooks" would misdirect on-call.
+  const label = context.provider ? accountingProviderDisplayName(context.provider) : 'accounting';
 
   console.warn(
-    '[accountingConnectionService] discarding owed QuickBooks payment delete(s) — '
+    `[accountingConnectionService] discarding owed ${label} payment delete(s) — `
     + 'Breeze created these Payments and will no longer remove them',
     { ...context, count: owed.count, remoteEntityIds },
   );
   captureException(
     new Error(
-      `accountingConnectionService: discarded ${owed.count} owed QuickBooks payment delete(s) — `
+      `accountingConnectionService: discarded ${owed.count} owed ${label} payment delete(s) — `
       + 'the Payments Breeze created stay in the customer books and need manual reconciliation',
     ),
     undefined,
@@ -875,12 +899,9 @@ export async function resetConnectionForRealmChange(
   partnerId: string,
 ): Promise<{ mappingsDeleted: number; owedPaymentDeletes: OwedPaymentDeletes }> {
   // BEFORE the delete: after it there is nothing left to count.
-  const owedPaymentDeletes = await collectOwedPaymentDeletes(dbc, and(
-    eq(accountingEntityMappings.integrationId, connectionId),
-    eq(accountingEntityMappings.partnerId, partnerId),
-    eq(accountingEntityMappings.breezeEntityType, 'payment'),
-    eq(accountingEntityMappings.pendingOp, 'delete'),
-  ), { connectionId, partnerId, reason: 'realm_changed' });
+  const owedPaymentDeletes = await collectOwedPaymentDeletes(
+    dbc, owedPaymentDeletesOfConnection(connectionId, partnerId), { connectionId, partnerId, reason: 'realm_changed' },
+  );
 
   const deleted = await dbc
     .delete(accountingEntityMappings)

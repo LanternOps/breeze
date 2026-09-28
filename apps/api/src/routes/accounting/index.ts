@@ -45,6 +45,7 @@ import {
 import { captureException } from '../../services/sentry';
 import { ACCOUNTING_PROVIDER_IDS } from '../../services/accounting/types';
 import { discardPendingTenantSelection } from '../../services/accounting/accountingTenantSelection';
+import { auditOwedDeletesDiscarded } from './owedDeletesAudit';
 import { rateLimitRetryAfterMs } from '../../services/accounting/accountingProviderError';
 import { releaseProviderConnection } from '../../services/accounting/accountingProviderRelease';
 import type { DbContextRunner } from '../../services/accounting/dbContextGuard';
@@ -524,9 +525,17 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   // A row waiting for an organisation is a cancel: no chosen link to release,
   // and this flow's links go through the held-checked cleanup. False = it was
   // claimed (or removed) in the meantime.
-  const discardPending = async () => (await discardPendingTenantSelection({
-    partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
-  })).discarded;
+  // A RE-PARKED former connected row can still carry mappings (#7289): the
+  // payment deletes they owed are discarded with it and audited like any
+  // disconnect's.
+  const discardPending = async () => {
+    const result = await discardPendingTenantSelection({
+      partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
+    });
+    if (!result.discarded) return false;
+    auditOwedDeletesDiscarded(c, { provider, connectionId: result.connectionId, reason: 'disconnect', owed: result.owedPaymentDeletes });
+    return true;
+  };
   if (ref.status === PENDING_TENANT_STATUS && await discardPending()) {
     audit(ref.id, PENDING_TENANT_STATUS, {});
     return c.json({ disconnected: true });
@@ -564,24 +573,10 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
   // — the only thing that lets a human find those Payments afterwards (review
   // wave 2, finding 3). The service already warned and raised Sentry.
-  if (owedPaymentDeletes.count > 0) {
-    writeRouteAudit(c, {
-      orgId: null,
-      action: 'accounting.connection.owed_deletes_discarded',
-      resourceType: 'accounting_connection',
-      // The CONNECTION id, matching the realm-change twin above: an audit trail
-      // that identifies the same subject two different ways cannot be joined.
-      // Non-null whenever `removed` is true, which the 404 above has established.
-      resourceId: connectionId ?? partner.partnerId,
-      result: 'failure',
-      details: {
-        provider,
-        reason: 'disconnect',
-        count: owedPaymentDeletes.count,
-        remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
-      },
-    });
-  }
+  // `connectionId` is non-null whenever `removed` is true (the 404 above).
+  auditOwedDeletesDiscarded(c, {
+    provider, connectionId: connectionId ?? partner.partnerId, reason: 'disconnect', owed: owedPaymentDeletes,
+  });
   return c.json({ disconnected: true });
 });
 

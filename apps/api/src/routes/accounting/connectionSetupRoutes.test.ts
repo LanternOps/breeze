@@ -237,7 +237,7 @@ describe('POST /:provider/tenants/select', () => {
 
 describe('POST /:provider/tenants/cancel', () => {
   it('discards the pending selection and audits it', async () => {
-    m.discard.mockResolvedValue({ discarded: true });
+    m.discard.mockResolvedValue({ discarded: true, connectionId: 'conn-row-1', owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
     const res = await post('/xero/tenants/cancel');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ cancelled: true });
@@ -245,8 +245,36 @@ describe('POST /:provider/tenants/cancel', () => {
     expect(m.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'accounting.connection.tenant_selection_cancelled' }));
   });
 
+  it('#7289: a re-parked row whose mappings owed payment deletes still cancels, and the discarded debt is audited like a disconnect', async () => {
+    m.discard.mockResolvedValue({
+      discarded: true, connectionId: 'conn-row-1',
+      owedPaymentDeletes: { count: 2, remoteEntityIds: ['P-181/INV-145', 'P-182/INV-146'] },
+    });
+    const res = await post('/xero/tenants/cancel');
+    expect(res.status).toBe(200);
+    const owed = m.audit.mock.calls.map((call) => call[1] as Record<string, unknown>)
+      .find((e) => e.action === 'accounting.connection.owed_deletes_discarded');
+    expect(owed).toEqual({
+      orgId: null,
+      action: 'accounting.connection.owed_deletes_discarded',
+      resourceType: 'accounting_connection',
+      resourceId: 'conn-row-1',
+      result: 'failure',
+      details: {
+        provider: 'xero', reason: 'tenant_selection_cancelled', count: 2, remoteEntityIds: ['P-181/INV-145', 'P-182/INV-146'],
+      },
+    });
+  });
+
+  it('#7289: a pending row that owed nothing writes no owed-deletes audit (no noise)', async () => {
+    m.discard.mockResolvedValue({ discarded: true, connectionId: 'conn-row-1', owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
+    await post('/xero/tenants/cancel');
+    expect(m.audit.mock.calls.map((call) => (call[1] as { action: string }).action))
+      .toEqual(['accounting.connection.tenant_selection_cancelled']);
+  });
+
   it('F13: gates WITHOUT requiring configuration, so a pending row is never stranded on an unconfigured instance', async () => {
-    m.discard.mockResolvedValue({ discarded: true });
+    m.discard.mockResolvedValue({ discarded: true, connectionId: 'conn-row-1', owedPaymentDeletes: { count: 0, remoteEntityIds: [] } });
     await post('/xero/tenants/cancel');
     expect(m.gate).toHaveBeenCalledWith(expect.anything(), 'xero', 'connect', { requireConfigured: false });
   });

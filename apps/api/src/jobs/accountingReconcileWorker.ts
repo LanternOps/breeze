@@ -602,7 +602,7 @@ export async function processReconcileConnectionJob(
  */
 export async function processReconcileSweep(): Promise<{
   enqueued: number; failed: number; deferred: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
-  pendingTenantsReaped: number;
+  pendingTenantsReaped: number; pendingTenantsKept: number;
 }> {
   return runOutsideDbContext(async () => {
     // Each pass's DB read is its OWN try/catch: a failure reading the
@@ -687,9 +687,14 @@ export async function processReconcileSweep(): Promise<{
     // partner's one-connection slot (a half-finished Xero connect blocks a
     // QuickBooks connect), so they must not live forever. Best-effort: a failure
     // here is logged and never fails or retries the sweep — the next tick retries.
+    // A stale row that still owes payment deletes is KEPT, not reaped (#7289):
+    // `pendingTenantsKept` counts those; each was warned + captured by the reaper.
     let pendingTenantsReaped = 0;
+    let pendingTenantsKept = 0;
     try {
-      pendingTenantsReaped = (await reapStalePendingTenants()).reaped;
+      const reap = await reapStalePendingTenants();
+      pendingTenantsReaped = reap.reaped;
+      pendingTenantsKept = reap.kept;
     } catch (err) {
       console.error(
         '[AccountingReconcileWorker] sweep pass 3 (reap pending tenants) failed',
@@ -704,7 +709,7 @@ export async function processReconcileSweep(): Promise<{
       '[AccountingReconcileWorker] sweep complete',
       `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`, `deferred=${deferred}`,
       `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
-      `pendingTenantsReaped=${pendingTenantsReaped}`,
+      `pendingTenantsReaped=${pendingTenantsReaped}`, `pendingTenantsKept=${pendingTenantsKept}`,
     );
 
     if (connectionsReadFailed || owedReadFailed) {
@@ -717,7 +722,7 @@ export async function processReconcileSweep(): Promise<{
       );
     }
 
-    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed, pendingTenantsReaped };
+    return { enqueued, failed, deferred, pendingOpsEnqueued, pendingOpsFailed, pendingTenantsReaped, pendingTenantsKept };
   });
 }
 
