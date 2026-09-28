@@ -13,7 +13,7 @@
 import './setup';
 import { randomUUID } from 'crypto';
 import { describe, it, expect } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
 import { createPartner, createOrganization, createSite } from './db-utils';
@@ -131,6 +131,28 @@ describe('edition auto-migrate per-org canary (#5016) — real Postgres', () => 
     });
     const next = await makeDevice(orgId, siteId);
     expect(await lookup(orgId, next)).toBeNull();
+  });
+
+  runDb('the settle window does not depend on the session time zone', async () => {
+    // last_seen_at is `timestamp` (UTC wall clock) and the dispatch stamp is
+    // `timestamptz`: comparing them raw casts through the session TimeZone.
+    const { orgId, siteId } = await fixtureOrg();
+    const dispatchedAt = new Date(Date.now() - 5 * HOUR);
+    await makeDevice(orgId, siteId, {
+      editionMigrationDispatchedAt: dispatchedAt,
+      // Survived: seen 3h after dispatch, past the 2h window.
+      lastSeenAt: new Date(dispatchedAt.getTime() + 3 * HOUR),
+      agentEdition: 'self-host',
+    });
+    const next = await makeDevice(orgId, siteId);
+    const inZone = (tz: string) =>
+      withSystemDbAccessContext(async () => {
+        await db.execute(sql`SELECT set_config('TimeZone', ${tz}, true)`);
+        return findUnresolvedOrgEditionMigration({ orgId, excludeDeviceId: next, targetEdition: 'hosted' });
+      });
+    // Five hours west of UTC would shift a naive cast by -5h and re-hold the org.
+    expect(await inZone('America/New_York')).toBeNull();
+    expect(await inZone('Asia/Tokyo')).toBeNull();
   });
 
   runDb('a removed (decommissioned) canary releases the org', async () => {

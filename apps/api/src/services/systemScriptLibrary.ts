@@ -117,27 +117,50 @@ $log = Join-Path $work 'migration.log'
 # could follow a planted link) and start clean; then force a
 # SYSTEM/Administrators-only ACL before anything secret or executable lands.
 $trustedOwners = @('S-1-5-18', 'S-1-5-32-544')
+function Test-TrustedItem($item) {
+  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+  $o = (Get-Acl -LiteralPath $item.FullName).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  return ($trustedOwners -contains $o)
+}
 if (Test-Path -LiteralPath $work) {
   $workItem = Get-Item -LiteralPath $work -Force
   if ($workItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
     Write-Output 'BreezeMigration path is a reparse point; aborting (nothing touched)'
     exit 1
   }
-  $owner = (Get-Acl -LiteralPath $work).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-  if ($trustedOwners -notcontains $owner) {
+  if (-not (Test-TrustedItem $workItem)) {
     $quarantine = 'BreezeMigration.untrusted-' + [guid]::NewGuid().ToString('N')
     try {
       Rename-Item -LiteralPath $work -NewName $quarantine -ErrorAction Stop
     } catch {
-      Write-Output "BreezeMigration is owned by $owner and could not be moved aside; aborting (nothing touched)"
+      Write-Output 'BreezeMigration is not owned by SYSTEM/Administrators and could not be moved aside; aborting (nothing touched)'
       exit 1
     }
   }
 }
-New-Item -ItemType Directory -Force -Path $work | Out-Null
+# Created WITHOUT -Force: anything that appeared at the path after the checks
+# above (a re-planted junction) makes creation fail instead of being adopted.
+if (-not (Test-Path -LiteralPath $work)) {
+  try {
+    New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
+  } catch {
+    Write-Output "could not create BreezeMigration ($($_.Exception.Message)); aborting (nothing touched)"
+    exit 1
+  }
+}
 & icacls $work /inheritance:r /grant:r 'NT AUTHORITY\\SYSTEM:(OI)(CI)F' 'BUILTIN\\Administrators:(OI)(CI)F' | Out-Null
 if ($LASTEXITCODE -ne 0) {
   Write-Output 'failed to restrict BreezeMigration ACL; aborting (nothing touched)'
+  exit 1
+}
+# Re-verify once the ACL is locked: until icacls ran, a fresh directory still
+# carried ProgramData's inherited ACL, which lets local users create entries
+# in it. The directory itself and every top-level entry must be a non-link
+# owned by SYSTEM/Administrators, or nothing here can be trusted.
+$untrusted = @(@(Get-Item -LiteralPath $work -Force) + @(Get-ChildItem -LiteralPath $work -Force) |
+  Where-Object { -not (Test-TrustedItem $_) })
+if ($untrusted.Count -gt 0) {
+  Write-Output "BreezeMigration contains untrusted entries ($(($untrusted | ForEach-Object { $_.Name }) -join ', ')); aborting (nothing touched)"
   exit 1
 }
 function Log($m) {
