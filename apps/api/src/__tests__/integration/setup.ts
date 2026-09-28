@@ -220,6 +220,10 @@ const CLEANUP_TABLES = [
   // rows survive between tests. supported_currencies is NOT here on purpose —
   // it is seeded reference data every suite depends on.
   'exchange_rates',
+  // Global, id-only backup snapshot tombstones (no tenant FK, so no cascade
+  // reaches them). Without this a snapshot id deleted by one test stays
+  // unavailable to every later test that reuses the same literal id.
+  'backup_snapshot_id_tombstones',
   'device_commands',
   'device_group_memberships',
   'device_groups',

@@ -253,6 +253,13 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
   // separate ai_sessions/sites re-points commit together.
   'ai_sessions.breeze_ai_sessions_topology_site_guard': 'fires only on UPDATE OF topology_site_id and blocks a pin change; never reads or blocks org_id',
+  // Brokered backup writes (2026-11-08-120000 / 120100): parent-org guards that
+  // check only the references (device, job, reservation, session, snapshot,
+  // configuration) an INSERT sets or an UPDATE changes. An UPDATE that changes
+  // org_id alone — a repoint or a device-move restamp — is never checked.
+  'backup_snapshot_id_reservations.backup_snapshot_id_reservations_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  'backup_storage_sessions.backup_storage_sessions_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  'backup_storage_session_uploads.backup_storage_session_uploads_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
   // Partner alerts feed (2026-10-30-130000): BEFORE INSERT OR UPDATE, only sets
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.

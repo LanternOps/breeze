@@ -741,8 +741,12 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_sla_events",
   // Snapshot attestations travel with their device and snapshot.
   "backup_snapshot_attestations",
+  // Snapshot id ownership moves with the org; the id itself never changes.
+  "backup_snapshot_id_reservations",
   "backup_snapshot_retirements",
   "backup_snapshots",
+  // Multipart uploads of write sessions travel with their session.
+  "backup_storage_session_uploads",
   // Short-lived storage sessions travel with their device and snapshot.
   "backup_storage_sessions",
   "backup_verifications",

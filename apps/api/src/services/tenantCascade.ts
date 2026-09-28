@@ -396,8 +396,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // except organizations (snapshot, job, device) is ON DELETE CASCADE, so
   // position is determinism, not correctness.
   'backup_snapshot_attestations',
+  // Snapshot id ownership: org_id with device_id; every FK is CASCADE or SET
+  // NULL. Deleting a row tombstones its id (trigger), so erasure never frees
+  // an id for reuse.
+  'backup_snapshot_id_reservations',
   'backup_snapshot_retirements',
   'backup_snapshots',
+  // Multipart uploads of write-scoped storage sessions (FKs CASCADE).
+  'backup_storage_session_uploads',
   // Brokered storage sessions: org_id denormalised from the executing device;
   // every FK (command, both devices, snapshot, config) is ON DELETE CASCADE,
   // so position is determinism, not correctness.
