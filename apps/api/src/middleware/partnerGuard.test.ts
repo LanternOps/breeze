@@ -39,7 +39,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { isPartnerGuardExemptPath, partnerGuard } from './partnerGuard';
+import { isPartnerGuardExemptPath, partnerGuard, partnerGuardWithExemptions } from './partnerGuard';
 import { verifyToken } from '../services/jwt';
 
 function makeApp() {
@@ -318,11 +318,11 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     expect(isPartnerGuardExemptPath(path)).toBe(expected);
   });
 
-  it('a bearer token on the QuickBooks webhook path never reaches the partners read or verifyToken (index.ts wrapper shape)', async () => {
+  it('a bearer token on the QuickBooks webhook path never reaches the partners read or verifyToken (mounted middleware)', async () => {
     vi.clearAllMocks();
     const app = new Hono();
-    // Mirrors the index.ts wrapper: exempt paths skip partnerGuard entirely.
-    app.use('*', (c, next) => (isPartnerGuardExemptPath(c.req.path) ? next() : partnerGuard(c, next)));
+    // The exact middleware index.ts mounts globally.
+    app.use('*', partnerGuardWithExemptions);
     app.post('/api/v1/webhooks/quickbooks', (c) => c.json({ ok: true }));
     app.post('/api/v1/devices', (c) => c.json({ ok: true }));
     const headers = { Authorization: 'Bearer valid-breeze-token' };

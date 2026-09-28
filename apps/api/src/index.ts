@@ -231,7 +231,7 @@ import {
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
-import { partnerGuard, isPartnerGuardExemptPath } from './middleware/partnerGuard';
+import { partnerGuardWithExemptions } from './middleware/partnerGuard';
 import { buildHealthPayload } from './services/versionInfo';
 import {
   setWorkerReadinessTransitionHandler,
@@ -780,10 +780,7 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 // any Response (403 PARTNER_INACTIVE, 403 PARTNER_NOT_FOUND, 503 PARTNER_LOOKUP_UNAVAILABLE)
 // propagates back through Hono's compose chain. Discarding the return causes
 // Hono to throw "Context is not finalized" and the request collapses to 500.
-api.use('*', async (c, next) => {
-  if (isPartnerGuardExemptPath(c.req.path)) return next();
-  return partnerGuard(c, next);
-});
+api.use('*', partnerGuardWithExemptions);
 
 api.use('*', async (c, next) => {
   const auditWritten = await runWithAuditRequestTracking(next);

@@ -34,6 +34,15 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   return false;
 }
 
+/**
+ * The middleware mounted globally in index.ts: skips exempt paths, otherwise
+ * runs partnerGuard. Must `return` the promise so guard Responses propagate.
+ */
+export function partnerGuardWithExemptions(c: Context, next: Next) {
+  if (isPartnerGuardExemptPath(c.req.path)) return next();
+  return partnerGuard(c, next);
+}
+
 export async function partnerGuard(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
