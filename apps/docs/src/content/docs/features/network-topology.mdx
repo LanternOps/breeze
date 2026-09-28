@@ -1,0 +1,462 @@
+---
+title: Network Topology Explorer
+description: Explore a site's measured physical and logical network, see the evidence and coverage behind every connection, monitor links and ports, trace routed paths, assess impact, and ask AI to explain what it sees.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The Network Topology Explorer builds on the per-site [Site Map](/features/discovery/#site-map). The Site Map shows a logical picture of a site. The explorer adds:
+
+- **Physical discovery.** Cables and switch-port attachments measured from LLDP, CDP, MAC address tables (FDB) and UniFi controllers.
+- **Evidence and coverage.** Every connection shows how Breeze knows about it, and the map says plainly where collection is incomplete.
+- **Operations.** Port measurement and link health, recurring monitoring policies with site-owned alerts, a bounded traceroute, possible impact and recent changes.
+- **Explain this.** A site-pinned AI investigation that answers only with cited evidence. It can propose one diagnostic, which runs only after you approve it with a fresh passkey check.
+
+The explorer never invents a connection. When Breeze cannot establish something, such as a port, a direct cable or a cause, the UI says so ("Port not identified", "Direct connection not established", "Not measured") rather than guessing.
+
+<Aside type="caution">
+  Physical discovery, port measurement and traceroute need the Breeze agent release that follows this feature. Earlier agents keep working, but they report no physical links or port counters, and they can't run a trace. Check the release notes for the agent version. Diagnostics and the logical map need agents running **v0.115.0 or later**, as described in [Site Map](/features/discovery/#site-map).
+</Aside>
+
+---
+
+## Before you start
+
+### Turn the feature on
+
+Network Topology is off by default. A partner admin enables it for all of the partner's organizations from **Settings → Modules**:
+
+| Toggle | What it unlocks in the explorer |
+|---|---|
+| **Enable network topology** | The map itself: the Overview and Logical views, evidence, coverage, layout and the Configuration panel. |
+| **Physical topology** | The **Physical** view, physical coverage reasons, port names on connections, and hiding connections from the Physical view. |
+| **Interface health** | Link health, port history and port measurement. Needs **Physical topology** on as well, because ports come from physical discovery. |
+| **Diagnostics** | **Diagnose** (including the routed path trace) and recurring monitoring policies. |
+| **AI insights** | **Explain this**. The organization also needs AI enabled and a working AI provider. |
+
+When you turn a toggle off, only what the explorer shows changes. Breeze keeps processing collected evidence, so turning a toggle back on doesn't require a rebuild.
+
+### Collect physical evidence
+
+Physical links come from two sources. You need at least one of them at the site:
+
+- **SNMP-enabled discovery profiles.** A profile whose scan methods include **SNMP**, with working community strings or SNMPv3 credentials, collects neighbour and MAC-table data from every host that answers SNMP. This happens during each scheduled scan. See [Network Discovery](/features/discovery/).
+- **UniFi controllers.** A UniFi controller that a Breeze agent polls, either in self-hosted mode or with deep telemetry, contributes its device list, client list and uplinks. The controller site must be mapped to the Breeze site. See [UniFi Network Integration](/features/unifi-integration/).
+
+### Permissions
+
+| Action | Permissions needed |
+|---|---|
+| View the map, evidence, coverage, health, history, impact and recent changes | `topology:read` and `devices:read` |
+| Hide or restore a connection, save the shared layout, add manual nodes and links | Also `topology:write` |
+| Run a diagnostic or trace, or approve a check the AI proposes | `topology:read`, `devices:read`, `topology:execute` and `devices:execute` |
+| Turn monitoring policies or port measurement on and off, and change diagnostic targets or policies | `topology:write`, `topology:execute`, `devices:write` and `devices:execute` |
+| Start an **Explain this** investigation | `topology:read`, `devices:read` and `ai_sessions:use` |
+
+By default, **Org Admin** and **Org Technician** hold `topology:read`, `topology:write` and `topology:execute`. **Partner Admin** holds every permission. **Partner Technician** and **Org Viewer** can view the map but can't change or run anything. Actions that run or schedule work also need an MFA-verified session when 2FA is enabled on your deployment.
+
+---
+
+## Where to find it
+
+- **Network Discovery → Topology tab.** Choose a site from the **Site** selector; it's skipped if you manage only one site. The map opens on the whole site.
+- **A device's Topology tab**, or a **network device's Topology tab.** The map opens focused on that device. Click **Show full site** to widen it.
+
+The toolbar has a search box, a **View** selector, **Show accessible list** (a table of the same devices and connections), **Refresh snapshot**, **Configuration** and **Operations**. Above the map, a status line shows the current coverage ("Network detail: Complete / Limited / Unknown"), how many devices and connections are visible, and how many are outside this view.
+
+### Views
+
+| View | Shows |
+|---|---|
+| **Overview** | The site as a whole: logical networks, routes and, where enabled, physical connections, bounded so large sites stay readable. |
+| **Logical** | Addressing and routing: network membership, default routes and egress paths. |
+| **Physical** | Measured cables and switch-port attachments. It's available only when **Physical topology** is on. If nothing has been reported yet, it says so and offers **View network overview**. |
+
+The legend explains the line styles. Solid lines are physical, dashed lines are logical, and dotted lines are inferred or schematic. Unknown health is never shown as a successful check.
+
+Grey **schematic** elements are placeholders. They explain missing evidence; they aren't discovered hardware, and you can't run diagnostics on them.
+
+---
+
+## Physical discovery
+
+### What Breeze collects
+
+From SNMP devices, during each discovery scan that includes SNMP:
+
+- **LLDP neighbours.** Remote chassis and port IDs, system name and management address, plus the device's own LLDP chassis and port identity.
+- **CDP neighbours.** Remote device ID, port and address.
+- **Interface names.** Name, alias and MAC address for each port, so connections show `Gi1/0/24` rather than an index.
+- **MAC address tables (FDB).** From BRIDGE-MIB and Q-BRIDGE-MIB, including the VLAN each forwarding table belongs to.
+
+From UniFi controllers:
+
+- The device and client lists, each client's uplink device, and whether the client is wired, wireless or connected over VPN/Teleport.
+- Per-port link state and negotiated speed. This data feeds link health when **Interface health** is on.
+
+UniFi doesn't provide PoE state or per-port traffic rates, and Breeze doesn't show them. For port traffic, turn on [port measurement](#port-measurement) over SNMP.
+
+### How connections are classified
+
+Open a connection in the inspector to see how Breeze classified it:
+
+| Field | Values and meaning |
+|---|---|
+| **Meaning** | *Physical connection*: a cable measured from both ends' ports (LLDP, or CDP that resolves). *Attachment*: a device learned on a port, or reported by a controller, without proof of a direct cable. The field also covers logical meanings: network membership, default route and egress path. |
+| **Directness** | *Direct connection*, *Through an unmanaged device*, or *Direct connection not established*. |
+| **Port** | *Identified port*, *Learned through this port* (from a MAC table), *Shared or upstream port*, or *Port not identified*. |
+| **Association** | For controller data: *Wired connection*, *Wireless association (reported by controller)*, *VPN or tunnel association*, or *Uplink reported by controller*. |
+| **Reported by** | LLDP neighbor, CDP neighbor, Learned MAC address table (FDB), UniFi controller, Manual assertion, or Legacy discovery. |
+| **Confidence** | *High* (a measured neighbour), *Medium* (a single MAC-table candidate), *Low* (competing candidates), or *Asserted* (entered by hand). |
+
+MAC tables are treated cautiously:
+
+- When exactly one switch port has learned a device's MAC, Breeze selects that port with **Medium** confidence.
+- When several ports compete, all of them stay **Low**. No port is selected, and the inspector lists them under **Other candidate ports**.
+- A port that has learned more than 16 distinct MAC addresses is treated as a **shared or upstream port**. It's recorded as one aggregate entry and never chosen as a device's attachment point.
+- Ports known to link switches together are excluded from attachment selection.
+
+When a switch port changes identity (for example, it's replaced or renumbered with a different name or MAC), Breeze treats it as a new port generation. Links aren't carried over to the new identity, and the old one is labelled *(earlier port identity)*.
+
+### Evidence panel
+
+For a selected connection, the inspector shows:
+
+- the source and target ports (or "Port not identified", with the raw reported port value when there is one);
+- the confidence, freshness, when it was last confirmed and when the evidence expires;
+- any other candidate ports;
+- the individual **Observations** behind it, each with its method, time and status (*Current*, *Expired* or *Withdrawn*). Use **Load more observations** for older ones.
+
+When the detail has aged out, the panel says "Observation detail has expired; the connection was still confirmed."
+
+### Coverage panel
+
+The coverage line and its reasons tell you what Breeze could and couldn't see. A reason may include an "(N affected)" count.
+
+| Reason shown | What it means and what to do |
+|---|---|
+| No topology snapshot has been published yet. | The map is still being built. Wait a few minutes after enabling. |
+| Inventory and legacy data only; discovery coverage and health are not established. | Only older scan data is available. Enable SNMP on a discovery profile, or connect a UniFi controller. |
+| Some devices or connections are outside this view. | The view is bounded. Expand the frontier buttons, or search for a device. |
+| Physical topology is turned off for this organization. | Turn on **Physical topology** in **Settings → Modules**. |
+| No collector reports physical connections for this site. | No SNMP discovery or mapped UniFi site covers this site. |
+| A physical collection is still running. | Wait for the scan to finish. |
+| An authorized collection did not report before its deadline. | The scanning agent went offline or the upload failed. Check the agent. |
+| A collection completed but found no neighbors. This does not mean the whole site is covered. | The polled devices returned empty neighbour tables. Check that LLDP/CDP is enabled on your switches. |
+| A device does not support a requested protocol. | For example, a switch without LLDP or Q-BRIDGE support. |
+| A collection timed out. / A collection failed. | Check that the agent can reach the device over SNMP. Each device gets 30 seconds per scan. |
+| A collection hit its row limit; some rows were left out. / A collection returned only part of its tables. | Very large tables were truncated. What was received is still used. |
+| A requested scope was not attempted. | The scan skipped a target. |
+| Physical evidence has not been confirmed recently. | Scans have stopped confirming links. Check the discovery schedule. |
+| No usable SNMP credentials are configured for a device. / A device rejected the configured SNMP credentials. | Fix the credentials on the discovery profile. |
+| Some connections were reported on ports that could not be identified. | The device reported a neighbour on a port Breeze couldn't match to a named interface. |
+| A UniFi controller site is not mapped to a Breeze site. / A UniFi controller site is mapped to another organization. | Fix the site mapping on the UniFi integration. |
+
+### Hide a connection from a view
+
+If a connection is correct but clutters a view (for example, a management VLAN membership you don't need on the Overview), you can hide it from that one view. You need `topology:write`.
+
+<Steps>
+
+1. Select the connection. In the inspector, enter a reason under **Why hide this connection?** (up to 500 characters).
+2. Click **Hide from this view**. The connection disappears from the current view's map, counts and neighbourhoods, and stays visible in the other views.
+3. To bring it back, click **Show accessible list**. The **Hidden (N)** table lists every connection hidden from the current view with its reason. Click **Restore to this view**. You can also select the connection and click **Restore to this view** in the inspector.
+
+</Steps>
+
+Hiding is purely presentational. The connection's evidence, health, impact analysis, monitoring and AI investigations are unchanged, and hiding never triggers a collection or diagnostic. Every hide and restore is audited.
+
+### Manual cables
+
+You can record a cable that discovery can't see, such as one through a patch panel or to an unmanaged device, through the API. Send `POST /topology/sites/:siteId/manual-relationships` with the two node IDs, `kind: "physical_link"`, and optionally the `sourceInterfaceId` and `targetInterfaceId` of the ports at each end, plus a `label` and `notes`. Each port must be a current port of that node.
+
+- Parallel cables between the same two devices are allowed, as long as they use different port pairs. Only an identical cable (same devices and same ports) is rejected as a duplicate.
+- A cable asserted without ports stays distinct from a measured cable, and shows as **Asserted**.
+- Manual cables are never changed or removed by later scans. Delete them with `DELETE /topology/sites/:siteId/manual-relationships/:relationshipId`.
+
+The explorer doesn't have a drawing tool for manual cables yet. The classic topology view's manual links are separate and are covered in [Network Topology (classic view)](/features/discovery/#network-topology-classic-view).
+
+---
+
+## Interface health and port history
+
+These features need the **Interface health** toggle, which also requires **Physical topology**.
+
+### Link health
+
+Select a connection to see **Link health**. It shows the overall status (*Healthy*, *Degraded*, *Check failed* or *Not measured*) and how long the measurement stays fresh. For each end's port, it also shows:
+
+- admin and link state, and capacity;
+- when it was last measured;
+- the latest received and sent rates, utilization, errors and discards.
+
+A value Breeze didn't measure shows as "Not measured", with the reason. When port counters don't describe the connection (for example, a logical route), the panel says so instead of showing a port. Click **Show history** on a port to open its history.
+
+### Port history
+
+The history panel charts **Throughput**, **Utilization** or **Errors and discards** for **Last hour**, **Last 24 hours** or **Last 7 days**. **Show data table** gives an accessible table of the same values.
+
+- Gaps are shown with their time range and reason. They are never interpolated.
+- Counter resets and wraps never produce a false spike.
+- If the port changed identity during the range, each port generation is charted separately and never joined.
+
+Samples are kept at full resolution for 7 days, as 5-minute rollups for 30 days, and as hourly rollups for 90 days.
+
+### Port measurement
+
+UniFi port link and speed arrive automatically. SNMP counters are collected only for ports you choose, and nothing is polled until you turn it on.
+
+<Steps>
+
+1. Select a switch or router on the map. In the inspector, find **Port measurement**.
+2. Tick the **Ports** to poll. Each port is labelled by what it connects to.
+3. Choose a **Collector**: an agent at the same site that can reach the device.
+4. Under **SNMP credentials**, choose a discovery profile at this site that has SNMP enabled and credentials configured. SNMP v1, v2c and v3 are supported.
+5. Choose an **Interval** (30, 60, 120 or 300 seconds) and when the measurement **Expires after** (7, 30 or 90 days).
+6. Click **Preview**. The preview shows the approximate number of samples per day and exactly what will be polled.
+7. Click **Turn on measurement**. If 2FA is enabled, confirm with your authenticator code or passkey in the **Confirm it's you** prompt.
+
+</Steps>
+
+Breeze polls the IF-MIB interface counters: octets, errors and discards, plus admin/oper status and speed. It uses 64-bit counters where the device supports them. **Turn off** stops polling immediately and doesn't need a second-factor check.
+
+An active measurement shows as **Measuring**. It changes to **Blocked**, with the reason, when something it depends on changes. Examples:
+
+- the measurement expires;
+- the collector moves or is removed;
+- the credentials or the polled port's identity change;
+- your permissions change;
+- **Interface health** is turned off.
+
+Only one measurement is active per device address. Turning on a new one replaces the previous one. A blocked measurement doesn't restart by itself. To resume, turn it on again.
+
+---
+
+## Recurring monitoring policies
+
+A monitoring policy runs one of the scheduled checks on an interval and raises an alert when it keeps failing. The checks are the reported gateway, the configured DNS, the internet path, or a configured target. Policies need the **Diagnostics** toggle.
+
+Open **Operations** in the toolbar to see the site's **Recurring monitoring** list. When you select a device or connection, the inspector's **Monitoring for this item** section shows the policies that target it.
+
+### How a policy is defined
+
+A policy definition has:
+
+- a check (`gateway_basic`, `dns_basic`, `internet_basic` or `target_connectivity`);
+- a subject (the reported gateway, the configured DNS or configured targets);
+- target keys and address families (IPv4, IPv6 or both);
+- where the check runs from: the device that reported the subject, or any eligible collector at the site;
+- an interval (1 to 60 minutes, with 10% jitter);
+- whether alerts are on, with failure and recovery thresholds (1 to 100 consecutive checks each).
+
+Policies are created and changed through the API (`POST`/`PATCH /topology/sites/:siteId/policies`) or delivered by a [shared configuration template](/features/discovery/#shared-configuration-templates). The explorer doesn't have a policy editor yet. Saving a policy with `enabled: true` records the *intent* to monitor. Nothing runs until a person turns it on in the explorer.
+
+### Turn a policy on
+
+<Steps>
+
+1. Open **Operations**, then click **Preview** on the policy. Review the check, subject, destinations, address families, where it's measured from, the interval, the alert thresholds and the approximate number of checks per day.
+2. Click **Enable monitoring**. If 2FA is enabled, confirm in the **Confirm it's you** prompt with your authenticator code or passkey. The confirmation applies only to this policy and expires after five minutes.
+3. The status changes to **Enabled** and shows the next and last check times. For each routing context and address family, it also shows the current run of failures and successes.
+
+</Steps>
+
+Only a person can turn a policy on. AI, MCP keys and automations can't arm or schedule monitoring. Up to two routing contexts are selected automatically when you turn a policy on. **Turn off** stops the policy immediately and doesn't need a second-factor check.
+
+A policy shows **Enable requested, not active** when its intent is saved but nobody has turned it on. It shows **Blocked**, with a reason, when something it depended on changed. Common reasons include:
+
+- the policy definition or its targets changed, so it needs re-enabling;
+- the policy was removed from the configuration or template;
+- the subject device was moved to another site or deleted. When this happens, the move confirmation reports how many topology policies were disabled;
+- the person who turned it on lost the required permissions, lost access to the site, had their MFA reset or was deactivated;
+- **Diagnostics** was turned off.
+
+A blocked policy never re-enables itself.
+
+### Policy alerts
+
+When alerts are on and a policy reaches its failure threshold, Breeze raises a **High** severity alert titled "Recurring … check failing: *policy key*". The alert:
+
+- **Is owned by the topology site**, not by whichever device ran the check. Who can see it follows access to that site.
+- **Is deduplicated.** Each policy, routing context and address family has at most one open alert.
+- **Re-notifies at most every five minutes.**
+- **Resolves automatically** after the recovery threshold of consecutive healthy checks.
+
+The policy panel links to the open alert. Deleting a site deletes its site-owned topology alerts.
+
+---
+
+## Diagnostics and routed path trace
+
+Select a device or connection and click **Diagnose** to run a check from an agent at the same site. You need `topology:execute` and `devices:execute`, and the **Diagnostics** toggle must be on.
+
+| Check | What it does |
+|---|---|
+| **Reported gateway** | Route lookup, then three pings to the device's observed gateway. |
+| **Configured DNS** | Queries a configured DNS name through the observed resolvers and compares the answer with the expected addresses. |
+| **Internet path** | DNS resolution, route lookup and a TCP connection (plus TLS and HTTP for HTTPS targets) to up to two configured targets. |
+| **Configured target** | The same steps against one configured target. |
+| **Routed path trace** | An ICMP traceroute toward the observed gateway, or toward the configured target. |
+
+Every check except **Reported gateway** needs **Allow checks against explicitly configured outbound targets** to be on in the site's **Configuration** panel, with targets configured there. Choose an address family (IPv4, IPv6, or both, which runs two checks) and an eligible origin, then click **Run diagnostic**. Results stream back step by step, and you can **Stop** a run in progress.
+
+### Traceroute limits
+
+The routed path trace is deliberately bounded:
+
+- **Max hops**: 1 to 30 (default 16).
+- **Probes per hop**: 1 or 2 (default 1).
+- One-second timeout per hop, and at most 60 seconds per trace.
+
+Hops that don't reply are shown as "Unknown (no reply)". Breeze doesn't guess them. The result also notes when more than one device responded at a hop, when the route changed during the trace, and when the output was truncated.
+
+A trace is an observed path from one origin at one moment. It never adds or changes topology connections, and it can't be scheduled as a recurring policy.
+
+<Aside type="note">
+  The trace needs the agent to open a raw ICMP socket on Linux and macOS, so the agent must run with the usual root privileges. On Windows it uses the built-in ICMP helper. Origins that can't trace are listed as ineligible, with the reason.
+</Aside>
+
+---
+
+## Possible impact and recent changes
+
+### Possible impact
+
+In the inspector, click **Show possible impact** for a device or connection. Breeze lists:
+
+- **Measured failures**: fresh failed checks in the last five minutes. If nothing is failing, it says so and treats the result as a what-if analysis.
+- **Possibly affected**: devices that depend on the selection through a known connection, each with how many hops away it is.
+
+The analysis labels its uncertainty:
+
+- "Another path exists; whether it carries traffic is not verified."
+- "No other path is known."
+- "Group membership does not prove a cable dependency." Group members are only ever *possibly* affected.
+- A suggested cause is shown only when measured failures corroborate it. Otherwise the panel says "No cause is suggested."
+
+The analysis ignores view hiding, so a connection hidden from a view still counts. If the map changes while you're reading, Breeze asks you to refresh.
+
+<Aside type="note">
+  Impact is an explanation only. It never changes, silences, acknowledges or closes an alert, and it never runs a check.
+</Aside>
+
+### Recent changes
+
+**Operations → Recent changes** lists what changed at the site in the **Last hour** or **Last 24 hours**. The list includes:
+
+- connections observed, withdrawn, added by hand or removed;
+- sources that restarted or stopped;
+- collection gaps;
+- measurement results;
+- configuration changes.
+
+The list is built from retained evidence. Items older than the evidence retention (30 days for observations) still appear, marked **Detail expired**.
+
+---
+
+## Explain this (AI)
+
+With **AI insights** on, the inspector for a device or connection shows **Explain this**. Click it to ask Breeze AI to explain the selection from its recorded evidence. The investigation only reads. Nothing runs unless you approve it.
+
+**What you need:**
+
+- **AI insights** turned on;
+- AI enabled for the organization, with a working AI provider;
+- `ai_sessions:use` and topology read access to the site.
+
+AI usage counts toward your normal AI budget.
+
+**How it works:**
+
+- **The investigation is pinned to one site.** It can read that site's map, connection evidence, link health, port history, recent changes, impact, monitoring status and diagnostic results, and nothing else. The site can't be changed later.
+- **Device names are replaced with aliases** such as `host-1a2b3c4d` before anything is sent to the model. Addresses and internal IDs are never sent. Your browser swaps the real names back in, but only for devices you can see.
+- **Every statement must cite evidence.** The answer is grouped into **Findings**, **Possible causes**, **Missing data** and **Next checks**.
+  - Possible causes are always labelled "Not verified" and are never shown as measured health.
+  - Each citation (*Evidence 1*, *Evidence 2*, …) links to the device, connection, observation or change it refers to.
+  - Before the answer is shown, Breeze checks that every citation exists and that you can still access it.
+  - Statements that depend on evidence that has since changed or disappeared are removed, and the answer is marked partial.
+- **If the answer can't be validated**, no AI statement is shown. The panel says "The explanation could not be validated, so no AI statement is shown." The evidence, health and diagnostics on the page keep working as usual.
+- **Text in the network data is treated as data.** A device name containing instructions can't steer the investigation.
+
+**Limits:**
+
+- 10 new investigations per user per hour, and 100 per organization per day;
+- 3 running at once per organization;
+- a bounded amount of evidence and output per investigation.
+
+When a limit is reached, the panel says so. Reloading a page with an open investigation brings it back.
+
+### Approving a proposed check
+
+An investigation can propose at most **one** diagnostic: one of the five checks above, from a specific origin. The **Proposed check** card shows:
+
+- the check;
+- the origin Breeze chose, which the server pins and the AI can't change;
+- the address family;
+- when the approval expires (15 minutes after the proposal).
+
+To approve it:
+
+- You must be the person who started the investigation.
+- You need `topology:execute` and `devices:execute` at the site.
+- You must confirm with a **fresh passkey or security-key assertion**, or with the Breeze mobile app's hardware-backed key. An authenticator (TOTP) code isn't accepted for this approval.
+
+Just before the check is released, Breeze re-checks everything:
+
+- your access and permissions;
+- that the toggles are still on;
+- that the proposal hasn't expired;
+- that the check it's about to run matches what you approved.
+
+If the site changed in a way that alters the check, it doesn't run. The approved check's status (*Queued*, *Running*, *Completed* and so on) then appears in the panel. If you lack execute access, the proposal is shown read-only.
+
+---
+
+## Using topology from MCP
+
+Breeze's MCP server exposes read-only topology tools:
+
+- `get_topology` and `get_link_evidence`;
+- `get_link_health` and `get_interface_history`;
+- `get_recent_network_changes` and `get_topology_impact`;
+- `get_topology_monitoring_status` and `get_diagnostic_run`.
+
+These tools only work with an API key restricted to **exactly one site**. Organization-wide and multi-site keys are refused. MCP can't turn on monitoring, port measurement or diagnostics. See [MCP Server](/features/mcp-server/).
+
+---
+
+## Known limitations
+
+- **CDP-only neighbours stay unresolved.** A CDP device ID is usually a hostname or serial number, and Breeze never matches devices by name. A neighbour seen only through CDP appears as a separate unbound endpoint with an attachment, not a measured cable. A measured cable needs LLDP from at least one end.
+- **LLDP neighbours resolve only by MAC address, or by an exact match with a polled device's own LLDP identity.** If two devices claim the same chassis ID, it resolves to neither. Devices that aren't polled over SNMP can't be matched this way.
+- **No link-aggregation (LAG) grouping.** Each LAG member port shows as its own cable. There is no parent interface, LACP state or member grouping.
+- **MAC-table competition is coarser without a complete VLAN mapping.** If a switch doesn't report which VLAN each forwarding table belongs to, more candidates compete and fewer are selected.
+- **UniFi uplinks are attachments, never cables.** Controllers report the uplink device's port but not the local port, so Breeze can't prove both ends. Wired clients are attachments on the reported uplink port. Wireless clients are direct associations, and VPN/Teleport clients are remote-access associations.
+- **UniFi-to-inventory matching is only as fresh as the last UniFi poll.** Controller devices are matched to Breeze devices by the agent-reported network adapter MAC addresses at the same site.
+- **Unbound endpoint nodes persist.** Neighbour devices Breeze couldn't match to inventory stay in the data after their connections are withdrawn. They're hidden with their connections, not deleted.
+- **No PoE state or per-port rates from UniFi.** For port traffic, use SNMP port measurement.
+- **An interrupted collection is retried whole.** If a device's report fails to upload, nothing from that attempt is kept, and the gap appears in the coverage panel.
+- **No editors yet for manual cables, monitoring policies or templates.** Use the API or configuration templates.
+
+---
+
+## API reference
+
+All paths are under `/topology/sites/:siteId`. The Site Map endpoints are listed in [Network Discovery → API Reference](/features/discovery/#site-map-1).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/exclusions?view=` | List connections hidden from a view (`limit` 1–200) |
+| POST | `/relationships/:relationshipId/exclusions` | Hide a connection from one view (`{view, reason}`) |
+| DELETE | `/relationships/:relationshipId/exclusions/:exclusionId` | Restore a hidden connection |
+| POST | `/manual-relationships` | Assert a connection, optionally with `sourceInterfaceId`/`targetInterfaceId` |
+| GET | `/relationships/:relationshipId/health` | Link health for a connection |
+| GET | `/interfaces/:interfaceId/history` | Port history (`resolution` `auto`/`raw`/`5m`/`1h`, up to 1,000 buckets, up to 8 series) |
+| GET | `/monitoring` | Policy and port-measurement status for the site |
+| POST | `/policies/:id/arm` | Turn a monitoring policy on (interactive session; step-up when 2FA is enabled) |
+| POST | `/policies/:id/disarm` | Turn a monitoring policy off |
+| POST | `/telemetry-arms` | Turn on SNMP port measurement (interactive session; step-up when 2FA is enabled) |
+| DELETE | `/telemetry-arms/:armId` | Turn off port measurement |
+| GET | `/impact` | Possible impact for a node or connection |
+| GET | `/changes` | Recent changes (a window of up to 24 hours) |
+| POST | `/diagnostic-runs` | Start a diagnostic, including `trace_route` with `{trace: {maxHops, probesPerHop}}` |
