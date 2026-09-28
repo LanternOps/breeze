@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -13,6 +13,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import type { M365LegacyStatus } from "./m365ConsentSummary";
 
 type Connection = {
   connected: boolean;
@@ -28,7 +29,20 @@ type SaveState = {
   message?: string;
 };
 
-export default function M365Integration() {
+interface M365IntegrationProps {
+  /** Reports the legacy connection's state so the tenant section can order the sub-tab. */
+  onStatusChange?: (status: M365LegacyStatus) => void;
+  /** Label the card "Legacy" (an existing direct connection alongside the consent path). */
+  legacyBadge?: boolean;
+  /** Say that this direct connection wins over a consent connection for the same tenant. */
+  showPrecedenceNote?: boolean;
+}
+
+export default function M365Integration({
+  onStatusChange,
+  legacyBadge = false,
+  showPrecedenceNote = false,
+}: M365IntegrationProps = {}) {
   const { t } = useTranslation("integrations");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -43,6 +57,21 @@ export default function M365Integration() {
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
 
   const isConnected = !!connection?.connected;
+
+  const status: M365LegacyStatus = loading
+    ? "loading"
+    : notEnabled
+      ? "not-enabled"
+      : isConnected
+        ? "connected"
+        : loadError
+          ? "error"
+          : "disconnected";
+  const onStatusChangeRef = useRef(onStatusChange);
+  onStatusChangeRef.current = onStatusChange;
+  useEffect(() => {
+    onStatusChangeRef.current?.(status);
+  }, [status]);
   const canSave =
     tenantId.trim().length > 0 &&
     clientId.trim().length > 0 &&
@@ -127,6 +156,8 @@ export default function M365Integration() {
   };
 
   const handleDisconnect = async () => {
+    // Same confirmation pattern as the consent steps' Disconnect.
+    if (!window.confirm(t("m365Integration.disconnectConfirm"))) return;
     setSaveState({ status: "saving" });
     try {
       const res = await fetchWithAuth("/m365/connection", { method: "DELETE" });
@@ -174,9 +205,9 @@ export default function M365Integration() {
             <Building2 className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold">
+            <h2 className="text-lg font-semibold">
               {t("m365Integration.microsoft365")}
-            </h1>
+            </h2>
             <p className="text-sm text-muted-foreground">
               {t("m365Integration.connectAnEntraAzureADAppRegistrationSo")}
             </p>
@@ -206,10 +237,20 @@ export default function M365Integration() {
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Building2 className="h-5 w-5" />
         </div>
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t("m365Integration.microsoft365")}
-          </h1>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold">
+              {t("m365Integration.microsoft365")}
+            </h2>
+            {legacyBadge && (
+              <span
+                data-testid="m365-legacy-badge"
+                className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              >
+                {t("m365Integration.legacyBadge")}
+              </span>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {t("m365Integration.connectAnEntraAzureADAppRegistrationSo2")}
           </p>
@@ -225,6 +266,15 @@ export default function M365Integration() {
         )}
       </div>
 
+      {showPrecedenceNote && (
+        <p
+          data-testid="m365-legacy-precedence-note"
+          className="rounded-md bg-muted p-3 text-sm text-muted-foreground"
+        >
+          {t("m365Integration.precedenceNote")}
+        </p>
+      )}
+
       {loadError && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {loadError}
@@ -233,9 +283,9 @@ export default function M365Integration() {
 
       {/* Connection card */}
       <div className="rounded-xl border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">
+        <h3 className="text-base font-semibold">
           {t("m365Integration.connection")}
-        </h2>
+        </h3>
         <p className="mb-4 text-sm text-muted-foreground">
           {t("m365Integration.enterTheTenantIdAppClientIdAnd")}
           {!isConnected && " Saving requires MFA verification."}
@@ -436,9 +486,9 @@ export default function M365Integration() {
       {/* Status card */}
       {isConnected && (
         <div className="rounded-xl border bg-card p-6 shadow-xs">
-          <h2 className="text-lg font-semibold">
+          <h3 className="text-base font-semibold">
             {t("m365Integration.connectionDetails")}
-          </h2>
+          </h3>
           <div className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between text-muted-foreground">
               <span>{t("m365Integration.tenant")}</span>

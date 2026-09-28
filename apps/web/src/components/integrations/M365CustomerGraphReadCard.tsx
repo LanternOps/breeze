@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   Loader2,
   PauseCircle,
@@ -20,6 +21,7 @@ import { handleActionError, runAction } from "../../lib/runAction";
 import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
+import type { M365ConsentStepSummary } from "./m365ConsentSummary";
 
 const STATUSES = [
   "pending-consent",
@@ -95,6 +97,10 @@ export type M365CustomerGraphReadCallbackResult =
 interface M365CustomerGraphReadCardProps {
   callbackResult?: M365CustomerGraphReadCallbackResult | null;
   callbackRefreshKey?: number;
+  /** Reports load state and connection identity to the tenant section. */
+  onStateChange?: (summary: M365ConsentStepSummary) => void;
+  /** The tenant panel header already shows the tenant name and ID. */
+  hideTenantIdentity?: boolean;
 }
 
 type Grant = {
@@ -382,6 +388,8 @@ function GrantList({ grants, testId }: { grants: Grant[]; testId?: string }) {
 export default function M365CustomerGraphReadCard({
   callbackResult = null,
   callbackRefreshKey = 0,
+  onStateChange,
+  hideTenantIdentity = false,
 }: M365CustomerGraphReadCardProps) {
   const { t } = useTranslation("integrations");
   const currentOrgId = useOrgStore((value) => value.currentOrgId);
@@ -637,6 +645,28 @@ export default function M365CustomerGraphReadCard({
   }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
 
   const connection = data?.connection ?? null;
+
+  // Report a projection of what this step loaded to the tenant section. The
+  // callback is read through a ref so a parent passing an inline function
+  // cannot turn this into a render loop.
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  const summary = useMemo<M365ConsentStepSummary>(() => ({
+    loadState,
+    onboardingEnabled: data?.onboardingEnabled ?? false,
+    connection: connection
+      ? {
+          tenantId: connection.tenantId,
+          displayName: connection.displayName,
+          lastVerifiedAt: connection.lastVerifiedAt,
+          status: connection.status,
+        }
+      : null,
+  }), [connection, data, loadState]);
+  useEffect(() => {
+    onStateChangeRef.current?.(summary);
+  }, [summary]);
+
   const reconciliationUnavailable = connection?.lastErrorCode === "grant_reconciliation_unavailable";
   const hasLastKnownGrantHealth = reconciliationUnavailable && connection.grantsVerifiedAt !== null;
   const grantHealthUnknown = reconciliationUnavailable && connection.grantsVerifiedAt === null;
@@ -702,9 +732,9 @@ export default function M365CustomerGraphReadCard({
 
   return (
     <section
-      className="rounded-xl border bg-card p-5 sm:p-6"
       aria-labelledby="customer-graph-read-title"
       aria-describedby={instanceUnavailable ? instanceUnavailableId : undefined}
+      data-testid="m365-read-step"
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-start gap-3">
@@ -712,8 +742,18 @@ export default function M365CustomerGraphReadCard({
             <ShieldCheck aria-hidden="true" className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <h2 id="customer-graph-read-title" className="text-lg font-semibold text-foreground">{t("m365CustomerGraphRead.title")}</h2>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{t("m365CustomerGraphRead.description")}</p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <h3 id="customer-graph-read-title" className="text-base font-semibold text-foreground">
+                <span className="font-normal text-muted-foreground">{t("m365TenantPanel.stepLabel", { number: 1 })} · </span>
+                {t("m365CustomerGraphRead.stepTitle")}
+              </h3>
+              {!connection && (
+                <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  {t("m365CustomerGraphRead.recommendedFirst")}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{t("m365CustomerGraphRead.stepDescription")}</p>
           </div>
         </div>
         {connection && (
@@ -760,7 +800,18 @@ export default function M365CustomerGraphReadCard({
       )}
 
       {loadState === "ready" && data && !instanceUnavailable && (
-        <div className="mt-6 space-y-6">
+        <div className="mt-5 space-y-6">
+          <div>
+            <p className="text-sm text-foreground">{t("m365CustomerGraphRead.capabilities.intro")}</p>
+            <ul className="mt-2 space-y-1.5 text-sm text-foreground">
+              {(["users", "devices", "posture"] as const).map((key) => (
+                <li key={key} className="flex items-start gap-2">
+                  <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <span>{t(/* i18n-dynamic */ `m365CustomerGraphRead.capabilities.${key}`)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
           {!data.onboardingEnabled && (
             <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
               {t("m365CustomerGraphRead.onboardingUnavailable")}
@@ -796,8 +847,12 @@ export default function M365CustomerGraphReadCard({
           {connection && (
             <div className="border-t pt-5">
               <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
-                <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.tenant")}</dt><dd className="mt-1 text-sm font-medium text-foreground">{connection.displayName || t("m365CustomerGraphRead.unnamedTenant")}</dd></div>
-                <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.tenantId")}</dt><dd className="mt-1 break-all font-mono text-xs text-foreground">{connection.tenantId || t("m365CustomerGraphRead.notVerified")}</dd></div>
+                {!hideTenantIdentity && (
+                  <>
+                    <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.tenant")}</dt><dd className="mt-1 text-sm font-medium text-foreground">{connection.displayName || t("m365CustomerGraphRead.unnamedTenant")}</dd></div>
+                    <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.tenantId")}</dt><dd className="mt-1 break-all font-mono text-xs text-foreground">{connection.tenantId || t("m365CustomerGraphRead.notVerified")}</dd></div>
+                  </>
+                )}
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.manifest")}</dt><dd className="mt-1 text-sm text-foreground">{t("m365CustomerGraphRead.manifestVersion", { version: connection.manifestVersion })}</dd></div>
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.grants.grantsVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.grantsVerifiedAt ? formatDateTime(connection.grantsVerifiedAt) : t("m365CustomerGraphRead.never")}</dd></div>
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphRead.lastVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.lastVerifiedAt ? formatDateTime(connection.lastVerifiedAt) : t("m365CustomerGraphRead.never")}</dd></div>
@@ -833,29 +888,35 @@ export default function M365CustomerGraphReadCard({
             </div>
           )}
 
-          <div className="grid gap-6 border-t pt-5 lg:grid-cols-2">
-            <div>
-              <h3 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphRead.grants.required")}</h3>
-              <GrantList grants={data.profile.requiredGrants} testId="required-grant" />
-            </div>
-            {connection && (
+          <details className="group border-t pt-5" data-testid="m365-read-permissions">
+            <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-md text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
+              <ChevronRight aria-hidden="true" className="h-4 w-4 transition-transform group-open:rotate-90" />
+              {t("m365CustomerGraphRead.showPermissions")}
+            </summary>
+            <div className="mt-3 grid gap-6 lg:grid-cols-2">
               <div>
-                <h3 className="mb-3 text-sm font-semibold text-foreground">{observedHeading}</h3>
-                {hasLastKnownGrantHealth && (
-                  <p className="mb-3 text-sm text-muted-foreground">{t("m365CustomerGraphRead.grants.lastKnownHelp")}</p>
-                )}
-                {grantHealthUnknown && (
-                  <p className="mb-3 text-sm text-muted-foreground">{t("m365CustomerGraphRead.grants.unknownHelp")}</p>
-                )}
-                <GrantList grants={connection.observedGrants} />
+                <h4 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphRead.grants.required")}</h4>
+                <GrantList grants={data.profile.requiredGrants} testId="required-grant" />
               </div>
-            )}
-          </div>
+              {connection && (
+                <div>
+                  <h4 className="mb-3 text-sm font-semibold text-foreground">{observedHeading}</h4>
+                  {hasLastKnownGrantHealth && (
+                    <p className="mb-3 text-sm text-muted-foreground">{t("m365CustomerGraphRead.grants.lastKnownHelp")}</p>
+                  )}
+                  {grantHealthUnknown && (
+                    <p className="mb-3 text-sm text-muted-foreground">{t("m365CustomerGraphRead.grants.unknownHelp")}</p>
+                  )}
+                  <GrantList grants={connection.observedGrants} />
+                </div>
+              )}
+            </div>
+          </details>
 
           {connection && (displayedMissingGrants.length > 0 || displayedUnexpectedGrants.length > 0) && (
             <div className="grid gap-6 border-t pt-5 lg:grid-cols-2">
               <div>
-                <h3 className="mb-3 text-sm font-semibold text-foreground">{missingHeading}</h3>
+                <h4 className="mb-3 text-sm font-semibold text-foreground">{missingHeading}</h4>
                 <GrantList grants={displayedMissingGrants} />
               </div>
               {displayedUnexpectedGrants.length > 0 && (
@@ -870,7 +931,7 @@ export default function M365CustomerGraphReadCard({
           <div className="flex flex-col gap-3 border-t pt-5 sm:flex-row sm:flex-wrap sm:items-center">
             <button type="button" onClick={startConsent} disabled={!canWrite || !data.onboardingEnabled || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
               {action === "consent" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
-              {connection ? t("m365CustomerGraphRead.actions.reconsent") : t("m365CustomerGraphRead.actions.connect")}
+              {connection ? t("m365CustomerGraphRead.actions.reconsent") : t("m365CustomerGraphRead.actions.connectTenant")}
             </button>
             {connection && (
               <>

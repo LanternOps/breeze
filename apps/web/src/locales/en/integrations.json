@@ -62,7 +62,8 @@
       "upgradeFailed": "Approval for the new permissions could not be started.",
       "syncNow": "Sync now",
       "syncFailed": "Tenant sync could not be requested.",
-      "syncSucceeded": "Tenant sync requested."
+      "syncSucceeded": "Tenant sync requested.",
+      "connectTenant": "Connect tenant"
     },
     "sync": {
       "lastSynced": "Last synced {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
+    },
+    "stepTitle": "Read access",
+    "stepDescription": "Read-only access granted by a customer administrator. Breeze never asks for a tenant secret or certificate.",
+    "recommendedFirst": "Recommended first",
+    "showPermissions": "Show Microsoft permissions",
+    "capabilities": {
+      "intro": "For AI lookups and reports, Breeze can:",
+      "users": "Look up users and groups",
+      "devices": "See devices and sign-ins",
+      "posture": "Review security posture"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Connection retest completed.",
       "disconnectWarning": "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
       "disconnectFailed": "The connection could not be disconnected.",
-      "disconnectSucceeded": "Breeze connection disconnected."
+      "disconnectSucceeded": "Breeze connection disconnected.",
+      "grant": "Grant admin actions…"
     },
     "errors": {
       "consent_expired": "The consent session expired. Start consent again.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
+    },
+    "stepTitle": "Admin actions",
+    "stepDescription": "Reset user passwords and disable user sign-in from Breeze.",
+    "readRequiredNote": "AI lookups and reports need Read access (step 1).",
+    "showPermissions": "Show Microsoft permissions",
+    "preflight": {
+      "title": "Before you continue to Microsoft",
+      "canDoIntro": "Breeze will be able to:",
+      "resetPasswords": "Reset user passwords",
+      "disableSignIn": "Disable user sign-in",
+      "adminRequired": "You must be signed in to Microsoft as a Global Administrator (or Privileged Role Administrator) for {{target}}.",
+      "revoke": "To revoke access later, disconnect here or remove the Breeze enterprise application in Microsoft Entra.",
+      "continue": "Continue to Microsoft",
+      "defaultTarget": "this organization's Microsoft 365 tenant"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Loading Microsoft 365 connections.",
+    "consentUnavailable": "Consent-based connection isn't available on this Breeze instance yet.",
+    "selectOrganization": "Select an organization to connect its Microsoft 365 tenant.",
+    "noTenantForOrg": "No Microsoft 365 tenant connected to {{orgName}}",
+    "noTenant": "No Microsoft 365 tenant connected to this organization",
+    "tenantId": "Tenant ID",
+    "copyTenantId": "Copy tenant ID",
+    "copied": "Tenant ID copied",
+    "lastVerified": "Last verified {{date}}",
+    "notVerifiedYet": "Not verified yet",
+    "stepLabel": "Step {{number}}",
+    "legacyDisclosure": "Advanced: use your own app registration (legacy)"
   },
   "communicationIntegrations": {
     "critical": "Critical",
@@ -566,7 +606,10 @@
     "hideSecret": "Hide secret",
     "showSecret": "Show secret",
     "updateConnection": "Update connection",
-    "saveAndVerify": "Save & verify"
+    "saveAndVerify": "Save & verify",
+    "legacyBadge": "Legacy",
+    "precedenceNote": "This legacy direct connection takes precedence over the consent-based connection for this tenant.",
+    "disconnectConfirm": "Disconnect the legacy direct connection? Breeze deletes the stored app registration credentials. The app registration itself stays in Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",

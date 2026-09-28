@@ -21,12 +21,12 @@ import SecurityIntegration from "./SecurityIntegration";
 import HuntressIntegration from "./HuntressIntegration";
 import MonitoringIntegration from "./MonitoringIntegration";
 import GoogleWorkspaceIntegration from "./GoogleWorkspaceIntegration";
-import M365Integration from "./M365Integration";
-import M365CustomerGraphReadCard, {
+import M365TenantSection from "./M365TenantSection";
+import {
   M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS,
   type M365CustomerGraphReadCallbackResult,
 } from "./M365CustomerGraphReadCard";
-import M365CustomerGraphActionsCard, {
+import {
   M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS,
   type M365CustomerGraphActionsCallbackResult,
 } from "./M365CustomerGraphActionsCard";
@@ -642,17 +642,12 @@ export default function IntegrationsPage({
         <GoogleWorkspaceIntegration />
       )}
       {activeTab === "cloud-tenants" && cloudTenantsSubTab === "m365" && (
-        <div className="space-y-6">
-          <M365Integration />
-          <M365CustomerGraphReadCard
-            callbackResult={visibleCustomerGraphReadResult}
-            callbackRefreshKey={customerGraphReadCallback.refreshKey}
-          />
-          <M365CustomerGraphActionsCard
-            callbackResult={visibleCustomerGraphActionsResult}
-            callbackRefreshKey={customerGraphActionsCallback.refreshKey}
-          />
-        </div>
+        <M365TenantSection
+          readCallbackResult={visibleCustomerGraphReadResult}
+          readCallbackRefreshKey={customerGraphReadCallback.refreshKey}
+          actionsCallbackResult={visibleCustomerGraphActionsResult}
+          actionsCallbackRefreshKey={customerGraphActionsCallback.refreshKey}
+        />
       )}
       {activeTab === "distributors" && isOrgScoped && (
         <p

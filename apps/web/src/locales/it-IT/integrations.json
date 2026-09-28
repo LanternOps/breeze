@@ -62,7 +62,8 @@
       "upgradeFailed": "Non è stato possibile avviare l'approvazione delle nuove autorizzazioni.",
       "syncNow": "Sincronizza ora",
       "syncFailed": "Non è stato possibile richiedere la sincronizzazione del tenant.",
-      "syncSucceeded": "Sincronizzazione del tenant richiesta."
+      "syncSucceeded": "Sincronizzazione del tenant richiesta.",
+      "connectTenant": "Collega tenant"
     },
     "sync": {
       "lastSynced": "Ultima sincronizzazione {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "Controllo dell'organizzazione Microsoft non riuscito. Ripeti il test della connessione.",
       "executor_unavailable": "Il servizio di verifica non è disponibile. Ripeti il test più tardi.",
       "unknown": "La verifica richiede attenzione. Ripeti il test della connessione o avvia di nuovo il consenso."
+    },
+    "stepTitle": "Accesso in lettura",
+    "stepDescription": "Accesso in sola lettura concesso da un amministratore del cliente. Breeze non chiede mai un segreto o un certificato del tenant.",
+    "recommendedFirst": "Consigliato per primo",
+    "showPermissions": "Mostra autorizzazioni Microsoft",
+    "capabilities": {
+      "intro": "Per ricerche IA e report, Breeze può:",
+      "users": "Cercare utenti e gruppi",
+      "devices": "Vedere dispositivi e accessi",
+      "posture": "Esaminare la postura di sicurezza"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Nuovo test della connessione completato.",
       "disconnectWarning": "La disconnessione impedisce a Breeze di usare questa connessione. Il consenso Microsoft a livello tenant resta attivo finché un amministratore del cliente non lo rimuove in Microsoft Entra.",
       "disconnectFailed": "Impossibile disconnettere la connessione.",
-      "disconnectSucceeded": "Connessione Breeze disconnessa."
+      "disconnectSucceeded": "Connessione Breeze disconnessa.",
+      "grant": "Concedi azioni amministrative…"
     },
     "errors": {
       "consent_expired": "La sessione di consenso è scaduta. Avvia di nuovo il consenso.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "Controllo dell'organizzazione Microsoft non riuscito. Ripeti il test della connessione.",
       "executor_unavailable": "Il servizio di verifica non è disponibile. Ripeti il test più tardi.",
       "unknown": "La verifica richiede attenzione. Ripeti il test della connessione o avvia di nuovo il consenso."
+    },
+    "stepTitle": "Azioni amministrative",
+    "stepDescription": "Reimpostare le password degli utenti e disattivarne l'accesso da Breeze.",
+    "readRequiredNote": "Ricerche IA e report richiedono l'accesso in lettura (passaggio 1).",
+    "showPermissions": "Mostra autorizzazioni Microsoft",
+    "preflight": {
+      "title": "Prima di continuare su Microsoft",
+      "canDoIntro": "Breeze potrà:",
+      "resetPasswords": "Reimpostare le password degli utenti",
+      "disableSignIn": "Disattivare l'accesso degli utenti",
+      "adminRequired": "Devi aver effettuato l'accesso a Microsoft come amministratore globale (o amministratore dei ruoli con privilegi) per {{target}}.",
+      "revoke": "Per revocare l'accesso in seguito, disconnetti qui o rimuovi l'applicazione aziendale Breeze in Microsoft Entra.",
+      "continue": "Continua su Microsoft",
+      "defaultTarget": "il tenant Microsoft 365 di questa organizzazione"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Caricamento delle connessioni Microsoft 365.",
+    "consentUnavailable": "La connessione basata sul consenso non è ancora disponibile su questa istanza di Breeze.",
+    "selectOrganization": "Seleziona un'organizzazione per collegarne il tenant Microsoft 365.",
+    "noTenantForOrg": "Nessun tenant Microsoft 365 collegato a {{orgName}}",
+    "noTenant": "Nessun tenant Microsoft 365 collegato a questa organizzazione",
+    "tenantId": "ID tenant",
+    "copyTenantId": "Copia ID tenant",
+    "copied": "ID tenant copiato",
+    "lastVerified": "Ultima verifica: {{date}}",
+    "notVerifiedYet": "Non ancora verificato",
+    "stepLabel": "Passaggio {{number}}",
+    "legacyDisclosure": "Avanzate: usa la tua registrazione dell'app (legacy)"
   },
   "communicationIntegrations": {
     "critical": "Critica",
@@ -566,7 +606,10 @@
     "hideSecret": "Nascondi secret",
     "showSecret": "Mostra secret",
     "updateConnection": "Aggiorna connessione",
-    "saveAndVerify": "Salva e verifica"
+    "saveAndVerify": "Salva e verifica",
+    "legacyBadge": "Metodo legacy",
+    "precedenceNote": "Questa connessione diretta legacy ha la precedenza sulla connessione basata sul consenso per questo tenant.",
+    "disconnectConfirm": "Disconnettere la connessione diretta legacy? Breeze elimina le credenziali salvate della registrazione dell'app. La registrazione dell'app resta in Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Stato dei dispositivi",

@@ -62,7 +62,8 @@
       "upgradeFailed": "L'approbation des nouvelles autorisations n'a pas pu être lancée.",
       "syncNow": "Synchroniser maintenant",
       "syncFailed": "Impossible de demander la synchronisation du locataire.",
-      "syncSucceeded": "Synchronisation du locataire demandée."
+      "syncSucceeded": "Synchronisation du locataire demandée.",
+      "connectTenant": "Connecter le locataire"
     },
     "sync": {
       "lastSynced": "Dernière synchronisation {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
+    },
+    "stepTitle": "Accès en lecture",
+    "stepDescription": "Accès en lecture seule accordé par un administrateur du client. Breeze ne demande jamais de secret ni de certificat de locataire.",
+    "recommendedFirst": "Recommandé en premier",
+    "showPermissions": "Afficher les autorisations Microsoft",
+    "capabilities": {
+      "intro": "Pour les recherches IA et les rapports, Breeze peut :",
+      "users": "Rechercher des utilisateurs et des groupes",
+      "devices": "Voir les appareils et les connexions",
+      "posture": "Examiner la posture de sécurité"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Le nouveau test de la connexion est terminé.",
       "disconnectWarning": "La déconnexion empêche Breeze d’utiliser cette connexion. Le consentement Microsoft à l’échelle du locataire reste actif jusqu’à ce qu’un administrateur du client le supprime dans Microsoft Entra.",
       "disconnectFailed": "La connexion n’a pas pu être déconnectée.",
-      "disconnectSucceeded": "La connexion Breeze a été déconnectée."
+      "disconnectSucceeded": "La connexion Breeze a été déconnectée.",
+      "grant": "Accorder les actions d'administration…"
     },
     "errors": {
       "consent_expired": "La session de consentement a expiré. Redémarrez le consentement.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
+    },
+    "stepTitle": "Actions d'administration",
+    "stepDescription": "Réinitialiser les mots de passe des utilisateurs et désactiver leur connexion depuis Breeze.",
+    "readRequiredNote": "Les recherches IA et les rapports nécessitent l'accès en lecture (étape 1).",
+    "showPermissions": "Afficher les autorisations Microsoft",
+    "preflight": {
+      "title": "Avant de continuer vers Microsoft",
+      "canDoIntro": "Breeze pourra :",
+      "resetPasswords": "Réinitialiser les mots de passe des utilisateurs",
+      "disableSignIn": "Désactiver la connexion des utilisateurs",
+      "adminRequired": "Vous devez être connecté à Microsoft en tant qu'administrateur général (ou administrateur de rôle privilégié) pour {{target}}.",
+      "revoke": "Pour révoquer l'accès plus tard, déconnectez ici ou supprimez l'application d'entreprise Breeze dans Microsoft Entra.",
+      "continue": "Continuer vers Microsoft",
+      "defaultTarget": "le locataire Microsoft 365 de cette organisation"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Chargement des connexions Microsoft 365.",
+    "consentUnavailable": "La connexion par consentement n'est pas encore disponible sur cette instance Breeze.",
+    "selectOrganization": "Sélectionnez une organisation pour connecter son locataire Microsoft 365.",
+    "noTenantForOrg": "Aucun locataire Microsoft 365 connecté à {{orgName}}",
+    "noTenant": "Aucun locataire Microsoft 365 connecté à cette organisation",
+    "tenantId": "ID du locataire",
+    "copyTenantId": "Copier l'ID du locataire",
+    "copied": "ID du locataire copié",
+    "lastVerified": "Dernière vérification : {{date}}",
+    "notVerifiedYet": "Pas encore vérifié",
+    "stepLabel": "Étape {{number}}",
+    "legacyDisclosure": "Avancé : utiliser votre propre inscription d'application (ancienne méthode)"
   },
   "communicationIntegrations": {
     "critical": "Critique",
@@ -566,7 +606,10 @@
     "hideSecret": "Cacher un secret",
     "showSecret": "Secret de l’émission",
     "updateConnection": "Mise à jour de la connexion",
-    "saveAndVerify": "Enregistrer et vérifier"
+    "saveAndVerify": "Enregistrer et vérifier",
+    "legacyBadge": "Ancienne méthode",
+    "precedenceNote": "Cette connexion directe (ancienne méthode) a priorité sur la connexion par consentement pour ce locataire.",
+    "disconnectConfirm": "Déconnecter la connexion directe (ancienne méthode) ? Breeze supprime les identifiants enregistrés de l'inscription d'application. L'inscription d'application reste dans Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Santé des dispositifs",
