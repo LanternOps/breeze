@@ -235,6 +235,50 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
   });
 });
 
+// axe (aria-valid-attr-value / aria-required-children): the active tab
+// button's aria-controls referenced an id with no matching element and no
+// role="tabpanel" anywhere on the page.
+describe('ConfigPolicyDetailPage — tab/panel ARIA wiring (#7179)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('pairs the active tab with a role="tabpanel" element matching its aria-controls id', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    const overviewTab = await screen.findByRole('tab', { name: /overview/i });
+    const controlsId = overviewTab.getAttribute('aria-controls');
+    expect(controlsId).toBeTruthy();
+
+    const panel = document.getElementById(controlsId!);
+    expect(panel).not.toBeNull();
+    expect(panel).toHaveAttribute('role', 'tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', overviewTab.id);
+  });
+
+  it('re-pairs the panel id/labelledby when a different tab becomes active', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+
+    // Under jsdom's zero-width layout Patches lives inside "More", so its
+    // trigger doesn't carry role="tab" — but the panel it labels must still
+    // exist, have role="tabpanel", and hold the Patches editor.
+    openFeatureTab('Patches');
+    const panel = screen.getByRole('tabpanel');
+    expect(panel.id).toBe('tab-patch-panel');
+    const labelledBy = panel.getAttribute('aria-labelledby');
+    expect(document.getElementById(labelledBy!)).not.toBeNull();
+    expect(panel).toContainElement(screen.getByTestId('patch-tab-editor'));
+  });
+});
+
 // Tabs are deep-linkable via the URL hash (feature-tab id === FeatureType key),
 // so a shared link / the contextual help button lands on the right tab.
 describe('ConfigPolicyDetailPage — URL hash deep-linking', () => {
