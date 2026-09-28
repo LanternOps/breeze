@@ -2029,9 +2029,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
       data.securityCapabilities?.scriptSecretEnvVersion,
     ),
-    // Same reasoning for the backup helper's storage-read protocol: this
-    // beat's report is authoritative over the (guarded) device write.
+    // Same reasoning for the backup helper's protocols: this beat's report
+    // is authoritative over the (guarded) device write.
     reportedBackupReadProtocolVersion: normalizeBackupReadProtocolVersion(data.backupReadProtocolVersion),
+    reportedBackupIntegrityProtocolVersion: normalizeBackupIntegrityProtocolVersion(data.backupIntegrityProtocolVersion),
+    reportedBackupWriteProtocolVersion: normalizeBackupWriteProtocolVersion(data.backupWriteProtocolVersion),
   });
 
   let networkContextReceipt;
