@@ -23,13 +23,22 @@ describe('providerRegistry', () => {
     expect(getAccountingProvider('quickbooks').displayName).toBe('QuickBooks');
   });
 
-  it('an unregistered provider supports nothing but still has a display name', async () => {
-    const { providerSupports, findAccountingProvider, accountingProviderDisplayName } = await import('./providerRegistry');
-    expect(findAccountingProvider('xero')).toBeNull();
-    expect(providerSupports('xero', 'connect')).toBe(false);
+  it('registers Xero with only the connect capability (W02)', async () => {
+    const {
+      findAccountingProvider, getAccountingProvider, providerSupports, accountingProviderDisplayName, listRegisteredAccountingProviders,
+    } = await import('./providerRegistry');
+    expect(findAccountingProvider('xero')?.displayName).toBe('Xero');
+    expect(getAccountingProvider('xero').capabilities).toEqual({
+      connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false,
+    });
+    expect(providerSupports('xero', 'connect')).toBe(true);
+    for (const cap of ['mapping', 'customerImport', 'invoicePush', 'paymentPull', 'paymentPush'] as const) {
+      expect(providerSupports('xero', cap)).toBe(false);
+    }
     expect(providerSupports('quickbooks', 'invoicePush')).toBe(true);
     expect(accountingProviderDisplayName('xero')).toBe('Xero');
     expect(accountingProviderDisplayName('quickbooks')).toBe('QuickBooks');
+    expect(listRegisteredAccountingProviders().map((p) => p.provider).sort()).toEqual(['quickbooks', 'xero']);
   });
 
   it('legacy untargeted jobs belong to QuickBooks (spec: a job destination is never reinterpreted)', async () => {
