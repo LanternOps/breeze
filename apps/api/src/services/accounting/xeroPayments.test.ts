@@ -6,12 +6,14 @@ vi.mock('./accountingRateLimit', () => ({
 }));
 
 import {
-  embedXeroPaymentMarker, extractXeroPaymentMarker, readXeroPaymentChanges, toChangeSetPaymentLine,
-  xeroPaymentHumanReference, XERO_PAYMENT_REF_MAX, XERO_RECONCILE_PAGE_SIZE,
+  createXeroPayment, deleteXeroPayment, embedXeroPaymentMarker, extractXeroPaymentMarker, readXeroPaymentChanges,
+  toChangeSetPaymentLine, XERO_PAYMENT_ACCOUNT_MISSING_MESSAGE, xeroPaymentHumanReference, xeroPaymentIdempotencyKey,
+  xeroPaymentPreflight, XERO_PAYMENT_REF_MAX, XERO_RECONCILE_PAGE_SIZE,
 } from './xeroPayments';
 import { buildPaymentPrivateNote } from './accountingPaymentMarker';
 import { XERO_RATE_LIMIT } from './xeroProvider';
 import type { AccountingConnection } from './accountingConnectionService';
+import type { AccountingPaymentPayload } from './types';
 
 const PAY_ID = '0f3c6f4e-5a1b-4c2d-9e8f-7a6b5c4d3e2f';
 const MARKER = buildPaymentPrivateNote(PAY_ID);
@@ -303,5 +305,218 @@ describe('readXeroPaymentChanges (refinements 9, 11)', () => {
       .mockResolvedValueOnce(json({ Invoices: [] }));
     const changes = await readXeroPaymentChanges(ctx, conn(), since);
     expect(changes.deletedPayments).toEqual([]);
+  });
+});
+
+describe('payment create (refinements 15, 17, 19)', () => {
+  const XI = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const payload = (over: Partial<AccountingPaymentPayload> = {}): AccountingPaymentPayload => ({
+    invoicePaymentId: PAY_ID, remoteCustomerId: 'xc-1', remoteInvoiceId: XI, amount: '107.00', currencyCode: 'GBP',
+    txnDate: '2026-09-02', reference: 'pi_1', marker: MARKER, pushGeneration: 0, ...over,
+  });
+  const reference = `${MARKER} | pi_1`;
+  const account = { defaultPaymentAccountRef: 'bank-acc-1' };
+  const ours = (over: Record<string, unknown> = {}) => payment({ PaymentID: 'xp-ours', Amount: 107, Reference: reference, Invoice: { InvoiceID: XI, Type: 'ACCREC' }, ...over });
+  let fetchMock: MockInstance<typeof fetch>;
+  const callsOf = () => fetchMock.mock.calls.map(([u, init]) => `${(init as RequestInit)?.method ?? 'GET'} ${String(u).replace('https://api.xero.com/api.xro/2.0/', '')}`);
+
+  beforeEach(() => { fetchMock = vi.spyOn(globalThis, 'fetch'); });
+
+  it('the key names the request identity: stable per (tenant, payment, generation), ≤128 chars', () => {
+    const k = xeroPaymentIdempotencyKey(TENANT, PAY_ID, 0);
+    expect(k).toMatch(/^breeze-pay-[0-9a-f]{64}$/);
+    expect(k.length).toBeLessThanOrEqual(128);
+    expect(xeroPaymentIdempotencyKey(TENANT, PAY_ID, 0)).toBe(k);
+    expect(xeroPaymentIdempotencyKey(TENANT, PAY_ID, 1)).not.toBe(k);
+    expect(xeroPaymentIdempotencyKey('other-tenant', PAY_ID, 0)).not.toBe(k);
+  });
+
+  it('preflight: no bank account → the operator message; an account → null', () => {
+    expect(xeroPaymentPreflight({ defaultPaymentAccountRef: null })).toBe(XERO_PAYMENT_ACCOUNT_MISSING_MESSAGE);
+    expect(xeroPaymentPreflight({ defaultPaymentAccountRef: '  ' })).toBe(XERO_PAYMENT_ACCOUNT_MISSING_MESSAGE);
+    expect(xeroPaymentPreflight(account)).toBeNull();
+  });
+
+  it('looks up by invoice first, then PUTs one payment with the explicit key and the exact body', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Payments: [ours({ UpdatedDateUTC: msDate('2026-09-27T09:00:00Z') })] }));
+
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .resolves.toEqual({ id: 'xp-ours', remoteVersion: '2026-09-27T09:00:00.000Z' });
+
+    expect(callsOf()).toEqual([
+      // xeroQuery uses encodeURIComponent, which leaves ( and ) literal.
+      `GET Payments?where=Invoice.InvoiceID%3D%3Dguid(%22${XI}%22)&page=1&pageSize=1000`,
+      'PUT Payments?summarizeErrors=true',
+    ]);
+    const put = fetchMock.mock.calls[1]![1] as RequestInit;
+    expect(new Headers(put.headers).get('idempotency-key')).toBe(xeroPaymentIdempotencyKey(TENANT, PAY_ID, 0));
+    expect(JSON.parse(String(put.body))).toEqual({ Payments: [{
+      Invoice: { InvoiceID: XI }, Account: { AccountID: 'bank-acc-1' }, Date: '2026-09-02', Amount: 107, Reference: reference,
+    }] });
+  });
+
+  it('adopts instead of creating when our marker is already on the invoice (lost earlier response)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [ours()] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference)).resolves.toMatchObject({ id: 'xp-ours' });
+    expect(callsOf()).toEqual([expect.stringMatching(/^GET Payments\?where=/)]);
+  });
+
+  it('ignores foreign and other-invoice payments in the lookup (a re-owned push also ignores its DELETED predecessor)', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [
+        ours({ PaymentID: 'gone', Status: 'DELETED' }),
+        payment({ PaymentID: 'hand', Reference: 'CHQ 1', Invoice: { InvoiceID: XI } }),
+        ours({ PaymentID: 'elsewhere', Invoice: { InvoiceID: 'ffffffff-ffff-ffff-ffff-ffffffffffff' } }),
+      ] }))
+      .mockResolvedValueOnce(json({ Payments: [ours({ PaymentID: 'new' })] }));
+    await expect(createXeroPayment(ctx, account, payload({ pushGeneration: 2 }), reference)).resolves.toMatchObject({ id: 'new' });
+  });
+
+  it('two live hits refuse with duplicate_key (never guess)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [ours({ PaymentID: 'a' }), ours({ PaymentID: 'b' })] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'duplicate_key' });
+  });
+
+  it('a live hit with a different amount is never adopted (quorum finding 6)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [ours({ Amount: 99.99 })] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'duplicate_key' });
+    expect(callsOf()).toHaveLength(1); // no PUT
+  });
+
+  it('a live hit in a different currency is never adopted (quorum finding 6)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [ours({ Invoice: { InvoiceID: XI, Type: 'ACCREC', CurrencyCode: 'USD' } })] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'duplicate_key' });
+    expect(callsOf()).toHaveLength(1); // no PUT
+  });
+
+  it('only a DELETED hit on a first push: refuse remote_deleted, never resurrect (quorum finding 4)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [ours({ Status: 'DELETED' })] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'remote_deleted' });
+    expect(callsOf()).toHaveLength(1);
+  });
+
+  it('only a DELETED hit on a RE-OWNED push (generation > 0): creates anew', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [ours({ Status: 'DELETED' })] }))
+      .mockResolvedValueOnce(json({ Payments: [ours({ PaymentID: 'xp-new' })] }));
+    await expect(createXeroPayment(ctx, account, payload({ pushGeneration: 1 }), reference)).resolves.toMatchObject({ id: 'xp-new' });
+  });
+
+  it('a lookup that cannot be enumerated in one page fails closed (quorum finding 5)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: Array.from({ length: XERO_RECONCILE_PAGE_SIZE }, (_, i) => payment({ PaymentID: `p${i}`, Invoice: { InvoiceID: XI } })) }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'duplicate_key' });
+    expect(callsOf()).toHaveLength(1);
+  });
+
+  it('a timed-out or 5xx create looks again and adopts what landed', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Message: 'Service unavailable' }, 503))
+      .mockResolvedValueOnce(json({ Payments: [ours()] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference)).resolves.toMatchObject({ id: 'xp-ours' });
+  });
+
+  it('a key-reuse 400 (transient) looks again and adopts', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Elements: [{ ValidationErrors: [{ Message: 'Idempotency Key: breeze-pay-x is used with a different request.' }] }] }, 400))
+      .mockResolvedValueOnce(json({ Payments: [ours()] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference)).resolves.toMatchObject({ id: 'xp-ours' });
+  });
+
+  it('a transient outcome with nothing found rethrows the original (retryable) error', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Message: 'Service unavailable' }, 503))
+      .mockResolvedValueOnce(json({ Payments: [] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference)).rejects.toMatchObject({ kind: 'transient', httpStatus: 503 });
+  });
+
+  it('a 2xx element carrying ValidationErrors is a classified validation failure (refinement 19)', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Payments: [{ HasValidationErrors: true, ValidationErrors: [{ Message: 'Payment amount exceeds the amount outstanding on this document' }] }] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'amount_exceeds_due' });
+  });
+
+  it('a 2xx create whose row is already DELETED is never recorded as created', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [] }))
+      .mockResolvedValueOnce(json({ Payments: [ours({ Status: 'DELETED' })] }));
+    await expect(createXeroPayment(ctx, account, payload(), reference))
+      .rejects.toMatchObject({ kind: 'validation', providerCode: 'remote_deleted' });
+  });
+
+  it('a non-GUID invoice id is refused before any call (it is interpolated into a where clause)', async () => {
+    await expect(createXeroPayment(ctx, account, payload({ remoteInvoiceId: 'x")||true||("' }), reference))
+      .rejects.toMatchObject({ kind: 'validation' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses without a bank account, before any call (defence behind the core preflight)', async () => {
+    await expect(createXeroPayment(ctx, { defaultPaymentAccountRef: null }, payload(), reference)).rejects.toMatchObject({ kind: 'validation' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('payment delete (refinement 18)', () => {
+  const XP = '12345678-1234-1234-1234-123456789012';
+  let fetchMock: MockInstance<typeof fetch>;
+  beforeEach(() => { fetchMock = vi.spyOn(globalThis, 'fetch'); });
+
+  it('reads, then POSTs Status DELETED without an idempotency key', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP })] }))
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP, Status: 'DELETED' })] }));
+    await expect(deleteXeroPayment(ctx, XP)).resolves.toBe('deleted');
+    const post = fetchMock.mock.calls[1]!;
+    expect(String(post[0])).toBe(`https://api.xero.com/api.xro/2.0/Payments/${XP}`);
+    expect((post[1] as RequestInit).method).toBe('POST');
+    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({ Status: 'DELETED' });
+    expect(new Headers((post[1] as RequestInit).headers).get('idempotency-key')).toBeNull();
+  });
+
+  it.each([
+    ['a 404 on the read', () => fetchMock.mockResolvedValueOnce(json({ Message: 'not found' }, 404))],
+    ['an already DELETED payment', () => fetchMock.mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP, Status: 'DELETED' })] }))],
+  ])('%s is already_absent with no write', async (_l, arrange) => {
+    arrange();
+    await expect(deleteXeroPayment(ctx, XP)).resolves.toBe('already_absent');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['an empty Payments list', { Payments: [] }],
+    ['a null body', null],
+  ])('a 2xx read with %s is transient, never already_absent (fail closed), and writes nothing', async (_l, body) => {
+    fetchMock.mockResolvedValueOnce(json(body));
+    await expect(deleteXeroPayment(ctx, XP)).rejects.toMatchObject({ kind: 'transient' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reconciled payment is refused as remote_locked without writing', async () => {
+    fetchMock.mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP, IsReconciled: true })] }));
+    await expect(deleteXeroPayment(ctx, XP)).rejects.toMatchObject({ kind: 'validation', providerCode: 'remote_locked' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 404 on the POST (deleted in between) is already_absent', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ Payments: [payment({ PaymentID: XP })] }))
+      .mockResolvedValueOnce(json({ Message: 'not found' }, 404));
+    await expect(deleteXeroPayment(ctx, XP)).resolves.toBe('already_absent');
+  });
+
+  it('a non-GUID payment id is refused before any call', async () => {
+    await expect(deleteXeroPayment(ctx, '181')).rejects.toMatchObject({ kind: 'validation' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
