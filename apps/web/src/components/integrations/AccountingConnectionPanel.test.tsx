@@ -345,6 +345,20 @@ describe("AccountingConnectionPanel", () => {
     expect(showToast).not.toHaveBeenCalled();
     expect(window.location.search).toBe("?accounting=xero&error=provider_conflict");
   });
+
+  it("toasts a warning to pick a Xero organisation on ?select_tenant=1 and strips the query params", async () => {
+    window.history.replaceState({}, "", "/integrations?accounting=xero&select_tenant=1#xero");
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      jsonResponse(url === "/accounting/xero" ? { ...disconnected, status: "pending_tenant" } : { count: 0, data: [] }));
+    render(<AccountingConnectionPanel provider="xero" />);
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "warning",
+        message: "Choose which Xero organisation to connect.",
+      }),
+    );
+    expect(window.location.search).toBe("");
+  });
 });
 
 // ─── Phase D: payment pull-back controls ────────────────────────────────────
@@ -823,5 +837,180 @@ describe("owed QuickBooks operations", () => {
         "Connect your QuickBooks Online company to sync customers, invoices, and payments. Breeze stays your system of record.",
       ),
     ).toBeTruthy();
+  });
+});
+
+// ─── Xero W02: capability gating, tenant picker, branded connect/disconnect,
+//     specific OAuth-return errors ───────────────────────────────────────────
+function mockStatus(path: string, status: unknown) {
+  fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url === path) return jsonResponse(status);
+    if (url === `${path}/owed-operations`) return jsonResponse({ count: 0, data: [] });
+    return jsonResponse({}, 404);
+  });
+}
+function mockJson(path: string, body: unknown, status = 200) {
+  const prev = fetchWithAuth.getMockImplementation();
+  fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === path) return jsonResponse(body, status);
+    return prev ? prev(url, init) : jsonResponse({}, 404);
+  });
+}
+const fetchWithAuthMock = fetchWithAuth;
+const showToastMock = showToast;
+
+describe("Xero W02 panel behaviour", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scope = "partner";
+    canWriteInvoices = true;
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  const xeroStatus = (over = {}) => ({
+    status: "connected", environment: "production", pushMode: "auto", connectedAt: null, lastError: null,
+    pullPayments: true, pushPayments: true, lastReconcileAt: null,
+    capabilities: { connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false },
+    features: { tenantSelection: true, settingsOptions: false }, ...over,
+  });
+
+  it("hides every control whose capability is false (Xero W02: connect only)", async () => {
+    mockStatus("/accounting/xero", xeroStatus());
+    render(<AccountingConnectionPanel provider="xero" />);
+    await screen.findByTestId("xero-disconnect");
+    for (const id of [
+      "xero-pushmode", "xero-pullpayments", "xero-pushpayments", "xero-reconcile-now", "xero-owed-operations",
+      "xero-mapping-workbench", "xero-import-panel",
+    ]) {
+      expect(screen.queryByTestId(id)).toBeNull();
+    }
+  });
+
+  it("QuickBooks without a capabilities field (older API) still shows every control", async () => {
+    mockStatus("/accounting/quickbooks", connected);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    for (const id of [
+      "quickbooks-pushmode", "quickbooks-pullpayments", "quickbooks-pushpayments", "quickbooks-reconcile-now", "quickbooks-owed-operations",
+      "quickbooks-mapping-workbench", "quickbooks-import-panel",
+    ]) {
+      expect(await screen.findByTestId(id)).toBeTruthy();
+    }
+  });
+
+  it("pending_tenant renders the organisation picker instead of the connect card", async () => {
+    mockStatus("/accounting/xero", xeroStatus({ status: "pending_tenant" }));
+    mockJson("/accounting/xero/tenants", { data: [{ tenantId: "t-A", name: "Alpha" }], expiresAt: null });
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(await screen.findByTestId("xero-tenant-picker")).toBeTruthy();
+    expect(screen.queryByTestId("xero-connect")).toBeNull();
+  });
+
+  it("shows a pending-tenant status pill", async () => {
+    mockStatus("/accounting/xero", xeroStatus({ status: "pending_tenant" }));
+    mockJson("/accounting/xero/tenants", { data: [{ tenantId: "t-A", name: "Alpha" }], expiresAt: null });
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(await screen.findByTestId("xero-status-pending")).toBeTruthy();
+  });
+
+  it("survives loading → loaded without a hook-order error (new state declared before the early returns)", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    let resolveStatus!: (r: Response) => void;
+    fetchWithAuthMock.mockImplementation((url: string) => url === "/accounting/xero"
+      ? new Promise<Response>((r) => { resolveStatus = r; })
+      : Promise.resolve(jsonResponse({})));
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(screen.getByTestId("xero-loading")).toBeTruthy();
+    resolveStatus(jsonResponse(xeroStatus()));
+    fireEvent.click(await screen.findByTestId("xero-disconnect"));
+    expect(await screen.findByTestId("xero-disconnect-confirm")).toBeTruthy();
+    expect(errors.mock.calls.flat().join(" ")).not.toMatch(/Rendered more hooks|change in the order of Hooks/);
+    errors.mockRestore();
+  });
+
+  it("Xero disconnect asks for confirmation; QuickBooks does not", async () => {
+    mockStatus("/accounting/xero", xeroStatus());
+    render(<AccountingConnectionPanel provider="xero" />);
+    fireEvent.click(await screen.findByTestId("xero-disconnect"));
+    expect(await screen.findByTestId("xero-disconnect-confirm")).toBeTruthy();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/xero/disconnect", expect.anything());
+  });
+
+  it("confirming the Xero disconnect dialog calls the disconnect endpoint and onConnectionChanged", async () => {
+    const onConnectionChanged = vi.fn();
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/accounting/xero/disconnect" && init?.method === "POST") return jsonResponse({});
+      if (url === "/accounting/xero") return jsonResponse(disconnected);
+      return jsonResponse({ count: 0, data: [] });
+    });
+    fetchWithAuthMock.mockImplementationOnce(async () => jsonResponse(xeroStatus()));
+    render(<AccountingConnectionPanel provider="xero" onConnectionChanged={onConnectionChanged} />);
+    fireEvent.click(await screen.findByTestId("xero-disconnect"));
+    fireEvent.click(await screen.findByTestId("xero-disconnect-confirm"));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      "/accounting/xero/disconnect", expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(onConnectionChanged).toHaveBeenCalled());
+  });
+
+  it.each([
+    ["tenant_held", "This Xero organisation is connected to another Breeze account."],
+    ["consent_denied", "You cancelled the Xero sign-in. Nothing was connected."],
+    ["auth_event_missing", "Xero didn't confirm which organisations you authorised. Please connect again."],
+  ])("OAuth return error=%s shows its specific message", async (code, message) => {
+    window.history.replaceState({}, "", `/integrations?accounting=xero&error=${code}#xero`);
+    mockStatus("/accounting/xero", xeroStatus({ status: "disconnected" }));
+    render(<AccountingConnectionPanel provider="xero" />);
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error", message })));
+  });
+
+  // Reconnect copy is gated on features.tenantSelection, never on the
+  // provider id — shown for Xero (feature true), absent for QuickBooks
+  // (feature false/missing), even though both are reauth_required.
+  it("shows the 'reconnect keeps organisation' note for Xero reauth_required with tenantSelection", async () => {
+    mockStatus("/accounting/xero", xeroStatus({ status: "reauth_required" }));
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(await screen.findByTestId("xero-reconnect-keeps-org")).toBeTruthy();
+  });
+
+  it("does not show the 'reconnect keeps organisation' note for QuickBooks reauth_required", async () => {
+    mockStatus("/accounting/quickbooks", {
+      status: "reauth_required", environment: "production", pushMode: "auto",
+      connectedAt: null, lastError: null,
+    });
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await screen.findByTestId("quickbooks-connect");
+    expect(screen.queryByTestId("quickbooks-reconnect-keeps-org")).toBeNull();
+  });
+
+  it("skips the owed-operations fetch when the connection cannot push payments", async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url === "/accounting/xero") return jsonResponse(xeroStatus());
+      if (url === "/accounting/xero/owed-operations") return jsonResponse({ count: 3, data: [] });
+      return jsonResponse({}, 404);
+    });
+    render(<AccountingConnectionPanel provider="xero" />);
+    await screen.findByTestId("xero-disconnect");
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/xero/owed-operations");
+  });
+
+  // The settings step is gated on the FEATURE, never the provider id.
+  it("renders the settings step for Xero when features.settingsOptions is true", async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url === "/accounting/xero") return jsonResponse(xeroStatus({ features: { tenantSelection: true, settingsOptions: true } }));
+      if (url === "/accounting/xero/settings/options") {
+        return jsonResponse({ data: { organisation: { name: "Acme", isDemoCompany: false }, incomeAccounts: [], taxRates: [], bankAccounts: [] } });
+      }
+      return jsonResponse({}, 404);
+    });
+    render(<AccountingConnectionPanel provider="xero" />);
+    expect(await screen.findByTestId("xero-settings-step")).toBeTruthy();
+  });
+
+  it("QuickBooks with no features field never renders or fetches the settings step", async () => {
+    mockStatus("/accounting/quickbooks", connected);
+    render(<AccountingConnectionPanel provider="quickbooks" />);
+    await screen.findByTestId("quickbooks-pushmode");
+    expect(screen.queryByTestId("quickbooks-settings-step")).toBeNull();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/accounting/quickbooks/settings/options");
   });
 });

@@ -17,6 +17,11 @@ interface Props {
    * the same answer that decides which cards render — one request, one truth.
    */
   onLoaded?: (providers: AccountingProvidersResponse | null) => void;
+  /**
+   * Bumped by the parent after a connection change (disconnect, tenant pick)
+   * so the cards re-fetch and reflect the new state without a full reload.
+   */
+  refreshKey?: number;
 }
 
 /**
@@ -28,7 +33,7 @@ interface Props {
  * disconnect first — the API would answer a connect there with 409
  * `accounting_provider_conflict` anyway.
  */
-export default function AccountingProviderCards({ selected, onSelect, onLoaded }: Props) {
+export default function AccountingProviderCards({ selected, onSelect, onLoaded, refreshKey }: Props) {
   const { t } = useTranslation('integrations');
   const [state, setState] = useState<AccountingProvidersResponse | null>(null);
   const onLoadedRef = useRef(onLoaded);
@@ -46,7 +51,7 @@ export default function AccountingProviderCards({ selected, onSelect, onLoaded }
     return () => {
       live = false;
     };
-  }, []);
+  }, [refreshKey]);
 
   if (!state) return null;
   const active = state.activeConnection;
@@ -74,6 +79,11 @@ export default function AccountingProviderCards({ selected, onSelect, onLoaded }
           // not claim "Connected" (finding: it read that way even when the
           // connection needed reauth).
           const needsReauth = active?.provider === p.id && active.status === 'reauth_required';
+          const pendingTenant = active?.provider === p.id && active.status === 'pending_tenant';
+          // Another provider's card is blocked by a connection that hasn't
+          // finished tenant selection yet — "disconnect first" doesn't apply
+          // (there's nothing connected to disconnect), so it gets its own copy.
+          const blockedByPendingTenant = blocked && active?.status === 'pending_tenant';
           return (
             <button
               key={p.id}
@@ -90,12 +100,16 @@ export default function AccountingProviderCards({ selected, onSelect, onLoaded }
               <div className="font-medium">{p.displayName}</div>
               <div className="text-sm text-muted-foreground">
                 {blocked
-                  ? t('accountingProviders.disconnectOtherFirst', { provider: activeName })
-                  : needsReauth
-                    ? t('accountingProviders.reconnectRequired')
-                    : active?.provider === p.id
-                      ? t('accountingProviders.connected')
-                      : t('accountingProviders.notConnected')}
+                  ? blockedByPendingTenant
+                    ? t('accountingProviders.finishOtherFirst', { provider: activeName })
+                    : t('accountingProviders.disconnectOtherFirst', { provider: activeName })
+                  : pendingTenant
+                    ? t('accountingProviders.pendingTenant')
+                    : needsReauth
+                      ? t('accountingProviders.reconnectRequired')
+                      : active?.provider === p.id
+                        ? t('accountingProviders.connected')
+                        : t('accountingProviders.notConnected')}
               </div>
             </button>
           );

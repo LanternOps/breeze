@@ -782,6 +782,8 @@
     "notConnected": "Non connecté",
     "reconnectRequired": "Reconnexion requise",
     "disconnectOtherFirst": "Déconnectez d'abord {{provider}}",
+    "pendingTenant": "Choisissez une organisation",
+    "finishOtherFirst": "Terminez ou annulez d'abord la connexion {{provider}}",
     "loadFailed": "Impossible de charger les fournisseurs comptables. Actualisez la page pour réessayer.",
     "noProviderConfigured": "Aucun fournisseur comptable n'est configuré sur cette instance."
   },
@@ -1098,7 +1100,55 @@
     "syncNowQueued": "Synchronisation des paiements mise en file d'attente.",
     "syncNowNotQueued": "Impossible de mettre la synchronisation des paiements en file d'attente. Réessayez sous peu.",
     "syncNowPullDisabled": "La synchronisation des paiements est désactivée pour cette connexion – activez Synchronisation des paiements ou Envoi des paiements pour synchroniser maintenant.",
-    "failedToSyncNow": "Impossible de démarrer la synchronisation des paiements."
+    "failedToSyncNow": "Impossible de démarrer la synchronisation des paiements.",
+    "tenantPicker": {
+      "title": "Choisissez votre organisation {{provider}}",
+      "description": "Vous avez autorisé plus d'une organisation. Breeze se connecte à une seule; les autres sont retirées de cette connexion.",
+      "loadFailed": "Impossible de charger vos organisations depuis {{provider}}.",
+      "expired": "Cette connexion à {{provider}} a expiré. Annulez et reconnectez-vous.",
+      "connect": "Connecter l'organisation",
+      "cancel": "Annuler la connexion",
+      "selectFailed": "Impossible de connecter cette organisation.",
+      "cancelFailed": "Impossible d'annuler la connexion.",
+      "connected": "Organisation {{provider}} connectée",
+      "cancelled": "Connexion {{provider}} annulée",
+      "chooseFirst": "Choisissez d'abord une organisation",
+      "grantSuperseded": "Une connexion {{provider}} plus récente a remplacé celle-ci. Choisissez l'organisation à nouveau.",
+      "deadline": "Choisissez une organisation avant {{time}}.",
+      "tenantHeld": "Cette organisation {{provider}} est déjà connectée à un autre compte Breeze. Choisissez une autre organisation ou annulez la connexion.",
+      "retry": "Réessayer"
+    },
+    "connectErrors": {
+      "tenantHeld": "Cette organisation {{provider}} est déjà connectée à un autre compte Breeze.",
+      "authEventMissing": "{{provider}} n'a pas confirmé quelles organisations vous avez autorisées. Veuillez vous reconnecter.",
+      "noOrganisation": "Aucune organisation {{provider}} n'a été autorisée. Choisissez une organisation sur l'écran de consentement de {{provider}}.",
+      "tenantLookupFailed": "Impossible de lire vos organisations {{provider}}. Veuillez réessayer.",
+      "consentDenied": "Vous avez annulé la connexion à {{provider}}. Rien n'a été connecté.",
+      "selectTenant": "Choisissez l'organisation {{provider}} à connecter."
+    },
+    "disconnectConfirm": {
+      "title": "Se déconnecter de {{provider}}?",
+      "message": "Breeze cessera de se synchroniser avec {{provider}} et retirera sa connexion dans {{provider}}. Vous pouvez vous reconnecter en tout temps.",
+      "confirm": "Déconnecter"
+    },
+    "reconnectKeepsOrganisation": "La reconnexion conserve votre organisation {{provider}} actuelle. Toute autre organisation cochée sur l'écran {{provider}} est libérée.",
+    "pendingTenant": "Choisir une organisation",
+    "settingsStep": {
+      "title": "Paramètres {{provider}}",
+      "organisation": "Organisation",
+      "demoBadge": "Entreprise de démonstration",
+      "incomeAccount": "Compte de revenus par défaut",
+      "taxRate": "Taux de taxe pour les lignes taxables",
+      "exemptTaxRate": "Taux de taxe pour les lignes non taxables",
+      "paymentAccount": "Compte bancaire pour les paiements",
+      "notSet": "Non défini",
+      "save": "Enregistrer les paramètres",
+      "saved": "Paramètres {{provider}} enregistrés",
+      "saveFailed": "Impossible d'enregistrer les paramètres {{provider}}.",
+      "loadFailed": "Impossible de charger les paramètres de {{provider}}.",
+      "retry": "Réessayer",
+      "pickDefaults": "Choisissez les valeurs par défaut que Breeze utilise avec {{provider}}. Si vous avez changé d'organisation, choisissez-les de nouveau — les choix de l'ancienne organisation ont été effacés."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Association des clients et des articles",

@@ -438,7 +438,7 @@ export const PSA_PROVIDER_NAMES: Record<string, string> = {
 /** Where a connector is repaired — the /integrations hub tab hashes (IntegrationsPage.tsx) and the PSA page. */
 export const CONNECTOR_SETTINGS_HREF: Record<ConnectorSystem, string> = {
   quickbooks: '/integrations#quickbooks',
-  xero: '/integrations#accounting',
+  xero: '/integrations#xero',
   psa: '/integrations/psa',
   pax8: '/integrations#pax8',
   huntress: '/integrations#huntress',

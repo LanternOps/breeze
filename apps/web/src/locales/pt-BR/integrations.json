@@ -782,6 +782,8 @@
     "notConnected": "Não conectado",
     "reconnectRequired": "Reconexão necessária",
     "disconnectOtherFirst": "Desconecte {{provider}} primeiro",
+    "pendingTenant": "Escolha uma organização",
+    "finishOtherFirst": "Conclua ou cancele primeiro a conexão do {{provider}}",
     "loadFailed": "Não foi possível carregar os provedores de contabilidade. Atualize a página para tentar novamente.",
     "noProviderConfigured": "Nenhum provedor de contabilidade está configurado nesta instância."
   },
@@ -1098,7 +1100,55 @@
     "syncNowQueued": "Sincronização de pagamentos na fila.",
     "syncNowNotQueued": "Não foi possível colocar a sincronização de pagamentos na fila. Tente novamente em instantes.",
     "syncNowPullDisabled": "A sincronização de pagamentos está desativada para esta conexão: ative Sincronização de pagamentos ou Envio de pagamentos para sincronizar agora.",
-    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos."
+    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos.",
+    "tenantPicker": {
+      "title": "Escolha sua organização do {{provider}}",
+      "description": "Você autorizou mais de uma organização. O Breeze se conecta a exatamente uma; as demais são removidas desta conexão.",
+      "loadFailed": "Não foi possível carregar suas organizações do {{provider}}.",
+      "expired": "Este login no {{provider}} expirou. Cancele e conecte-se novamente.",
+      "connect": "Conectar organização",
+      "cancel": "Cancelar conexão",
+      "selectFailed": "Não foi possível conectar essa organização.",
+      "cancelFailed": "Não foi possível cancelar a conexão.",
+      "connected": "Organização do {{provider}} conectada",
+      "cancelled": "Conexão com o {{provider}} cancelada",
+      "chooseFirst": "Escolha uma organização primeiro",
+      "grantSuperseded": "Um login mais recente no {{provider}} substituiu este. Escolha a organização novamente.",
+      "deadline": "Escolha uma organização antes de {{time}}.",
+      "tenantHeld": "Esta organização do {{provider}} já está conectada a outra conta Breeze. Escolha outra organização ou cancele a conexão.",
+      "retry": "Tentar novamente"
+    },
+    "connectErrors": {
+      "tenantHeld": "Esta organização do {{provider}} já está conectada a outra conta Breeze.",
+      "authEventMissing": "O {{provider}} não confirmou quais organizações você autorizou. Conecte-se novamente.",
+      "noOrganisation": "Nenhuma organização do {{provider}} foi autorizada. Escolha uma organização na tela de consentimento do {{provider}}.",
+      "tenantLookupFailed": "Não foi possível ler suas organizações do {{provider}}. Tente novamente.",
+      "consentDenied": "Você cancelou o login no {{provider}}. Nada foi conectado.",
+      "selectTenant": "Escolha qual organização do {{provider}} conectar."
+    },
+    "disconnectConfirm": {
+      "title": "Desconectar do {{provider}}?",
+      "message": "O Breeze vai parar de sincronizar com o {{provider}} e remover a conexão no {{provider}}. Você pode se reconectar a qualquer momento.",
+      "confirm": "Desconectar"
+    },
+    "reconnectKeepsOrganisation": "Reconectar mantém sua organização atual do {{provider}}. Qualquer outra organização marcada na tela do {{provider}} é liberada.",
+    "pendingTenant": "Escolher uma organização",
+    "settingsStep": {
+      "title": "Configurações do {{provider}}",
+      "organisation": "Organização",
+      "demoBadge": "Empresa de demonstração",
+      "incomeAccount": "Conta de receita padrão",
+      "taxRate": "Alíquota de imposto para linhas tributáveis",
+      "exemptTaxRate": "Alíquota de imposto para linhas isentas",
+      "paymentAccount": "Conta bancária para pagamentos",
+      "notSet": "Não definido",
+      "save": "Salvar configurações",
+      "saved": "Configurações do {{provider}} salvas",
+      "saveFailed": "Não foi possível salvar as configurações do {{provider}}.",
+      "loadFailed": "Não foi possível carregar as configurações do {{provider}}.",
+      "retry": "Tentar novamente",
+      "pickDefaults": "Escolha os padrões que o Breeze usa com o {{provider}}. Se você trocou de organização, escolha-os novamente — as escolhas da organização anterior foram apagadas."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Mapeamento de clientes e itens",
