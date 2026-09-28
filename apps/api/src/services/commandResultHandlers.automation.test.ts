@@ -93,7 +93,13 @@ describe('script automation terminal reconciliation', () => {
   });
 
   it('treats a duplicate source transition as a no-op', async () => {
+    // Three CAS rungs run in sequence before the "matched nothing" fallback:
+    // cancel-unconfirmed-cas, primary-cas, and the #3607 recovery rung — all
+    // three must miss for this scenario (a genuine duplicate frame), so the
+    // mock needs a return value queued for each of the three `db.update`
+    // calls, not just two.
     updateMock
+      .mockReturnValueOnce(updateReturning([]))
       .mockReturnValueOnce(updateReturning([]))
       .mockReturnValueOnce(updateReturning([]));
     selectMock.mockReturnValueOnce(selectRows([{ status: 'completed', exitCode: 0 }]));

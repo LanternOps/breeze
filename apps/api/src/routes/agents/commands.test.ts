@@ -39,6 +39,21 @@ function chainMock(resolvedValue: unknown = []) {
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
 
+// #3530 — the result route's terminal CAS + per-type persistence run in ONE
+// savepoint on the request transaction (withDbTransaction). The mock tracks
+// whether a call is inside it; a real rollback cannot happen with `db` mocked,
+// so the tests pin the composition that makes it true.
+let insideResultSavepoint = false;
+const withDbTransactionMock = vi.fn(async (fn: () => any) => {
+  const prior = insideResultSavepoint;
+  insideResultSavepoint = true;
+  try {
+    return await fn();
+  } finally {
+    insideResultSavepoint = prior;
+  }
+});
+
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
@@ -47,6 +62,12 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withSystemDbAccessContext: (...args: unknown[]) =>
     withSystemDbAccessContextMock(...(args as [any])),
+  withDbTransaction: (...args: unknown[]) => withDbTransactionMock(...(args as [any])),
+}));
+
+const writeAuditEventMock = vi.fn();
+vi.mock('../../services/auditEvents', () => ({
+  writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...args),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -204,6 +225,113 @@ describe('agent commands routes', () => {
       await next();
     });
     app.route('/agents', commandsRoutes);
+  });
+
+  // #3530 — the terminal CAS used to commit in its own system transaction
+  // BEFORE the per-type persistence ran, and every persistence failure was
+  // caught and answered `{success:true}`: the history said "completed", the
+  // feature record was missing, and the row refused any resubmission.
+  describe('#3530: terminal CAS commits with the per-type persistence, or not at all', () => {
+    function recordingUpdate(rows: unknown[]) {
+      const writes: Array<{ set: Record<string, any>; inSavepoint: boolean }> = [];
+      updateMock.mockImplementation(() => {
+        const chain: Record<string, any> = {};
+        chain.set = vi.fn((set: Record<string, any>) => {
+          writes.push({ set, inSavepoint: insideResultSavepoint });
+          return chain;
+        });
+        chain.where = vi.fn(() => chain);
+        chain.returning = vi.fn(() => Promise.resolve(rows));
+        return chain;
+      });
+      return writes;
+    }
+
+    async function post(type: string) {
+      selectMock.mockReturnValueOnce(chainMock([{ id: commandId, deviceId: 'device-1', type, status: 'sent', payload: {} }]));
+      return app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', exitCode: 0, stdout: '{}' }),
+      });
+    }
+
+    it('persistence failure: CAS rolled back with it, row parked reopenable, no audit, non-2xx', async () => {
+      const writes = recordingUpdate([{ id: commandId }]);
+      let handlerInSavepoint: boolean | null = null;
+      vi.mocked(handleCisCommandResult).mockImplementationOnce(async () => {
+        handlerInSavepoint = insideResultSavepoint;
+        throw new Error('cis_results write failed');
+      });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const res = await post('cis_benchmark');
+      errorSpy.mockRestore();
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'result_processing_failed' });
+
+      // CAS and the failing persistence shared the savepoint; the park write
+      // ran after it rolled back, on the (still usable) request transaction.
+      expect(writes).toHaveLength(2);
+      expect(writes[0]!.inSavepoint).toBe(true);
+      expect(handlerInSavepoint).toBe(true);
+      expect(writes[1]!.inSavepoint).toBe(false);
+      expect(writes[1]!.set.status).toBe('failed');
+      expect(writes[1]!.set.result).toMatchObject({
+        status: 'result_processing_failed',
+        agentStatus: 'completed',
+        processingFailedAt: expect.any(String),
+      });
+
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+      expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
+    });
+
+    it('success: CAS and persistence share the savepoint; audit + automation only after; 200', async () => {
+      const writes = recordingUpdate([{ id: commandId }]);
+      let handlerInSavepoint: boolean | null = null;
+      vi.mocked(handleCisCommandResult).mockImplementationOnce(async () => {
+        handlerInSavepoint = insideResultSavepoint;
+      });
+
+      const res = await post('cis_benchmark');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true });
+      expect(writes).toHaveLength(1);
+      expect(writes[0]!.inSavepoint).toBe(true);
+      expect(writes[0]!.set.status).toBe('completed');
+      expect(handlerInSavepoint).toBe(true);
+      expect(writeAuditEventMock).toHaveBeenCalledTimes(1);
+      expect(writeAuditEventMock.mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(vi.mocked(handleCisCommandResult).mock.invocationCallOrder[0]!);
+      expect(applyCommandAutomationTerminalMock.mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(vi.mocked(handleCisCommandResult).mock.invocationCallOrder[0]!);
+    });
+
+    it('a registry-handler failure is no longer swallowed either', async () => {
+      const writes = recordingUpdate([{ id: commandId }]);
+      scriptRegistryHandlerMock.mockRejectedValueOnce(new Error('script_executions write failed'));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const res = await post('script');
+      errorSpy.mockRestore();
+
+      expect(res.status).toBe(500);
+      expect(writes).toHaveLength(2);
+      expect(writes[1]!.set.result).toMatchObject({ status: 'result_processing_failed' });
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+    });
+
+    it('a duplicate / already-recorded result (CAS 0 rows) runs no persistence and still answers success', async () => {
+      const writes = recordingUpdate([]);
+      const res = await post('cis_benchmark');
+      expect(res.status).toBe(200);
+      expect(writes).toHaveLength(1);
+      expect(handleCisCommandResult).not.toHaveBeenCalled();
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+    });
   });
 
   it.each(['backup_restore', 'bmr_recover'] as const)(

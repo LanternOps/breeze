@@ -188,39 +188,41 @@ async function handleDiscoveryResult({ agentId, command, result, commandId }: Pa
           })
           .where(eq(discoveryJobs.id, expectedJobId));
       } catch (dbErr) {
-        // #3530: without this the job stays 'running' with nothing reported.
+        // #3530: the job would stay 'running' with nothing recorded — neither
+        // the results nor the failure. Propagate so the transport rolls the
+        // command's terminal transition back and parks it as
+        // result_processing_failed instead of reporting it completed.
         console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
-        captureException(dbErr, undefined, { command_result_phase: 'discovery_mark_failed' });
+        throw dbErr;
       }
     }
   }
 }
 
-async function handleBackupVerificationResult({ agentId, result, stdout, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    await processBackupVerificationResult(commandId, {
-      status: result.status,
-      stdout,
-      error: result.error,
-    });
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process backup verification result for ${agentId}:`, err);
-    captureException(err);
-  }
+// #3530: every persistence handler below PROPAGATES its failure. Both
+// transports run it inside the transaction that also holds the command's
+// terminal compare-and-set, so a throw rolls that transition back and the
+// transport parks the row as `result_processing_failed` (reopenable) — the
+// command history never claims "completed" for a result that was not
+// recorded. Logging + Sentry capture happen once, at the transport, tagged
+// with the command type and id. Only genuinely best-effort side effects
+// (custom-field write-back, exit-code alerts, verification enqueues) keep a
+// local catch.
+async function handleBackupVerificationResult({ result, stdout, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await processBackupVerificationResult(commandId, {
+    status: result.status,
+    stdout,
+    error: result.error,
+  });
 }
 
-async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    await updateRestoreJobByCommandId({
-      commandId: commandId,
-      deviceId: resolvedDeviceId,
-      commandType: command.type,
-      result,
-    });
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process queued restore result for ${agentId}:`, err);
-    captureException(err);
-  }
+async function handleVmRestoreResult({ command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await updateRestoreJobByCommandId({
+    commandId: commandId,
+    deviceId: resolvedDeviceId,
+    commandType: command.type,
+    result,
+  });
 }
 
 /**
@@ -231,18 +233,13 @@ async function handleVmRestoreResult({ agentId, command, result, resolvedDeviceI
  * stays the primary path — applyRebuildCommandResult is idempotent on a row
  * it already terminalised.
  */
-async function handleBareMetalRebuildResult({ agentId, command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    await updateRestoreJobByCommandId({
-      commandId,
-      deviceId: resolvedDeviceId,
-      commandType: command.type,
-      result,
-    });
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process bare-metal rebuild restore job for ${agentId}:`, err);
-    captureException(err);
-  }
+async function handleBareMetalRebuildResult({ command, result, resolvedDeviceId, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await updateRestoreJobByCommandId({
+    commandId,
+    deviceId: resolvedDeviceId,
+    commandType: command.type,
+    result,
+  });
 
   const payload =
     command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
@@ -254,96 +251,83 @@ async function handleBareMetalRebuildResult({ agentId, command, result, resolved
   const orgId = typeof command.submittedOrgId === 'string' ? command.submittedOrgId : null;
   if (!recoveryId || !orgId) return;
 
-  try {
-    await applyRebuildCommandResult({ recoveryId, orgId, result: result as unknown as Record<string, unknown> });
-  } catch (err) {
-    console.error(`[AgentWs] Failed to apply bare-metal rebuild result to recovery ${recoveryId} for ${agentId}:`, err);
-    captureException(err);
-  }
+  // Idempotent on a row the progress route already terminalised, so a
+  // resubmission after a rolled-back attempt is safe.
+  await applyRebuildCommandResult({ recoveryId, orgId, result: result as unknown as Record<string, unknown> });
 }
 
-async function handleProviderBackedBackupResult({ agentId, command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    const payload =
-      command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
-        ? command.payload as Record<string, unknown>
-        : {};
-    const backupJobId =
-      typeof payload.backupJobId === 'string'
-        ? payload.backupJobId
-        : typeof payload.jobId === 'string' && UUID_REGEX.test(payload.jobId)
-          ? payload.jobId
-          : null;
+async function handleProviderBackedBackupResult({ command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload =
+    command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+      ? command.payload as Record<string, unknown>
+      : {};
+  const backupJobId =
+    typeof payload.backupJobId === 'string'
+      ? payload.backupJobId
+      : typeof payload.jobId === 'string' && UUID_REGEX.test(payload.jobId)
+        ? payload.jobId
+        : null;
 
-    if (backupJobId) {
-      const [backupJob] = await db
-        .select({
-          id: backupJobs.id,
-          orgId: backupJobs.orgId,
-          deviceId: backupJobs.deviceId,
-        })
-        .from(backupJobs)
-        .where(
-          and(
-            eq(backupJobs.id, backupJobId),
-            eq(backupJobs.deviceId, resolvedDeviceId)
-          )
+  if (backupJobId) {
+    const [backupJob] = await db
+      .select({
+        id: backupJobs.id,
+        orgId: backupJobs.orgId,
+        deviceId: backupJobs.deviceId,
+      })
+      .from(backupJobs)
+      .where(
+        and(
+          eq(backupJobs.id, backupJobId),
+          eq(backupJobs.deviceId, resolvedDeviceId)
         )
-        .limit(1);
+      )
+      .limit(1);
 
-      if (backupJob) {
-        const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
-        if (!parsedBackup.success) {
-          await applyBackupCommandResultToJob({
-            jobId: backupJob.id,
-            orgId: backupJob.orgId,
-            deviceId: backupJob.deviceId,
-            resultStatus: 'failed',
-            result: {
-              error: `Malformed backup result payload: ${describeZodIssues(parsedBackup.error)}`,
-            },
-          });
-        } else {
-          await applyBackupCommandResultToJob({
-            jobId: backupJob.id,
-            orgId: backupJob.orgId,
-            deviceId: backupJob.deviceId,
-            resultStatus: result.status,
-            // Provider-backed backups do not report `partial` today, but this
-            // path parses the agent's status and must not be the one place
-            // that silently discards it.
-            agentStatus: parsedBackup.data.status,
-            result: {
-              ...parsedBackup.data,
-              error: result.error || result.stderr,
-            },
-            // Reached only after the terminal compare-and-set on this
-            // device's own dispatched command row.
-            dispatchExpectationVerified: true,
-          });
-        }
+    if (backupJob) {
+      const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
+      if (!parsedBackup.success) {
+        await applyBackupCommandResultToJob({
+          jobId: backupJob.id,
+          orgId: backupJob.orgId,
+          deviceId: backupJob.deviceId,
+          resultStatus: 'failed',
+          result: {
+            error: `Malformed backup result payload: ${describeZodIssues(parsedBackup.error)}`,
+          },
+        });
+      } else {
+        await applyBackupCommandResultToJob({
+          jobId: backupJob.id,
+          orgId: backupJob.orgId,
+          deviceId: backupJob.deviceId,
+          resultStatus: result.status,
+          // Provider-backed backups do not report `partial` today, but this
+          // path parses the agent's status and must not be the one place
+          // that silently discards it.
+          agentStatus: parsedBackup.data.status,
+          result: {
+            ...parsedBackup.data,
+            error: result.error || result.stderr,
+          },
+          // Reached only after the terminal compare-and-set on this
+          // device's own dispatched command row.
+          dispatchExpectationVerified: true,
+        });
       }
     }
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process ${command.type} backup result for ${agentId}:`, err);
-    captureException(err);
   }
 }
 
-async function handleVaultSyncResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    await applyVaultSyncCommandResult({
-      deviceId: resolvedDeviceId,
-      command,
-      resultStatus: result.status,
-      stdout,
-      stderr: result.stderr,
-      error: result.error,
-    });
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process vault sync result for ${agentId}:`, err);
-    captureException(err);
-  }
+async function handleVaultSyncResult({ command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await applyVaultSyncCommandResult({
+    deviceId: resolvedDeviceId,
+    command,
+    resultStatus: result.status,
+    stdout,
+    stderr: result.stderr,
+    error: result.error,
+  });
 }
 
 /** Called only after the transport has bound the result to its dispatched target.
@@ -363,61 +347,56 @@ export async function recordSnmpPollFailure(snmpDeviceId: string, deviceId: stri
 }
 
 async function handleSnmpPollResult({ agentId, command, result, commandId, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    const payload = command.payload as Record<string, unknown> | null;
-    const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
-    const snmpData = result.result as {
-      deviceId?: string;
-      metrics?: SnmpMetricResult[];
-      protocol?: number;
-      success?: boolean;
-    } | undefined;
+  const payload = command.payload as Record<string, unknown> | null;
+  const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
+  const snmpData = result.result as {
+    deviceId?: string;
+    metrics?: SnmpMetricResult[];
+    protocol?: number;
+    success?: boolean;
+  } | undefined;
 
-    if (!expectedDeviceId || (snmpData?.deviceId && snmpData.deviceId !== expectedDeviceId)) {
-      console.warn(
-        `[AgentWs] Rejecting mismatched SNMP result ${commandId} from agent ${agentId}: ` +
-        `sentDevice=${snmpData?.deviceId ?? 'none'} expected=${expectedDeviceId ?? 'none'}`
-      );
-      return;
+  if (!expectedDeviceId || (snmpData?.deviceId && snmpData.deviceId !== expectedDeviceId)) {
+    console.warn(
+      `[AgentWs] Rejecting mismatched SNMP result ${commandId} from agent ${agentId}: ` +
+      `sentDevice=${snmpData?.deviceId ?? 'none'} expected=${expectedDeviceId ?? 'none'}`
+    );
+    return;
+  }
+  if (result.status !== 'completed' || snmpData?.success === false) {
+    await recordSnmpPollFailure(expectedDeviceId, resolvedDeviceId, result.error || 'SNMP poll failed');
+    return;
+  }
+  if (snmpData?.deviceId && Array.isArray(snmpData.metrics)) {
+    if (isRedisAvailable() || snmpData.metrics.length === 0) {
+      const { snmpDevices } = await import('../db/schema');
+      await db.update(snmpDevices)
+        .set({ lastError: null, lastErrorAt: null })
+        .where(eq(snmpDevices.id, expectedDeviceId));
+      if (snmpData.metrics.length === 0) return;
+      const metrics = snmpData.metrics;
+      // Exit the held org-scoped transaction context for the Redis
+      // round-trips (#1105) — see the note on the monitor-result branch.
+      await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics, undefined, snmpData.protocol));
+    } else {
+      // Redis not available — log warning about dropped metrics and mark status
+      console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
+      const { snmpDevices } = await import('../db/schema');
+      await db
+        .update(snmpDevices)
+        .set({
+          lastPolled: new Date(),
+          // The device answered; only our own pipeline failed. Clear the
+          // failure backoff (#3217) so a Redis outage doesn't march every
+          // healthy SNMP target to 'offline' and a one-hour interval.
+          lastPollAttemptedAt: new Date(),
+          consecutiveFailures: 0,
+          lastStatus: 'warning',
+          lastError: null,
+          lastErrorAt: null
+        })
+        .where(eq(snmpDevices.id, expectedDeviceId));
     }
-    if (result.status !== 'completed' || snmpData?.success === false) {
-      await recordSnmpPollFailure(expectedDeviceId, resolvedDeviceId, result.error || 'SNMP poll failed');
-      return;
-    }
-    if (snmpData?.deviceId && Array.isArray(snmpData.metrics)) {
-      if (isRedisAvailable() || snmpData.metrics.length === 0) {
-        const { snmpDevices } = await import('../db/schema');
-        await db.update(snmpDevices)
-          .set({ lastError: null, lastErrorAt: null })
-          .where(eq(snmpDevices.id, expectedDeviceId));
-        if (snmpData.metrics.length === 0) return;
-        const metrics = snmpData.metrics;
-        // Exit the held org-scoped transaction context for the Redis
-        // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics, undefined, snmpData.protocol));
-      } else {
-        // Redis not available — log warning about dropped metrics and mark status
-        console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
-        const { snmpDevices } = await import('../db/schema');
-        await db
-          .update(snmpDevices)
-          .set({
-            lastPolled: new Date(),
-            // The device answered; only our own pipeline failed. Clear the
-            // failure backoff (#3217) so a Redis outage doesn't march every
-            // healthy SNMP target to 'offline' and a one-hour interval.
-            lastPollAttemptedAt: new Date(),
-            consecutiveFailures: 0,
-            lastStatus: 'warning',
-            lastError: null,
-            lastErrorAt: null
-          })
-          .where(eq(snmpDevices.id, expectedDeviceId));
-      }
-    }
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
-    captureException(err);
   }
 }
 
@@ -869,55 +848,42 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
   } catch (err) {
     // #3162 lived undetected because this catch logged to the container and
     // nothing else — a swallowed 22P02 silently discarded every automation's
-    // script output. Report it like the SNMP handler does so the next failure
-    // in here (schema drift, a redaction throw, a batch-counter FK violation)
-    // surfaces instead of quietly eating results.
-    console.error(`[AgentWs] Failed to process script result for ${agentId}:`, err);
-    captureException(err, undefined, {
-      commandId: command.id,
-      agentId,
-      executionId: String((command.payload as Record<string, unknown> | null)?.executionId ?? ''),
-      phase,
-    });
+    // script output. #3530 goes further: the failure PROPAGATES, so the
+    // transport rolls back the command's terminal transition and parks it as
+    // result_processing_failed rather than reporting a completed run with no
+    // recorded output. The phase is logged here because the transport's
+    // Sentry capture cannot see it.
+    console.error(
+      `[AgentWs] Failed to process script result for ${agentId} ` +
+      `(command ${command.id}, execution ${String((command.payload as Record<string, unknown> | null)?.executionId ?? '')}, phase ${phase}):`,
+      err,
+    );
+    throw err;
   }
 }
 
-async function handleSensitiveDataResult({ agentId, command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    const { handleSensitiveDataCommandResult } = await import('../routes/agents/helpers');
-    await handleSensitiveDataCommandResult(command, {
-      status: result.status,
-      exitCode: result.exitCode,
-      stdout,
-      stderr: result.stderr,
-      durationMs: result.durationMs,
-      error: result.error,
-    } as any);
-  } catch (err) {
-    // #3530: the command is already terminal, so a swallowed failure here loses
-    // the result with no trace outside the container log. Report it.
-    console.error(`[AgentWs] Failed to process sensitive data result for ${agentId}:`, err);
-    captureException(err, undefined, { command_result_phase: 'sensitive_data_result' });
-  }
+async function handleSensitiveDataResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleSensitiveDataCommandResult } = await import('../routes/agents/helpers');
+  await handleSensitiveDataCommandResult(command, {
+    status: result.status,
+    exitCode: result.exitCode,
+    stdout,
+    stderr: result.stderr,
+    durationMs: result.durationMs,
+    error: result.error,
+  } as any);
 }
 
-async function handleCisResult({ agentId, command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    const { handleCisCommandResult } = await import('../routes/agents/helpers');
-    await handleCisCommandResult(command, {
-      status: result.status,
-      exitCode: result.exitCode,
-      stdout,
-      stderr: result.stderr,
-      durationMs: result.durationMs,
-      error: result.error,
-    } as any);
-  } catch (err) {
-    // #3530: the command is already terminal, so a swallowed failure here loses
-    // the result with no trace outside the container log. Report it.
-    console.error(`[AgentWs] Failed to process CIS result for ${agentId}:`, err);
-    captureException(err, undefined, { command_result_phase: 'cis_result' });
-  }
+async function handleCisResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleCisCommandResult } = await import('../routes/agents/helpers');
+  await handleCisCommandResult(command, {
+    status: result.status,
+    exitCode: result.exitCode,
+    stdout,
+    stderr: result.stderr,
+    durationMs: result.durationMs,
+    error: result.error,
+  } as any);
 }
 
 const peripheralPolicyResultV2Schema = z.object({
@@ -979,25 +945,18 @@ async function handlePamActuationV2Result({
  * schema module into the graph, and several suites here partially mock
  * `db/schema`.
  */
-async function handleScriptCancelResult({ agentId, commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  try {
-    const { applyScriptCancelAck } = await import('./scriptCancellation');
-    await applyScriptCancelAck({
-      // The transport-authorized id, never one read off the payload — same
-      // invariant as every other handler in this file.
-      cancelCommandId: commandId,
-      result: (result ?? null) as Record<string, unknown> | null,
-    });
-  } catch (err) {
-    // Both transports CAS the device_commands row to a terminal status BEFORE
-    // dispatching here, so the agent will never resend this ack — losing it
-    // leaves the execution in `cancelling` until the sweep (closer 5) gives up
-    // and records `unconfirmed`. Degraded but not stranded, so this is
-    // reported rather than rethrown; the tags are what let an on-call engineer
-    // find the affected row from the alert. Matches handleScriptResult.
-    console.error(`[AgentWs] Failed to apply script cancel ack for ${agentId}:`, err);
-    captureException(err, undefined, { commandId, agentId });
-  }
+async function handleScriptCancelResult({ commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  // #3530: propagates like every persistence handler. A lost ack still leaves
+  // the execution in `cancelling` until the sweep (closer 5) records
+  // `unconfirmed` — but the cancel command itself is now parked as
+  // result_processing_failed (reopenable) instead of reading "completed".
+  const { applyScriptCancelAck } = await import('./scriptCancellation');
+  await applyScriptCancelAck({
+    // The transport-authorized id, never one read off the payload — same
+    // invariant as every other handler in this file.
+    cancelCommandId: commandId,
+    result: (result ?? null) as Record<string, unknown> | null,
+  });
 }
 
 /**

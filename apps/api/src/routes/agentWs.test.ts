@@ -442,7 +442,7 @@ import {
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
-import { BACKUP_QUEUE_ACK_RESULT_STATUS } from '../services/commandResultAcceptance';
+import { BACKUP_QUEUE_ACK_RESULT_STATUS, RESULT_PROCESSING_FAILED_RESULT_STATUS } from '../services/commandResultAcceptance';
 import { enqueueBackupResults } from '../jobs/backupEnqueue';
 import { encryptSensitivePayloadFields } from '../services/sensitiveCommandPayload';
 import { resetAgentUpdateStatusCoalescerForTests } from '../services/agentUpdateStatusCoalescer';
@@ -1560,10 +1560,12 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
-  it('a reconcile failure is reported, not rethrown into the socket handler', async () => {
-    // Rethrowing would abort the rest of the result pipeline (the per-type
-    // handler, the ack) for every install whose reconcile hits a transient
-    // fault — one bad row would look like an unresponsive agent.
+  it('a reconcile failure is reported and nacked, never rethrown into the socket handler (#3530)', async () => {
+    // Never rethrown out of onMessage (one bad row must not look like an
+    // unresponsive agent) — but since #3530 it is also never ACKED: the
+    // command's terminal transition rolls back with the failed reconcile, the
+    // row is parked as result_processing_failed, and the agent gets an error
+    // frame naming the command.
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
     const commandId = '44444444-4444-4444-8444-444444444444';
@@ -1589,7 +1591,11 @@ describe('agent websocket command results', () => {
     }
 
     expect(captureException).toHaveBeenCalledTimes(1);
-    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"RESULT_PROCESSING_FAILED"'));
+    // CAS, then the park write.
+    expect(db.update).toHaveBeenCalledTimes(2);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
   });
 
   it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
@@ -4561,9 +4567,19 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
 // long time they ran with NO DB access context at
 // all — tripping the contextless-write guard in db/index.ts on every fresh
 // process and flooding Sentry. device_commands has no RLS so the write always
-// landed; the bug was the false invariant + the noise. The fix nests
+// landed; the bug was the false invariant + the noise. The fix nested
 // withSystemDbAccessContext INSIDE runOutsideDbContext (same shape as
 // isAgentDeviceStillAuthorized here and the insert in services/commandQueue.ts).
+//
+// #3530 moved the WRITE: the terminal CAS now runs inside the short org-scoped
+// `agentWs.commandResult.finalize` transaction, so it commits (or rolls back)
+// together with the per-type persistence. That is still an explicit context —
+// the #1375 invariant ("no contextless device_commands write") holds — and
+// device_commands has no RLS, so org vs system scope changes nothing it can
+// touch. The inverted-nesting mutant this suite was built to catch
+// (a context opened and then immediately escaped) must still fail: the write
+// has to sit in exactly the finalize frame, with nothing outside/system
+// between it and the transaction.
 //
 // The READ is intentionally NOT wrapped in a system context: only
 // insert/update/delete are instrumented by the guard, and device_commands has
@@ -4583,20 +4599,28 @@ describe('device_commands access context on the WS result path (#1375)', () => {
     vi.resetAllMocks();
   });
 
-  it('runs the device_commands write inside a system context nested in runOutsideDbContext, and the read outside any context', async () => {
+  it('runs the device_commands write inside the explicit finalize transaction, and the read outside any context', async () => {
     // Open first, before the wrapper/DB spies below, so the handshake's own
     // traffic can never land in `observed`.
     const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
 
     // Track the ACTIVE WRAPPER STACK, not just depth counters. Depth counters
-    // are order-blind: `system(outside(write))` — the inverted nesting, which
+    // are order-blind: `org(outside(write))` — the inverted nesting, which
     // is the #1375 bug re-introduced, since runOutsideDbContext exits the
     // context that was just established — produces the same non-zero counts as
-    // the correct `outside(system(write))`. Snapshotting the stack at the
-    // moment of each DB call is what makes that mutant detectable.
+    // the correct `org(write)`. Snapshotting the stack at the moment of each
+    // DB call is what makes that mutant detectable.
     const stack: string[] = [];
     const observed: Array<{ op: 'select' | 'update'; table: unknown; stack: string[] }> = [];
 
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      stack.push(`org:${ctx.label}`);
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
     vi.mocked(runOutsideDbContext).mockImplementation((async (fn: any) => {
       stack.push('outside');
       try {
@@ -4665,10 +4689,178 @@ describe('device_commands access context on the WS result path (#1375)', () => {
     // and deliberately NOT in a system context (see the note above).
     expect(read.stack).toEqual(['outside']);
 
-    // Write: outside the held tenant transaction AND inside an explicit system
-    // context — in that exact order. Asserting the full stack (rather than
-    // "both are non-zero") is what fails if the two wrappers are ever swapped.
-    expect(write.stack).toEqual(['outside', 'system']);
+    // Write (#3530): inside exactly the explicit finalize transaction — the
+    // one the per-type persistence shares. Asserting the full stack is what
+    // fails if a runOutsideDbContext ever sneaks in between (contextless write,
+    // and no longer atomic with the persistence).
+    expect(write.stack).toEqual(['org:agentWs.commandResult.finalize']);
+  });
+});
+
+// #3530: the terminal compare-and-set used to commit on its own, BEFORE the
+// per-type persistence ran — and the handlers swallowed their failures — so
+// the history said "completed" while the script output / backup verification
+// / CIS findings were never written, and nothing could resubmit. The CAS now
+// runs in the SAME org transaction as the persistence; a persistence failure
+// rolls both back, parks the row as a reopenable `result_processing_failed`,
+// emits no terminal audit, and answers the agent with an error frame instead
+// of an ack.
+//
+// `../db` is mocked wholesale (same caveat as the suites below), so the
+// rollback itself is not observable here — what IS pinned is the composition
+// that makes it true: the CAS and the persistence share one transaction
+// frame. The rollback mechanism is withDbAccessContext's own transaction.
+describe('#3530: terminal CAS commits with the per-type persistence, or not at all', () => {
+  const COMMAND_ID = '35303530-3530-4530-8530-353035303530';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  async function harness(commandType: string) {
+    const { handlers, ws } = await connectedAgent('agent-3530', {
+      deviceId: 'device-3530', orgId: 'org-3530', partnerId: 'partner-3530',
+    });
+
+    const stack: string[] = [];
+    const wrap = (label: string) => (async (...args: any[]) => {
+      const fn = args[args.length - 1];
+      stack.push(label === 'org' ? `org:${args[0].label}` : label);
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any;
+    vi.mocked(withDbAccessContext).mockImplementation(wrap('org'));
+    vi.mocked(runOutsideDbContext).mockImplementation(wrap('outside'));
+    vi.mocked(withSystemDbAccessContext).mockImplementation(wrap('system'));
+
+    const commandRow = { id: COMMAND_ID, type: commandType, payload: {}, deviceId: 'device-3530', status: 'sent' };
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        const rows = table === deviceCommands ? [commandRow] : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+
+    const commandWrites: Array<{ set: Record<string, any>; stack: string[] }> = [];
+    let casRows: unknown[] = [{ id: COMMAND_ID }];
+    vi.mocked(db.update).mockImplementation(((table: unknown) => ({
+      set: vi.fn((set: Record<string, any>) => {
+        if (table === deviceCommands) commandWrites.push({ set, stack: [...stack] });
+        const returning = vi.fn().mockResolvedValue(table === deviceCommands ? casRows : []);
+        return { where: vi.fn().mockReturnValue({ returning }), returning };
+      }),
+    })) as any);
+
+    const send = () => handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: COMMAND_ID, status: 'completed', exitCode: 0, stdout: '{}' }),
+    } as any, ws as any);
+
+    return { ws, stack, commandWrites, send, setCasRows: (rows: unknown[]) => { casRows = rows; } };
+  }
+
+  it('persistence failure: CAS and persistence share one transaction, row parked reopenable, no audit, error frame', async () => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const boom = new Error('cis_results write failed');
+    let handlerStack: string[] | null = null;
+    const h = await harness('cis_benchmark');
+    const spy = vi.spyOn(commandResultHandlers, 'cis_benchmark').mockImplementation(async () => {
+      handlerStack = [...h.stack];
+      throw boom;
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await h.send();
+
+      // The CAS ran in the same transaction frame as the failing persistence,
+      // so the thrown error rolls it back with it.
+      expect(h.commandWrites.length).toBe(2);
+      const [cas, park] = h.commandWrites;
+      expect(cas!.stack).toEqual(['org:agentWs.commandResult.finalize']);
+      expect(handlerStack).toEqual(cas!.stack);
+
+      // …then the row is parked, in its OWN fresh system context (the failed
+      // transaction is gone), as failed + the reopenable marker.
+      expect(park!.stack).toEqual(['outside', 'system']);
+      expect(park!.set.status).toBe('failed');
+      expect(park!.set.result).toMatchObject({
+        status: RESULT_PROCESSING_FAILED_RESULT_STATUS,
+        agentStatus: 'completed',
+        processingFailedAt: expect.any(String),
+      });
+
+      // No terminal side effects for a result that was not recorded.
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+      expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledWith(boom, undefined, expect.objectContaining({
+        command_result_phase: 'ws_result_persistence',
+        commandType: 'cis_benchmark',
+        commandId: COMMAND_ID,
+      }));
+
+      // The agent is told, not acked.
+      const frames = h.ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+      expect(frames.find((f: any) => f.type === 'ack')).toBeUndefined();
+      expect(frames).toContainEqual(expect.objectContaining({
+        type: 'error',
+        code: 'RESULT_PROCESSING_FAILED',
+        messageType: 'command_result',
+        commandId: COMMAND_ID,
+      }));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('success: CAS and persistence share one transaction; audit + automation terminal only after; ack', async () => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    let handlerStack: string[] | null = null;
+    const h = await harness('cis_benchmark');
+    const spy = vi.spyOn(commandResultHandlers, 'cis_benchmark').mockImplementation(async () => {
+      handlerStack = [...h.stack];
+    });
+    try {
+      await h.send();
+
+      expect(h.commandWrites.length).toBe(1);
+      expect(h.commandWrites[0]!.stack).toEqual(['org:agentWs.commandResult.finalize']);
+      expect(h.commandWrites[0]!.set.status).toBe('completed');
+      expect(handlerStack).toEqual(['org:agentWs.commandResult.finalize']);
+
+      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+      expect(applyCommandAutomationTerminalMock).toHaveBeenCalledTimes(1);
+      // Emitted after the persistence committed, never before it.
+      expect(vi.mocked(writeAuditEvent).mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(spy.mock.invocationCallOrder[0]!);
+      expect(applyCommandAutomationTerminalMock.mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(spy.mock.invocationCallOrder[0]!);
+      expect(h.ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a duplicate / already-recorded result (CAS 0 rows) runs no persistence and is acked', async () => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const h = await harness('cis_benchmark');
+    h.setCasRows([]);
+    const spy = vi.spyOn(commandResultHandlers, 'cis_benchmark').mockResolvedValue(undefined);
+    try {
+      await h.send();
+      expect(spy).not.toHaveBeenCalled();
+      expect(h.commandWrites.length).toBe(1);
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+      expect(h.ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -4776,12 +4968,14 @@ describe('#3021: command_result opens no message-level org context', () => {
       }),
     } as any, ws as any);
 
-    // The deviceCommands lookup + terminal CAS keep their #1375 composition —
-    // and, new with #3021, have NO enclosing `org:*` frame.
+    // The deviceCommands lookup keeps its #1375 composition with NO enclosing
+    // `org:*` frame (#3021). The terminal CAS runs in the short finalize
+    // transaction alongside the per-type persistence (#3530) — ONE org frame,
+    // with no system context nested inside it (no second pooled connection).
     const commandOps = observed.filter((o) => o.table === deviceCommands);
     expect(commandOps.map((o) => o.op)).toEqual(['select', 'update']);
     expect(commandOps.find((o) => o.op === 'select')!.stack).toEqual(['outside']);
-    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['outside', 'system']);
+    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['org:agentWs.commandResult.finalize']);
 
     // The devices lifecycle recheck likewise runs outside any org context.
     const deviceReads = observed.filter((o) => o.table === devices && o.op === 'select');
@@ -4790,12 +4984,12 @@ describe('#3021: command_result opens no message-level org context', () => {
       expect(read.stack).toEqual(['outside', 'system']);
     }
 
-    // The per-type handler's tenant-RLS write runs under EXACTLY the short
-    // labelled org wrap — present (RLS visibility preserved) and alone on the
-    // stack (no system context nested inside an org transaction).
+    // The per-type handler's tenant-RLS write runs under EXACTLY the same
+    // short labelled org wrap as the CAS — present (RLS visibility preserved)
+    // and alone on the stack (no system context nested inside it).
     const scriptOps = observed.filter((o) => o.table === scriptExecutions);
     expect(scriptOps.map((o) => o.op)).toEqual(['update']);
-    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.finalize']);
     expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
       source: 'script_execution',
       scriptExecutionId: 'row-1',
@@ -4805,7 +4999,7 @@ describe('#3021: command_result opens no message-level org context', () => {
 
     // The short wrap carries the authenticated agent's org, and no context
     // anywhere in the message used the removed message-level label.
-    const handlerCtx = orgContexts.find((c) => c.label === 'agentWs.commandResult.handler');
+    const handlerCtx = orgContexts.find((c) => c.label === 'agentWs.commandResult.finalize');
     // #4673 W02 — `currentPartnerId` is asserted here because
     // `runWithAgentOrgDbAccess(label, orgId, partnerId, fn)` takes orgId and
     // partnerId as ADJACENT positional strings across five call sites in
@@ -4924,10 +5118,10 @@ describe('#3021: command_result opens no message-level org context', () => {
 
     // And the result was honored as an owned command (terminal CAS +
     // handler dispatch), not misrouted to the orphaned path.
-    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['outside', 'system']);
+    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['org:agentWs.commandResult.finalize']);
     const scriptOps = observed.filter((o) => o.table === scriptExecutions);
     expect(scriptOps.map((o) => o.op)).toEqual(['update']);
-    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.finalize']);
   });
 
   it('wraps a non-UUID orphaned result in the short orphaned org context, not a message-level wrap', async () => {

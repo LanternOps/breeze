@@ -76,6 +76,27 @@ export const SERVER_TIMEOUT_RESULT_STATUS = 'timeout';
 export const BACKUP_QUEUE_ACK_RESULT_STATUS = 'queue_ack';
 
 /**
+ * #3530 — marker written into `device_commands.result.status` when the agent's
+ * result reached the server but its per-type persistence (script_executions,
+ * backup verification, restore job, CIS/sensitive-data findings, …) failed.
+ *
+ * Both ingest transports now run the terminal compare-and-set in the SAME
+ * transaction as that persistence, so a failure rolls the CAS back; the row is
+ * then parked as top-level `status: 'failed'` (the history never claims
+ * "completed" for a result that was not recorded) with this marker, which
+ * keeps it reopenable exactly like {@link SERVER_TIMEOUT_RESULT_STATUS}: a
+ * resubmitted result is accepted and reprocessed instead of being
+ * short-circuited as a duplicate.
+ *
+ * `processingFailedAt` is the server-only stamp — the analogue of `timedOutBy`.
+ * `buildStoredCommandResult` never copies it from an agent payload, and the
+ * agent schema cannot report this status value, so an agent cannot mint a
+ * reopenable row on its own. Written only by
+ * `services/commandResultProcessingFailure.ts`.
+ */
+export const RESULT_PROCESSING_FAILED_RESULT_STATUS = 'result_processing_failed';
+
+/**
  * Drizzle predicate for "this row may still accept an agent result".
  *
  * Use it in BOTH the ingest lookup and the terminal compare-and-set. Applying
@@ -103,6 +124,11 @@ export function commandAcceptsAgentResultCondition(): SQL {
       eq(deviceCommands.status, 'completed'),
       inArray(deviceCommands.type, [...QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES]),
       sql`${deviceCommands.result}->>'status' = ${BACKUP_QUEUE_ACK_RESULT_STATUS}`,
+    ),
+    and(
+      eq(deviceCommands.status, 'failed'),
+      sql`${deviceCommands.result}->>'status' = ${RESULT_PROCESSING_FAILED_RESULT_STATUS}`,
+      sql`${deviceCommands.result}->>'processingFailedAt' IS NOT NULL`,
     ),
   )!;
 }
@@ -138,6 +164,14 @@ export function commandAcceptsAgentResult(
     resultStatus === BACKUP_QUEUE_ACK_RESULT_STATUS &&
     !!type &&
     (QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES as readonly string[]).includes(type)
+  ) {
+    return true;
+  }
+  if (
+    status === 'failed' &&
+    resultStatus === RESULT_PROCESSING_FAILED_RESULT_STATUS &&
+    // See the SQL twin: only markCommandResultProcessingFailed sets this key.
+    resultRecord?.processingFailedAt != null
   ) {
     return true;
   }
