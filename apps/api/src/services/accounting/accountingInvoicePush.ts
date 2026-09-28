@@ -64,8 +64,9 @@ import { accountingProviderDisplayName, getAccountingProvider } from './provider
 import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
 import {
-  providerErrorKindOf, providerFaultSuffix, providerLogFields, providerRateLimitedMessage,
-  providerRateLimitedRetryLaterMessage, providerTelemetryTags, rateLimitRetryAfterMs, rateLimitSourceOf,
+  providerErrorKindOf, providerFaultSuffix, providerLogFields, providerPermissionMessage,
+  providerRateLimitedMessage, providerRateLimitedRetryLaterMessage, providerTelemetryTags,
+  rateLimitRetryAfterMs, rateLimitSourceOf, refusalCodeOf,
 } from './accountingProviderError';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
@@ -81,6 +82,7 @@ import {
 } from './types';
 import { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
 import { assertPushedLinesMatchSubtotal, computeRemoteVariance, pushedLineAmounts } from './accountingInvoiceTotals';
+import { invoicePushMessages } from './accountingInvoicePushMessages';
 
 export { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
 
@@ -228,7 +230,8 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
  * tech had no signal short of retrying the push manually and reading the 409.
  * Deliberately scoped to those two codes (see `PERSISTED_PREFLIGHT_CODES`),
  * not `home_currency_unknown`, a rarer connection-setup problem that is not
- * #4498's complaint.
+ * #4498's complaint. Also covers `push_settings_incomplete` (Xero W04)
+ * pre-flight refusal (a missing connection setting the provider needs).
  *
  * MUST be called from OUTSIDE the Phase 1 `runInDbContext` call whose guard
  * just threw — that transaction has already rolled back by the time this
@@ -250,6 +253,7 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
 const PERSISTED_PREFLIGHT_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
   'currency_mismatch',
   'invoice_totals_mismatch',
+  'push_settings_incomplete',
 ]);
 
 async function persistInvoicePreflightErrorInOwnContext(
@@ -473,6 +477,7 @@ async function upsertInvoiceMappingPending(params: {
   integrationId: string;
   partnerId: string;
   invoiceId: string;
+  label: string;
 }): Promise<MappingRow> {
   try {
     if (params.existing) {
@@ -512,11 +517,7 @@ async function upsertInvoiceMappingPending(params: {
             eq(accountingEntityMappings.partnerId, params.partnerId),
           ));
         if (isInvoiceRemoteDeletedMarker(recheck[0]?.lastError)) {
-          throw new AccountingInvoicePushError(
-            'remote_deleted',
-            409,
-            'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
-          );
+          throw new AccountingInvoicePushError('remote_deleted', 409, invoicePushMessages.remoteDeleted(params.label));
         }
         throw new Error(`invoice mapping pending-update matched no row (id=${params.existing.id})`);
       }
@@ -540,11 +541,7 @@ async function upsertInvoiceMappingPending(params: {
     return row;
   } catch (err) {
     if (isPgUniqueViolation(err, 'accounting_entity_mappings_breeze_uniq')) {
-      throw new AccountingInvoicePushError(
-        'provider_error',
-        502,
-        'A concurrent QuickBooks sync for this invoice is already in progress; retry shortly',
-      );
+      throw new AccountingInvoicePushError('provider_error', 502, invoicePushMessages.concurrentSync(params.label));
     }
     throw err;
   }
@@ -562,6 +559,7 @@ async function persistInvoiceRemoteRef(params: {
   remoteSyncToken: string | null;
   remoteDocNumber: string | null;
   syncStatus: 'synced' | 'synced_with_tax_variance';
+  label: string;
 }): Promise<MappingRow> {
   const rows = await db
     .update(accountingEntityMappings)
@@ -579,7 +577,7 @@ async function persistInvoiceRemoteRef(params: {
     .returning();
   const row = (rows as MappingRow[])[0];
   if (!row) {
-    throw new Error(`persistInvoiceRemoteRef matched no accounting_entity_mappings row (id=${params.mappingId}); refusing to lose the QuickBooks sync result`);
+    throw new Error(invoicePushMessages.persistNoRow(params.label, params.mappingId));
   }
   return row;
 }
@@ -652,6 +650,24 @@ function buildInvoicePayload(
   };
 }
 
+/**
+ * Provider refusals the operator must resolve (Xero W04, refinement 14):
+ * terminal 409s, persisted on the mapping row, never reported to Sentry.
+ * Null for anything else. QuickBooks never sets these neutral codes on an
+ * invoice (its providerCode is Intuit's numeric fault code), so its errors
+ * keep the generic retryable handling below.
+ */
+function invoicePushRefusal(err: unknown, label: string): { code: AccountingInvoicePushErrorCode; message: string } | null {
+  switch (refusalCodeOf(err)) {
+    case 'remote_missing': return { code: 'remote_missing', message: invoicePushMessages.remoteMissing(label) };
+    case 'duplicate_key': return { code: 'remote_ambiguous', message: invoicePushMessages.remoteAmbiguous(label) };
+    case 'remote_locked': return { code: 'remote_locked', message: invoicePushMessages.remoteLocked(label) };
+    case 'insufficient_scope': return { code: 'provider_permission', message: providerPermissionMessage(label) };
+    case 'duplicate_name': case 'remote_archived': return null;
+    default: return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // pushInvoiceToAccounting
 // ---------------------------------------------------------------------------
@@ -680,10 +696,12 @@ export async function pushInvoiceToAccounting(
     linePayloads: AccountingInvoiceLinePayload[];
     orgMapping: MappingRow;
     itemMappingRows: MappingRow[];
+    label: string;
   };
   try {
     prep = await runInDbContext(async () => {
       const conn = await resolveConnection(partnerId, target).catch(translateMappingError);
+      const label = accountingProviderDisplayName(conn.provider);
 
       const inv = await loadOwnedInvoice(invoiceId, partnerId);
       if (inv.invoiceNumber === null || !PUSHABLE_STATUSES.has(inv.status)) {
@@ -692,7 +710,7 @@ export async function pushInvoiceToAccounting(
         throw new AccountingInvoicePushError(
           'invoice_not_pushable',
           409,
-          'Invoice must be issued and not void before it can be pushed to QuickBooks',
+          invoicePushMessages.notPushable(label),
         );
       }
 
@@ -705,11 +723,7 @@ export async function pushInvoiceToAccounting(
       // are still in flight — this early check is a cheap-exit optimization,
       // not the sole enforcement point.
       if (await loadInvoiceMappingIsRemoteDeleted(partnerId, conn.id, inv.id)) {
-        throw new AccountingInvoicePushError(
-          'remote_deleted',
-          409,
-          'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
-        );
+        throw new AccountingInvoicePushError('remote_deleted', 409, invoicePushMessages.remoteDeleted(label));
       }
 
       // Currency guard runs BEFORE any org/item lookup, token refresh or provider
@@ -726,16 +740,28 @@ export async function pushInvoiceToAccounting(
       // before any org/item sync, token refresh or provider call. Asserted on
       // the exact line payloads that get pushed below, not a re-derivation.
       const linePayloads = lines.map(buildLinePayload);
-      assertPushedLinesMatchSubtotal(inv, linePayloads, accountingProviderDisplayName(conn.provider));
+      assertPushedLinesMatchSubtotal(inv, linePayloads, label);
+
+      // Xero W04: provider-specific refusals that need no I/O (a missing Xero
+      // tax rate or revenue account; tax that cannot be placed on any line).
+      // Same placement and persistence as the currency and totals guards: it
+      // fires before any dependency sync, token refresh or provider call.
+      // QuickBooks declares no preflight.
+      const preflight = getAccountingProvider(conn.provider).invoicePushPreflight?.(conn, {
+        currencyCode: inv.currencyCode, taxTotal: inv.taxTotal, lines: linePayloads,
+      }) ?? null;
+      if (preflight) {
+        throw new AccountingInvoicePushError(
+          preflight.reason === 'settings' ? 'push_settings_incomplete' : 'invoice_totals_mismatch',
+          409,
+          preflight.message,
+        );
+      }
 
       const orgMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'org');
       const orgMapping = orgMappingRows.find((m) => m.breezeEntityId === inv.orgId) ?? null;
       if (!orgMapping || orgMapping.linkStatus === 'unlinked' || orgMapping.linkStatus === 'suggested') {
-        throw new AccountingInvoicePushError(
-          'customer_not_mapped',
-          409,
-          'This organization is not mapped to a QuickBooks customer yet — confirm or create a mapping first',
-        );
+        throw new AccountingInvoicePushError('customer_not_mapped', 409, invoicePushMessages.customerNotMapped(label));
       }
       if (
         orgMapping.remoteCurrencyCode
@@ -744,12 +770,12 @@ export async function pushInvoiceToAccounting(
         throw new AccountingInvoicePushError(
           'customer_currency_mismatch',
           409,
-          `The QuickBooks customer for this organization is stamped in ${orgMapping.remoteCurrencyCode}, which does not match this invoice's ${inv.currencyCode} currency`,
+          invoicePushMessages.customerCurrencyMismatch(label, orgMapping.remoteCurrencyCode, inv.currencyCode),
         );
       }
 
       const itemMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'catalog_item');
-      return { conn, inv, lines, linePayloads, orgMapping, itemMappingRows };
+      return { conn, inv, lines, linePayloads, orgMapping, itemMappingRows, label };
     });
   } catch (err) {
     if (err instanceof AccountingInvoicePushError && PERSISTED_PREFLIGHT_CODES.has(err.code)) {
@@ -772,7 +798,7 @@ export async function pushInvoiceToAccounting(
   }
   const customerRemoteId = orgMapping.remoteEntityId;
   if (!customerRemoteId) {
-    throw new AccountingInvoicePushError('customer_not_mapped', 409, 'QuickBooks customer sync did not return a remote id');
+    throw new AccountingInvoicePushError('customer_not_mapped', 409, invoicePushMessages.customerSyncNoRemoteId(prep.label));
   }
   const customerSyncToken = orgMapping.remoteSyncToken ?? null;
 
@@ -819,17 +845,14 @@ export async function pushInvoiceToAccounting(
     // (`lastError: null`) and let the push through, re-creating the invoice
     // in QuickBooks.
     if (isInvoiceRemoteDeletedMarker(existingInvoiceMapping?.lastError)) {
-      throw new AccountingInvoicePushError(
-        'remote_deleted',
-        409,
-        'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
-      );
+      throw new AccountingInvoicePushError('remote_deleted', 409, invoicePushMessages.remoteDeleted(prep.label));
     }
     return upsertInvoiceMappingPending({
       existing: existingInvoiceMapping,
       integrationId: conn.id,
       partnerId,
       invoiceId: inv.id,
+      label: prep.label,
     });
   });
 
@@ -857,6 +880,12 @@ export async function pushInvoiceToAccounting(
       await markInvoiceRateLimitedAndThrow(runInDbContext, mappingRow.id, partnerId, conn.provider, throttleMs, err);
     }
     const label = accountingProviderDisplayName(conn.provider);
+    const refusal = invoicePushRefusal(err, label);
+    if (refusal) {
+      logProviderFault('pushInvoice', mappingRow.id, err);
+      await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, refusal.message);
+      throw new AccountingInvoicePushError(refusal.code, 409, refusal.message, { cause: err });
+    }
     const message = sanitizeInvoiceSyncErrorMessage(err, label);
     logProviderFault('pushInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
@@ -884,12 +913,13 @@ export async function pushInvoiceToAccounting(
       remoteSyncToken: result.remoteVersion ?? null,
       remoteDocNumber,
       syncStatus: variance.syncStatus,
+      label: prep.label,
     }));
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, remote_entity_id: result.id,
     });
-    const message = `QuickBooks accepted the invoice sync (remote id ${result.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;
+    const message = invoicePushMessages.recordFailed(prep.label, result.id);
     // Best-effort: the row is currently stuck at sync_status='pending' with no
     // remote id, which a stale-pending reaper would re-push and duplicate the
     // QuickBooks invoice. markInvoiceMappingError is a separate UPDATE in its
@@ -1005,8 +1035,15 @@ export async function voidInvoiceInAccounting(
         throw new AccountingInvoicePushError(
           'sync_in_progress',
           409,
-          'A QuickBooks push for this invoice is still in flight; the void will be retried once it completes',
+          invoicePushMessages.voidPushInFlight(accountingProviderDisplayName(conn.provider)),
         );
+      }
+      // Refinement 22: an `error` row can hide a create whose response AND
+      // recovery lookup were lost. Only a provider that can find its invoice by
+      // the Breeze id (Xero's Reference) is asked; QuickBooks keeps the no-op.
+      if (mappingRow.syncStatus === 'error' && getAccountingProvider(conn.provider).findRemoteInvoice) {
+        const inv = await loadOwnedInvoice(invoiceId, partnerId);
+        return { conn, mappingRow, inv, recover: true };
       }
       return null;
     }
@@ -1023,7 +1060,7 @@ export async function voidInvoiceInAccounting(
     if (isInvoiceRemoteDeletedMarker(mappingRow.lastError)) return null;
 
     const inv = await loadOwnedInvoice(invoiceId, partnerId);
-    return { conn, mappingRow, inv };
+    return { conn, mappingRow, inv, recover: false };
   });
   if (!prep) return;
 
@@ -1036,14 +1073,24 @@ export async function voidInvoiceInAccounting(
     docNumber: mappingRow.remoteDocNumber ?? inv.invoiceNumber,
     currencyCode: inv.currencyCode,
   };
-  const mappingSeam: AccountingEntityMappingSeam = {
+  let mappingSeam: AccountingEntityMappingSeam | null = prep.recover ? null : {
     remoteEntityId: mappingRow.remoteEntityId as string,
     remoteSyncToken: mappingRow.remoteSyncToken ?? null,
   };
 
-  let voidResult: InvoiceVoidResult;
+  let voidResult: InvoiceVoidResult | null;
   try {
-    voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
+    voidResult = await runOutsideDbContext(async () => {
+      if (!mappingSeam) {
+        // Refinement 22: the create's response (and the recovery lookup) were
+        // lost — find the invoice Xero already holds by its Breeze id before
+        // voiding it. Nothing in the provider is the no-op this always was.
+        const found = await providerImpl.findRemoteInvoice!(liveConn, inv.id);
+        if (!found) return null;
+        mappingSeam = { remoteEntityId: found.id, remoteSyncToken: found.remoteVersion ?? null };
+      }
+      return providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam);
+    });
   } catch (err) {
     // Throttled (ruling P6a): NO marker and no Sentry. The void claims no row,
     // so nothing can be stranded, and a marker on this synced row would outlive
@@ -1056,6 +1103,14 @@ export async function voidInvoiceInAccounting(
         'rate_limited', 429, providerRateLimitedMessage(accountingProviderDisplayName(conn.provider), throttleSource),
         { retryAfterMs: throttleMs, throttleSource, cause: err },
       );
+    }
+    // Xero W04: a scope refusal is terminal. A missing remote invoice never
+    // reaches here — the provider treats "already gone" as a successful void.
+    if (refusalCodeOf(err) === 'insufficient_scope') {
+      const message = providerPermissionMessage(accountingProviderDisplayName(conn.provider));
+      logProviderFault('voidInvoice', mappingRow.id, err);
+      await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
+      throw new AccountingInvoicePushError('provider_permission', 409, message, { cause: err });
     }
     // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will
     // never allow this". A payment applied to the invoice in QuickBooks makes
@@ -1079,6 +1134,11 @@ export async function voidInvoiceInAccounting(
     if (blockedByPayments) throw new AccountingInvoicePushError('void_blocked_by_payments', 409, message);
     throw new AccountingInvoicePushError('provider_error', 502, message);
   }
+  // Nothing in the provider (refinement 22's recovery lookup found no invoice)
+  // — today's no-op: no void call was made and nothing to write.
+  if (!voidResult || !mappingSeam) return;
+  const seam = mappingSeam;
+
   // Success: sync_status/last_error are left exactly as they were (still
   // 'synced'/null from the original push) — a void does not change whether
   // the invoice's LAST sync succeeded.
@@ -1090,7 +1150,37 @@ export async function voidInvoiceInAccounting(
   // error, and the stale token is self-healing anyway (`pushInvoice` and
   // `voidInvoice` both re-read on 5010). Skipped entirely when the response
   // carried no token, so a tokenless reply cannot NULL out a good one.
-  if (voidResult.remoteVersion && voidResult.remoteVersion !== mappingRow.remoteSyncToken) {
+  if (prep.recover) {
+    // Refinement 22: this row never recorded a remote id at all — record the
+    // one the recovery lookup found, and confirm the link, same best-effort
+    // shape and zero-row capture as the SyncToken persist below.
+    try {
+      const rows = await runInDbContext(() => db
+        .update(accountingEntityMappings)
+        .set({
+          remoteEntityId: seam.remoteEntityId,
+          remoteSyncToken: voidResult.remoteVersion ?? seam.remoteSyncToken,
+          linkStatus: 'confirmed',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingRow.id),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ id: accountingEntityMappings.id }));
+      if (!rows[0]) {
+        captureException(
+          new Error(`void recovery persist matched no accounting_entity_mappings row (id=${mappingRow.id})`),
+          undefined,
+          { service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId },
+        );
+      }
+    } catch (dbErr) {
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
+        service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId,
+      });
+    }
+  } else if (voidResult.remoteVersion && voidResult.remoteVersion !== mappingRow.remoteSyncToken) {
     try {
       const rows = await runInDbContext(() => db
         .update(accountingEntityMappings)
