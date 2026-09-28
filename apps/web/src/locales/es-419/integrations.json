@@ -782,6 +782,8 @@
     "notConnected": "No conectado",
     "reconnectRequired": "Se requiere reconexión",
     "disconnectOtherFirst": "Desconecte {{provider}} primero",
+    "pendingTenant": "Elija una organización",
+    "finishOtherFirst": "Termine o cancele primero la conexión de {{provider}}",
     "loadFailed": "No se pudieron cargar los proveedores de contabilidad. Actualice la página para intentarlo de nuevo.",
     "noProviderConfigured": "No hay ningún proveedor de contabilidad configurado en esta instancia."
   },

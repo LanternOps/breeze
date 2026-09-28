@@ -63,4 +63,35 @@ describe('AccountingProviderCards', () => {
     expect(qbo.textContent).toContain('Reconnect required');
     expect(qbo.textContent).not.toContain('Connected');
   });
+
+  it('shows "Choose an organisation" for the connection\'s own card while pending_tenant', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: [
+      { id: 'xero', displayName: 'Xero', configured: true, capabilities: caps },
+    ], activeConnection: { provider: 'xero', status: 'pending_tenant' } }));
+    render(<AccountingProviderCards selected="xero" onSelect={() => {}} />);
+    const xero = await screen.findByTestId('accounting-provider-card-xero');
+    expect(xero.textContent).toContain('Choose an organisation');
+    expect(xero.textContent).not.toContain('Connected');
+  });
+
+  it('shows "Finish or cancel the ... connection first" on another card while one is pending_tenant', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: [
+      { id: 'quickbooks', displayName: 'QuickBooks', configured: true, capabilities: caps },
+      { id: 'xero', displayName: 'Xero', configured: true, capabilities: caps },
+    ], activeConnection: { provider: 'xero', status: 'pending_tenant' } }));
+    render(<AccountingProviderCards selected="xero" onSelect={() => {}} />);
+    const qbo = await screen.findByTestId('accounting-provider-card-quickbooks');
+    expect(qbo.textContent).toContain('Finish or cancel the Xero connection first');
+    expect(qbo.textContent).not.toContain('Disconnect Xero first');
+  });
+
+  it('re-fetches when refreshKey changes', async () => {
+    m.fetchWithAuth.mockReturnValue(ok({ data: [
+      { id: 'quickbooks', displayName: 'QuickBooks', configured: true, capabilities: caps },
+    ], activeConnection: null }));
+    const { rerender } = render(<AccountingProviderCards selected={null} onSelect={() => {}} refreshKey={0} />);
+    await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledTimes(1));
+    rerender(<AccountingProviderCards selected={null} onSelect={() => {}} refreshKey={1} />);
+    await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledTimes(2));
+  });
 });

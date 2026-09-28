@@ -247,6 +247,14 @@ export default function IntegrationsPage({
   const [accountingProviders, setAccountingProviders] = useState<
     AccountingProvidersResponse | null | undefined
   >(undefined);
+  // Bumped after a connection change (disconnect, tenant pick) so the cards —
+  // and the auto-pick effect below — see fresh data without a full reload.
+  const [accountingProvidersRefreshKey, setAccountingProvidersRefreshKey] = useState(0);
+  // True once the accounting sub-tab was chosen explicitly (a hash naming a
+  // provider, the OAuth `?accounting=` return param, or a card/sub-tab click).
+  // While false, a bare `#accounting` hash lets the auto-pick effect below
+  // choose a provider once the provider list loads.
+  const accountingSubTabExplicitRef = useRef(false);
   const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
     result: M365CustomerGraphReadCallbackResult | null;
     refreshKey: number;
@@ -288,13 +296,23 @@ export default function IntegrationsPage({
       if (parsed.securitySub) setSecuritySubTab(parsed.securitySub);
       if (parsed.cloudTenantsSub) setCloudTenantsSubTab(parsed.cloudTenantsSub);
       if (parsed.distributorSub) setDistributorSubTab(parsed.distributorSub);
-      if (parsed.accountingSub) setAccountingSubTab(parsed.accountingSub);
-      else if (parsed.tab === "accounting") {
+      if (parsed.accountingSub) {
+        setAccountingSubTab(parsed.accountingSub);
+        accountingSubTabExplicitRef.current = true;
+      } else if (parsed.tab === "accounting") {
         // The accounting OAuth callback returns to
         // /integrations?accounting=<provider>&…#accounting. Open that
         // provider's panel so it can report the result (and strip the params).
         const returning = new URLSearchParams(window.location.search).get("accounting");
-        if (returning && isAccountingProviderId(returning)) setAccountingSubTab(returning);
+        if (returning && isAccountingProviderId(returning)) {
+          setAccountingSubTab(returning);
+          accountingSubTabExplicitRef.current = true;
+        } else {
+          // A bare #accounting hash: let the auto-pick effect below choose a
+          // provider once the list loads, rather than always defaulting to
+          // whatever provider was last selected (or QuickBooks).
+          accountingSubTabExplicitRef.current = false;
+        }
       }
       if (parsed.consumeCustomerGraphReadResult) {
         setCustomerGraphReadCallback((current) => ({
@@ -405,9 +423,28 @@ export default function IntegrationsPage({
         && isAccountingProviderVisible(p, accountingProviders.activeConnection),
     );
   const selectAccountingSubTab = (id: AccountingSubTab) => {
+    accountingSubTabExplicitRef.current = true;
     if (typeof window !== "undefined") window.location.hash = id;
     setAccountingSubTab(id);
   };
+  // Auto-pick a provider for a bare `#accounting` hash once the provider list
+  // loads: the active connection's provider if it's visible, else the first
+  // visible provider in `data` order, else nothing. Never overrides an
+  // explicit hash/param/click, and never writes to the URL hash itself —
+  // `#accounting` stays as-is (Xero W02c task 11b).
+  useEffect(() => {
+    if (accountingSubTabExplicitRef.current) return;
+    if (!accountingProviders) return;
+    const active = accountingProviders.activeConnection;
+    const activeVisible = active
+      && accountingProviders.data.find(
+        (p) => p.id === active.provider && isAccountingProviderVisible(p, active),
+      );
+    const pick = activeVisible
+      ? active.provider
+      : accountingProviders.data.find((p) => isAccountingProviderVisible(p, active))?.id;
+    if (pick) setAccountingSubTab(pick);
+  }, [accountingProviders]);
   const visibleCustomerGraphReadResult = callbackOrgId !== null
     && customerGraphReadCallback.orgId === callbackOrgId
     ? customerGraphReadCallback.result
@@ -555,6 +592,7 @@ export default function IntegrationsPage({
               selected={selectedAccountingProvider}
               onSelect={selectAccountingSubTab}
               onLoaded={setAccountingProviders}
+              refreshKey={accountingProvidersRefreshKey}
             />
           )}
           <div className="flex gap-2">
@@ -648,6 +686,7 @@ export default function IntegrationsPage({
           <AccountingConnectionPanel
             key={selectedAccountingProvider}
             provider={selectedAccountingProvider}
+            onConnectionChanged={() => setAccountingProvidersRefreshKey((k) => k + 1)}
           />
         ) : null)}
       {activeTab === "accounting" &&

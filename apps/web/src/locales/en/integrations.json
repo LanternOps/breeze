@@ -782,6 +782,8 @@
     "notConnected": "Not connected",
     "reconnectRequired": "Reconnect required",
     "disconnectOtherFirst": "Disconnect {{provider}} first",
+    "pendingTenant": "Choose an organisation",
+    "finishOtherFirst": "Finish or cancel the {{provider}} connection first",
     "loadFailed": "Could not load the accounting providers. Refresh the page to try again.",
     "noProviderConfigured": "No accounting provider is configured on this instance."
   },

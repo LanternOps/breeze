@@ -782,6 +782,8 @@
     "notConnected": "Nicht verbunden",
     "reconnectRequired": "Erneute Verbindung erforderlich",
     "disconnectOtherFirst": "Trennen Sie zuerst {{provider}}",
+    "pendingTenant": "Wählen Sie eine Organisation",
+    "finishOtherFirst": "Schließen Sie die {{provider}}-Verbindung zuerst ab oder brechen Sie sie ab",
     "loadFailed": "Die Buchhaltungsanbieter konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
     "noProviderConfigured": "Auf dieser Instanz ist kein Buchhaltungsanbieter konfiguriert."
   },

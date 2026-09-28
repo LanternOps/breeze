@@ -782,6 +782,8 @@
     "notConnected": "Bağlı değil",
     "reconnectRequired": "Yeniden bağlantı gerekli",
     "disconnectOtherFirst": "Önce {{provider}} bağlantısını kesin",
+    "pendingTenant": "Bir kuruluş seçin",
+    "finishOtherFirst": "{{provider}} bağlantısını önce tamamlayın veya iptal edin",
     "loadFailed": "Muhasebe sağlayıcıları yüklenemedi. Tekrar denemek için sayfayı yenileyin.",
     "noProviderConfigured": "Bu örnekte yapılandırılmış bir muhasebe sağlayıcısı yok."
   },
