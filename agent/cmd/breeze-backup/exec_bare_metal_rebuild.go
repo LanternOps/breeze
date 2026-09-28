@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
+	"strings"
 
+	"github.com/breeze-rmm/agent/internal/backup/hyperv"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
@@ -27,8 +30,40 @@ type bareMetalRebuildPayload struct {
 		Path           string `json:"path"`
 		ImageSizeBytes int64  `json:"imageSizeBytes,omitempty"`
 	} `json:"target"`
-	Identity  string `json:"identity,omitempty"`
-	OutputDir string `json:"outputDir,omitempty"`
+	Identity  string         `json:"identity,omitempty"`
+	OutputDir string         `json:"outputDir,omitempty"`
+	HyperV    *hyperVPayload `json:"hyperv,omitempty"`
+}
+
+// hyperVPayload mirrors apps/api/src/services/bareMetalRebuildSchemas.ts
+// hypervOptionsSchema field-for-field. When set, the helper creates a Hyper-V
+// VM from the rebuilt VHDX after a completed run (no NIC unless switchName).
+type hyperVPayload struct {
+	VMName     string `json:"vmName"`
+	SwitchName string `json:"switchName,omitempty"`
+	MemoryMB   int64  `json:"memoryMb,omitempty"`
+	CPUCount   int    `json:"cpuCount,omitempty"`
+}
+
+// hostGOOS is runtime.GOOS; a var so tests exercise the Windows-only hyperv
+// path on the Linux/macOS CI agents.
+var hostGOOS = runtime.GOOS
+
+// createRebuildVMFn is the Hyper-V VM-create seam (hyperv.CreateVMFromVHDX
+// on Windows); overridden in tests. Distinct from execBareMetalRebuild's
+// rebuildFn parameter, which is the rebuild ENGINE (rebuild.Run).
+var createRebuildVMFn = createRebuildVM
+
+// createVMRequest is the VM-create request for this payload: the VM boots the
+// VHDX the helper told the engine to write (target.path, validated here).
+func (p *bareMetalRebuildPayload) createVMRequest() hyperv.CreateVMRequest {
+	return hyperv.CreateVMRequest{
+		VMName:     p.HyperV.VMName,
+		VHDXPath:   p.Target.Path,
+		SwitchName: p.HyperV.SwitchName,
+		MemoryMB:   p.HyperV.MemoryMB,
+		CPUCount:   p.HyperV.CPUCount,
+	}
 }
 
 func (p *bareMetalRebuildPayload) validate() error {
@@ -39,10 +74,23 @@ func (p *bareMetalRebuildPayload) validate() error {
 		return errors.New("token and server are required")
 	case p.Target.Kind != string(rebuild.TargetVHDX) && p.Target.Kind != string(rebuild.TargetImage):
 		return fmt.Errorf("target.kind must be vhdx or image, got %q", p.Target.Kind)
+	case strings.HasPrefix(p.Target.Path, `\\`) || (hostGOOS == "windows" && strings.HasPrefix(p.Target.Path, "//")):
+		// The API refuses UNC (isAbsoluteRebuildPath); filepath.IsAbs on
+		// Windows would accept \\server\share\x, so refuse it here too.
+		return fmt.Errorf("target.path must be a local absolute path, not a UNC path: %q", p.Target.Path)
 	case p.Target.Path == "" || !filepath.IsAbs(p.Target.Path):
 		return fmt.Errorf("target.path must be an absolute path, got %q", p.Target.Path)
 	}
-	return nil
+	if p.HyperV == nil {
+		return nil
+	}
+	if hostGOOS != "windows" {
+		return errors.New("hyperv is only supported on Windows hosts")
+	}
+	if p.Target.Kind != string(rebuild.TargetVHDX) {
+		return fmt.Errorf("hyperv requires target.kind vhdx, got %q", p.Target.Kind)
+	}
+	return hyperv.ValidateCreateVMRequest(p.createVMRequest())
 }
 
 // bareMetalRebuildResult is the command result body: the engine Result
@@ -104,6 +152,9 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 		}
 		return fail(runErr.Error())
 	}
+	if runErr == nil && res.Status == "completed" && p.HyperV != nil {
+		createHyperVVM(ctx, &p, res)
+	}
 	body, merr := json.Marshal(bareMetalRebuildResult{Result: res, RecoveryID: p.RecoveryID})
 	if merr != nil {
 		return fail(fmt.Sprintf("failed to marshal result: %v", merr))
@@ -116,4 +167,21 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 		return backupipc.BackupCommandResult{Success: false, Stdout: string(body), Stderr: reason}
 	}
 	return ok(string(body))
+}
+
+// createHyperVVM creates the optional Hyper-V VM after a completed rebuild
+// and records the outcome on res. A failure never fails the command — the
+// rebuild succeeded and the VHDX stays where it is — but it is never silent
+// either: VMCreated stays false, VMError carries the reason, and the reason
+// leads Warnings so no warning cap can trim it away.
+func createHyperVVM(ctx context.Context, p *bareMetalRebuildPayload, res *rebuild.Result) {
+	req := p.createVMRequest()
+	if err := createRebuildVMFn(ctx, req); err != nil {
+		slog.Warn("bare_metal_rebuild: hyperv VM creation failed", "recoveryId", p.RecoveryID, "vmName", req.VMName, "error", err.Error())
+		res.VMError = err.Error()
+		res.Warnings = append([]string{"hyperv VM creation failed: " + err.Error()}, res.Warnings...)
+		return
+	}
+	slog.Info("bare_metal_rebuild: hyperv VM created", "recoveryId", p.RecoveryID, "vmName", req.VMName)
+	res.VMCreated = true
 }

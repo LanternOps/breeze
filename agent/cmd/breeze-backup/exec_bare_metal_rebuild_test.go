@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/hyperv"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -223,5 +226,250 @@ func TestExecuteCommand_DispatchesBareMetalRebuild(t *testing.T) {
 		if res.Success || !strings.Contains(res.Stderr, "invalid bare_metal_rebuild payload") {
 			t.Errorf("withMgr=%v: res = %+v", withMgr, res)
 		}
+	}
+}
+
+// --- hyperv: create a VM from the rebuilt VHDX (W06d Task 21) ---
+
+// pinHostGOOS makes validate() see goos for the rest of the test, so the
+// Windows-only hyperv path is exercised on the Linux/macOS CI agents too.
+func pinHostGOOS(t *testing.T, goos string) {
+	t.Helper()
+	orig := hostGOOS
+	hostGOOS = goos
+	t.Cleanup(func() { hostGOOS = orig })
+}
+
+// stubCreateRebuildVM replaces the VM-create seam for the rest of the test
+// and records every request it is handed.
+func stubCreateRebuildVM(t *testing.T, err error) *[]hyperv.CreateVMRequest {
+	t.Helper()
+	orig := createRebuildVMFn
+	var got []hyperv.CreateVMRequest
+	createRebuildVMFn = func(_ context.Context, req hyperv.CreateVMRequest) error {
+		got = append(got, req)
+		return err
+	}
+	t.Cleanup(func() { createRebuildVMFn = orig })
+	return &got
+}
+
+// testBareMetalRebuildPayloadWithHyperV is testBareMetalRebuildPayload with
+// the target path under test control and an hyperv block (raw JSON, "" for
+// none). A separate helper: adding hyperv to the shared payload would make
+// every other exec test fail validate() off-Windows.
+func testBareMetalRebuildPayloadWithHyperV(t *testing.T, server, targetPath, hypervJSON string) json.RawMessage {
+	t.Helper()
+	hv := ""
+	if hypervJSON != "" {
+		hv = `, "hyperv": ` + hypervJSON
+	}
+	return json.RawMessage(fmt.Sprintf(`{
+		"recoveryId": "rec-1", "token": "brz_rec_test", "server": %q,
+		"target": {"kind": "vhdx", "path": %q}%s
+	}`, server, targetPath, hv))
+}
+
+type hyperVResultBody struct {
+	Status     string   `json:"status"`
+	RecoveryID string   `json:"recoveryId"`
+	VMCreated  bool     `json:"vmCreated"`
+	VMError    string   `json:"vmError"`
+	Warnings   []string `json:"warnings"`
+}
+
+func decodeHyperVResult(t *testing.T, stdout string) hyperVResultBody {
+	t.Helper()
+	var out hyperVResultBody
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout %q: %v", stdout, err)
+	}
+	return out
+}
+
+// rebuiltVHDX creates a stand-in for the rebuilt disk so a test can prove
+// the VM step never removes it.
+func rebuiltVHDX(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dev-1.vhdx")
+	if err := os.WriteFile(path, []byte("vhdx"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// pushCompletedRun queues the dry run AND the real run — token mode calls
+// the engine twice, so one pushed result would be eaten by the dry run.
+func pushCompletedRun(fake *fakeRebuild, targetPath string, warnings ...string) {
+	fake.push(&rebuild.Result{Status: "completed", Plan: &rebuild.Plan{}}, nil)
+	fake.push(&rebuild.Result{
+		Status: "completed", PhaseReached: rebuild.PhaseValidate, Plan: &rebuild.Plan{},
+		Target:   rebuild.Target{Kind: rebuild.TargetVHDX, Path: targetPath},
+		Warnings: warnings,
+	}, nil)
+}
+
+func TestValidate_RejectsHyperVOffWindows(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		pinHostGOOS(t, goos)
+		p := &bareMetalRebuildPayload{RecoveryID: "rec-1", Token: "brz_rec_test", Server: "https://breeze.example.com"}
+		p.Target.Kind, p.Target.Path = "vhdx", "/var/tmp/x.vhdx"
+		p.HyperV = &hyperVPayload{VMName: "w06-proof"}
+		if err := p.validate(); err == nil || !strings.Contains(err.Error(), "hyperv is only supported on Windows hosts") {
+			t.Fatalf("%s: validate() = %v, want hyperv-not-windows error", goos, err)
+		}
+	}
+}
+
+func TestValidate_HyperVOnWindows(t *testing.T) {
+	pinHostGOOS(t, "windows")
+	for name, tt := range map[string]struct {
+		kind, path string
+		hv         *hyperVPayload
+		want       string // "" = valid
+	}{
+		"valid":                {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "w06-proof", SwitchName: "LAN", MemoryMB: 8192, CPUCount: 4}, ""},
+		"valid, no hyperv":     {"vhdx", "/srv/x.vhdx", nil, ""},
+		"image target":         {"image", "/srv/x.img", &hyperVPayload{VMName: "w06-proof"}, "hyperv requires target.kind vhdx"},
+		"no vmName":            {"vhdx", "/srv/x.vhdx", &hyperVPayload{}, "vmName is required"},
+		"vmName quote":         {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "a'; Stop-Computer; '"}, ""},
+		"vmName newline":       {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "a'\nStop-Computer"}, "control character"},
+		"vmName NUL":           {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "a\x00b"}, "control character"},
+		"switch CR":            {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "ok", SwitchName: "LAN\r"}, "control character"},
+		"memory below minimum": {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "ok", MemoryMB: 100}, "memoryMb"},
+		"cpu negative":         {"vhdx", "/srv/x.vhdx", &hyperVPayload{VMName: "ok", CPUCount: -2}, "cpuCount"},
+		"UNC target":           {"vhdx", `\\srv\share\x.vhdx`, nil, "UNC"},
+		"UNC target slashes":   {"vhdx", "//srv/share/x.vhdx", nil, "UNC"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &bareMetalRebuildPayload{RecoveryID: "rec-1", Token: "brz_rec_test", Server: "https://breeze.example.com", HyperV: tt.hv}
+			p.Target.Kind, p.Target.Path = tt.kind, tt.path
+			err := p.validate()
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validate() = %v, want error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecBareMetalRebuild_CreatesVMOnHyperVSuccess(t *testing.T) {
+	pinHostGOOS(t, "windows")
+	got := stubCreateRebuildVM(t, nil)
+	server, statuses := newTokenModeTestServer(t, biosLayoutJSON(t))
+	vhdx := rebuiltVHDX(t)
+	fake := &fakeRebuild{}
+	pushCompletedRun(fake, vhdx)
+
+	payload := testBareMetalRebuildPayloadWithHyperV(t, server.URL, vhdx, `{"vmName":"w06-proof","switchName":"LAN","memoryMb":8192,"cpuCount":4}`)
+	result := execBareMetalRebuild(context.Background(), payload, fake.fn)
+	if !result.Success {
+		t.Fatalf("result = %+v", result)
+	}
+	want := hyperv.CreateVMRequest{VMName: "w06-proof", VHDXPath: vhdx, SwitchName: "LAN", MemoryMB: 8192, CPUCount: 4}
+	if len(*got) != 1 || (*got)[0] != want {
+		t.Fatalf("createRebuildVMFn calls = %+v, want exactly one %+v", *got, want)
+	}
+	res := decodeHyperVResult(t, result.Stdout)
+	if !res.VMCreated || res.VMError != "" || res.Status != "completed" {
+		t.Fatalf("result body = %+v, want completed with vmCreated", res)
+	}
+	if got := statuses(); strings.Join(got, ",") != "planned,restoring,validated" {
+		t.Errorf("posted statuses = %v", got)
+	}
+}
+
+func TestExecBareMetalRebuild_VMCreateFailureKeepsCompletedResult(t *testing.T) {
+	pinHostGOOS(t, "windows")
+	got := stubCreateRebuildVM(t, errors.New("New-VM: access denied"))
+	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
+	vhdx := rebuiltVHDX(t)
+	fake := &fakeRebuild{}
+	// 70 engine warnings: past the 64-entry reporting cap, so a VM warning
+	// appended at the end would be trimmed away.
+	engineWarnings := make([]string, 70)
+	for i := range engineWarnings {
+		engineWarnings[i] = fmt.Sprintf("engine warning %d", i)
+	}
+	pushCompletedRun(fake, vhdx, engineWarnings...)
+
+	payload := testBareMetalRebuildPayloadWithHyperV(t, server.URL, vhdx, `{"vmName":"w06-proof"}`)
+	result := execBareMetalRebuild(context.Background(), payload, fake.fn)
+
+	// The rebuild succeeded; only the convenience VM did not. The command
+	// still succeeds and the failure is carried in the result, not swallowed.
+	if !result.Success || result.Stderr != "" {
+		t.Fatalf("expected the completed rebuild to still report success, got %+v", result)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("createRebuildVMFn calls = %d, want 1", len(*got))
+	}
+	res := decodeHyperVResult(t, result.Stdout)
+	if res.VMCreated {
+		t.Fatalf("vmCreated = true after a failed VM create: %+v", res)
+	}
+	if !strings.Contains(res.VMError, "New-VM: access denied") {
+		t.Fatalf("vmError = %q, want the VM-create failure", res.VMError)
+	}
+	if len(res.Warnings) != 71 || !strings.Contains(res.Warnings[0], "hyperv VM creation failed: New-VM: access denied") {
+		t.Fatalf("warnings[0] = %q (len %d), want the VM-create failure first so no warning cap can drop it", res.Warnings[0], len(res.Warnings))
+	}
+	if res.Status != "completed" || res.RecoveryID != "rec-1" {
+		t.Fatalf("result body = %+v, want the completed rebuild result", res)
+	}
+	if _, err := os.Stat(vhdx); err != nil {
+		t.Fatalf("the rebuilt VHDX must survive a VM-create failure: %v", err)
+	}
+}
+
+func TestExecBareMetalRebuild_NoVMWithoutHyperVOrCompletedRun(t *testing.T) {
+	pinHostGOOS(t, "windows")
+	for name, tt := range map[string]struct {
+		hv   string
+		push func(*fakeRebuild, string)
+	}{
+		"no hyperv block": {"", func(f *fakeRebuild, p string) { pushCompletedRun(f, p) }},
+		"failed run": {`{"vmName":"w06-proof"}`, func(f *fakeRebuild, p string) {
+			f.push(&rebuild.Result{Status: "completed", Plan: &rebuild.Plan{}}, nil)
+			f.push(&rebuild.Result{Status: "failed", Error: "DISM exploded"}, errors.New("DISM exploded"))
+		}},
+		"refused dry run": {`{"vmName":"w06-proof"}`, func(f *fakeRebuild, p string) {
+			f.push(&rebuild.Result{Status: "refused", Refusal: "target is too small"}, &rebuild.RefusalError{Reason: "target is too small"})
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := stubCreateRebuildVM(t, nil)
+			server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
+			vhdx := rebuiltVHDX(t)
+			fake := &fakeRebuild{}
+			tt.push(fake, vhdx)
+			result := execBareMetalRebuild(context.Background(), testBareMetalRebuildPayloadWithHyperV(t, server.URL, vhdx, tt.hv), fake.fn)
+			if len(*got) != 0 {
+				t.Fatalf("createRebuildVMFn called %d times, want never", len(*got))
+			}
+			if res := decodeHyperVResult(t, result.Stdout); res.VMCreated || res.VMError != "" {
+				t.Fatalf("result body = %+v, want no VM outcome", res)
+			}
+		})
+	}
+}
+
+// Off Windows the API never sends hyperv, but if it did the helper refuses
+// the whole command before touching the engine or Hyper-V.
+func TestExecBareMetalRebuild_HyperVRefusedOffWindowsBeforeEngine(t *testing.T) {
+	pinHostGOOS(t, "linux")
+	got := stubCreateRebuildVM(t, nil)
+	fake := &fakeRebuild{}
+	result := execBareMetalRebuild(context.Background(), testBareMetalRebuildPayloadWithHyperV(t, "https://breeze.example.com", "/srv/x.vhdx", `{"vmName":"w06-proof"}`), fake.fn)
+	if result.Success || !strings.Contains(result.Stderr, "hyperv is only supported on Windows hosts") {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(fake.calls) != 0 || len(*got) != 0 {
+		t.Fatalf("engine calls = %d, VM calls = %d; want neither", len(fake.calls), len(*got))
 	}
 }

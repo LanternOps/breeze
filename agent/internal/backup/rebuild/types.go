@@ -216,6 +216,10 @@ type Result struct {
 
 	Platform  string `json:"platform"`
 	VMCreated bool   `json:"vmCreated,omitempty"`
+	// VMError is why the optional Hyper-V VM (bare_metal_rebuild's hyperv
+	// block, set by cmd/breeze-backup after a completed run) was not
+	// created. The rebuild itself still completed; the VHDX is left in place.
+	VMError string `json:"vmError,omitempty"`
 }
 
 // FailedFilesLen and CloneWithTrimmedFailedFiles satisfy bmr's

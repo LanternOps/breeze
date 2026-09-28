@@ -230,7 +230,7 @@ func TestRun_ResumeReclaimsLeakedDriveLetters(t *testing.T) {
 	if waitIdx == -1 || unmountIdx == -1 || bootIdx == -1 {
 		t.Fatalf("cmds = %v, want WaitForVolumes, UnmountVolume Y:, and a bcdboot.exe run", cmds)
 	}
-	if !(waitIdx < unmountIdx && unmountIdx < bootIdx) {
+	if waitIdx >= unmountIdx || unmountIdx >= bootIdx {
 		t.Fatalf("cmds = %v, want the leaked letter reclaimed after WaitForVolumes and before bcdboot", cmds)
 	}
 }
