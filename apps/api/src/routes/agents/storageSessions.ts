@@ -180,6 +180,15 @@ function failure(c: Context, result: WriteFailure): Response {
   return c.json({ error: result.code, code: result.code }, result.status);
 }
 
+function renewResponse(c: Context, renewed: Awaited<ReturnType<typeof renewStorageSession>>): Response {
+  if (renewed.status === 429) {
+    c.header('Retry-After', String(renewed.retryAfterSeconds));
+    return c.json({ error: 'Storage session budget exceeded' }, 429);
+  }
+  if (renewed.status !== 200) return c.json({ error: renewed.error }, renewed.status);
+  return c.json(renewed.body, 200);
+}
+
 agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAgentRole, async (c) => {
   noStore(c);
   const op = c.req.param('op') ?? '';
@@ -235,9 +244,7 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
 
       if (!isWriteSession) {
         if (op === 'renew') {
-          const renewed = await renewStorageSession(session);
-          if (renewed.status !== 200) return { done: c.json({ error: renewed.error }, renewed.status) };
-          return { done: c.json(renewed.body, 200) };
+          return { done: renewResponse(c, await renewStorageSession(session)) };
         }
         const result = await resolveStorageSessionObjects(session, keys!);
         if (result.status === 429) {
@@ -252,9 +259,7 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
       const live = await ensureWriteSessionLive(session);
       if (!live.ok) return { done: c.json({ error: live.error }, live.status) };
       if (op === 'renew') {
-        const renewed = await renewStorageSession(session);
-        if (renewed.status !== 200) return { done: c.json({ error: renewed.error }, renewed.status) };
-        return { done: c.json(renewed.body, 200) };
+        return { done: renewResponse(c, await renewStorageSession(session)) };
       }
       if (op === 'objects:resolve') {
         const requests = parseWriteRequests(body);

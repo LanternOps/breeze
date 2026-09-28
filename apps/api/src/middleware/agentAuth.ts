@@ -753,8 +753,8 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
     && pathSegments[CORE_AGENT_ACTION_INDEX] === 'storage-sessions';
 
-  // Storage-session calls are metered by their own per-session and per-device
-  // windows (services/agentStorageSessionRateLimit.ts) INSTEAD of the general
+  // Storage-session calls are metered by their own per-session, per-device and
+  // per-org windows (services/agentStorageSessionRateLimit.ts) INSTEAD of the general
   // per-(agent, source-IP), per-agent and per-org buckets below. A brokered
   // transfer makes one call per multipart part or small file; charged to the
   // general buckets it exhausted them within a minute and the agent's own
@@ -763,6 +763,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // token, device binding and budget checks in the handlers are unchanged.
   if (isStorageSessionPath) {
     const storageCheck = await checkAgentStorageSessionRateLimit(redis, {
+      orgId: device.orgId,
       deviceId: device.id,
       sessionId: pathSegments[CORE_AGENT_ACTION_INDEX + 1] ?? '',
     });

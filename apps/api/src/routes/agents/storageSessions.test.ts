@@ -174,6 +174,13 @@ describe('storage session renew endpoint', () => {
     const res = await post(renewPath, {});
     expect(res.status).toBe(410);
   });
+
+  it('answers a renew throttled by the session call budget 429 with its Retry-After', async () => {
+    renewMock.mockResolvedValue({ status: 429, retryAfterSeconds: 3 });
+    const res = await post(renewPath, {});
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('3');
+  });
 });
 
 describe('storage session single-object compatibility endpoint', () => {

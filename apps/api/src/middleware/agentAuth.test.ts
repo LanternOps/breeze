@@ -566,7 +566,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     const next = vi.fn().mockResolvedValue(undefined);
     await agentAuthMiddleware(c, next);
     expect(next).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(checkAgentStorageSessionRateLimit)).toHaveBeenCalledWith(expect.anything(), { deviceId: 'device-1', sessionId });
+    expect(vi.mocked(checkAgentStorageSessionRateLimit)).toHaveBeenCalledWith(expect.anything(), { orgId: 'org-1', deviceId: 'device-1', sessionId });
     expect(vi.mocked(rateLimiter)).not.toHaveBeenCalled();
   });
 
@@ -580,6 +580,40 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(c._getResponse()).toEqual({ status: 429, body: { error: 'storage_session_rate_limit_exceeded' } });
     expect(c._getResponseHeaders()['Retry-After']).toBe('37');
     expect(vi.mocked(rateLimiter)).not.toHaveBeenCalled();
+  });
+
+  // The storage-session path changes only rate accounting: every gate after
+  // the limiters still applies to it.
+  const STORAGE_PATH = '/api/v1/agents/agent-1/storage-sessions/0b6f0c7e-3d2a-4f5b-9e1c-8a7d6c5b4a39/objects:resolve';
+
+  it('still applies the tenant-status gate on a storage-session path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue(null);
+    const next = vi.fn();
+    await expect(agentAuthMiddleware(createContext({ token: VALID_TOKEN, path: STORAGE_PATH }), next))
+      .rejects.toMatchObject({ status: 401, message: 'Invalid agent credentials' });
+    expect(next).not.toHaveBeenCalled();
+    expect(vi.mocked(checkAgentStorageSessionRateLimit)).toHaveBeenCalledTimes(1);
+  });
+
+  it('still applies the tenant drain gate on a storage-session path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    const c = createContext({ token: VALID_TOKEN, path: STORAGE_PATH });
+    const next = vi.fn();
+    const result = await agentAuthMiddleware(c, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 403, body: { error: 'tenant_offboarding' } });
+  });
+
+  it('still applies the device uninstall drain gate on a storage-session path', async () => {
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValueOnce(true);
+    const c = createContext({ token: VALID_TOKEN, path: STORAGE_PATH });
+    const next = vi.fn();
+    const result = await agentAuthMiddleware(c, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 403, body: { error: 'device_uninstall_draining' } });
   });
 
   it('keeps other agent routes on the general buckets and off the storage-session limiter', async () => {
@@ -941,6 +975,19 @@ describe('agentAuthMiddleware - certificate/device binding (Wave 5 Task 6)', () 
     const next = vi.fn().mockResolvedValue(undefined);
 
     await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({ status: 401 });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('mode enforce: still refuses a storage-session path without a matching certificate', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/storage-sessions/0b6f0c7e-3d2a-4f5b-9e1c-8a7d6c5b4a39/multipart:complete',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({ status: 401, message: 'Invalid agent credentials' });
     expect(next).not.toHaveBeenCalled();
   });
 

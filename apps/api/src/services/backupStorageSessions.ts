@@ -819,9 +819,15 @@ export async function resolveStorageSessionObjects(
 
 export type RenewResult =
   | { status: 200; body: { expiresAt: string; expiresIn: number } }
+  | { status: 429; retryAfterSeconds: number }
   | { status: 410; error: string };
 
-/** Extends the lease by STORAGE_SESSION_LEASE_MS, never past the deadline. */
+/**
+ * Extends the lease by STORAGE_SESSION_LEASE_MS, never past the deadline.
+ * Each renew is one call against the session's call budget (no objects), like
+ * every other operation: a helper renews when a third of the lease is left, so
+ * normal renewal is a handful of calls per hour, far inside the budget.
+ */
 export async function renewStorageSession(
   session: StorageSessionRow,
   deps: BrokeredReadDeps = defaultBrokeredReadDeps,
@@ -832,6 +838,13 @@ export async function renewStorageSession(
     session.deadline.getTime(),
   ));
   if (target.getTime() <= now.getTime()) return { status: 410, error: 'Storage session has reached its deadline' };
+  const budget = await deps.store.consumeBudget(session.id, { calls: 1, objects: 0 }, now);
+  if (!budget) return { status: 410, error: 'Storage session has been revoked' };
+  if (budget.kind === 'throttled') return { status: 429, retryAfterSeconds: budget.retryAfterSeconds };
+  if (budget.kind === 'exhausted') {
+    await deps.store.revokeSession(session.id, 'budget_exhausted');
+    return { status: 410, error: 'Storage session has used its entire call allowance' };
+  }
   const stored = await deps.store.extendLease(session.id, target);
   if (!stored || stored.getTime() <= now.getTime()) return { status: 410, error: 'Storage session has been revoked' };
   const clamped = new Date(Math.min(stored.getTime(), session.deadline.getTime()));

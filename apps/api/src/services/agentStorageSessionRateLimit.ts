@@ -14,7 +14,7 @@ import { STORAGE_SESSION_CALLS_PER_MINUTE } from './backupStorageSessionBudget';
  * offline mid-backup. Storage traffic now spends only its own budget, so it can
  * never starve heartbeats, and heartbeats cannot starve it.
  *
- * Two sliding 60 s windows, both checked on every call:
+ * Three sliding 60 s windows, all checked on every call:
  *   - per session (keyed by device AND session id):
  *       AGENT_STORAGE_SESSION_RATE_LIMIT = STORAGE_SESSION_CALLS_PER_MINUTE
  *       (600/min). One call per part: 10 parts/s is ~50 MiB/s even at the
@@ -31,8 +31,15 @@ import { STORAGE_SESSION_CALLS_PER_MINUTE } from './backupStorageSessionBudget';
  *       backup and a restore (or two jobs) can both run at full rate, while the
  *       total the device can drive through this path stays bounded no matter
  *       how many session ids it presents.
+ *   - per org, across all its devices:
+ *       AGENT_STORAGE_ORG_RATE_LIMIT (20,000/min) — the platform ceiling of the
+ *       general per-org agent bucket (DEFAULT_AGENT_ORG_RATE_LIMIT_MAX). It
+ *       bounds the load one tenant can drive through this path, including the
+ *       tenant-status lookups that run after this gate, and is far above what
+ *       an org's concurrent backups and restores need (~16 devices each at
+ *       their full device ceiling).
  *
- * Refusals are free: a refused call is removed again from both windows, so a
+ * Refusals are free: a refused call is removed again from every window, so a
  * client that keeps retrying while throttled does not keep itself throttled,
  * and the Retry-After it is given is the time until the window actually has
  * room — not a flat second, which with punitive accounting became a retry loop
@@ -46,6 +53,8 @@ import { STORAGE_SESSION_CALLS_PER_MINUTE } from './backupStorageSessionBudget';
 export const AGENT_STORAGE_RATE_WINDOW_SECONDS = 60;
 export const AGENT_STORAGE_SESSION_RATE_LIMIT = STORAGE_SESSION_CALLS_PER_MINUTE;
 export const AGENT_STORAGE_DEVICE_RATE_LIMIT = 2 * AGENT_STORAGE_SESSION_RATE_LIMIT;
+/** Equal to DEFAULT_AGENT_ORG_RATE_LIMIT_MAX (agentOrgRateLimit.ts); kept a literal so this module stays free of database imports. */
+export const AGENT_STORAGE_ORG_RATE_LIMIT = 20_000;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
@@ -54,11 +63,16 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  */
 const MALFORMED_SESSION_BUCKET = 'malformed';
 
-export function agentStorageSessionRateKeys(deviceId: string, sessionId: string): { session: string; device: string } {
+export function agentStorageSessionRateKeys(
+  orgId: string,
+  deviceId: string,
+  sessionId: string,
+): { session: string; device: string; org: string } {
   const sessionBucket = UUID_PATTERN.test(sessionId) ? sessionId.toLowerCase() : MALFORMED_SESSION_BUCKET;
   return {
     session: `agent_storage_rate:session:${deviceId}:${sessionBucket}`,
     device: `agent_storage_rate:device:${deviceId}`,
+    org: `agent_storage_rate:org:${orgId}`,
   };
 }
 
@@ -98,13 +112,13 @@ async function msUntilRoom(redis: Redis, key: string, count: number, limit: numb
 }
 
 /**
- * Charge one storage-session call to its session and device windows, or
- * refuse it without charging either. Fails closed (refuses, advertising the
- * full window) when Redis is unavailable, like the general agent limiters.
+ * Charge one storage-session call to its session, device and org windows, or
+ * refuse it without charging any. Fails closed (refuses, advertising the full
+ * window) when Redis is unavailable, like the general agent limiters.
  */
 export async function checkAgentStorageSessionRateLimit(
   redis: Redis | null,
-  input: { deviceId: string; sessionId: string },
+  input: { orgId: string; deviceId: string; sessionId: string },
   now: number = Date.now(),
 ): Promise<AgentStorageRateDecision> {
   if (!redis) {
@@ -112,43 +126,43 @@ export async function checkAgentStorageSessionRateLimit(
     return failClosed();
   }
   const windowMs = AGENT_STORAGE_RATE_WINDOW_SECONDS * 1000;
-  const keys = agentStorageSessionRateKeys(input.deviceId, input.sessionId);
+  const keys = agentStorageSessionRateKeys(input.orgId, input.deviceId, input.sessionId);
+  // Session, then device, then org.
+  const buckets = [
+    { key: keys.session, limit: AGENT_STORAGE_SESSION_RATE_LIMIT },
+    { key: keys.device, limit: AGENT_STORAGE_DEVICE_RATE_LIMIT },
+    { key: keys.org, limit: AGENT_STORAGE_ORG_RATE_LIMIT },
+  ];
   const member = `${now}-${Math.random().toString(36).slice(2, 12)}`;
 
   try {
-    const results = await redis
-      .multi()
-      .zremrangebyscore(keys.session, '-inf', now - windowMs)
-      .zremrangebyscore(keys.device, '-inf', now - windowMs)
-      .zadd(keys.session, now, member)
-      .zadd(keys.device, now, member)
-      .zcard(keys.session)
-      .zcard(keys.device)
-      .pexpire(keys.session, windowMs)
-      .pexpire(keys.device, windowMs)
-      .exec();
+    const pipeline = redis.multi();
+    for (const b of buckets) pipeline.zremrangebyscore(b.key, '-inf', now - windowMs);
+    for (const b of buckets) pipeline.zadd(b.key, now, member);
+    for (const b of buckets) pipeline.zcard(b.key);
+    for (const b of buckets) pipeline.pexpire(b.key, windowMs);
+    const results = await pipeline.exec();
     if (!results) return failClosed();
 
-    const sessionCount = numberAt(results, 4);
-    const deviceCount = numberAt(results, 5);
-    const sessionOver = sessionCount > AGENT_STORAGE_SESSION_RATE_LIMIT;
-    const deviceOver = deviceCount > AGENT_STORAGE_DEVICE_RATE_LIMIT;
-    if (!sessionOver && !deviceOver) return { allowed: true };
+    const counts = buckets.map((_, i) => numberAt(results, 2 * buckets.length + i));
+    const over = buckets.map((b, i) => counts[i]! > b.limit);
+    if (!over.some(Boolean)) return { allowed: true };
 
-    // Refused: take this call back out of both windows. If that fails the call
+    // Refused: take this call back out of every window. If that fails the call
     // stays counted (the older, stricter behaviour) — never wrongly admitted.
     try {
-      await redis.multi().zrem(keys.session, member).zrem(keys.device, member).exec();
+      const refund = redis.multi();
+      for (const b of buckets) refund.zrem(b.key, member);
+      await refund.exec();
     } catch (err) {
       console.error('[agent-storage-rate] refund failed', err);
     }
 
     let waitMs = 0;
-    if (sessionOver) {
-      waitMs = Math.max(waitMs, await msUntilRoom(redis, keys.session, sessionCount - 1, AGENT_STORAGE_SESSION_RATE_LIMIT, windowMs, now));
-    }
-    if (deviceOver) {
-      waitMs = Math.max(waitMs, await msUntilRoom(redis, keys.device, deviceCount - 1, AGENT_STORAGE_DEVICE_RATE_LIMIT, windowMs, now));
+    for (let i = 0; i < buckets.length; i += 1) {
+      if (!over[i]) continue;
+      const b = buckets[i]!;
+      waitMs = Math.max(waitMs, await msUntilRoom(redis, b.key, counts[i]! - 1, b.limit, windowMs, now));
     }
     return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil(waitMs / 1000)) };
   } catch (err) {

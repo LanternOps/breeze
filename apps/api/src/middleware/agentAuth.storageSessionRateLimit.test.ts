@@ -159,6 +159,13 @@ describe('agentAuthMiddleware — storage-session rate accounting', () => {
     expect(read.status).toBe(200);
   });
 
+  it('refuses a storage-session call for a full window when Redis is unavailable', async () => {
+    redisHolder.current = null;
+    const res = await storageCall(buildApp(), SESSIONS[0]!);
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('60');
+  });
+
   it('heartbeats keep their existing per-(agent, source-IP) limit', async () => {
     const app = buildApp();
     for (let i = 0; i < 30; i += 1) expect((await heartbeat(app)).status).toBe(200);
