@@ -46,9 +46,14 @@ export function contactNumberFor(organizationId: string): string {
   return `breeze:${organizationId.toLowerCase()}`;
 }
 
+/** Truncates by code point (never by UTF-16 unit) so a surrogate pair at the boundary is never split. */
+function truncateCodePoints(value: string, limit: number): string {
+  return Array.from(value).slice(0, limit).join('');
+}
+
 /** Xero refuses angle brackets, leading/trailing and repeated whitespace; Name is ≤255. */
 export function xeroContactName(displayName: string): string {
-  const name = displayName.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 255).trim();
+  const name = truncateCodePoints(displayName.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim(), 255).trim();
   if (!name) throw validation('Xero contact name', 'Xero contact name is empty after removing characters Xero refuses');
   return name;
 }

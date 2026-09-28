@@ -63,8 +63,29 @@ describe('item codes and names', () => {
     expect(xeroItemCode(payload({ sku: undefined, name: '★★★' }))).toBe(`item-${H}`);
     expect(xeroItemCode(payload({ sku: undefined, name: 'Café Wi-Fi' }))).toBe(`cafe-wi-fi-${H}`);
   });
+  it('falls back to the NAME slug when the SKU slugs to nothing, and "item" only when both do (Review Minor 3)', () => {
+    expect(xeroItemCode(payload({ sku: '★', name: 'Managed Firewall' }))).toBe(`managed-firewall-${H}`);
+    expect(xeroItemCode(payload({ sku: '★', name: '★★★' }))).toBe(`item-${H}`);
+  });
   it('truncates names to 50', () => {
     expect(xeroItemName(`  ${'N'.repeat(80)} `)).toHaveLength(50);
+  });
+  const noLoneSurrogate = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u;
+  it('truncates the name by code point, never leaving a lone surrogate (Review Minor 2)', () => {
+    const name = `${'N'.repeat(49)}😀BB`; // 49 ascii + 1 emoji (surrogate pair) + 2 ascii, 53 UTF-16 units
+    const truncated = xeroItemName(name);
+    expect(truncated).not.toMatch(noLoneSurrogate);
+    expect(Array.from(truncated)).toHaveLength(50);
+  });
+  it('truncates the description by code point, never leaving a lone surrogate (Review Minor 2)', async () => {
+    const description = `${'D'.repeat(3999)}😀BB`; // 3999 ascii + 1 emoji + 2 ascii, 4003 UTF-16 units
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Items: [] }))
+      .mockResolvedValueOnce(json({ Items: [xitem()] }));
+    await upsertXeroItem(ctx, payload({ description }), null, TAX);
+    const sentDescription = (JSON.parse(initOf(fetchMock, 1).body as string) as { Items: [{ Description: string }] }).Items[0].Description;
+    expect(sentDescription).not.toMatch(noLoneSurrogate);
+    expect(Array.from(sentDescription)).toHaveLength(4000);
   });
 });
 

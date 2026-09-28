@@ -70,6 +70,12 @@ describe('contact wire mapping', () => {
     expect(xeroContactName('x'.repeat(300))).toHaveLength(255);
     expect(() => xeroContactName(' <> ')).toThrow(expect.objectContaining({ kind: 'validation', provider: 'xero' }));
   });
+  it('truncates the name by code point, never leaving a lone surrogate (Review Minor 2)', () => {
+    const name = `${'N'.repeat(254)}😀BB`; // 254 ascii + 1 emoji (surrogate pair) + 2 ascii, 258 UTF-16 units
+    const truncated = xeroContactName(name);
+    expect(truncated).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u);
+    expect(Array.from(truncated)).toHaveLength(255);
+  });
   it('builds the ContactNumber from a UUID only', () => {
     expect(contactNumberFor(ORG)).toBe(NUMBER);
     expect(() => contactNumberFor('x" or 1==1')).toThrow(expect.objectContaining({ kind: 'validation' }));

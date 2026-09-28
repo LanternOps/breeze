@@ -37,15 +37,24 @@ export function xeroItemSuffix(catalogItemId: string): string {
   return createHash('sha256').update(catalogItemId).digest('hex').slice(0, SUFFIX_LEN);
 }
 
+function slugOf(source: string): string {
+  return source.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, PREFIX_MAX).replace(/-+$/, '');
+}
+
 export function xeroItemCode(item: Pick<AccountingItemPayload, 'catalogItemId' | 'sku' | 'name'>): string {
-  const source = item.sku?.trim() || item.name;
-  const prefix = source.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, PREFIX_MAX).replace(/-+$/, '') || 'item';
+  const skuSlug = item.sku?.trim() ? slugOf(item.sku.trim()) : '';
+  const prefix = skuSlug || slugOf(item.name) || 'item';
   return `${prefix}-${xeroItemSuffix(item.catalogItemId)}`;
 }
 
+/** Truncates by code point (never by UTF-16 unit) so a surrogate pair at the boundary is never split. */
+function truncateCodePoints(value: string, limit: number): string {
+  return Array.from(value).slice(0, limit).join('');
+}
+
 export function xeroItemName(name: string): string {
-  return name.replace(/\s+/g, ' ').trim().slice(0, 50).trim();
+  return truncateCodePoints(name.replace(/\s+/g, ' ').trim(), 50).trim();
 }
 
 export function toRemoteItem(item: XeroItem): RemoteItem | null {
@@ -84,7 +93,7 @@ function itemFields(item: AccountingItemPayload, tax: { taxCodeRef: string | nul
   const taxType = item.taxable ? tax.taxCodeRef : tax.exemptTaxCodeRef;
   return {
     Name: xeroItemName(item.name),
-    ...(item.description ? { Description: item.description.slice(0, 4000) } : {}),
+    ...(item.description ? { Description: truncateCodePoints(item.description, 4000) } : {}),
     IsSold: true,
     SalesDetails: {
       UnitPrice: unitPrice,

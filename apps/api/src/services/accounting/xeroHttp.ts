@@ -462,7 +462,10 @@ async function xeroApiCall<T>(
 
   if (!response.ok) {
     const err = xeroApiError(operation, response.status, response.headers, text);
-    console.error(`[xeroHttp] ${operation} failed`, `status=${response.status}`, `kind=${err.kind}`);
+    console.error(
+      `[xeroHttp] ${operation} failed`, `status=${response.status}`, `kind=${err.kind}`,
+      ...(err.providerCode ? [`providerCode=${err.providerCode}`] : []),
+    );
     throw err;
   }
   try {

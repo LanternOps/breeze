@@ -1417,7 +1417,7 @@ async function syncMappedEntityUnderLease(
       if (breezeEntityType === 'org') {
         const org = await loadOwnedOrg(breezeEntityId, partnerId);
         if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
-        return { conn, mapping, existingRef, kind: 'org' as const, payload: buildCustomerPayload(org) };
+        return { conn, mapping, existingRef, kind: 'org' as const, providerLabel, payload: buildCustomerPayload(org) };
       }
 
       if (isCreate && !conn.defaultIncomeAccountRef) {
@@ -1433,7 +1433,7 @@ async function syncMappedEntityUnderLease(
       // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
       if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
       return {
-        conn, mapping, existingRef, kind: 'catalog_item' as const,
+        conn, mapping, existingRef, kind: 'catalog_item' as const, providerLabel,
         payload: buildItemPayload(item, conn, currencyCode, unitPrice),
       };
     } catch (err) {
@@ -1451,8 +1451,7 @@ async function syncMappedEntityUnderLease(
   });
 
   if ('refusal' in prep) throw prep.refusal;
-  const { conn, mapping, existingRef } = prep;
-  const providerLabel = accountingProviderDisplayName(conn.provider);
+  const { conn, mapping, existingRef, providerLabel } = prep;
   // Token refresh and the upsert both run with NO context held (see
   // `resolveLiveConnection`).
   const liveConn = await resolveLiveConnection(conn);

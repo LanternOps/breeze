@@ -1669,10 +1669,13 @@ describe('provider refusals the user resolves (Xero W03)', () => {
 
   it('remote_archived → 409 remote_archived', async () => {
     upsertCustomerMock.mockRejectedValueOnce(refusal('remote_archived'));
-    await expect(syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx)).rejects.toMatchObject({
+    const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
+    expect(err).toMatchObject({
       code: 'remote_archived', status: 409,
       message: 'The Xero customer for "Acme" is archived — restore it in Xero, then sync again',
     });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
   });
 
   it('remote_missing → 409 remote_missing (a mapped record deleted in the provider)', async () => {
@@ -1693,6 +1696,7 @@ describe('provider refusals the user resolves (Xero W03)', () => {
   it('duplicate_key (two provider records claim this item) → 409 mapping_conflict', async () => {
     upsertCustomerMock.mockRejectedValueOnce(refusal('duplicate_key'));
     await expect(syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx)).rejects.toMatchObject({ code: 'mapping_conflict', status: 409 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it('insufficient_scope → 409 provider_permission (Review Focus 5)', async () => {
@@ -1716,6 +1720,7 @@ describe('provider refusals the user resolves (Xero W03)', () => {
     listRemoteItemsMock.mockRejectedValueOnce(refusal('insufficient_scope'));
     await expect(listMappingProposals({ partnerId: PARTNER, provider: 'xero', entityType: 'catalog_item' }, runCtx))
       .rejects.toMatchObject({ code: 'provider_permission', status: 409 });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });
 
