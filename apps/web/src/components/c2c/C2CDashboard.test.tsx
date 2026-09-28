@@ -86,20 +86,26 @@ describe('C2CDashboard', () => {
   });
 
   it('wraps every tab table in a horizontally scrollable container so mobile content stays inside the card (#7155)', async () => {
+    // #7148: this row is now the shared OverflowTabs component (role="tab",
+    // not role="button"), which collapses every tab but the first behind
+    // "More" under jsdom — open it to reach the rest (see the test above).
     render(<C2CDashboard />);
 
     const connectionsMessage = await screen.findByText(/No connections configured yet/i);
     expect(connectionsMessage.closest('table')!.parentElement!.className).toContain('overflow-x-auto');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Configs' }));
+    fireEvent.click(screen.getByTestId('c2c-tab-more'));
+    fireEvent.click(screen.getByTestId('c2c-tab-configs'));
     const configsMessage = await screen.findByText('No backup configs yet. Add a connection first, then configure backups.');
     expect(configsMessage.closest('table')!.parentElement!.className).toContain('overflow-x-auto');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Jobs' }));
+    fireEvent.click(screen.getByTestId('c2c-tab-more'));
+    fireEvent.click(screen.getByTestId('c2c-tab-jobs'));
     const jobsMessage = await screen.findByText('No sync jobs have run yet.');
     expect(jobsMessage.closest('table')!.parentElement!.className).toContain('overflow-x-auto');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Items' }));
+    fireEvent.click(screen.getByTestId('c2c-tab-more'));
+    fireEvent.click(screen.getByTestId('c2c-tab-items'));
     const itemsMessage = await screen.findByText('No items found. Run a sync to populate backup items.');
     expect(itemsMessage.closest('table')!.parentElement!.className).toContain('overflow-x-auto');
   });
