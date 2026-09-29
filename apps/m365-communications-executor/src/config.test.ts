@@ -144,6 +144,9 @@ describe('M365 communications executor config', () => {
     ['IPv4 multicast', { M365_COMMS_EXECUTOR_BIND_HOST: '239.1.2.3' }],
     ['IPv6 multicast', { M365_COMMS_EXECUTOR_BIND_HOST: 'ff02::1' }],
     ['a public interface', { M365_COMMS_EXECUTOR_BIND_HOST: '203.0.113.10' }],
+    ['IPv4 link-local', { M365_COMMS_EXECUTOR_BIND_HOST: '169.254.12.123' }],
+    ['the public address just below RFC 6598 shared space', { M365_COMMS_EXECUTOR_BIND_HOST: '100.63.255.255' }],
+    ['the public address just above RFC 6598 shared space', { M365_COMMS_EXECUTOR_BIND_HOST: '100.128.0.0' }],
     ['a hostname requiring resolution', { M365_COMMS_EXECUTOR_BIND_HOST: 'executor.internal' }],
     ['port zero', { M365_COMMS_EXECUTOR_PORT: '0' }],
     ['an out-of-range port', { M365_COMMS_EXECUTOR_PORT: '65536' }],
@@ -161,6 +164,18 @@ describe('M365 communications executor config', () => {
     'fc00::',
     'fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
   ])('accepts the RFC1918/ULA private boundary address %s', (bindHost) => {
+    expect(loadExecutorConfig(validEnv({
+      M365_COMMS_EXECUTOR_BIND_HOST: bindHost,
+    })).bindHost).toBe(bindHost);
+  });
+
+  // Azure Container Apps workload-profile replicas only get an address from the
+  // platform overlay (100.100.0.0/17 and friends), never an RFC1918 one.
+  it.each([
+    '100.64.0.0',
+    '100.100.197.88',
+    '100.127.255.255',
+  ])('accepts the RFC 6598 shared address %s', (bindHost) => {
     expect(loadExecutorConfig(validEnv({
       M365_COMMS_EXECUTOR_BIND_HOST: bindHost,
     })).bindHost).toBe(bindHost);
