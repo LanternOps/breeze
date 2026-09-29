@@ -104,7 +104,8 @@ scriptAiRoutes.post(
     try {
       // Refuse before a session exists: with no model provider the builder's
       // first message could only come back empty.
-      if (llmUnusableCode(resolved) === 'ai_not_configured') {
+      // The builder always runs the Agent SDK, never the OpenAI-compatible provider.
+      if (llmUnusableCode(resolved, 'agent_sdk') === 'ai_not_configured') {
         return c.json(AI_NOT_CONFIGURED_BODY, 503);
       }
       if (resolved.source === 'unavailable') {

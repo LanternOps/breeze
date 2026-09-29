@@ -150,6 +150,21 @@ describe('topology AI tool gate (M4-D1)', () => {
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
   });
 
+  it('an MCP site key still reads topology on a server with no model key (the MCP client brings its own model)', async () => {
+    const mcp = { kind: 'mcp_site_key' } as const;
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth({ allowedSiteIds: [SITE_A] }), mcp))
+      .toMatchObject({ ok: true, pinnedSiteId: SITE_A });
+    // Everything else that gates it still does: a broken partner config, the org policy, the flags.
+    mocks.providerUsable.mockResolvedValueOnce('ai_unavailable');
+    expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth({ allowedSiteIds: [SITE_A] }), mcp))
+      .toMatchObject({ ok: false, code: 'topology_ai_disabled' });
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    mocks.budget.mockResolvedValueOnce({ enabled: false });
+    expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth({ allowedSiteIds: [SITE_A] }), mcp))
+      .toMatchObject({ ok: false, code: 'topology_ai_disabled' });
+  });
+
   it('says AI is not configured when the server has no model provider at all', async () => {
     const bound = { kind: 'ai_session', sessionId: SESSION } as const;
     mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');

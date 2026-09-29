@@ -34,6 +34,14 @@ export const PLATFORM_LLM_CREDENTIAL_ENV_KEYS = [
   'CLAUDE_CODE_OAUTH_TOKEN',
 ] as const;
 
+/**
+ * How a surface reaches the model. `chat` (AI chat, topology "Explain this")
+ * can run on the platform's OpenAI-compatible provider; `agent_sdk` surfaces
+ * (the script builder) always spawn the Claude Agent SDK, which needs an
+ * Anthropic-dialect credential and cannot use that provider.
+ */
+export type LlmTransport = 'chat' | 'agent_sdk';
+
 export const AI_NOT_CONFIGURED_MESSAGE =
   'AI is not configured on this server. An administrator needs to add a model provider key.';
 
@@ -68,19 +76,22 @@ function present(value: string | undefined): boolean {
 }
 
 /**
- * Whether the platform path has any model credential. `apiKey` is the
- * resolved platform config's snapshot of `ANTHROPIC_API_KEY` (the same env var
- * when omitted).
+ * Whether the platform path has a model credential for `transport`. `apiKey`
+ * is the resolved platform config's snapshot of `ANTHROPIC_API_KEY` (the same
+ * env var when omitted).
  */
-export function isPlatformLlmConfigured(apiKey: string | undefined = process.env.ANTHROPIC_API_KEY): boolean {
+export function isPlatformLlmConfigured(
+  apiKey: string | undefined = process.env.ANTHROPIC_API_KEY,
+  transport: LlmTransport = 'chat',
+): boolean {
   const credentialPresent = PLATFORM_LLM_CREDENTIAL_ENV_KEYS.some((key) =>
     present(key === 'ANTHROPIC_API_KEY' ? apiKey : process.env[key]));
-  return credentialPresent || isOpenAICompatibleProvider();
+  return credentialPresent || (transport === 'chat' && isOpenAICompatibleProvider());
 }
 
-/** Why no model can be called for `resolved`, or null when one can. */
-export function llmUnusableCode(resolved: ResolvedLlmConfig): LlmUnusableCode | null {
+/** Why no model can be called for `resolved` over `transport`, or null when one can. */
+export function llmUnusableCode(resolved: ResolvedLlmConfig, transport: LlmTransport = 'chat'): LlmUnusableCode | null {
   if (resolved.source === 'unavailable') return 'ai_unavailable';
-  if (resolved.source === 'platform' && !isPlatformLlmConfigured(resolved.apiKey)) return 'ai_not_configured';
+  if (resolved.source === 'platform' && !isPlatformLlmConfigured(resolved.apiKey, transport)) return 'ai_not_configured';
   return null;
 }

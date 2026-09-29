@@ -60,6 +60,13 @@ describe('llmUnusableCode — the one "can a model be called" decision', () => {
     expect(llmUnusableCode({ source: 'platform', apiKey: undefined, model: 'm' })).toBeNull();
   });
 
+  it('does not count the OpenAI-compatible provider for Agent-SDK-only surfaces (script builder)', () => {
+    configRef.provider = 'openai-compatible';
+    expect(llmUnusableCode({ source: 'platform', apiKey: undefined, model: 'm' }, 'agent_sdk')).toBe('ai_not_configured');
+    expect(llmUnusableCode({ source: 'platform', apiKey: 'sk-platform', model: 'm' }, 'agent_sdk')).toBeNull();
+    expect(llmUnusableCode(PARTNER, 'agent_sdk')).toBeNull();
+  });
+
   it('treats a partner BYO key as usable and a broken partner config as unavailable (not "not configured")', () => {
     expect(llmUnusableCode(PARTNER)).toBeNull();
     expect(llmUnusableCode({ source: 'unavailable', partnerId: PARTNER.partnerId, reason: 'key_error' })).toBe('ai_unavailable');

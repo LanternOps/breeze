@@ -405,7 +405,9 @@ export async function runPreFlightChecks(
       status: 503,
     };
   }
-  if (llmUnusableCode(resolved) === 'ai_not_configured') {
+  // The script builder always runs the Agent SDK; chat can also run on the
+  // platform's OpenAI-compatible provider.
+  if (llmUnusableCode(resolved, session.type === 'script_builder' ? 'agent_sdk' : 'chat') === 'ai_not_configured') {
     return { ok: false, error: 'ai_not_configured', status: 503 };
   }
   if (resolved.source === 'unavailable') {

@@ -296,7 +296,14 @@ export async function authorizeTopologyAiToolCall(
   }
   if (sessionOrgId !== null && ctx.scope.orgId !== sessionOrgId) return refuse('topology_site_unavailable');
 
-  const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(ctx);
+  const loaded = await loadTopologyAiFlagsAndReadiness(ctx);
+  const { flags } = loaded;
+  // An MCP client brings its own model: a server with no model key of its own
+  // still serves topology reads over a site key. Only a missing server key is
+  // waived — a broken partner config, the org policy and the flags still gate.
+  const readiness = binding.kind === 'mcp_site_key' && loaded.readiness.providerNotConfigured
+    ? { provider: true, orgPolicy: loaded.readiness.orgPolicy }
+    : loaded.readiness;
   if (!topologyAiAvailable(flags, readiness)) return refuse(topologyAiRefusalCode(flags, readiness));
 
   return { ok: true, ctx, pinnedSiteId, sessionId };

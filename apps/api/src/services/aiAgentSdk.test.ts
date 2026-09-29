@@ -73,6 +73,12 @@ vi.mock('./llm/llmConfigResolver', () => ({
   resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
 }));
 
+// The real decision, observed: which transport a session type is checked for.
+vi.mock('./llm/llmAvailability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./llm/llmAvailability')>();
+  return { ...actual, llmUnusableCode: vi.fn(actual.llmUnusableCode) };
+});
+
 const mockCheckAiRateLimit = vi.fn();
 const mockCheckBudget = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
@@ -454,6 +460,16 @@ describe('runPreFlightChecks', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('checks a script-builder session against the Agent SDK transport, every other session against chat', async () => {
+    const { llmUnusableCode } = await import('./llm/llmAvailability');
+    mockGetSession.mockResolvedValueOnce(makeSession({ type: 'script_builder' }));
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(llmUnusableCode).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'platform' }), 'agent_sdk');
+    mockGetSession.mockResolvedValueOnce(makeSession({ type: 'general' }));
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(llmUnusableCode).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'platform' }), 'chat');
   });
 
   it('captures resolver failures and returns a generic retryable 503', async () => {
