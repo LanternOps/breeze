@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { createPublicKey, verify } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/u;
 const SOURCE_COMMIT_RE = /^[0-9a-f]{40}$/u;
@@ -39,8 +39,26 @@ function validateImage(image, label = 'image') {
   return { name: image.name, repository: image.repository, digest: image.digest };
 }
 
-export function collectReleaseImageMetadata({ directory, sourceCommit }) {
+export const RELEASE_KINDS = Object.freeze(['full', 'server-only']);
+const STABLE_TAG_RE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
+// Only the binaries-init image may be carried forward from a full release by a
+// server-only release; every other image is rebuilt from the release commit.
+const CARRIABLE_IMAGES = Object.freeze(['binaries']);
+
+function isCarriedRecord(metadata) {
+  return 'carriedFromRelease' in metadata || 'carriedFromSourceCommit' in metadata;
+}
+
+// Collects the per-image metadata records the release jobs uploaded. A record
+// carrying `carriedFromRelease` is accepted only for a server-only release,
+// only for the binaries image, and only when its sourceCommit is truthfully the
+// base release's commit. Every other record must match the release commit.
+export function collectReleaseImageSet({ directory, sourceCommit, releaseKind = 'full', carriedSourceCommit }) {
   if (!SOURCE_COMMIT_RE.test(sourceCommit ?? '')) fail('source commit is invalid');
+  if (!RELEASE_KINDS.includes(releaseKind)) fail(`release kind is invalid: ${releaseKind}`);
+  if (releaseKind === 'server-only' && !SOURCE_COMMIT_RE.test(carriedSourceCommit ?? '')) {
+    fail('carried source commit is invalid');
+  }
   const files = readdirSync(directory)
     .filter((name) => name.endsWith('.json'))
     .sort();
@@ -49,6 +67,7 @@ export function collectReleaseImageMetadata({ directory, sourceCommit }) {
   }
 
   const images = [];
+  const carried = [];
   const names = new Set();
   const repositories = new Set();
   for (const file of files) {
@@ -58,10 +77,28 @@ export function collectReleaseImageMetadata({ directory, sourceCommit }) {
     } catch (error) {
       fail(`${file}: invalid JSON (${error.message})`);
     }
-    if (!isPlainObject(metadata) || metadata.sourceCommit !== sourceCommit) {
+    if (!isPlainObject(metadata)) fail(`${file}: metadata must be an object`);
+    const image = validateImage(metadata, file);
+    if (isCarriedRecord(metadata)) {
+      if (releaseKind !== 'server-only') {
+        fail(`${file}: carried image record for ${image.name} is only allowed in a server-only release`);
+      }
+      if (!CARRIABLE_IMAGES.includes(image.name)) fail(`${file}: only the binaries image may be carried, not ${image.name}`);
+      if (!STABLE_TAG_RE.test(metadata.carriedFromRelease ?? '')) fail(`${file}: carriedFromRelease must be a stable release tag`);
+      if (
+        metadata.sourceCommit !== carriedSourceCommit
+        || metadata.carriedFromSourceCommit !== carriedSourceCommit
+      ) {
+        fail(`${file}: carried binaries sourceCommit must be the base commit ${carriedSourceCommit}`);
+      }
+      carried.push({
+        ...image,
+        fromRelease: metadata.carriedFromRelease,
+        fromSourceCommit: metadata.carriedFromSourceCommit,
+      });
+    } else if (metadata.sourceCommit !== sourceCommit) {
       fail(`${file}: sourceCommit does not match the signed release commit`);
     }
-    const image = validateImage(metadata, file);
     if (names.has(image.name)) fail(`${file}: duplicate image name ${image.name}`);
     if (repositories.has(image.repository)) fail(`${file}: duplicate image repository ${image.repository}`);
     names.add(image.name);
@@ -74,7 +111,18 @@ export function collectReleaseImageMetadata({ directory, sourceCommit }) {
   if (missing.length || extra.length) {
     fail(`release image set mismatch; missing=${missing.join(',') || 'none'} extra=${extra.join(',') || 'none'}`);
   }
-  return images.sort((left, right) => left.name.localeCompare(right.name));
+  if (releaseKind === 'server-only' && !carried.some((entry) => entry.name === 'binaries')) {
+    fail('a server-only release must carry the binaries image from its base release');
+  }
+  return {
+    images: images.sort((left, right) => left.name.localeCompare(right.name)),
+    carried: carried.sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+// Full-release contract (unchanged): refuses any carried record.
+export function collectReleaseImageMetadata({ directory, sourceCommit }) {
+  return collectReleaseImageSet({ directory, sourceCommit, releaseKind: 'full' }).images;
 }
 
 function publicKeyFromConfiguredValue(value) {
@@ -112,6 +160,49 @@ function verifySignature(manifestBytes, signatureBytes, configuredKeys) {
   fail('release manifest signature verification failed');
 }
 
+// Validates the additive server-only fields. Absent releaseKind means a full
+// release (every manifest signed before the server-only lane existed).
+function validateReleaseKind(manifest, byName) {
+  const releaseKind = manifest.releaseKind ?? 'full';
+  if (!RELEASE_KINDS.includes(releaseKind)) fail('release manifest releaseKind is invalid');
+  if (releaseKind === 'full') {
+    for (const key of ['binariesRelease', 'binariesSourceCommit', 'carriedImages']) {
+      if (key in manifest) fail(`a full release must not carry ${key}`);
+    }
+    return { releaseKind };
+  }
+
+  if (!STABLE_TAG_RE.test(manifest.binariesRelease ?? '')) fail('binariesRelease must be a stable release tag');
+  if (manifest.binariesRelease === manifest.release) fail('binariesRelease must differ from release');
+  if (!SOURCE_COMMIT_RE.test(manifest.binariesSourceCommit ?? '')) fail('binariesSourceCommit is invalid');
+  if (!Array.isArray(manifest.carriedImages) || manifest.carriedImages.length === 0) {
+    fail('carriedImages must list the carried binaries image');
+  }
+  const carriedImages = [];
+  const carriedNames = new Set();
+  for (const [index, entry] of manifest.carriedImages.entries()) {
+    const image = validateImage(entry, `carriedImages[${index}]`);
+    if (!CARRIABLE_IMAGES.includes(image.name)) fail(`only the binaries image may be carried, not ${image.name}`);
+    if (carriedNames.has(image.name)) fail(`carriedImages lists ${image.name} twice`);
+    carriedNames.add(image.name);
+    const signed = byName.get(image.name);
+    if (!signed || signed.repository !== image.repository || signed.digest !== image.digest) {
+      fail(`carriedImages[${index}] does not match images[] for ${image.name}`);
+    }
+    if (entry.fromRelease !== manifest.binariesRelease || entry.fromSourceCommit !== manifest.binariesSourceCommit) {
+      fail(`carriedImages[${index}] provenance does not match binariesRelease/binariesSourceCommit`);
+    }
+    carriedImages.push({ ...image, fromRelease: entry.fromRelease, fromSourceCommit: entry.fromSourceCommit });
+  }
+  if (!carriedNames.has('binaries')) fail('carriedImages must list the carried binaries image');
+  return {
+    releaseKind,
+    binariesRelease: manifest.binariesRelease,
+    binariesSourceCommit: manifest.binariesSourceCommit,
+    carriedImages,
+  };
+}
+
 export function verifyReleaseImageManifest({
   manifestBytes,
   signatureBytes,
@@ -119,7 +210,9 @@ export function verifyReleaseImageManifest({
   expectedRepository,
   expectedRelease,
   requiredImages,
+  requireKind = 'any',
 }) {
+  if (requireKind !== 'any' && !RELEASE_KINDS.includes(requireKind)) fail(`invalid required release kind: ${requireKind}`);
   verifySignature(manifestBytes, signatureBytes, publicKeys);
 
   let manifest;
@@ -153,6 +246,11 @@ export function verifyReleaseImageManifest({
     fail(`signed release image set mismatch; missing=${missing.join(',') || 'none'} extra=${extra.join(',') || 'none'}`);
   }
 
+  const kind = validateReleaseKind(manifest, byName);
+  if (requireKind !== 'any' && kind.releaseKind !== requireKind) {
+    fail(`release manifest has release kind ${kind.releaseKind}, expected ${requireKind}`);
+  }
+
   for (const required of requiredImages) {
     const actual = byName.get(required.name);
     if (!actual) fail(`signed release manifest is missing required image ${required.name}`);
@@ -160,7 +258,14 @@ export function verifyReleaseImageManifest({
       fail(`configured ${required.name} image does not match the signed release manifest`);
     }
   }
-  return { sourceCommit: manifest.sourceCommit, images: [...byName.values()] };
+  return {
+    release: manifest.release,
+    repository: manifest.repository,
+    sourceCommit: manifest.sourceCommit,
+    images: [...byName.values()],
+    assets: Array.isArray(manifest.assets) ? manifest.assets : [],
+    ...kind,
+  };
 }
 
 function parseOptions(args) {
@@ -187,12 +292,34 @@ function runCli(argv) {
   if (command === 'record') {
     const image = validateImage(options);
     if (!SOURCE_COMMIT_RE.test(options.sourceCommit ?? '')) fail('source commit is invalid');
-    writeFileSync(options.output, `${JSON.stringify({ ...image, sourceCommit: options.sourceCommit }, null, 2)}\n`);
+    const record = { ...image, sourceCommit: options.sourceCommit };
+    const carried = [options.carriedFromRelease, options.carriedFromSourceCommit];
+    if (carried.some((value) => value !== undefined)) {
+      // A carried record's sourceCommit is truthfully the base commit it was
+      // built from — never the server-only release commit.
+      if (!STABLE_TAG_RE.test(options.carriedFromRelease ?? '')) fail('--carried-from-release must be a stable release tag');
+      if (options.carriedFromSourceCommit !== options.sourceCommit) {
+        fail('--carried-from-source-commit must equal --source-commit (the base commit)');
+      }
+      record.carriedFromRelease = options.carriedFromRelease;
+      record.carriedFromSourceCommit = options.carriedFromSourceCommit;
+    }
+    writeFileSync(options.output, `${JSON.stringify(record, null, 2)}\n`);
     return;
   }
   if (command === 'collect') {
-    const images = collectReleaseImageMetadata(options);
+    const releaseKind = options.releaseKind ?? 'full';
+    if (releaseKind === 'server-only' && !options.carriedOutput) {
+      fail('--carried-output is required for a server-only release (carry provenance must be preserved)');
+    }
+    const { images, carried } = collectReleaseImageSet({
+      directory: options.directory,
+      sourceCommit: options.sourceCommit,
+      releaseKind,
+      carriedSourceCommit: options.carriedSourceCommit,
+    });
     writeFileSync(options.output, `${JSON.stringify(images, null, 2)}\n`);
+    if (options.carriedOutput) writeFileSync(options.carriedOutput, `${JSON.stringify(carried, null, 2)}\n`);
     return;
   }
   if (command === 'verify') {
@@ -203,14 +330,31 @@ function runCli(argv) {
       expectedRepository: options.expectedRepository,
       expectedRelease: options.expectedRelease,
       requiredImages: options.requiredImages,
+      requireKind: options.requireKind ?? 'any',
     });
+    if (options.output) writeFileSync(options.output, `${JSON.stringify(verified, null, 2)}\n`);
     process.stdout.write(`Verified ${options.requiredImages.length} signed release images from ${verified.sourceCommit}\n`);
+    process.stdout.write(verified.releaseKind === 'server-only'
+      ? `Release kind: server-only release ${verified.release} pairs with binaries ${verified.binariesRelease} (${verified.binariesSourceCommit})\n`
+      : `Release kind: full\n`);
     return;
   }
   fail('usage: release-image-manifest.mjs <record|collect|verify> ...');
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compare real paths: the guard runs these helpers from a temporary directory
+// that may sit behind a symlink (/var -> /private/var on macOS). A plain URL
+// comparison would then silently skip the CLI and exit 0 with no output.
+function invokedAsCli() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   try {
     runCli(process.argv.slice(2));
   } catch (error) {
