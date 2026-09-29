@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -62,7 +63,9 @@ func restoreWindowsLiveState(stagingDir string) (RestoreReport, error) {
 	applied := 0
 
 	certsDir := filepath.Join(stagingDir, "certs")
-	if dirHasEntries(certsDir) {
+	if certsStaged, err := stagedDirHasEntries(certsDir); err != nil {
+		errs = append(errs, fmt.Errorf("certificates: inspect staged certificate database: %w", err))
+	} else if certsStaged {
 		if out, err := runCommand(context.Background(), "certutil", "-restoreDB", certsDir); err != nil {
 			errs = append(errs, fmt.Errorf("certificates: certutil -restoreDB: %s: %w", strings.TrimSpace(string(out)), err))
 		} else {
@@ -72,7 +75,9 @@ func restoreWindowsLiveState(stagingDir string) (RestoreReport, error) {
 	}
 
 	fwPath := filepath.Join(stagingDir, "firewall", "rules.wfw")
-	if info, err := os.Stat(fwPath); err == nil && info.Mode().IsRegular() {
+	if fwStaged, err := stagedRegularFile(fwPath); err != nil {
+		errs = append(errs, fmt.Errorf("firewall: inspect staged firewall policy: %w", err))
+	} else if fwStaged {
 		if out, err := runCommand(context.Background(), "netsh", "advfirewall", "import", fwPath); err != nil {
 			errs = append(errs, fmt.Errorf("firewall: netsh advfirewall import: %s: %w", strings.TrimSpace(string(out)), err))
 		} else {
@@ -96,11 +101,16 @@ func restoreWindowsLiveState(stagingDir string) (RestoreReport, error) {
 func windowsReferenceOnlyWarning(stagingDir string) string {
 	entries, err := os.ReadDir(stagingDir)
 	if err != nil {
-		return ""
+		return fmt.Sprintf("could not list the staged system state to name what was collected for reference only: %v", err)
 	}
 	staged := map[string]bool{}
 	for _, e := range entries {
-		if e.IsDir() && !windowsLiveAppliedCategories[e.Name()] && dirHasEntries(filepath.Join(stagingDir, e.Name())) {
+		if !e.IsDir() || windowsLiveAppliedCategories[e.Name()] {
+			continue
+		}
+		// An unreadable directory is still named: it was staged, and it
+		// was not applied.
+		if hasEntries, err := stagedDirHasEntries(filepath.Join(stagingDir, e.Name())); err != nil || hasEntries {
 			staged[e.Name()] = true
 		}
 	}
@@ -151,8 +161,33 @@ func stagedHiveNames(registryDir string) []string {
 	return hives
 }
 
-// dirHasEntries reports whether dir exists, is a directory, and is not empty.
-func dirHasEntries(dir string) bool {
+// stagedDirHasEntries reports whether dir exists and is not empty. A dir
+// that does not exist is (false, nil): nothing was staged for it. Any other
+// error is returned, so an artifact that is there but unreadable is never
+// mistaken for one that is absent.
+func stagedDirHasEntries(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
-	return err == nil && len(entries) > 0
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
+}
+
+// stagedRegularFile reports whether path exists as a regular file, with the
+// same absent-versus-unreadable split as stagedDirHasEntries.
+func stagedRegularFile(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s is not a regular file", path)
+	}
+	return true, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -211,5 +212,34 @@ func TestRestoreWindowsLiveState_CertRestoreFails_ReturnsError(t *testing.T) {
 	}
 	if len(*calls) != 2 || (*calls)[1].name != "netsh" {
 		t.Fatalf("commands = %+v, want the firewall import to run after the failed certificate restore", *calls)
+	}
+}
+
+// TestRestoreWindowsLiveState_UnreadableStagedArtifact_ReturnsError: a staged
+// artifact the restorer cannot even inspect (permission or I/O error, as
+// opposed to simply not being there) is a failure, never a silent skip that
+// lets the other step's success read as stateApplied: true.
+func TestRestoreWindowsLiveState_UnreadableStagedArtifact_ReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX directory permissions enforced for the test user")
+	}
+	for _, tc := range []struct{ name, lockDir, wantStep string }{
+		{"firewall", "firewall", "firewall"},
+		{"certs", "certs", "certificates"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			staging := stageWindowsArtifacts(t, fullWindowsCapture...)
+			locked := filepath.Join(staging, tc.lockDir)
+			if err := os.Chmod(locked, 0); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+			fakeWindowsRunner(t, nil)
+
+			_, err := restoreWindowsLiveState(staging)
+			if err == nil || !strings.Contains(err.Error(), tc.wantStep) {
+				t.Fatalf("err = %v, want a %s-step error for an unreadable staged artifact", err, tc.wantStep)
+			}
+		})
 	}
 }
