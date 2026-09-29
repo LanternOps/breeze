@@ -17,7 +17,7 @@ vi.mock('./backupHealthReadModel', () => ({
 import { db } from '../db';
 import { listBackupHealthRows, summarizeBackupHealth } from './backupHealthReadModel';
 import { generateBackupStatusReport } from './backupStatusReport';
-import type { ReportExecutionAuthority } from './siteScope';
+import type { OrgReportExecutionAuthority } from './siteScope';
 import type { ReportResult } from './reportGenerationService';
 import type { BackupHealthRow, BackupHealthSummary, BackupStatusReportData } from '@breeze/shared';
 
@@ -29,7 +29,7 @@ const SITE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 function authority(
   kind: 'unrestricted' | 'restricted' = 'unrestricted',
   siteIds: string[] = [],
-): ReportExecutionAuthority {
+): OrgReportExecutionAuthority {
   return {
     principalKind: 'user',
     scope: kind === 'restricted'
