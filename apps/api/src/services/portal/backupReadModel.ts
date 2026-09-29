@@ -1,14 +1,62 @@
-import { and, countDistinct, desc, eq } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   backupConfigs,
   backupJobs,
+  backupProviderDevices,
+  backupSlaEvents,
   backupVerifications,
   devices,
+  portalBranding,
+  recoveryReadiness,
+  DEGRADED_BACKUP_JOB_STATUSES,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
+import type {
+  BackupDeviceRow,
+  BackupDevicesDto,
+  BackupHealth,
+  BackupHealthRow,
+  BackupOverviewDto,
+  ExternalBackupStatus,
+} from '@breeze/shared';
+import { getFirstPartyCoverageForDevices, listBackupHealthRows } from '../backupHealthReadModel';
+import { sqlTimestamp } from './sqlTimestamp';
 
+/**
+ * A device counts as "configured" for first-party backup when it has a job
+ * under one of the org's ACTIVE configs. Shared by the tile's third-party
+ * count and the device ledger so the two never disagree about which devices
+ * first-party backup already covers.
+ */
+function firstPartyConfiguredSql(orgId: string, deviceId: SQL) {
+  return sql<boolean>`
+    exists (
+      select 1
+      from backup_jobs bj
+      join backup_configs bc
+        on bc.id = bj.config_id
+       and bc.org_id = ${orgId}
+       and bc.is_active = true
+      where bj.org_id = ${orgId}
+        and bj.device_id = ${deviceId}
+    )
+  `;
+}
+
+/**
+ * The dashboard tile is built for every org unconditionally
+ * (`portal/dashboard.ts`), so third-party backup rows fold in only when the
+ * org has turned portal Backups on — the same gate as the Backups page (spec
+ * "Client portal"). With it off, or with no third-party rows, the tile is
+ * exactly what it was before #6012.
+ *
+ * `completedAt`/`verificationType` stay first-party only: a vendor's
+ * successful session is not a verification, and the tile reads "Last backup
+ * verified".
+ */
 export async function backupTile(orgId: string, now: Date) {
-  const [totalRows, activeConfigRows, configuredRows, latestRows] = await Promise.all([
+  const [totalRows, activeConfigRows, configuredRows, latestRows, brandingRows] = await Promise.all([
     db
       .select({ total: countDistinct(devices.id) })
       .from(devices)
@@ -45,16 +93,47 @@ export async function backupTile(orgId: string, now: Date) {
       ))
       .orderBy(desc(backupVerifications.completedAt))
       .limit(1),
+    db
+      .select({ enableBackups: portalBranding.enableBackups })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, orgId))
+      .limit(1),
   ]);
 
   const total = Number(totalRows[0]?.total ?? 0);
   const hasActiveConfig = activeConfigRows.length > 0;
-  const configured = Number(configuredRows[0]?.configured ?? 0);
+  let configured = Number(configuredRows[0]?.configured ?? 0);
   const latest = latestRows[0];
+
+  let hasThirdPartyBackup = false;
+  if (brandingRows[0]?.enableBackups === true) {
+    // `linkedOnly`: managed devices a third party backs up that first-party
+    // backup does not already count. `unlinked`: third-party rows with no
+    // managed device. The device join is pinned to this org as well as the
+    // row, so a link can never count one org's device toward another's.
+    const [counts] = await db
+      .select({
+        linkedOnly: sql<number>`(count(distinct ${backupProviderDevices.breezeDeviceId}) filter (
+          where ${devices.id} is not null
+            and ${devices.isEphemeral} = false
+            and not ${firstPartyConfiguredSql(orgId, sql`${devices.id}`)}
+        ))::int`,
+        unlinked: sql<number>`(count(*) filter (where ${backupProviderDevices.breezeDeviceId} is null))::int`,
+      })
+      .from(backupProviderDevices)
+      .leftJoin(
+        devices,
+        and(eq(devices.id, backupProviderDevices.breezeDeviceId), eq(devices.orgId, orgId)),
+      )
+      .where(eq(backupProviderDevices.orgId, orgId));
+    const linkedOnly = Number(counts?.linkedOnly ?? 0);
+    configured += linkedOnly;
+    hasThirdPartyBackup = linkedOnly > 0 || Number(counts?.unlinked ?? 0) > 0;
+  }
 
   return {
     status:
-      !hasActiveConfig
+      !hasActiveConfig && !hasThirdPartyBackup
         ? 'not_configured' as const
         : latest
           ? 'ok' as const
@@ -67,26 +146,131 @@ export async function backupTile(orgId: string, now: Date) {
   };
 }
 
+// ── third-party rows, merged onto the device ledger (#6012) ────────────────
+
+const PROVIDER_PAGE_SIZE = 500;
+const PROVIDER_MAX_PAGES = 20;
+
+/**
+ * Every third-party backup row for the org, from the unified read model with
+ * CUSTOMER labels (`labels: 'portal'`): the vendor is named only where the
+ * MSP turned the per-connection toggle on (spec D5). The portal runs under an
+ * org token, so the read model's own org + RLS scoping already fences this;
+ * the `orgId` filter here is defence in depth on a customer-facing surface.
+ * Portal users carry no site restriction, so unlinked rows are theirs to see.
+ */
+async function loadPortalProviderRows(orgId: string, now: Date): Promise<BackupHealthRow[]> {
+  const out: BackupHealthRow[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < PROVIDER_MAX_PAGES; page += 1) {
+    const result = await listBackupHealthRows(
+      { orgIds: [orgId] },
+      { sources: ['provider'], labels: 'portal', page: { limit: PROVIDER_PAGE_SIZE, cursor }, now },
+    );
+    for (const row of result.rows) {
+      if (row.orgId === orgId) out.push(row);
+    }
+    if (!result.nextCursor) return out;
+    cursor = result.nextCursor;
+  }
+  console.warn(
+    `[portal/backupReadModel] org ${orgId} has more than ${PROVIDER_PAGE_SIZE * PROVIDER_MAX_PAGES} third-party backup rows; the portal shows the first ${out.length}`,
+  );
+  return out;
+}
+
+/** The third-party row that speaks for a managed device. Two rows per device is
+ *  a post-acquisition corner; the covered one, then the fresher one, wins. */
+function linkedProviderByDevice(rows: BackupHealthRow[]): Map<string, BackupHealthRow> {
+  const out = new Map<string, BackupHealthRow>();
+  for (const row of rows) {
+    if (!row.deviceId) continue;
+    const existing = out.get(row.deviceId);
+    if (
+      !existing ||
+      (row.covered && !existing.covered) ||
+      (row.covered === existing.covered && (row.lastSuccessAt ?? '') > (existing.lastSuccessAt ?? ''))
+    ) {
+      out.set(row.deviceId, row);
+    }
+  }
+  return out;
+}
+
+type FirstPartyState = { status: ExternalBackupStatus; health: BackupHealth; lastSuccessAt: string | null };
+
+/** ISO-8601 strings in one format compare lexicographically in time order. */
+function maxIso(a: string | null | undefined, b: string | null | undefined): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return a > b ? a : b;
+}
+
+/**
+ * One portal row per managed device. First-party backup is the headline when
+ * it has any evidence (Breeze's own product is what the MSP runs and answers
+ * for); a device only a third party backs up takes the third party's status.
+ * A device with no backup from any source is `no_backups` / `unknown` — the
+ * page states that plainly rather than painting every unprotected workstation
+ * "Critical" on the customer's screen.
+ */
+function mergeDeviceBackup(firstParty: FirstPartyState | undefined, provider: BackupHealthRow | undefined) {
+  const firstPartyHasEvidence = firstParty !== undefined && firstParty.status !== 'no_backups';
+  const headline = firstPartyHasEvidence ? firstParty : provider;
+  return {
+    hasEvidence: firstPartyHasEvidence || provider !== undefined,
+    status: headline?.status ?? ('no_backups' as const),
+    health: headline?.health ?? ('unknown' as const),
+    lastSuccessAt: maxIso(firstParty?.lastSuccessAt, provider?.lastSuccessAt),
+    providerLabel: provider?.providerLabel ?? null,
+  };
+}
+
+function emptyByHealth(): Record<BackupHealth, number> {
+  return { healthy: 0, warning: 0, critical: 0, unknown: 0 };
+}
+
+/** The health breakdown and provider labels for the WHOLE org's ledger. */
+async function loadLedgerHealth(orgId: string, now: Date) {
+  const [idRows, providerRows] = await Promise.all([
+    db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false))),
+    loadPortalProviderRows(orgId, now),
+  ]);
+  const deviceIds = idRows.map((row) => row.id);
+  const firstParty = deviceIds.length > 0
+    ? await getFirstPartyCoverageForDevices(orgId, deviceIds, { now })
+    : new Map<string, FirstPartyState>();
+  const linked = linkedProviderByDevice(providerRows);
+
+  // Rows with backup evidence only — the same default as the technician
+  // overview ("like the Cove email"); unprotected devices are counted by the
+  // Protected-devices line, not as a health bucket.
+  const byHealth = emptyByHealth();
+  for (const deviceId of deviceIds) {
+    const merged = mergeDeviceBackup(firstParty.get(deviceId), linked.get(deviceId));
+    if (merged.hasEvidence) byHealth[merged.health] += 1;
+  }
+  for (const row of providerRows) {
+    if (!row.deviceId) byHealth[row.health] += 1;
+  }
+
+  const externalProviders = [
+    ...new Set(providerRows.map((row) => row.providerLabel).filter((label): label is string => label !== null)),
+  ].sort();
+
+  return { byHealth, externalProviders };
+}
+
 // W06 — backup overview + per-device backup evidence
-import {
-  backupSlaEvents,
-  recoveryReadiness,
-  DEGRADED_BACKUP_JOB_STATUSES,
-  RESTORABLE_BACKUP_JOB_STATUSES,
-} from '../../db/schema';
-import { asc, isNull, sql } from 'drizzle-orm';
-import type {
-  BackupDeviceRow,
-  BackupDevicesDto,
-  BackupOverviewDto,
-} from '@breeze/shared';
-import { sqlTimestamp } from './sqlTimestamp';
 
 export async function backupOverview(
   orgId: string,
   args: { timezone: string; now: Date },
 ): Promise<BackupOverviewDto> {
-  const [tile, restoreRows, breachRows, readinessRows] = await Promise.all([
+  const [tile, restoreRows, breachRows, readinessRows, ledger] = await Promise.all([
     backupTile(orgId, args.now),
     db
       .select({
@@ -123,6 +307,8 @@ export async function backupOverview(
         ),
       )
       .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false))),
+    // The overview route is already gated on enable_backups (routes/portal/index.ts).
+    loadLedgerHealth(orgId, args.now),
   ]);
 
   // Mirrors apps/api/src/jobs/backupSlaWorker.ts: 'missed_backup' is an RPO-family event.
@@ -169,9 +355,17 @@ export async function backupOverview(
         : null,
     readinessScoredDevices,
     readinessTotalDevices,
+    byHealth: ledger.byHealth,
+    externalProviders: ledger.externalProviders,
   };
 }
 
+/**
+ * The ledger is managed devices (hostname order, SQL-paged exactly as before)
+ * followed by third-party rows with no managed device (the read model's name
+ * order). Pages are offsets into that concatenation, so a row is never
+ * repeated or dropped between pages and `total` is the same on every page.
+ */
 export async function backupDevicesPage(
   orgId: string,
   args: { page: number; limit: number; timezone: string; now: Date },
@@ -181,7 +375,7 @@ export async function backupDevicesPage(
     RESTORABLE_BACKUP_JOB_STATUSES.map((status) => sql`${status}`),
     sql`, `,
   );
-  const [countRows, rows] = await Promise.all([
+  const [countRows, rows, providerRows] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(devices)
@@ -191,18 +385,7 @@ export async function backupDevicesPage(
         id: devices.id,
         hostname: devices.hostname,
         displayName: devices.displayName,
-        configured: sql<boolean>`
-          exists (
-            select 1
-            from backup_jobs bj
-            join backup_configs bc
-              on bc.id = bj.config_id
-             and bc.org_id = ${orgId}
-             and bc.is_active = true
-            where bj.org_id = ${orgId}
-              and bj.device_id = ${devices.id}
-          )
-        `,
+        configured: firstPartyConfiguredSql(orgId, sql`${devices.id}`),
         lastBackupAt: sql<Date | string | null>`(
           select max(bj.completed_at)
           from backup_jobs bj
@@ -269,36 +452,84 @@ export async function backupDevicesPage(
       .orderBy(asc(devices.hostname), asc(devices.id))
       .limit(args.limit)
       .offset(offset),
+    loadPortalProviderRows(orgId, args.now),
   ]);
 
-  const data: BackupDeviceRow[] = rows.map((row) => ({
-    id: row.id,
-    name: row.displayName ?? row.hostname,
-    configured: row.configured,
-    lastRestorePointAt: sqlTimestamp(row.lastBackupAt)?.toISOString() ?? null,
-    // #5396: any restore point that missed files is degraded, whether under
-    // the threshold (completed_with_errors) or over it (partial).
-    lastRestorePointDegraded: (DEGRADED_BACKUP_JOB_STATUSES as readonly string[]).includes(
-      row.lastBackupStatus ?? '',
-    ),
-    lastTestRestore: row.testRestoreStatus
-      ? {
-          status: row.testRestoreStatus,
-          completedAt: sqlTimestamp(row.testRestoreAt)?.toISOString() ?? null,
-          restoreTimeSeconds: row.restoreTimeSeconds,
-        }
-      : null,
-    openBreaches: row.openBreaches,
-    readinessScore: row.readinessScore,
-    estimatedRtoMinutes: row.estimatedRtoMinutes,
-    estimatedRpoMinutes: row.estimatedRpoMinutes,
-  }));
-  const total = Number(countRows[0]?.count ?? 0);
+  const pageDeviceIds = rows.map((row) => row.id);
+  const firstParty = pageDeviceIds.length > 0
+    ? await getFirstPartyCoverageForDevices(orgId, pageDeviceIds, { now: args.now })
+    : new Map<string, FirstPartyState>();
+  const linked = linkedProviderByDevice(providerRows);
+
+  const data: BackupDeviceRow[] = rows.map((row) => {
+    const provider = linked.get(row.id);
+    const merged = mergeDeviceBackup(firstParty.get(row.id), provider);
+    const firstPartyRestorePoint = sqlTimestamp(row.lastBackupAt)?.toISOString() ?? null;
+    const providerIsNewer =
+      provider?.lastSuccessAt != null &&
+      (firstPartyRestorePoint == null || provider.lastSuccessAt > firstPartyRestorePoint);
+    return {
+      id: row.id,
+      name: row.displayName ?? row.hostname,
+      configured: row.configured || provider !== undefined,
+      lastRestorePointAt: providerIsNewer ? provider!.lastSuccessAt : firstPartyRestorePoint,
+      // #5396: any restore point that missed files is degraded, whether under
+      // the threshold (completed_with_errors) or over it (partial). When the
+      // newest restore point is the third party's, its own status decides.
+      lastRestorePointDegraded: providerIsNewer
+        ? provider!.status === 'completed_with_errors'
+        : (DEGRADED_BACKUP_JOB_STATUSES as readonly string[]).includes(row.lastBackupStatus ?? ''),
+      lastTestRestore: row.testRestoreStatus
+        ? {
+            status: row.testRestoreStatus,
+            completedAt: sqlTimestamp(row.testRestoreAt)?.toISOString() ?? null,
+            restoreTimeSeconds: row.restoreTimeSeconds,
+          }
+        : null,
+      openBreaches: row.openBreaches,
+      readinessScore: row.readinessScore,
+      estimatedRtoMinutes: row.estimatedRtoMinutes,
+      estimatedRpoMinutes: row.estimatedRpoMinutes,
+      source: 'breeze',
+      providerLabel: merged.providerLabel,
+      status: merged.status,
+      health: merged.health,
+      lastSuccessAt: merged.lastSuccessAt,
+    };
+  });
+
+  // Verification, test-restore, breach and readiness are first-party facts; a
+  // third-party success proves none of them, so an external row carries none.
+  const external = providerRows.filter((row) => !row.deviceId);
+  const deviceTotal = Number(countRows[0]?.count ?? 0);
+  const externalStart = Math.max(0, offset - deviceTotal);
+  const externalCount = Math.max(0, offset + args.limit - Math.max(offset, deviceTotal));
+  const externalRows: BackupDeviceRow[] = external
+    .slice(externalStart, externalStart + externalCount)
+    .map((row) => ({
+      id: row.key,
+      name: row.name,
+      configured: true,
+      lastRestorePointAt: row.lastSuccessAt,
+      lastRestorePointDegraded: row.status === 'completed_with_errors',
+      lastTestRestore: null,
+      openBreaches: [],
+      readinessScore: null,
+      estimatedRtoMinutes: null,
+      estimatedRpoMinutes: null,
+      source: 'external',
+      providerLabel: row.providerLabel,
+      status: row.status,
+      health: row.health,
+      lastSuccessAt: row.lastSuccessAt,
+    }));
+
+  const total = deviceTotal + external.length;
 
   return {
     dataStatus: total === 0 ? 'no_data' : 'ok',
     asOf: args.now.toISOString(),
-    data,
+    data: [...data, ...externalRows],
     pagination: {
       page: args.page,
       limit: args.limit,
