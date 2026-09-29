@@ -71,10 +71,12 @@ func assignOwnerWithFallback[T comparable](
 
 	release, privErr := enablePrivilege()
 	if privErr == nil {
-		err = apply(primary)
-		// Released before any fallback attempt: the privilege is held only
-		// for the one call that needs it.
-		release()
+		// Released before any fallback attempt (and on a panic): the
+		// privilege is held only for the one call that needs it.
+		err = func() error {
+			defer release()
+			return apply(primary)
+		}()
 		if err == nil {
 			return ownerAssignResult{how: ownerAssignedWithPrivilege}, nil
 		}

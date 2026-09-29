@@ -767,6 +767,13 @@ type sddlOwner struct {
 	owner, group *windows.SID
 }
 
+// builtinAdministratorsSID is built once: applyWindowsDACL runs on every
+// config write, and the fallback owner is only ever needed on the rare
+// refused-owner path.
+var builtinAdministratorsSID = sync.OnceValues(func() (*windows.SID, error) {
+	return windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+})
+
 // administratorsOwnerFor returns primary with owner (and group, when primary
 // sets one) replaced by BUILTIN\Administrators, or primary itself when its
 // owner already is Administrators.
@@ -774,7 +781,7 @@ func administratorsOwnerFor(primary sddlOwner) (sddlOwner, error) {
 	if primary.owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
 		return primary, nil
 	}
-	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	admins, err := builtinAdministratorsSID()
 	if err != nil {
 		return sddlOwner{}, fmt.Errorf("create Administrators SID: %w", err)
 	}

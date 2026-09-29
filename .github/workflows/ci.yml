@@ -1913,15 +1913,11 @@ jobs:
       # the "/"-separated target to "\" on write, so os.Readlink then
       # faithfully reads it back with backslashes), was fixed to compare
       # after filepath.ToSlash on Windows — the Linux assertion is unchanged.
-      # ./internal/config joined for #7394: its Windows owner/DACL code had
-      # never run in CI, so the ERROR_INVALID_OWNER regression an elevated
-      # administrator hit on `breeze-agent enroll` shipped unseen. The package
-      # was run natively (Server 2022, elevated administrator) before adding.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/config ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1946,6 +1942,30 @@ jobs:
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # internal/config's Windows owner/DACL code had never run in CI, which is
+      # how #7394 shipped: an elevated administrator running
+      # `breeze-agent enroll` was refused SYSTEM as the ProgramData owner
+      # (ERROR_INVALID_OWNER) and the device was left half-enrolled. The two
+      # RealToken tests drive the real SetNamedSecurityInfo from this elevated
+      # runner with SeRestorePrivilege disabled (the interactive admin-prompt
+      # state); they skip on a filtered token, so assert zero skips. Only these
+      # tests run, not the whole package: its serverurl TTL test is flaky on
+      # Windows (1ns TTL vs the Windows clock).
+      - name: Run Windows config owner/DACL tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/config -run '^Test(ApplyWindowsDACL|AssignOwnerWithFallback)' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
+          if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
