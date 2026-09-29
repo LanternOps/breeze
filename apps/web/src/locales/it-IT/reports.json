@@ -1370,6 +1370,41 @@
         "recipientsNeedExportAndMfa": "L’invio di report ai destinatari richiede l’autorizzazione di esportazione e l’accesso con autenticazione a più fattori.",
         "seriesAuthorityUnverifiable": "Impossibile confermare ora l’accesso del proprietario. Riprova tra un attimo."
       }
+    },
+    "seriesCombine": {
+      "banner": "Alcune organizzazioni hanno report quasi identici che possono essere uniti in un unico report multi-organizzazione. Gruppi trovati: {{groups}}",
+      "review": "Esamina",
+      "title": "Unisci in un report multi-organizzazione",
+      "groupLabel": "Gruppo",
+      "groupSummary": "{{type}} · {{schedule}} · organizzazioni: {{orgs}}",
+      "nameLabel": "Nome del report multi-organizzazione",
+      "targetLegend": "Organizzazioni incluse",
+      "targetSelected": "Solo queste organizzazioni (non viene inviato nulla di nuovo)",
+      "targetAll": "Tutte le organizzazioni, comprese quelle aggiunte in seguito",
+      "targetAllWarning": "Le organizzazioni che oggi non hanno una copia inizieranno a ricevere questo report, solo con la copia interna finché non aggiungi destinatari del cliente.",
+      "adopt": "Mantenuto e convertito",
+      "archive": "Duplicato, verrà archiviato",
+      "deliverableLinked": "Usato come prova di una prestazione di servizio",
+      "lastRun": "Ultima esecuzione {{date}}",
+      "neverRun": "Mai eseguito",
+      "contacts": "Destinatari del cliente: {{list}}",
+      "noContacts": "Nessun destinatario del cliente",
+      "ccShared": "Copia interna su ogni copia: {{list}}",
+      "ccNone": "Nessuna copia interna",
+      "ccConflictHeading": "Questi indirizzi in copia sono presenti solo in alcuni di questi report. Scegli cosa fare con ciascuno:",
+      "ccInclude": "In copia su tutte",
+      "ccDrop": "Togli dalla copia",
+      "ccUnresolved": "Scegli cosa fare con ogni indirizzo in copia prima di unire.",
+      "ruleNote": "Ogni cliente mantiene esattamente i destinatari che ha oggi. Puoi aggiungere una regola per i destinatari in seguito nel report multi-organizzazione.",
+      "confirm": "Unisci",
+      "success": "Uniti in “{{name}}”",
+      "failed": "Impossibile unire questi report.",
+      "groupChanged": "Questi report sono cambiati da quando hai aperto questa finestra. L'elenco è stato aggiornato.",
+      "stalled": "Oggi non viene inviato (il proprietario ha perso l'accesso). L'unione ne riprende l'invio.",
+      "ccHeldBy": "Attualmente in copia su: {{list}}",
+      "ownerIneligible": "Non puoi essere proprietario di un report per queste organizzazioni: {{list}}",
+      "ccTooMany": "Troppi indirizzi in copia interna (massimo {{max}}).",
+      "otherOrgs": "altre organizzazioni"
     }
   }
 }

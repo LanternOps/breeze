@@ -1370,6 +1370,41 @@
         "recipientsNeedExportAndMfa": "Das Senden von Berichten an Empfänger erfordert die Exportberechtigung und die Multi-Faktor-Anmeldung.",
         "seriesAuthorityUnverifiable": "Der Zugriff des Eigentümers konnte gerade nicht bestätigt werden. Versuchen Sie es gleich noch einmal."
       }
+    },
+    "seriesCombine": {
+      "banner": "Einige Organisationen haben nahezu identische Berichte, die zu einem Multi-Organisations-Bericht zusammengeführt werden können. Gefundene Gruppen: {{groups}}",
+      "review": "Prüfen",
+      "title": "Zu einem Multi-Organisations-Bericht zusammenführen",
+      "groupLabel": "Gruppe",
+      "groupSummary": "{{type}} · {{schedule}} · Organisationen: {{orgs}}",
+      "nameLabel": "Name des Multi-Organisations-Berichts",
+      "targetLegend": "Abgedeckte Organisationen",
+      "targetSelected": "Nur diese Organisationen (es wird nichts Neues versendet)",
+      "targetAll": "Alle Organisationen, auch später hinzugefügte",
+      "targetAllWarning": "Organisationen ohne eigene Kopie erhalten diesen Bericht künftig – nur an die interne CC, bis Sie Kundenempfänger hinzufügen.",
+      "adopt": "Wird übernommen und umgewandelt",
+      "archive": "Duplikat, wird archiviert",
+      "deliverableLinked": "Dient als Nachweis für eine Serviceleistung",
+      "lastRun": "Letzter Lauf {{date}}",
+      "neverRun": "Noch nie ausgeführt",
+      "contacts": "Kundenempfänger: {{list}}",
+      "noContacts": "Keine Kundenempfänger",
+      "ccShared": "Interne CC auf jeder Kopie: {{list}}",
+      "ccNone": "Keine interne CC",
+      "ccConflictHeading": "Diese CC-Adressen stehen nur auf einigen dieser Berichte. Legen Sie für jede fest, was geschehen soll:",
+      "ccInclude": "Jede Kopie in CC",
+      "ccDrop": "Nicht mehr in CC",
+      "ccUnresolved": "Legen Sie vor dem Zusammenführen für jede CC-Adresse fest, was geschehen soll.",
+      "ruleNote": "Jeder Kunde behält genau die Empfänger, die er heute hat. Eine Empfängerregel können Sie später im Multi-Organisations-Bericht hinzufügen.",
+      "confirm": "Zusammenführen",
+      "success": "Zusammengeführt zu „{{name}}“",
+      "failed": "Diese Berichte konnten nicht zusammengeführt werden.",
+      "groupChanged": "Diese Berichte haben sich seit dem Öffnen des Dialogs geändert. Die Liste wurde aktualisiert.",
+      "stalled": "Wird derzeit nicht versendet (der Besitzer hat keinen Zugriff mehr). Durch das Zusammenführen wird der Versand fortgesetzt.",
+      "ccHeldBy": "Derzeit in CC bei: {{list}}",
+      "ownerIneligible": "Sie können keinen Bericht für diese Organisationen besitzen: {{list}}",
+      "ccTooMany": "Zu viele interne CC-Adressen (maximal {{max}}).",
+      "otherOrgs": "weitere Organisationen"
     }
   }
 }

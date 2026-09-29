@@ -2,7 +2,9 @@
  * Multi-org report series — target set (spec §3.3 "Target set").
  * 'all'      = every ELIGIBLE org of the series partner minus the target rows;
  * 'selected' = exactly the target rows that are eligible.
- * Eligible = status IN SERIES_ELIGIBLE_ORG_STATUSES AND deleted_at IS NULL.
+ * Eligible = status IN SERIES_ELIGIBLE_ORG_STATUSES AND deleted_at IS NULL
+ * AND not a hidden org type (HIDDEN_ORG_TYPES: Quick Support and the
+ * unassigned-pool holding org, services/unassignedPool/visibility.ts).
  *
  * Either way, an org that holds a live DETACHED standalone of the series
  * (reports.detached_from_series_id = the series, series_id NULL, not
@@ -13,6 +15,7 @@
  */
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { organizations, reports, reportSeriesOrgTargets } from '../../db/schema';
+import { notHiddenOrgType } from '../unassignedPool/visibility';
 import {
   SERIES_ELIGIBLE_ORG_STATUSES,
   type ReportSeriesRow,
@@ -31,6 +34,7 @@ export async function eligiblePartnerOrgs(
       eq(organizations.partnerId, partnerId),
       inArray(organizations.status, [...SERIES_ELIGIBLE_ORG_STATUSES]),
       isNull(organizations.deletedAt),
+      notHiddenOrgType(),
     ))
     .orderBy(asc(organizations.name), asc(organizations.id));
 }

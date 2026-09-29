@@ -17,6 +17,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenLockTimeout } from '../../db/lockTimeout';
 import { reports, reportSeries } from '../../db/schema';
 import { captureException } from '../sentry';
+import { notInHiddenOrgCondition } from '../unassignedPool/visibility';
 import {
   captureChildExecutionScope,
   isSeriesOwnerEligible,
@@ -255,6 +256,8 @@ export async function findSeriesNeedingReconcile(limit: number, tx: SeriesTx = d
         JOIN organizations o ON o.partner_id = s.partner_id
        WHERE o.status IN ('active', 'trial')
          AND o.deleted_at IS NULL
+         -- targets.ts: hidden org types (Quick Support, the holding org) are never eligible.
+         AND ${notInHiddenOrgCondition(sql`o.id`)}
          AND (
            (s.target_mode = 'all' AND NOT EXISTS (
               SELECT 1 FROM report_series_org_targets x WHERE x.series_id = s.id AND x.org_id = o.id))

@@ -515,6 +515,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // Multi-org report series (W02): generate_report lists and runs series
   // children like any org report; a series-management tool is a follow-up.
   'reports/series.ts': { tools: ['generate_report'] },
+  'reports/seriesCombine.ts': { exempt: 'human_only_migration', note: 'Multi-org report series W04 Combine: an opt-in, one-shot consolidation of existing per-org reports that a human reviews in a dialog (candidate groups, CC resolution) before confirming; spec §3.8 gives it no AI tool and D4 forbids automatic consolidation.' },
   'roles.ts': { gap: '#6789' },
   'scriptAi.ts': { exempt: 'ai_transport' },
   'scriptBundle.ts': { gap: '#6806' },
