@@ -109,6 +109,16 @@ describe('InvoiceWorkspace', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-workspace-error')).toBeInTheDocument());
   });
 
+  it('renders AccessDenied (not a load error) when the invoice GET is 403', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/invoices/inv-1') return json({ error: 'forbidden' }, false, 403);
+      return json({ data: {} });
+    });
+    render(<InvoiceWorkspace id="inv-1" />);
+    expect(await screen.findByTestId('invoice-workspace-denied')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-workspace-error')).not.toBeInTheDocument();
+  });
+
   // #1418: issuing a draft must flip the header from "Draft invoice" to the
   // assigned invoice number in place — no manual reload. The editor refetches
   // via onChanged() after the mutation; this guards that wiring end-to-end.

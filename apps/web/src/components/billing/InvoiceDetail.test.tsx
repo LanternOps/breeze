@@ -120,6 +120,21 @@ describe('InvoiceDetail', () => {
     expect(localStorage.getItem('breeze:quote-editor-show-margin')).toBe('1');
   });
 
+  it('shows the void state instead of a BALANCE DUE for a void invoice', async () => {
+    const voided: InvoiceDetailData = { ...issued, invoice: { ...issued.invoice, status: 'void', balance: '120.00' } };
+    render(<InvoiceDetail detail={voided} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByText('Balance due')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-detail-balance')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-void-state')).toHaveTextContent('Void');
+  });
+
+  it('still shows Balance due for an issued invoice', async () => {
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail-balance')).toHaveTextContent('$120.00'));
+    expect(screen.queryByTestId('invoice-detail-void-state')).not.toBeInTheDocument();
+  });
+
   // sweep F9: the frozen `ticketLabel` (#6940) already reaches Preview, the
   // PDF and the portal via the same `ticketNumber` API field — the default
   // Detail view was the one place still silent about it.
@@ -249,6 +264,26 @@ describe('InvoiceDetail', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     const postCall = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/payments') && (c[1] as RequestInit)?.method === 'POST');
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({ amount: 50, method: 'check' });
+  });
+
+  it('blocks recording a payment larger than the balance before the confirm dialog', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-form')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '120.01' } });
+    expect(screen.getByTestId('invoice-payment-overpayment')).toHaveTextContent('$120.00');
+    expect(screen.getByTestId('invoice-payment-submit')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('invoice-payment-submit'));
+    expect(screen.queryByTestId('invoice-payment-confirm')).not.toBeInTheDocument();
+
+    // Exactly the balance is allowed.
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '120.00' } });
+    expect(screen.queryByTestId('invoice-payment-overpayment')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-payment-submit')).toBeEnabled();
   });
 
   it.each([true, false])('warns about a QuickBooks reversal only when the record is untouched (%s)', async (providerRecordUntouched) => {

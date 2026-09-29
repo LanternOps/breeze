@@ -382,6 +382,15 @@ describe('QuoteEditor — inline line editing', () => {
     expect(rate).toHaveTextContent('8.95%');
   });
 
+  it('tax hint says the rate was fixed at creation and where to change it for future quotes', async () => {
+    const withRate: QuoteDetailData = { ...detail, quote: { ...detail.quote, taxRate: '0.0895' } };
+    render(<QuoteEditor detail={withRate} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    const hint = screen.getByTestId('quote-tax-rate-help');
+    expect(hint).toHaveTextContent(/set when the quote was created/i);
+    expect(hint).toHaveTextContent(/future quotes/i);
+  });
+
   it('rejects a fractional quantity with an inline error, keeps the input, and PATCHes nothing', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());

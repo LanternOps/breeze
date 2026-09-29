@@ -925,7 +925,7 @@
         "subtotal": "Zwischensumme",
         "tax": "Steuer",
         "taxRate": "Steuersatz",
-        "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Wird in den Steuereinstellungen der Organisation festgelegt.",
+        "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Dieser Satz wurde bei der Erstellung des Angebots festgelegt; um ihn für künftige Angebote zu ändern, passen Sie die Steuereinstellungen der Organisation an.",
         "title": "Live-Summen",
         "total": "Gesamtsumme"
       },
@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "E-Mail-Adresse (optional)",
         "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
         "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
-        "consequenceEmail": "Die Rechnung wird per E-Mail an den Kunden gesendet.",
+        "consequenceEmail": "Die Rechnung wird per E-Mail an {{recipients}} gesendet.",
         "consequenceDraft": "Dieses Angebot wurde nie versendet. Der Kunde sieht es zum ersten Mal als Rechnung.",
         "submit": "Annehmen und Rechnung stellen",
         "success": "Angebot angenommen. Rechnung {{number}} erstellt.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG oder JPEG, bis zu 10 MB — z. B. die unterschriebene Bestellung oder das Dokument.",
         "evidenceTooLarge": "Diese Datei ist größer als 10 MB. Wählen Sie eine kleinere Datei.",
         "evidenceAttached": "Nachweis angehängt.",
-        "evidenceError": "Die Annahme wurde erfasst, aber die Nachweisdatei konnte nicht angehängt werden. Hängen Sie sie von der Angebotsseite aus an."
+        "evidenceError": "Die Annahme wurde erfasst, aber die Nachweisdatei konnte nicht angehängt werden. Hängen Sie sie von der Angebotsseite aus an.",
+        "consequenceEmailNoRecipient": "Für dieses Angebot ist kein Empfänger hinterlegt, daher wird die Rechnung möglicherweise nicht per E-Mail versendet. Senden Sie sie bei Bedarf selbst an den Kunden.",
+        "successNoRecipient": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde möglicherweise nicht per E-Mail versendet — für dieses Angebot ist kein Empfänger hinterlegt."
       },
       "declineOnBehalf": {
         "button": "Im Auftrag ablehnen",
@@ -1952,7 +1954,8 @@
       "inProvider": "In {{provider}} vorhanden",
       "syncingToProvider": "Wird synchronisiert…",
       "providerSyncFailed": "{{provider}}-Synchronisierung fehlgeschlagen",
-      "reverseInProviderToo": "Stornieren Sie diese Zahlung auch in {{provider}}"
+      "reverseInProviderToo": "Stornieren Sie diese Zahlung auch in {{provider}}",
+      "overpayment": "Der Betrag übersteigt den offenen Saldo ({{balance}})."
     },
     "requestPayment": {
       "invoiceSent": "Rechnung verschickt",
@@ -2287,7 +2290,8 @@
     "loading": "Abrechnungseinstellungen werden geladen…",
     "saveButton": "Abrechnungseinstellungen speichern",
     "saveError": "Die Abrechnungseinstellungen konnten nicht gespeichert werden.",
-    "saveSuccess": "Abrechnungseinstellungen gespeichert"
+    "saveSuccess": "Abrechnungseinstellungen gespeichert",
+    "readOnlyNotice": "Sie haben nur Lesezugriff auf die Rechnungseinstellungen. Bitten Sie eine Administratorin oder einen Administrator, sie zu ändern."
   },
   "shared": {
     "documentWorkspace": {

@@ -899,7 +899,7 @@
         "srUpdatedWithTax": "Totaux mis à jour. Ponctuel {{oneTime}}, récurrent mensuel {{monthly}}, récurrent annuel {{annual}}, taxe {{tax}}, dû à l'acceptation {{due}}.",
         "tax": "Taxe",
         "taxRate": "Taux de taxe",
-        "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
+        "taxRateHelp": "S'applique aux lignes marquées taxables. Ce taux a été fixé à la création de la soumission; pour le modifier pour les soumissions futures, mettez à jour les paramètres fiscaux de l'organisation.",
         "title": "Totaux en direct",
         "firstPeriodSubtotal": "Sous-total de la première période",
         "subtotal": "Sous-total",
@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "Son courriel (facultatif)",
         "consequenceInvoice": "Une facture de {{amount}} sera émise et numérotée maintenant.",
         "consequenceContracts": "Les lignes récurrentes deviennent des contrats en brouillon que vous activez plus tard.",
-        "consequenceEmail": "La facture sera envoyée par courriel au client.",
+        "consequenceEmail": "La facture sera envoyée par courriel à {{recipients}}.",
         "consequenceDraft": "Cette proposition n'a jamais été envoyée. La facture sera la première chose que le client en verra.",
         "submit": "Accepter et émettre la facture",
         "success": "Proposition acceptée. Facture {{number}} émise.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG ou JPEG, jusqu'à 10 Mo — par exemple le bon de commande signé ou le document.",
         "evidenceTooLarge": "Ce fichier dépasse 10 Mo. Choisissez un fichier plus petit.",
         "evidenceAttached": "Justificatif joint.",
-        "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition."
+        "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
+        "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur cette soumission; la facture pourrait donc ne pas être envoyée par courriel. Envoyez-la vous-même au client au besoin.",
+        "successNoRecipient": "Soumission acceptée. Facture {{number}} émise. Elle pourrait ne pas avoir été envoyée par courriel : aucun destinataire n'est enregistré sur cette soumission."
       },
       "declineOnBehalf": {
         "button": "Refuser au nom du client",
@@ -1952,7 +1954,8 @@
       "inProvider": "Dans {{provider}}",
       "syncingToProvider": "Synchronisation…",
       "providerSyncFailed": "Échec de la synchronisation {{provider}}",
-      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}"
+      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}",
+      "overpayment": "Le montant dépasse le solde dû ({{balance}})."
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -2287,7 +2290,8 @@
     "loading": "Chargement des paramètres de facturation…",
     "saveButton": "Enregistrer les paramètres de facturation",
     "saveError": "Impossible d’enregistrer les paramètres de facturation.",
-    "saveSuccess": "Paramètres de facturation enregistrés"
+    "saveSuccess": "Paramètres de facturation enregistrés",
+    "readOnlyNotice": "Vous avez un accès en lecture seule aux paramètres de facturation. Demandez à un administrateur de les modifier."
   },
   "shared": {
     "documentWorkspace": {

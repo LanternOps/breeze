@@ -192,6 +192,23 @@ describe('InvoicesPage', () => {
     expect(strip.textContent).not.toContain('€');
   });
 
+  it('excludes drafts (unissued, priced) from the Outstanding total and open count', async () => {
+    const data = [
+      { ...INVOICES[0], id: 'inv-a', invoiceNumber: 'INV-A', status: 'sent', balance: '100.00' },
+      { ...INVOICES[0], id: 'inv-b', invoiceNumber: 'INV-B', status: 'overdue', balance: '189.09' },
+      { ...INVOICES[0], id: 'inv-d', invoiceNumber: null, status: 'draft', balance: '560.00' },
+    ];
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ data });
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+    const card = await screen.findByTestId('invoices-outstanding-card');
+    expect(card).toHaveTextContent('$289.09');
+    expect(card).toHaveTextContent('2 open');
+  });
+
   it('hides the filter toolbar on a genuinely empty list', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
