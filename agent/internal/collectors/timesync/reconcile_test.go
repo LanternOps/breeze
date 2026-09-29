@@ -300,16 +300,37 @@ func TestReconcileTimezoneAndNonfatalResync(t *testing.T) {
 		fail     string
 		reason   string
 		outcome  string
+		role     string
+		managed  bool
+		flip     bool
 	}{
-		{"on", managementPtr("Eastern Standard Time"), "", "auto_timezone_on", "skipped"},
-		{"off", nil, "", "no_expected_timezone", "skipped"},
-		{"unknown", managementPtr("Eastern Standard Time"), "", "applied", "ok"},
-		{"off", managementPtr("UTC"), "", "already_compliant", "ok"},
-		{"off", managementPtr("Missing Zone"), "", "invalid_settings", "skipped"},
-		{"off", managementPtr("Eastern Standard Time"), "timezone", "exec_failed", "failed"},
+		{"on", managementPtr("Eastern Standard Time"), "", "auto_timezone_on", "skipped", "", false, false},
+		{"off", nil, "", "no_expected_timezone", "skipped", "", false, false},
+		{"unknown", managementPtr("Eastern Standard Time"), "", "applied", "ok", "", false, false},
+		{"off", managementPtr("UTC"), "", "already_compliant", "ok", "", false, false},
+		{"off", managementPtr("Missing Zone"), "", "invalid_settings", "skipped", "", false, false},
+		{"off", managementPtr("Eastern Standard Time"), "timezone", "exec_failed", "failed", "", false, false},
+		// W32Time role and GPO state do not gate timezone enforcement (spec §8.4).
+		{auto: "off", expected: managementPtr("Eastern Standard Time"), reason: "applied", outcome: "ok", role: "member", managed: true},
+		{auto: "off", expected: managementPtr("Eastern Standard Time"), reason: "applied", outcome: "ok", role: "unknown"},
+		{auto: "off", expected: managementPtr("Eastern Standard Time"), reason: "applied", outcome: "ok", role: "unknown", managed: true},
+		{auto: "off", expected: managementPtr("Eastern Standard Time"), reason: "auto_timezone_on", outcome: "skipped", flip: true},
+		{auto: "off", expected: managementPtr("Eastern Standard Time"), reason: "auto_timezone_on", outcome: "skipped", role: "member", managed: true, flip: true},
 	} {
 		now := time.Now()
-		f := newFakeTimeSystem("workgroup")
+		role := tc.role
+		if role == "" {
+			role = "workgroup"
+		}
+		f := newFakeTimeSystem(role)
+		f.obs.Config.PolicyManaged = tc.managed
+		if tc.flip {
+			f.beforeRead = func(f *fakeTimeSystem) {
+				if f.reads >= 2 {
+					f.obs.Timezone.AutoUpdate = "on"
+				}
+			}
+		}
 		r := fakeReconciler(f, &now)
 		r.State.Settings.EnforceNTP = false
 		r.State.Settings.Timezone = TimezoneSettings{tc.expected, true}
@@ -324,6 +345,9 @@ func TestReconcileTimezoneAndNonfatalResync(t *testing.T) {
 		}
 		if tc.outcome == "skipped" && len(f.calls) != 0 {
 			t.Fatal(f.calls)
+		}
+		if tc.reason == "applied" && !reflect.DeepEqual(f.calls, []string{"timezone"}) {
+			t.Fatal(tc, f.calls)
 		}
 	}
 	now := time.Now()
@@ -352,5 +376,61 @@ func TestReconcilePersistenceAndReadFailures(t *testing.T) {
 	}
 	if r.State.Report.NTP.Outcome != "failed" || len(f.calls) != 0 {
 		t.Fatal(r.State.Report)
+	}
+}
+func TestReconcileGateClampsAfterBackwardClockStep(t *testing.T) {
+	for _, fail := range []string{"", "manual"} {
+		t.Run("fail="+fail, func(t *testing.T) {
+			// A run while the device clock is a year ahead must not block
+			// enforcement once the clock is corrected (the reconciler's own
+			// resync is what steps it back).
+			now := time.Date(2027, 9, 28, 12, 0, 0, 0, time.UTC)
+			f := newFakeTimeSystem("workgroup")
+			f.fail = fail
+			r := fakeReconciler(f, &now)
+			if e := r.Run(context.Background(), false); e != nil {
+				t.Fatal(e)
+			}
+			id, failures := r.State.Report.NTP.ResultID, r.State.NTPGate.Failures
+			f.fail = ""
+			f.calls = nil
+			f.obs.Config.ServiceState = "stopped"
+			now = time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC)
+			if e := r.Run(context.Background(), false); e != nil {
+				t.Fatal(e)
+			}
+			if r.State.Report.NTP.ResultID == id || len(f.calls) == 0 {
+				t.Fatal("stale future gate blocked the run", r.State.NTPGate, f.calls)
+			}
+			if d := r.State.NTPGate.Next.Sub(now); d <= 0 || d > 24*time.Hour {
+				t.Fatal("gate not re-based on the corrected clock", d)
+			}
+			if r.State.Report.NTP.Outcome != "ok" || r.State.NTPGate.Failures != 0 {
+				t.Fatal(r.State.Report.NTP, r.State.NTPGate, failures)
+			}
+		})
+	}
+}
+func TestReconcileGateKeepsLegitimateBackoff(t *testing.T) {
+	// The clamp must only drop impossible future gates, never a real back-off.
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	f := newFakeTimeSystem("workgroup")
+	f.fail = "manual"
+	r := fakeReconciler(f, &now)
+	for i := 0; i < 6; i++ {
+		if e := r.Run(context.Background(), true); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if d := r.State.NTPGate.Next.Sub(now); d != 24*time.Hour {
+		t.Fatal(d)
+	}
+	calls := len(f.calls)
+	now = now.Add(23 * time.Hour)
+	if e := r.Run(context.Background(), false); e != nil {
+		t.Fatal(e)
+	}
+	if len(f.calls) != calls {
+		t.Fatal("legitimate 24h back-off bypassed", f.calls)
 	}
 }

@@ -109,6 +109,13 @@ func (r *Reconciler) runKind(ctx context.Context, s Settings, zone, force bool) 
 		*gate = AttemptGate{Fingerprint: s.Fingerprint}
 	}
 	now := r.Now()
+	// Next is wall-clock. A gate further ahead than any delay this code produces
+	// means the clock stepped backward (often via our own resync); keep the
+	// failure count but drop the stale absolute time so enforcement is not
+	// blocked until real time catches up.
+	if gate.Next.Sub(now) > gateDelay(gate.Failures) {
+		gate.Next = now
+	}
 	if !force && now.Before(gate.Next) {
 		return nil
 	}
@@ -123,11 +130,13 @@ func (r *Reconciler) runKind(ctx context.Context, s Settings, zone, force bool) 
 	var opErr error
 	if readErr != nil {
 		outcome, reason, opErr = "failed", "exec_failed", readErr
-	} else if !knownRole(before.Domain.Role) {
+	} else if !zone && !knownRole(before.Domain.Role) {
 		outcome, reason = "skipped", "role_unknown"
-	} else if before.Config.PolicyManaged {
+	} else if !zone && before.Config.PolicyManaged {
 		outcome, reason = "skipped", "conflict_gpo"
 	} else if zone {
+		// Spec §8.4: the W32Time role and Policies\Microsoft\W32Time do not govern the
+		// timezone, so neither gates it; only autoUpdate and the zone key do.
 		switch {
 		case s.Timezone.ExpectedWindowsID == nil:
 			outcome, reason = "skipped", "no_expected_timezone"
@@ -195,14 +204,18 @@ func (r *Reconciler) guarded(ctx context.Context, role string, zone bool, write 
 	if e != nil {
 		return e
 	}
+	if zone {
+		// Timezone writes re-check only what gates them (spec §8.4), never W32Time role/GPO.
+		if fresh.Timezone.AutoUpdate == "on" {
+			return &guardStop{"auto_timezone_on"}
+		}
+		return write()
+	}
 	if !knownRole(fresh.Domain.Role) || fresh.Domain.Role != role {
 		return &guardStop{"role_unknown"}
 	}
 	if fresh.Config.PolicyManaged {
 		return &guardStop{"conflict_gpo"}
-	}
-	if zone && fresh.Timezone.AutoUpdate == "on" {
-		return &guardStop{"auto_timezone_on"}
 	}
 	return write()
 }
