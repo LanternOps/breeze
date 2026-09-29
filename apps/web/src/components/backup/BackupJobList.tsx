@@ -72,6 +72,9 @@ type BackupJob = {
   size: string;
   errorCount: number;
   errorSummary: string;
+  // Full cleaned error text for the Errors cell tooltip; errorSummary is cut
+  // to 60 characters for the table, so the whole reason has to live here.
+  errorDetail: string | null;
   // Live-progress fields (running rows). null when the agent never reported
   // progress (legacy agent) — the UI falls back to an indeterminate bar.
   transferredSize: number | null;
@@ -201,6 +204,7 @@ function formatTime(iso?: string | null): string {
 }
 
 function mapJob(raw: BackupJobRaw): BackupJob {
+  const cleanedErrorLog = raw.errorLog ? stripInternalTagPrefix(raw.errorLog) : null;
   return {
     id: raw.id,
     deviceName: raw.deviceName ?? raw.deviceId?.slice(0, 8) ?? '--',
@@ -218,11 +222,9 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     lastProgressAt: raw.lastProgressAt ?? null,
     lastKeepaliveAt: raw.lastKeepaliveAt ?? null,
     errorCount: raw.errorCount ?? 0,
-    errorSummary: raw.errorLog
-      ? (() => {
-          const cleaned = stripInternalTagPrefix(raw.errorLog);
-          return cleaned.length > 60 ? `${cleaned.slice(0, 57)}...` : cleaned;
-        })()
+    errorDetail: cleanedErrorLog,
+    errorSummary: cleanedErrorLog
+      ? cleanedErrorLog.length > 60 ? `${cleanedErrorLog.slice(0, 57)}...` : cleanedErrorLog
       : raw.errorCount
         ? i18n.t('backup:backupJobList.errorCount', { count: raw.errorCount })
         : '-'
@@ -664,7 +666,7 @@ export default function BackupJobList() {
                         {job.errorSummary !== '-' ? (
                           <span
                             data-testid="backup-job-error-summary"
-                            title={job.errorSummary}
+                            title={job.errorDetail ?? job.errorSummary}
                             className="inline-flex items-center gap-1 text-xs font-medium text-destructive"
                           >
                             <AlertTriangle className="h-3.5 w-3.5" />

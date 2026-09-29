@@ -692,6 +692,36 @@ snapshotsRoutes.post(
   },
 );
 
+type SnapshotHardwareSizing = {
+  cpuCores: number | null;
+  totalMemoryMB: number | null;
+  disks: { sizeBytes: number }[];
+};
+
+/**
+ * Restore-as-VM snapshot cards show CPU / memory / disk chips. The stored
+ * profile (the agent's systemstate.HardwareProfile) also carries NICs with MAC
+ * addresses, BIOS and board strings the list has no use for, so only the
+ * sizing fields ride, under their stored names. Null when none was captured.
+ */
+function toHardwareSizing(profile: unknown): SnapshotHardwareSizing | null {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+  const stored = profile as Record<string, unknown>;
+  const positive = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  const disks = Array.isArray(stored.disks)
+    ? stored.disks.flatMap((disk) => {
+        const sizeBytes = disk && typeof disk === 'object' ? positive((disk as Record<string, unknown>).sizeBytes) : null;
+        return sizeBytes === null ? [] : [{ sizeBytes }];
+      })
+    : [];
+  return {
+    cpuCores: positive(stored.cpuCores),
+    totalMemoryMB: positive(stored.totalMemoryMB),
+    disks,
+  };
+}
+
 function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
   return {
     id: row.id,
@@ -710,6 +740,7 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     // unknown). The rebuild engine is platform-matched, so Restore-as-VM
     // filters rebuild hosts by it; a null platform cannot be rebuilt.
     layoutPlatform: resolveSnapshotPlatform(row.layoutManifest),
+    hardwareProfile: toHardwareSizing(row.hardwareProfile),
     sizeBytes: row.size ?? null,
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,

@@ -10,10 +10,12 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
+import type { TFunction } from 'i18next';
 import { cn } from '@/lib/utils';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
+import { formatNumber } from '@/lib/i18n/format';
 import VMRestoreSpecsStep from './VMRestoreSpecsStep';
 import VMRestoreConfirmStep from './VMRestoreConfirmStep';
 import AlphaBadge from '../shared/AlphaBadge';
@@ -34,14 +36,18 @@ import '../../lib/i18n';
 type Snapshot = {
   id: string;
   label: string;
+  /** Backed-up device's display name / hostname, from GET /backup/snapshots. */
+  deviceName?: string | null;
   createdAt?: string;
   timestamp?: string;
   sizeBytes?: number | null;
+  /** Sizing fields of the captured hardware profile, under the stored
+   * (agent systemstate.HardwareProfile) names GET /backup/snapshots sends. */
   hardwareProfile?: {
-    cpuCount?: number;
-    memoryMB?: number;
-    diskGB?: number;
-  };
+    cpuCores?: number | null;
+    totalMemoryMB?: number | null;
+    disks?: { sizeBytes?: number | null }[] | null;
+  } | null;
   /** Storage key of the disk-layout manifest; only whole-machine snapshots
    * carry one, and only those can go through the rebuild engine. */
   layoutManifestKey?: string | null;
@@ -49,7 +55,53 @@ type Snapshot = {
    * platform-matched: it picks the host OS filter, and a null platform cannot
    * be rebuilt (the API refuses it as snapshot_not_bare_metal_restorable). */
   layoutPlatform?: RebuildHostOs | null;
+  /** The bare-metal guard's verdict on the snapshot's contents. The rebuild
+   * engine requires `true` as well as a layout manifest; null (never
+   * assessed) and false are both refused with snapshot_not_bare_metal_restorable. */
+  bareMetalRestorable?: boolean | null;
 };
+
+type HardwareChips = { cpuCores: number | null; memoryGb: number | null; diskGb: number | null };
+
+function hardwareChips(snapshot: Snapshot): HardwareChips | null {
+  const hw = snapshot.hardwareProfile;
+  if (!hw) return null;
+  const positive = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  const diskBytes = (hw.disks ?? []).reduce((sum, disk) => sum + (positive(disk?.sizeBytes) ?? 0), 0);
+  const memoryMb = positive(hw.totalMemoryMB);
+  const chips = {
+    cpuCores: positive(hw.cpuCores),
+    memoryGb: memoryMb === null ? null : memoryMb / 1024,
+    diskGb: diskBytes > 0 ? diskBytes / 1024 ** 3 : null,
+  };
+  return chips.cpuCores === null && chips.memoryGb === null && chips.diskGb === null ? null : chips;
+}
+
+function SnapshotHardwareChips({ snapshot }: { snapshot: Snapshot }) {
+  const { t } = useTranslation('backup');
+  const chips = hardwareChips(snapshot);
+  if (!chips) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
+      {chips.cpuCores !== null && (
+        <span className="inline-flex items-center gap-1">
+          <Cpu className="h-3 w-3" /> {chips.cpuCores} {t('vMRestoreWizard.cpu')}
+        </span>
+      )}
+      {chips.memoryGb !== null && (
+        <span className="inline-flex items-center gap-1">
+          <MemoryStick className="h-3 w-3" /> {formatNumber(chips.memoryGb, { maximumFractionDigits: 1 })} {t('vMRestoreWizard.gb')}
+        </span>
+      )}
+      {chips.diskGb !== null && (
+        <span className="inline-flex items-center gap-1">
+          <HardDrive className="h-3 w-3" /> {formatNumber(chips.diskGb, { maximumFractionDigits: 0 })} {t('vMRestoreWizard.gb')}
+        </span>
+      )}
+    </div>
+  );
+}
 
 type VMEstimate = {
   memoryMb?: number;
@@ -63,19 +115,71 @@ type VMEstimate = {
 type RestoreMode = 'full' | 'instant' | 'rebuild';
 
 function snapshotRebuildPlatform(snapshot: Snapshot | undefined): RebuildHostOs | null {
-  if (!snapshot?.layoutManifestKey) return null;
+  // Mirrors the API's own gate (vmRestoreRebuildEngine): layout manifest AND a
+  // bare-metal-restorable verdict AND a recorded platform.
+  if (!snapshot?.layoutManifestKey || snapshot.bareMetalRestorable !== true) return null;
   return snapshot.layoutPlatform === 'linux' || snapshot.layoutPlatform === 'windows'
     ? snapshot.layoutPlatform
     : null;
 }
 
-const steps = ['Snapshot', 'Target Host', 'VM Specs', 'VM Name', 'Mode', 'Review'];
+type StepId = 'snapshot' | 'mode' | 'target' | 'specs' | 'name' | 'review';
+
+const STEP_LABELS: Record<StepId, string> = {
+  snapshot: 'Snapshot',
+  mode: 'Mode',
+  target: 'Target Host',
+  specs: 'VM Specs',
+  name: 'VM Name',
+  review: 'Review',
+};
+
+// The mode decides which inputs the restore needs, so it is picked right after
+// the snapshot. Full restore and instant boot run on a Hyper-V target host and
+// need a VM name. The rebuild engine picks its own host on the Mode step and
+// takes no VM name, so it skips both steps (it keeps VM Specs, which sizes the
+// optional Hyper-V VM on a Windows rebuild host).
+const HYPERVISOR_STEPS: readonly StepId[] = ['snapshot', 'mode', 'target', 'specs', 'name', 'review'];
+const REBUILD_STEPS: readonly StepId[] = ['snapshot', 'mode', 'specs', 'review'];
+
+/**
+ * The restore routes answer some refusals with a bare machine token in
+ * `error` (runAction would toast it verbatim). Map the rebuild-engine ones to
+ * copy; for any other snake_case token, use the sentence the API ships with it
+ * (`message`, e.g. hyperv_requires_windows_host, or `details.reasons`, e.g.
+ * snapshot_storage_identity_unknown).
+ */
+function friendlyRestoreError(t: TFunction, code: string, body: unknown): string | undefined {
+  const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {};
+  const details = record.details && typeof record.details === 'object' ? record.details as Record<string, unknown> : {};
+  const reasons = Array.isArray(details.reasons)
+    ? details.reasons.filter((r): r is string => typeof r === 'string' && r.trim() !== '').map((r) => r.trim())
+    : [];
+  switch (code) {
+    case 'snapshot_not_bare_metal_restorable':
+      return reasons.length > 0
+        ? t('vMRestoreWizard.rebuildErrorNotRestorableReasons', { reasons: reasons.join('; ') })
+        : t('vMRestoreWizard.rebuildErrorNotRestorable');
+    case 'rebuild_host_unsupported':
+      return t('vMRestoreWizard.rebuildErrorHostUnsupported');
+    case 'recovery_in_progress':
+      return t('vMRestoreWizard.rebuildErrorRecoveryInProgress');
+    case 'snapshot_not_found':
+      return t('vMRestoreWizard.rebuildErrorSnapshotNotFound');
+    case 'rebuild_host_not_found':
+      return t('vMRestoreWizard.rebuildErrorHostNotFound');
+  }
+  if (!/^[a-z]+(?:_[a-z]+)+$/.test(code)) return undefined;
+  if (typeof record.message === 'string' && record.message.trim()) return record.message.trim();
+  if (reasons.length > 0) return reasons.join(' ');
+  return undefined;
+}
 
 // ── Component ─────────────────────────────────────────────────────
 
 export default function VMRestoreWizard() {
   const { t } = useTranslation('backup');
-  const [step, setStep] = useState(0);
+  const [stepId, setStepId] = useState<StepId>('snapshot');
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [deviceSearch, setDeviceSearch] = useState('');
   const [snapshotId, setSnapshotId] = useState('');
@@ -115,8 +219,14 @@ export default function VMRestoreWizard() {
     enabled: mode === 'rebuild',
   });
 
-  const nextStep = () => setStep((prev) => Math.min(prev + 1, steps.length - 1));
-  const prevStep = () => setStep((prev) => Math.max(prev - 1, 0));
+  const steps = mode === 'rebuild' ? REBUILD_STEPS : HYPERVISOR_STEPS;
+  // A step the current mode does not show can only be the current one if the
+  // mode changed under it; fall back to Mode, where that choice is made.
+  const step: StepId = steps.includes(stepId) ? stepId : 'mode';
+  const stepIndex = steps.indexOf(step);
+  const isLastStep = stepIndex === steps.length - 1;
+  const nextStep = () => setStepId(steps[Math.min(stepIndex + 1, steps.length - 1)]);
+  const prevStep = () => setStepId(steps[Math.max(stepIndex - 1, 0)]);
 
   // Fetch snapshots; target hosts are loaded by the shared device-options contract.
   useEffect(() => {
@@ -191,7 +301,8 @@ export default function VMRestoreWizard() {
     setSnapshotId(snapshot.id);
   };
 
-  // Switching to a snapshot without a layout manifest invalidates the rebuild engine.
+  // Switching to a snapshot the rebuild engine cannot take (no layout manifest,
+  // not bare-metal restorable, or no platform) invalidates the rebuild engine.
   useEffect(() => {
     if (mode === 'rebuild' && !rebuildEngineAvailable) setMode('full');
   }, [mode, rebuildEngineAvailable]);
@@ -270,6 +381,7 @@ export default function VMRestoreWizard() {
           }),
         errorFallback: 'Failed to start restore',
         successMessage,
+        friendly: (code, _message, body) => friendlyRestoreError(t, code, body),
       });
       setRestoreSuccess(successMessage);
     } catch (err) {
@@ -320,26 +432,26 @@ export default function VMRestoreWizard() {
       <div className="rounded-lg border bg-card p-5 shadow-xs">
         {/* Step indicators */}
         <div className="flex flex-wrap gap-2">
-          {steps.map((label, index) => (
+          {steps.map((id, index) => (
             <button
               type="button"
-              key={label}
-              onClick={() => setStep(index)}
+              key={id}
+              onClick={() => setStepId(id)}
               className={cn(
                 'rounded-full border px-4 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors',
-                index === step
+                id === step
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-muted bg-muted/30 text-muted-foreground hover:text-foreground'
               )}
             >
-              {index + 1}. {label}
+              {index + 1}. {STEP_LABELS[id]}
             </button>
           ))}
         </div>
 
         <div className="mt-6 space-y-6">
-          {/* Step 1: Select Snapshot */}
-          {step === 0 && (
+          {/* Select Snapshot */}
+          {step === 'snapshot' && (
             <div className="space-y-4">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.selectBackupSnapshot')}</h3>
@@ -364,26 +476,14 @@ export default function VMRestoreWizard() {
                       )}
                     >
                       <div className="text-sm font-semibold text-foreground">{snap.label}</div>
+                      {snap.deviceName ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{snap.deviceName}</div>
+                      ) : null}
                       <div className="mt-1 flex flex-wrap gap-3 text-xs text-muted-foreground">
                         {(snap.createdAt ?? snap.timestamp) && <span>{formatTime(snap.createdAt ?? snap.timestamp)}</span>}
                         {snap.sizeBytes != null && <span>{formatBytes(snap.sizeBytes)}</span>}
                       </div>
-                      {snap.hardwareProfile && (
-                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                          {snap.hardwareProfile.cpuCount && (
-                            <span className="inline-flex items-center gap-1">
-                              <Cpu className="h-3 w-3" /> {snap.hardwareProfile.cpuCount} {t('vMRestoreWizard.cpu')} </span>
-                          )}
-                          {snap.hardwareProfile.memoryMB && (
-                            <span className="inline-flex items-center gap-1">
-                              <MemoryStick className="h-3 w-3" /> {snap.hardwareProfile.memoryMB} {t('vMRestoreWizard.mb')} </span>
-                          )}
-                          {snap.hardwareProfile.diskGB && (
-                            <span className="inline-flex items-center gap-1">
-                              <HardDrive className="h-3 w-3" /> {snap.hardwareProfile.diskGB} {t('vMRestoreWizard.gb')} </span>
-                          )}
-                        </div>
-                      )}
+                      <SnapshotHardwareChips snapshot={snap} />
                     </button>
                   ))}
                 </div>
@@ -391,77 +491,8 @@ export default function VMRestoreWizard() {
             </div>
           )}
 
-          {/* Step 2: Target Host */}
-          {step === 1 && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.selectTargetHost')}</h3>
-                <p className="text-sm text-muted-foreground">
-                  {t('vMRestoreWizard.chooseAWindowsDeviceWithHyperVTo')} </p>
-              </div>
-              <DeviceOptionPicker
-                result={deviceOptions}
-                selectedIds={targetDeviceId ? [targetDeviceId] : []}
-                onSelectedIdsChange={(ids) => setTargetDeviceId(ids[0] ?? '')}
-                search={deviceSearch}
-                onSearchChange={setDeviceSearch}
-                selectionMode="single"
-              />
-            </div>
-          )}
-
-          {/* Step 3: VM Specs */}
-          {step === 2 && (
-            <VMRestoreSpecsStep
-              memoryMB={memoryMB}
-              cpuCount={cpuCount}
-              diskGB={diskGB}
-              onMemoryChange={setMemoryMB}
-              onCpuChange={setCpuCount}
-              onDiskChange={setDiskGB}
-            />
-          )}
-
-          {/* Step 4: VM Name */}
-          {step === 3 && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.vmIdentity')}</h3>
-                <p className="text-sm text-muted-foreground">
-                  {t('vMRestoreWizard.nameTheVirtualMachineAndOptionallySpecifyA')} </p>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label htmlFor="vm-name" className="text-xs font-medium text-muted-foreground">{t('vMRestoreWizard.vmName')}</label>
-                  <input
-                    id="vm-name"
-                    value={vmName}
-                    onChange={(e) => setVmName(e.target.value)}
-                    placeholder={t('vMRestoreWizard.eGRestoredDbServer')}
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  />
-                  {vmNameMissing ? (
-                    <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.enterAVmNameToContinue')}</p>
-                  ) : null}
-                </div>
-                <div className="space-y-2">
-                  <label htmlFor="vm-switch" className="text-xs font-medium text-muted-foreground">
-                    {t('vMRestoreWizard.virtualSwitch')} <span className="text-muted-foreground/60">{t('vMRestoreWizard.optional')}</span>
-                  </label>
-                  <input
-                    id="vm-switch"
-                    value={virtualSwitch}
-                    onChange={(e) => setVirtualSwitch(e.target.value)}
-                    placeholder={t('vMRestoreWizard.defaultSwitch')}
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Step 5: Mode */}
-          {step === 4 && (
+          {/* Mode */}
+          {step === 'mode' && (
             <div className="space-y-4">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.restoreMode')}</h3>
@@ -600,8 +631,77 @@ export default function VMRestoreWizard() {
             </div>
           )}
 
-          {/* Step 6: Review */}
-          {step === 5 && (
+          {/* Target Host (full restore / instant boot only) */}
+          {step === 'target' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.selectTargetHost')}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {t('vMRestoreWizard.chooseAWindowsDeviceWithHyperVTo')} </p>
+              </div>
+              <DeviceOptionPicker
+                result={deviceOptions}
+                selectedIds={targetDeviceId ? [targetDeviceId] : []}
+                onSelectedIdsChange={(ids) => setTargetDeviceId(ids[0] ?? '')}
+                search={deviceSearch}
+                onSearchChange={setDeviceSearch}
+                selectionMode="single"
+              />
+            </div>
+          )}
+
+          {/* VM Specs */}
+          {step === 'specs' && (
+            <VMRestoreSpecsStep
+              memoryMB={memoryMB}
+              cpuCount={cpuCount}
+              diskGB={diskGB}
+              onMemoryChange={setMemoryMB}
+              onCpuChange={setCpuCount}
+              onDiskChange={setDiskGB}
+            />
+          )}
+
+          {/* VM Name (full restore / instant boot only) */}
+          {step === 'name' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.vmIdentity')}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {t('vMRestoreWizard.nameTheVirtualMachineAndOptionallySpecifyA')} </p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label htmlFor="vm-name" className="text-xs font-medium text-muted-foreground">{t('vMRestoreWizard.vmName')}</label>
+                  <input
+                    id="vm-name"
+                    value={vmName}
+                    onChange={(e) => setVmName(e.target.value)}
+                    placeholder={t('vMRestoreWizard.eGRestoredDbServer')}
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  />
+                  {vmNameMissing ? (
+                    <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.enterAVmNameToContinue')}</p>
+                  ) : null}
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="vm-switch" className="text-xs font-medium text-muted-foreground">
+                    {t('vMRestoreWizard.virtualSwitch')} <span className="text-muted-foreground/60">{t('vMRestoreWizard.optional')}</span>
+                  </label>
+                  <input
+                    id="vm-switch"
+                    value={virtualSwitch}
+                    onChange={(e) => setVirtualSwitch(e.target.value)}
+                    placeholder={t('vMRestoreWizard.defaultSwitch')}
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Review */}
+          {step === 'review' && (
             <VMRestoreConfirmStep
               snapshotLabel={selectedSnapshot?.label}
               hostname={mode === 'rebuild' ? selectedRebuildHost?.hostname : selectedDevice?.hostname}
@@ -621,19 +721,19 @@ export default function VMRestoreWizard() {
           <button
             type="button"
             onClick={prevStep}
-            disabled={step === 0}
+            disabled={stepIndex === 0}
             className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
           >
             <ArrowLeft className="h-4 w-4" /> {t('vMRestoreWizard.back')} </button>
           <div className="flex items-center gap-2">
-            {step === steps.length - 1 && vmNameMissing ? (
+            {isLastStep && vmNameMissing ? (
               <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.enterAVmNameOnTheVmNameStep')}</p>
             ) : null}
-            {step < steps.length - 1 ? (
+            {!isLastStep ? (
               <button
                 type="button"
                 onClick={nextStep}
-                disabled={step === 3 && vmNameMissing}
+                disabled={step === 'name' && vmNameMissing}
                 className="disabled:opacity-50 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
                 {t('vMRestoreWizard.continue')} <ArrowRight className="h-4 w-4" />

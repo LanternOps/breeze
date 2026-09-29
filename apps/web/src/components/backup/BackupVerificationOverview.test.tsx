@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import BackupVerificationOverview from './BackupVerificationOverview';
@@ -108,7 +108,7 @@ describe('BackupVerificationOverview', () => {
 
     await screen.findByText('82.5');
     expect(screen.getAllByText('Low Device').length).toBeGreaterThan(0);
-    expect(screen.getByText('Devices scoring below the 85-point readiness threshold.')).toBeTruthy();
+    expect(screen.getByText('Devices scoring below the 70-point readiness threshold.')).toBeTruthy();
     expect(screen.queryByText('High Device')).toBeNull();
     expect(screen.getByText('Failed verification checks across all devices.')).toBeTruthy();
   });
@@ -116,6 +116,38 @@ describe('BackupVerificationOverview', () => {
   it('shows why a verification failed (#7213)', async () => {
     render(<BackupVerificationOverview />);
     expect(await screen.findByText('Snapshot manifest missing')).toBeTruthy();
+  });
+
+  it('lists only devices under the API low-readiness threshold, matching the Low Readiness tile', async () => {
+    // A device with no restore test tops out at 80 (#7328). The API counts it
+    // as not-low (threshold 70), so the table must not list it either.
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).includes('/backup/recovery-readiness')) {
+        return makeJsonResponse({
+          data: {
+            summary: { devices: 2, averageScore: 68, lowReadiness: 1, highReadiness: 0 },
+            devices: [
+              { deviceId: 'device-mac', deviceName: 'Mac Mini', readinessScore: 80, riskFactors: [{ code: 'restore_test_missing', severity: 'medium', message: 'No restore test has run in the last 30 days.' }] },
+              { deviceId: 'device-win', deviceName: 'Win Server', readinessScore: 56, riskFactors: [] },
+            ],
+          },
+        });
+      }
+      if (String(input).includes('/backup/health')) {
+        return makeJsonResponse({ data: { verification: { total: 2, failedLast24h: 0 }, readiness: { averageScore: 68, lowReadinessCount: 1 } } });
+      }
+      if (String(input).includes('/backup/verifications')) {
+        return makeJsonResponse({ data: [] });
+      }
+      return base(input, init);
+    });
+    render(<BackupVerificationOverview />);
+
+    const table = await screen.findByTestId('low-readiness-devices');
+    expect(within(table).getByText('Win Server')).toBeTruthy();
+    expect(within(table).queryByText('Mac Mini')).toBeNull();
+    expect(within(table).getAllByRole('row')).toHaveLength(2); // header + one device
   });
 
   it('does not show "0 / 100" or "all devices meet the threshold" when no device has been scored (#7213)', async () => {
