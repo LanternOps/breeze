@@ -49,6 +49,11 @@ import { describe, expect, it } from 'vitest';
 const API_SRC = fileURLToPath(new URL('..', import.meta.url));
 const SERVICES_DIR = join(API_SRC, 'services');
 const GUARDRAILS_SRC = readFileSync(join(API_SRC, 'services/aiGuardrails.ts'), 'utf8');
+// AGENT_HUMAN_ONLY_TOOLS moved out of aiGuardrails.ts into this data-only
+// module (W01-D1/D4, #6755's quorum amendment WQ4) — aiGuardrails.ts now only
+// re-exports it. Read separately so the SAFE_WRITE_SITES proof below still
+// finds its literal definition.
+const TOOL_EXPOSURE_SRC = readFileSync(join(API_SRC, 'services/aiToolExposure.ts'), 'utf8');
 const WORKER_SRC = readFileSync(join(API_SRC, 'jobs/intentReleaseWorker.ts'), 'utf8');
 
 const EXCLUDED_MODULES: ReadonlySet<string> = new Set([
@@ -345,7 +350,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
     expect(agentMgmtSrc).toMatch(/aiExecuteCommand\(auth, 'trigger_agent_upgrade'/);
     expect(agentMgmtSrc).toMatch(/aiExecuteCommand\(auth, 'trigger_agent_restart'/);
 
-    expect(GUARDRAILS_SRC).toMatch(/export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>\(\[\s*\n\s*'manage_ai_agents',/);
+    expect(TOOL_EXPOSURE_SRC).toMatch(/export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>\(\[\s*\n\s*'manage_ai_agents',/);
 
     const browserSrc = readFileSync(join(API_SRC, 'services/aiToolsBrowser.ts'), 'utf8');
     expect(browserSrc).toMatch(/aiDispatchDeviceCommand\(auth, 'manage_browser_policy'/);

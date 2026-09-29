@@ -65,7 +65,7 @@ import { createActionIntent } from '../actionIntents/intentService';
 import { captureException } from '../sentry';
 import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
-import { BREEZE_MCP_TOOL_NAMES, createBreezeMcpServer } from '../aiAgentSdkTools';
+import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
@@ -77,6 +77,7 @@ import {
   AGENT_HUMAN_ONLY_TOOLS,
   BLOCKED_TOOLS,
   checkAgentGuardrails,
+  isNeverAgentTool,
   checkGuardrails,
   isReadOnlyResolution,
   TOOL_ACTION_INPUT_KEYS,
@@ -1949,6 +1950,18 @@ async function driveSdkLoop(
     patch: patchRefs,
   });
 
+  // A full-profile run (profileAllowlist undefined) used to expose EVERY
+  // name in TOOL_TIERS (via BREEZE_MCP_TOOL_NAMES), including names
+  // `checkAgentGuardrails` denies unconditionally regardless of policy
+  // (AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS, BLOCKED_TOOLS,
+  // secret-bearing — see `isNeverAgentTool`). Those names still reached the
+  // model as full tool schemas and only failed once actually called (W01
+  // quorum amendment WQ3, #6755). Filtering here, once, keeps a
+  // profile-allowlisted run untouched (it was already narrower than this)
+  // and makes a full-profile run's exposure agree with what the guardrail
+  // would allow anyway.
+  const fullProfileReachableToolNames = Object.keys(TOOL_TIERS).filter((name) => !isNeverAgentTool(name));
+
   // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
   // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
   // is still the sole authority for anything the model does manage to call;
@@ -1969,7 +1982,7 @@ async function driveSdkLoop(
     ? exposureList.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
-    : BREEZE_MCP_TOOL_NAMES;
+    : fullProfileReachableToolNames.map((name) => `mcp__breeze__${name}`);
 
   // F2 fix (P2-1 second live check): `allowedTools` above only gates
   // PERMISSION to call a tool — the MCP server still sends every REGISTERED

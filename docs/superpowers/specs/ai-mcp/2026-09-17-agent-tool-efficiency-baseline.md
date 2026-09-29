@@ -245,6 +245,24 @@ As a proxy for prompt growth that doesn't need a live model call: `Buffer.byteLe
 
 Production output-size report: `not run` — needs `docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql` on EU + US (Todd); the 20-tool list above is provisional until then, per D10/the plan's "The 20 tools" section. Per Q10, `manage_tickets`, `list_monitors`, and `get_incident_timeline` are MCP-only (absent from `TOOL_TIERS`), so `hotForShaping` (which ranks `chat`+`helper` rows only) cannot measure them even once the report runs on production — they were shaped anyway on the survey's likely-traffic ranking, and stay in the 20-tool table with that caveat.
 
+## Full-control W01 (#6755) delta
+
+**Date measured:** 2026-09-26 · **Branch:** `feature/6754-ai-full-control/wave-6755-public` against `origin/main` @ `5345f00202` · **Plan:** `2026-09-23-ai-full-control-w01-guard-and-reads.md`
+
+**`ANTHROPIC_API_KEY` was absent in this environment** — the real-API harness (`tool-capture.ts` against `query()`/the local proxy) could not run. Every turn-1-token cell below is `not measured: ANTHROPIC_API_KEY absent`; no token count was estimated. In its place, per the plan's offline-proxy fallback, this measures the wire-shaped bytes of the SDK tool declarations without calling the API: `Buffer.byteLength(JSON.stringify(name)) + Buffer.byteLength(JSON.stringify(description)) + Buffer.byteLength(JSON.stringify(z.toJSONSchema(z.object(inputSchema))))`, summed over `buildBreezeSdkTools(fakeAuth).map(attachRegistryMeta)` (`aiAgentSdkTools.ts`), on `origin/main` and on this branch. `fakeAuth` is the same throwing no-op `listChatSurfaceToolNames` uses; no DB or handler ever executes. Both runs used the same unset-env default (no `M365_ENABLED`/`GOOGLE_WORKSPACE_ENABLED`/`DELEGANT_BASE_URL`/`BREEZE_AI_SCRIPT_AUTHORING_ENABLED`), so the counts below are each environment's floor, consistent with §1's env-gating caveat — the delta between them is what this task records, not the absolute count.
+
+`chat`, `agent-full`, and `helper-standard` all register the same unfiltered `createBreezeMcpServer` output (`toolCapture/surfaces.ts`: none of the three sets `onlyTools`; only headless per-profile agent runs do), so all three surfaces share one registry-bytes number per ref — there is no per-surface split to report for this measurement.
+
+| Surface | Tools sent (main) | Tools sent (branch) | Δ tools | Registry bytes (main) | Registry bytes (branch) | Δ bytes | Turn-1 tokens (main/branch/Δ) |
+|---|---|---|---|---|---|---|---|
+| chat | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+| agent-full | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+| helper-standard | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+
+The +32 tool delta is this PR's wiring total: 28 newly tiered read-only tools plus the 4 script-library reads newly declared on the main server. The by-domain tool index (`renderToolIndexByDomain(listChatSurfaceToolNames())`) grows from 4943 to 5690 bytes. The registry counts are lower than the `TOOL_TIERS` counts because `TOOL_TIERS` also includes env-gated tool sets (M365, Google Workspace, script authoring) that are off by default and therefore absent from `buildBreezeSdkTools`'s output under this measurement's unset env — see §1's "Env-gating caveat" for the same floor-vs-ceiling distinction on the original A-W01 numbers.
+
+**W01 is recorded, not gated (spec D5); W02–W04 each carry +8k against the post-W01 main.**
+
 ### 7.4 The 7 production-hot tools A-W05 missed (#6745)
 
 **Date measured:** 2026-09-23 · **Branch:** `feat/6745-shape-hot-ai-tools`. The tool list is the §4 90-day hot list (ranked by `executions × delivered_bytes_p50`). "Prod p50/p95" are the higher of EU and US from that pull. "Measured default page" is each tool's `*.outputShape.test.ts` realistic fixture through `expectDefaultPageFits`: under 8000 chars and not compacted.

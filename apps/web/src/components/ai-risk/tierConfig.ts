@@ -93,6 +93,16 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
+      // W01 (#6755)
+      { name: 'get_elevation_history', description: 'Admin elevation request history', category: 'Security & Compliance' },
+      { name: 'get_user_risk_scores', description: 'User security risk scores', category: 'Security & Compliance' },
+      { name: 'get_user_risk_detail', description: "One user's risk history", category: 'Security & Compliance' },
+      { name: 'get_peripheral_activity', description: 'USB and peripheral device activity', category: 'Security & Compliance' },
+      // W01 (#6755) follow-up
+      { name: 'get_browser_security', description: 'Browser extensions and browser policy compliance', category: 'Security & Compliance' },
+      { name: 'get_sensitive_data_overview', description: 'Sensitive data scan findings (chat only, not agents)', category: 'Security & Compliance' },
+      { name: 'get_incident_timeline', description: 'Incident details and timeline', category: 'Security & Compliance' },
+      { name: 'generate_incident_report', description: 'Incident report', category: 'Security & Compliance' },
       // Alerts & Notifications
       { name: 'list_incidents', description: 'List incidents', category: 'Alerts & Notifications' },
       { name: 'list_remediation_suggestions', description: 'List remediation suggestions', category: 'Alerts & Notifications' },
@@ -119,6 +129,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
       { name: 'get_script_execution_history', description: 'Past execution results for a script', category: 'Scripts & Automation' },
       { name: 'get_script_execution', description: 'One script execution with its output', category: 'Scripts & Automation' },
+      // W01 (#6755)
+      { name: 'list_scripts', description: 'List scripts in the library', category: 'Scripts & Automation' },
+      { name: 'list_script_templates', description: 'List script templates', category: 'Scripts & Automation' },
       // AI script authoring (behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED). A
       // proposal is inert: nothing runs until run_script consumes it (Tier 3).
       { name: 'propose_script', description: 'Author a script as a proposal for independent review', category: 'Scripts & Automation' },
@@ -142,6 +155,24 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_backups', description: 'List backup configs, jobs, and policies', category: 'Backup & Recovery' },
       { name: 'get_backup_status', description: 'Backup health summary', category: 'Backup & Recovery' },
       { name: 'browse_snapshots', description: 'Browse backup snapshots', category: 'Backup & Recovery' },
+      // W01 (#6755): Hyper-V, MSSQL, vault, SLA and C2C reads
+      { name: 'get_hyperv_vm_details', description: 'Hyper-V VM details', category: 'Backup & Recovery' },
+      { name: 'query_hyperv_vms', description: 'List Hyper-V VMs', category: 'Backup & Recovery' },
+      { name: 'get_mssql_backup_status', description: 'SQL Server backup status', category: 'Backup & Recovery' },
+      { name: 'query_mssql_instances', description: 'List SQL Server instances', category: 'Backup & Recovery' },
+      { name: 'get_vault_status', description: 'Backup vault sync status', category: 'Backup & Recovery' },
+      { name: 'get_vm_restore_estimate', description: 'VM restore time estimate', category: 'Backup & Recovery' },
+      { name: 'query_backup_sla', description: 'Backup SLA configurations', category: 'Backup & Recovery' },
+      { name: 'get_sla_breaches', description: 'Backup SLA breach events', category: 'Backup & Recovery' },
+      { name: 'get_sla_compliance_report', description: 'Backup SLA compliance report', category: 'Backup & Recovery' },
+      { name: 'query_c2c_jobs', description: 'Cloud-to-cloud backup jobs', category: 'Backup & Recovery' },
+      { name: 'search_c2c_items', description: 'Search cloud mailbox/file items', category: 'Backup & Recovery' },
+      // W01 (#6755) follow-up: vault, C2C connection and DR reads
+      { name: 'query_vaults', description: 'List backup vaults', category: 'Backup & Recovery' },
+      { name: 'query_c2c_connections', description: 'Cloud-to-cloud backup connections', category: 'Backup & Recovery' },
+      { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
+      { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
+      { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'query_monitors', description: 'List monitors with status', category: 'Monitoring & Analytics' },
       { name: 'manage_monitors (get/create/update/delete)', description: 'Monitor details and history; retired writes return guidance', category: 'Monitoring & Analytics' },

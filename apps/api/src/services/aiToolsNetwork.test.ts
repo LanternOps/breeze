@@ -190,3 +190,16 @@ describe('configure_network_baseline (create path)', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 });
+
+describe('get_network_changes — limit description matches the handler clamp (#6755)', () => {
+  it('description states the actual clamp (default 50, max 200), not a stale "default 100, max 500"', () => {
+    const reg = new Map();
+    registerNetworkTools(reg);
+    const tool = reg.get('get_network_changes')!;
+    const description = (tool.definition.input_schema as { properties: Record<string, { description?: string }> })
+      .properties.limit?.description;
+
+    // Math.min(Math.max(1, Number(input.limit) || 50), 200) in the handler.
+    expect(description).toMatch(/default 50, max 200/);
+  });
+});

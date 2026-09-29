@@ -4,7 +4,7 @@ import '../aiTools'; // populates the registry
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
-import { AGENT_HUMAN_ONLY_TOOLS, BLOCKED_TOOLS } from '../aiGuardrails';
+import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS, BLOCKED_TOOLS, isNeverAgentTool } from '../aiGuardrails';
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import {
@@ -30,6 +30,10 @@ describe('agentToolCatalog contract', () => {
       expect(name in m365ToolTiers).toBe(false);
       expect(name in googleToolTiers).toBe(false);
       expect(AGENT_HUMAN_ONLY_TOOLS.has(name)).toBe(false);
+      // AGENT_DENIED_READ_TOOLS (W01-D5, quorum amendment WQ1/WQ2, #6755): a
+      // sensitive tier-1 read denied to headless agents must never be
+      // reachable either.
+      expect(AGENT_DENIED_READ_TOOLS.has(name)).toBe(false);
       // Same runtime deny set `checkAgentGuardrails` enforces unconditionally
       // (aiGuardrails.ts ~1692-1697): a blocked or secret-bearing tool must
       // never be reachable, even though nothing in the current headless
@@ -39,9 +43,14 @@ describe('agentToolCatalog contract', () => {
       // set gains a headless member.
       expect(BLOCKED_TOOLS.has(name)).toBe(false);
       expect(isSecretBearingTool(name)).toBe(false);
+      // isNeverAgentTool (WQ4) is the single predicate both this function and
+      // checkAgentGuardrails now share — a reachable name must never trip it.
+      expect(isNeverAgentTool(name)).toBe(false);
     }
     for (const name of aiTools.keys()) {
-      if (name in TOOL_TIERS && !AGENT_HUMAN_ONLY_TOOLS.has(name)) expect(reachable.has(name)).toBe(true);
+      if (name in TOOL_TIERS && !AGENT_HUMAN_ONLY_TOOLS.has(name) && !AGENT_DENIED_READ_TOOLS.has(name)) {
+        expect(reachable.has(name)).toBe(true);
+      }
     }
   });
 
@@ -52,6 +61,17 @@ describe('agentToolCatalog contract', () => {
     // reachability is a product decision; update this snapshot WITH the
     // registry/guardrail change that makes it true, never on its own.
     expect(listUnreachableRegisteredTools()).toMatchSnapshot();
+  });
+
+  it('W01 (#6755): every AGENT_DENIED_READ_TOOLS entry stays unreachable, and the newly-wired reads are reachable', () => {
+    const unreachable = new Set(listUnreachableRegisteredTools());
+    for (const name of AGENT_DENIED_READ_TOOLS.keys()) {
+      expect(unreachable.has(name), `${name} is in AGENT_DENIED_READ_TOOLS but reachable`).toBe(true);
+    }
+    const reachable = new Set(listAgentReachableTools());
+    for (const name of ['browse_snapshots', 'list_scripts', 'query_backup_sla']) {
+      expect(reachable.has(name), `${name} should be agent-reachable after W01 wiring`).toBe(true);
+    }
   });
 
   it('unreachableTools ∪ reachable = every registered tool name, and the two sets are disjoint (Task 7, #5049)', () => {
