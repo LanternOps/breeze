@@ -79,11 +79,7 @@ export function SeriesListRow({ detail, expanded, onToggle, onChanged, timezone 
         <td className="px-4 py-3 text-sm">{t(/* i18n-dynamic */ `reports.reportsList.schedules.${series.schedule}`)}</td>
         <td className="px-4 py-3 text-sm">{t(/* i18n-dynamic */ `reports.reportsList.formats.${series.format}`)}</td>
         <td data-testid={`report-series-summary-${series.id}`} className="px-4 py-3 text-sm text-muted-foreground">
-          {paused && (
-            <span className="mr-2">
-              <SeriesPausedBadge testId={`report-series-paused-lastrun-${series.id}`} />
-            </span>
-          )}
+          {/* Paused is shown once, in the Covers cell. */}
           {summary.lastRunAt ? (
             <span className="inline-flex items-center gap-1">
               {[

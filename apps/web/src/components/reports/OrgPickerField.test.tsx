@@ -5,6 +5,8 @@ import userEvent from '@testing-library/user-event';
 const orgState = vi.hoisted(() => ({
   currentOrgId: null as string | null,
   organizations: [] as Array<{ id: string; partnerId: string; name: string; status: string; createdAt: string }>,
+  organizationsLoaded: undefined as boolean | undefined,
+  error: null as string | null,
 }));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => orgState }));
 
@@ -34,6 +36,8 @@ describe('useReportTargetOrg / OrgPickerField (multi-org report series W01)', ()
   beforeEach(() => {
     orgState.currentOrgId = null;
     orgState.organizations = [];
+    orgState.organizationsLoaded = undefined;
+    orgState.error = null;
   });
 
   it('uses the focused org and shows no picker when the switcher names one', () => {
@@ -93,5 +97,45 @@ describe('useReportTargetOrg / OrgPickerField (multi-org report series W01)', ()
     render(<Harness defaultOrgId="org-b" />);
     expect(state()).toEqual({ orgId: 'org-b', pickerVisible: true, missing: false });
     expect(screen.getByTestId('report-org-picker-select')).toHaveValue('org-b');
+  });
+
+  // Pre-release sweep: under All organizations the live preview fired before
+  // the org list arrived and 400'd ("orgId is required when partner has
+  // multiple organizations"). `pending` says "the org is not known yet".
+  describe('pending (org not known yet)', () => {
+    function PendingHarness() {
+      const target = useReportTargetOrg();
+      return <span data-testid="pending">{String(target.pending)}</span>;
+    }
+    const pending = () => screen.getByTestId('pending').textContent;
+
+    it('is pending while the switcher names no org and the org list has not loaded', () => {
+      orgState.organizationsLoaded = false;
+      render(<PendingHarness />);
+      expect(pending()).toBe('true');
+    });
+
+    it('is not pending once the list loaded, when the switcher names an org, or when the list failed', () => {
+      orgState.organizationsLoaded = true;
+      const { unmount } = render(<PendingHarness />);
+      expect(pending()).toBe('false');
+      unmount();
+
+      orgState.organizationsLoaded = false;
+      orgState.currentOrgId = 'org-a';
+      const second = render(<PendingHarness />);
+      expect(pending()).toBe('false');
+      second.unmount();
+
+      orgState.currentOrgId = null;
+      orgState.error = 'Failed to fetch organizations';
+      render(<PendingHarness />);
+      expect(pending()).toBe('false');
+    });
+
+    it('is not pending for a store without the loaded flag (older mocks)', () => {
+      render(<PendingHarness />);
+      expect(pending()).toBe('false');
+    });
   });
 });

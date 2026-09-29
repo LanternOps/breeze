@@ -15,7 +15,8 @@
  */
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { organizations, reports, reportSeriesOrgTargets } from '../../db/schema';
-import { notHiddenOrgType } from '../unassignedPool/visibility';
+import { HIDDEN_ORG_TYPES, notHiddenOrgType } from '../unassignedPool/visibility';
+import { ReportSeriesError } from './errors';
 import {
   SERIES_ELIGIBLE_ORG_STATUSES,
   type ReportSeriesRow,
@@ -37,6 +38,45 @@ export async function eligiblePartnerOrgs(
       notHiddenOrgType(),
     ))
     .orderBy(asc(organizations.name), asc(organizations.id));
+}
+
+/**
+ * Every org a series detail lists (per-org state rows): the partner's orgs,
+ * whatever their status, EXCEPT hidden org types. Those are never targeted,
+ * so a row for one would read "excluded" and offer an Include that cannot
+ * take effect.
+ */
+export async function listSeriesDetailOrgs(
+  partnerId: string,
+  tx: SeriesTx,
+): Promise<Array<{ id: string; name: string; status: string | null; deletedAt: Date | null }>> {
+  return tx
+    .select({
+      id: organizations.id,
+      name: organizations.name,
+      status: organizations.status,
+      deletedAt: organizations.deletedAt,
+    })
+    .from(organizations)
+    .where(and(eq(organizations.partnerId, partnerId), notHiddenOrgType()))
+    .orderBy(asc(organizations.name), asc(organizations.id));
+}
+
+/**
+ * A targets write (create, PUT /targets) may not name a hidden org type, in
+ * either mode: it is never eligible, so a row for it would only be stored
+ * noise that the UI then shows as a no-op "Include". 400
+ * series_target_org_hidden, before anything is written.
+ */
+export async function assertNoHiddenTargetOrgs(orgIds: readonly string[], tx: SeriesTx): Promise<void> {
+  if (orgIds.length === 0) return;
+  const hidden = await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(inArray(organizations.id, [...orgIds]), inArray(organizations.type, [...HIDDEN_ORG_TYPES])));
+  if (hidden.length > 0) {
+    throw new ReportSeriesError('series_target_org_hidden', 400, { orgIds: hidden.map((row) => row.id).sort() });
+  }
 }
 
 export function applyTargetMode(

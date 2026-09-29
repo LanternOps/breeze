@@ -127,6 +127,16 @@ describe('CombineDialog (series W04)', () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
+  it('names the reason of a partner-level series_owner_ineligible (no orgIds)', async () => {
+    fetchWithAuth.mockReturnValue(okResponse({ error: 'series_owner_ineligible', reason: 'permission_removed' }, 400));
+    renderDialog();
+    fireEvent.click(screen.getByTestId('combine-cc-drop-extra@msp.test'));
+    fireEvent.click(screen.getByTestId('combine-confirm'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect((vi.mocked(showToast).mock.calls.at(-1)![0] as { message: string }).message)
+      .toBe("That user can't own a multi-org report: their role doesn't grant the Reports export permission (reports:export).");
+  });
+
   it('explains combine_cc_too_many with the limit, and maps W03 series codes', async () => {
     fetchWithAuth.mockReturnValueOnce(okResponse({ error: 'combine_cc_too_many', max: 50 }, 400));
     renderDialog();

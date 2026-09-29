@@ -397,7 +397,7 @@
         "fetchReports": "No se pudieron recuperar los informes",
         "generateReport": "No se pudo generar el informe",
         "generic": "Se produjo un error",
-        "noCompletedRun": "Todavía no hay una narrativa completada para abrir"
+        "noCompletedRun": "Todavía no hay una ejecución completada para abrir"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Cargando informes...",
       "never": "Nunca",
+      "notGeneratedYet": "Aún no generado",
       "success": {
         "generated": "Informe \"{{name}}\" generado."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "No se pudieron cargar los destinatarios del informe",
         "businessEmailOnly": "Los informes de negocio se envían solo a las direcciones de correo electrónico de abajo. No se pueden agregar contactos de la organización.",
         "partnerOwnedEmailOnly": "Este informe abarca todas las organizaciones, por lo que se envía solo a las direcciones de correo electrónico de abajo. No se pueden agregar contactos de la organización.",
+        "oneTimeNotEmailed": "Los informes de una sola vez no se envían por correo electrónico. Elija una programación recurrente para enviar este informe a los contactos.",
         "emailAddresses": "Direcciones de correo electrónico"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Cada día"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Una sola vez"
+        },
         "daily": {
           "label": "A diario"
         },
@@ -1361,10 +1366,17 @@
         "seriesTypeUnsupported": "Este tipo de informe no se puede enviar como un informe por organización.",
         "seriesConfigOrgSpecific": "Quite los filtros de sitio, dispositivo y grupo: un informe multiorganización abarca organizaciones completas.",
         "seriesManaged": "Este informe pertenece a un informe multiorganización. Edite el informe multiorganización o desvincule primero esta copia.",
-        "seriesOwnerIneligible": "Ese usuario no puede ser propietario de un informe multiorganización: necesita acceso a todas las organizaciones y a todos los sitios.",
+        "seriesOwnerIneligible": "Ese usuario no puede ser propietario de un informe multiorganización.",
+        "seriesOwnerIneligiblePermission": "Ese usuario no puede ser propietario de un informe multiorganización: su rol no concede el permiso de exportación de informes (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Ese usuario no puede ser propietario de un informe multiorganización: necesita acceso a todas las organizaciones.",
+        "seriesOwnerIneligibleInactive": "La cuenta de ese usuario no está activa, por lo que no puede ser propietario de un informe multiorganización.",
+        "seriesOwnerIneligibleMembership": "Ese usuario ya no es miembro de su socio, por lo que no puede ser propietario de un informe multiorganización.",
+        "seriesOwnerIneligibleNotPartner": "Ese usuario no pertenece a su socio, por lo que no puede ser propietario de un informe multiorganización.",
+        "seriesOwnerIneligibleTenantInactive": "Su cuenta de socio no está activa, por lo que un informe multiorganización no puede recibir un nuevo propietario.",
         "seriesNotFound": "Este informe multiorganización ya no existe.",
         "seriesWriteDenied": "Solo los usuarios del socio con acceso a todas las organizaciones pueden modificar informes multiorganización.",
         "seriesTargetOrgInaccessible": "Una de las organizaciones elegidas no está disponible para usted.",
+        "seriesTargetOrgHidden": "Quick Support y la organización de espera de dispositivos sin asignar no pueden incluirse en un informe multiorganización.",
         "reportNotSeriesChild": "Este informe ya no forma parte de un informe multiorganización.",
         "recipientModeRequiresSeries": "\"No enviar nunca\" solo se aplica a una copia de un informe multiorganización.",
         "recipientsNeedExportAndMfa": "Enviar informes a destinatarios requiere el permiso de exportación y el inicio de sesión con autenticación multifactor.",

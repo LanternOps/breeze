@@ -78,6 +78,7 @@ describe('ReportsList schedule cell', () => {
     mountWith([{
       ...monthlyReport,
       portalSelfService: true,
+      lastGeneratedAt: '2026-09-01T09:00:00Z',
     }]);
 
     render(<ReportsList />);
@@ -98,5 +99,20 @@ describe('ReportsList schedule cell', () => {
     expect(
       screen.queryByTestId(`report-edit-${monthlyReport.id}`),
     ).not.toBeInTheDocument();
+  });
+
+  // Pre-release sweep: "Open latest" on a report that never ran answered
+  // "No completed narrative to open yet" (narrative copy on a posture /
+  // executive-summary row). A never-generated row says so instead.
+  it('says "Not generated yet" instead of offering open-latest on a never-generated read-only row', async () => {
+    mountWith([{ ...monthlyReport, portalSelfService: true }]);
+
+    render(<ReportsList />);
+
+    expect(
+      await screen.findByTestId(`report-open-latest-empty-${monthlyReport.id}`),
+    ).toHaveTextContent('Not generated yet');
+    expect(screen.queryByTestId(`report-open-latest-${monthlyReport.id}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`report-generate-${monthlyReport.id}`)).not.toBeInTheDocument();
   });
 });

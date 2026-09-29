@@ -243,10 +243,20 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   // Partner-owned (covers all the partner's organizations): the PUT must not
   // carry any orgId — the API answers 400 report_ownership_immutable.
   const partnerOwned = report.orgId == null && report.partnerId != null;
+  // The stored run time / day / date (config.schedule, which the schedule
+  // worker reads). Without them the builder falls back to 09:00 / Monday / 1st
+  // and a save moves the report's delivery (seriesBuilderDefaults does the same).
+  const scheduleDetail =
+    config.schedule && typeof config.schedule === 'object' && !Array.isArray(config.schedule)
+      ? (config.schedule as Record<string, unknown>)
+      : {};
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
     schedule: report.schedule,
+    ...(typeof scheduleDetail.time === 'string' ? { scheduleTime: scheduleDetail.time } : {}),
+    ...(typeof scheduleDetail.day === 'string' ? { scheduleDay: scheduleDetail.day } : {}),
+    ...(typeof scheduleDetail.date === 'string' ? { scheduleDate: scheduleDetail.date } : {}),
     format: report.format,
     // Business types select by their own period and owner scope; the server
     // REFUSES a dateRange/filters on them, so none is defaulted here.
@@ -386,6 +396,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       <ReportBuilder
         mode="edit"
         reportId={reportId}
+        reportOrgId={report.orgId ?? null}
         defaultValues={defaultValues}
         baseConfig={baseConfig}
         partnerOwned={partnerOwned}

@@ -644,7 +644,16 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                                (#4562) while the customer portal exposes
                                reports — so the row offers reading the newest
                                run only. Read-only, not invisible: the MSP can
-                               still open what the customer sees. */
+                               still open what the customer sees. A row that
+                               was never generated has nothing to open. */
+                            !report.lastGeneratedAt ? (
+                              <span
+                                data-testid={`report-open-latest-empty-${report.id}`}
+                                className="px-3 text-xs text-muted-foreground"
+                              >
+                                {t('reports.reportsList.notGeneratedYet')}
+                              </span>
+                            ) : (
                             <button
                               type="button"
                               data-testid={`report-open-latest-${report.id}`}
@@ -659,6 +668,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               )}
                               {t('reports.reportsList.aiNarrative.openLatest')}
                             </button>
+                            )
                           ) : (
                             <>
                               <button

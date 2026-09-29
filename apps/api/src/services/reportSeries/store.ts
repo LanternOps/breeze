@@ -11,7 +11,6 @@
 import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
-  organizations,
   reportRuns,
   reports,
   reportSeries,
@@ -25,8 +24,10 @@ import { ReportSeriesError, seriesNotFound } from './errors';
 import { listSeriesChildren, reconcileSeries, type SeriesChildRow } from './reconcile';
 import { materializeDetachedRecipients, resolveSeriesRecipientsForOrgs } from './recipients';
 import {
+  assertNoHiddenTargetOrgs,
   eligiblePartnerOrgs,
   listDetachedOrgIds,
+  listSeriesDetailOrgs,
   listSeriesTargetRows,
   resolveSeriesTargetOrgIds,
   resolveTargetsForSeries,
@@ -143,6 +144,7 @@ export async function createSeries(
   const partnerId = requireSeriesPartner(auth);
   if (deliversAnything(input.recipientRule, input.internalCc)) requireDeliveryGate(options.mayAddDelivery);
   await assertSeriesOwnerEligible(input.ownerUserId, partnerId, tx);
+  await assertNoHiddenTargetOrgs(input.orgIds, tx);
 
   const [series] = await tx
     .insert(reportSeries)
@@ -244,6 +246,7 @@ export async function replaceSeriesTargets(
 ): Promise<{ series: ReportSeriesRow; reconcile: ReconcileResult }> {
   const partnerId = requireSeriesPartner(auth);
   const current = await lockOwnSeries(seriesId, partnerId, tx);
+  await assertNoHiddenTargetOrgs(input.orgIds, tx);
   const before = new Set(await resolveSeriesTargetOrgIds(current, tx));
   const eligible = await eligiblePartnerOrgs(partnerId, tx);
   const after = await resolveTargetsForSeries(
@@ -335,18 +338,14 @@ export async function getSeriesDetail(seriesId: string, auth: SeriesAuth): Promi
 async function buildSeriesDetail(series: ReportSeriesRow): Promise<SeriesDetail> {
   const seriesId = series.id;
   const partnerId = series.partnerId;
-  const targets = await listSeriesTargetRows(seriesId, db);
+  const storedTargets = await listSeriesTargetRows(seriesId, db);
   const targeted = new Set(await resolveSeriesTargetOrgIds(series, db));
-  const orgRows = await db
-    .select({
-      id: organizations.id,
-      name: organizations.name,
-      status: organizations.status,
-      deletedAt: organizations.deletedAt,
-    })
-    .from(organizations)
-    .where(eq(organizations.partnerId, partnerId))
-    .orderBy(asc(organizations.name), asc(organizations.id));
+  const orgRows = await listSeriesDetailOrgs(partnerId, db);
+  // A target row stored for a hidden org (before targets writes refused them)
+  // is dropped too: the client echoes `targets` back on its next PUT, which
+  // would now be refused, and that PUT's replace clears the stale row.
+  const listedOrgIds = new Set(orgRows.map((org) => org.id));
+  const targets = storedTargets.filter((orgId) => listedOrgIds.has(orgId));
   const activeChildren = (await listSeriesChildren(seriesId, db)).filter((child) => child.archivedAt === null);
   const childByOrg = new Map(activeChildren.map((child) => [child.orgId, child]));
 
