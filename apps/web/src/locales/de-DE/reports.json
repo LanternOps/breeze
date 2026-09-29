@@ -1365,6 +1365,7 @@
         "seriesNotFound": "Dieser Multi-Organisations-Bericht existiert nicht mehr.",
         "seriesWriteDenied": "Nur Partnerbenutzer mit Zugriff auf jede Organisation können Multi-Organisations-Berichte ändern.",
         "seriesTargetOrgInaccessible": "Eine der ausgewählten Organisationen steht Ihnen nicht zur Verfügung.",
+        "seriesTargetOrgHidden": "Quick Support und die Warteorganisation für nicht zugewiesene Geräte können nicht von einem Multi-Organisations-Bericht abgedeckt werden.",
         "reportNotSeriesChild": "Dieser Bericht ist nicht mehr Teil eines Multi-Organisations-Berichts.",
         "recipientModeRequiresSeries": "„Nie senden“ gilt nur für eine Kopie eines Multi-Organisations-Berichts.",
         "recipientsNeedExportAndMfa": "Das Senden von Berichten an Empfänger erfordert die Exportberechtigung und die Multi-Faktor-Anmeldung.",

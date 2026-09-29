@@ -290,6 +290,58 @@ describe('series store (partner request context)', () => {
     )))).toBe('report_not_series_child');
   });
 
+  // Pre-release sweep (v0.118.2 -> main): a hidden org type (Quick Support,
+  // the unassigned-pool holding org) is never a target, so the detail must not
+  // offer it (it read "excluded" with an Include button that did nothing) and
+  // a targets write must refuse it rather than store a row for it.
+  describe('hidden org types', () => {
+    async function seedWithHidden() {
+      const s = await seed();
+      const quickSupport = await createOrganization({ partnerId: s.partnerId, name: 'Quick Support', type: 'quick_support' });
+      const holding = await createOrganization({ partnerId: s.partnerId, name: 'Unassigned devices', type: 'unassigned_pool' });
+      // A partner-wide caller can open every org of its partner, hidden ones included.
+      const ctx: DbAccessContext = { ...s.ctx, accessibleOrgIds: [s.orgA, s.orgB, quickSupport.id, holding.id] };
+      const inPartner = <T>(fn: (tx: typeof db) => Promise<T>) =>
+        withDbAccessContext(ctx, () => db.transaction((tx) => fn(tx as unknown as typeof db)));
+      return { ...s, ctx, inPartner, hidden: [quickSupport.id, holding.id] };
+    }
+    const targetRowsOf = (seriesId: string) =>
+      system(() => db.select().from(reportSeriesOrgTargets).where(eq(reportSeriesOrgTargets.seriesId, seriesId)));
+
+    it('detail lists neither hidden orgs nor stored target rows for them', async () => {
+      const s = await seedWithHidden();
+      const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+      // A row stored for a hidden org before targets writes refused them.
+      await system(() => db.execute(sql`INSERT INTO report_series_org_targets (series_id, org_id) VALUES (${series.id}, ${s.hidden[0]})`));
+
+      const detail = await withDbAccessContext(s.ctx, () => getSeriesDetail(series.id, s.auth));
+
+      expect(detail.orgs.map((o) => o.orgId).sort()).toEqual([s.orgA, s.orgB].sort());
+      expect(detail.targets).toEqual([]);
+    });
+
+    it.each(['selected', 'all'] as const)('a %s targets replace naming a hidden org is refused and writes nothing', async (targetMode) => {
+      const s = await seedWithHidden();
+      const { series } = await s.inPartner((tx) => createSeries(
+        input(s.owner, { targetMode: 'selected', orgIds: [s.orgA] }), s.auth, tx, { mayAddDelivery: true },
+      ));
+
+      for (const hiddenOrgId of s.hidden) {
+        expect(await codeOf(s.inPartner((tx) => replaceSeriesTargets(
+          series.id, { targetMode, orgIds: [s.orgA, hiddenOrgId] }, s.auth, tx, { mayAddDelivery: true },
+        )))).toBe('series_target_org_hidden');
+      }
+      expect((await targetRowsOf(series.id)).map((r) => r.orgId)).toEqual([s.orgA]);
+    });
+
+    it('create naming a hidden org is refused and writes nothing', async () => {
+      const s = await seedWithHidden();
+      expect(await codeOf(s.inPartner((tx) => createSeries(
+        input(s.owner, { targetMode: 'selected', orgIds: [s.orgA, s.hidden[0]!] }), s.auth, tx, { mayAddDelivery: true },
+      )))).toBe('series_target_org_hidden');
+      expect(await system(() => db.select().from(reportSeries).where(eq(reportSeries.partnerId, s.partnerId)))).toHaveLength(0);
+    });
+  });
 });
 
 // Final review #1: detach is REMEMBERED on the standalone

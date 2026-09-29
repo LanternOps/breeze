@@ -1365,6 +1365,7 @@
         "seriesNotFound": "Este informe multiorganización ya no existe.",
         "seriesWriteDenied": "Solo los usuarios del socio con acceso a todas las organizaciones pueden modificar informes multiorganización.",
         "seriesTargetOrgInaccessible": "Una de las organizaciones elegidas no está disponible para usted.",
+        "seriesTargetOrgHidden": "Quick Support y la organización de espera de dispositivos sin asignar no pueden incluirse en un informe multiorganización.",
         "reportNotSeriesChild": "Este informe ya no forma parte de un informe multiorganización.",
         "recipientModeRequiresSeries": "\"No enviar nunca\" solo se aplica a una copia de un informe multiorganización.",
         "recipientsNeedExportAndMfa": "Enviar informes a destinatarios requiere el permiso de exportación y el inicio de sesión con autenticación multifactor.",

@@ -1365,6 +1365,7 @@
         "seriesNotFound": "Ce rapport multi-organisation n’existe plus.",
         "seriesWriteDenied": "Seuls les utilisateurs du partenaire ayant accès à toutes les organisations peuvent modifier les rapports multi-organisation.",
         "seriesTargetOrgInaccessible": "Une des organisations choisies ne vous est pas accessible.",
+        "seriesTargetOrgHidden": "Quick Support et l’organisation d’attente des appareils non attribués ne peuvent pas être couverts par un rapport multi-organisation.",
         "reportNotSeriesChild": "Ce rapport ne fait plus partie d’un rapport multi-organisation.",
         "recipientModeRequiresSeries": "« Ne jamais envoyer » ne s’applique qu’à une copie d’un rapport multi-organisation.",
         "recipientsNeedExportAndMfa": "L’envoi de rapports à des destinataires exige l’autorisation d’exportation et l’authentification multifacteur.",

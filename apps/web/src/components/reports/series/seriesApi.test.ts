@@ -10,6 +10,7 @@ import {
   fetchSeriesList,
   fetchSeriesOwnerCandidates,
   previewSeriesRecipients,
+  replaceSeriesTargets,
   seriesFriendlyError,
   setChildRecipientOverride,
 } from './seriesApi';
@@ -54,6 +55,16 @@ describe('seriesApi', () => {
     expect(seriesFriendlyError('unrelated_code')).toBeUndefined();
     // W02 maps a transient owner-authority lookup failure to 503 series_authority_unverifiable.
     expect(seriesFriendlyError('series_authority_unverifiable')).toBeTruthy();
+  });
+
+  it('explains a targets write that names a hidden organization (series_target_org_hidden)', async () => {
+    fetchWithAuth.mockReturnValueOnce(json({ error: 'series_target_org_hidden', orgIds: ['org-qs'] }, 400));
+    await expect(replaceSeriesTargets('s-1', { targetMode: 'selected', orgIds: ['org-qs'] }, { errorFallback: 'fail' }))
+      .rejects.toMatchObject({ status: 400 });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: "Quick Support and the unassigned-devices holding organization can't be covered by a multi-org report.",
+    }));
   });
 
   it('previews without a toast and throws on failure', async () => {

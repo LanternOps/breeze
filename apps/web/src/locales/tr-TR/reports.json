@@ -1365,6 +1365,7 @@
         "seriesNotFound": "Bu çok kuruluşlu rapor artık yok.",
         "seriesWriteDenied": "Çok kuruluşlu raporları yalnızca tüm kuruluşlara erişimi olan iş ortağı kullanıcıları değiştirebilir.",
         "seriesTargetOrgInaccessible": "Seçilen kuruluşlardan biri sizin için kullanılamıyor.",
+        "seriesTargetOrgHidden": "Quick Support ve atanmamış cihazların bekleme kuruluşu çok kuruluşlu bir rapora dahil edilemez.",
         "reportNotSeriesChild": "Bu rapor artık bir çok kuruluşlu raporun parçası değil.",
         "recipientModeRequiresSeries": "\"Asla gönderme\" yalnızca çok kuruluşlu raporun bir kopyası için geçerlidir.",
         "recipientsNeedExportAndMfa": "Raporları alıcılara göndermek için dışa aktarma izni ve çok faktörlü oturum açma gerekir.",

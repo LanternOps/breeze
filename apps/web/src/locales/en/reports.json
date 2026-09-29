@@ -1365,6 +1365,7 @@
         "seriesNotFound": "This multi-org report no longer exists.",
         "seriesWriteDenied": "Only partner users with access to every organization can change multi-org reports.",
         "seriesTargetOrgInaccessible": "One of the chosen organizations isn't available to you.",
+        "seriesTargetOrgHidden": "Quick Support and the unassigned-devices holding organization can't be covered by a multi-org report.",
         "reportNotSeriesChild": "This report is no longer part of a multi-org report.",
         "recipientModeRequiresSeries": "\"Never send\" only applies to a copy of a multi-org report.",
         "recipientsNeedExportAndMfa": "Sending reports to recipients needs the export permission and multi-factor sign-in.",

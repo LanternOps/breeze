@@ -37,6 +37,8 @@ const FRIENDLY_ERROR_KEYS: Readonly<Record<string, string>> = {
   // W02 contract concern 4: tokens beyond the INDEX list.
   series_write_denied: 'reports:reports.series.errors.seriesWriteDenied',
   series_target_org_inaccessible: 'reports:reports.series.errors.seriesTargetOrgInaccessible',
+  // Quick Support / the holding org are never a series target (400 on create and PUT /targets).
+  series_target_org_hidden: 'reports:reports.series.errors.seriesTargetOrgHidden',
   report_not_series_child: 'reports:reports.series.errors.reportNotSeriesChild',
   recipient_mode_requires_series: 'reports:reports.series.errors.recipientModeRequiresSeries',
   recipients_need_export_and_mfa: 'reports:reports.series.errors.recipientsNeedExportAndMfa',
