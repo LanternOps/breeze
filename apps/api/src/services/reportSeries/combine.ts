@@ -24,6 +24,7 @@ import {
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../partnerWideAccess';
+import { notHiddenOrgType } from '../unassignedPool/visibility';
 import { assertSeriesOwnerEligible, captureChildExecutionScope } from './authority';
 import {
   CombineError,
@@ -88,10 +89,16 @@ const COMBINE_ROW_COLUMNS = {
   archivedAt: reports.archivedAt,
 };
 
-/** Series-eligible orgs only (spec §3.3): a row in any other org would be
- *  archived by the reconciler the moment it was adopted. */
+/** Series-eligible orgs only (spec §3.3, targets.ts eligiblePartnerOrgs): a
+ *  row in any other org would be archived by the reconciler the moment it was
+ *  adopted. Hidden org types (Quick Support, the holding org) are never
+ *  eligible. */
 function eligibleOrgCondition() {
-  return and(inArray(organizations.status, ['active', 'trial']), isNull(organizations.deletedAt));
+  return and(
+    inArray(organizations.status, ['active', 'trial']),
+    isNull(organizations.deletedAt),
+    notHiddenOrgType(),
+  );
 }
 
 async function loadCandidateRows(partnerId: string, tx: Tx): Promise<CombineSourceRow[]> {

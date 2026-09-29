@@ -41,6 +41,7 @@ import {
   grantRolePermissions,
 } from './db-utils';
 import { getTestDb } from './setup';
+import { seedHoldingOrg } from './unassignedPoolFixtures';
 
 const runDb = it.runIf(Boolean(process.env.DATABASE_URL));
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -193,11 +194,11 @@ async function seedGroup(f: Fixture) {
   return { rA1, rA2, rB1, rC1, rPortal, rRestricted, rSites, rOneTime, ann, bob, cara, dA1, dA2, evA1, evA2, runA2 };
 }
 
-function asAdmin<T>(f: Fixture, fn: (tx: Tx) => Promise<T>): Promise<T> {
+function asAdmin<T>(f: Fixture, fn: (tx: Tx) => Promise<T>, extraOrgIds: string[] = []): Promise<T> {
   const context = buildDbAccessContext({
     scope: 'partner',
     orgId: null,
-    accessibleOrgIds: [f.orgA.id, f.orgB.id, f.orgD.id],
+    accessibleOrgIds: [f.orgA.id, f.orgB.id, f.orgD.id, ...extraOrgIds],
     partnerId: f.partner.id,
     userId: f.admin.id,
   });
@@ -365,6 +366,26 @@ describe('Combine service on real Postgres (series W04)', () => {
       .rejects.toMatchObject({ code: 'combine_group_changed', status: 409 });
     expect(await seriesOf(f.partner.id)).toHaveLength(1);
     expect(await candidatesFor(f)).toEqual([]);
+  });
+
+  // W04 final review F7. The auth middleware grants every partner user the
+  // partner's Quick Support org, so RLS alone does not hide its rows; the
+  // holding org is added to the context too, so only the service's own
+  // eligibility rule can leave either out.
+  runDb('a report in the holding org or a Quick Support org is never a Combine candidate', async () => {
+    const f = await seedFixture();
+    const s = await seedGroup(f);
+    const holding = await seedHoldingOrg(f.partner.id);
+    const quickSupport = (await createOrganization({ partnerId: f.partner.id, name: 'Quick Support', type: 'quick_support' }))!;
+    const rHolding = await seedReport(holding.orgId, f.admin.id);
+    const rQuickSupport = await seedReport(quickSupport.id, f.admin.id);
+
+    const groups = await asAdmin(f, (tx) => findCombineCandidates(f.partner.id, tx), [holding.orgId, quickSupport.id]);
+    expect(groups).toHaveLength(1);
+    const listed = groups[0]!.orgs.flatMap((o) => o.rows.map((r) => r.reportId));
+    expect(listed.sort()).toEqual([s.rA1, s.rA2, s.rB1].sort());
+    expect(listed).not.toContain(rHolding);
+    expect(listed).not.toContain(rQuickSupport);
   });
 
   runDb('a selected-access partner user is refused by the service belt', async () => {

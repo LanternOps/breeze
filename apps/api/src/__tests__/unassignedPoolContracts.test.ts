@@ -51,6 +51,12 @@ const REACH_FILES = [
   // Raw partner-member reach for orgs outside accessibleOrgIds (suspended,
   // archived); org_access='all' would otherwise reach the holding org.
   'services/partnerOrgSelection.ts',
+  // Multi-org report series: the eligible-org set a series targets ('all'
+  // mode mints a child in every one of them). targets.ts spreads
+  // SERIES_ELIGIBLE_ORG_STATUSES, so it does not carry the fingerprint above.
+  'services/reportSeries/targets.ts',
+  // Series W04 Combine: candidates and adoption only in series-eligible orgs.
+  'services/reportSeries/combine.ts',
 ];
 /** file -> reason. Add only with a reason a reviewer can check. */
 const REACH_EXEMPT: Record<string, string> = {};

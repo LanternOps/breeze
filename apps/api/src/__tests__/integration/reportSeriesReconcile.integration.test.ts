@@ -38,10 +38,12 @@ import {
 } from './db-utils';
 import { SeriesAuthorityUnverifiableError } from '../../services/reportSeries/authority';
 import {
+  findSeriesNeedingReconcile,
   reconcileAllSeries,
   reconcileSeries,
   seriesChildGate,
 } from '../../services/reportSeries/reconcile';
+import { seedHoldingOrg } from './unassignedPoolFixtures';
 
 const system = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 
@@ -189,6 +191,59 @@ describe('reconcileSeries', () => {
     const result = await reconcile(s.series.id);
     expect(result.created).toBe(2);
     expect(result.blocked).toHaveLength(2);
+  });
+});
+
+// W04 final review F7: the holding org and Quick Support orgs are real, active
+// organizations rows, but hidden (services/unassignedPool/visibility.ts). A
+// series must never mint a customer report in one.
+describe('hidden org types are never series targets', () => {
+  async function seedHiddenOrgs(partnerId: string) {
+    const holding = await seedHoldingOrg(partnerId);
+    const quickSupport = await createOrganization({ partnerId, name: 'Quick Support', type: 'quick_support' });
+    return { holdingOrgId: holding.orgId, quickSupportOrgId: quickSupport.id };
+  }
+
+  it("'all' mode creates no child in the holding org or a Quick Support org, and the sweep sees no drift there", async () => {
+    const s = await seedSeries();
+    const hidden = await seedHiddenOrgs(s.partnerId);
+    expect(await reconcile(s.series.id)).toMatchObject({ created: 2 });
+    const orgIds = (await children(s.series.id)).map((row) => row.orgId).sort();
+    expect(orgIds).toEqual([s.orgA, s.orgB].sort());
+    expect(orgIds).not.toContain(hidden.holdingOrgId);
+    expect(orgIds).not.toContain(hidden.quickSupportOrgId);
+    // findSeriesNeedingReconcile mirrors the target rule in raw SQL: a hidden
+    // org without a child must not read as drift, or the series is re-swept
+    // on every tick for nothing.
+    const drifted = await system(() => findSeriesNeedingReconcile(100_000));
+    expect(drifted).not.toContain(s.series.id);
+  });
+
+  it('an existing child in the holding org is archived by reconcileSeries', async () => {
+    const s = await seedSeries();
+    await reconcile(s.series.id);
+    // Seeded after the first reconcile, so the stray row below is the only
+    // child the holding org can have, whatever the target rule says.
+    const hidden = await seedHiddenOrgs(s.partnerId);
+    const [stray] = await system(() => db.insert(reports).values({
+      orgId: hidden.holdingOrgId,
+      partnerId: null,
+      seriesId: s.series.id,
+      seriesRevision: s.series.revision,
+      name: s.series.name,
+      type: s.series.type,
+      format: s.series.format,
+      schedule: s.series.schedule,
+      config: { columns: ['hostname'] },
+      createdBy: s.owner,
+    }).returning({ id: reports.id }));
+    // The sweep must see the stray child as drift (a child of an untargeted org).
+    expect(await system(() => findSeriesNeedingReconcile(100_000))).toContain(s.series.id);
+
+    expect(await reconcile(s.series.id)).toMatchObject({ archived: 1 });
+    const row = (await children(s.series.id)).find((child) => child.id === stray!.id)!;
+    expect(row.archivedAt).not.toBeNull();
+    expect(await activeChildFor(s.series.id, hidden.holdingOrgId)).toBeUndefined();
   });
 });
 
