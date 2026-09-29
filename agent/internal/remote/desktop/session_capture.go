@@ -1167,7 +1167,14 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 		if m.Index == displayIndex {
 			slog.Info("applyDisplayOffset: selected",
 				"display", displayIndex, "offsetX", m.X, "offsetY", m.Y,
-				"dpiMode", processDPIMode)
+				"dpiMode", processDPIMode, "dpiSource", processDPISource)
+			// Warn (not Info) so it reaches Agent Logs at the default shipping
+			// level: the init-time warning in dpi_windows.go runs before the
+			// helper's logger exists and is lost.
+			if dpiModeMisplacesInput(processDPIMode) {
+				slog.Warn("remote desktop process is not per-monitor DPI aware; clicks will be misplaced on mixed-scale monitors",
+					"dpiMode", processDPIMode, "dpiSource", processDPISource, "monitors", len(monitors))
+			}
 			handler.SetDisplayOffset(m.X, m.Y)
 			cursorOffX.Store(int32(m.X))
 			cursorOffY.Store(int32(m.Y))
