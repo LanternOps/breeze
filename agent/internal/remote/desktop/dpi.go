@@ -9,13 +9,16 @@ const (
 	dpiModeUnaware      = "unaware"
 )
 
-// processDPIMode is the awareness mode that took effect at init on Windows;
-// logged with the display offset so a helper log shows which coordinate space
-// input and cursor calls used. Other platforms have no DPI virtualization.
+// processDPIMode is the effective awareness mode at init on Windows (read back
+// from Windows, see resolveDPIAwareness); logged with the display offset so a
+// helper log shows which coordinate space input and cursor calls used. Other
+// platforms have no DPI virtualization.
 var processDPIMode = "n/a"
 
 // chooseDPIAwareness elevates the process to the strongest available DPI
-// awareness and returns the mode that took effect.
+// awareness and returns the mode of the first set call that succeeded. That is
+// only an inference: when a manifest already fixed the mode every call fails,
+// so resolveDPIAwareness prefers reading the effective mode back.
 //
 // Why this matters for remote desktop: DXGI Desktop Duplication reports every
 // output's geometry in PHYSICAL pixels, and that geometry is what
@@ -58,4 +61,104 @@ func hresultSucceeded(hr uintptr) bool { return int32(uint32(hr)) >= 0 }
 // true even though chooseDPIAwareness asked for per-monitor-v2.
 func dpiModeMisplacesInput(mode string) bool {
 	return mode == dpiModeSystem || mode == dpiModeUnaware
+}
+
+// Where processDPIMode came from, logged next to it so a helper log shows
+// whether the manifest or the runtime set calls fixed the mode.
+const (
+	// dpiSourcePreset: the effective mode was already per-monitor before any
+	// set call — in practice the binary's manifest declared it.
+	dpiSourcePreset = "preset"
+	// dpiSourceSet: read back from Windows after the set calls ran.
+	dpiSourceSet = "set"
+	// dpiSourceInferred: no query API is available, so the mode is inferred
+	// from which set call succeeded. Unreliable when a manifest already fixed
+	// the mode (every set call then fails with access denied).
+	dpiSourceInferred = "inferred"
+)
+
+// processDPISource is the dpiSource* value for processDPIMode ("n/a" off
+// Windows).
+var processDPISource = "n/a"
+
+// dpiQueryAPIs are the raw Win32 reads of the process's EFFECTIVE DPI
+// awareness. A nil func means this Windows build does not export the API.
+type dpiQueryAPIs struct {
+	// processContext is user32!GetDpiAwarenessContextForProcess(NULL) (1803+).
+	processContext func() (ctx uintptr, ok bool)
+	// threadContext is user32!GetThreadDpiAwarenessContext (1607+). Nothing in
+	// the agent sets a per-thread context, so it equals the process default.
+	threadContext func() (ctx uintptr, ok bool)
+	// awarenessFromContext is user32!GetAwarenessFromDpiAwarenessContext:
+	// DPI_AWARENESS -1 invalid, 0 unaware, 1 system, 2 per-monitor.
+	awarenessFromContext func(ctx uintptr) int32
+	// isPerMonitorV2 is AreDpiAwarenessContextsEqual(ctx, PER_MONITOR_AWARE_V2).
+	// DPI_AWARENESS alone cannot tell per-monitor v1 from v2.
+	isPerMonitorV2 func(ctx uintptr) bool
+	// processAwareness is shcore!GetProcessDpiAwareness(NULL) (8.1+):
+	// PROCESS_DPI_AWARENESS 0 unaware, 1 system, 2 per-monitor. ok=false when
+	// the HRESULT failed.
+	processAwareness func() (value uint32, ok bool)
+}
+
+// queryEffectiveDPIMode reads the awareness Windows actually applies to the
+// process, preferring the process context, then the thread context, then
+// shcore. ok=false when no source gives a usable answer.
+func queryEffectiveDPIMode(apis dpiQueryAPIs) (mode string, ok bool) {
+	if apis.awarenessFromContext != nil {
+		for _, get := range []func() (uintptr, bool){apis.processContext, apis.threadContext} {
+			if get == nil {
+				continue
+			}
+			ctx, ok := get()
+			if !ok || ctx == 0 {
+				continue
+			}
+			switch apis.awarenessFromContext(ctx) {
+			case 2:
+				if apis.isPerMonitorV2 != nil && apis.isPerMonitorV2(ctx) {
+					return dpiModePerMonitorV2, true
+				}
+				return dpiModePerMonitor, true
+			case 1:
+				return dpiModeSystem, true
+			case 0:
+				return dpiModeUnaware, true
+			}
+			// DPI_AWARENESS_INVALID: try the next source.
+		}
+	}
+	if apis.processAwareness != nil {
+		if v, ok := apis.processAwareness(); ok {
+			switch v {
+			case 2:
+				// shcore cannot distinguish v2; it is only reached on builds
+				// older than 1607, which have no v2 anyway.
+				return dpiModePerMonitor, true
+			case 1:
+				return dpiModeSystem, true
+			case 0:
+				return dpiModeUnaware, true
+			}
+		}
+	}
+	return "", false
+}
+
+// resolveDPIAwareness returns the process's effective DPI mode and where it
+// came from. If the process is already per-monitor (the manifest declared it)
+// no set call is made — they would all fail with access denied and the old
+// inference from their results misreported per-monitor-v2 as "system". If it is
+// weaker, elevate (chooseDPIAwareness over the set calls) runs for binaries
+// without the manifest, and the mode is read back from Windows. Only when no
+// query API exists does the set-call inference stand.
+func resolveDPIAwareness(query func() (string, bool), elevate func() string) (mode, source string) {
+	if mode, ok := query(); ok && !dpiModeMisplacesInput(mode) {
+		return mode, dpiSourcePreset
+	}
+	inferred := elevate()
+	if mode, ok := query(); ok {
+		return mode, dpiSourceSet
+	}
+	return inferred, dpiSourceInferred
 }
