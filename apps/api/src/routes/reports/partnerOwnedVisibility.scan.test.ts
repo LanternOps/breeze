@@ -199,6 +199,8 @@ const AUD_AI_AGENT_ARTIFACT = 'reads only narrative / fleet-design scalars of th
 const AUD_EVIDENCE_REFUSES = 'deliverable evidence refuses msp_staff definitions/runs before any link, attach or run (ruling F1)';
 const AUD_EVIDENCE_LINKED = 'reaches report_runs only through deliverable evidence, which can never reference an msp_staff run (ruling F1)';
 const AUD_CALLER_AUTHORIZED = 'keyed on a definition its caller already authorized, audience included';
+const AUD_SERIES = 'series children carry their series type, and assertSeriesTypeSupported refuses every msp_staff (business) type at series create; the series type is immutable';
+const SERIES_CHILD_PIN = 'series children are org-owned by construction (reports_series_child_shape_chk: series_id IS NULL OR org_id IS NOT NULL), so no series_id predicate can reach a partner-owned row';
 
 const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/routes/aiAgents.ts', new Map([
@@ -260,6 +262,11 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['listPendingDeliveriesForRun', pinned(1, 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller', AUD_SYSTEM)],
     ['listUnsettledDeliveries', pinned(1, 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller', AUD_SYSTEM)],
     ['query', pinned(1, 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)', AUD_SYSTEM)],
+  ])],
+  ['src/services/reportSeries/reconcile.ts', new Map([
+    ['listSeriesChildren', pinned(1, `children of ONE series id, read by the reconciler / gate / series store in the caller's context; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
+    ['updateSeriesChild', pinned(1, `updates one child by id AND org_id AND series_id that listSeriesChildren just returned; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
+    ['findSeriesNeedingReconcile', pinned(1, `system-context repair-sweep drift scan; returns series ids only and shows nothing to a caller; ${SERIES_CHILD_PIN}`, AUD_SYSTEM)],
   ])],
   ['src/services/serviceDeliverableService.ts', new Map([
     ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
@@ -840,7 +847,7 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
 
   it('finds raw-SQL sites in template text (guards against a vacuous raw arm)', () => {
     const raw = files.flatMap((f) => querySiteMatches(code(f)).filter((h) => h.text.startsWith('sql`')).map(() => rel(f)));
-    expect(new Set(raw)).toEqual(new Set(['src/services/tenantCascade.ts', 'src/services/orgMergeCustomExecutors.ts']));
+    expect(new Set(raw)).toEqual(new Set(['src/services/tenantCascade.ts', 'src/services/orgMergeCustomExecutors.ts', 'src/services/reportSeries/reconcile.ts']));
   });
 
   it('every guard entrypoint reaches the helper', () => {
