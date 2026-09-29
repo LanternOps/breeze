@@ -164,4 +164,47 @@ describe('DeviceDetails tab layout', () => {
     const anomalies = await screen.findByRole('tab', { name: /anomalies/i });
     expect(anomalies).toHaveTextContent('Anomalies2');
   });
+
+  // Resolving the only open anomaly must clear the tab badge right away, not
+  // on the next tab switch.
+  it('refetches tab counts when an anomaly is resolved inside the Anomalies tab', async () => {
+    counts = { alerts: 0, anomalies: 1, tickets: 0, operatorTasks: 0, monitoring: 0, compliance: 0 };
+    mlAnomaliesEnabled = true;
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    window.location.hash = '#anomalies';
+    const openEpisode = {
+      id: 'ep-1', orgId: 'org-1', deviceId: 'device-1', episodeKey: 'k', sourceTable: 'device_metrics',
+      anomalyType: 'spike', metricFamily: 'cpu', metricNames: ['cpu_percent'], status: 'open', closeReason: null,
+      firstSeenAt: '2026-06-18T12:00:00.000Z', lastSeenAt: '2026-06-18T12:10:00.000Z', bucketCount: 2,
+      peakValue: 96.4, peakMetricName: 'cpu_percent', peakBaselineValue: 42.2, peakScore: 8.1, peakAt: '2026-06-18T12:05:00.000Z',
+      recurrenceCount: 0, attribution: null, linkedAlertId: null, snoozedUntil: null, resolvedAt: null, resolvedByUserId: null,
+      note: null, createdAt: '2026-06-18T12:00:00.000Z', updatedAt: '2026-06-18T12:10:00.000Z',
+      durationSeconds: 600, ongoing: true, promoted: false, snoozed: false, rangeMin: 90, rangeMax: 96.4,
+      peakAnomalyId: 'ep-1-peak', deviceLastSeenAt: null,
+    };
+    const base = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/anomaly-episodes/ep-1') && init?.method === 'PATCH') {
+        return Promise.resolve(jsonResponse({ data: { ...openEpisode, status: 'resolved', ongoing: false } }));
+      }
+      if (href.includes('/anomaly-episodes')) {
+        return Promise.resolve(jsonResponse({ data: [openEpisode], focusedEpisodeId: null }));
+      }
+      return base(url, init);
+    });
+    const countCalls = () =>
+      fetchWithAuthMock.mock.calls.filter(([u]) => String(u).includes('/tab-counts')).length;
+
+    render(<DeviceDetails device={device} />);
+    expect(await screen.findByRole('tab', { name: /anomalies/i })).toHaveTextContent('Anomalies1');
+    const before = countCalls();
+
+    counts = { ...counts!, anomalies: 0 };
+    fireEvent.click(await screen.findByRole('button', { name: /^resolve$/i }));
+
+    await waitFor(() => expect(countCalls()).toBeGreaterThan(before));
+    // Count is now 0: the badge is gone (the tab may also drop back into "More").
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /anomalies\s*1/i })).toBeNull());
+  });
 });

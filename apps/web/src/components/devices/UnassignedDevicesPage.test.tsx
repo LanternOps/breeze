@@ -93,8 +93,8 @@ describe('UnassignedDevicesPage', () => {
     expect(screen.getByTestId('parked-devices-reported-caption').textContent).toMatch(/not verified/i);
   });
 
-  it('shows the API error when the list is refused', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Managing partner-wide state requires full partner org access' }), { status: 403 }));
+  it('shows the API error when the list fails for a non-permission reason', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Managing partner-wide state requires full partner org access' }), { status: 500 }));
     render(<UnassignedDevicesPage />);
     await waitFor(() => expect(screen.getByTestId('parked-devices-error').textContent).toMatch(/full partner org access/));
   });
@@ -157,5 +157,14 @@ describe('UnassignedDevicesPage', () => {
     expect(last.checked).toBe(false);
     expect(last.disabled).toBe(true);
     expect(screen.getByTestId('parked-devices-selection-cap')).toBeTruthy();
+  });
+
+  it('renders AccessDenied instead of the page chrome on a 403', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Permission denied' }), { status: 403 }));
+    render(<UnassignedDevicesPage />);
+    await waitFor(() => expect(screen.getByTestId('unassigned-devices-denied')).toBeTruthy());
+    expect(screen.queryByTestId('unassigned-devices-page')).toBeNull();
+    expect(screen.queryByTestId('parked-devices-error')).toBeNull();
+    expect(screen.queryByText('Permission denied')).toBeNull();
   });
 });

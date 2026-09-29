@@ -1108,7 +1108,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
           >
             {info.lastLogAt
-              ? t("deviceInfoTab.logsSilent", { since: formatDateTime(info.lastLogAt) })
+              ? t("deviceInfoTab.logsSilent", { since: formatDate(info.lastLogAt) })
               : t("deviceInfoTab.logsSilentNeverShipped")}
           </div>
         ) : null}
