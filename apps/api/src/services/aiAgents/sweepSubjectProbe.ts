@@ -51,6 +51,7 @@ import type { AiSweepKind } from '@breeze/shared';
 // `sweepEvidence.ts`.
 import * as dbModule from '../../db';
 import { captureException } from '../sentry';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 
 /**
  * `present` — the condition the finding was about is still true.
@@ -96,7 +97,7 @@ type ProbeRow = {
 /** ms since an observation, or null when it carries no usable timestamp. */
 function ageMs(timestamp: Date | string | null | undefined): number | null {
   if (!timestamp) return null;
-  const at = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  const at = timestamp instanceof Date ? timestamp : dateFromSqlValue(timestamp);
   const ms = at.getTime();
   if (!Number.isFinite(ms)) return null;
   return Date.now() - ms;

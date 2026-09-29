@@ -104,7 +104,8 @@
     "deliverableTemplates": "Deliverable Templates",
     "securityScans": "IOC Scans",
     "system": "System",
-    "monitorConversion": "Monitor Conversion"
+    "monitorConversion": "Monitor Conversion",
+    "timeSync": "Time Sync"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

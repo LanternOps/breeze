@@ -56,6 +56,7 @@ import {
   type ApprovedDesignSummary,
   type DriftLiveState,
 } from './drift';
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const RUN = '22222222-2222-4222-8222-222222222222';
@@ -332,6 +333,35 @@ describe('loadApprovedDesign', () => {
   });
 });
 
+
+describe('loadDriftLiveState offsetless created_at', () => {
+  it.each([
+    ['America/Denver', '2026-09-01 09:30:00.500', '2026-09-01T09:30:00.500Z', 0],
+    ['Asia/Tokyo', '2026-09-01 10:30:00.500', '2026-09-01T10:30:00.500Z', 1],
+  ] as const)('reads configuration_policies.created_at text as UTC on a %s host', async (zone, text, isoText, extras) => {
+    // offsetless `timestamp` text from a raw query; read as UTC
+    executeMock.mockImplementation(async (statement: SQL) => {
+      const query = new PgDialect().sqlToQuery(statement).sql;
+      if (query.includes('FROM configuration_policies')) return [
+        { id: POLICY, name: 'Applied policy', status: 'active', org_id: ORG, created_at: APPLIED_AT },
+        { id: 'hand-made-policy', name: 'Hand made', status: 'active', org_id: ORG, created_at: text },
+      ];
+      if (query.includes('FROM config_policy_monitors')) return [
+        { policy_id: 'hand-made-policy', name: 'Svc', kind: 'service', condition: { serviceName: 'Spooler' }, severity: 'low', cooldown_minutes: 5, enabled: true, item_kind: null },
+      ];
+      return [];
+    });
+    const summary = approved();
+    summary.functions[0]!.groupId = null;
+    await withHostTimeZone(zone, async () => {
+      const state = await loadDriftLiveState(ORG, summary);
+      expect(state.policies.find((p) => p.id === 'hand-made-policy')!.createdAt).toBe(isoText);
+      const drift = computeDrift(summary, state);
+      // Created before the apply (Denver case) is not drift; after it (Tokyo case) is.
+      expect(drift.extra.filter((e) => e.policyId === 'hand-made-policy')).toHaveLength(extras);
+    });
+  });
+});
 
 describe('loadDriftLiveState', () => {
   it('uses only attached monitors as live watch/rule sources, never legacy tables', async () => {

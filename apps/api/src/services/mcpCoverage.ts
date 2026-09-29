@@ -184,6 +184,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/enrollment.ts': { exempt: 'agent_transport' },
   'agents/eventlogs.ts': { exempt: 'agent_transport' },
   'agents/hardwareHealth.ts': { exempt: 'agent_transport' },
+  'agents/timeStatus.ts': { exempt: 'agent_transport' },
   'agents/heartbeat.ts': { exempt: 'agent_transport' },
   'agents/inventory.ts': { exempt: 'agent_transport' },
   'agents/logs.ts': { exempt: 'agent_transport' },
@@ -346,6 +347,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/groups.ts': { tools: ['manage_groups'] },
   'devices/hardware.ts': { tools: ['get_ip_history', 'get_device_details'] },
   'devices/hardwareHealth.ts': { tools: ['get_device_hardware_health'] },
+  'devices/timeStatus.ts': { tools: ['get_device_time_status'] },
   'devices/health.ts': { gap: '#6783' },
   'devices/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'devices/homebrewBootstrap.ts': { gap: '#6782' },
@@ -580,6 +582,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'timeEntries/suggestions.ts': { gap: '#6776' },
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
+  'timeStatus.ts': { tools: ['list_time_sync_issues'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
   // M4-D5 (#6000): run reads and the ONE approval-gated start are the M4 tools.
   // NOT covered, deliberately (no implicit parity): collector selection and

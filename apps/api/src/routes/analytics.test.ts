@@ -263,6 +263,7 @@ import { db } from '../db';
 import { analyticsDashboards, dashboardWidgets } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { analyticsRoutes, metricColumnMap } from './analytics';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 function createChain(result: unknown = []) {
   const chain: Record<string, any> = {};
@@ -415,6 +416,35 @@ describe('analytics routes', () => {
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     });
 
+    it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+      'reads raw device_metrics bucket text as UTC on a %s host',
+      async (zone) => {
+        await withHostTimeZone(zone, async () => {
+          mockSelectOnce([]); // metric_rollups
+          mockSelectOnce([{ bucket: '2026-06-18 12:00:00', value: 37 }]); // raw, offsetless text
+
+          const res = await app.request('/analytics/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              deviceIds: [DEVICE_IN_SCOPE],
+              metricTypes: ['cpu_usage'],
+              startTime: '2026-06-18T00:00:00Z',
+              endTime: '2026-06-19T00:00:00Z',
+              aggregation: 'avg',
+              interval: 'hour'
+            })
+          });
+
+          expect(res.status).toBe(200);
+          const body = await res.json();
+          expect(body.series[0].data).toEqual([
+            { timestamp: '2026-06-18T12:00:00.000Z', value: 37 },
+          ]);
+        });
+      }
+    );
+
     it('uses metric rollup sample counts for daily count aggregation', async () => {
       mockSelectOnce([
         { bucket: new Date('2026-06-18T00:00:00.000Z'), value: 15 },
@@ -511,6 +541,29 @@ describe('analytics routes', () => {
       });
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     });
+    it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+      'anchors the forecast on raw daily bucket text read as UTC on a %s host',
+      async (zone) => {
+        await withHostTimeZone(zone, async () => {
+          mockSelectOnce([]); // stored predictions empty
+          mockSelectOnce([]); // metric_rollups empty
+          mockSelectOnce([
+            { timestamp: '2026-06-17 00:00:00', value: 10 },
+            { timestamp: '2026-06-18 00:00:00', value: 20 },
+          ]); // raw daily date_trunc, offsetless text
+
+          const res = await app.request('/analytics/capacity?metricType=disk', {
+            method: 'GET',
+            headers: { Authorization: 'Bearer token' }
+          });
+
+          expect(res.status).toBe(200);
+          const body = await res.json();
+          expect(body.predictions[2].timestamp).toBe('2026-06-19T00:00:00.000Z');
+          expect(body.predictions[15].timestamp).toBe('2026-07-02T00:00:00.000Z');
+        });
+      }
+    );
   });
 
   describe('GET /analytics/anomalies/evaluation', () => {

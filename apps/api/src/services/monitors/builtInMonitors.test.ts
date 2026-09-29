@@ -9,22 +9,24 @@ import { getMonitorKindSpec } from './kinds';
 import { buildCompiledTemplate } from './monitorCompiler';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 
-describe('version 3 hardware defaults', () => {
+describe('version 4 time and historical hardware defaults', () => {
   const keys = ['raid_array_degraded', 'physical_disk_failed', 'cache_battery_problem', 'hardware_collector_failing'];
+  const timeKeys = ['time_source_problem', 'time_sync_stale', 'timezone_mismatch'];
 
-  it('has eight valid defaults, four introduced at version 3', () => {
-    expect(BUILT_IN_MONITORS_VERSION).toBe(3);
-    expect(BUILT_IN_MONITOR_DEFAULTS).toHaveLength(8);
-    expect(defaultsToProvision(2).map((d) => d.key)).toEqual(keys);
+  it('has eleven valid defaults with preserved version gates', () => {
+    expect(BUILT_IN_MONITORS_VERSION).toBe(4);
+    expect(BUILT_IN_MONITOR_DEFAULTS).toHaveLength(11);
+    expect(defaultsToProvision(2).map((d) => d.key)).toEqual([...keys, ...timeKeys]);
     for (const d of BUILT_IN_MONITOR_DEFAULTS) {
       expect(getMonitorKindSpec(d.kind).conditionSchema.safeParse(d.condition).success).toBe(true);
     }
   });
 
   it('preserves historical version gates', () => {
-    expect(defaultsToProvision(null)).toHaveLength(8);
-    expect(defaultsToProvision(1).map((d) => d.key)).toEqual(['patch_compliance_low', ...keys]);
-    expect(defaultsToProvision(3)).toEqual([]);
+    expect(defaultsToProvision(null)).toHaveLength(11);
+    expect(defaultsToProvision(1).map((d) => d.key)).toEqual(['patch_compliance_low', ...keys, ...timeKeys]);
+    expect(defaultsToProvision(3).map(d => d.key)).toEqual(timeKeys);
+    expect(defaultsToProvision(4)).toEqual([]);
     expect(BUILT_IN_MONITOR_DEFAULTS.filter((d) => d.sinceVersion === 1).map((d) => d.key)).toEqual([
       'cpu_high',
       'memory_high',
@@ -38,7 +40,7 @@ describe('version 3 hardware defaults', () => {
 
   it('matches the four approved settings exactly', () => {
     expect(
-      defaultsToProvision(2).map((d) => [d.key, d.name, d.condition, d.severity, d.cooldownMinutes, d.sinceVersion]),
+      defaultsToProvision(2).filter(d => d.sinceVersion === 3).map((d) => [d.key, d.name, d.condition, d.severity, d.cooldownMinutes, d.sinceVersion]),
     ).toEqual([
       [
         'raid_array_degraded',

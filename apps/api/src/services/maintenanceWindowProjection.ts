@@ -50,6 +50,7 @@ import {
   maintenanceWallClock,
   resolveMaintenanceConfigForDevice,
 } from './featureConfigResolver';
+import { dateFromSqlValue } from './portal/sqlTimestamp';
 
 export const MAINTENANCE_WINDOW_HORIZON_DAYS = 30;
 
@@ -156,7 +157,7 @@ type StandaloneRow = {
 };
 
 function asDate(value: Date | string): Date {
-  return value instanceof Date ? value : new Date(value);
+  return value instanceof Date ? value : dateFromSqlValue(value);
 }
 
 function standaloneTargets(row: StandaloneRow, device: DeviceRow, groupIds: ReadonlySet<string>): boolean {

@@ -57,6 +57,8 @@ export const monitorKindEnum = pgEnum('monitor_kind', [
   // W03 (hardware & RAID monitoring) —
   // 2026-10-30-110200-monitor-kind-hardware-health.sql
   'hardware_health',
+  // W02 (time sync) — 2026-11-10-110100-monitor-kind-time-sync.sql
+  'time_sync',
 ]);
 
 export const monitorDefinitions = pgTable(

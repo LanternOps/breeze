@@ -85,6 +85,7 @@ import { sanitizeSweepText } from './runnerPrompt';
 // `vi.mock('../../db')` factory can be observed. Same idiom as
 // `narrativeContext.ts` / `sweepEvidence.ts`.
 import * as dbModule from '../../db';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -244,7 +245,7 @@ function textOrNull(value: unknown): string | null {
 function isoOrNull(value: unknown): string | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
   if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = new Date(value);
+    const parsed = dateFromSqlValue(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
   return null;

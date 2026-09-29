@@ -523,6 +523,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_reliability_history',
   'device_sessions',
   'device_software_inventory_state',
+  'device_time_daily',
+  'device_time_status',
   'device_vulnerabilities',
   'device_warranty',
   'devices',

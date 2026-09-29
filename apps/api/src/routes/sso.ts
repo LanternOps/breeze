@@ -33,7 +33,6 @@ import {
   discoverOIDCConfig,
   assertSafeOidcEndpoint,
   assertFreshIdpAuthentication,
-  utcMsFromOffsetlessTimestamp,
   PROVIDER_PRESETS,
   type OIDCConfig,
   type EmailVerifiedClaim
@@ -2944,12 +2943,11 @@ ssoRoutes.get('/callback', async (c) => {
       // that predates the user's click is a cached session, however recent it
       // looks. Fails closed on a missing auth_time.
       //
-      // created_at is `timestamp without time zone`, so a bare .getTime() is
-      // off by the HOST's UTC offset and cannot be compared to the id_token's
-      // auth_time epoch — see utcMsFromOffsetlessTimestamp.
+      // created_at is an offsetless `timestamp`; Drizzle decodes it as UTC,
+      // so its epoch is directly comparable with auth_time on any host.
       const freshness = assertFreshIdpAuthentication(
         idClaims,
-        utcMsFromOffsetlessTimestamp(session.createdAt),
+        session.createdAt.getTime(),
       );
       if (!freshness.ok) {
         writeRouteAudit(c, {

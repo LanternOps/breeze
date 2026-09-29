@@ -1,4 +1,166 @@
 {
+  "timeSync": {
+    "title": "Hora",
+    "loading": "Cargando el estado de la hora…",
+    "error": "No se pudo cargar el estado de la hora.",
+    "retry": "Reintentar",
+    "unknown": "Desconocido",
+    "yes": "Sí",
+    "no": "Negativo",
+    "site": "Sitio",
+    "policy": "Política",
+    "states": {
+      "not_reported": "Aún no hay datos de hora — se necesita una actualización del agente que incluya sincronización horaria",
+      "unsupported_os": "Aún no se admite en este sistema operativo"
+    },
+    "health": {
+      "healthy": "Correcto",
+      "warning": "Advertencia",
+      "critical": "Crítico",
+      "unknown": "Desconocido"
+    },
+    "severity": {
+      "critical": "Crítico",
+      "warning": "Advertencia",
+      "info": "Información"
+    },
+    "received": "Recibido: {{at}}",
+    "collected": "Recopilado: {{at}}",
+    "stale": "Desactualizado — el último informe de hora se recibió hace más de 90 minutos.",
+    "expected": "Se espera: {{windows}} ({{iana}}), según {{source}}: {{name}}",
+    "expectedPolicy": "Se espera: {{windows}} ({{iana}}), según la política {{name}} — reemplaza la zona horaria del sitio",
+    "managedBadge": "Administrado por una directiva de grupo",
+    "unset": {
+      "site_utc_default": "Sin zona horaria esperada (el sitio usa UTC de forma predeterminada)",
+      "no_site": "Sin zona horaria esperada (no hay ningún sitio asignado)",
+      "unmapped": "Sin zona horaria esperada (la zona horaria del sitio no tiene correspondencia en Windows)"
+    },
+    "noFindings": "No hay hallazgos de hora en este informe.",
+    "events": "Eventos de hora recientes ({{count}})",
+    "noEvents": "No hay eventos de hora recientes.",
+    "eventHeading": "Evento {{id}} · Nivel {{level}}",
+    "noMessage": "No hay mensaje del evento.",
+    "fields": {
+      "source": "Origen de la hora",
+      "sourceKind": "Tipo de origen",
+      "lastSync": "Última sincronización correcta",
+      "method": "Método de recopilación",
+      "lastError": "Último error de sincronización",
+      "stratum": "Nivel NTP",
+      "poll": "Intervalo de consulta efectivo (segundos)",
+      "syncType": "Tipo de sincronización",
+      "ntpServer": "Configuración del servidor NTP",
+      "hosts": "Hosts NTP identificados",
+      "specialPoll": "Intervalo de consulta especial (segundos)",
+      "serviceState": "Servicio de hora de Windows",
+      "serviceStartType": "Inicio del servicio",
+      "policyManaged": "Administrado por una directiva de grupo",
+      "policyManagedValues": "Valores de la directiva de grupo",
+      "hostProvider": "Proveedor de hora del host de la VM habilitado",
+      "joinType": "Tipo de unión",
+      "role": "Rol en el dominio",
+      "domain": "Dominio",
+      "forest": "Bosque",
+      "pdc": "PDC",
+      "windowsId": "Zona horaria actual de Windows",
+      "bias": "Desfase (minutos)",
+      "autoUpdate": "Zona horaria automática"
+    },
+    "values": {
+      "NT5DS": "Jerarquía del dominio (NT5DS)",
+      "NTP": "Pares NTP",
+      "NoSync": "Sin sincronización",
+      "AllSync": "Todos los orígenes",
+      "ntp_peer": "Par NTP",
+      "domain_peer": "Par del dominio",
+      "local_clock": "Reloj local",
+      "free_running": "Reloj de funcionamiento libre",
+      "vm_host": "Host de la VM",
+      "unknown": "Desconocido",
+      "provider_api": "API del proveedor de Windows",
+      "w32tm_tokens": "Tokens del estado de hora de Windows",
+      "events": "Eventos de Time-Service",
+      "unavailable": "No disponible",
+      "none": "Sin unión",
+      "workplace": "Registrado en el área de trabajo",
+      "azure_ad": "Unido a Microsoft Entra",
+      "on_prem_ad": "Unido a Active Directory",
+      "hybrid_azure_ad": "Unión híbrida a Entra",
+      "workgroup": "Grupo de trabajo",
+      "entra_only": "Solo Entra",
+      "member": "Miembro del dominio",
+      "dc": "Controlador de dominio",
+      "pdc_emulator": "Emulador de PDC",
+      "forest_root_pdc_emulator": "Emulador de PDC de la raíz del bosque",
+      "running": "En ejecución",
+      "stopped": "Detenido",
+      "start_pending": "Iniciando",
+      "stop_pending": "Deteniendo",
+      "paused": "En pausa",
+      "not_installed": "No instalado",
+      "auto": "Automático",
+      "delayed_auto": "Automático (inicio retrasado)",
+      "manual": "Modo manual",
+      "trigger_manual": "Manual (inicio por desencadenador)",
+      "disabled": "Deshabilitado",
+      "on": "Activado",
+      "off": "Desactivado"
+    },
+    "findings": {
+      "pdc_no_external_source": {
+        "label": "El PDC raíz del bosque no tiene un origen externo",
+        "hint": "Configura servidores NTP en {device} — es el PDC raíz del bosque y todos los miembros del dominio lo siguen."
+      },
+      "source_local_clock": {
+        "label": "Se está usando el reloj local",
+        "hint": "Se sincroniza con su propio reloj. Configura un origen NTP (o, si está unido a un dominio, revisa su controlador de dominio)."
+      },
+      "dc_vm_host_sync": {
+        "label": "El controlador de dominio se sincroniza con el host de la VM",
+        "hint": "Deshabilita el proveedor de hora del host de la VM en este controlador de dominio."
+      },
+      "ntp_server_unresolvable": {
+        "label": "El nombre del servidor NTP no es válido o no se resuelve",
+        "hint": "El servidor NTP {host} no se resuelve o no tiene un nombre válido — corrige el nombre o DNS."
+      },
+      "ntp_peer_unreachable": {
+        "label": "No se puede acceder al par NTP",
+        "hint": "No hay respuesta de {source} — revisa el tráfico UDP saliente en el puerto 123."
+      },
+      "domain_source_unavailable": {
+        "label": "El origen de hora del dominio no está disponible",
+        "hint": "No se encuentra un origen de hora del dominio — revisa la conectividad con el controlador de dominio."
+      },
+      "member_not_on_hierarchy": {
+        "label": "No se está usando la jerarquía del dominio",
+        "hint": "Está unido al dominio, pero no usa su jerarquía."
+      },
+      "sync_disabled": {
+        "label": "La sincronización horaria está deshabilitada",
+        "hint": "El servicio de hora de Windows está deshabilitado."
+      },
+      "sync_stale": {
+        "label": "No hay sincronizaciones correctas recientes",
+        "hint": "No hay sincronizaciones correctas desde {lastSuccessfulSyncAt}."
+      },
+      "correction_refused": {
+        "label": "Se rechazó la corrección de hora",
+        "hint": "El desfase del reloj es demasiado grande para que Windows lo corrija; vuelve a sincronizarlo o corrígelo manualmente."
+      },
+      "timezone_mismatch": {
+        "label": "La zona horaria difiere de la esperada",
+        "hint": "La zona horaria es {actual}; se esperaba {expected} (según {site or policy})."
+      },
+      "policy_not_applied": {
+        "label": "No se aplicó la política de hora",
+        "hint": "No se pudo aplicar la política de hora: {error}."
+      },
+      "policy_conflict_gpo": {
+        "label": "Una directiva de grupo controla la configuración de hora",
+        "hint": "Una directiva de grupo administra W32Time; Breeze no modifica su configuración."
+      }
+    }
+  },
   "aiActivity": {
     "title": "Actividad de IA",
     "count": "{{count}} acciones enviadas en los últimos {{days}} días",
@@ -3590,6 +3752,64 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Límite de dispositivos alcanzado",
       "STEP_UP_REQUIRED": "Se requiere confirmación",
       "ASSIGNMENT_FAILED": "Error"
+    }
+  },
+  "timeFleet": {
+    "title": "Sincronización de hora",
+    "subtitle": "Configuración de hora de Windows y hallazgos de sincronización observados.",
+    "view": "Vista",
+    "list": "Dispositivos",
+    "byDomain": "Por dominio de AD",
+    "health": "Estado",
+    "finding": "Hallazgo",
+    "findings": "Hallazgos",
+    "role": "Rol",
+    "organization": "Organización",
+    "site": "Sitio",
+    "all": "Todos",
+    "refresh": "Actualizar",
+    "device": "Dispositivo",
+    "source": "Fuente de hora",
+    "received": "Última recepción",
+    "stale": "Desactualizado",
+    "noData": "Aún no hay datos de hora",
+    "unknown": "Desconocido",
+    "never": "Nunca",
+    "none": "Ninguno",
+    "noDomain": "No se informó ningún dominio de AD",
+    "pdcContext": "El PDC se muestra fijo como referencia y puede estar fuera de los filtros o la página seleccionados.",
+    "pdcMissing": "El PDC no está registrado en el inventario al que tienes acceso. Puede estar fuera de tu alcance de acceso.",
+    "exportCurrent": "Exportar CSV actual",
+    "exportHistory": "Exportar CSV diario",
+    "from": "Desde (UTC)",
+    "to": "Hasta (UTC)",
+    "evidence": "Sincronización observada e informada por el agente de Breeze; los días sin informe se muestran como períodos sin datos. Exporta hasta 400 días UTC. Los filtros seleccionan el conjunto actual de dispositivos.",
+    "rangeError": "Selecciona un intervalo de 1 a 400 días UTC.",
+    "exportError": "No se pudo exportar la evidencia. Inténtalo de nuevo.",
+    "siteError": "No se pudieron cargar los sitios. Actualiza para intentarlo de nuevo.",
+    "loading": "Cargando datos de sincronización de hora…",
+    "loadError": "No se pudieron cargar los datos de sincronización de hora.",
+    "retry": "Reintentar",
+    "empty": "Ningún dispositivo Windows accesible coincide con estos filtros.",
+    "count": "{{count}} dispositivo coincidente",
+    "count_other": "{{count}} dispositivos coincidentes",
+    "previous": "Anterior",
+    "next": "Siguiente",
+    "page": "Página {{page}}",
+    "healthLabels": {
+      "healthy": "Correcto",
+      "warning": "Advertencia",
+      "critical": "Crítico",
+      "unknown": "Desconocido"
+    },
+    "roles": {
+      "workgroup": "Grupo de trabajo",
+      "entra_only": "Solo Entra",
+      "member": "Miembro del dominio",
+      "dc": "Controlador de dominio",
+      "pdc_emulator": "Emulador de PDC del dominio",
+      "forest_root_pdc_emulator": "Emulador de PDC de la raíz del bosque",
+      "unknown": "Desconocido"
     }
   }
 }

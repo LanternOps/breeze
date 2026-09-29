@@ -18,7 +18,7 @@ All constraints in the index's Global constraints and final Contract resolutions
 
 - W03a changes API, shared, web and documentation only; no `agent/` files.
 - `time_sync` is inline-only and has trust tier `protective`; partner-wide policies are supported.
-- Migration: `2026-11-09-120000-time-sync-config-feature.sql`; append the enum label, never reorder existing labels.
+- Migration: `2026-11-10-120000-time-sync-config-feature.sql`; append the enum label, never reorder existing labels.
 - Settings defaults: `enforceNtp: false`, `ntpServers: []`, `pollIntervalMinutes: 60`, `timezone: { expected: 'site', pinnedTimezone: null, autoFix: false }`.
 - NTP list: 0–5 entries; enforcement requires at least 1; poll interval: integer 15–1440 minutes.
 - Cache: `timesync:settings:device:${deviceId}`, TTL 120 seconds.
@@ -78,7 +78,7 @@ Paths marked **dependency modification** exist by W01a/W02 contract but are abse
 | `packages/shared/src/constants/configFeatureTypes.test.ts` | Protective-tier regression. |
 | `apps/api/src/db/schema/configurationPolicies.ts` | Enum and typed time settings table with CHECKs. |
 | `apps/api/src/db/schema/timeSync.ts` | Dependency modification: enforcement column. |
-| `apps/api/migrations/2026-11-09-120000-time-sync-config-feature.sql` | Idempotent table, enum, enforcement column and RLS. |
+| `apps/api/migrations/2026-11-10-120000-time-sync-config-feature.sql` | Idempotent table, enum, enforcement column and RLS. |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` | Parent-chain table registration. |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` | Classify enforcement as an open container. |
 | `apps/api/src/services/timeSync/settings.integration.test.ts` | RLS, SQL constraints, migration replay and partner inheritance. |
@@ -363,7 +363,7 @@ git commit -m "feat(time-sync): define inline management settings" -m "Co-Author
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:971`.
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` (W01a/W02 `device_time_status` entry; absent locally).
 - Modify if W01a did not already register the glob: `apps/api/vitest.config.ts:56`, `apps/api/vitest.integration.config.ts:30`.
-- Create: `apps/api/migrations/2026-11-09-120000-time-sync-config-feature.sql`.
+- Create: `apps/api/migrations/2026-11-10-120000-time-sync-config-feature.sql`.
 - Create/Test: `apps/api/src/services/timeSync/settings.integration.test.ts`.
 
 **Interfaces:** Consumes `configPolicyFeatureLinks.id` and `configurationPolicies` ownership. Produces `configPolicyTimeSyncSettings` with typed columns and `deviceTimeStatus.enforcement: TimeSyncEnforcementState | Record<string, never>`. The empty object represents no report; the view converts it to null.
@@ -565,8 +565,8 @@ it('is forced, has five policies, and replays without erasing settings', async (
     'r',
     'w',
   ]);
-  await replayMigration('2026-11-09-120000-time-sync-config-feature.sql');
-  await replayMigration('2026-11-09-120000-time-sync-config-feature.sql');
+  await replayMigration('2026-11-10-120000-time-sync-config-feature.sql');
+  await replayMigration('2026-11-10-120000-time-sync-config-feature.sql');
   expect(
     await withDbAccessContext(f.own, () =>
       db.execute(sql`
@@ -717,7 +717,7 @@ Retain all other column classifications. Do not register the settings child in d
 - [ ] Commit:
 
 ```bash
-git add apps/api/migrations/2026-11-09-120000-time-sync-config-feature.sql apps/api/src/db/schema/configurationPolicies.ts apps/api/src/db/schema/timeSync.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/timeSync/settings.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
+git add apps/api/migrations/2026-11-10-120000-time-sync-config-feature.sql apps/api/src/db/schema/configurationPolicies.ts apps/api/src/db/schema/timeSync.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/timeSync/settings.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
 git commit -m "feat(time-sync): persist isolated management settings" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 

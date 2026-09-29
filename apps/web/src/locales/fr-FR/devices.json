@@ -1,4 +1,166 @@
 {
+  "timeSync": {
+    "title": "Heure",
+    "loading": "Chargement de l’état de l’heure…",
+    "error": "Impossible de charger l’état de l’heure.",
+    "retry": "Réessayer",
+    "unknown": "Inconnu",
+    "yes": "Oui",
+    "no": "Non",
+    "site": "Site client",
+    "policy": "Stratégie",
+    "states": {
+      "not_reported": "Aucune donnée horaire pour le moment — une mise à jour de l’agent incluant la synchronisation de l’heure est nécessaire",
+      "unsupported_os": "Pas encore pris en charge sur ce système d’exploitation"
+    },
+    "health": {
+      "healthy": "Bon état",
+      "warning": "Avertissement",
+      "critical": "Critique",
+      "unknown": "Inconnu"
+    },
+    "severity": {
+      "critical": "Critique",
+      "warning": "Avertissement",
+      "info": "Informations"
+    },
+    "received": "Reçu : {{at}}",
+    "collected": "Collecté : {{at}}",
+    "stale": "Obsolète — le dernier rapport horaire a été reçu il y a plus de 90 minutes.",
+    "expected": "Attendu : {{windows}} ({{iana}}), selon {{source}} : {{name}}",
+    "expectedPolicy": "Attendu : {{windows}} ({{iana}}), selon la stratégie {{name}} — remplace le fuseau horaire du site",
+    "managedBadge": "Géré par une stratégie de groupe",
+    "unset": {
+      "site_utc_default": "Aucun fuseau horaire attendu (le site utilise UTC par défaut)",
+      "no_site": "Aucun fuseau horaire attendu (aucun site n’est attribué)",
+      "unmapped": "Aucun fuseau horaire attendu (le fuseau du site n’a pas de correspondance Windows)"
+    },
+    "noFindings": "Aucun constat horaire dans ce rapport.",
+    "events": "Événements horaires récents ({{count}})",
+    "noEvents": "Aucun événement horaire récent.",
+    "eventHeading": "Événement {{id}} · Niveau {{level}}",
+    "noMessage": "Aucun message d’événement.",
+    "fields": {
+      "source": "Source de l’heure",
+      "sourceKind": "Type de source",
+      "lastSync": "Dernière synchronisation réussie",
+      "method": "Méthode de collecte",
+      "lastError": "Dernière erreur de synchronisation",
+      "stratum": "Niveau NTP",
+      "poll": "Intervalle d’interrogation effectif (secondes)",
+      "syncType": "Type de synchronisation",
+      "ntpServer": "Configuration du serveur NTP",
+      "hosts": "Hôtes NTP identifiés",
+      "specialPoll": "Intervalle d’interrogation spécial (secondes)",
+      "serviceState": "Service de temps Windows",
+      "serviceStartType": "Démarrage du service",
+      "policyManaged": "Géré par une stratégie de groupe",
+      "policyManagedValues": "Valeurs de la stratégie de groupe",
+      "hostProvider": "Fournisseur de temps de l’hôte de la machine virtuelle activé",
+      "joinType": "Type de jonction",
+      "role": "Rôle dans le domaine",
+      "domain": "Domaine",
+      "forest": "Forêt",
+      "pdc": "PDC",
+      "windowsId": "Fuseau horaire Windows actuel",
+      "bias": "Décalage (minutes)",
+      "autoUpdate": "Fuseau horaire automatique"
+    },
+    "values": {
+      "NT5DS": "Hiérarchie du domaine (NT5DS)",
+      "NTP": "Pairs NTP",
+      "NoSync": "Aucune synchronisation",
+      "AllSync": "Toutes les sources",
+      "ntp_peer": "Pair NTP",
+      "domain_peer": "Pair du domaine",
+      "local_clock": "Horloge locale",
+      "free_running": "Horloge autonome",
+      "vm_host": "Hôte de la machine virtuelle",
+      "unknown": "Inconnu",
+      "provider_api": "API du fournisseur Windows",
+      "w32tm_tokens": "Jetons d’état de l’heure Windows",
+      "events": "Événements Time-Service",
+      "unavailable": "Indisponible",
+      "none": "Non joint",
+      "workplace": "Inscrit à l’espace de travail",
+      "azure_ad": "Joint à Microsoft Entra",
+      "on_prem_ad": "Joint à Active Directory",
+      "hybrid_azure_ad": "Jonction hybride à Entra",
+      "workgroup": "Groupe de travail",
+      "entra_only": "Entra uniquement",
+      "member": "Membre du domaine",
+      "dc": "Contrôleur de domaine",
+      "pdc_emulator": "Émulateur PDC",
+      "forest_root_pdc_emulator": "Émulateur PDC du domaine racine de la forêt",
+      "running": "En cours d’exécution",
+      "stopped": "Arrêté",
+      "start_pending": "Démarrage en cours",
+      "stop_pending": "Arrêt en cours",
+      "paused": "En pause",
+      "not_installed": "Non installé",
+      "auto": "Automatique",
+      "delayed_auto": "Automatique (différé)",
+      "manual": "Manuel",
+      "trigger_manual": "Manuel (démarrage déclenché)",
+      "disabled": "Désactivé",
+      "on": "Activé",
+      "off": "Désactivé"
+    },
+    "findings": {
+      "pdc_no_external_source": {
+        "label": "Le PDC racine de la forêt n’a pas de source externe",
+        "hint": "Configurez des serveurs NTP sur {device} — il s’agit du PDC racine de la forêt et tous les membres du domaine le suivent."
+      },
+      "source_local_clock": {
+        "label": "Utilisation de l’horloge locale",
+        "hint": "Se synchronise sur sa propre horloge. Configurez une source NTP (ou vérifiez son contrôleur de domaine s’il est joint à un domaine)."
+      },
+      "dc_vm_host_sync": {
+        "label": "Le contrôleur de domaine se synchronise avec l’hôte de la machine virtuelle",
+        "hint": "Désactivez le fournisseur de temps de l’hôte de la machine virtuelle sur ce contrôleur de domaine."
+      },
+      "ntp_server_unresolvable": {
+        "label": "Le nom du serveur NTP est invalide ou non résolu",
+        "hint": "Le serveur NTP {host} ne peut pas être résolu ou son nom est invalide — corrigez le nom ou le DNS."
+      },
+      "ntp_peer_unreachable": {
+        "label": "Le pair NTP est injoignable",
+        "hint": "Aucune réponse de {source} — vérifiez le trafic UDP sortant sur le port 123."
+      },
+      "domain_source_unavailable": {
+        "label": "La source de temps du domaine est indisponible",
+        "hint": "Impossible de trouver une source de temps du domaine — vérifiez l’accessibilité du contrôleur de domaine."
+      },
+      "member_not_on_hierarchy": {
+        "label": "La hiérarchie du domaine n’est pas utilisée",
+        "hint": "Joint au domaine, mais n’utilise pas sa hiérarchie."
+      },
+      "sync_disabled": {
+        "label": "La synchronisation de l’heure est désactivée",
+        "hint": "Le service de temps Windows est désactivé."
+      },
+      "sync_stale": {
+        "label": "Aucune synchronisation réussie récemment",
+        "hint": "Aucune synchronisation réussie depuis {lastSuccessfulSyncAt}."
+      },
+      "correction_refused": {
+        "label": "La correction de l’heure a été refusée",
+        "hint": "Le décalage de l’horloge est trop important pour que Windows le corrige automatiquement ; resynchronisez-la ou corrigez-la manuellement."
+      },
+      "timezone_mismatch": {
+        "label": "Le fuseau horaire diffère de celui attendu",
+        "hint": "Le fuseau horaire est {actual}, mais {expected} est attendu (selon {site or policy})."
+      },
+      "policy_not_applied": {
+        "label": "La stratégie horaire n’a pas été appliquée",
+        "hint": "Impossible d’appliquer la stratégie horaire : {error}."
+      },
+      "policy_conflict_gpo": {
+        "label": "Une stratégie de groupe contrôle les paramètres horaires",
+        "hint": "W32Time est géré par une stratégie de groupe ; Breeze ne modifie pas ses paramètres."
+      }
+    }
+  },
   "aiActivity": {
     "title": "Activité de l'IA",
     "count": "{{count}} actions envoyées au cours des {{days}} derniers jours",
@@ -3590,6 +3752,64 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite d'appareils atteinte",
       "STEP_UP_REQUIRED": "Confirmation requise",
       "ASSIGNMENT_FAILED": "Échec"
+    }
+  },
+  "timeFleet": {
+    "title": "Synchronisation de l’heure",
+    "subtitle": "Configuration horaire Windows et constats de synchronisation observés.",
+    "view": "Affichage",
+    "list": "Appareils",
+    "byDomain": "Par domaine AD",
+    "health": "État",
+    "finding": "Constat",
+    "findings": "Constats",
+    "role": "Rôle",
+    "organization": "Organisation",
+    "site": "Site associé",
+    "all": "Tous",
+    "refresh": "Actualiser",
+    "device": "Appareil",
+    "source": "Source de temps",
+    "received": "Dernière réception",
+    "stale": "Obsolète",
+    "noData": "Aucune donnée horaire pour le moment",
+    "unknown": "Inconnu",
+    "never": "Jamais",
+    "none": "Aucun",
+    "noDomain": "Aucun domaine AD signalé",
+    "pdcContext": "Le PDC est épinglé à titre de référence et peut se trouver en dehors des filtres ou de la page sélectionnés.",
+    "pdcMissing": "Le PDC n’est pas inscrit dans l’inventaire auquel vous avez accès. Il peut se trouver hors de votre périmètre d’accès.",
+    "exportCurrent": "Exporter le CSV actuel",
+    "exportHistory": "Exporter le CSV quotidien",
+    "from": "Du (UTC)",
+    "to": "Au (UTC)",
+    "evidence": "Synchronisation observée et signalée par l’agent Breeze ; les jours sans rapport sont indiqués comme des périodes sans données. Exportez jusqu’à 400 jours UTC. Les filtres sélectionnent le parc actuel d’appareils.",
+    "rangeError": "Choisissez une période de 1 à 400 jours UTC.",
+    "exportError": "L’export des preuves a échoué. Réessayez.",
+    "siteError": "Impossible de charger les sites. Actualisez pour réessayer.",
+    "loading": "Chargement des données de synchronisation de l’heure…",
+    "loadError": "Impossible de charger les données de synchronisation de l’heure.",
+    "retry": "Réessayer",
+    "empty": "Aucun appareil Windows accessible ne correspond à ces filtres.",
+    "count": "{{count}} appareil correspondant",
+    "count_other": "{{count}} appareils correspondants",
+    "previous": "Précédent",
+    "next": "Suivant",
+    "page": "Page n° {{page}}",
+    "healthLabels": {
+      "healthy": "En bon état",
+      "warning": "Avertissement",
+      "critical": "Critique",
+      "unknown": "Inconnu"
+    },
+    "roles": {
+      "workgroup": "Groupe de travail",
+      "entra_only": "Entra uniquement",
+      "member": "Membre du domaine",
+      "dc": "Contrôleur de domaine",
+      "pdc_emulator": "Émulateur PDC du domaine",
+      "forest_root_pdc_emulator": "Émulateur PDC de la racine de la forêt",
+      "unknown": "Inconnu"
     }
   }
 }

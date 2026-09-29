@@ -13,6 +13,7 @@
  *    (never the 'missing' tombstone), and no forbidden jsonb/free-text column.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 
 const executed: unknown[] = [];
 let results: unknown[] = [];
@@ -278,6 +279,25 @@ describe('loadPatchEvidence', () => {
     expect(rows[2]).toMatchObject({ deviceId: DEV2, fields: { patchId: P2, failureClass: 'unknown', attemptCount: 1 } });
     expect(e.sections.failedWork.total).toBe(3);
   });
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads offsetless failed-work and last_seen_at text as UTC on a %s host',
+    async (zone) => {
+      await withHostTimeZone(zone, async () => {
+        seedHappyPath();
+        // Swap the Date fixtures for the offsetless text a raw query returns.
+        results[5] = [{ ...(results[5] as Record<string, unknown>[])[0], last_seen_at: '2026-09-13 00:00:00.250' }];
+        results[8] = (results[8] as Record<string, unknown>[]).map((r) => ({
+          ...r,
+          created_at: (r.created_at as Date).toISOString().slice(0, 23).replace('T', ' '),
+          completed_at: r.completed_at ? (r.completed_at as Date).toISOString().slice(0, 23).replace('T', ' ') : null,
+        }));
+        const e = await loadPatchEvidence(ORG, PARTNER);
+        expect(e.sections.failedWork.rows[0]).toMatchObject({ fields: { lastAttemptAt: '2026-09-13T02:30:00.000Z' } });
+        expect(e.sections.topNonCompliant.rows[0]).toMatchObject({ fields: { lastSeenAt: '2026-09-13T00:00:00.250Z' } });
+      });
+    },
+  );
 
   it('pins org on BOTH patch_jobs.org_id and devices.org_id, excludes ephemeral devices, and filters status = failed with patch_id set', async () => {
     seedHappyPath();

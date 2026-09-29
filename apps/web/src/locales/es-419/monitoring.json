@@ -191,7 +191,8 @@
     "backup_continuity": "Continuidad de respaldo",
     "script": "Verificación de script",
     "network_check": "Verificación de red",
-    "hardware_health": "Estado del hardware"
+    "hardware_health": "Estado del hardware",
+    "time_sync": "Sincronización de hora"
   },
   "fields": {
     "operator": "Comparación",
@@ -586,6 +587,25 @@
         "minHealthOptions": {
           "warning": "Advertencia",
           "critical": "Crítico"
+        }
+      },
+      "time_sync": {
+        "findings": "Hallazgos",
+        "consecutiveSnapshots": "Instantáneas consecutivas",
+        "findingOptions": {
+          "pdc_no_external_source": "El PDC raíz del bosque no tiene un origen externo",
+          "source_local_clock": "Se está usando el reloj local",
+          "dc_vm_host_sync": "El controlador de dominio se sincroniza con el host de la VM",
+          "ntp_server_unresolvable": "El nombre del servidor NTP no es válido o no se resuelve",
+          "ntp_peer_unreachable": "No se puede acceder al par NTP",
+          "domain_source_unavailable": "El origen de hora del dominio no está disponible",
+          "member_not_on_hierarchy": "No se está usando la jerarquía del dominio",
+          "sync_disabled": "La sincronización horaria está deshabilitada",
+          "sync_stale": "No hay sincronizaciones correctas recientes",
+          "correction_refused": "Se rechazó la corrección de hora",
+          "timezone_mismatch": "La zona horaria difiere de la esperada",
+          "policy_not_applied": "No se aplicó la política de hora",
+          "policy_conflict_gpo": "Una directiva de grupo controla la configuración de hora"
         }
       }
     }

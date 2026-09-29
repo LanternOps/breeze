@@ -546,3 +546,38 @@ it('retirement outbox enforces app-role cross-org read and insert isolation', as
   await expect(withDbAccessContext(context, () => db.insert(hardwareAlertRetirementOutbox)
     .values({ id: randomUUID(), orgId: f.org.id, envelope: {} }))).rejects.toMatchObject({ cause: { code: '42501' } });
 });
+
+it('stages the recurrence escalation alert for a latched time_sync subject monitor', async () => {
+  const f = await fixture();
+  const monitor = await withSystemDbAccessContext(async () => {
+    const [row] = await db.insert(monitorDefinitions).values({
+      partnerId: f.partner.id, name: 'Clock drift', kind: 'time_sync',
+      condition: { findings: ['sync_stale'], consecutiveSnapshots: 2 }, severity: 'medium', autoResolve: true,
+      deliveryMode: 'none', recurrenceThreshold: 2, recurrenceWindowHours: 24, pauseResponsesOnEscalation: true,
+    }).returning();
+    if (!row) throw new Error('Time-sync monitor seed failed');
+    const [episode] = await db.insert(monitorEpisodes).values({
+      monitorId: row.id, deviceId: f.device.id, orgId: f.org.id, startedAt: new Date(),
+    }).returning();
+    await db.insert(monitorDeviceState).values({
+      monitorId: row.id, deviceId: f.device.id, orgId: f.org.id, currentEpisodeId: episode!.id,
+      episodesInWindow: 2, windowStartedAt: new Date(Date.now() - 3600_000), escalatedAt: new Date(),
+      escalationAlertId: null, responsesPaused: true, lastState: 'breach',
+    });
+    return row;
+  });
+
+  await drainSubjectAlertOutbox(f.device.id);
+
+  const escalation = m.publish.mock.calls
+    .filter(call => call[0] === 'alert.triggered')
+    .map(call => call[2])
+    .filter(payload => payload.monitorId === monitor.id);
+  expect(escalation).toHaveLength(1);
+  expect(escalation[0]).toMatchObject({ kind: 'time_sync', requiresHuman: true, source: 'monitor_recurrence' });
+  const [state] = await withSystemDbAccessContext(() => db.select().from(monitorDeviceState)
+    .where(and(eq(monitorDeviceState.monitorId, monitor.id), eq(monitorDeviceState.deviceId, f.device.id))));
+  expect(state!.escalationAlertId).toBe(escalation[0]!.alertId);
+  const staged = (await alertRows(f.device.id)).find(a => a.id === state!.escalationAlertId);
+  expect(staged).toMatchObject({ monitorId: monitor.id, requiresHuman: true, status: 'active' });
+});

@@ -2756,6 +2756,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
       'mcp__breeze__manage_alerts',
       'mcp__breeze__get_device_details',
       'mcp__breeze__get_device_hardware_health',
+      'mcp__breeze__get_device_time_status',
+      'mcp__breeze__list_time_sync_issues',
       'mcp__breeze__analyze_metrics',
       'mcp__breeze__query_monitors',
       'mcp__breeze__submit_alert_verdict',
@@ -2776,7 +2778,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
       | { onlyTools?: ReadonlySet<string> }
       | undefined;
     expect(mcpServerOptions?.onlyTools).toEqual(
-      new Set(['manage_alerts', 'get_device_details', 'get_device_hardware_health', 'analyze_metrics', 'query_monitors']),
+      new Set(['manage_alerts', 'get_device_details', 'get_device_hardware_health', 'get_device_time_status', 'list_time_sync_issues', 'analyze_metrics', 'query_monitors']),
     );
   });
 

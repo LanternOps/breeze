@@ -1,0 +1,7 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import FleetTimeSyncReport from '../../components/devices/time/FleetTimeSyncReport';
+---
+<DashboardLayout titleKey="titles.devicesTime">
+  <FleetTimeSyncReport client:load />
+</DashboardLayout>

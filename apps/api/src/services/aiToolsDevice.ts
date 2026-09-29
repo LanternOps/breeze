@@ -11,6 +11,11 @@
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
  */
 
+import {
+  TIME_SYNC_DOMAIN_ROLES,
+  TIME_SYNC_FINDING_CODES,
+  TIME_SYNC_HEALTH,
+} from '@breeze/shared';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { db } from '../db';
 import {
@@ -30,6 +35,8 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
+import { getDeviceTimeStatusView } from './timeSync/view';
+import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
 import { projectPublicDevice } from '../routes/devices/helpers';
 import {
@@ -318,6 +325,37 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    deviceArgs: ['deviceId'],
+    searchHint:
+      'time synchronization, NTP source, domain PDC, time service findings, timezone mismatch',
+    definition: {
+      name: 'list_time_sync_issues',
+      description:
+        'List observed time synchronization status in the accessible Windows fleet. Filter by finding, role, domain, health, organization or site; paged. PDC domain context respects caller access. Optional deviceId restricts the whole result, including domain context, to one device.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          health: { type: 'string', enum: [...TIME_SYNC_HEALTH] },
+          finding: { type: 'string', enum: [...TIME_SYNC_FINDING_CODES] },
+          role: { type: 'string', enum: [...TIME_SYNC_DOMAIN_ROLES] },
+          orgId: { type: 'string', format: 'uuid' },
+          siteId: { type: 'string', format: 'uuid' },
+          deviceId: { type: 'string', format: 'uuid' },
+          domain: { type: 'string', minLength: 1, maxLength: 255 },
+          page: { type: 'integer', minimum: 1, default: 1 },
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 50, description: 'Max devices per page (default 50, max 100)' },
+        },
+      },
+    },
+    handler: async (input, auth) =>
+      JSON.stringify(
+        await listFleetTimeStatus(fleetTimeFiltersSchema.parse(input), auth),
+      ),
+  });
+
   // get_device_hardware_health - Tier 1 (auto-execute)
   // ============================================
 
@@ -369,6 +407,32 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       }
       return JSON.stringify(result);
     }
+  });
+
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    deviceArgs: ['deviceId'],
+    searchHint:
+      'Windows time synchronization, timezone, NTP source and time findings',
+    definition: {
+      name: 'get_device_time_status',
+      description:
+        'Get current Windows time synchronization, expected timezone provenance, findings and recent time events.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'The device UUID' },
+        },
+        required: ['deviceId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const deviceId = input.deviceId as string;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      return JSON.stringify(await getDeviceTimeStatusView(deviceId));
+    },
   });
 
   // ============================================

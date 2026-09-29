@@ -25,6 +25,7 @@ import {
   fingerprintSoftwareInstallMethodDependency,
   fingerprintSoftwareVersionDependency,
 } from '../services/softwareDependencyIdentity';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   getOrganizationSoftwareDownloadPolicy,
@@ -2745,6 +2746,36 @@ describe('software routes', () => {
       // One grouped query — no per-deployment fan-out.
       expect(db.select).toHaveBeenCalledTimes(1);
     });
+
+    it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+      'reads offsetless lastCompletedAt text as UTC when windowing the 7d counters on a %s host',
+      async (zone) => {
+        await withHostTimeZone(zone, async () => {
+          const now = Date.now();
+          const hours = 60 * 60 * 1000;
+          const sqlText = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 23);
+          const old = new Date(now - 30 * 24 * hours).toISOString();
+          const sevenDays = 7 * 24 * hours;
+
+          vi.mocked(db.select).mockReturnValueOnce(selectResult([
+            // finished 3h inside the window: counted
+            { deploymentId: 'dep-in', dispatchedAt: old, createdAt: old, status: 'completed', count: 1, lastCompletedAt: sqlText(now - sevenDays + 3 * hours) },
+            // finished 3h outside the window: excluded
+            { deploymentId: 'dep-out', dispatchedAt: old, createdAt: old, status: 'failed', count: 1, lastCompletedAt: sqlText(now - sevenDays - 3 * hours) },
+          ]));
+
+          const res = await app.request('/software/deployments/summary', {
+            method: 'GET',
+            headers: { Authorization: 'Bearer token' },
+          });
+
+          expect(res.status).toBe(200);
+          expect(await res.json()).toEqual({
+            data: { active: 0, scheduled: 0, completedLast7d: 1, failedLast7d: 0 },
+          });
+        });
+      }
+    );
 
     it('denies an org-scoped token requesting a different orgId', async () => {
       const res = await app.request('/software/deployments/summary?orgId=44444444-4444-4444-8444-444444444444', {

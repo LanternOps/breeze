@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 
 import { db } from '../db';
+import { dateFromSqlValue } from './portal/sqlTimestamp';
 import { appendUserRiskSignalEvent } from './userRiskScoring';
 import { resolveMlFeatureFlagForOrg } from './mlFeatureFlags';
 
@@ -66,7 +67,7 @@ function toInt(value: number | string | null | undefined): number {
 }
 
 function toDate(value: Date | string): Date {
-  return value instanceof Date ? value : new Date(value);
+  return dateFromSqlValue(value);
 }
 
 function windowKey(date: Date, hours: number): string {

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { pgOffsetlessTimestamp } from '../testUtils/pgOffsetlessTimestamp';
 
 const selectMock = vi.fn();
 const insertMock = vi.fn();
@@ -605,11 +604,10 @@ describe('findDueReports', () => {
         {
           id: ORG_ID,
           schedule: 'daily',
-          // 09:30 Chicago → already ran. Built through the driver simulation
-          // because `reports.last_generated_at` is an offsetless `timestamp`
-          // column: a bare `new Date(...Z)` here would be an unfaithful fixture
-          // that only matches production on a UTC host (#4059).
-          lastGeneratedAt: pgOffsetlessTimestamp(Date.parse('2026-07-01T14:30:00Z')),
+          // 09:30 Chicago → already ran. `reports.last_generated_at` is an
+          // offsetless `timestamp`; Drizzle decodes it as UTC, so this is the
+          // Date the worker receives on any host.
+          lastGeneratedAt: new Date('2026-07-01T14:30:00Z'),
           config: { schedule: { time: '09:00' } },
           orgSettings: { timezone: 'America/Chicago' },
           partnerTimezone: 'UTC',
@@ -634,8 +632,8 @@ describe('findDueReports', () => {
         {
           id: REPORT_ID,
           schedule: 'daily',
-          // 09:05 Chicago Jun 30, via the offsetless-column simulation (see above).
-          lastGeneratedAt: pgOffsetlessTimestamp(Date.parse('2026-06-30T14:05:00Z')),
+          // 09:05 Chicago Jun 30.
+          lastGeneratedAt: new Date('2026-06-30T14:05:00Z'),
           config: { schedule: { time: '09:00' } },
           orgSettings: {},
           partnerTimezone: 'America/Chicago',

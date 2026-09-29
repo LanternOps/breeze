@@ -18,7 +18,7 @@ All constraints in the index's Global constraints and final Contract resolutions
 
 - PR: W01a; no agent code, commands, policy configuration, monitor kind, streaks, daily table, fleet route, or version bump.
 - Snapshot `schemaVersion: 1`; enforcement schema exists, ingest ignores enforcement, view returns `enforcement: null`.
-- Migration: `2026-11-09-100000-time-sync-status.sql`.
+- Migration: `2026-11-10-100000-time-sync-status.sql`.
 - Composite FK: `(device_id, org_id) → devices(id, org_id) ON UPDATE CASCADE ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE`.
 - Agent body rule: `agent-time-status`, `512 * 1024` bytes; malformed snapshots return `400`; sequence rejection returns `200 { accepted: false, reason: 'stale_sequence' }` (R4). The API body ceiling remains 512 KiB; R5 separately limits collector snapshots to 256 KiB.
 - Freshness: `90` minutes; event activity: `24` hours; mark retention: `7` days; recent events: `20`; snapshot events: `100`.
@@ -71,7 +71,7 @@ Every implementation file is listed below; Task 11 changes only the execution ch
 - `packages/shared/src/utils/windowsZones.ts` — expose strict IANA/Windows lookup accessors.
 - `packages/shared/src/utils/windowsZones.test.ts` — verify windowsZones behavior and contracts.
 - `packages/shared/src/utils/index.ts` — export the new contract/schema or mount the new resource alongside hardware.
-- `apps/api/migrations/2026-11-09-100000-time-sync-status.sql` — create latest time status with ownership FKs, forced RLS and indexes.
+- `apps/api/migrations/2026-11-10-100000-time-sync-status.sql` — create latest time status with ownership FKs, forced RLS and indexes.
 - `apps/api/src/db/schema/timeSync.ts` — define typed W01a status columns, indexes and health check.
 - `apps/api/src/db/schema/index.ts` — export the new contract/schema or mount the new resource alongside hardware.
 - `apps/api/src/services/tenantCascade.ts` — register status in alphabetical tenant erasure order.
@@ -838,7 +838,7 @@ git commit -m "feat(time-sync): add pinned CLDR timezone mapping" -m "Co-Authore
 
 ### Task 3: Add the latest-status table and every lifecycle registration
 
-**Files:** Create `apps/api/migrations/2026-11-09-100000-time-sync-status.sql`, `apps/api/src/db/schema/timeSync.ts`, `apps/api/src/services/timeSync/migrations.integration.test.ts`; Modify `apps/api/src/db/schema/index.ts:16`, `apps/api/src/services/tenantCascade.ts:525`, `apps/api/src/routes/devices/core.ts:319,564`, `apps/api/src/services/orgMergeRegistry.ts:850`, `apps/api/src/services/tenantExportPolicyRegistry.ts:307`, `apps/api/src/services/deviceDeletion.test.ts:74`, `apps/api/vitest.config.ts:56`, `apps/api/vitest.integration.config.ts:30`.
+**Files:** Create `apps/api/migrations/2026-11-10-100000-time-sync-status.sql`, `apps/api/src/db/schema/timeSync.ts`, `apps/api/src/services/timeSync/migrations.integration.test.ts`; Modify `apps/api/src/db/schema/index.ts:16`, `apps/api/src/services/tenantCascade.ts:525`, `apps/api/src/routes/devices/core.ts:319,564`, `apps/api/src/services/orgMergeRegistry.ts:850`, `apps/api/src/services/tenantExportPolicyRegistry.ts:307`, `apps/api/src/services/deviceDeletion.test.ts:74`, `apps/api/vitest.config.ts:56`, `apps/api/vitest.integration.config.ts:30`.
 
 **Interfaces:** Produces `deviceTimeStatus`, `typeof deviceTimeStatus.$inferSelect`, and the SQL table specified by §D without `finding_streaks` or `enforcement`. Consumes existing `devices(id, org_id)`, `organizations.id`, `breeze_has_org_access(uuid)`, `tablePolicy`, and the dynamic `getDeviceCascadeDeleteTables()` deletion path (`services/deviceDeletion.ts:18,339–352`). Direct `org_id` RLS is auto-discovered; do not add a redundant join-policy allowlist entry. Existing test helpers are verified at `apps/api/src/__tests__/integration/db-utils.ts:176,216,295` (`createPartner`, `createOrganization`, `createSite`), `setup.ts:61` (`getTestDb`), `replayMigration.ts:85` (`replayMigration`), and `apps/api/src/utils/pgErrors.ts:3` (`pgErrorCode` re-export). `tablePolicy` is defined at `apps/api/src/services/tenantExportPolicyRegistry.ts:17`.
 
@@ -958,8 +958,8 @@ it('denies forged ownership and cross-org CRUD under the app role', async () => 
 it('replaying the migration preserves observations and FK properties', async () => {
   const f = await fixture();
   await withDbAccessContext(system, () => insert(f.device.id, f.org.id));
-  await replayMigration('2026-11-09-100000-time-sync-status.sql');
-  await replayMigration('2026-11-09-100000-time-sync-status.sql');
+  await replayMigration('2026-11-10-100000-time-sync-status.sql');
+  await replayMigration('2026-11-10-100000-time-sync-status.sql');
   expect(
     await getTestDb().execute(sql`
     SELECT * FROM device_time_status WHERE device_id=${f.device.id}`),
@@ -1406,7 +1406,7 @@ Expected PASS: four forced policies, cross-org CRUD isolation, 23503 wrong owner
 - [ ] Commit:
 
 ```bash
-git add apps/api/migrations/2026-11-09-100000-time-sync-status.sql apps/api/src/db/schema/timeSync.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/deviceDeletion.test.ts apps/api/src/services/timeSync/migrations.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
+git add apps/api/migrations/2026-11-10-100000-time-sync-status.sql apps/api/src/db/schema/timeSync.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/deviceDeletion.test.ts apps/api/src/services/timeSync/migrations.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
 git commit -m "feat(time-sync): persist tenant-isolated device status" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -2839,7 +2839,7 @@ git commit -m "feat(time-sync): expose current device time view" -m "Co-Authored
 
 ### Task 7: Mount authenticated routes, limits, and MCP coverage
 
-**Files:** Create `apps/api/src/routes/agents/timeStatus.ts`, `timeStatus.test.ts`, `timeStatus.mounted.test.ts`; Create `apps/api/src/routes/devices/timeStatus.ts`, `timeStatus.test.ts`; Modify `apps/api/src/routes/agents/index.ts:18,86`, `apps/api/src/routes/devices/index.ts:17,162`, `apps/api/src/middleware/bodyLimit.ts:36,200`, `apps/api/src/middleware/bodyLimit.test.ts:250,360`, `apps/api/src/services/mcpCoverage.ts:186,348`.
+**Files:** Create `apps/api/src/routes/agents/timeStatus.ts`, `timeStatus.test.ts`, `timeStatus.mounted.test.ts`; Create `apps/api/src/routes/devices/timeStatus.ts`, `timeStatus.test.ts`; Modify `apps/api/src/routes/agents/index.ts:18,86`, `apps/api/src/routes/devices/index.ts:17,162`, `apps/api/src/middleware/bodyLimit.ts:36,200`, `apps/api/src/middleware/bodyLimit.test.ts:250,360`, `apps/api/src/services/mcpCoverage.ts:186,348`, `apps/api/src/routes/agents/parkedRouteClassification.test.ts` (`EXPECTED`: `'PUT /:id/time-status': 'deny'`), `apps/api/src/__tests__/parkedFanout.contract.test.ts` (`EXEMPT`: `services/timeSync/ingest.ts`, `services/timeSync/view.ts`, beside the hardwareHealth entries).
 
 **Interfaces:** Consumes `requireAgentRole` (`middleware/requireAgentRole.ts:15`), `AgentAuthContext` (`middleware/agentAuth.ts:26`), `zValidator` (`lib/validation.ts:150`, default 400), Task 5 ingest and Task 6 view. Produces `timeStatusRoutes` in each route module; agent `PUT /api/v1/agents/:id/time-status` → `200 { accepted: boolean, health?: TimeSyncHealth, reason?: 'stale_sequence' }` (R4); operator `GET /api/v1/devices/:id/time-status` → `DeviceTimeStatusView`, or 404 hidden/missing device. GET uses the exact scope/permission/site-check chain at `routes/devices/hardwareHealth.ts:8–12`. Existing functions are defined at `middleware/auth.ts:594,917,968` (`authMiddleware`, `requireScope`, `requirePermission`) and `routes/devices/helpers.ts:174,191` (`SITE_ACCESS_DENIED`, `getDeviceWithOrgAndSiteCheck`).
 
@@ -3408,11 +3408,11 @@ with:
   },
 ```
 
-- [ ] Run `cd apps/api && npx vitest run src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts`; expected PASS for body boundaries both with and without Content-Length, authentication, tenant/site denial, malformed input, and response shapes.
+- [ ] Run `cd apps/api && npx vitest run src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts src/routes/agents/parkedRouteClassification.test.ts src/__tests__/parkedFanout.contract.test.ts`; expected PASS for body boundaries both with and without Content-Length, authentication, tenant/site denial, malformed input, and response shapes.
 - [ ] Commit:
 
 ```bash
-git add apps/api/src/routes/agents/timeStatus.ts apps/api/src/routes/agents/timeStatus.test.ts apps/api/src/routes/agents/timeStatus.mounted.test.ts apps/api/src/routes/agents/index.ts apps/api/src/routes/devices/timeStatus.ts apps/api/src/routes/devices/timeStatus.test.ts apps/api/src/routes/devices/index.ts apps/api/src/middleware/bodyLimit.ts apps/api/src/middleware/bodyLimit.test.ts apps/api/src/services/mcpCoverage.ts
+git add apps/api/src/routes/agents/timeStatus.ts apps/api/src/routes/agents/timeStatus.test.ts apps/api/src/routes/agents/timeStatus.mounted.test.ts apps/api/src/routes/agents/index.ts apps/api/src/routes/devices/timeStatus.ts apps/api/src/routes/devices/timeStatus.test.ts apps/api/src/routes/devices/index.ts apps/api/src/middleware/bodyLimit.ts apps/api/src/middleware/bodyLimit.test.ts apps/api/src/services/mcpCoverage.ts apps/api/src/routes/agents/parkedRouteClassification.test.ts apps/api/src/__tests__/parkedFanout.contract.test.ts
 git commit -m "feat(time-sync): mount authenticated device and agent routes" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -6403,20 +6403,22 @@ git commit -m "docs(time-sync): explain device visibility and findings" -m "Co-A
 
 **Interfaces:** Consumes the complete W01a implementation and the existing contract runners. Produces verified RLS coverage, ownership-FK deferrability, cascade/move/merge/export coverage, current migration ordering, and API/shared/web type consistency. This final verification task reruns existing failing-test/implementation cycles from Tasks 1–10; it adds no artificial failing test or duplicate implementation.
 
-- [ ] Run Task 2's mapping test with the exact R2 `['Antarctica/Troll']` exception and Task 6's `unmapped` view test. Contract issues 1–4 are resolved below; no further mapping decision is required.
-- [ ] Run the existing targeted unit regressions (no full unit suites):
+- [x] Run Task 2's mapping test with the exact R2 `['Antarctica/Troll']` exception and Task 6's `unmapped` view test. Contract issues 1–4 are resolved below; no further mapping decision is required.
+- [x] Run the existing targeted unit regressions (no full unit suites):
 
 ```bash
 (cd packages/shared && npx vitest run src/validators/timeSync.test.ts src/validators/ntpServerHosts.test.ts src/utils/windowsZones.test.ts)
-(cd apps/api && npx vitest run src/services/timeSync/expectedTimezone.test.ts src/services/timeSync/findings.test.ts src/services/timeSync/freshness.test.ts src/services/timeSync/view.test.ts src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts)
+(cd apps/api && npx vitest run src/services/timeSync/expectedTimezone.test.ts src/services/timeSync/findings.test.ts src/services/timeSync/freshness.test.ts src/services/timeSync/view.test.ts src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts src/routes/agents/parkedRouteClassification.test.ts src/__tests__/parkedFanout.contract.test.ts)
 (cd apps/api && npx vitest run src/routes/devices/cascadeDelete.test.ts src/routes/devices/moveOrg.coverage.test.ts src/services/deviceDeletion.test.ts src/services/orgMerge.test.ts src/db/migrationRlsScope.test.ts src/db/autoMigrate.test.ts)
 (cd apps/api && npx vitest run src/services/aiToolsDevice.timeSync.test.ts src/services/aiToolsDevice.timeSync.registry.test.ts src/services/helperToolFilter.test.ts src/services/llm/toolCapture/surfaces.test.ts src/services/aiGuardrails.agentPrincipal.contract.test.ts src/services/aiAgents/runLoop.test.ts src/__tests__/mcp-coverage.test.ts)
 (cd apps/web && npx vitest run src/components/devices/time/DeviceTimeSection.test.tsx src/components/devices/time/DeviceTimeSection.integration.test.tsx src/components/devices/time/timeSyncDocs.test.ts src/components/devices/DeviceInfoTab.test.tsx src/lib/i18n/keyUsage.test.ts src/lib/i18n/translationCoverage.test.ts)
 ```
 
+Parked-registry contract: `parkedRouteClassification.test.ts` classifies every route in the real `agentRoutes` table and `parkedFanout.contract.test.ts` classifies every file under `src/services`, so every new agent route or `services/**` file needs an entry there in the same commit (W01a: `PUT /:id/time-status` → `deny`; `services/timeSync/{ingest,view}.ts` exempt). W02's routes and services must register the same way.
+
 Expected PASS with the binding R1–R17 resolutions applied. Before the corresponding implementations the exact failures are pinned in Tasks 1–10; a missing module, omitted registration, wrong scope, stale reset boundary, or untranslated key is a failure, not a reason to weaken an assertion.
 
-- [ ] Run every index-mandated tenancy contract against the private worktree stack. Run the teardown even when a command fails; the shell trap covers that cleanup. The RLS coverage suite has its own runner and is not selected through the integration config.
+- [x] Run every index-mandated tenancy contract against the private worktree stack. Run the teardown even when a command fails; the shell trap covers that cleanup. The RLS coverage suite has its own runner and is not selected through the integration config.
 
 ```bash
 (
@@ -6436,7 +6438,7 @@ Expected PASS with the binding R1–R17 resolutions applied. Before the correspo
 
 Expected PASS: `device_time_status` is covered by forced RLS and every tenant lifecycle list; wrong-tenant insert fails with SQLSTATE 42501; wrong composite owner fails with 23503; foreign reads/updates/deletes affect zero rows; the FK is deferrable but initially immediate; export open JSON columns remain excluded; initial/reset races accept exactly one snapshot.
 
-- [ ] Run the exact current CI typechecks (`.github/workflows/ci.yml:374,380,383–384`):
+- [x] Run the exact current CI typechecks (`.github/workflows/ci.yml:374,380,383–384`):
 
 ```bash
 pnpm exec tsc --build apps/api/tsconfig.tests.json
@@ -6446,7 +6448,7 @@ pnpm --filter @breeze/shared typecheck
 
 Expected PASS for API source and tests, shared source and tests, and web Astro/React. Do not replace the API build-mode command with the old source-only checker.
 
-- [ ] Run the R17 linters before committing (also run the applicable commands before each earlier task's implementation commit):
+- [x] Run the R17 linters before committing (also run the applicable commands before each earlier task's implementation commit):
 
 ```bash
 pnpm --filter @breeze/api lint
@@ -6456,7 +6458,7 @@ pnpm --filter @breeze/web lint
 
 Expected PASS. W01a creates no Go code, so `gofmt -l` is not applicable in this wave.
 
-- [ ] Inspect the migration ceiling and diff before committing final evidence:
+- [x] Inspect the migration ceiling and diff before committing final evidence:
 
 ```bash
 ls apps/api/migrations | grep -E '^[0-9]{4}-.*\.sql$' | sort | tail -1
@@ -6468,12 +6470,32 @@ rg -n 'get_device_time_status' apps/api/src/services apps/web/src/components/ai-
 
 Expected: the reserved migration still sorts after committed migrations; all registration hits in Tasks 3 and 8 exist. If the ceiling moved, the index explicitly permits renaming upward before shipping; update the migration replay reference and this plan's commands together, and record that contract adjustment. Never rename a shipped migration.
 
-- [ ] Mark completed checkboxes in this document only after actual execution; preserve any verification failures and the R2 mapping exception in the implementation PR. This planning pass has not run implementation tests. Commit the completed execution record:
+- [x] Mark completed checkboxes in this document only after actual execution; preserve any verification failures and the R2 mapping exception in the implementation PR. This planning pass has not run implementation tests. Commit the completed execution record:
 
 ```bash
 git add docs/superpowers/plans/monitoring/2026-09-28-time-sync-w01a-api-web-visibility.md
 git commit -m "docs(time-sync): record W01a verification" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+**Execution record (2026-09-29, branch `feature/7452-time-sync/wave-7453`, all PASS, no verification failures):**
+
+| Check | Result |
+| --- | --- |
+| Shared unit (timeSync, ntpServerHosts, windowsZones incl. R2 `['Antarctica/Troll']`) | 3 files / 52 tests |
+| API unit group 1 (timeSync services, routes, bodyLimit, parked registries; incl. `unmapped` view case) | 10 files / 173 tests |
+| API unit group 2 (cascadeDelete, moveOrg.coverage, deviceDeletion, orgMerge, migrationRlsScope, autoMigrate) | 6 files / 284 tests |
+| API unit group 3 (AI tool surfaces, guardrails, runLoop, mcp-coverage) | 7 files / 276 tests |
+| Web unit (DeviceTimeSection, integration, docs, DeviceInfoTab, i18n keyUsage/translationCoverage) | 6 files / 61 tests |
+| `test:rls-coverage` (`DB_CONTEXTLESS_WRITE_STRICT=true`) | 103 tests |
+| tenantCascade / tenant-export-policy / tenantExportErasureRoundtrip / orgMergeRegistry / orgLifecycleFoundations | 5 / 3 / 8 / 14 / 4 tests |
+| timeSync migrations + ingest integration | 2 files / 7 tests |
+| `pnpm db:check-drift` | no drift (972 migration files) |
+| `tsc --build apps/api/tsconfig.tests.json`, shared `typecheck`, web `astro check` | 0 errors each |
+| API lint, web lint, shared eslint (listed files) | clean |
+| Migration ceiling / naming / `git diff --check` | `2026-11-10-100000-time-sync-status.sql` still sorts last (origin/main ceiling `2026-11-09-110100-…`); naming guard OK; diff clean |
+| Registration greps | `device_time_status` in tenantCascade, core.ts (×2), orgMergeRegistry, tenantExportPolicyRegistry; `get_device_time_status` across all AI surfaces + tierConfig |
+
+Two invocation notes (no contract change): the API build-mode typecheck needs CI's `NODE_OPTIONS=--max-old-space-size=12288` locally or it aborts with a heap OOM, and `pnpm db:check-drift` needs `DATABASE_URL` pointed at the test stack from `.env.test` (it does not read that file itself).
 
 ## Self-Review
 

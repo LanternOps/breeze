@@ -1,4 +1,166 @@
 {
+  "timeSync": {
+    "title": "Zeit",
+    "loading": "Zeitstatus wird geladen…",
+    "error": "Zeitstatus konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "unknown": "Unbekannt",
+    "yes": "Ja",
+    "no": "Nein",
+    "site": "Standort",
+    "policy": "Richtlinie",
+    "states": {
+      "not_reported": "Noch keine Zeitdaten — dafür ist ein Agent-Update mit Zeitsynchronisierung erforderlich",
+      "unsupported_os": "Auf diesem Betriebssystem noch nicht unterstützt"
+    },
+    "health": {
+      "healthy": "Fehlerfrei",
+      "warning": "Warnung",
+      "critical": "Kritisch",
+      "unknown": "Unbekannt"
+    },
+    "severity": {
+      "critical": "Kritisch",
+      "warning": "Warnung",
+      "info": "Hinweis"
+    },
+    "received": "Empfangen: {{at}}",
+    "collected": "Erfasst: {{at}}",
+    "stale": "Veraltet — der letzte Zeitbericht wurde vor mehr als 90 Minuten empfangen.",
+    "expected": "Erwartet: {{windows}} ({{iana}}), aus {{source}}: {{name}}",
+    "expectedPolicy": "Erwartet: {{windows}} ({{iana}}), aus Richtlinie {{name}} — überschreibt die Zeitzone des Standorts",
+    "managedBadge": "Durch Gruppenrichtlinie verwaltet",
+    "unset": {
+      "site_utc_default": "Keine erwartete Zeitzone (Standort verwendet den UTC-Standard)",
+      "no_site": "Keine erwartete Zeitzone (kein Standort zugewiesen)",
+      "unmapped": "Keine erwartete Zeitzone (für die Zeitzone des Standorts gibt es keine Windows-Zuordnung)"
+    },
+    "noFindings": "Keine Zeitbefunde in diesem Bericht.",
+    "events": "Aktuelle Zeitereignisse ({{count}})",
+    "noEvents": "Keine aktuellen Zeitereignisse.",
+    "eventHeading": "Ereignis {{id}} · Stufe {{level}}",
+    "noMessage": "Keine Ereignismeldung.",
+    "fields": {
+      "source": "Zeitquelle",
+      "sourceKind": "Art der Quelle",
+      "lastSync": "Letzte erfolgreiche Synchronisierung",
+      "method": "Erfassungsmethode",
+      "lastError": "Letzter Synchronisierungsfehler",
+      "stratum": "NTP-Ebene",
+      "poll": "Tatsächliches Abfrageintervall (Sekunden)",
+      "syncType": "Synchronisierungstyp",
+      "ntpServer": "NTP-Serverkonfiguration",
+      "hosts": "Ermittelte NTP-Hosts",
+      "specialPoll": "Spezielles Abfrageintervall (Sekunden)",
+      "serviceState": "Windows-Zeitdienst",
+      "serviceStartType": "Dienststart",
+      "policyManaged": "Durch Gruppenrichtlinie verwaltet",
+      "policyManagedValues": "Gruppenrichtlinienwerte",
+      "hostProvider": "Zeitanbieter des VM-Hosts aktiviert",
+      "joinType": "Beitrittstyp",
+      "role": "Domänenrolle",
+      "domain": "Domäne",
+      "forest": "Gesamtstruktur",
+      "pdc": "PDC",
+      "windowsId": "Aktuelle Windows-Zeitzone",
+      "bias": "Zeitversatz (Minuten)",
+      "autoUpdate": "Automatische Zeitzone"
+    },
+    "values": {
+      "NT5DS": "Domänenhierarchie (NT5DS)",
+      "NTP": "NTP-Gegenstellen",
+      "NoSync": "Keine Synchronisierung",
+      "AllSync": "Alle Quellen",
+      "ntp_peer": "NTP-Gegenstelle",
+      "domain_peer": "Domänengegenstelle",
+      "local_clock": "Lokale Uhr",
+      "free_running": "Freilaufende Uhr",
+      "vm_host": "VM-Host",
+      "unknown": "Unbekannt",
+      "provider_api": "Windows-Anbieter-API",
+      "w32tm_tokens": "Windows-Zeitstatustoken",
+      "events": "Time-Service-Ereignisse",
+      "unavailable": "Nicht verfügbar",
+      "none": "Nicht beigetreten",
+      "workplace": "Am Arbeitsplatz registriert",
+      "azure_ad": "Microsoft Entra beigetreten",
+      "on_prem_ad": "Active Directory beigetreten",
+      "hybrid_azure_ad": "Hybrider Entra-Beitritt",
+      "workgroup": "Arbeitsgruppe",
+      "entra_only": "Nur Entra",
+      "member": "Domänenmitglied",
+      "dc": "Domänencontroller",
+      "pdc_emulator": "PDC-Emulator",
+      "forest_root_pdc_emulator": "PDC-Emulator der Gesamtstruktur-Stammdomäne",
+      "running": "Wird ausgeführt",
+      "stopped": "Beendet",
+      "start_pending": "Wird gestartet",
+      "stop_pending": "Wird beendet",
+      "paused": "Angehalten",
+      "not_installed": "Nicht installiert",
+      "auto": "Automatisch",
+      "delayed_auto": "Automatisch (verzögert)",
+      "manual": "Manuell",
+      "trigger_manual": "Manuell (Triggerstart)",
+      "disabled": "Deaktiviert",
+      "on": "Ein",
+      "off": "Aus"
+    },
+    "findings": {
+      "pdc_no_external_source": {
+        "label": "Der PDC der Gesamtstruktur-Stammdomäne hat keine externe Quelle",
+        "hint": "Legen Sie NTP-Server auf {device} fest — das Gerät ist der PDC der Gesamtstruktur-Stammdomäne, dem alle Domänenmitglieder folgen."
+      },
+      "source_local_clock": {
+        "label": "Lokale Uhr wird verwendet",
+        "hint": "Synchronisiert mit der eigenen Uhr. Konfigurieren Sie eine NTP-Quelle (oder prüfen Sie bei Domänenbeitritt den Domänencontroller)."
+      },
+      "dc_vm_host_sync": {
+        "label": "Domänencontroller synchronisiert mit dem VM-Host",
+        "hint": "Deaktivieren Sie auf diesem Domänencontroller den Zeitanbieter des VM-Hosts."
+      },
+      "ntp_server_unresolvable": {
+        "label": "NTP-Servername ist ungültig oder nicht auflösbar",
+        "hint": "NTP-Server {host} kann nicht aufgelöst werden oder hat keinen gültigen Namen — korrigieren Sie den Namen oder DNS."
+      },
+      "ntp_peer_unreachable": {
+        "label": "NTP-Gegenstelle ist nicht erreichbar",
+        "hint": "Keine Antwort von {source} — prüfen Sie ausgehendes UDP auf Port 123."
+      },
+      "domain_source_unavailable": {
+        "label": "Domänenzeitquelle nicht verfügbar",
+        "hint": "Keine Domänenzeitquelle gefunden — prüfen Sie die Erreichbarkeit des Domänencontrollers."
+      },
+      "member_not_on_hierarchy": {
+        "label": "Domänenhierarchie wird nicht verwendet",
+        "hint": "Der Domäne beigetreten, verwendet jedoch nicht die Domänenhierarchie."
+      },
+      "sync_disabled": {
+        "label": "Zeitsynchronisierung ist deaktiviert",
+        "hint": "Der Windows-Zeitdienst ist deaktiviert."
+      },
+      "sync_stale": {
+        "label": "Keine aktuelle erfolgreiche Synchronisierung",
+        "hint": "Keine erfolgreiche Synchronisierung seit {lastSuccessfulSyncAt}."
+      },
+      "correction_refused": {
+        "label": "Zeitkorrektur wurde abgelehnt",
+        "hint": "Die Uhr weicht zu stark ab, als dass Windows sie selbst korrigieren könnte; synchronisieren Sie erneut oder korrigieren Sie sie manuell."
+      },
+      "timezone_mismatch": {
+        "label": "Zeitzone weicht von der erwarteten Zeitzone ab",
+        "hint": "Die Zeitzone ist {actual}, erwartet wird {expected} (aus {site or policy})."
+      },
+      "policy_not_applied": {
+        "label": "Zeitrichtlinie wurde nicht angewendet",
+        "hint": "Zeitrichtlinie konnte nicht angewendet werden: {error}."
+      },
+      "policy_conflict_gpo": {
+        "label": "Gruppenrichtlinie steuert die Zeiteinstellungen",
+        "hint": "W32Time wird durch Gruppenrichtlinie verwaltet; Breeze ändert die Einstellungen nicht."
+      }
+    }
+  },
   "aiActivity": {
     "title": "KI-Aktivität",
     "count": "{{count}} Aktionen in den letzten {{days}} Tagen ausgelöst",
@@ -3590,6 +3752,64 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Gerätelimit erreicht",
       "STEP_UP_REQUIRED": "Bestätigung erforderlich",
       "ASSIGNMENT_FAILED": "Fehlgeschlagen"
+    }
+  },
+  "timeFleet": {
+    "title": "Zeitsynchronisierung",
+    "subtitle": "Beobachtete Windows-Zeitkonfiguration und Synchronisierungsbefunde.",
+    "view": "Ansicht",
+    "list": "Geräte",
+    "byDomain": "Nach AD-Domäne",
+    "health": "Zustand",
+    "finding": "Befund",
+    "findings": "Befunde",
+    "role": "Rolle",
+    "organization": "Organisation",
+    "site": "Standort",
+    "all": "Alle",
+    "refresh": "Aktualisieren",
+    "device": "Gerät",
+    "source": "Zeitquelle",
+    "received": "Zuletzt empfangen",
+    "stale": "Veraltet",
+    "noData": "Noch keine Zeitdaten",
+    "unknown": "Unbekannt",
+    "never": "Nie",
+    "none": "Keine",
+    "noDomain": "Keine AD-Domäne gemeldet",
+    "pdcContext": "Der PDC wird zur Einordnung oben angezeigt und kann außerhalb der ausgewählten Filter oder Seite liegen.",
+    "pdcMissing": "Der PDC ist nicht im zugänglichen Gerätebestand registriert. Möglicherweise fehlen Ihnen die Zugriffsrechte.",
+    "exportCurrent": "Aktuellen Stand als CSV exportieren",
+    "exportHistory": "Tagesdaten als CSV exportieren",
+    "from": "Von (UTC)",
+    "to": "Bis (UTC)",
+    "evidence": "Vom Breeze-Agenten gemeldete beobachtete Synchronisierung; Tage ohne Bericht werden als Lücken aufgeführt. Exportieren Sie bis zu 400 UTC-Tage. Die Filter wählen den aktuellen Gerätebestand aus.",
+    "rangeError": "Wählen Sie einen Zeitraum von 1 bis 400 UTC-Tagen.",
+    "exportError": "Der Nachweisexport ist fehlgeschlagen. Versuchen Sie es erneut.",
+    "siteError": "Die Standorte konnten nicht geladen werden. Aktualisieren Sie die Ansicht, um es erneut zu versuchen.",
+    "loading": "Zeitsynchronisierungsdaten werden geladen…",
+    "loadError": "Die Zeitsynchronisierungsdaten konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Keine zugänglichen Windows-Geräte entsprechen diesen Filtern.",
+    "count": "{{count}} passendes Gerät",
+    "count_other": "{{count}} passende Geräte",
+    "previous": "Zurück",
+    "next": "Weiter",
+    "page": "Seite {{page}}",
+    "healthLabels": {
+      "healthy": "In Ordnung",
+      "warning": "Warnung",
+      "critical": "Kritisch",
+      "unknown": "Unbekannt"
+    },
+    "roles": {
+      "workgroup": "Arbeitsgruppe",
+      "entra_only": "Nur Entra",
+      "member": "Domänenmitglied",
+      "dc": "Domänencontroller",
+      "pdc_emulator": "PDC-Emulator der Domäne",
+      "forest_root_pdc_emulator": "PDC-Emulator der Gesamtstruktur-Stammdomäne",
+      "unknown": "Unbekannt"
     }
   }
 }

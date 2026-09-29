@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { db } from '../db';
 import { incidents, huntressIncidents, s1Threats, type IncidentTimelineEntry } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import {
   ALLOWED_EVIDENCE_STORAGE_SCHEMES,
   ALLOWED_STATUS_TRANSITIONS,
@@ -404,7 +405,7 @@ export async function buildIncidentFeed(
         edrStatus: r.edrStatus,
         status: r.status,
         deviceId: r.deviceId,
-        detectedAt: new Date(r.detectedAt as unknown as string).toISOString(),
+        detectedAt: dateFromSqlValue(r.detectedAt as unknown as string).toISOString(),
         trackedIncidentId: r.trackedIncidentId,
         linkOut: source === 'breeze' ? null : resolveFindingLinkOut(r.details),
       };
