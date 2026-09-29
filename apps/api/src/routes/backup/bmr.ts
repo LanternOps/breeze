@@ -1945,7 +1945,7 @@ bmrPublicRoutes.post(
           code: result.code ?? null,
         },
       };
-      const persistedRestoreJob = await db.transaction(async (tx) => {
+      const completion = await db.transaction(async (tx) => {
         const [restoreJob] = await tx
           .insert(restoreJobs)
           .values({
@@ -2005,10 +2005,24 @@ bmrPublicRoutes.post(
               id: restoreJobs.id,
               status: restoreJobs.status,
             });
-          if (overwritten) persisted = overwritten;
+          if (overwritten) {
+            persisted = overwritten;
+          } else {
+            // Zero rows: a concurrent completion moved the row off `failed`
+            // after our SELECT. Re-read it so the response reports the row
+            // that actually won rather than the stale `failed` snapshot.
+            const [current] = await tx
+              .select({ id: restoreJobs.id, status: restoreJobs.status })
+              .from(restoreJobs)
+              .where(eq(restoreJobs.id, persisted.id))
+              .limit(1);
+            if (current) persisted = current;
+          }
         }
 
-        if (persisted && consumesToken) {
+        if (!persisted) return { job: null, tokenConsumed: false };
+
+        if (consumesToken) {
           await tx
             .update(recoveryTokens)
             .set({
@@ -2022,12 +2036,28 @@ bmrPublicRoutes.post(
             .update(recoveryMediaArtifacts)
             .set({ status: 'expired' })
             .where(eq(recoveryMediaArtifacts.tokenId, row.id));
+          return { job: persisted, tokenConsumed: true };
         }
 
-        return persisted ?? null;
+        // This attempt failed, so it does not consume the token — but a
+        // concurrent completion may already have. Report the token's actual
+        // state rather than inferring it from this attempt's own result.
+        if (restoreJob || persisted.status === 'failed') {
+          return { job: persisted, tokenConsumed: false };
+        }
+        const [currentToken] = await tx
+          .select({ status: recoveryTokens.status, completedAt: recoveryTokens.completedAt })
+          .from(recoveryTokens)
+          .where(eq(recoveryTokens.id, row.id))
+          .limit(1);
+        return {
+          job: persisted,
+          tokenConsumed: currentToken?.status === 'used' && currentToken.completedAt != null,
+        };
       });
 
-      const tokenConsumed = consumesToken && persistedRestoreJob !== null;
+      const persistedRestoreJob = completion.job;
+      const { tokenConsumed } = completion;
       writeAuditEvent(c, {
         orgId: row.orgId,
         action: 'bmr.recovery.complete',
@@ -2041,7 +2071,13 @@ bmrPublicRoutes.post(
           ...(result.error ? { error: result.error.slice(0, 500) } : {}),
         },
         result: restoreStatus === 'failed' ? 'failure' : 'success',
-        ...(restoreStatus === 'failed' ? { errorMessage: 'Recovery attempt failed; token remains usable for a retry' } : {}),
+        ...(restoreStatus === 'failed'
+          ? {
+              errorMessage: tokenConsumed
+                ? 'Recovery attempt failed; token was already consumed by a concurrent completion'
+                : 'Recovery attempt failed; token remains usable for a retry',
+            }
+          : {}),
       });
 
       return c.json({
