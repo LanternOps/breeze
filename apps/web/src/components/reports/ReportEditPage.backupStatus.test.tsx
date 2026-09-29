@@ -93,3 +93,27 @@ describe('ReportEditPage builder org', () => {
     expect(builderProps.mock.calls.at(-1)![0]).toMatchObject({ mode: 'edit', reportOrgId: 'org-7' });
   });
 });
+
+// Review follow-up (pre-existing bug): the edit page never passed the stored
+// run time / day / date, so every save reset them to 09:00 / Monday / 1st and
+// moved the report's delivery (the schedule worker reads config.schedule).
+describe('ReportEditPage keeps the stored run time', () => {
+  it('hands the builder the stored time, day and date', async () => {
+    vi.clearAllMocks();
+    const weekly = { ...report, schedule: 'weekly', config: { schedule: { time: '14:30', day: 'friday', date: '15' } } };
+    fetchWithAuth.mockImplementation((url: string) =>
+      url === '/reports/report-1'
+        ? Promise.resolve({ ok: true, json: () => Promise.resolve(weekly) })
+        : Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) }));
+
+    render(<ReportEditPage reportId="report-1" />);
+    await screen.findByTestId('report-builder-stub');
+
+    expect((builderProps.mock.calls.at(-1)![0] as { defaultValues: Record<string, unknown> }).defaultValues).toMatchObject({
+      schedule: 'weekly',
+      scheduleTime: '14:30',
+      scheduleDay: 'friday',
+      scheduleDate: '15',
+    });
+  });
+});
