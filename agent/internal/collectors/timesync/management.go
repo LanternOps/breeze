@@ -32,7 +32,7 @@ type Manager struct {
 	// blockedFingerprint names the settings whose persistence last failed, so a
 	// heartbeat that re-sends them retries the save without re-reporting the error.
 	blockedFingerprint string
-	// lastRejected identifies the most recent invalid delivery (payload + reason).
+	// lastRejected identifies the most recent invalid delivery by payload alone.
 	// The API re-sends settings on every heartbeat; a repeat is not a new rejection.
 	lastRejected string
 }
@@ -109,7 +109,7 @@ func (m *Manager) Apply(raw any) (bool, error) {
 		e = fmt.Errorf("settings changed without a new fingerprint")
 	}
 	if e != nil {
-		key := rejectionKey(raw, e)
+		key := rejectionKey(raw)
 		if key == m.lastRejected {
 			// Already reported under one result ID; the retained last-valid settings
 			// keep reconciling on the normal schedule.
@@ -149,14 +149,19 @@ func (m *Manager) Apply(raw any) (bool, error) {
 	return true, nil
 }
 
-// rejectionKey is the canonical delivery (json.Marshal sorts map keys) plus the
-// reason, so an identical re-delivery is recognised across heartbeats.
-func rejectionKey(raw any, reason error) string {
+// rejectionKey is the canonical delivery (json.Marshal sorts map keys), so an
+// identical re-delivery is recognised across heartbeats. The reason is left out:
+// it is fixed by the payload (parsing is deterministic, and the fingerprint check
+// compares against Settings, which only a valid delivery changes — and a valid
+// delivery clears lastRejected), so including its text could only let a
+// nondeterministic message re-report the same payload.
+func rejectionKey(raw any) string {
 	b, e := json.Marshal(raw)
 	if e != nil {
-		return "unencodable\x00" + reason.Error()
+		// Unreachable for a decoded heartbeat; ParseSettings rejects it the same way.
+		return "unencodable\x00" + e.Error()
 	}
-	return string(b) + "\x00" + reason.Error()
+	return string(b)
 }
 func (m *Manager) read(ctx context.Context) (Observation, error) { return m.observe(ctx) }
 func (m *Manager) reconciler() *Reconciler {

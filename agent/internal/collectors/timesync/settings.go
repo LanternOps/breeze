@@ -3,7 +3,9 @@ package timesync
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -34,15 +36,26 @@ func ValidateSettings(s Settings) error {
 	}
 	return nil
 }
+
+// canonicalObject errors must be a pure function of the payload: the rejection
+// memory treats a re-delivered payload as already reported, so never let map
+// iteration order pick which key an error names.
 func canonicalObject(m map[string]json.RawMessage, aliases map[string]string, required []string) error {
-	for old, next := range aliases {
+	var duplicates []string
+	for _, old := range slices.Sorted(maps.Keys(aliases)) {
+		next := aliases[old]
 		if v, ok := m[old]; ok {
 			if _, exists := m[next]; exists {
-				return fmt.Errorf("duplicate settings alias %s", next)
+				duplicates = append(duplicates, next)
+				continue
 			}
 			m[next] = v
 			delete(m, old)
 		}
+	}
+	if len(duplicates) > 0 {
+		slices.Sort(duplicates)
+		return fmt.Errorf("duplicate settings aliases %s", strings.Join(duplicates, ", "))
 	}
 	allowed := map[string]bool{}
 	for _, key := range required {
@@ -51,10 +64,15 @@ func canonicalObject(m map[string]json.RawMessage, aliases map[string]string, re
 			return fmt.Errorf("missing %s", key)
 		}
 	}
+	var unknown []string
 	for key := range m {
 		if !allowed[key] {
-			return fmt.Errorf("unknown setting %s", key)
+			unknown = append(unknown, key)
 		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		return fmt.Errorf("unknown settings %s", strings.Join(unknown, ", "))
 	}
 	return nil
 }

@@ -115,3 +115,44 @@ func TestManagementResultNulls(t *testing.T) {
 		t.Fatal(string(b))
 	}
 }
+
+// invalidDeliveries are payloads whose rejection used to depend on Go's randomised
+// map iteration: the first unknown key or duplicate alias found named the error.
+func invalidDeliveries(t *testing.T) map[string]func() map[string]any {
+	t.Helper()
+	return map[string]func() map[string]any{
+		"unknown-top": func() map[string]any {
+			m := rawSettings(t, settingsFixture())
+			m["futureA"], m["futureB"], m["futureC"] = true, 1, "x"
+			return m
+		},
+		"unknown-timezone": func() map[string]any {
+			m := rawSettings(t, settingsFixture())
+			z := m["timezone"].(map[string]any)
+			z["futureA"], z["futureB"], z["futureC"] = true, 1, "x"
+			return m
+		},
+		"duplicate-alias": func() map[string]any {
+			m := rawSettings(t, settingsFixture())
+			m["enforceNtp"], m["ntpServers"], m["pollIntervalMinutes"] = m["enforce_ntp"], m["ntp_servers"], m["poll_interval_minutes"]
+			return m
+		},
+	}
+}
+func TestManagementSettingsErrorsAreDeterministic(t *testing.T) {
+	want := map[string]string{
+		"unknown-top":      "unknown settings futureA, futureB, futureC",
+		"unknown-timezone": "unknown settings futureA, futureB, futureC",
+		"duplicate-alias":  "duplicate settings aliases enforce_ntp, ntp_servers, poll_interval_minutes",
+	}
+	for name, build := range invalidDeliveries(t) {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < 50; i++ {
+				_, err := ParseSettings(build())
+				if err == nil || err.Error() != want[name] {
+					t.Fatalf("delivery %d: got %v, want %q", i, err, want[name])
+				}
+			}
+		})
+	}
+}

@@ -335,6 +335,37 @@ func TestManagementRepeatedInvalidDeliveryReportsOnceThenReconcilesLastValid(t *
 		t.Fatal("rejection after valid delivery", changed, e)
 	}
 }
+func TestManagementRepeatedMultiKeyRejectionReportsOnce(t *testing.T) {
+	for name, build := range invalidDeliveries(t) {
+		t.Run(name, func(t *testing.T) {
+			m := managementFixture(t, t.TempDir(), newFakeTimeSystem("workgroup"), func(context.Context, any) error { return nil })
+			if changed, e := m.Apply(build()); e == nil || !changed {
+				t.Fatal("first rejection", changed, e)
+			}
+			id := m.state.Report.NTP.ResultID
+			// Every heartbeat re-delivers the same payload; none of them is a new rejection.
+			for i := 0; i < 20; i++ {
+				if changed, e := m.Apply(build()); e != nil || changed {
+					t.Fatal("repeat rejection", i, changed, e)
+				}
+				if m.state.Report.NTP.ResultID != id {
+					t.Fatal("repeat rejection minted a new result", i)
+				}
+			}
+		})
+	}
+}
+func TestManagementRejectionKeyIsPayloadOnly(t *testing.T) {
+	raw := rawSettings(t, settingsFixture())
+	if rejectionKey(raw) != rejectionKey(rawSettings(t, settingsFixture())) {
+		t.Fatal("identical payloads keyed differently")
+	}
+	other := settingsFixture()
+	other.PollIntervalMinutes = 16
+	if rejectionKey(raw) == rejectionKey(rawSettings(t, other)) {
+		t.Fatal("different payloads share a key")
+	}
+}
 func TestManagementRepeatedBlockedDeliveryIsNotAnError(t *testing.T) {
 	f := newFakeTimeSystem("workgroup")
 	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
