@@ -932,7 +932,7 @@
       "windowsHello": "Verifica Windows Hello fallita",
       "actionFailed": "Impossibile {{decision}} la richiesta",
       "network": "Errore di rete",
-      "notApproved": "Elevazione non approvata. La richiesta non è più in sospeso.",
+      "notApproved": "Il server non ha confermato l'approvazione di questa elevazione. Chiudi questa finestra di dialogo per vederne lo stato attuale.",
       "notApprovedReason": "Elevazione non approvata: {{reason}}"
     },
     "toasts": {

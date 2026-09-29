@@ -45,6 +45,19 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
   } as unknown as Response;
 }
 
+/** The respond route's 200 for a decision recorded as asked (routes/pam.ts). */
+function respondRecordsRequestedDecision() {
+  fetchWithAuthMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+    const approve = JSON.parse(String(init?.body ?? '{}')).decision === 'approve';
+    return makeJsonResponse({
+      success: true,
+      id: 'er-9',
+      status: approve ? 'approved' : 'denied',
+      enforcementStatus: approve ? 'pending_dispatch' : 'cleanup_pending',
+    });
+  });
+}
+
 const requestFixture = (over: Partial<ElevationRequest> = {}): ElevationRequest => ({
   id: 'er-9',
   orgId: 'org-1',
@@ -79,7 +92,7 @@ function respondBody(): Record<string, unknown> {
 describe('PamRespondModal Windows Hello step-up', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ success: true }));
+    respondRecordsRequestedDecision();
   });
 
   it('runs the assertion on approve and includes the proof in the respond body', async () => {
@@ -162,7 +175,7 @@ describe('PamRespondModal critical-tier (L4) re-authentication (#4052)', () => {
     vi.clearAllMocks();
     authState.user = { id: 'u-1', mfaEnabled: true, hasPassword: true };
     getApprovalAssertionMock.mockResolvedValue(proofFixture);
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ success: true }));
+    respondRecordsRequestedDecision();
   });
 
   it('does not show re-auth fields for a non-critical request', () => {
@@ -572,8 +585,34 @@ describe('PamRespondModal non-success outcomes on a 200', () => {
     );
     submit();
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/not approved/i));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/did not confirm this elevation as approved/i),
+    );
     expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(onActioned).not.toHaveBeenCalled();
+  });
+
+  // An approval gate must not claim "approved" on a 200 it cannot read as one
+  // (no `status`, or a body that is not JSON at all).
+  it.each([
+    ['names no status', { success: true }],
+    ['is not JSON', null],
+  ])('does not report an approve as approved when the 200 body %s', async (_label, payload) => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(payload));
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 2 })}
+        onClose={() => {}}
+        onActioned={onActioned}
+      />,
+    );
+    submit();
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/did not confirm this elevation as approved/i),
+    );
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     expect(onActioned).not.toHaveBeenCalled();
   });

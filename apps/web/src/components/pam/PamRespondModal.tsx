@@ -72,14 +72,20 @@ type RespondResult = {
 
 /**
  * When a 200 respond body did not record the decision the approver asked for,
- * returns the server's reason ('' when it gave none); otherwise null. A body
- * that omits `status` (older API) keeps meaning success.
+ * returns the server's reason ('' when it gave none); otherwise null.
+ *
+ * Asymmetric on purpose: an approve counts as approved ONLY when the body says
+ * `status: 'approved'` — a body with no readable status must never be shown
+ * as a grant. A deny grants nothing, so it is only contradicted by an explicit
+ * other status.
  */
 function outcomeRefusal(decision: 'approve' | 'deny', data: unknown): string | null {
   const body = (data && typeof data === 'object' ? data : {}) as RespondResult;
   const refused =
     body.enforcementStatus === 'refused' ||
-    (typeof body.status === 'string' && body.status !== (decision === 'approve' ? 'approved' : 'denied'));
+    (decision === 'approve'
+      ? body.status !== 'approved'
+      : typeof body.status === 'string' && body.status !== 'denied');
   if (!refused) return null;
   return typeof body.reason === 'string' ? body.reason.trim() : '';
 }
@@ -104,10 +110,10 @@ export default function PamRespondModal({
   // Set when the server refused the approve for want of an approver device,
   // so the error also offers the register-device action.
   const [needsApproverDevice, setNeedsApproverDevice] = useState(false);
-  // Set when the server recorded a decision other than the one asked for (a
-  // refused approve is recorded as denied). The request is no longer pending:
-  // submitting again could only 409, and dismissing must refresh the list so
-  // the row shows its real status.
+  // Set when a 200 did not confirm the decision asked for (a refused approve is
+  // recorded as denied). The server has already acted — a refused request is
+  // no longer pending, so a resubmit could only 409 — so submit is disabled and
+  // dismissing refreshes the list so the row shows its real status.
   const [settledOtherwise, setSettledOtherwise] = useState(false);
   const dismiss = settledOtherwise ? onActioned : onClose;
   const reasonId = useId();
@@ -266,7 +272,8 @@ export default function PamRespondModal({
               reason: refusal,
             })
           : t('pamPamRespondModal.errors.notApproved', {
-              defaultValue: 'Elevation not approved. The request is no longer pending.',
+              defaultValue:
+                'The server did not confirm this elevation as approved. Close this dialog to see its current status.',
             });
         setSettledOtherwise(true);
         setError(message);

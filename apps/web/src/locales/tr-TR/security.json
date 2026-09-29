@@ -932,7 +932,7 @@
       "windowsHello": "Windows Hello doğrulama başarısız oldu",
       "actionFailed": "{{decision}} isteği yerine getirilemedi",
       "network": "Ağ hatası",
-      "notApproved": "Yükseltme onaylanmadı. İstek artık beklemede değil.",
+      "notApproved": "Sunucu bu yükseltmenin onaylandığını doğrulamadı. Güncel durumunu görmek için bu iletişim kutusunu kapatın.",
       "notApprovedReason": "Yükseltme onaylanmadı: {{reason}}"
     },
     "toasts": {
