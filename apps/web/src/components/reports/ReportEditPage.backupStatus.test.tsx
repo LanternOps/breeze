@@ -28,6 +28,7 @@ import ReportEditPage from './ReportEditPage';
 const report = {
   id: 'report-1',
   name: 'Backups',
+  orgId: 'org-7',
   type: 'backup_status',
   schedule: 'one_time',
   format: 'pdf',
@@ -72,5 +73,23 @@ describe('ReportEditPage backup status options', () => {
 
     await waitFor(() => expect(lastBaseConfig().includeDevicesWithoutBackup).toBe(true));
     expect(lastBaseConfig().sites).toEqual(['keep-me']);
+  });
+});
+
+// Pre-release sweep: the builder read contacts from the header org; the edit
+// page must hand it the report's own org.
+describe('ReportEditPage builder org', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuth.mockImplementation((url: string) =>
+      url === '/reports/report-1'
+        ? Promise.resolve({ ok: true, json: () => Promise.resolve(report) })
+        : Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) }));
+  });
+
+  it("passes the report's own org to the builder", async () => {
+    render(<ReportEditPage reportId="report-1" />);
+    await screen.findByTestId('report-builder-stub');
+    expect(builderProps.mock.calls.at(-1)![0]).toMatchObject({ mode: 'edit', reportOrgId: 'org-7' });
   });
 });

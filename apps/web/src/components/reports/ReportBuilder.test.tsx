@@ -563,6 +563,49 @@ describe('ReportBuilder recipients', () => {
   });
 });
 
+// Pre-release sweep: the edit page listed the HEADER org's contacts, so under
+// All organizations it listed none (and under another org, the wrong org's).
+describe('ReportBuilder edit: contacts come from the report\'s own org', () => {
+  const contactsUrls = () =>
+    fetchWithAuthMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/contacts'));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async url => {
+      if (url.includes('/orgs/organizations/org-7/contacts')) {
+        return makeJsonResponse({ data: [{ id: 'contact-7', name: 'Nora Northwind', email: 'nora@northwind.test' }] });
+      }
+      if (url.includes('/contacts')) return makeJsonResponse({ data: [] });
+      if (url.endsWith('/reports/report-1/recipients')) return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ data: { rows: [] } });
+    });
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null });
+  });
+
+  it.each([
+    ['All organizations', null],
+    ['another org in the switcher', 'org-1'],
+  ])('lists the report org\'s contacts under %s', async (_label, headerOrgId) => {
+    useOrgStore.setState({ currentOrgId: headerOrgId });
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        reportOrgId="org-7"
+        defaultValues={{ type: 'device_inventory', schedule: 'monthly' }}
+      />
+    );
+
+    expect(await screen.findByTestId('report-recipient-contact-contact-7')).toHaveTextContent('Nora Northwind');
+    expect(contactsUrls()).toEqual(['/orgs/organizations/org-7/contacts']);
+    const [, init] = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/contacts'))!;
+    expect(init).toMatchObject({ orgIdOverride: 'org-7' });
+  });
+});
+
 describe('ReportBuilder contact recipients refusal (#3198 W03, ruling W5)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

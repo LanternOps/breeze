@@ -386,6 +386,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       <ReportBuilder
         mode="edit"
         reportId={reportId}
+        reportOrgId={report.orgId ?? null}
         defaultValues={defaultValues}
         baseConfig={baseConfig}
         partnerOwned={partnerOwned}

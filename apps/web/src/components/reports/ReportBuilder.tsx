@@ -140,6 +140,13 @@ type ReportBuilderProps = {
    */
   defaultOrgId?: string | null;
   /**
+   * Edit mode: the org the edited report belongs to (ReportEditPage passes
+   * `report.orgId`). Contact recipients are that org's contacts, whatever the
+   * header switcher shows (All organizations included). Null for a
+   * partner-owned report, which takes no contact recipients.
+   */
+  reportOrgId?: string | null;
+  /**
    * The caller's own options (rendered outside the builder, e.g. a business
    * report's options panel on the edit page) are invalid: submit is disabled
    * and a submission is ignored, so a value the API would 400 on never leaves.
@@ -787,6 +794,7 @@ export default function ReportBuilder({
   partnerOwned = false,
   series,
   defaultOrgId,
+  reportOrgId,
   submitBlocked = false,
   onSubmit,
   onPreview,
@@ -904,11 +912,15 @@ export default function ReportBuilder({
     setTemplateName(defaultValues.templateName ?? '');
   }, [defaultValues]);
 
+  // The report's own org, never the header switcher's: under All
+  // organizations the switcher names none, and under another org it names the
+  // wrong one. `currentOrgId` only for a caller that does not say.
+  const contactsOrgId = reportOrgId ?? currentOrgId;
   useEffect(() => {
-    if (!currentOrgId || !reportId || schedule === 'one_time' || contactRecipientsRefused) return;
+    if (!contactsOrgId || !reportId || schedule === 'one_time' || contactRecipientsRefused) return;
 
     void Promise.all([
-      fetchWithAuth(`/orgs/organizations/${currentOrgId}/contacts`),
+      fetchWithAuth(`/orgs/organizations/${contactsOrgId}/contacts`, { orgIdOverride: contactsOrgId }),
       fetchWithAuth(`/reports/${reportId}/recipients`)
     ]).then(async ([contactsResponse, recipientsResponse]) => {
       if (!contactsResponse.ok || !recipientsResponse.ok) {
@@ -933,7 +945,7 @@ export default function ReportBuilder({
     }).catch(() => {
       setError(stableT('reports.reportBuilder.recipients.loadFailed'));
     });
-  }, [currentOrgId, reportId, schedule, contactRecipientsRefused, stableT]);
+  }, [contactsOrgId, reportId, schedule, contactRecipientsRefused, stableT]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
   // Series mode (spec §3.7): nothing that names one org's sites/devices/groups.
