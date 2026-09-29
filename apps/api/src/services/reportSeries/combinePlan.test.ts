@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { BUSINESS_REPORT_TYPES } from '@breeze/shared';
 import { INTERNAL_REPORT_TYPES, PARTNER_ONLY_DELIVERY_REPORT_TYPES } from '../../routes/reports/schemas';
 import {
+  carriedLastGeneratedAt,
   combineExclusionReason,
   groupCombineRows,
+  isScopeDenialRun,
   planGroupAdoption,
   resolveCombineCc,
   splitCombineCc,
   toCandidateGroup,
   type CombineSourceRow,
+  type EligibleCombineRow,
 } from './combinePlan';
 
 const SITE = '5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a';
@@ -36,7 +39,14 @@ function row(over: Partial<CombineSourceRow> = {}): CombineSourceRow {
     updatedAt: new Date('2026-09-01T00:00:00Z'),
     portalSelfService: false,
     sourceAiAgentScheduleId: null,
+    partnerId: null,
+    // A complete v1 envelope (reportScheduleWorker completeExecutableScopePredicate).
+    executionScopeVersion: 1,
     executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-09-01T00:00:00Z'),
     executionScopePrincipalKind: 'user',
     seriesId: null,
     detachedFromSeriesId: null,
@@ -63,6 +73,26 @@ describe('combineExclusionReason — spec §5 W04 exclusion list', () => {
     ['config_invalid', { config: { schedule: { time: 'nope' } } }],
   ] as const)('%s', (reason, over) => {
     expect(combineExclusionReason(row(over as Partial<CombineSourceRow>))).toBe(reason);
+  });
+
+  // W04 final review F1b: a row the worker never polls (it fails
+  // completeExecutableScopePredicate) is not running today; adopting it would
+  // capture a fresh scope and restart it. Every column rule of the predicate.
+  it.each([
+    ['legacy all-NULL envelope', {
+      executionScopeVersion: null, executionScopeKind: null, executionScopeUserId: null,
+      executionScopeFingerprint: null, executionScopeCapturedAt: null, executionScopePrincipalKind: null,
+    }],
+    ['version is not 1', { executionScopeVersion: 2 }],
+    ['version is NULL', { executionScopeVersion: null }],
+    ['unknown kind', { executionScopeKind: 'everything' }],
+    ['no acting user', { executionScopeUserId: null }],
+    ['no fingerprint', { executionScopeFingerprint: null }],
+    ['no capture time', { executionScopeCapturedAt: null }],
+    ['unrestricted with a site list', { executionScopeSiteIds: ['5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a'] }],
+    ['partner_wide on an org-owned row (no partner_id)', { executionScopeKind: 'partner_wide' }],
+  ] as const)('incomplete_execution_scope: %s', (_label, over) => {
+    expect(combineExclusionReason(row(over as Partial<CombineSourceRow>))).toBe('incomplete_execution_scope');
   });
 
   it('excludes every internal and partner-only-delivery (business) type', () => {
@@ -138,6 +168,44 @@ describe('planGroupAdoption', () => {
   });
 });
 
+// W04 final review F1a: the adopted row takes the newest run of its org's
+// group rows, so it is not due for an occurrence a duplicate already sent.
+describe('carriedLastGeneratedAt', () => {
+  const at = (iso: string) => new Date(iso);
+  it("is the newest lastGeneratedAt among the org's adopted row and its duplicates", () => {
+    const adopt = row({ lastGeneratedAt: at('2026-01-01T08:00:00Z') });
+    const dupNewest = row({ lastGeneratedAt: at('2026-09-28T08:00:05Z') });
+    const dupOlder = row({ lastGeneratedAt: at('2026-09-21T08:00:05Z') });
+    const dupNever = row({ lastGeneratedAt: null });
+    const carried = carriedLastGeneratedAt({ adopt: adopt as EligibleCombineRow, archive: [dupOlder, dupNever, dupNewest] as EligibleCombineRow[] });
+    expect(carried).toBe(dupNewest.lastGeneratedAt);
+  });
+  it("never lowers the adopted row's own value", () => {
+    const adopt = row({ lastGeneratedAt: at('2026-09-28T08:00:05Z') });
+    const dup = row({ lastGeneratedAt: at('2026-09-21T08:00:05Z') });
+    expect(carriedLastGeneratedAt({ adopt: adopt as EligibleCombineRow, archive: [dup as EligibleCombineRow] }))
+      .toBe(adopt.lastGeneratedAt);
+  });
+  it('carries a duplicate run onto a never-run adopted row, and stays null when nothing ever ran', () => {
+    const dup = row({ lastGeneratedAt: at('2026-09-28T08:00:05Z') });
+    expect(carriedLastGeneratedAt({ adopt: row() as EligibleCombineRow, archive: [dup as EligibleCombineRow] }))
+      .toBe(dup.lastGeneratedAt);
+    expect(carriedLastGeneratedAt({ adopt: row() as EligibleCombineRow, archive: [row() as EligibleCombineRow] })).toBeNull();
+    expect(carriedLastGeneratedAt({ adopt: row() as EligibleCombineRow, archive: [] })).toBeNull();
+  });
+});
+
+describe('isScopeDenialRun (the worker deny() shape)', () => {
+  it("is a failed run whose error starts with 'scope_'", () => {
+    expect(isScopeDenialRun({ status: 'failed', errorMessage: 'scope_membership_removed' })).toBe(true);
+    expect(isScopeDenialRun({ status: 'failed', errorMessage: 'scope_legacy_unscoped' })).toBe(true);
+    expect(isScopeDenialRun({ status: 'failed', errorMessage: 'boom' })).toBe(false);
+    expect(isScopeDenialRun({ status: 'failed', errorMessage: 'series_skip_archived' })).toBe(false);
+    expect(isScopeDenialRun({ status: 'failed', errorMessage: null })).toBe(false);
+    expect(isScopeDenialRun({ status: 'completed', errorMessage: 'scope_membership_removed' })).toBe(false);
+  });
+});
+
 describe('CC split and resolution', () => {
   const a1 = row({ orgId: 'org-a', config: { ...CONFIG, emailRecipients: ['cc@msp.test', 'extra@msp.test'] } });
   const a2 = row({ orgId: 'org-a', config: { ...CONFIG, emailRecipients: ['cc@msp.test'] } });
@@ -176,9 +244,10 @@ describe('CC split and resolution', () => {
       plan,
       new Map([[a2.id, [{ contactId: 'c-1', name: 'Ann', email: 'ann@acme.test' }]]]),
       new Set([a2.id]),
+      new Set([a1.id]),
     );
-    expect(dto.orgs[0]!.rows[0]).toMatchObject({ reportId: a2.id, action: 'adopt', deliverableLinked: true });
-    expect(dto.orgs[0]!.rows[1]).toMatchObject({ reportId: a1.id, action: 'archive', emailRecipients: ['cc@msp.test', 'extra@msp.test'] });
+    expect(dto.orgs[0]!.rows[0]).toMatchObject({ reportId: a2.id, action: 'adopt', deliverableLinked: true, stalled: false });
+    expect(dto.orgs[0]!.rows[1]).toMatchObject({ reportId: a1.id, action: 'archive', emailRecipients: ['cc@msp.test', 'extra@msp.test'], stalled: true });
     expect(dto.orgs[0]!.rows[0]!.contactRecipients).toEqual([{ contactId: 'c-1', name: 'Ann', email: 'ann@acme.test' }]);
     expect(dto.sharedCc).toEqual(['cc@msp.test']);
     expect(dto.groupKey).toBe(plan.groupKey);

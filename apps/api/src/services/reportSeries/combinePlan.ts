@@ -31,7 +31,14 @@ export interface CombineSourceRow {
   updatedAt: Date;
   portalSelfService: boolean;
   sourceAiAgentScheduleId: string | null;
+  /** Always null for a combinable row (org-owned); read for the scope rule. */
+  partnerId: string | null;
+  executionScopeVersion: number | null;
   executionScopeKind: string | null;
+  executionScopeSiteIds: string[] | null;
+  executionScopeUserId: string | null;
+  executionScopeFingerprint: string | null;
+  executionScopeCapturedAt: Date | null;
   executionScopePrincipalKind: string | null;
   seriesId: string | null;
   /** Set on a standalone copy detached from a series (W02). */
@@ -51,6 +58,7 @@ export type CombineExclusion =
   | 'narrative'
   | 'system_managed'
   | 'site_restricted_scope'
+  | 'incomplete_execution_scope'
   | 'type_unsupported'
   | 'config_invalid'
   | 'config_org_specific';
@@ -62,6 +70,29 @@ export interface KeyedCombineRow {
 }
 
 /**
+ * The pure twin of reportScheduleWorker's completeExecutableScopePredicate()
+ * (same column rules, kind by kind). A row that fails it is never polled by
+ * findDueReports, so it is not sending today; adopting it would capture a
+ * fresh scope and restart it (W04 final review F1b).
+ */
+function hasCompleteExecutionScope(row: CombineSourceRow): boolean {
+  if (row.executionScopeVersion !== 1) return false;
+  if (row.executionScopeUserId === null || row.executionScopeFingerprint === null || row.executionScopeCapturedAt === null) {
+    return false;
+  }
+  switch (row.executionScopeKind) {
+    case 'unrestricted':
+      return row.executionScopeSiteIds === null && row.orgId !== null;
+    case 'restricted':
+      return row.executionScopeSiteIds !== null && row.orgId !== null;
+    case 'partner_wide':
+      return row.executionScopeSiteIds === null && row.partnerId !== null;
+    default:
+      return false;
+  }
+}
+
+/**
  * First matching exclusion wins. The row-level signals come first; the TYPE
  * and CONFIG gates reuse W02's series validators so Combine can never adopt a
  * row into a series that `POST /reports/series` would have refused.
@@ -70,6 +101,8 @@ export interface KeyedCombineRow {
  *    routes/reports/helpers.ts isSystemManagedReportDefinition).
  *  - site_restricted_scope: adoption captures the owner's unrestricted scope;
  *    a restricted row would silently start covering every site.
+ *  - incomplete_execution_scope: see hasCompleteExecutionScope. Such a row
+ *    stays standalone, exactly as it is today.
  */
 export function keyCombineRow(
   row: CombineSourceRow,
@@ -86,6 +119,7 @@ export function keyCombineRow(
   if (row.sourceAiAgentScheduleId !== null) return { ok: false, reason: 'narrative' };
   if (row.executionScopePrincipalKind === 'system') return { ok: false, reason: 'system_managed' };
   if (row.executionScopeKind === 'restricted') return { ok: false, reason: 'site_restricted_scope' };
+  if (!hasCompleteExecutionScope(row)) return { ok: false, reason: 'incomplete_execution_scope' };
   try {
     assertSeriesTypeSupported(row.type);
   } catch {
@@ -179,6 +213,31 @@ function adoptionOrder(linked: ReadonlySet<string>) {
     if (ca !== cb) return cb - ca;
     return compareIds(a.id, b.id);
   };
+}
+
+/**
+ * The lastGeneratedAt the adopted row must carry (W04 final review F1a): the
+ * NEWEST non-null value among the org's rows in the locked group (the adopted
+ * row plus its archived duplicates). An adopted row keeps its own schedule
+ * position otherwise, so a stalled row adopted next to a duplicate that
+ * already sent this occurrence would be overdue and send it a second time.
+ * Never lower than the adopted row's own value (it is one of the inputs);
+ * null only when no row of the org ever ran. Values are the column's raw
+ * reads, compared as adoptionOrder compares them.
+ */
+export function carriedLastGeneratedAt(org: Pick<PlannedCombineOrg, 'adopt' | 'archive'>): Date | null {
+  let newest: Date | null = null;
+  for (const row of [org.adopt, ...org.archive]) {
+    const value = row.lastGeneratedAt;
+    if (value !== null && (newest === null || value.getTime() > newest.getTime())) newest = value;
+  }
+  return newest;
+}
+
+/** A worker scope denial (reportScheduleWorker deny()): a failed run whose
+ *  error is a `scope_*` reason. */
+export function isScopeDenialRun(run: { status: string; errorMessage: string | null }): boolean {
+  return run.status === 'failed' && (run.errorMessage ?? '').startsWith('scope_');
 }
 
 function suggestName(names: readonly string[]): string {
@@ -298,6 +357,9 @@ export interface CombineCandidateRow {
   lastGeneratedAt: string | null;
   action: 'adopt' | 'archive';
   deliverableLinked: boolean;
+  /** Its most recent run was a worker scope denial (isScopeDenialRun): it is
+   *  not sending today, and combining resumes it (W04 final review F1c). */
+  stalled: boolean;
   contactRecipients: CombineContactRecipient[];
   emailRecipients: string[];
 }
@@ -323,6 +385,7 @@ export function toCandidateGroup(
   plan: PlannedCombineGroup,
   recipientsByReport: ReadonlyMap<string, CombineContactRecipient[]>,
   linked: ReadonlySet<string>,
+  stalled: ReadonlySet<string>,
 ): CombineCandidateGroup {
   const split = splitCombineCc(plan);
   const emails = new Map(plan.rows.map((k) => [k.row.id, k.emailRecipients]));
@@ -332,6 +395,7 @@ export function toCandidateGroup(
     lastGeneratedAt: row.lastGeneratedAt ? row.lastGeneratedAt.toISOString() : null,
     action,
     deliverableLinked: linked.has(row.id),
+    stalled: stalled.has(row.id),
     contactRecipients: recipientsByReport.get(row.id) ?? [],
     emailRecipients: emails.get(row.id) ?? [],
   });

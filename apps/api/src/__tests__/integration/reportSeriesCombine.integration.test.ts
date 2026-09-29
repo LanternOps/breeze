@@ -13,7 +13,8 @@ import { Hono } from 'hono';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { findDueReports } from '../../jobs/reportScheduleWorker';
 import {
   contacts,
   partnerUsers,
@@ -125,6 +126,12 @@ async function seedRun(reportId: string): Promise<string> {
     reportId, status: 'completed', startedAt: new Date('2026-09-15T08:00:00Z'), completedAt: new Date('2026-09-15T08:01:00Z'),
   }).returning({ id: reportRuns.id });
   return row!.id;
+}
+
+async function seedRunAt(reportId: string, status: 'completed' | 'failed', errorMessage: string | null, createdAt: string): Promise<void> {
+  await getTestDb().insert(reportRuns).values({
+    reportId, status, errorMessage, completedAt: new Date(createdAt), createdAt: new Date(createdAt),
+  });
 }
 
 async function seedDeliverable(orgId: string, reportId: string, userId: string): Promise<string> {
@@ -395,6 +402,70 @@ describe('Combine service on real Postgres (series W04)', () => {
     await expect(asAdmin(f, (tx) => combineIntoSeries(input, { ...adminAuth(f), partnerOrgAccess: 'selected' }, tx)))
       .rejects.toThrow(/org access/i);
     expect(await seriesOf(f.partner.id)).toEqual([]);
+  });
+});
+
+/**
+ * W04 final review F1 — Combine never makes anything new send in 'selected'
+ * mode, and never a second copy of an occurrence already sent.
+ * A1: stalled (its technician owner lost access, so its latest run is a
+ * worker scope denial and its lastGeneratedAt is months old), and
+ * deliverable-linked, so it is the Acme row adopted. A2: its live same-org
+ * duplicate, which already sent the current occurrence. B1: Bravo's twin,
+ * denied once and then run again (so NOT stalled today).
+ */
+async function seedCombineDay(f: Fixture) {
+  const tech = (await createUser({ partnerId: f.partner.id, orgId: null, email: `combine-tech-${randomUUID()}@example.com` }))!;
+  const sentAt = new Date();
+  const rA1 = await seedReport(f.orgA.id, tech.id, { lastGeneratedAt: new Date('2026-01-05T08:00:00Z') });
+  const rA2 = await seedReport(f.orgA.id, f.admin.id, { name: 'Weekly critical alerts (copy)', lastGeneratedAt: sentAt });
+  const rB1 = await seedReport(f.orgB.id, f.admin.id, { lastGeneratedAt: sentAt });
+  await seedDeliverable(f.orgA.id, rA1, f.admin.id);
+  await seedRunAt(rA1, 'completed', null, '2026-01-05T08:00:01Z');
+  await seedRunAt(rA1, 'failed', 'scope_membership_removed', '2026-09-21T08:00:01Z');
+  await seedRunAt(rA2, 'completed', null, '2026-09-21T08:00:02Z');
+  await seedRunAt(rB1, 'failed', 'scope_permission_removed', '2026-09-14T08:00:01Z');
+  await seedRunAt(rB1, 'completed', null, '2026-09-21T08:00:03Z');
+  return { tech, sentAt, rA1, rA2, rB1 };
+}
+
+const dueIds = async (ids: readonly string[]) =>
+  (await withSystemDbAccessContext(() => findDueReports(new Date())))
+    .map((due) => due.id)
+    .filter((id) => ids.includes(id));
+
+describe('Combine on the day of an occurrence (W04 final review F1)', () => {
+  runDb('flags a row whose latest run is a scope denial as stalled, and only that row', async () => {
+    const f = await seedFixture();
+    const d = await seedCombineDay(f);
+    const [group] = await candidatesFor(f);
+    const rows = new Map(group!.orgs.flatMap((o) => o.rows.map((r) => [r.reportId, r] as const)));
+    expect([...rows.keys()].sort()).toEqual([d.rA1, d.rA2, d.rB1].sort());
+    expect(rows.get(d.rA1)).toMatchObject({ action: 'adopt', deliverableLinked: true, stalled: true });
+    expect(rows.get(d.rA2)).toMatchObject({ action: 'archive', stalled: false });
+    expect(rows.get(d.rB1)).toMatchObject({ action: 'adopt', stalled: false });
+  });
+
+  runDb("an adopted stalled row carries its duplicate's lastGeneratedAt and is not due again", async () => {
+    const f = await seedFixture();
+    const d = await seedCombineDay(f);
+    // Control: the stalled row is polled and overdue before the combine (the
+    // worker then denies it); A2 and B1 already sent this occurrence.
+    expect(await dueIds([d.rA1, d.rA2, d.rB1])).toEqual([d.rA1]);
+
+    const result = await asAdmin(f, async (tx) => combineIntoSeries(
+      await inputFor(f, { ccResolution: { include: [], drop: [] } }), adminAuth(f), tx,
+    ));
+    expect(result.adopted.map((a) => a.reportId).sort()).toEqual([d.rA1, d.rB1].sort());
+    expect(result.archived).toEqual([{ reportId: d.rA2, orgId: f.orgA.id }]);
+
+    const adopted = await reportRow(d.rA1);
+    expect(adopted.seriesId).toBe(result.seriesId);
+    expect(adopted.executionScopeUserId).toBe(f.admin.id);
+    expect(adopted.lastGeneratedAt?.getTime()).toBe((await reportRow(d.rA2)).lastGeneratedAt?.getTime());
+    // Never lowered: B1's own value is untouched.
+    expect((await reportRow(d.rB1)).lastGeneratedAt?.getTime()).toBe((await reportRow(d.rA2)).lastGeneratedAt?.getTime());
+    expect(await dueIds([d.rA1, d.rA2, d.rB1])).toEqual([]);
   });
 });
 

@@ -267,6 +267,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/reportSeries/combine.ts', new Map([
     ['loadCandidateRows', pinned(1, `Combine candidate scan: isNotNull(reports.orgId) joined to organizations of ONE partner (eq(organizations.partnerId, partnerId)); callers are gated on canManagePartnerWidePolicies; ${ORG_PIN}`, AUD_SERIES_COMBINE)],
     ['loadLockedGroupRows', pinned(1, `Combine re-read FOR UPDATE: the caller's report ids AND the same org-owned, one-partner predicate as loadCandidateRows; ${ORG_PIN}`, AUD_SERIES_COMBINE)],
+    ['loadStalledReportIds', pinned(1, 'Combine stalled flag: the latest run (DISTINCT ON report_id) of report ids that loadCandidateRows just returned (org-owned, one partner); only a boolean per id leaves the service', AUD_SERIES_COMBINE)],
     ['archiveCombineExtras', pinned(1, `Combine archive of same-org duplicates: ids from loadLockedGroupRows AND eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_SERIES_COMBINE)],
     ['adoptCombineRow', pinned(1, `Combine adoption: one row by id AND eq(reports.orgId, row.orgId), locked by loadLockedGroupRows; ${ORG_PIN}`, AUD_SERIES_COMBINE)],
   ])],

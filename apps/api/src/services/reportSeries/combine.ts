@@ -12,10 +12,11 @@
  * joined to organizations of ONE partner; see the allowlist entries in
  * partnerOwnedVisibility.scan.test.ts.
  */
-import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import {
   contacts,
   organizations,
+  reportRuns,
   reportScheduleRecipients,
   reportSeries,
   reportSeriesOrgTargets,
@@ -29,7 +30,9 @@ import { assertSeriesOwnerEligible, captureChildExecutionScope } from './authori
 import {
   CombineError,
   MAX_INTERNAL_CC,
+  carriedLastGeneratedAt,
   groupCombineRows,
+  isScopeDenialRun,
   planGroupAdoption,
   resolveCombineCc,
   splitCombineCc,
@@ -82,7 +85,13 @@ const COMBINE_ROW_COLUMNS = {
   updatedAt: reports.updatedAt,
   portalSelfService: reports.portalSelfService,
   sourceAiAgentScheduleId: reports.sourceAiAgentScheduleId,
+  partnerId: reports.partnerId,
+  executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
+  executionScopeSiteIds: reports.executionScopeSiteIds,
+  executionScopeUserId: reports.executionScopeUserId,
+  executionScopeFingerprint: reports.executionScopeFingerprint,
+  executionScopeCapturedAt: reports.executionScopeCapturedAt,
   executionScopePrincipalKind: reports.executionScopePrincipalKind,
   seriesId: reports.seriesId,
   detachedFromSeriesId: reports.detachedFromSeriesId,
@@ -165,6 +174,25 @@ async function loadContactRecipients(reportIds: readonly string[], tx: Tx): Prom
 }
 
 /**
+ * Rows whose MOST RECENT run is a worker scope denial (isScopeDenialRun): not
+ * sending today. ONE query for every grouped id — DISTINCT ON (report_id)
+ * over the (report_id, created_at DESC, id DESC) index order.
+ */
+async function loadStalledReportIds(reportIds: readonly string[], tx: Tx): Promise<Set<string>> {
+  if (reportIds.length === 0) return new Set();
+  const latest = await tx
+    .selectDistinctOn([reportRuns.reportId], {
+      reportId: reportRuns.reportId,
+      status: reportRuns.status,
+      errorMessage: reportRuns.errorMessage,
+    })
+    .from(reportRuns)
+    .where(inArray(reportRuns.reportId, [...reportIds]))
+    .orderBy(reportRuns.reportId, desc(reportRuns.createdAt), desc(reportRuns.id));
+  return new Set(latest.filter(isScopeDenialRun).map((run) => run.reportId));
+}
+
+/**
  * Groups of >= 2 orgs whose rows could be combined. Read-only. The caller must
  * already have passed the partner-wide gate for `partnerId`.
  */
@@ -174,8 +202,9 @@ export async function findCombineCandidates(partnerId: string, tx: Tx): Promise<
   const groupedIds = groups.flatMap((g) => g.rows.map((k) => k.row.id));
   const linked = linkedReportIds(await loadDeliverableLinks(groupedIds, tx));
   const recipients = await loadContactRecipients(groupedIds, tx);
+  const stalled = await loadStalledReportIds(groupedIds, tx);
   return groups
-    .map((g) => toCandidateGroup(planGroupAdoption(g, linked), recipients, linked))
+    .map((g) => toCandidateGroup(planGroupAdoption(g, linked), recipients, linked, stalled))
     .sort((a, b) => b.orgs.length - a.orgs.length
       || a.suggestedName.localeCompare(b.suggestedName, 'en')
       || (a.groupKey < b.groupKey ? -1 : 1));
@@ -239,13 +268,30 @@ async function archiveCombineExtras(orgId: string, duplicateIds: readonly string
  * for this org. `reconcileSeries` then overwrites the shared fields through
  * its stale-child branch — the reconciler stays the ONE writer of a child's
  * shared fields.
+ *
+ * `lastGeneratedAt` is the org's newest run in the locked group
+ * (carriedLastGeneratedAt, W04 final review F1a): the fresh scope makes a
+ * stalled row executable, and without the carried value it would be overdue
+ * for an occurrence its duplicate already sent. It is the column's own read,
+ * written back through the same Drizzle column mapping (an exact round trip);
+ * only a newer value is written.
  */
-async function adoptCombineRow(row: EligibleCombineRow, seriesId: string, scope: ChildScopeColumns, tx: Tx): Promise<void> {
+async function adoptCombineRow(
+  row: EligibleCombineRow,
+  seriesId: string,
+  scope: ChildScopeColumns,
+  lastGeneratedAt: Date | null,
+  tx: Tx,
+): Promise<void> {
+  const carried = lastGeneratedAt !== null
+    && (row.lastGeneratedAt === null || lastGeneratedAt.getTime() > row.lastGeneratedAt.getTime())
+    ? { lastGeneratedAt }
+    : {};
   const rows = await tx
     .update(reports)
     // detachedFromSeriesId is already null (keyCombineRow excludes detached
     // standalones); cleared defensively per reports_series_child_detached_chk.
-    .set({ seriesId, seriesRevision: 0, detachedFromSeriesId: null, ...scope, updatedAt: new Date() })
+    .set({ seriesId, seriesRevision: 0, detachedFromSeriesId: null, ...scope, ...carried, updatedAt: new Date() })
     .where(and(
       eq(reports.id, row.id),
       eq(reports.orgId, row.orgId),
@@ -329,7 +375,7 @@ export async function combineIntoSeries(input: CombineInput, auth: CombineAuth, 
       await archiveCombineExtras(org.orgId, duplicateIds, tx);
       archived.push(...duplicateIds.map((reportId) => ({ reportId, orgId: org.orgId })));
     }
-    await adoptCombineRow(org.adopt, seriesId, scopes.get(org.orgId)!, tx);
+    await adoptCombineRow(org.adopt, seriesId, scopes.get(org.orgId)!, carriedLastGeneratedAt(org), tx);
   }
 
   // Writes every adopted child's shared fields (revision 0 → series.revision),
