@@ -521,13 +521,15 @@ Uplink ports carrying many MAC addresses are filtered out of host-attachment so 
 
 Where it's enabled, the **Topology** tab shows a per-site **Site Map** instead of the classic view above: a logical map of a site built automatically from what your agents passively observe on the network -- interfaces, routes, and neighbor tables -- refreshed on an interval without you having to run a scan. It adds shared configuration templates you can apply across many sites at once, automatic layout, and on-demand diagnostics you can launch straight from the map.
 
+The physical view, per-connection evidence and coverage, link health and port history, recurring monitoring policies, the routed path trace, impact analysis and the **Explain this** AI investigation are covered in [Network Topology Explorer](/features/network-topology/).
+
 <Aside type="caution">
   Site Map needs agents running **v0.115.0 or later** to collect the passive network evidence it's built from. Sites with older agents keep showing the classic Topology view (or an emptier map) until their agents are updated.
 </Aside>
 
 ### Turning it on
 
-Network Topology (Beta) is off for every partner by default. A partner admin enables it from **Settings → Partner → Modules**: the main toggle turns on topology materialization and the UI together, and four sub-toggles underneath control physical topology, interface health, diagnostics, and AI insights independently. Until it's turned on, a device's Topology tab shows an empty state explaining that Network Topology is off -- with a link straight to Modules settings for a partner admin, or "Ask your MSP to enable it" for an organization user.
+Network Topology (Beta) is off for every partner by default. A partner admin enables it from **Settings → Partner → Modules**: the main toggle turns on topology materialization and the UI together, and four sub-toggles underneath control physical topology, interface health, diagnostics, and AI insights independently (see [what each toggle unlocks](/features/network-topology/#turn-the-feature-on)). Until it's turned on, a device's Topology tab shows an empty state explaining that Network Topology is off -- with a link straight to Modules settings for a partner admin, or "Ask your MSP to enable it" for an organization user.
 
 <Aside type="note">
   Network Topology shipped in v0.115.0 but had no way to enable it until this Modules toggle landed in v0.116.0 -- every device's Topology tab showed a raw `materialization_disabled` code in the meantime. If you're on v0.115.0, there is no supported way to turn it on; upgrade to v0.116.0 or later.
@@ -545,7 +547,7 @@ The map lays itself out automatically -- **Arrange** nudges new nodes into place
 
 ### On-demand diagnostics
 
-Select a node or connection and click **Diagnose** to run an on-demand, ping/traceroute-style check without leaving the map. Choose what to test against -- the device's reported gateway, its configured DNS server, general internet reachability, or a target you've configured explicitly -- pick an agent to run it from, and start the check. Results stream back step by step (each hop's method, outcome, and round-trip detail), and you can cancel a run that's still in progress. Diagnostics require the `topology:diagnostics` capability to be enabled for your organization and an eligible agent at the site.
+Select a node or connection and click **Diagnose** to run an on-demand, ping/traceroute-style check without leaving the map. Choose what to test against -- the device's reported gateway, its configured DNS server, general internet reachability, a target you've configured explicitly, or a bounded routed path trace -- pick an agent to run it from, and start the check. Results stream back step by step (each hop's method, outcome, and round-trip detail), and you can cancel a run that's still in progress. Diagnostics require the **Diagnostics** module toggle, the `topology:execute` and `devices:execute` permissions, and an eligible agent at the site. See [Diagnostics and routed path trace](/features/network-topology/#diagnostics-and-routed-path-trace) for each check and the trace limits.
 
 ### Shared configuration templates
 
