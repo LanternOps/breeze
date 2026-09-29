@@ -296,6 +296,13 @@
         "replaceNow": "Replace now",
         "unknownAge": "Purchase date unknown"
       },
+      "backupStatus": {
+        "healthy": "Healthy",
+        "warning": "Warning",
+        "critical": "Critical",
+        "unknown": "Unknown",
+        "truncated": "The device list reached its row limit and is incomplete."
+      },
       "vulnerabilityManagement": {
         "critical": "Open critical",
         "expiringExceptions": "Exceptions expiring next period",

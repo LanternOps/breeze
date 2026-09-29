@@ -296,6 +296,13 @@
         "replaceNow": "Jetzt austauschen",
         "unknownAge": "Alter unbekannt"
       },
+      "backupStatus": {
+        "healthy": "Gesund",
+        "warning": "Warnung",
+        "critical": "Kritisch",
+        "unknown": "Unbekannt",
+        "truncated": "Die Geräteliste hat ihr Zeilenlimit erreicht und ist unvollständig."
+      },
       "vulnerabilityManagement": {
         "critical": "Offen kritisch",
         "expiringExceptions": "Ausnahmen mit Ablauf im nächsten Zeitraum",

@@ -296,6 +296,13 @@
         "replaceNow": "À remplacer maintenant",
         "unknownAge": "Âge inconnu"
       },
+      "backupStatus": {
+        "healthy": "Sain",
+        "warning": "Avertissement",
+        "critical": "Critique",
+        "unknown": "Inconnu",
+        "truncated": "La liste des appareils a atteint sa limite de lignes et est incomplète."
+      },
       "vulnerabilityManagement": {
         "critical": "Critiques ouverts",
         "expiringExceptions": "Exceptions expirant à la prochaine période",

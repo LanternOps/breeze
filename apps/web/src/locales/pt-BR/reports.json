@@ -296,6 +296,13 @@
         "replaceNow": "Substituir agora",
         "unknownAge": "Idade desconhecida"
       },
+      "backupStatus": {
+        "healthy": "Saudável",
+        "warning": "Aviso",
+        "critical": "Crítico",
+        "unknown": "Desconhecido",
+        "truncated": "A lista de dispositivos atingiu o limite de linhas e está incompleta."
+      },
       "vulnerabilityManagement": {
         "critical": "Críticos abertos",
         "expiringExceptions": "Exceções que vencem no próximo período",

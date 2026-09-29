@@ -296,6 +296,13 @@
         "replaceNow": "Şimdi değiştir",
         "unknownAge": "Yaş bilinmiyor"
       },
+      "backupStatus": {
+        "healthy": "Sağlıklı",
+        "warning": "Uyarı",
+        "critical": "Kritik",
+        "unknown": "Bilinmiyor",
+        "truncated": "Cihaz listesi satır sınırına ulaştı ve eksik."
+      },
       "vulnerabilityManagement": {
         "critical": "Açık kritik",
         "expiringExceptions": "Sonraki dönemde sona eren istisnalar",

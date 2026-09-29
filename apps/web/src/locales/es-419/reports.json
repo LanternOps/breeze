@@ -296,6 +296,13 @@
         "replaceNow": "Reemplazar ahora",
         "unknownAge": "Antigüedad desconocida"
       },
+      "backupStatus": {
+        "healthy": "Correcto",
+        "warning": "Advertencia",
+        "critical": "Crítico",
+        "unknown": "Desconocido",
+        "truncated": "La lista de equipos alcanzó su límite de filas y está incompleta."
+      },
       "vulnerabilityManagement": {
         "critical": "Críticos abiertos",
         "expiringExceptions": "Excepciones que vencen el próximo período",
