@@ -27,7 +27,7 @@ func TestSCKStreamLiveFrameRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newSCKCapturer: %v", err)
 	}
-	defer capturer.Close()
+	defer func() { _ = capturer.Close() }()
 
 	first, err := capturer.Capture()
 	if err != nil || first == nil {
