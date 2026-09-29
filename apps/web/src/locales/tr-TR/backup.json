@@ -536,6 +536,7 @@
     "kindInstantBoot": "Anında önyükleme",
     "kindSelective": "Seçmeli geri yükleme",
     "kindFull": "Tam geri yükleme",
+    "kindRebuild": "VHDX olarak yeniden oluşturma",
     "restoreQueuedOnDevice": "{{device}} üzerinde geri yükleme kuyruğa alındı.",
     "restoreStartedOnDevice": "{{device}} üzerinde geri yükleme başlatıldı.",
     "restoreQueued": "Geri yükleme kuyruğa alındı.",

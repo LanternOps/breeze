@@ -64,8 +64,8 @@ type RestoreJob = {
   deviceId: string;
   restoreType: RestoreType | string;
   deviceName?: string | null;
-  // 'vm' / 'instant_boot' restores persist restoreType 'full' (#7213).
-  restoreMode?: 'vm' | 'instant_boot' | null;
+  // 'vm' / 'instant_boot' / 'rebuild' restores persist restoreType 'full' (#7213).
+  restoreMode?: 'vm' | 'instant_boot' | 'rebuild' | null;
   selectedPaths?: string[];
   status: string;
   targetPath?: string | null;
@@ -126,6 +126,14 @@ function formatBytes(bytes?: number | null): string {
 
 function isActiveRestoreStatus(status: string | null | undefined): boolean {
   return ['pending', 'running'].includes(`${status ?? ''}`.toLowerCase());
+}
+
+// Only file restores (full / selective, the jobs this wizard starts) can be
+// cancelled here. VM, instant-boot and rebuild jobs have their own lifecycle:
+// the restore cancel route does not close a rebuild's bare-metal recovery,
+// which would then block the next rebuild of that device.
+function isCancellableFileRestore(job: RestoreJob): boolean {
+  return !job.restoreMode && isActiveRestoreStatus(job.status);
 }
 
 function formatTimestamp(value?: string | null): string {
@@ -307,6 +315,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   const restoreKindLabel = (job: RestoreJob): string => {
     if (job.restoreMode === 'vm') return t('restoreWizard.kindVm');
     if (job.restoreMode === 'instant_boot') return t('restoreWizard.kindInstantBoot');
+    if (job.restoreMode === 'rebuild') return t('restoreWizard.kindRebuild');
     return job.restoreType === 'selective' ? t('restoreWizard.kindSelective') : t('restoreWizard.kindFull');
   };
 
@@ -774,7 +783,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
               </div>
               {latestKnownRestore?.id ? (
                 <div className="flex items-center gap-2">
-                  {isActiveRestoreStatus(latestKnownRestore.status) ? (
+                  {isCancellableFileRestore(latestKnownRestore) ? (
                     <button
                       type="button"
                       onClick={() => void handleCancelRestore(latestKnownRestore.id)}

@@ -536,6 +536,7 @@
     "kindInstantBoot": "Instant boot",
     "kindSelective": "Selective restore",
     "kindFull": "Full restore",
+    "kindRebuild": "Rebuild to VHDX",
     "restoreQueuedOnDevice": "Restore queued on {{device}}.",
     "restoreStartedOnDevice": "Restore started on {{device}}.",
     "restoreQueued": "Restore queued.",

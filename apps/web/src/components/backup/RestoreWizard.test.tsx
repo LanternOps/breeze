@@ -200,6 +200,28 @@ describe('RestoreWizard', () => {
       type: 'warning',
       message: 'Restore marked as cancelled but the stop signal could not be delivered to the agent.',
     })));
+    // Partial success: the warning replaces the clean "Restore cancelled." toast.
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it.each([
+    { restoreMode: 'rebuild', label: 'Rebuild to VHDX' },
+    { restoreMode: 'vm', label: 'Restore as VM' },
+    { restoreMode: 'instant_boot', label: 'Instant boot' },
+  ])('offers no Cancel for a queued $restoreMode job (it has its own lifecycle)', async ({ restoreMode, label }) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{ id: 'restore-9', snapshotId: 'snap-1', deviceId: 'device-1', deviceName: 'HV-HOST', restoreType: 'full', restoreMode, status: 'pending', createdAt: '2026-03-31T10:00:00.000Z', updatedAt: '2026-03-31T10:00:00.000Z' }] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    expect(await screen.findByText(new RegExp(`^${label} ·`))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Cancel restore/i })).toBeNull();
   });
 
   it('offers no Cancel for a restore that already finished', async () => {

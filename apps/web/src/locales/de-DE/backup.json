@@ -536,6 +536,7 @@
     "kindInstantBoot": "Sofortstart",
     "kindSelective": "Selektive Wiederherstellung",
     "kindFull": "Vollständige Wiederherstellung",
+    "kindRebuild": "Neuaufbau als VHDX",
     "restoreQueuedOnDevice": "Wiederherstellung auf {{device}} in die Warteschlange gestellt.",
     "restoreStartedOnDevice": "Wiederherstellung auf {{device}} gestartet.",
     "restoreQueued": "Wiederherstellung in die Warteschlange gestellt.",

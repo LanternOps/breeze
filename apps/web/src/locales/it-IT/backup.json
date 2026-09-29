@@ -536,6 +536,7 @@
     "kindInstantBoot": "Avvio istantaneo",
     "kindSelective": "Ripristino selettivo",
     "kindFull": "Ripristino completo",
+    "kindRebuild": "Ricostruzione in VHDX",
     "restoreQueuedOnDevice": "Ripristino in coda su {{device}}.",
     "restoreStartedOnDevice": "Ripristino avviato su {{device}}.",
     "restoreQueued": "Ripristino in coda.",

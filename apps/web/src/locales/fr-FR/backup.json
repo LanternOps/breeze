@@ -536,6 +536,7 @@
     "kindInstantBoot": "Démarrage instantané",
     "kindSelective": "Restauration sélective",
     "kindFull": "Restauration complète",
+    "kindRebuild": "Reconstruction en VHDX",
     "restoreQueuedOnDevice": "Restauration mise en file d’attente sur {{device}}.",
     "restoreStartedOnDevice": "Restauration démarrée sur {{device}}.",
     "restoreQueued": "Restauration mise en file d’attente.",
