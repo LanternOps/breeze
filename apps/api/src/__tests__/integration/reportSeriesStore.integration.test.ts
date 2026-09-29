@@ -299,7 +299,9 @@ describe('series store (partner request context)', () => {
       const s = await seed();
       const quickSupport = await createOrganization({ partnerId: s.partnerId, name: 'Quick Support', type: 'quick_support' });
       const holding = await createOrganization({ partnerId: s.partnerId, name: 'Unassigned devices', type: 'unassigned_pool' });
-      // A partner-wide caller can open every org of its partner, hidden ones included.
+      // A partner-wide caller reaches Quick Support; it never reaches the holding
+      // org (the route refuses that one first, series_target_org_inaccessible).
+      // Both are granted here so the store-level refusal is proven for each type.
       const ctx: DbAccessContext = { ...s.ctx, accessibleOrgIds: [s.orgA, s.orgB, quickSupport.id, holding.id] };
       const inPartner = <T>(fn: (tx: typeof db) => Promise<T>) =>
         withDbAccessContext(ctx, () => db.transaction((tx) => fn(tx as unknown as typeof db)));
