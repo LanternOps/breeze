@@ -199,6 +199,7 @@ const AUD_AI_AGENT_ARTIFACT = 'reads only narrative / fleet-design scalars of th
 const AUD_EVIDENCE_REFUSES = 'deliverable evidence refuses msp_staff definitions/runs before any link, attach or run (ruling F1)';
 const AUD_EVIDENCE_LINKED = 'reaches report_runs only through deliverable evidence, which can never reference an msp_staff run (ruling F1)';
 const AUD_CALLER_AUTHORIZED = 'keyed on a definition its caller already authorized, audience included';
+const AUD_SERIES_COMBINE = 'series W04 Combine: partner scope with org_access=all only (route + service belt canManagePartnerWidePolicies); msp_staff business types are excluded before grouping (assertSeriesTypeSupported refuses PARTNER_ONLY_DELIVERY_REPORT_TYPES)';
 const AUD_SERIES = 'series children carry their series type, and assertSeriesTypeSupported refuses every msp_staff (business) type at series create; the series type is immutable';
 const SERIES_CHILD_PIN = 'series children are org-owned by construction (reports_series_child_shape_chk: series_id IS NULL OR org_id IS NOT NULL), so no series_id predicate can reach a partner-owned row';
 
@@ -262,6 +263,12 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['listPendingDeliveriesForRun', pinned(1, 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller', AUD_SYSTEM)],
     ['listUnsettledDeliveries', pinned(1, 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller', AUD_SYSTEM)],
     ['query', pinned(1, 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)', AUD_SYSTEM)],
+  ])],
+  ['src/services/reportSeries/combine.ts', new Map([
+    ['loadCandidateRows', pinned(1, `Combine candidate scan: isNotNull(reports.orgId) joined to organizations of ONE partner (eq(organizations.partnerId, partnerId)); callers are gated on canManagePartnerWidePolicies; ${ORG_PIN}`, AUD_SERIES_COMBINE)],
+    ['loadLockedGroupRows', pinned(1, `Combine re-read FOR UPDATE: the caller's report ids AND the same org-owned, one-partner predicate as loadCandidateRows; ${ORG_PIN}`, AUD_SERIES_COMBINE)],
+    ['archiveCombineExtras', pinned(1, `Combine archive of same-org duplicates: ids from loadLockedGroupRows AND eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_SERIES_COMBINE)],
+    ['adoptCombineRow', pinned(1, `Combine adoption: one row by id AND eq(reports.orgId, row.orgId), locked by loadLockedGroupRows; ${ORG_PIN}`, AUD_SERIES_COMBINE)],
   ])],
   ['src/services/reportSeries/reconcile.ts', new Map([
     ['listSeriesChildren', pinned(1, `children of ONE series id, read by the reconciler / gate / series store in the caller's context; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
