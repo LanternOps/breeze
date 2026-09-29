@@ -28,7 +28,10 @@ const MIGRATION = '2026-11-06-210000-topology-interface-samples.sql';
 const UINT64_MAX = '18446744073709551615';
 const base = fixtureFile.valid.samples[0]!;
 const iso = (ms: number) => new Date(ms).toISOString();
-const today = () => new Date().toISOString().slice(0, 10).replaceAll('-', '');
+// The daily leaf a sample lands in is the UTC day of its own sampled_at, never
+// "today": a sample taken a minute ago belongs to yesterday's leaf for the
+// first minute after UTC midnight (#7409).
+const leafDay = (ms: number) => iso(ms).slice(0, 10).replaceAll('-', '');
 
 let allowed: string[] = [];
 let generation = 'arm-1';
@@ -112,11 +115,17 @@ describe('topology interface samples: schema and tenancy', () => {
 
   it('denies cross-org SELECT, INSERT, UPDATE and DELETE on the parent and every partition level', async () => {
     const f = await fixture();
-    const now = Date.now();
-    await f.persist(f.envelope(f.producer, '1', now - minute, [f.sample(f.ifA, now - minute)]));
+    const sampledAt = Date.now() - minute;
+    await f.persist(f.envelope(f.producer, '1', sampledAt, [f.sample(f.ifA, sampledAt)]));
     const otherOrg = (await createTopologyTenant()).orgId;
-    const relations = ['topology_interface_samples', 'topology_interface_samples_raw', `topology_interface_samples_raw_p${today()}`];
+    const leaf = `topology_interface_samples_raw_p${leafDay(sampledAt)}`;
+    const [placed] = await f.scoped(() => db.execute(sql`SELECT tableoid::regclass::text AS leaf FROM topology_interface_samples WHERE org_id=${f.orgId}::uuid`));
+    expect(placed!.leaf).toBe(leaf);
+    const relations = ['topology_interface_samples', 'topology_interface_samples_raw', leaf];
     const [row] = await f.scoped(() => db.execute(sql`SELECT * FROM topology_interface_samples WHERE org_id=${f.orgId}::uuid`));
+    // A distinct primary key that stays in the seeded row's leaf: +1 µs past a
+    // millisecond-precision instant can never cross a UTC day boundary.
+    const forgedAt = iso(sampledAt).replace(/Z$/, '001Z');
     for (const name of relations) {
       const table = sql.identifier(name);
       expect(await f.scoped(() => db.execute(sql`SELECT 1 FROM ${table} WHERE org_id=${f.orgId}::uuid`)), `${name} own read`).toHaveLength(1);
@@ -124,7 +133,7 @@ describe('topology interface samples: schema and tenancy', () => {
       expect(await asOther(() => db.execute(sql`SELECT 1 FROM ${table} WHERE org_id=${f.orgId}::uuid`)), `${name} read`).toHaveLength(0);
       expect(await asOther(() => db.execute(sql`UPDATE ${table} SET updated_at=now() WHERE org_id=${f.orgId}::uuid RETURNING 1`)), `${name} update`).toHaveLength(0);
       expect(await asOther(() => db.execute(sql`DELETE FROM ${table} WHERE org_id=${f.orgId}::uuid RETURNING 1`)), `${name} delete`).toHaveLength(0);
-      const forged = { ...row, sampled_at: new Date(now - 30_000).toISOString() };
+      const forged = { ...row, sampled_at: forgedAt };
       await expect(asOther(() => db.execute(sql`INSERT INTO ${table} SELECT * FROM jsonb_populate_record(NULL::${table}, ${JSON.stringify(forged)}::jsonb)`)), `${name} insert`)
         .rejects.toMatchObject({ cause: { code: '42501' } });
     }
@@ -195,9 +204,17 @@ describe('topology interface samples: schema and tenancy', () => {
     const f = await fixture();
     const now = Date.now();
     await f.persist(f.envelope(f.producer, UINT64_MAX, now - minute, [f.sample(f.ifA, now - minute)]));
-    const snapshot = () => withSystemDbAccessContext(() => db.execute(sql`SELECT count(*)::int AS relations,
+    // The migration provisions leaves relative to the DB's current UTC day
+    // (yesterday .. +7). Replayed on a later day than the suite's database was
+    // migrated, it legitimately adds that day's new leaves — not a replay
+    // defect (#7409). Pre-provision its window for today AND tomorrow so the
+    // replay must be a pure no-op even if UTC midnight passes mid-test.
+    await withSystemDbAccessContext(() => db.execute(sql`SELECT public.breeze_ensure_topology_interface_sample_partition(r, (now() AT TIME ZONE 'UTC')::date + d)
+      FROM unnest(ARRAY['raw','5m','1h']) AS r, generate_series(-1, 8) AS d`));
+    const snapshot = () => withSystemDbAccessContext(() => db.execute(sql`SELECT
+      array_agg(c.relname::text ORDER BY c.relname) AS relations,
       (SELECT count(*)::int FROM pg_policies WHERE tablename LIKE 'topology_interface_samples%') AS policies
-      FROM pg_partition_tree('public.topology_interface_samples')`));
+      FROM pg_partition_tree('public.topology_interface_samples') t JOIN pg_class c ON c.oid = t.relid`));
     const before = await snapshot();
     await replayMigration(MIGRATION);
     expect(await snapshot()).toEqual(before);
