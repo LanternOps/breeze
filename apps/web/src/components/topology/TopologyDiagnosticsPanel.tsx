@@ -21,7 +21,7 @@ export default function TopologyDiagnosticsPanel({ siteId, subject, graphRevisio
   const heading = useRef<HTMLHeadingElement>(null), active = useRef(true);
   const base = `/topology/sites/${siteId}`;
   // Known diagnostic codes read as sentences; an unknown code still degrades to readable words.
-  const reasonText = (code: string) => t(`diagnosticReasons.${code}`, { defaultValue: code.replaceAll('_', ' ') });
+  const reasonText = (code: string) => t(/* i18n-dynamic */ `diagnosticReasons.${code}`, { defaultValue: code.replaceAll('_', ' ') });
   useEffect(() => { active.current = true; heading.current?.focus(); return () => { active.current = false; }; }, []);
   useEffect(() => {
     const controller = new AbortController(); setCollectors(null); setOrigin(''); setError(undefined);
