@@ -6,6 +6,7 @@ import type { DeviceTimeStatusView } from './types';
 import { findingCopy } from './timeSyncCopy';
 import TimeEventsList from './TimeEventsList';
 import TimeSyncActions from './TimeSyncActions';
+import TimeSyncEnforcement from './TimeSyncEnforcement';
 type Load =
   | { state: 'loading' | 'error' }
   | { state: 'ready'; view: DeviceTimeStatusView };
@@ -220,6 +221,7 @@ export default function DeviceTimeSection({
           <TimeSyncActions
             targets={[{ deviceId: data.deviceId, name: deviceName ?? deviceId }]}
           />
+          <TimeSyncEnforcement report={data.enforcement} />
           <TimeEventsList events={data.recentEvents} />
         </>
       )}
