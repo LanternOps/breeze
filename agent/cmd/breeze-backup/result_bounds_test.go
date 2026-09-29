@@ -693,3 +693,75 @@ func TestSendBackupResultReportsSendFailure(t *testing.T) {
 		t.Fatal("expected a send over a closed connection to return an error, not be swallowed")
 	}
 }
+
+// A snapshot attestation names the layout and system-state manifests the
+// result reports. When bounding drops either manifest, the attestation must
+// go with it: the server binds the statement to the manifests the result
+// carries, and a statement naming one the result no longer carries could only
+// be recorded as a failed attestation.
+func TestFitBackupResultDropsAttestationWithAControlManifest(t *testing.T) {
+	manifest := `{"platform":"windows","artifacts":[` +
+		strings.Repeat(`{"name":"registry-hive","path":"C:\\Windows\\System32\\config\\SOFTWARE","bytes":123456},`, 200000) +
+		`{"name":"tail"}]}`
+	stdout := `{"id":"job-1","status":"completed","filesBackedUp":12,"bytesBackedUp":345,` +
+		`"snapshot":{"id":"snapshot-1","size":345},"attestation":{"statement":"{\"v\":1}"},"systemStateManifest":` + manifest + `}`
+	fitted, _ := fitBackupResultForDelivery(backupipc.BackupCommandResult{CommandID: "sysimage-1", Success: true, Stdout: stdout})
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	if _, ok := out["systemStateManifest"]; ok {
+		t.Fatal("expected the oversize systemStateManifest to be dropped")
+	}
+	if _, ok := out["attestation"]; ok {
+		t.Fatal("the attestation survived without the system-state manifest it names")
+	}
+
+	// A result that fits keeps its attestation.
+	small := `{"id":"job-1","status":"completed","snapshot":{"id":"snapshot-1","size":1},"attestation":{"statement":"{\"v\":1}"}}`
+	kept, _ := fitBackupResultForDelivery(backupipc.BackupCommandResult{CommandID: "c", Success: true, Stdout: small})
+	if !strings.Contains(kept.Stdout, `"attestation"`) {
+		t.Fatal("a result within bounds lost its attestation")
+	}
+}
+
+// A whole-machine run whose file index alone is over the limit: emptying the
+// index is enough, so the system-state and layout manifests and the
+// attestation that names them must all survive.
+func TestFitBackupResultKeepsControlManifestsWhenEmptyingTheIndexIsEnough(t *testing.T) {
+	var files strings.Builder
+	for i := 0; i < 30000; i++ {
+		if i > 0 {
+			files.WriteString(",")
+		}
+		fmt.Fprintf(&files, `{"sourcePath":"C:\\Windows\\System32\\drivers\\file-%06d.sys","backupPath":"snapshots/snapshot-1/files/path_0/Windows/System32/drivers/file-%06d.sys.gz","size":123456,"checksum":"%064d"}`, i, i, i)
+	}
+	var artifacts strings.Builder
+	for i := 0; i < 60; i++ {
+		if i > 0 {
+			artifacts.WriteString(",")
+		}
+		fmt.Fprintf(&artifacts, `{"name":"artifact-%02d","category":"registry","path":"registry/hive-%02d","sizeBytes":1048576,"checksum":"%064d"}`, i, i, i)
+	}
+	stdout := `{"id":"job-1","status":"completed","filesBackedUp":30000,"bytesBackedUp":1,` +
+		`"snapshot":{"id":"snapshot-1","size":1,"files":[` + files.String() + `]},` +
+		`"systemStateManifest":{"platform":"windows","artifacts":[` + artifacts.String() + `]},` +
+		`"layoutManifest":{"disks":[{"number":0,"partitions":[` + strings.Repeat(`{"number":1,"sizeBytes":1073741824,"type":"basic"},`, 60) + `{"number":2}]}]},` +
+		`"attestation":{"statement":"{\"v\":1}"}}`
+	fitted, _ := fitBackupResultForDelivery(backupipc.BackupCommandResult{CommandID: "img-1", Success: true, Stdout: stdout})
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	for _, key := range []string{"systemStateManifest", "layoutManifest", "attestation"} {
+		if _, ok := out[key]; !ok {
+			t.Fatalf("%s was dropped although emptying the file index was enough", key)
+		}
+	}
+	var snap struct {
+		Files []json.RawMessage `json:"files"`
+	}
+	if err := json.Unmarshal(out["snapshot"], &snap); err != nil || len(snap.Files) != 0 {
+		t.Fatalf("expected the file index emptied, got %d entries (err %v)", len(snap.Files), err)
+	}
+}

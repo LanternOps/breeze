@@ -1151,7 +1151,8 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	}
 	uploadedBases := map[string]bool{}
 	for _, c := range recording.uploadCalls {
-		uploadedBases[pathpkg.Base(c.localPath)] = true
+		// Keyed on the object key: the local path may be a staged copy.
+		uploadedBases[strings.TrimSuffix(pathpkg.Base(c.remotePath), ".gz")] = true
 	}
 	if uploadedBases["f1.txt"] || uploadedBases["f2.txt"] {
 		t.Errorf("f1/f2 should have been resumed, not re-uploaded: %v", recording.uploadCalls)
@@ -1187,7 +1188,9 @@ func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
 	resumedPath := createTempFile(t, tmpDir, "resumed.txt", "already-uploaded")
 	resumedSize := int64(len("already-uploaded"))
 	if err := journal.Record(SnapshotFile{
-		SourcePath: resumedPath, Size: resumedSize, ModTime: modTime, Checksum: "resumed",
+		// A journaled entry carries the digest of the uploaded bytes, which
+		// the resume check compares with the current source.
+		SourcePath: resumedPath, Size: resumedSize, ModTime: modTime, Checksum: digestBytes([]byte("already-uploaded")).SHA256,
 	}); err != nil {
 		t.Fatalf("Record failed: %v", err)
 	}
@@ -1313,6 +1316,10 @@ func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
 	provider := newMockProvider()
 	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	journalDir := t.TempDir()
+	// Run 2's shadow copy exposes the same content at a different path;
+	// the resume check hashes it against the journaled digest.
+	shadow2 := createTempFileIn(t, pathpkg.Join(t.TempDir(), "SHADOW-RUN2", "data"), "f.txt", "hello world")
+	run1Checksum := digestBytes([]byte("hello world")).SHA256
 
 	journal1, _, err := openSnapshotJournal(journalDir, "test-vss-identity", journalMaxAge)
 	if err != nil {
@@ -1328,7 +1335,7 @@ func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
 		BackupPath:   "snap/f.txt.gz",
 		Size:         11,
 		ModTime:      modTime,
-		Checksum:     "run1-checksum",
+		Checksum:     run1Checksum,
 	}); err != nil {
 		t.Fatalf("Record failed: %v", err)
 	}
@@ -1345,8 +1352,8 @@ func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
 	// Run 2 walks a DIFFERENT (fresh) shadow-copy device path for the same
 	// logical file, but the same OriginalPath.
 	run2File := backupFile{
-		sourcePath:   "SHADOW-RUN2/data/f.txt", // different from run 1's
-		originalPath: "/data/f.txt",            // same as run 1's
+		sourcePath:   shadow2,       // different from run 1's
+		originalPath: "/data/f.txt", // same as run 1's
 		snapshotPath: "path_0/f.txt",
 		size:         11,
 		modTime:      modTime,
@@ -1359,7 +1366,7 @@ func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
 	if len(snapshot.Files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
 	}
-	if snapshot.Files[0].Checksum != "run1-checksum" {
+	if snapshot.Files[0].Checksum != run1Checksum {
 		t.Errorf("expected the resumed (run 1) entry to be carried forward, got %+v", snapshot.Files[0])
 	}
 	// Only the manifest should have uploaded — the data file itself must be
@@ -1879,7 +1886,8 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 	}
 	uploadedBases := map[string]bool{}
 	for _, c := range provider.uploadCalls {
-		uploadedBases[pathpkg.Base(c.localPath)] = true
+		// Keyed on the object key: the local path may be a staged copy.
+		uploadedBases[strings.TrimSuffix(pathpkg.Base(c.remotePath), ".gz")] = true
 	}
 	if !uploadedBases["f2.txt"] {
 		t.Errorf("f2 (changed) should have been uploaded: %v", provider.uploadCalls)
@@ -1993,7 +2001,7 @@ func TestCreateSnapshotWithProgress_JournalResumeWinsOverReference(t *testing.T)
 		BackupPath: path.Join(snapshotRootDir, journal.snapshotID, snapshotFilesDir, "path_0/f.txt.gz"),
 		Size:       int64(len("content")),
 		ModTime:    modTime,
-		Checksum:   "journal-checksum",
+		Checksum:   digestBytes([]byte("content")).SHA256,
 	}); err != nil {
 		t.Fatalf("Record failed: %v", err)
 	}
@@ -2017,8 +2025,8 @@ func TestCreateSnapshotWithProgress_JournalResumeWinsOverReference(t *testing.T)
 	if len(snapshot.Files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
 	}
-	if snapshot.Files[0].Checksum != "journal-checksum" {
-		t.Errorf("expected the journal's entry to win over the reference, got checksum %q (want journal-checksum)", snapshot.Files[0].Checksum)
+	if want := digestBytes([]byte("content")).SHA256; snapshot.Files[0].Checksum != want {
+		t.Errorf("expected the journal's entry to win over the reference, got checksum %q (want %s)", snapshot.Files[0].Checksum, want)
 	}
 	if len(provider.uploadCalls) != 1 { // only the manifest uploads
 		t.Fatalf("expected only the manifest to upload (file resumed via journal), got %d upload calls: %v", len(provider.uploadCalls), provider.uploadCalls)
@@ -2397,7 +2405,7 @@ func TestPublishSystemState_SkipsUploadingSymlinkArtifacts(t *testing.T) {
 
 	provider := newMockProvider()
 	snapshotID := "snap-1"
-	if err := publishSystemState(context.Background(), provider, snapshotID, stagingDir, manifest); err != nil {
+	if _, err := publishSystemState(context.Background(), provider, "", nil, snapshotID, stagingDir, manifest); err != nil {
 		t.Fatalf("publishSystemState: %v", err)
 	}
 

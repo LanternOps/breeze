@@ -69,6 +69,15 @@ func (c objectKeyClaims) claim(key string) bool {
 	return true
 }
 
+// clone returns an independent copy (planning keys ahead of assigning them).
+func (c objectKeyClaims) clone() objectKeyClaims {
+	out := make(objectKeyClaims, len(c))
+	for k, v := range c {
+		out[k] = v
+	}
+	return out
+}
+
 // assign returns the key a newly uploaded file must use: its natural key
 // when that is free, else its case-twin key. The chosen key is claimed.
 func (c objectKeyClaims) assign(prefix, snapshotPath, naturalKey string) string {

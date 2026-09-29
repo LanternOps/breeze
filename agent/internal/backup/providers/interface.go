@@ -39,3 +39,12 @@ type BackupProvider interface {
 type JournalIdentity interface {
 	BackupIdentity() string
 }
+
+// JournalScoper is optionally implemented by providers whose destination
+// identity (BackupIdentity) can be shared by several backup configurations —
+// a brokered writer names the destination exactly as the S3 provider does.
+// JournalScope ("" = none) then keeps each configuration's checkpoint
+// journal separate; it never changes the snapshot's own identity.
+type JournalScoper interface {
+	JournalScope() string
+}

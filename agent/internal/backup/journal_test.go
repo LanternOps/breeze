@@ -33,12 +33,19 @@ func TestOpenSnapshotJournal_FreshWhenNoFileExists(t *testing.T) {
 	}
 	j.Abandon()
 
-	entries, err := os.ReadDir(dir)
+	all, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected exactly one journal file on disk, got %d", len(entries))
+	// The journal plus its lock file (kept, never removed).
+	var entries []os.DirEntry
+	for _, e := range all {
+		if !strings.HasSuffix(e.Name(), journalLockSuffix) {
+			entries = append(entries, e)
+		}
+	}
+	if len(entries) != 1 || len(all) != 2 {
+		t.Fatalf("expected exactly one journal file and its lock on disk, got %d entries", len(all))
 	}
 	if !strings.HasPrefix(entries[0].Name(), "backup-journal-") || !strings.HasSuffix(entries[0].Name(), ".jsonl") {
 		t.Errorf("unexpected journal filename: %s", entries[0].Name())

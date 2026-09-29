@@ -304,7 +304,7 @@ func uploadHypervTestSnapshot(t *testing.T, provider providers.BackupProvider, s
 		}},
 		Size: size,
 	}
-	if err := uploadHypervSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadHypervSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 }
@@ -580,7 +580,7 @@ func TestExecHypervRestore_ManifestWithoutSizeUsesFileSizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Size = 0
-	if err := uploadHypervSnapshotManifest(mgr.GetProvider(), *m); err != nil {
+	if _, err := uploadHypervSnapshotManifest(mgr.GetProvider(), "", *m); err != nil {
 		t.Fatal(err)
 	}
 	rec := stubHypervSeams(t,

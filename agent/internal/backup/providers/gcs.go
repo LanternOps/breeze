@@ -181,6 +181,9 @@ func (g *GCSProvider) Delete(remotePath string) error {
 
 	ctx := context.Background()
 	if err := client.Bucket(g.bucketName).Object(remotePath).Delete(ctx); err != nil {
+		if gcsIsNotFound(err) {
+			return nil // already gone: the delete's goal holds
+		}
 		return fmt.Errorf("failed to delete gcs object: %w", err)
 	}
 	return nil
@@ -267,4 +270,9 @@ func (g *GCSProvider) getClient() (*gcs.Client, error) {
 
 	g.client = client
 	return g.client, nil
+}
+
+// gcsIsNotFound reports whether err says the object does not exist.
+func gcsIsNotFound(err error) bool {
+	return errors.Is(err, gcs.ErrObjectNotExist)
 }

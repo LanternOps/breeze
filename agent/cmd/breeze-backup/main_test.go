@@ -706,7 +706,7 @@ func TestExecuteCommand_MSSQLRestoreNilManagerUsesPayloadProvider(t *testing.T) 
 		},
 		Size: int64(len(backupBytes)),
 	}
-	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadMssqlSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 
@@ -799,7 +799,7 @@ func TestExecuteCommand_MSSQLVerifyNilManagerUsesPayloadProvider(t *testing.T) {
 		},
 		Size: int64(len(backupBytes)),
 	}
-	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadMssqlSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 

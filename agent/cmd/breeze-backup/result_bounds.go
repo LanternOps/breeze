@@ -245,8 +245,33 @@ func fitBackupResult(result backupipc.BackupCommandResult) (
 	if entries, ok := emptySnapshotFiles(obj, limit); ok {
 		notes = append(notes, fmt.Sprintf("snapshot file index dropped (%d entries)", entries))
 	}
-	for _, key := range dropBulkFields(obj, limit) {
+	// Emptying the index is usually enough; only then are other containers
+	// dropped. The layout and system-state manifests and the attestation
+	// that names them go last: the attestation is bound to exactly the
+	// manifests the result carries, so dropping one of them costs it too.
+	result.Stdout = encodeStdoutObject(obj, result.Stdout)
+	if fits(result) {
+		return finishBounding(result, notes, limit)
+	}
+	for _, key := range dropBulkFields(obj, limit, attestationBoundKeys) {
 		notes = append(notes, fmt.Sprintf("%s dropped (bulk field)", key))
+	}
+	result.Stdout = encodeStdoutObject(obj, result.Stdout)
+	if fits(result) {
+		return finishBounding(result, notes, limit)
+	}
+	for _, key := range dropBulkFields(obj, limit, nil) {
+		notes = append(notes, fmt.Sprintf("%s dropped (bulk field)", key))
+		// A snapshot attestation names the control manifests the result
+		// reports; without one of them the server could only record it as
+		// a failed attestation, so it goes too (the snapshot is then simply
+		// unattested).
+		if key == "layoutManifest" || key == "systemStateManifest" {
+			if _, present := obj["attestation"]; present {
+				delete(obj, "attestation")
+				notes = append(notes, "attestation dropped (it names "+key+")")
+			}
+		}
 	}
 	result.Stdout = encodeStdoutObject(obj, result.Stdout)
 	if fits(result) {
@@ -567,16 +592,21 @@ func emptySnapshotFiles(obj map[string]json.RawMessage, limit deliveryLimit) (in
 	return len(files), true
 }
 
-// dropBulkFields removes every top-level container field whose encoded size
+// attestationBoundKeys are the result fields a snapshot attestation is bound
+// to, dropped only when nothing else brings the result within its limit.
+var attestationBoundKeys = map[string]bool{"layoutManifest": true, "systemStateManifest": true, "attestation": true}
+
+// dropBulkFields removes every top-level container field (other than those in
+// keep) whose encoded size
 // exceeds bulkFieldThreshold — the per-file arrays (restore's failedFiles /
 // warnings, verify's failedFiles) that are unbounded for the same reason
 // Snapshot.Files is. `snapshot` is exempt: emptySnapshotFiles already handled
 // its bulk and the rest of it is the identity the server needs. Returns the
 // keys dropped, sorted for a deterministic note, and records them in `warning`.
-func dropBulkFields(obj map[string]json.RawMessage, limit deliveryLimit) []string {
+func dropBulkFields(obj map[string]json.RawMessage, limit deliveryLimit, keep map[string]bool) []string {
 	var dropped []string
 	for key, raw := range obj {
-		if key == "snapshot" || len(raw) <= bulkFieldThreshold {
+		if key == "snapshot" || keep[key] || len(raw) <= bulkFieldThreshold {
 			continue
 		}
 		if !isJSONContainer(raw) {

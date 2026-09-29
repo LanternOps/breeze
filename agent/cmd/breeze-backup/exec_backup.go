@@ -168,79 +168,16 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	if len(payload) == 0 {
 		return nil, nil
 	}
-	var p struct {
-		Provider       string                   `json:"provider"`
-		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
-		Paths          []string                 `json:"paths"`
-		// Excludes is only consumed here for the wholeMachine system_image
-		// branch below. Plain file-mode runs ignore this field on the
-		// manager config — their excludes flow through main.go's separate
-		// parseBackupRunExcludes + RunBackupContext(ctx, excludes) call,
-		// which takes precedence whenever the payload's top-level "excludes"
-		// key is present (see RunBackupContext's excludes==nil fallback).
-		Excludes    []string `json:"excludes"`
-		SystemImage bool     `json:"systemImage"`
-		// BaseSnapshotID/PublishLeaseExpiresAt implement the D18 §3.1
-		// server-owned-base protocol. BaseSnapshotID's presence in the JSON
-		// (vs. entirely absent) is the protocol switch: a *string stays nil
-		// when the field is omitted (older server, legacy bucket-listing
-		// mode) and becomes non-nil (possibly pointing at "") when present.
-		BaseSnapshotID        *string `json:"baseSnapshotId"`
-		PublishLeaseExpiresAt string  `json:"publishLeaseExpiresAt"`
-		// Vss lets the server force VSS on/off for this run. Not currently sent
-		// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
-		// absent the agent defaults it itself below.
-		Vss *bool `json:"vss,omitempty"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return nil, fmt.Errorf("invalid backup_run payload: %w", err)
+	p, err := decodeBackupRunPayload(payload)
+	if err != nil {
+		return nil, err
 	}
 	if p.ProviderConfig == nil || p.Provider == "" {
 		return nil, nil
 	}
-	var publishLeaseExpiresAt time.Time
-	if p.PublishLeaseExpiresAt != "" {
-		parsed, parseErr := time.Parse(time.RFC3339, p.PublishLeaseExpiresAt)
-		if parseErr != nil {
-			return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt %q: %w", p.PublishLeaseExpiresAt, parseErr)
-		}
-		publishLeaseExpiresAt = parsed
-	}
-	// D18 §3.1 (P1 fix): publishLeaseExpiresAt is sent for EVERY
-	// server-owned-mode run — base or an explicit full run — never only
-	// when a base was actually chosen. A present baseSnapshotId (server-
-	// owned mode is ON, even if it points at "") with a missing, empty, or
-	// unparseable-to-zero lease means the dispatching server is violating
-	// its own protocol. Reject the WHOLE payload here rather than silently
-	// running server-owned mode ungated: main.go's caller turns this error
-	// into `fail(err.Error())`, so the backup_run command fails outright
-	// and uploads nothing.
-	if p.BaseSnapshotID != nil && publishLeaseExpiresAt.IsZero() {
-		return nil, fmt.Errorf("invalid backup_run payload: baseSnapshotId is present (server-owned mode) but publishLeaseExpiresAt is missing, empty, or zero")
-	}
-	// Symmetric defense-in-depth (review finding): the leaseGate installs
-	// on BaseSnapshotID != nil alone (backup.go), never on the lease value,
-	// so a payload that sent a non-zero lease WITHOUT baseSnapshotId would
-	// otherwise silently fall back to fully-unfenced legacy mode instead of
-	// getting the publish fence its own lease implies it wants. This can
-	// only happen if a dispatching server has a bug (the protocol ties the
-	// two together — baseSnapshotId's presence, even as "", IS the
-	// server-owned-mode switch per D18 §3.1), but reject it loudly here
-	// rather than silently downgrading to legacy/ungated.
-	if p.BaseSnapshotID == nil && !publishLeaseExpiresAt.IsZero() {
-		return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt is present but baseSnapshotId is absent (server-owned mode requires both fields together)")
-	}
-	// vssEnabled defaults to on for server-dispatched Windows file backups so
-	// locked files (open documents, DB files) aren't silently skipped — VSS
-	// failure is already non-fatal (backup.go's RunBackupWithExcludes proceeds
-	// without it), so this can't newly break Linux/macOS or Windows hosts
-	// without VSS. system_image mode manages its own consistency via system
-	// state collection, so it stays off there unless the payload overrides it.
-	// The server can force it either way via the optional `vss` field (not
-	// currently sent by apps/api/src/jobs/backupWorker.ts).
-	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage, len(p.Paths) > 0)
-	if p.Vss != nil {
-		vssEnabled = *p.Vss
+	publishLeaseExpiresAt, vssEnabled, err := p.runSettings()
+	if err != nil {
+		return nil, err
 	}
 	var provider providers.BackupProvider
 	switch p.Provider {
@@ -265,6 +202,122 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	default:
 		return nil, fmt.Errorf("unsupported backup provider %q", p.Provider)
 	}
+	return backupRunManager(p, publishLeaseExpiresAt, vssEnabled, provider)
+}
+
+// brokeredBackupRunManager builds the backup_run manager for a payload that
+// carries a write-scoped storage session: provider is the session's writer
+// and the ONLY storage the run uses. A brokered run must be in server-owned
+// mode (a server-selected base, possibly none, plus a publish lease); a
+// payload without one fails closed instead of listing storage for a base.
+func brokeredBackupRunManager(payload json.RawMessage, provider providers.BackupProvider) (*backup.BackupManager, error) {
+	p, err := decodeBackupRunPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	publishLeaseExpiresAt, vssEnabled, err := p.runSettings()
+	if err != nil {
+		return nil, err
+	}
+	if p.BaseSnapshotID == nil {
+		return nil, fmt.Errorf("storage session: a brokered backup requires a server-selected base (baseSnapshotId)")
+	}
+	return backupRunManager(p, publishLeaseExpiresAt, vssEnabled, provider)
+}
+
+// backupRunPayload is the part of a backup_run payload the run manager is
+// built from.
+type backupRunPayload struct {
+	Provider       string                   `json:"provider"`
+	ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
+	Paths          []string                 `json:"paths"`
+	// Excludes is only consumed here for the wholeMachine system_image
+	// branch below. Plain file-mode runs ignore this field on the
+	// manager config — their excludes flow through main.go's separate
+	// parseBackupRunExcludes + RunBackupContext(ctx, excludes) call,
+	// which takes precedence whenever the payload's top-level "excludes"
+	// key is present (see RunBackupContext's excludes==nil fallback).
+	Excludes    []string `json:"excludes"`
+	SystemImage bool     `json:"systemImage"`
+	// BaseSnapshotID/PublishLeaseExpiresAt implement the D18 §3.1
+	// server-owned-base protocol. BaseSnapshotID's presence in the JSON
+	// (vs. entirely absent) is the protocol switch: a *string stays nil
+	// when the field is omitted (older server, legacy bucket-listing
+	// mode) and becomes non-nil (possibly pointing at "") when present.
+	BaseSnapshotID        *string `json:"baseSnapshotId"`
+	PublishLeaseExpiresAt string  `json:"publishLeaseExpiresAt"`
+	// JobID is the dispatched backup job; a snapshot attestation names
+	// it. BaseAttestation is the server's record of the pinned base's
+	// manifest, which the run checks the downloaded base against.
+	JobID           string                  `json:"jobId"`
+	BaseAttestation *backup.BaseAttestation `json:"baseAttestation"`
+	// Vss lets the server force VSS on/off for this run. Not currently sent
+	// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
+	// absent the agent defaults it itself below.
+	Vss *bool `json:"vss,omitempty"`
+}
+
+// decodeBackupRunPayload decodes a backup_run payload.
+func decodeBackupRunPayload(payload json.RawMessage) (backupRunPayload, error) {
+	var p backupRunPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return p, fmt.Errorf("invalid backup_run payload: %w", err)
+	}
+	return p, nil
+}
+
+// runSettings validates the payload's server-owned-base fields and returns
+// the publish lease and the VSS choice.
+func (p backupRunPayload) runSettings() (publishLeaseExpiresAt time.Time, vssEnabled bool, err error) {
+	if p.PublishLeaseExpiresAt != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, p.PublishLeaseExpiresAt)
+		if parseErr != nil {
+			return time.Time{}, false, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt %q: %w", p.PublishLeaseExpiresAt, parseErr)
+		}
+		publishLeaseExpiresAt = parsed
+	}
+	// D18 §3.1 (P1 fix): publishLeaseExpiresAt is sent for EVERY
+	// server-owned-mode run — base or an explicit full run — never only
+	// when a base was actually chosen. A present baseSnapshotId (server-
+	// owned mode is ON, even if it points at "") with a missing, empty, or
+	// unparseable-to-zero lease means the dispatching server is violating
+	// its own protocol. Reject the WHOLE payload here rather than silently
+	// running server-owned mode ungated: main.go's caller turns this error
+	// into `fail(err.Error())`, so the backup_run command fails outright
+	// and uploads nothing.
+	if p.BaseSnapshotID != nil && publishLeaseExpiresAt.IsZero() {
+		return time.Time{}, false, fmt.Errorf("invalid backup_run payload: baseSnapshotId is present (server-owned mode) but publishLeaseExpiresAt is missing, empty, or zero")
+	}
+	// Symmetric defense-in-depth (review finding): the leaseGate installs
+	// on BaseSnapshotID != nil alone (backup.go), never on the lease value,
+	// so a payload that sent a non-zero lease WITHOUT baseSnapshotId would
+	// otherwise silently fall back to fully-unfenced legacy mode instead of
+	// getting the publish fence its own lease implies it wants. This can
+	// only happen if a dispatching server has a bug (the protocol ties the
+	// two together — baseSnapshotId's presence, even as "", IS the
+	// server-owned-mode switch per D18 §3.1), but reject it loudly here
+	// rather than silently downgrading to legacy/ungated.
+	if p.BaseSnapshotID == nil && !publishLeaseExpiresAt.IsZero() {
+		return time.Time{}, false, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt is present but baseSnapshotId is absent (server-owned mode requires both fields together)")
+	}
+	// vssEnabled defaults to on for server-dispatched Windows file backups so
+	// locked files (open documents, DB files) aren't silently skipped — VSS
+	// failure is already non-fatal (backup.go's RunBackupWithExcludes proceeds
+	// without it), so this can't newly break Linux/macOS or Windows hosts
+	// without VSS. system_image mode manages its own consistency via system
+	// state collection, so it stays off there unless the payload overrides it.
+	// The server can force it either way via the optional `vss` field (not
+	// currently sent by apps/api/src/jobs/backupWorker.ts).
+	vssEnabled = defaultVSS(runtime.GOOS, p.SystemImage, len(p.Paths) > 0)
+	if p.Vss != nil {
+		vssEnabled = *p.Vss
+	}
+	return publishLeaseExpiresAt, vssEnabled, nil
+}
+
+// backupRunManager builds the manager for a parsed backup_run payload writing
+// through provider.
+func backupRunManager(p backupRunPayload, publishLeaseExpiresAt time.Time, vssEnabled bool, provider providers.BackupProvider) (*backup.BackupManager, error) {
 	// system_image mode carries no file paths: the backup content is the
 	// collected system-state staging dir. The server fans a `system_image`
 	// selection out as a backup_run with `systemImage:true` and no `paths`
@@ -283,6 +336,8 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 			AgentVersion:          version,
 			BaseSnapshotID:        p.BaseSnapshotID,
 			PublishLeaseExpiresAt: publishLeaseExpiresAt,
+			JobID:                 p.JobID,
+			BaseAttestation:       p.BaseAttestation,
 		}
 		// #5493: a wholeMachine system_image selection fans out with Paths
 		// set (backupWorker.ts resolveBackupTargets), so this run ALSO walks
@@ -319,6 +374,8 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		AgentVersion:          version,
 		BaseSnapshotID:        p.BaseSnapshotID,
 		PublishLeaseExpiresAt: publishLeaseExpiresAt,
+		JobID:                 p.JobID,
+		BaseAttestation:       p.BaseAttestation,
 	}), nil
 }
 

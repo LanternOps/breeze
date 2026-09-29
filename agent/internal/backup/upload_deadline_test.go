@@ -55,7 +55,7 @@ func TestPublishSnapshotManifest_DeadlineExpiryIsAStallNotAStop(t *testing.T) {
 	restoreFloor := setUploadTimeoutFloorForTest(50 * time.Millisecond)
 	defer restoreFloor()
 
-	err := publishSnapshotManifest(context.Background(), &stallOnceProvider{}, &Snapshot{ID: "snap-1"}, "snapshots/snap-1")
+	_, err := publishSnapshotManifest(context.Background(), &stallOnceProvider{}, "", nil, &Snapshot{ID: "snap-1"})
 	if err == nil {
 		t.Fatal("want an error when the manifest upload stalls past its deadline")
 	}
@@ -71,7 +71,7 @@ func TestPublishLayoutManifest_DeadlineExpiryIsAStallNotAStop(t *testing.T) {
 	restoreFloor := setUploadTimeoutFloorForTest(50 * time.Millisecond)
 	defer restoreFloor()
 
-	err := publishLayoutManifest(context.Background(), &stallOnceProvider{}, "snap-1", nil)
+	_, err := publishLayoutManifest(context.Background(), &stallOnceProvider{}, "", nil, "snap-1", nil)
 	if err == nil {
 		t.Fatal("want an error when the layout manifest upload stalls past its deadline")
 	}
@@ -92,7 +92,7 @@ func TestPublishSystemState_ArtifactDeadlineExpiryIsAStallNotAStop(t *testing.T)
 		Artifacts: []systemstate.Artifact{{Path: "reg.hiv", SizeBytes: 4}},
 	}
 
-	err := publishSystemState(context.Background(), &stallOnceProvider{}, "snap-1", staging, manifest)
+	_, err := publishSystemState(context.Background(), &stallOnceProvider{}, "", nil, "snap-1", staging, manifest)
 	if err == nil {
 		t.Fatal("want an error when a system state artifact upload stalls past its deadline")
 	}
@@ -112,7 +112,7 @@ func TestUploadWithDeadline_JobCancelStaysAStop(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
 	}()
-	err := uploadWithDeadline(ctx, &stallOnceProvider{}, writeTempFile(t, "x"), "remote/x", 1)
+	_, err := uploadWithDeadline(ctx, &stallOnceProvider{}, "", writeTempFile(t, "x"), "remote/x", 1)
 	if !errors.Is(err, errBackupStopped) {
 		t.Fatalf("want errBackupStopped for a job cancel, got %v", err)
 	}

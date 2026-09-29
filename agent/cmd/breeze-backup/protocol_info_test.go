@@ -41,13 +41,16 @@ func TestPrintProtocolInfoReportsAllProtocols(t *testing.T) {
 }
 
 // TestProtocolVersionsThisBuildImplements pins the values this build
-// reports: brokered reads only. Raising either of the others is what tells
-// the server the helper implements that protocol.
+// reports: brokered reads, integrity protocol 1 (snapshot attestations
+// plus a verified incremental base) and write protocol 1 (backups to S3
+// through a write-scoped storage session, under the server-issued snapshot
+// id). Raising a value is what tells the server the helper implements that
+// protocol.
 func TestProtocolVersionsThisBuildImplements(t *testing.T) {
-	if backup.IntegrityProtocolVersion != 0 {
-		t.Fatalf("IntegrityProtocolVersion = %d, want 0", backup.IntegrityProtocolVersion)
+	if backup.IntegrityProtocolVersion != 1 {
+		t.Fatalf("IntegrityProtocolVersion = %d, want 1", backup.IntegrityProtocolVersion)
 	}
-	if storagesession.WriteProtocolVersion != 0 {
-		t.Fatalf("WriteProtocolVersion = %d, want 0", storagesession.WriteProtocolVersion)
+	if storagesession.WriteProtocolVersion != 1 {
+		t.Fatalf("WriteProtocolVersion = %d, want 1", storagesession.WriteProtocolVersion)
 	}
 }

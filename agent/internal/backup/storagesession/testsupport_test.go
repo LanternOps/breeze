@@ -114,6 +114,10 @@ func newFakeControlPlane(t *testing.T, storage *fakeStorage) *fakeControlPlane {
 	}
 	base := "/api/v1/agents/" + testAgentID + "/storage-sessions/" + testSessionID
 	cp.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cp.mu.Lock()
+		serverNow := cp.now()
+		cp.mu.Unlock()
+		w.Header().Set("Date", serverNow.UTC().Format(http.TimeFormat))
 		switch {
 		case r.Method == http.MethodPost && r.URL.EscapedPath() == base+"/objects:resolve":
 			cp.handleResolve(w, r)
@@ -237,6 +241,9 @@ func newTestProvider(t *testing.T, cp *fakeControlPlane, d *Descriptor, opts Opt
 	}
 	if opts.StorageClient == nil {
 		opts.StorageClient = cp.storage.srv.Client()
+	}
+	if opts.ControlCallsPerMinute == 0 {
+		opts.ControlCallsPerMinute = -1
 	}
 	p, err := New(context.Background(), d, testCredentials(cp), opts)
 	if err != nil {

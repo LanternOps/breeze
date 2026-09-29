@@ -758,6 +758,14 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return result
 		}
 	}
+	// A backup carrying a write-scoped storage session writes through that
+	// session only — never through agent.yaml storage or a payload
+	// providerConfig.
+	if brokeredWriteCommands[req.CommandType] {
+		if result, handled := executeBrokeredWrite(req, conn, commandCanceller); handled {
+			return result
+		}
+	}
 	if req.CommandType == "backup_run" {
 		payloadMgr, err := managerFromBackupRunPayload(req.Payload)
 		if err != nil {
@@ -884,35 +892,13 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		if err := applyCommandStorageEncryption(mgr.GetProvider(), req.Payload); err != nil {
 			return fail(err.Error())
 		}
-		excludes, err := parseBackupRunExcludes(req.Payload)
-		if err != nil {
-			return fail(err.Error())
-		}
 		// Track this command with the canceller so backup_stop's cancelAll()
 		// can abort the run even though mgr may be an ephemeral
 		// payload-built manager that never goes through Stop() (see
 		// managerFromBackupRunPayload above).
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
-		// mgr here may be the ephemeral payload-built manager resolved above
-		// (not the long-lived agent.yaml manager), so the progress fn is set
-		// on it directly, right before the run that actually uses it.
-		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
-			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
-				CommandID: req.CommandID, Phase: "uploading",
-				Current: bytesDone, Total: bytesTotal,
-				FilesDone: filesDone, FilesTotal: filesTotal,
-				// Forwarded so the server records backup_jobs.snapshot_id
-				// mid-run (#3006). Empty on pre-snapshot keepalives.
-				SnapshotID: snapshotID,
-			})
-		})
-		result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
-		// Auto-sync to vault after successful backup (async — don't block command response)
-		if result.Success {
-			go autoSyncToVault(result.Stdout, vaultState, conn)
-		}
-		return result
+		return runBackupRunCommand(ctx, req, mgr, vaultState, conn)
 	case "backup_list":
 		return marshalResult(backup.ListSnapshots(mgr.GetProvider()))
 	case "backup_stop":
@@ -989,6 +975,34 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	default:
 		return fail(fmt.Sprintf("unknown backup command: %s", req.CommandType))
 	}
+}
+
+// runBackupRunCommand runs a backup_run through mgr (whose provider already
+// carries the command's storage encryption) and reports its progress.
+func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+	excludes, err := parseBackupRunExcludes(req.Payload)
+	if err != nil {
+		return fail(err.Error())
+	}
+	// mgr here may be the ephemeral payload-built manager resolved above
+	// (not the long-lived agent.yaml manager), so the progress fn is set
+	// on it directly, right before the run that actually uses it.
+	mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
+		sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
+			CommandID: req.CommandID, Phase: "uploading",
+			Current: bytesDone, Total: bytesTotal,
+			FilesDone: filesDone, FilesTotal: filesTotal,
+			// Forwarded so the server records backup_jobs.snapshot_id
+			// mid-run (#3006). Empty on pre-snapshot keepalives.
+			SnapshotID: snapshotID,
+		})
+	})
+	result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
+	// Auto-sync to vault after successful backup (async — don't block command response)
+	if result.Success {
+		go autoSyncToVault(result.Stdout, vaultState, conn)
+	}
+	return result
 }
 
 // --- helpers ---
