@@ -317,11 +317,10 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		return fail("failed to upload Hyper-V manifest: " + err.Error())
 	}
 
-	return marshalResult(map[string]any{
+	out := map[string]any{
 		"snapshotId":    snapshotID,
 		"filesBackedUp": fileCount,
 		"bytesBackedUp": totalSize,
-		"warning":       strings.Join(warnings, "\n"),
 		"backupType":    "application",
 		"metadata": map[string]any{
 			"backupKind":       "hyperv_export",
@@ -339,7 +338,13 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 			"size":      totalSize,
 			"files":     manifestFiles,
 		},
-	}, nil)
+	}
+	// Omitted, not "", when there is nothing to report (#7466): a blank warning
+	// reads as "no warning" to the server, but older servers refused it.
+	if len(warnings) > 0 {
+		out["warning"] = strings.Join(warnings, "\n")
+	}
+	return marshalResult(out, nil)
 }
 
 func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {

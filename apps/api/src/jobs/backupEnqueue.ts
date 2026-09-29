@@ -143,6 +143,39 @@ export interface ProcessResultsResult {
   error?: string;
 }
 
+/**
+ * The OPTIONAL free-text fields of the result. The strict queue schema declares
+ * each as a non-empty string, but the ingress schema (routes/backup/
+ * resultSchemas.ts) accepts any string, so a helper that reports one blank gets
+ * past ingress and is then refused here, failing a run that succeeded (#7466:
+ * the Hyper-V export sends `warning: ""` on every clean run).
+ *
+ * Blank means "not reported": {@link withBlankOptionalStringsAbsent} drops these
+ * keys when they are empty or whitespace-only, just before the strict parse. The
+ * queue schema stays strict for everything else. The required `status` is
+ * server-derived and deliberately NOT listed: a blank one is a server bug and
+ * must still be refused. backupEnqueue.test.ts derives the optional
+ * non-empty-string keys from the queue schema and fails if one is missing here.
+ */
+const BLANK_AS_ABSENT_RESULT_KEYS = [
+  'agentStatus',
+  'jobId',
+  'snapshotId',
+  'warning',
+  'error',
+] as const satisfies ReadonlyArray<keyof ProcessResultsResult>;
+
+function withBlankOptionalStringsAbsent(result: ProcessResultsResult): ProcessResultsResult {
+  const normalized: ProcessResultsResult = { ...result };
+  for (const key of BLANK_AS_ABSENT_RESULT_KEYS) {
+    const value = normalized[key];
+    if (typeof value === 'string' && value.trim() === '') {
+      delete normalized[key];
+    }
+  }
+  return normalized;
+}
+
 const SYSTEM_DISPATCH_META: QueueActorMeta = {
   actorType: 'system',
   actorId: null,
@@ -211,7 +244,7 @@ export async function enqueueBackupResults(
     jobId,
     orgId,
     deviceId,
-    result,
+    result: withBlankOptionalStringsAbsent(result),
     ...(options.dispatchExpectationVerified ? { dispatchExpectationVerified: true as const } : {}),
   }, meta));
   const job = await queue.add(
