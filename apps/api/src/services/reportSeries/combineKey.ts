@@ -136,6 +136,11 @@ export function normalizeCombineConfig(
   };
 }
 
+/** Lower-case sha256 hex of `text`: the group key and the plan fingerprint. */
+export function sha256Hex(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
 export function combineGroupKey(parts: {
   type: ReportType;
   format: CombineFormat;
@@ -149,7 +154,7 @@ export function combineGroupKey(parts: {
     schedule: parts.schedule,
     config: parts.canonicalConfig,
   });
-  return createHash('sha256').update(text).digest('hex');
+  return sha256Hex(text);
 }
 
 /** The series definition's `config`: a stored row config (NOT canonical, no

@@ -91,6 +91,8 @@ const combineEmailSchema = z.string().trim().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)
 /** POST /reports/series/combine (series W04, spec §3.8). */
 export const combineSeriesSchema = z.object({
   groupKey: z.string().regex(/^[0-9a-f]{64}$/),
+  /** The candidate's planFingerprint: the plan the dialog showed (W04 final review F3). */
+  planFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   reportIds: z.array(z.string().guid()).min(2).max(500),
   name: z.string().trim().min(1).max(255),
   targetMode: z.enum(['selected', 'all']).default('selected'),

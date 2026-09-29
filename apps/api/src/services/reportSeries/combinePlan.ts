@@ -6,10 +6,12 @@
  */
 import type { ReportType } from '@breeze/shared';
 import {
+  canonicalize,
   combineGroupKey,
   normalizeCombineConfig,
   normalizeEmail,
   seriesConfigFrom,
+  sha256Hex,
   type CombineCadence,
   type CombineFormat,
 } from './combineKey';
@@ -291,6 +293,29 @@ export function splitCombineCc(group: { rows: readonly KeyedCombineRow[] }): CcS
   return { shared, conflicting };
 }
 
+/**
+ * The plan a dialog showed, beyond what the group key covers (W04 final review
+ * F3). A CC edit, or a run that changes which row is adopted, keeps the same
+ * key and the same id set but changes what the user approved; the server
+ * recomputes this under lock and answers combine_group_changed on a mismatch.
+ * sha256 hex of the canonical JSON of: per org (by orgId) the adopted id and
+ * the sorted archived ids; the sorted shared CC; the sorted conflicting CC
+ * addresses.
+ */
+export function combinePlanFingerprint(
+  plan: { orgs: readonly { orgId: string; adopt: { id: string }; archive: readonly { id: string }[] }[] },
+  ccSplit: CcSplit,
+): string {
+  const orgs = [...plan.orgs]
+    .sort((a, b) => compareIds(a.orgId, b.orgId))
+    .map((o) => ({ orgId: o.orgId, adopt: o.adopt.id, archive: o.archive.map((r) => r.id).sort(compareIds) }));
+  return sha256Hex(JSON.stringify(canonicalize({
+    orgs,
+    sharedCc: [...ccSplit.shared].sort(compareIds),
+    conflictingCc: ccSplit.conflicting.map((c) => c.email).sort(compareIds),
+  })));
+}
+
 export interface CcResolution {
   include: readonly string[];
   drop: readonly string[];
@@ -379,6 +404,8 @@ export interface CombineCandidateGroup {
   orgs: CombineCandidateOrg[];
   sharedCc: string[];
   conflictingCc: CcSplit['conflicting'];
+  /** combinePlanFingerprint of this plan; the POST must echo it. */
+  planFingerprint: string;
 }
 
 export function toCandidateGroup(
@@ -412,5 +439,6 @@ export function toCandidateGroup(
     })),
     sharedCc: split.shared,
     conflictingCc: split.conflicting,
+    planFingerprint: combinePlanFingerprint(plan, split),
   };
 }

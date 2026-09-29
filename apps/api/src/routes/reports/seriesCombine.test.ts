@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 
 const TX = { marker: 'tx' };
 const GROUP_KEY = 'a'.repeat(64);
+const PLAN_FINGERPRINT = 'b'.repeat(64);
 const R1 = '11111111-1111-4111-8111-111111111111';
 const R2 = '22222222-2222-4222-8222-222222222222';
 
@@ -57,7 +58,7 @@ import { seriesCombineRoutes } from './seriesCombine';
 const READ = { resource: 'reports', action: 'read' };
 const WRITE = { resource: 'reports', action: 'write' };
 const body = {
-  groupKey: GROUP_KEY, reportIds: [R1, R2], name: 'Weekly alerts', targetMode: 'selected',
+  groupKey: GROUP_KEY, planFingerprint: PLAN_FINGERPRINT, reportIds: [R1, R2], name: 'Weekly alerts', targetMode: 'selected',
   ccResolution: { include: [], drop: ['extra@msp.test'] },
 };
 
@@ -163,6 +164,16 @@ describe('series Combine routes (W04)', () => {
     expect((await post({ ...body, reportIds: [R1] })).status).toBe(400);
     expect((await post({ ...body, groupKey: 'nope' })).status).toBe(400);
     expect((await post({ ...body, targetMode: 'everyone' })).status).toBe(400);
+    expect(state.combineIntoSeries).not.toHaveBeenCalled();
+  });
+
+  // W04 final review F3: the fingerprint of the plan the dialog showed is required.
+  it('refuses a missing or malformed planFingerprint before touching the service', async () => {
+    const { planFingerprint: _omitted, ...withoutFingerprint } = body;
+    expect((await post(withoutFingerprint)).status).toBe(400);
+    expect((await post({ ...body, planFingerprint: 'B'.repeat(64) })).status).toBe(400);
+    expect((await post({ ...body, planFingerprint: 'b'.repeat(63) })).status).toBe(400);
+    expect((await post({ ...body, planFingerprint: 42 })).status).toBe(400);
     expect(state.combineIntoSeries).not.toHaveBeenCalled();
   });
 });

@@ -227,6 +227,7 @@ async function inputFor(f: Fixture, over: Partial<CombineInput> = {}): Promise<C
   const [group] = await candidatesFor(f);
   return {
     groupKey: group!.groupKey,
+    planFingerprint: group!.planFingerprint,
     reportIds: group!.orgs.flatMap((o) => o.rows.map((r) => r.reportId)),
     name: 'Weekly critical alerts',
     targetMode: 'selected',
@@ -395,6 +396,27 @@ describe('Combine service on real Postgres (series W04)', () => {
     expect(listed).not.toContain(rQuickSupport);
   });
 
+  // W04 final review F3: a CC edit between the GET and the POST keeps the key
+  // and the id set but changes the plan the user approved.
+  runDb('a CC address added between listing and combining gets 409 combine_group_changed and writes nothing', async () => {
+    const f = await seedFixture();
+    const s = await seedGroup(f);
+    const input = await inputFor(f);
+    await getTestDb().update(reports)
+      .set({ config: { ...TWIN_CONFIG, emailRecipients: ['CC@msp.test', 'late@msp.test'] } })
+      .where(eq(reports.id, s.rB1));
+    const [relisted] = await candidatesFor(f);
+    expect(relisted!.groupKey).toBe(input.groupKey);
+    expect(relisted!.planFingerprint).not.toBe(input.planFingerprint);
+
+    await expect(asAdmin(f, (tx) => combineIntoSeries(input, adminAuth(f), tx)))
+      .rejects.toMatchObject({ code: 'combine_group_changed', status: 409 });
+    expect(await seriesOf(f.partner.id)).toEqual([]);
+    for (const id of [s.rA1, s.rA2, s.rB1]) {
+      expect(await reportRow(id)).toMatchObject({ seriesId: null, archivedAt: null });
+    }
+  });
+
   runDb('a selected-access partner user is refused by the service belt', async () => {
     const f = await seedFixture();
     await seedGroup(f);
@@ -492,7 +514,7 @@ describe('Combine routes on real Postgres (series W04)', () => {
 
     const listed = await app.request('/reports/series/combine-candidates', { headers: auth });
     expect(listed.status).toBe(200);
-    const { data } = await listed.json() as { data: { groupKey: string; orgs: { rows: { reportId: string }[] }[] }[] };
+    const { data } = await listed.json() as { data: { groupKey: string; planFingerprint: string; orgs: { rows: { reportId: string }[] }[] }[] };
     expect(data).toHaveLength(1);
 
     const res = await app.request('/reports/series/combine', {
@@ -500,6 +522,7 @@ describe('Combine routes on real Postgres (series W04)', () => {
       headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         groupKey: data[0]!.groupKey,
+        planFingerprint: data[0]!.planFingerprint,
         reportIds: data[0]!.orgs.flatMap((o) => o.rows.map((r) => r.reportId)),
         name: 'Weekly critical alerts',
         ccResolution: { include: [], drop: ['extra@msp.test'] },
@@ -521,7 +544,7 @@ describe('Combine routes on real Postgres (series W04)', () => {
     expect((await app.request('/reports/series/combine-candidates', { headers: auth })).status).toBe(403);
     const res = await app.request('/reports/series/combine', {
       method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ groupKey: 'a'.repeat(64), reportIds: [randomUUID(), randomUUID()], name: 'x' }),
+      body: JSON.stringify({ groupKey: 'a'.repeat(64), planFingerprint: 'b'.repeat(64), reportIds: [randomUUID(), randomUUID()], name: 'x' }),
     });
     expect(res.status).toBe(403);
     expect(await seriesOf(f.partner.id)).toEqual([]);

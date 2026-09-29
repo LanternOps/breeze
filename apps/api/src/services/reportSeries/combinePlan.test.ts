@@ -4,6 +4,7 @@ import { INTERNAL_REPORT_TYPES, PARTNER_ONLY_DELIVERY_REPORT_TYPES } from '../..
 import {
   carriedLastGeneratedAt,
   combineExclusionReason,
+  combinePlanFingerprint,
   groupCombineRows,
   isScopeDenialRun,
   planGroupAdoption,
@@ -203,6 +204,45 @@ describe('isScopeDenialRun (the worker deny() shape)', () => {
     expect(isScopeDenialRun({ status: 'failed', errorMessage: 'series_skip_archived' })).toBe(false);
     expect(isScopeDenialRun({ status: 'failed', errorMessage: null })).toBe(false);
     expect(isScopeDenialRun({ status: 'completed', errorMessage: 'scope_membership_removed' })).toBe(false);
+  });
+});
+
+// W04 final review F3: what the dialog showed, so the server can refuse a
+// plan that changed between the GET and the POST (same key, same ids).
+describe('combinePlanFingerprint', () => {
+  const build = (rows: CombineSourceRow[], linked: string[] = []) => {
+    const [group] = groupCombineRows(rows);
+    const plan = planGroupAdoption(group!, new Set(linked));
+    return combinePlanFingerprint(plan, splitCombineCc(plan));
+  };
+  const a1 = row({ orgId: 'org-a', lastGeneratedAt: new Date('2026-09-20T08:00:00Z'), config: { ...CONFIG, emailRecipients: ['cc@msp.test', 'extra@msp.test'] } });
+  const a2 = row({ orgId: 'org-a', lastGeneratedAt: new Date('2026-09-01T08:00:00Z') });
+  const b1 = row({ orgId: 'org-b', orgName: 'Bravo' });
+
+  it('is sha256 hex and stable under input order', () => {
+    const fp = build([a1, a2, b1]);
+    expect(fp).toMatch(/^[0-9a-f]{64}$/);
+    expect(build([b1, a2, a1])).toBe(fp);
+    expect(build([a2, b1, a1])).toBe(fp);
+  });
+
+  it('changes when a CC address changes (shared or conflicting)', () => {
+    const fp = build([a1, a2, b1]);
+    const b1WithExtra = { ...b1, config: { ...CONFIG, emailRecipients: ['cc@msp.test', 'new@msp.test'] } };
+    expect(build([a1, a2, b1WithExtra])).not.toBe(fp);
+    const a2NoCc = { ...a2, config: { ...CONFIG, emailRecipients: [] } };
+    expect(build([a1, a2NoCc, b1])).not.toBe(fp);
+  });
+
+  it('changes when the adopted row changes, even with the same ids', () => {
+    expect(build([a1, a2, b1], [a2.id])).not.toBe(build([a1, a2, b1]));
+  });
+
+  it('is the planFingerprint the candidate DTO carries', () => {
+    const [group] = groupCombineRows([a1, a2, b1]);
+    const plan = planGroupAdoption(group!, new Set());
+    expect(toCandidateGroup(plan, new Map(), new Set(), new Set()).planFingerprint)
+      .toBe(combinePlanFingerprint(plan, splitCombineCc(plan)));
   });
 });
 

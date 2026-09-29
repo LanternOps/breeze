@@ -31,6 +31,7 @@ import {
   CombineError,
   MAX_INTERNAL_CC,
   carriedLastGeneratedAt,
+  combinePlanFingerprint,
   groupCombineRows,
   isScopeDenialRun,
   planGroupAdoption,
@@ -52,6 +53,8 @@ type ChildScopeColumns = Exclude<Awaited<ReturnType<typeof captureChildExecution
 
 export interface CombineInput {
   groupKey: string;
+  /** combinePlanFingerprint of the plan the dialog showed (candidate DTO). */
+  planFingerprint: string;
   /** Every row the dialog showed for the group (adopt + archive). */
   reportIds: string[];
   name: string;
@@ -317,7 +320,12 @@ export async function combineIntoSeries(input: CombineInput, auth: CombineAuth, 
   const plan = planGroupAdoption(group, linkedReportIds(links));
   assertSeriesConfigOrgAgnostic(plan.seriesConfig);
 
-  const cc = resolveCombineCc(splitCombineCc(plan), input.ccResolution);
+  // Same key and ids, different plan (a CC edit, or a run that changed which
+  // row is adopted): not what the user approved. Checked before the CC
+  // resolution, so a stale dialog refreshes instead of looping on cc_conflict.
+  const split = splitCombineCc(plan);
+  if (combinePlanFingerprint(plan, split) !== input.planFingerprint) throw groupChanged();
+  const cc = resolveCombineCc(split, input.ccResolution);
   if (!cc.ok) {
     throw new CombineError('combine_cc_conflict', 409, {
       error: 'combine_cc_conflict', shared: cc.shared, unresolved: cc.unresolved, unexpected: cc.unexpected,
