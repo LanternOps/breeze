@@ -831,6 +831,7 @@
         "loadFailed": "No se pudieron cargar los destinatarios del informe",
         "businessEmailOnly": "Los informes de negocio se envían solo a las direcciones de correo electrónico de abajo. No se pueden agregar contactos de la organización.",
         "partnerOwnedEmailOnly": "Este informe abarca todas las organizaciones, por lo que se envía solo a las direcciones de correo electrónico de abajo. No se pueden agregar contactos de la organización.",
+        "oneTimeNotEmailed": "Los informes de una sola vez no se envían por correo electrónico. Elija una programación recurrente para enviar este informe a los contactos.",
         "emailAddresses": "Direcciones de correo electrónico"
       },
       "previewTable": {

@@ -831,6 +831,7 @@
         "loadFailed": "Não foi possível carregar os destinatários do relatório",
         "businessEmailOnly": "Relatórios de negócios são enviados somente para os endereços de e-mail abaixo. Não é possível adicionar contatos da organização.",
         "partnerOwnedEmailOnly": "Este relatório abrange todas as organizações, por isso é enviado somente para os endereços de e-mail abaixo. Não é possível adicionar contatos da organização.",
+        "oneTimeNotEmailed": "Relatórios únicos não são enviados por e-mail. Escolha um agendamento recorrente para enviar este relatório aos contatos.",
         "emailAddresses": "Endereços de e-mail"
       },
       "previewTable": {

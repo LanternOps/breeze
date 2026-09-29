@@ -831,6 +831,7 @@
         "loadFailed": "Impossibile caricare i destinatari del report",
         "businessEmailOnly": "I report aziendali vengono inviati solo agli indirizzi email indicati sotto. Non è possibile aggiungere contatti dell'organizzazione.",
         "partnerOwnedEmailOnly": "Questo report copre tutte le organizzazioni, quindi viene inviato solo agli indirizzi email indicati sotto. Non è possibile aggiungere contatti dell'organizzazione.",
+        "oneTimeNotEmailed": "I report una tantum non vengono inviati via email. Scegli una pianificazione ricorrente per inviare questo report ai contatti.",
         "emailAddresses": "Indirizzi email"
       },
       "previewTable": {

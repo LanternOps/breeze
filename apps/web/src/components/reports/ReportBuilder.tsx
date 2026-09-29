@@ -862,8 +862,9 @@ export default function ReportBuilder({
   const [chartType, setChartType] = useState<ChartType>(defaultValues?.chartType ?? 'table');
   const [schedule, setSchedule] = useState<ReportSchedule>(normalizeSchedule(defaultValues?.schedule));
   // A one-time report (one being edited, or a one-time template's) keeps a
-  // One-time choice next to the recurring ones; nothing else offers it.
-  const offersOneTime = defaultValues?.schedule === 'one_time';
+  // One-time choice next to the recurring ones; nothing else offers it, and a
+  // multi-org report (recurring-only, submitSeries) never does.
+  const offersOneTime = defaultValues?.schedule === 'one_time' && !seriesMode;
   const visibleScheduleOptions = offersOneTime ? [oneTimeScheduleOption, ...scheduleOptions] : scheduleOptions;
   const [scheduleTime, setScheduleTime] = useState(defaultValues?.scheduleTime ?? '09:00');
   const [scheduleDay, setScheduleDay] = useState(defaultValues?.scheduleDay ?? 'monday');
@@ -2529,6 +2530,12 @@ export default function ReportBuilder({
                       {businessType
                         ? t('reports.reportBuilder.recipients.businessEmailOnly')
                         : t('reports.reportBuilder.recipients.partnerOwnedEmailOnly')}
+                    </p>
+                  ) : schedule === 'one_time' ? (
+                    // Contacts are not loaded for a one-time report: it is never
+                    // emailed (runs.ts records no delivery; the worker skips it).
+                    <p data-testid="report-one-time-recipients-note" className="text-xs text-muted-foreground">
+                      {t('reports.reportBuilder.recipients.oneTimeNotEmailed')}
                     </p>
                   ) : (
                   <>

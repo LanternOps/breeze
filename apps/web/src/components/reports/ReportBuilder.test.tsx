@@ -878,6 +878,17 @@ describe('ReportBuilder keeps a one-time schedule', () => {
     await waitFor(() => expect(putBody()).toMatchObject({ schedule: 'monthly' }));
   });
 
+  // Review follow-up: the contacts load skips one-time reports (they are never
+  // emailed), which left an empty "Organization contacts" list.
+  it('says a one-time report is not emailed instead of showing an empty contacts list', async () => {
+    renderOneTime();
+
+    expect(await screen.findByTestId('report-one-time-recipients-note'))
+      .toHaveTextContent("One-time reports aren't emailed. Choose a recurring schedule to send this report to contacts.");
+    expect(screen.queryByText('Organization contacts')).toBeNull();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes('/contacts'))).toBe(false);
+  });
+
   it('offers no one-time option to a recurring report', async () => {
     render(
       <ReportBuilder

@@ -836,6 +836,7 @@
         "loadFailed": "Could not load the report recipients",
         "businessEmailOnly": "Business reports are delivered only to the email addresses below. Organization contacts can't be added.",
         "partnerOwnedEmailOnly": "This report covers all organizations, so it is delivered only to the email addresses below. Organization contacts can't be added.",
+        "oneTimeNotEmailed": "One-time reports aren't emailed. Choose a recurring schedule to send this report to contacts.",
         "emailAddresses": "Email addresses"
       },
       "previewTable": {

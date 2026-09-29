@@ -831,6 +831,7 @@
         "loadFailed": "Rapor alıcıları yüklenemedi",
         "businessEmailOnly": "İş raporları yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
         "partnerOwnedEmailOnly": "Bu rapor tüm kuruluşları kapsadığından yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
+        "oneTimeNotEmailed": "Tek seferlik raporlar e-postayla gönderilmez. Bu raporu kişilere göndermek için yinelenen bir zamanlama seçin.",
         "emailAddresses": "E-posta adresleri"
       },
       "previewTable": {

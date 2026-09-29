@@ -831,6 +831,7 @@
         "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden",
         "businessEmailOnly": "Geschäftsberichte werden nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
         "partnerOwnedEmailOnly": "Dieser Bericht umfasst alle Organisationen und wird daher nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "oneTimeNotEmailed": "Einmalige Berichte werden nicht per E-Mail versendet. Wählen Sie einen wiederkehrenden Zeitplan, um diesen Bericht an Kontakte zu senden.",
         "emailAddresses": "E-Mail-Adressen"
       },
       "previewTable": {

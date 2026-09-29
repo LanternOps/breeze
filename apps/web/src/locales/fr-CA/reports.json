@@ -831,6 +831,7 @@
         "loadFailed": "Impossible de charger les destinataires du rapport",
         "businessEmailOnly": "Les rapports d'affaires sont envoyés uniquement aux adresses courriel ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
         "partnerOwnedEmailOnly": "Ce rapport couvre toutes les organisations, il est donc envoyé uniquement aux adresses courriel ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
+        "oneTimeNotEmailed": "Les rapports ponctuels ne sont pas envoyés par courriel. Choisissez une planification récurrente pour envoyer ce rapport aux contacts.",
         "emailAddresses": "Adresses courriel"
       },
       "previewTable": {
