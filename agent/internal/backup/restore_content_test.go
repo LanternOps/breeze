@@ -24,6 +24,9 @@ type restoreEntry struct {
 	source  string
 	key     string
 	content string
+	// rawSource, when set, is the manifest SourcePath verbatim (uncleaned),
+	// for entries the restore must refuse.
+	rawSource string
 }
 
 // writeRestoreSnapshot builds a snapshot whose manifest lists entries in
@@ -47,8 +50,12 @@ func writeRestoreSnapshot(t *testing.T, entries []restoreEntry) (*providers.Loca
 			}
 			uploaded[key] = true
 		}
+		source := path.Join("/original", e.source)
+		if e.rawSource != "" {
+			source = e.rawSource
+		}
 		files = append(files, SnapshotFile{
-			SourcePath: path.Join("/original", e.source),
+			SourcePath: source,
 			BackupPath: key,
 			Size:       int64(len(e.content)),
 			ModTime:    time.Now().UTC(),
@@ -461,5 +468,58 @@ func TestRestoreContent_ResumedEntryWithChangedTargetIsRestoredAgain(t *testing.
 	got, err := os.ReadFile(resolveTargetPath(targetDir, restoreSourcePath(files[2])))
 	if err != nil || int64(len(got)) != files[2].Size || bytes.Equal(got, make([]byte, files[2].Size)) {
 		t.Fatalf("file 2 not re-restored with real content: %q (err %v)", got, err)
+	}
+}
+
+// A failed download and a refused path in the middle of the window must not
+// stall or skew the pipeline: the entries behind them still download,
+// install and journal, and the failures are counted exactly once each.
+func TestRestoreContent_MidWindowFailuresDoNotStallThePass(t *testing.T) {
+	defer setRestoreConcurrencyForTest(4)()
+	entries := numberedEntries(20)
+	entries[3].key = "fails"
+	entries[7] = restoreEntry{rawSource: "../escape.txt", key: "escape", content: "nope"}
+	base, snapID := writeRestoreSnapshot(t, entries)
+	provider := newGatedProvider(base)
+	provider.delay = func(string) time.Duration { return 10 * time.Millisecond }
+	provider.fail = func(key string) error {
+		if strings.HasSuffix(key, "/fails.gz") {
+			return errors.New("injected download failure")
+		}
+		return nil
+	}
+	targetDir, workRoot := t.TempDir(), t.TempDir()
+	cfg := RestoreConfig{SnapshotID: snapID, TargetPath: targetDir, WorkRoot: workRoot}
+	stagingDir, err := restoreStagingDir(cfg, filepath.Join(workRoot, "restore-work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if result.Status != "partial" || result.FilesRestored != 18 || result.FilesFailed != 2 || len(result.FailedFiles) != 2 {
+		t.Fatalf("status=%s restored=%d failed=%d %v, want partial/18/2", result.Status, result.FilesRestored, result.FilesFailed, result.FailedFiles)
+	}
+	if provider.count("snapshots/test-snap-content/files/escape.gz") != 0 {
+		t.Error("a refused path was downloaded")
+	}
+	for i, e := range entries {
+		if i == 3 || i == 7 {
+			continue
+		}
+		if got, err := os.ReadFile(resolveTargetPath(targetDir, "/original/"+e.source)); err != nil || string(got) != e.content {
+			t.Errorf("entry %d: %q (err %v)", i, got, err)
+		}
+	}
+	state, err := LoadResumeState(stagingDir)
+	if err != nil || state == nil || len(state.CompletedFiles) != 18 {
+		t.Fatalf("resume state: %+v (err %v), want 18 completed", state, err)
+	}
+	staged, _ := os.ReadDir(stagingDir)
+	for _, e := range staged {
+		if strings.HasSuffix(e.Name(), ".gz") {
+			t.Errorf("staged object %s left behind", e.Name())
+		}
 	}
 }
