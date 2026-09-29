@@ -37,6 +37,7 @@ describe('RestoreWizard', () => {
             {
               id: 'snap-1',
               label: 'Server snapshot',
+              deviceName: 'RECEPTION-PC',
               status: 'Ready',
               size: '4 GB',
             },
@@ -108,11 +109,113 @@ describe('RestoreWizard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
 
-    await waitFor(() => {
-      expect(screen.getByText(/Restore job restore-2 queued successfully/i)).toBeTruthy();
-    });
+    // A readable confirmation naming the device, never the raw job UUID.
+    const banner = await screen.findByTestId('restore-success-banner');
+    expect(banner.textContent).toContain('Restore queued on RECEPTION-PC.');
+    expect(banner.textContent).not.toContain('restore-2');
     expect(screen.getByText('Latest restore job')).toBeTruthy();
     expect(screen.getByText(/pending/i)).toBeTruthy();
+
+    // "View progress" takes the operator to the Latest restore job panel.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    fireEvent.click(screen.getByRole('button', { name: /View progress/i }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByTestId('restore-latest-job'));
+  });
+
+  it('cancels a queued restore from the Latest restore job panel', async () => {
+    const pendingJob = {
+      id: 'restore-2',
+      snapshotId: 'snap-1',
+      deviceId: 'device-1',
+      deviceName: 'FRONT-DESK-01',
+      restoreType: 'full',
+      status: 'pending',
+      targetPath: null,
+      createdAt: '2026-03-31T11:00:00.000Z',
+      updatedAt: '2026-03-31T11:00:00.000Z',
+      restoredSize: null,
+      restoredFiles: null,
+      commandId: 'cmd-1',
+      errorSummary: null,
+      resultDetails: null,
+    };
+    let history: unknown[] = [pendingJob];
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: history });
+      if (url === '/backup/restore/restore-2/cancel' && method === 'POST') {
+        const cancelled = { ...pendingJob, status: 'cancelled', errorSummary: 'Cancelled by user' };
+        history = [cancelled];
+        return makeJsonResponse({ data: cancelled });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+
+    const cancel = await screen.findByRole('button', { name: /Cancel restore/i });
+    fireEvent.click(cancel);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/backup/restore/restore-2/cancel', expect.objectContaining({ method: 'POST' }))
+    );
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Restore cancelled.' })));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Cancel restore/i })).toBeNull());
+  });
+
+  it('surfaces the stop-signal warning when a running restore is cancelled but the agent was not reached', async () => {
+    const runningJob = {
+      id: 'restore-3',
+      snapshotId: 'snap-1',
+      deviceId: 'device-1',
+      restoreType: 'full',
+      status: 'running',
+      createdAt: '2026-03-31T11:00:00.000Z',
+      updatedAt: '2026-03-31T11:00:00.000Z',
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [runningJob] });
+      if (url === '/backup/restore/restore-3/cancel' && method === 'POST') {
+        return makeJsonResponse({
+          data: { ...runningJob, status: 'cancelled' },
+          warning: 'Restore marked as cancelled but the stop signal could not be delivered to the agent.',
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Cancel restore/i }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning',
+      message: 'Restore marked as cancelled but the stop signal could not be delivered to the agent.',
+    })));
+  });
+
+  it('offers no Cancel for a restore that already finished', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{ id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', restoreType: 'full', status: 'completed', createdAt: '2026-03-31T10:00:00.000Z', updatedAt: '2026-03-31T10:10:00.000Z' }] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    expect(screen.queryByRole('button', { name: /Cancel restore/i })).toBeNull();
   });
 
   it('surfaces the restore API error when restore startup fails', async () => {

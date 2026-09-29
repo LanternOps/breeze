@@ -535,7 +535,16 @@
     "kindVm": "VM olarak geri yükle",
     "kindInstantBoot": "Anında önyükleme",
     "kindSelective": "Seçmeli geri yükleme",
-    "kindFull": "Tam geri yükleme"
+    "kindFull": "Tam geri yükleme",
+    "restoreQueuedOnDevice": "{{device}} üzerinde geri yükleme kuyruğa alındı.",
+    "restoreStartedOnDevice": "{{device}} üzerinde geri yükleme başlatıldı.",
+    "restoreQueued": "Geri yükleme kuyruğa alındı.",
+    "restoreStarted": "Geri yükleme başlatıldı.",
+    "viewProgress": "İlerlemeyi görüntüle",
+    "cancelRestore": "Geri yüklemeyi iptal et",
+    "cancellingRestore": "İptal ediliyor...",
+    "restoreCancelled": "Geri yükleme iptal edildi.",
+    "cancelRestoreFailed": "Geri yükleme iptal edilemedi."
   },
   "sLAConfigDialog": {
     "name": "Ad",

@@ -535,7 +535,16 @@
     "kindVm": "Als VM wiederherstellen",
     "kindInstantBoot": "Sofortstart",
     "kindSelective": "Selektive Wiederherstellung",
-    "kindFull": "Vollständige Wiederherstellung"
+    "kindFull": "Vollständige Wiederherstellung",
+    "restoreQueuedOnDevice": "Wiederherstellung auf {{device}} in die Warteschlange gestellt.",
+    "restoreStartedOnDevice": "Wiederherstellung auf {{device}} gestartet.",
+    "restoreQueued": "Wiederherstellung in die Warteschlange gestellt.",
+    "restoreStarted": "Wiederherstellung gestartet.",
+    "viewProgress": "Fortschritt anzeigen",
+    "cancelRestore": "Wiederherstellung abbrechen",
+    "cancellingRestore": "Wird abgebrochen...",
+    "restoreCancelled": "Wiederherstellung abgebrochen.",
+    "cancelRestoreFailed": "Die Wiederherstellung konnte nicht abgebrochen werden."
   },
   "sLAConfigDialog": {
     "name": "Name",

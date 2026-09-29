@@ -535,7 +535,16 @@
     "kindVm": "Restaurar como VM",
     "kindInstantBoot": "Arranque instantáneo",
     "kindSelective": "Restauración selectiva",
-    "kindFull": "Restauración completa"
+    "kindFull": "Restauración completa",
+    "restoreQueuedOnDevice": "Restauración en cola en {{device}}.",
+    "restoreStartedOnDevice": "Restauración iniciada en {{device}}.",
+    "restoreQueued": "Restauración en cola.",
+    "restoreStarted": "Restauración iniciada.",
+    "viewProgress": "Ver progreso",
+    "cancelRestore": "Cancelar restauración",
+    "cancellingRestore": "Cancelando...",
+    "restoreCancelled": "Restauración cancelada.",
+    "cancelRestoreFailed": "No se pudo cancelar la restauración."
   },
   "sLAConfigDialog": {
     "name": "Nombre",

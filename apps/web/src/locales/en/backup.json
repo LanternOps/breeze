@@ -535,7 +535,16 @@
     "kindVm": "Restore as VM",
     "kindInstantBoot": "Instant boot",
     "kindSelective": "Selective restore",
-    "kindFull": "Full restore"
+    "kindFull": "Full restore",
+    "restoreQueuedOnDevice": "Restore queued on {{device}}.",
+    "restoreStartedOnDevice": "Restore started on {{device}}.",
+    "restoreQueued": "Restore queued.",
+    "restoreStarted": "Restore started.",
+    "viewProgress": "View progress",
+    "cancelRestore": "Cancel restore",
+    "cancellingRestore": "Cancelling...",
+    "restoreCancelled": "Restore cancelled.",
+    "cancelRestoreFailed": "Failed to cancel the restore."
   },
   "sLAConfigDialog": {
     "name": "Name",

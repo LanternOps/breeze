@@ -535,7 +535,16 @@
     "kindVm": "Ripristina come VM",
     "kindInstantBoot": "Avvio istantaneo",
     "kindSelective": "Ripristino selettivo",
-    "kindFull": "Ripristino completo"
+    "kindFull": "Ripristino completo",
+    "restoreQueuedOnDevice": "Ripristino in coda su {{device}}.",
+    "restoreStartedOnDevice": "Ripristino avviato su {{device}}.",
+    "restoreQueued": "Ripristino in coda.",
+    "restoreStarted": "Ripristino avviato.",
+    "viewProgress": "Visualizza avanzamento",
+    "cancelRestore": "Annulla ripristino",
+    "cancellingRestore": "Annullamento...",
+    "restoreCancelled": "Ripristino annullato.",
+    "cancelRestoreFailed": "Impossibile annullare il ripristino."
   },
   "sLAConfigDialog": {
     "name": "Nome",
