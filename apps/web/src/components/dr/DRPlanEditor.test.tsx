@@ -124,6 +124,38 @@ describe('DRPlanEditor step type', () => {
     });
   });
 
+  // #7087: a group whose timeout the operator never touched must carry the
+  // 24 h default, not the old 4 h one that cancelled large rehearsals.
+  it('saves a new rebuild group with the 1440-minute default wait timeout (#7087)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans' && method === 'POST') return makeJsonResponse({ data: { id: 'plan-1' } });
+      if (url === '/dr/plans/plan-1/groups' && method === 'POST') return makeJsonResponse({ data: { id: 'group-1' } });
+      return makeJsonResponse({}, false, 404);
+    });
+    const onSaved = vi.fn();
+
+    render(<DRPlanEditor open planId={null} onClose={vi.fn()} onSaved={onSaved} />);
+    fireEvent.change(screen.getByLabelText('Plan name'), { target: { value: 'Plan A' } });
+    fireEvent.change(screen.getByPlaceholderText('Core services'), { target: { value: 'Tier 1' } });
+    fireEvent.change(screen.getByTestId('dr-group-step-type'), { target: { value: 'BARE_METAL_REBUILD' } });
+    const deviceRows = await screen.findAllByText('zzz-dr-device');
+    fireEvent.click(deviceRows[0]!.closest('label')!.querySelector('input')!);
+    expect((screen.getByTestId('dr-group-rebuild-wait-timeout') as HTMLInputElement).value).toBe('1440');
+
+    const save = screen.getByText('Save plan').closest('button')!;
+    await waitFor(() => expect(save).not.toBeDisabled());
+    fireEvent.click(save);
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const groupCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/dr/plans/plan-1/groups' && (init as RequestInit | undefined)?.method === 'POST'
+    );
+    expect(JSON.parse(String((groupCall![1] as RequestInit).body)).restoreConfig.waitTimeoutMinutes).toBe(1440);
+  });
+
   it('reads restoreConfig back into the form when editing and re-sends it unchanged', async () => {
     const onSaved = vi.fn();
     fetchMock.mockImplementation(async (input, init) => {
@@ -223,6 +255,10 @@ describe('DRPlanEditor save atomicity (#6382)', () => {
     );
     const save = (await screen.findByText('Save plan')).closest('button')!;
     await waitFor(() => expect(save).not.toBeDisabled());
+    // Dialog moves initial focus into the panel on the next animation frame.
+    // Wait for it, or it can land after a later focus assertion and steal focus
+    // (the #6494 banner-focus test failed intermittently on main this way).
+    await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement));
     return { save, onPartialSave };
   };
 

@@ -44,6 +44,21 @@ export function joinRebuildOutputPath(outputDir: string, file: string): string {
   return `${trimmed}${sep}${file}`;
 }
 
+/**
+ * The step's default wait budget: how long a recovery may stay non-terminal
+ * before `drExecutionService` marks the device `timeout` and cancels it. It
+ * equals the reaper ceiling for the `bare_metal_rebuild` command itself
+ * (`WHOLE_MACHINE_RESTORE_TIMEOUT_MS`, 24 h), so by default the step never
+ * cancels a rebuild that its own command would still let run (#7087). The old
+ * 240 cancelled large rehearsals: a Windows whole-machine rebuild of 133k
+ * files / 20.6 GB took 5h23m in the lab. A stuck rebuild is caught earlier by
+ * the helper's own stall watchdog (#6664), not by this budget.
+ *
+ * Configs are stored normalised, so plans saved before this change keep the
+ * `240` they stored until an operator edits the step.
+ */
+export const DR_BARE_METAL_REBUILD_DEFAULT_WAIT_TIMEOUT_MINUTES = 1440;
+
 export const drBareMetalRebuildConfigSchema = z.object({
   commandType: z.literal(DR_STEP_BARE_METAL_REBUILD),
   snapshotSelection: z.literal('latest_restorable').default('latest_restorable'),
@@ -56,7 +71,7 @@ export const drBareMetalRebuildConfigSchema = z.object({
     .refine(isAbsoluteRebuildPath, 'absolute path required (POSIX or a Windows drive letter, no UNC)')
     // Still the Linux value when unset; dispatch resolves it per host OS.
     .default(DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR),
-  waitTimeoutMinutes: z.number().int().min(5).max(1440).default(240),
+  waitTimeoutMinutes: z.number().int().min(5).max(1440).default(DR_BARE_METAL_REBUILD_DEFAULT_WAIT_TIMEOUT_MINUTES),
 });
 export type DrBareMetalRebuildConfig = z.infer<typeof drBareMetalRebuildConfigSchema>;
 
