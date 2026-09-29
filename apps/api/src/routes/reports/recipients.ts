@@ -300,7 +300,7 @@ recipientsRoutes.post(
         .for('update');
       if (!lockedReport) return null;
       // Adopted as a series child after the unlocked load above.
-      if (lockedReport.seriesId) return { seriesManaged: lockedReport.seriesId } as const;
+      if (lockedReport.seriesId) return { kind: 'series_managed' as const, seriesId: lockedReport.seriesId };
 
       let [contact] = await tx.select({
         id: contacts.id,
@@ -355,11 +355,11 @@ recipientsRoutes.post(
         isNull(reports.seriesId),
       ));
 
-      return { contact: contact!, createdContact };
+      return { kind: 'converted' as const, contact: contact!, createdContact };
     });
 
     if (!result) return c.json({ error: 'Report not found' }, 404);
-    if ('seriesManaged' in result) return c.json(seriesManagedRefusal(result.seriesManaged), 409);
+    if (result.kind === 'series_managed') return c.json(seriesManagedRefusal(result.seriesId), 409);
 
     if (result.createdContact) {
       const createEvent = contactCreateAuditEvent(result.createdContact);
