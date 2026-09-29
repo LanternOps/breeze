@@ -64,21 +64,57 @@ func flushHiveTargets(targets []hiveFlushTarget, flushOne func(hiveFlushTarget) 
 	return flushed, errors.Join(errs...)
 }
 
+// flushLoadedHives is the platform flush (regflush_windows.go /
+// regflush_other.go), a var so tests can make it slow or fail.
+var flushLoadedHives = flushLoadedHivesPlatform
+
+// flushTimeout bounds how long a backup waits for the flush. RegFlushKey is
+// synchronous disk I/O with no cancellation; a flush that has not returned by
+// then is left to finish in the background and the snapshot goes ahead, so a
+// stuck flush costs the capture its freshness, never the backup.
+var flushTimeout = 60 * time.Second
+
+type flushResult struct {
+	flushed int
+	err     error
+}
+
 // FlushRegistryHives writes the loaded registry hives' in-memory changes to
 // disk so a VSS snapshot taken next contains them. It is best effort and
 // never fails the caller: a hive it cannot flush is captured as the snapshot
 // finds it, which is what every backup got before this flush existed. Every
-// failure is logged as a warning that names the hive.
+// failure, and a flush still running after flushTimeout, is logged as a
+// warning.
 func FlushRegistryHives() {
 	start := time.Now()
-	flushed, err := flushLoadedHives()
-	elapsed := time.Since(start).Milliseconds()
-	if err != nil {
-		slog.Warn("systemstate: could not flush every registry hive before the VSS snapshot; changes still in memory for those hives may be missing from the backup",
-			"flushed", flushed, "elapsedMs", elapsed, "error", err.Error())
+	flush := flushLoadedHives         // read once: a timed-out goroutine outlives the caller
+	done := make(chan flushResult, 1) // buffered: a timed-out flush never blocks on send
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- flushResult{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
+		n, err := flush()
+		done <- flushResult{flushed: n, err: err}
+	}()
+	timer := time.NewTimer(flushTimeout)
+	defer timer.Stop()
+	var res flushResult
+	select {
+	case res = <-done:
+	case <-timer.C:
+		slog.Warn("systemstate: registry flush before the VSS snapshot did not finish in time, taking the snapshot anyway; recent registry changes may be missing from the backup",
+			"timeout", flushTimeout.String())
 		return
 	}
-	if flushed > 0 {
-		slog.Info("systemstate: flushed registry hives before the VSS snapshot", "flushed", flushed, "elapsedMs", elapsed)
+	elapsed := time.Since(start).Milliseconds()
+	if res.err != nil {
+		slog.Warn("systemstate: could not flush every registry hive before the VSS snapshot; changes still in memory for those hives may be missing from the backup",
+			"flushed", res.flushed, "elapsedMs", elapsed, "error", res.err.Error())
+		return
+	}
+	if res.flushed > 0 {
+		slog.Info("systemstate: flushed registry hives before the VSS snapshot", "flushed", res.flushed, "elapsedMs", elapsed)
 	}
 }

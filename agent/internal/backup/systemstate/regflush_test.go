@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // #7367: a shadow copy only holds what the configuration manager has already
@@ -122,5 +123,42 @@ func TestFlushHiveTargets_AllGood(t *testing.T) {
 	n, err := flushHiveTargets([]hiveFlushTarget{{Root: "HKLM", Path: "SYSTEM", Required: true}}, func(hiveFlushTarget) error { return nil })
 	if err != nil || n != 1 {
 		t.Fatalf("flushHiveTargets = (%d, %v), want (1, nil)", n, err)
+	}
+}
+
+func stubFlushLoadedHives(t *testing.T, fn func() (int, error), timeout time.Duration) {
+	t.Helper()
+	origFlush, origTimeout := flushLoadedHives, flushTimeout
+	t.Cleanup(func() { flushLoadedHives, flushTimeout = origFlush, origTimeout })
+	flushLoadedHives, flushTimeout = fn, timeout
+}
+
+// RegFlushKey cannot be cancelled: a flush that hangs must not hang the
+// backup. FlushRegistryHives gives up waiting after flushTimeout.
+func TestFlushRegistryHives_StuckFlushDoesNotBlockTheCaller(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	stubFlushLoadedHives(t, func() (int, error) { <-release; return 0, nil }, 20*time.Millisecond)
+
+	returned := make(chan struct{})
+	go func() { FlushRegistryHives(); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("FlushRegistryHives still blocked on a stuck flush after 5s; flushTimeout is 20ms")
+	}
+}
+
+// A failing or panicking flush is logged, never propagated: the caller goes
+// on to take its snapshot.
+func TestFlushRegistryHives_FailureAndPanicAreContained(t *testing.T) {
+	for name, fn := range map[string]func() (int, error){
+		"error": func() (int, error) { return 1, errors.New(`HKLM\SAM: access denied`) },
+		"panic": func() (int, error) { panic("proc not found") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubFlushLoadedHives(t, fn, 5*time.Second)
+			FlushRegistryHives() // a panic escaping here fails the test
+		})
 	}
 }

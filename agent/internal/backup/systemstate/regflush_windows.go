@@ -28,10 +28,10 @@ var hklmFlushTargets = []hiveFlushTarget{
 	{Root: "HKLM", Path: "DRIVERS"},
 }
 
-// flushLoadedHives flushes the HKLM hives above plus every hive loaded under
+// flushLoadedHivesPlatform flushes the HKLM hives above plus every hive loaded under
 // HKEY_USERS (.DEFAULT, each signed-in user's NTUSER.DAT and UsrClass.dat,
 // which the whole-machine walk captures from the same snapshot).
-func flushLoadedHives() (int, error) {
+func flushLoadedHivesPlatform() (int, error) {
 	targets := append([]hiveFlushTarget(nil), hklmFlushTargets...)
 	var enumErr error
 	if names, err := loadedUserHives(); err != nil {
@@ -54,16 +54,30 @@ func loadedUserHives() ([]string, error) {
 	return k.ReadSubKeyNames(-1)
 }
 
-// flushHiveKey opens the hive's root key and calls RegFlushKey on it, which
-// writes that hive's dirty data to disk before returning. The agent runs as
-// LocalSystem, whose token may open SAM and SECURITY; QUERY_VALUE is the
-// smallest access that opens a key for a flush.
+// flushHiveKey calls RegFlushKey on the hive's root key, which returns once
+// that hive's changes have been written out. It opens the key read-only
+// first (QUERY_VALUE is enough for every hive but SAM) and retries with
+// write access only when the flush is refused: SAM rejects a flush through a
+// read-only handle even for LocalSystem (verified on Server 2022). Nothing is
+// ever written through either handle. SAM and SECURITY open only for
+// LocalSystem, the account the agent service runs as.
 func flushHiveKey(t hiveFlushTarget) error {
+	if err := procRegFlushKey.Find(); err != nil {
+		return fmt.Errorf("RegFlushKey unavailable: %w", err)
+	}
 	root := registry.LOCAL_MACHINE
 	if t.Root == "HKU" {
 		root = registry.USERS
 	}
-	k, err := registry.OpenKey(root, t.Path, registry.QUERY_VALUE)
+	err := flushKeyWithAccess(root, t.Path, registry.QUERY_VALUE)
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		err = flushKeyWithAccess(root, t.Path, registry.WRITE)
+	}
+	return err
+}
+
+func flushKeyWithAccess(root registry.Key, path string, access uint32) error {
+	k, err := registry.OpenKey(root, path, access)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotExist) {
 			return errHiveNotLoaded
