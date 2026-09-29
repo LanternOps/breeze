@@ -268,6 +268,10 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['updateSeriesChild', pinned(1, `updates one child by id AND org_id AND series_id that listSeriesChildren just returned; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
     ['findSeriesNeedingReconcile', pinned(1, `system-context repair-sweep drift scan; returns series ids only and shows nothing to a caller; ${SERIES_CHILD_PIN}`, AUD_SYSTEM)],
   ])],
+  ['src/services/reportSeries/store.ts', new Map([
+    ['buildSeriesDetail', pinned(1, `latest run per active child id returned by listSeriesChildren for a series its callers (listSeries / getSeriesDetail) already loaded under requireSeriesPartner + eq(partner_id, token partner); ${SERIES_CHILD_PIN}`, AUD_SERIES)],
+    ['deleteSeries', pinned(1, `archives children of ONE series the caller owns (requireSeriesPartner + FOR UPDATE lock on the series row); ${SERIES_CHILD_PIN}`, AUD_SERIES)],
+  ])],
   ['src/services/serviceDeliverableService.ts', new Map([
     ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
     ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
