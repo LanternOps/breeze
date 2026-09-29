@@ -14,6 +14,7 @@
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { tightenLockTimeout } from '../../db/lockTimeout';
 import { reports, reportSeries } from '../../db/schema';
 import { captureException } from '../sentry';
 import {
@@ -32,6 +33,14 @@ import {
 } from './types';
 
 export const SERIES_SWEEP_LIMIT = 100;
+
+/**
+ * lock_timeout of each per-series sweep transaction: a child row held by a
+ * generating job (claim / lastGeneratedAt stamp) fails THAT series with 55P03
+ * after this long, isolated like any other per-series error, instead of
+ * stalling the whole check-schedules tick. The series is retried next tick.
+ */
+export const SERIES_SWEEP_LOCK_TIMEOUT_MS = 5_000;
 
 /**
  * The all-NULL execution scope of a BLOCKED child (spec §3.4 "blocked: no
@@ -287,7 +296,8 @@ export async function findSeriesNeedingReconcile(limit: number, tx: SeriesTx = d
  * BEFORE the due scan. Bounded, per-series error isolation, logged. Picks up
  * new orgs in 'all' mode and repairs anything a crash left behind.
  *
- * Each series is reconciled in its OWN top-level committed system transaction:
+ * Each series is reconciled in its OWN top-level committed system transaction
+ * (lock waits bounded by SERIES_SWEEP_LOCK_TIMEOUT_MS):
  * its FOR UPDATE lock is released as soon as that series is done, its children
  * are committed before the due scan can enqueue them, and one series' failure
  * (including a transient SeriesAuthorityUnverifiableError, which leaves that
@@ -308,7 +318,10 @@ export async function reconcileAllSeries(options: {
 } = {}): Promise<void> {
   const limit = options.limit ?? SERIES_SWEEP_LIMIT;
   const reconcileOne = options.reconcileOne
-    ?? ((seriesId: string) => reconcileSeries(seriesId, db));
+    ?? (async (seriesId: string) => {
+      await tightenLockTimeout(db, SERIES_SWEEP_LOCK_TIMEOUT_MS);
+      return reconcileSeries(seriesId, db);
+    });
   await runOutsideDbContext(async () => {
     const ids = await withSystemDbAccessContext(
       () => findSeriesNeedingReconcile(limit + 1),

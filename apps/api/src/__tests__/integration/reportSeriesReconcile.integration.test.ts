@@ -309,6 +309,47 @@ describe('lock scope (review I-2)', () => {
     expect(await children(bad.series.id)).toHaveLength(0);
   });
 
+  // Final review minor #8: a child row held by a generating job (the worker's
+  // claim / lastGeneratedAt stamp) must not stall the whole tick. The
+  // per-series transaction bounds its lock waits; the timeout is isolated
+  // like any other per-series error.
+  it('a lock timeout on one series does not stop the sweep reaching the next', async () => {
+    const held = await seedSeries();
+    await reconcile(held.series.id);
+    await system(() => db.update(reportSeries).set({ name: 'Renamed', revision: 2 }).where(eq(reportSeries.id, held.series.id)));
+    const heldChild = (await activeChildFor(held.series.id, held.orgA))!;
+    const next = await seedSeries();
+
+    let release!: () => void;
+    const releaseLock = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = system(() => db.transaction(async (tx) => {
+      await tx.execute(sql`UPDATE reports SET updated_at = now() WHERE id = ${heldChild.id}`);
+      locked();
+      await releaseLock;
+    }));
+    await lockTaken;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const outcome = await Promise.race([
+        reconcileAllSeries().then(() => 'done'),
+        new Promise<string>((resolve) => setTimeout(() => resolve('stalled'), 20_000)),
+      ]);
+      expect(outcome).toBe('done');
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('repair sweep failed for one series'),
+        expect.objectContaining({ seriesId: held.series.id }),
+      );
+    } finally {
+      release();
+      await holder;
+      error.mockRestore();
+    }
+    expect((await children(next.series.id)).length).toBe(2);
+    expect((await activeChildFor(held.series.id, held.orgA))?.seriesRevision).toBe(1);
+  }, 60_000);
+
   it('a non-stale gate takes no row lock on the series', async () => {
     const s = await seedSeries();
     await reconcile(s.series.id);
