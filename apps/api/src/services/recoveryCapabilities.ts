@@ -87,9 +87,10 @@ export function negotiateRecoveryCapabilities(input: NegotiationInput): Negotiat
     // changed after the snapshot was written would otherwise be discovered
     // file-by-file after the target was already provisioned. A pinned
     // identity is compared exactly as for a referenced snapshot; a legacy
-    // snapshot with NO pinned identity has nothing to compare against and
-    // stays recoverable (only a referenced snapshot needs one — R10 below).
-    if (input.storageIdentity && input.resolvedProviderIdentity !== input.storageIdentity) {
+    // snapshot with NO pinned identity (NULL) has nothing to compare against
+    // and stays recoverable (only a referenced snapshot needs one — R10
+    // below); an empty string is not "no identity" and fails closed.
+    if (input.storageIdentity !== null && input.resolvedProviderIdentity !== input.storageIdentity) {
       return refuse('storage_identity_drift');
     }
     return { ok: true, granted: clientHasCap ? [CAP] : [], fileIndex: null, enqueueHydration: false };

@@ -731,6 +731,19 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       expect(result.unavailable).toBe(false);
     });
 
+    it('treats an EMPTY-string pinned identity as drift (fail closed), not as a legacy snapshot', async () => {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: '' },
+        providerType: 'local',
+        providerConfig: { path: '/var/backups' },
+      });
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/current/manifest.json');
+
+      expect(result).toEqual({ unavailable: true, reason: DRIFT_REASON });
+      expect(statMock).not.toHaveBeenCalled();
+    });
+
     it('refuses an otherwise-authorized EXTERNAL key when the live config drifted from the pinned identity', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: 'local::/srv/old-backups' },

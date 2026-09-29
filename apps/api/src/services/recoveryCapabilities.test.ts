@@ -135,6 +135,13 @@ describe('negotiateRecoveryCapabilities', () => {
     expect(result).toMatchObject({ ok: false, error: 'storage_identity_drift' });
   });
 
+  it('#6490: an EMPTY-string pinned identity is not treated as "no identity" — it fails closed as drift', () => {
+    const result = negotiateRecoveryCapabilities(base({
+      referencedFiles: null, storageIdentity: '', resolvedProviderIdentity: 's3::e::any-bucket',
+    }));
+    expect(result).toMatchObject({ ok: false, error: 'storage_identity_drift' });
+  });
+
   it('#6490: self-contained legacy snapshot with NO pinned identity is still granted (nothing to compare against)', () => {
     const result = negotiateRecoveryCapabilities(base({
       referencedFiles: null, storageIdentity: null, resolvedProviderIdentity: 's3::e::any-bucket',

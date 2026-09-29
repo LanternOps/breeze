@@ -298,9 +298,10 @@ export async function getAuthenticatedRecoveryDownloadTarget(
   // from the wrong bucket/root. Authenticate/exchange already refuse that
   // drift up front (negotiateRecoveryCapabilities); this re-checks on every
   // object because the destination can change mid-session. A legacy
-  // snapshot with no pinned identity has nothing to compare against.
+  // snapshot with no pinned identity (NULL) has nothing to compare against;
+  // an empty string is not "no identity" and fails closed.
   const pinnedStorageIdentity = resolved.snapshot.storageIdentity ?? null;
-  if (pinnedStorageIdentity) {
+  if (pinnedStorageIdentity !== null) {
     const resolvedStorageIdentity = normalizeStorageIdentity(resolved.providerType, asRecord(resolved.providerConfig));
     if (resolvedStorageIdentity !== pinnedStorageIdentity) {
       console.warn(
