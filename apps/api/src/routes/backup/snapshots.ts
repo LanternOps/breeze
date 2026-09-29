@@ -21,6 +21,7 @@ import {
 } from './schemas';
 import type { SnapshotTreeItem } from './types';
 import { attachDeviceNames } from './deviceNames';
+import { normalizeSnapshotPath } from '../../services/backupSelectedPaths';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -68,10 +69,6 @@ type SnapshotFileRow = {
   modifiedAt: Date | null;
 };
 
-function normalizeSourcePath(value: string): string {
-  return value.replaceAll('\\', '/');
-}
-
 function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
   const root: SnapshotTreeItem[] = [];
 
@@ -84,7 +81,7 @@ function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
   };
 
   for (const file of files) {
-    const normalizedPath = normalizeSourcePath(file.sourcePath);
+    const normalizedPath = normalizeSnapshotPath(file.sourcePath);
     const parts = normalizedPath.split('/').filter(Boolean);
     if (parts.length === 0) continue;
 

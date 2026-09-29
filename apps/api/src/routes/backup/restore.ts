@@ -13,6 +13,7 @@ import { backupReadCredentialPayload } from '../../services/backupCommandCredent
 import { resolveScopedOrgId } from './helpers';
 import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
+import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from '../../services/backupSelectedPaths';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -231,6 +232,7 @@ restoreRoutes.post(
       return c.json({ error: 'Snapshot not found' }, 404);
     }
 
+    let selectedPaths: string[] = [];
     if (payload.restoreType === 'selective') {
       const snapshotFiles = await db
         .select({ id: backupSnapshotFiles.id, sourcePath: backupSnapshotFiles.sourcePath })
@@ -241,11 +243,16 @@ restoreRoutes.post(
         return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files' }, 409);
       }
 
-      const availablePaths = new Set(snapshotFiles.map((row) => row.sourcePath));
-      const invalidPath = payload.selectedPaths?.find((path) => !availablePaths.has(path));
-      if (invalidPath) {
-        return c.json({ error: `Selected path is not available in this snapshot: ${invalidPath}` }, 400);
+      // The browse tree shows forward-slash paths; map each selection back to
+      // the stored original the agent indexed (and matches against).
+      const resolution = resolveSelectedSnapshotPaths(
+        payload.selectedPaths ?? [],
+        snapshotFiles.map((row) => row.sourcePath)
+      );
+      if (!resolution.ok) {
+        return c.json({ error: selectedSnapshotPathError(resolution) }, 400);
       }
+      selectedPaths = resolution.paths;
     }
 
     const now = new Date();
@@ -294,7 +301,7 @@ restoreRoutes.post(
           deviceId: resolvedTargetDeviceId,
           restoreType: payload.restoreType,
           targetPath: payload.targetPath ?? null,
-          selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
+          selectedPaths,
           status: 'pending',
           initiatedBy: c.get('auth')?.user?.id ?? null,
           createdAt: now,
@@ -318,7 +325,7 @@ restoreRoutes.post(
             restoreJobId: row.id,
             snapshotId: snapshot.snapshotId,
             targetPath: row.targetPath ?? '',
-            selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
+            selectedPaths,
             // A reference only: the destination is resolved when the command
             // is delivered, so it is never written to the command row.
             ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
