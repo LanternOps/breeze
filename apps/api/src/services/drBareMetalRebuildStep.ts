@@ -52,7 +52,10 @@ export function joinRebuildOutputPath(outputDir: string, file: string): string {
  * cancels a rebuild that its own command would still let run (#7087). The old
  * 240 cancelled large rehearsals: a Windows whole-machine rebuild of 133k
  * files / 20.6 GB took 5h23m in the lab. A stuck rebuild is caught earlier by
- * the helper's own stall watchdog (#6664), not by this budget.
+ * the helper's own stall watchdog (#6664), not by this budget. A rebuild that
+ * keeps progressing is stopped by the helper's ceiling (22h50m, agent
+ * `backupipc.BareMetalRebuildRunBudget`). That ceiling is below the 24 h
+ * recovery token TTL, so the helper can still report its own failure.
  *
  * Configs are stored normalised, so plans saved before this change keep the
  * `240` they stored until an operator edits the step.
