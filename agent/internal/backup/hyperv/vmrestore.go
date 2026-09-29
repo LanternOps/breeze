@@ -33,9 +33,12 @@ type VMRestoreFromBackupConfig struct {
 //  2. Create a dynamic VHDX
 //  3. Mount, partition (GPT), and format (NTFS)
 //  4. Restore snapshot files to the mounted volume
-//  5. Inject Hyper-V enlightenment drivers
-//  6. Dismount the VHDX
-//  7. Create and configure the VM
+//  5. Dismount the VHDX
+//  6. Create and configure the VM
+//
+// There is no driver-injection step: Hyper-V Generation 2 guests on
+// Windows 8 / Server 2012 and later already carry the Hyper-V storage and
+// VMBus drivers in-box, so the restored image is never serviced offline.
 func RestoreAsVM(
 	ctx context.Context,
 	cfg VMRestoreFromBackupConfig,
@@ -101,7 +104,7 @@ func RestoreAsVM(
 	}()
 
 	// 1. Download manifest.
-	progress("downloading_manifest", 1, 7)
+	progress("downloading_manifest", 1, 6)
 	slog.Info("vmrestore: downloading snapshot manifest", "snapshotId", cfg.SnapshotID)
 
 	manifest, err := downloadVMRestoreManifest(cfg.SnapshotID, provider)
@@ -112,7 +115,7 @@ func RestoreAsVM(
 	slog.Info("vmrestore: manifest downloaded", "files", len(manifest.Files))
 
 	// 2. Create the VHDX inside the restore directory.
-	progress("creating_vhdx", 2, 7)
+	progress("creating_vhdx", 2, 6)
 	vhdDir := filepath.Join(restoreDir, "Virtual Hard Disks")
 	if err := os.MkdirAll(vhdDir, 0o750); err != nil {
 		result.Error = err.Error()
@@ -134,7 +137,7 @@ func RestoreAsVM(
 	}
 
 	// 3. Mount VHDX, initialize disk, partition, and format.
-	progress("mounting_vhdx", 3, 7)
+	progress("mounting_vhdx", 3, 6)
 	if ctx.Err() != nil {
 		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
 		return result, ctx.Err()
@@ -160,7 +163,7 @@ func RestoreAsVM(
 	slog.Info("vmrestore: VHDX mounted", "drive", targetRoot)
 
 	// 4. Restore snapshot files to the mounted volume.
-	progress("restoring_files", 4, 7)
+	progress("restoring_files", 4, 6)
 	if ctx.Err() != nil {
 		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
 		return result, ctx.Err()
@@ -182,22 +185,8 @@ func RestoreAsVM(
 	}
 	slog.Info("vmrestore: files restored", "restored", tally.Restored, "bytes", tally.Bytes)
 
-	// 5. Inject Hyper-V enlightenment drivers.
-	progress("injecting_drivers", 5, 7)
-	if ctx.Err() != nil {
-		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
-		return result, ctx.Err()
-	}
-	slog.Info("vmrestore: injecting Hyper-V drivers")
-
-	if driverErr := injectHyperVDrivers(targetRoot); driverErr != nil {
-		warnMsg := fmt.Sprintf("driver injection failed: %s", driverErr.Error())
-		slog.Warn("vmrestore: " + warnMsg)
-		result.Warnings = append(result.Warnings, warnMsg)
-	}
-
-	// 6. Dismount VHDX.
-	progress("dismounting_vhdx", 6, 7)
+	// 5. Dismount VHDX.
+	progress("dismounting_vhdx", 5, 6)
 	slog.Info("vmrestore: dismounting VHDX")
 
 	if err := dismountVHDX(vhdxPath); err != nil {
@@ -206,8 +195,8 @@ func RestoreAsVM(
 	}
 	dismounted = true
 
-	// 7. Create and configure the VM.
-	progress("creating_vm", 7, 7)
+	// 6. Create and configure the VM.
+	progress("creating_vm", 6, 6)
 	if ctx.Err() != nil {
 		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
 		return result, ctx.Err()
@@ -303,43 +292,6 @@ func dismountVHDX(vhdxPath string) error {
 	cmd := fmt.Sprintf(`Dismount-VHD -Path '%s'`, escapePSString(vhdxPath))
 	if _, err := runPS(cmd); err != nil {
 		return fmt.Errorf("dismount VHDX: %w", err)
-	}
-	return nil
-}
-
-// injectHyperVDrivers uses DISM to add Hyper-V enlightenment drivers to a
-// mounted Windows image volume. This ensures the restored OS can boot on Hyper-V.
-func injectHyperVDrivers(targetRoot string) error {
-	// Hyper-V enlightenment drivers are typically at:
-	// C:\Windows\System32\drivers\vmbus.sys (and others in DriverStore)
-	// Use DISM /Add-Driver with the driver store for the most reliable injection.
-	drivers := []string{
-		`C:\Windows\System32\drivers\vmbus.sys`,
-		`C:\Windows\System32\drivers\storvsc.sys`,
-		`C:\Windows\System32\drivers\netvsc.sys`,
-	}
-
-	var lastErr error
-	injected := 0
-	for _, drv := range drivers {
-		if _, statErr := os.Stat(drv); statErr != nil {
-			continue // driver not found on host, skip
-		}
-		drvDir := filepath.Dir(drv)
-		cmd := fmt.Sprintf(
-			`dism /Image:%s /Add-Driver /Driver:%s /ForceUnsigned`,
-			escapePSString(strings.TrimSuffix(targetRoot, `\`)),
-			escapePSString(drvDir),
-		)
-		if _, err := runPS(cmd); err != nil {
-			lastErr = err
-			continue
-		}
-		injected++
-	}
-
-	if injected == 0 && lastErr != nil {
-		return fmt.Errorf("no drivers injected: %w", lastErr)
 	}
 	return nil
 }

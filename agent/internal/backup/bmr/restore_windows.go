@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/breeze-rmm/agent/internal/backup/hosttool"
 )
 
 // windowsRestorer applies Windows-specific system state during BMR.
@@ -39,12 +41,14 @@ func (r *windowsRestorer) RestoreSystemState(stagingDir string) error {
 	return nil
 }
 
-// InjectDrivers installs drivers from the given directory using pnputil.
+// InjectDrivers installs drivers from the given directory using the host's
+// own pnputil, by absolute path (hosttool.SystemTool), never resolved
+// through PATH.
 func (r *windowsRestorer) InjectDrivers(driverDir string) (int, error) {
 	slog.Info("bmr: injecting Windows drivers", "driverDir", driverDir)
 
 	pattern := filepath.Join(driverDir, "*.inf")
-	cmd := exec.Command("pnputil", "/add-driver", pattern, "/install", "/subdirs")
+	cmd := exec.Command(hosttool.SystemTool("pnputil.exe"), "/add-driver", pattern, "/install", "/subdirs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Warn("bmr: pnputil driver injection had errors",
