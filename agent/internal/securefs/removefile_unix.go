@@ -34,7 +34,7 @@ func RemoveRegularFileNoFollow(dir, name string) error {
 		}
 		return &os.PathError{Op: "open", Path: dir, Err: err}
 	}
-	defer unix.Close(dirFD)
+	defer func() { _ = unix.Close(dirFD) }()
 
 	var st unix.Stat_t
 	if err := unix.Fstatat(dirFD, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {

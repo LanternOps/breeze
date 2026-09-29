@@ -22,7 +22,15 @@ func TestPackageCleanup(t *testing.T) {
 	for _, m := range matches {
 		artifacts[m[1]] = true
 	}
-	if len(artifacts) != 8 {
+	// Root-daemon binaries are staged in the payload and postinstall copies
+	// them to /usr/local/bin or /Library/Breeze/bin (#7211), so either
+	// installed location must be torn down.
+	staged := regexp.MustCompile(`\$STAGING/([^"\s/]+)`).FindAllStringSubmatch(string(build), -1)
+	for _, m := range staged {
+		artifacts["/usr/local/bin/"+m[1]] = true
+		artifacts["/Library/Breeze/bin/"+m[1]] = true
+	}
+	if len(artifacts) != 11 {
 		t.Fatalf("package artifacts: %v", artifacts)
 	}
 	// The socket is volatile runtime state, not part of the pkg payload.
