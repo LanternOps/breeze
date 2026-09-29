@@ -1,4 +1,166 @@
 {
+  "timeSync": {
+    "title": "Saat",
+    "loading": "Saat durumu yükleniyor…",
+    "error": "Saat durumu yüklenemedi.",
+    "retry": "Yeniden dene",
+    "unknown": "Bilinmiyor",
+    "yes": "Evet",
+    "no": "Hayır",
+    "site": "Konum",
+    "policy": "İlke",
+    "states": {
+      "not_reported": "Henüz saat verisi yok — saat eşitlemeyi içeren bir aracı güncellemesi gerekiyor",
+      "unsupported_os": "Bu işletim sisteminde henüz desteklenmiyor"
+    },
+    "health": {
+      "healthy": "Sağlıklı",
+      "warning": "Uyarı",
+      "critical": "Kritik",
+      "unknown": "Bilinmiyor"
+    },
+    "severity": {
+      "critical": "Kritik",
+      "warning": "Uyarı",
+      "info": "Bilgi"
+    },
+    "received": "Alınma: {{at}}",
+    "collected": "Toplanma: {{at}}",
+    "stale": "Güncel değil — son saat raporu 90 dakikadan uzun süre önce alındı.",
+    "expected": "Beklenen: {{windows}} ({{iana}}), kaynak {{source}}: {{name}}",
+    "expectedPolicy": "Beklenen: {{windows}} ({{iana}}), {{name}} ilkesinden — konumun saat dilimini geçersiz kılar",
+    "managedBadge": "Grup İlkesi tarafından yönetiliyor",
+    "unset": {
+      "site_utc_default": "Beklenen saat dilimi yok (konum varsayılan UTC saat dilimini kullanıyor)",
+      "no_site": "Beklenen saat dilimi yok (atanmış konum yok)",
+      "unmapped": "Beklenen saat dilimi yok (konumun saat diliminin Windows eşlemesi yok)"
+    },
+    "noFindings": "Bu raporda saatle ilgili bulgu yok.",
+    "events": "Son saat olayları ({{count}})",
+    "noEvents": "Yakın zamanda saat olayı yok.",
+    "eventHeading": "Olay {{id}} · Düzey {{level}}",
+    "noMessage": "Olay iletisi yok.",
+    "fields": {
+      "source": "Saat kaynağı",
+      "sourceKind": "Kaynak türü",
+      "lastSync": "Son başarılı eşitleme",
+      "method": "Toplama yöntemi",
+      "lastError": "Son eşitleme hatası",
+      "stratum": "NTP düzeyi",
+      "poll": "Etkin sorgulama aralığı (saniye)",
+      "syncType": "Eşitleme türü",
+      "ntpServer": "NTP sunucusu yapılandırması",
+      "hosts": "Ayrıştırılan NTP ana bilgisayarları",
+      "specialPoll": "Özel sorgulama aralığı (saniye)",
+      "serviceState": "Windows Zamanı hizmeti",
+      "serviceStartType": "Hizmetin başlatılması",
+      "policyManaged": "Grup İlkesi tarafından yönetiliyor",
+      "policyManagedValues": "Grup İlkesi değerleri",
+      "hostProvider": "VM ana bilgisayarı zaman sağlayıcısı etkin",
+      "joinType": "Katılım türü",
+      "role": "Etki alanı rolü",
+      "domain": "Etki alanı",
+      "forest": "Orman",
+      "pdc": "PDC",
+      "windowsId": "Geçerli Windows saat dilimi",
+      "bias": "Sapma (dakika)",
+      "autoUpdate": "Otomatik saat dilimi"
+    },
+    "values": {
+      "NT5DS": "Etki alanı hiyerarşisi (NT5DS)",
+      "NTP": "NTP eşleri",
+      "NoSync": "Eşitleme yok",
+      "AllSync": "Tüm kaynaklar",
+      "ntp_peer": "NTP eşi",
+      "domain_peer": "Etki alanı eşi",
+      "local_clock": "Yerel saat",
+      "free_running": "Bağımsız çalışan saat",
+      "vm_host": "VM ana bilgisayarı",
+      "unknown": "Bilinmiyor",
+      "provider_api": "Windows sağlayıcı API’si",
+      "w32tm_tokens": "Windows saat durumu belirteçleri",
+      "events": "Time-Service olayları",
+      "unavailable": "Kullanılamıyor",
+      "none": "Katılmamış",
+      "workplace": "İş yeri kaydı yapılmış",
+      "azure_ad": "Microsoft Entra’ya katılmış",
+      "on_prem_ad": "Active Directory’ye katılmış",
+      "hybrid_azure_ad": "Entra’ya hibrit katılmış",
+      "workgroup": "Çalışma grubu",
+      "entra_only": "Yalnızca Entra",
+      "member": "Etki alanı üyesi",
+      "dc": "Etki alanı denetleyicisi",
+      "pdc_emulator": "PDC öykünücüsü",
+      "forest_root_pdc_emulator": "Orman kökü PDC öykünücüsü",
+      "running": "Çalışıyor",
+      "stopped": "Durduruldu",
+      "start_pending": "Başlatılıyor",
+      "stop_pending": "Durduruluyor",
+      "paused": "Duraklatıldı",
+      "not_installed": "Yüklü değil",
+      "auto": "Otomatik",
+      "delayed_auto": "Otomatik (gecikmeli)",
+      "manual": "El ile",
+      "trigger_manual": "El ile (tetikleyiciyle başlatma)",
+      "disabled": "Devre dışı",
+      "on": "Açık",
+      "off": "Kapalı"
+    },
+    "findings": {
+      "pdc_no_external_source": {
+        "label": "Orman kökü PDC’sinin dış kaynağı yok",
+        "hint": "{device} üzerinde NTP sunucularını ayarlayın — bu cihaz orman kökü PDC’sidir ve tüm etki alanı üyeleri onu izler."
+      },
+      "source_local_clock": {
+        "label": "Yerel saat kullanılıyor",
+        "hint": "Kendi saatiyle eşitleniyor. Bir NTP kaynağı yapılandırın (veya etki alanına katılmışsa etki alanı denetleyicisini kontrol edin)."
+      },
+      "dc_vm_host_sync": {
+        "label": "Etki alanı denetleyicisi VM ana bilgisayarıyla eşitleniyor",
+        "hint": "Bu etki alanı denetleyicisinde VM ana bilgisayarı zaman sağlayıcısını devre dışı bırakın."
+      },
+      "ntp_server_unresolvable": {
+        "label": "NTP sunucusu adı geçersiz veya çözümlenemiyor",
+        "hint": "NTP sunucusu {host} çözümlenemiyor veya adı geçersiz — adı ya da DNS’i düzeltin."
+      },
+      "ntp_peer_unreachable": {
+        "label": "NTP eşine ulaşılamıyor",
+        "hint": "{source} yanıt vermiyor — 123 numaralı bağlantı noktasındaki giden UDP trafiğini kontrol edin."
+      },
+      "domain_source_unavailable": {
+        "label": "Etki alanı saat kaynağı kullanılamıyor",
+        "hint": "Etki alanı saat kaynağı bulunamıyor — etki alanı denetleyicisinin erişilebilirliğini kontrol edin."
+      },
+      "member_not_on_hierarchy": {
+        "label": "Etki alanı hiyerarşisi kullanılmıyor",
+        "hint": "Etki alanına katılmış ancak etki alanı hiyerarşisini kullanmıyor."
+      },
+      "sync_disabled": {
+        "label": "Saat eşitleme devre dışı",
+        "hint": "Windows Zamanı hizmeti devre dışı."
+      },
+      "sync_stale": {
+        "label": "Yakın zamanda başarılı eşitleme yok",
+        "hint": "{lastSuccessfulSyncAt} tarihinden beri başarılı eşitleme yok."
+      },
+      "correction_refused": {
+        "label": "Saat düzeltmesi reddedildi",
+        "hint": "Saat sapması Windows’un kendiliğinden düzeltemeyeceği kadar büyük; yeniden eşitleyin veya el ile düzeltin."
+      },
+      "timezone_mismatch": {
+        "label": "Saat dilimi beklenenden farklı",
+        "hint": "Saat dilimi {actual}, beklenen {expected} ({site or policy} kaynağından)."
+      },
+      "policy_not_applied": {
+        "label": "Saat ilkesi uygulanmadı",
+        "hint": "Saat ilkesi uygulanamadı: {error}."
+      },
+      "policy_conflict_gpo": {
+        "label": "Grup İlkesi saat ayarlarını denetliyor",
+        "hint": "W32Time, Grup İlkesi tarafından yönetiliyor; Breeze ayarları değiştirmiyor."
+      }
+    }
+  },
   "aiActivity": {
     "title": "Yapay zekâ etkinliği",
     "count": "Son {{days}} günde {{count}} eylem gönderildi",

@@ -40,6 +40,7 @@ import {
 import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
+import DeviceTimeSection from "./time/DeviceTimeSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -894,6 +895,11 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           value={info?.architecture ?? "—"}
         />
       </Section>
+
+      <DeviceTimeSection
+        deviceId={deviceId}
+        deviceName={info?.displayName ?? info?.hostname ?? deviceId}
+      />
 
       <Section
         title={t("deviceInfoTab.hardwareSummary")}
