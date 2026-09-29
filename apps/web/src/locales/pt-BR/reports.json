@@ -864,6 +864,9 @@
         "everyDay": "Todos os dias"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Único"
+        },
         "daily": {
           "label": "Diario"
         },

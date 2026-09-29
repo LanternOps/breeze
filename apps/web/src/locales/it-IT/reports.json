@@ -864,6 +864,9 @@
         "everyDay": "Ogni giorno"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Una tantum"
+        },
         "daily": {
           "label": "Giornaliero"
         },

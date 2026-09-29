@@ -864,6 +864,9 @@
         "everyDay": "Her gün"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Tek seferlik"
+        },
         "daily": {
           "label": "Günlük"
         },

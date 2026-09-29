@@ -262,6 +262,10 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   backup_status: 'devices'
 };
 
+/** Listed only for a report opened as one-time (see `offersOneTime`). */
+const oneTimeScheduleOption: { value: ReportSchedule; label: string; description: string } =
+  { value: 'one_time', label: 'One-time', description: 'Run only when generated' };
+
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [
   { value: 'daily', label: 'Daily', description: 'Run every day' },
   { value: 'weekly', label: 'Weekly', description: 'Run once a week' },
@@ -769,10 +773,10 @@ export const reportTypeSurvivesBuilder = (value: ReportBuilderType): boolean => 
   return builderToLegacyType[normalizeBuilderType(value)] === value;
 };
 
-const normalizeSchedule = (value?: ReportSchedule): ReportSchedule => {
-  if (!value || value === 'one_time') return 'weekly';
-  return value;
-};
+// A loaded schedule is kept as it is, one_time included: saving must never
+// change a report's cadence the user did not touch. Only a missing one
+// defaults (to weekly, the builder's create default).
+const normalizeSchedule = (value?: ReportSchedule): ReportSchedule => value ?? 'weekly';
 
 const formatLabel = (value: string) =>
   value
@@ -854,6 +858,10 @@ export default function ReportBuilder({
   const [aggregation, setAggregation] = useState<Aggregation>(defaultValues?.aggregation ?? { type: 'count' });
   const [chartType, setChartType] = useState<ChartType>(defaultValues?.chartType ?? 'table');
   const [schedule, setSchedule] = useState<ReportSchedule>(normalizeSchedule(defaultValues?.schedule));
+  // A one-time report (one being edited, or a one-time template's) keeps a
+  // One-time choice next to the recurring ones; nothing else offers it.
+  const offersOneTime = defaultValues?.schedule === 'one_time';
+  const visibleScheduleOptions = offersOneTime ? [oneTimeScheduleOption, ...scheduleOptions] : scheduleOptions;
   const [scheduleTime, setScheduleTime] = useState(defaultValues?.scheduleTime ?? '09:00');
   const [scheduleDay, setScheduleDay] = useState(defaultValues?.scheduleDay ?? 'monday');
   const [scheduleDate, setScheduleDate] = useState(defaultValues?.scheduleDate ?? '1');
@@ -1517,8 +1525,9 @@ export default function ReportBuilder({
       setError(t('reports.series.targeting.noneSelected'));
       return;
     }
-    // Recurring-only. The builder's schedule select never offers one_time, so
-    // this only narrows the type; it is never a silent substitution.
+    // Recurring-only. One-time is offered only for a report opened as
+    // one-time; a multi-org report needs a recurring choice, never a silent
+    // substitution.
     if (!payload.schedule || payload.schedule === 'one_time') {
       setError(t('reports.series.schedule.required'));
       return;
@@ -2400,10 +2409,11 @@ export default function ReportBuilder({
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.schedule')}</p>
               <div className="flex flex-wrap gap-2">
-                {scheduleOptions.map(option => (
+                {visibleScheduleOptions.map(option => (
                   <button
                     key={option.value}
                     type="button"
+                    aria-pressed={schedule === option.value}
                     onClick={() => setSchedule(option.value)}
                     className={cn(
                       'rounded-md border px-3 py-2 text-xs font-medium transition',
@@ -2417,6 +2427,7 @@ export default function ReportBuilder({
                 ))}
               </div>
 
+              {schedule !== 'one_time' && (
               <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div className="space-y-2">
                   <label htmlFor="report-builder-run-time" className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
@@ -2467,6 +2478,7 @@ export default function ReportBuilder({
                   </div>
                 )}
               </div>
+              )}
             </div>
 
             <div className="space-y-3">
@@ -2665,7 +2677,9 @@ export default function ReportBuilder({
 
           <div className="flex flex-wrap gap-2">
             <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">{scheduleLabel}</span>
-            <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">{scheduleDetail}</span>
+            {schedule !== 'one_time' && (
+              <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">{scheduleDetail}</span>
+            )}
             <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">
               {exportFormats.map(format => format.toUpperCase()).join(', ')}
             </span>

@@ -864,6 +864,9 @@
         "everyDay": "Cada día"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Una sola vez"
+        },
         "daily": {
           "label": "A diario"
         },

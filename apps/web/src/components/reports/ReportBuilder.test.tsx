@@ -803,3 +803,74 @@ describe('ReportBuilder live preview waits until the org is known', () => {
     expect(generateBodies()[0]).toMatchObject({ orgId: 'org-b' });
   });
 });
+
+// Pre-release sweep: the builder had no one-time option and silently turned a
+// one-time report Weekly (`schedule: 'weekly'` in the PUT) the first time its
+// edit page was saved. The loaded schedule is kept unless the user changes it.
+describe('ReportBuilder keeps a one-time schedule', () => {
+  const putBody = () => {
+    const call = fetchWithAuthMock.mock.calls.find(
+      ([url, init]) => url === '/reports/report-1' && (init as RequestInit | undefined)?.method === 'PUT'
+    );
+    expect(call).toBeDefined();
+    return JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { rows: [] } }));
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null });
+  });
+
+  const renderOneTime = () =>
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        reportOrgId="org-1"
+        defaultValues={{ name: 'Backups', type: 'backup_status', schedule: 'one_time' }}
+      />
+    );
+
+  it('saves an untouched one-time report as one-time', async () => {
+    renderOneTime();
+
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => expect(putBody()).toMatchObject({ schedule: 'one_time' }));
+  });
+
+  it('shows the one-time option selected', async () => {
+    renderOneTime();
+
+    expect(await screen.findByRole('button', { name: 'One-time' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Weekly' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('saves the recurring schedule the user picks instead', async () => {
+    renderOneTime();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Monthly' }));
+    fireEvent.click(screen.getByTestId('report-builder-submit'));
+
+    await waitFor(() => expect(putBody()).toMatchObject({ schedule: 'monthly' }));
+  });
+
+  it('offers no one-time option to a recurring report', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        reportOrgId="org-1"
+        defaultValues={{ name: 'Weekly devices', type: 'device_inventory', schedule: 'weekly' }}
+      />
+    );
+
+    expect(await screen.findByRole('button', { name: 'Weekly' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('button', { name: 'One-time' })).toBeNull();
+  });
+});
