@@ -22,6 +22,15 @@ it('renders a passive snapshot, and local arrangement never persists', async () 
   await screen.findByTestId('topology-unsaved-layout');
   expect(vi.mocked(fetchWithAuth).mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
 });
+it('pluralizes the node and connection counts', async () => {
+  const graph = topologyGraphFixture(); graph.counts = { ...graph.counts, visibleNodes: 1, visibleRelationships: 1, omittedNodes: 1, omittedRelationships: 0 };
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(graph)));
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  const counts = await screen.findByTestId('topology-counts');
+  expect(counts).toHaveTextContent('1 node · 1 connection');
+  expect(counts).not.toHaveTextContent('1 connections');
+  expect(counts.nextElementSibling).toHaveTextContent('Outside this view: 1 node · 0 connections');
+});
 it('provides keyboard-equivalent list inspection and preserves conflict drafts', async () => {
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   await screen.findByTestId('topology-health-internet');
