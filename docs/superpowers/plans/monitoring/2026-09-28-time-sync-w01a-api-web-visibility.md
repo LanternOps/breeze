@@ -6403,8 +6403,8 @@ git commit -m "docs(time-sync): explain device visibility and findings" -m "Co-A
 
 **Interfaces:** Consumes the complete W01a implementation and the existing contract runners. Produces verified RLS coverage, ownership-FK deferrability, cascade/move/merge/export coverage, current migration ordering, and API/shared/web type consistency. This final verification task reruns existing failing-test/implementation cycles from Tasks 1–10; it adds no artificial failing test or duplicate implementation.
 
-- [ ] Run Task 2's mapping test with the exact R2 `['Antarctica/Troll']` exception and Task 6's `unmapped` view test. Contract issues 1–4 are resolved below; no further mapping decision is required.
-- [ ] Run the existing targeted unit regressions (no full unit suites):
+- [x] Run Task 2's mapping test with the exact R2 `['Antarctica/Troll']` exception and Task 6's `unmapped` view test. Contract issues 1–4 are resolved below; no further mapping decision is required.
+- [x] Run the existing targeted unit regressions (no full unit suites):
 
 ```bash
 (cd packages/shared && npx vitest run src/validators/timeSync.test.ts src/validators/ntpServerHosts.test.ts src/utils/windowsZones.test.ts)
@@ -6418,7 +6418,7 @@ Parked-registry contract: `parkedRouteClassification.test.ts` classifies every r
 
 Expected PASS with the binding R1–R17 resolutions applied. Before the corresponding implementations the exact failures are pinned in Tasks 1–10; a missing module, omitted registration, wrong scope, stale reset boundary, or untranslated key is a failure, not a reason to weaken an assertion.
 
-- [ ] Run every index-mandated tenancy contract against the private worktree stack. Run the teardown even when a command fails; the shell trap covers that cleanup. The RLS coverage suite has its own runner and is not selected through the integration config.
+- [x] Run every index-mandated tenancy contract against the private worktree stack. Run the teardown even when a command fails; the shell trap covers that cleanup. The RLS coverage suite has its own runner and is not selected through the integration config.
 
 ```bash
 (
@@ -6438,7 +6438,7 @@ Expected PASS with the binding R1–R17 resolutions applied. Before the correspo
 
 Expected PASS: `device_time_status` is covered by forced RLS and every tenant lifecycle list; wrong-tenant insert fails with SQLSTATE 42501; wrong composite owner fails with 23503; foreign reads/updates/deletes affect zero rows; the FK is deferrable but initially immediate; export open JSON columns remain excluded; initial/reset races accept exactly one snapshot.
 
-- [ ] Run the exact current CI typechecks (`.github/workflows/ci.yml:374,380,383–384`):
+- [x] Run the exact current CI typechecks (`.github/workflows/ci.yml:374,380,383–384`):
 
 ```bash
 pnpm exec tsc --build apps/api/tsconfig.tests.json
@@ -6448,7 +6448,7 @@ pnpm --filter @breeze/shared typecheck
 
 Expected PASS for API source and tests, shared source and tests, and web Astro/React. Do not replace the API build-mode command with the old source-only checker.
 
-- [ ] Run the R17 linters before committing (also run the applicable commands before each earlier task's implementation commit):
+- [x] Run the R17 linters before committing (also run the applicable commands before each earlier task's implementation commit):
 
 ```bash
 pnpm --filter @breeze/api lint
@@ -6458,7 +6458,7 @@ pnpm --filter @breeze/web lint
 
 Expected PASS. W01a creates no Go code, so `gofmt -l` is not applicable in this wave.
 
-- [ ] Inspect the migration ceiling and diff before committing final evidence:
+- [x] Inspect the migration ceiling and diff before committing final evidence:
 
 ```bash
 ls apps/api/migrations | grep -E '^[0-9]{4}-.*\.sql$' | sort | tail -1
@@ -6470,12 +6470,32 @@ rg -n 'get_device_time_status' apps/api/src/services apps/web/src/components/ai-
 
 Expected: the reserved migration still sorts after committed migrations; all registration hits in Tasks 3 and 8 exist. If the ceiling moved, the index explicitly permits renaming upward before shipping; update the migration replay reference and this plan's commands together, and record that contract adjustment. Never rename a shipped migration.
 
-- [ ] Mark completed checkboxes in this document only after actual execution; preserve any verification failures and the R2 mapping exception in the implementation PR. This planning pass has not run implementation tests. Commit the completed execution record:
+- [x] Mark completed checkboxes in this document only after actual execution; preserve any verification failures and the R2 mapping exception in the implementation PR. This planning pass has not run implementation tests. Commit the completed execution record:
 
 ```bash
 git add docs/superpowers/plans/monitoring/2026-09-28-time-sync-w01a-api-web-visibility.md
 git commit -m "docs(time-sync): record W01a verification" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+**Execution record (2026-09-29, branch `feature/7452-time-sync/wave-7453`, all PASS, no verification failures):**
+
+| Check | Result |
+| --- | --- |
+| Shared unit (timeSync, ntpServerHosts, windowsZones incl. R2 `['Antarctica/Troll']`) | 3 files / 52 tests |
+| API unit group 1 (timeSync services, routes, bodyLimit, parked registries; incl. `unmapped` view case) | 10 files / 173 tests |
+| API unit group 2 (cascadeDelete, moveOrg.coverage, deviceDeletion, orgMerge, migrationRlsScope, autoMigrate) | 6 files / 284 tests |
+| API unit group 3 (AI tool surfaces, guardrails, runLoop, mcp-coverage) | 7 files / 276 tests |
+| Web unit (DeviceTimeSection, integration, docs, DeviceInfoTab, i18n keyUsage/translationCoverage) | 6 files / 61 tests |
+| `test:rls-coverage` (`DB_CONTEXTLESS_WRITE_STRICT=true`) | 103 tests |
+| tenantCascade / tenant-export-policy / tenantExportErasureRoundtrip / orgMergeRegistry / orgLifecycleFoundations | 5 / 3 / 8 / 14 / 4 tests |
+| timeSync migrations + ingest integration | 2 files / 7 tests |
+| `pnpm db:check-drift` | no drift (972 migration files) |
+| `tsc --build apps/api/tsconfig.tests.json`, shared `typecheck`, web `astro check` | 0 errors each |
+| API lint, web lint, shared eslint (listed files) | clean |
+| Migration ceiling / naming / `git diff --check` | `2026-11-10-100000-time-sync-status.sql` still sorts last (origin/main ceiling `2026-11-09-110100-…`); naming guard OK; diff clean |
+| Registration greps | `device_time_status` in tenantCascade, core.ts (×2), orgMergeRegistry, tenantExportPolicyRegistry; `get_device_time_status` across all AI surfaces + tierConfig |
+
+Two invocation notes (no contract change): the API build-mode typecheck needs CI's `NODE_OPTIONS=--max-old-space-size=12288` locally or it aborts with a heap OOM, and `pnpm db:check-drift` needs `DATABASE_URL` pointed at the test stack from `.env.test` (it does not read that file itself).
 
 ## Self-Review
 
