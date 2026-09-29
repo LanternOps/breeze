@@ -1187,9 +1187,13 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
   const evaluatedMonitorIds = new Set<string>();
 
   for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
-    // Other monitor kinds recover through checkAutoResolve. Hardware subjects
-    // recover only through their locked reconciliation below.
-    if (suppressAlerts && monitor?.kind !== 'hardware_health') continue;
+    // Subject monitors still evaluate recovery during maintenance; new breaches remain suppressed.
+    if (
+      suppressAlerts &&
+      monitor?.kind !== 'hardware_health' &&
+      monitor?.kind !== 'time_sync'
+    )
+      continue;
     // #6353 — a network_check has ONE verdict per org, evaluated by the
     // device-independent sweep on the check's alert device. The per-device
     // sweep skips it (but still counts it as evaluated, or the detach scan

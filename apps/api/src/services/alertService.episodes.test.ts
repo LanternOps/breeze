@@ -491,30 +491,60 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
 });
 
 describe('monitor maintenance suppression', () => {
-  it('preserves component recovery under the subject lock without admitting breaches or episode side effects', async () => {
-    vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue({ suppressAlerts: true } as never);
-    vi.mocked(isInMaintenanceWindow).mockReturnValue({ active: true, suppressAlerts: true } as never);
-    const recovered = { subjectKey: 'disk:healthy', status: 'recovered', description: 'Recovered disk' };
-    const unknown = { subjectKey: 'disk:missing', status: 'unknown', description: 'Missing data' };
-    evaluateConditionsMock.mockResolvedValue({
-      triggered: true, conditionsMet: [], conditionsNotMet: [], context: {},
-      subjects: [recovered, unknown, { subjectKey: 'disk:failed', status: 'breaching' }],
-    });
-    pushSweepQueue({ triggered: false, monitorRow: { id: MONITOR_ID, kind: 'hardware_health' } });
+  it.each(['hardware_health', 'time_sync'] as const)(
+    'preserves %s subject recovery under the subject lock without admitting breaches or episode side effects',
+    async (kind) => {
+      vi.mocked(resolveMaintenanceConfigForDevice).mockResolvedValue({
+        suppressAlerts: true,
+      } as never);
+      vi.mocked(isInMaintenanceWindow).mockReturnValue({
+        active: true,
+        suppressAlerts: true,
+      } as never);
+      const recovered = {
+        subjectKey: 'disk:healthy',
+        status: 'recovered',
+        description: 'Recovered disk',
+      };
+      const unknown = {
+        subjectKey: 'disk:missing',
+        status: 'unknown',
+        description: 'Missing data',
+      };
+      evaluateConditionsMock.mockResolvedValue({
+        triggered: true,
+        conditionsMet: [],
+        conditionsNotMet: [],
+        context: {},
+        subjects: [
+          recovered,
+          unknown,
+          { subjectKey: 'disk:failed', status: 'breaching' },
+        ],
+      });
+      pushSweepQueue({ triggered: false, monitorRow: { id: MONITOR_ID, kind } });
 
-    expect(await evaluateDeviceAlerts(DEVICE_ID)).toEqual([]);
+      expect(await evaluateDeviceAlerts(DEVICE_ID)).toEqual([]);
 
-    expect(dbMock.execute).toHaveBeenCalledWith(expect.objectContaining({
-      values: [`hardware-subject:rule-1:${DEVICE_ID}`],
-    }));
-    expect(evaluateSubjectAlerts).toHaveBeenCalledWith(expect.objectContaining({
-      evidence: expect.objectContaining({ subjects: [recovered, unknown], createdAlertIds: [] }),
-    }));
-    expect(insertedAlerts).toHaveLength(0);
-    expect(recordMonitorEvaluationMock).not.toHaveBeenCalled();
-    expect(fireEscalationLatchMock).not.toHaveBeenCalled();
-    expect(detachMonitorFromDeviceMock).not.toHaveBeenCalled();
-  });
+      expect(dbMock.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          values: [`hardware-subject:rule-1:${DEVICE_ID}`],
+        }),
+      );
+      expect(evaluateSubjectAlerts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evidence: expect.objectContaining({
+            subjects: [recovered, unknown],
+            createdAlertIds: [],
+          }),
+        }),
+      );
+      expect(insertedAlerts).toHaveLength(0);
+      expect(recordMonitorEvaluationMock).not.toHaveBeenCalled();
+      expect(fireEscalationLatchMock).not.toHaveBeenCalled();
+      expect(detachMonitorFromDeviceMock).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { active: true, suppressAlerts: true, creates: false },
