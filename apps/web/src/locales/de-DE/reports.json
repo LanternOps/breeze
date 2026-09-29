@@ -437,7 +437,8 @@
         "completed": "Abgeschlossen",
         "report": "Bericht",
         "started": "Begonnen",
-        "status": "Status"
+        "status": "Status",
+        "organization": "Organisation"
       },
       "schedules": {
         "daily": "Täglich",
@@ -457,7 +458,8 @@
         "lastGenerated": "Zuletzt generiert",
         "name": "Name",
         "schedule": "Zeitplan",
-        "type": "Typ"
+        "type": "Typ",
+        "covers": "Umfasst"
       },
       "tabs": {
         "recentRuns": "Letzte Läufe",
@@ -467,7 +469,20 @@
       "title": "Berichte",
       "tryAgain": "Versuchen Sie es erneut",
       "unknownReport": "Unbekannter Bericht",
-      "partnerWideIncomplete": "Einige Berichte, die alle Organisationen umfassen, konnten nicht geladen werden. Diese Liste ist daher möglicherweise unvollständig. Wechseln Sie zu „Alle Organisationen“, um alle Berichte zu sehen."
+      "partnerWideIncomplete": "Einige Berichte, die alle Organisationen umfassen, konnten nicht geladen werden. Diese Liste ist daher möglicherweise unvollständig. Wechseln Sie zu „Alle Organisationen“, um alle Berichte zu sehen.",
+      "covers": {
+        "combined": "Alle Organisationen · Kombiniert",
+        "unknownOrg": "Unbekannte Organisation",
+        "seriesAll": "Alle Orgs · {{count}} · Eine pro Organisation",
+        "seriesSelected_one": "{{count}} Org · Eine pro Organisation",
+        "seriesSelected_other": "{{count}} Orgs · Eine pro Organisation"
+      },
+      "delivery": {
+        "noRecipients": "Keine Empfänger",
+        "noRecipientsHint": "Der letzte geplante Lauf hatte keine Empfänger. Fügen Sie Empfänger hinzu, um diesen Bericht zuzustellen.",
+        "partial": "Teilweise zugestellt",
+        "failed": "E-Mail nicht gesendet"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -1142,6 +1157,14 @@
       "singleOrganizationHint": "Die im Organisationswechsler ausgewählte Organisation.",
       "singleOrganizationDisabledHint": "Wählen Sie eine Organisation im Organisationswechsler aus, um einen organisationsbezogenen Bericht zu erstellen.",
       "needsOrganizationHint": "Wählen Sie im Organisationswechsler eine Organisation aus, um diesen Bericht zu erstellen. Berichte für alle Organisationen erfordern Zugriff auf alle Organisationen."
+    },
+    "orgPicker": {
+      "label": "Organisation",
+      "placeholder": "Organisation auswählen",
+      "hint": "Sie sehen alle Organisationen. Wählen Sie die Organisation aus, für die dieser Bericht gilt.",
+      "required": "Wählen Sie vor dem Speichern dieses Berichts eine Organisation aus.",
+      "chooseFirst": "Wählen Sie oben eine Organisation aus, bevor Sie eine Vorlage verwenden.",
+      "previewNeedsOrg": "Wählen Sie eine Organisation aus, um eine Live-Vorschau zu sehen."
     }
   }
 }

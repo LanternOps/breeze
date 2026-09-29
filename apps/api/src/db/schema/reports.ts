@@ -134,6 +134,24 @@ export const reports = pgTable('reports', {
     .where(sql`${table.type} = 'ai_fleet_design'`),
 }));
 
+/**
+ * `report_runs.delivery_status` (multi-org report series W01, spec §3.2):
+ * what a scheduled run's email did. NULL for ad-hoc and pre-W01 runs;
+ * 'not_scheduled' for a manual run of a scheduled definition. Pinned by
+ * `report_runs_delivery_status_chk`. Re-exported from
+ * `services/reportDelivery.ts`, the cross-wave contract path — declared here
+ * because the column below needs it and the schema layer never imports
+ * services.
+ */
+export const REPORT_DELIVERY_STATUSES = [
+  'sent',
+  'partial',
+  'no_recipients',
+  'failed',
+  'not_scheduled',
+] as const;
+export type ReportDeliveryStatus = (typeof REPORT_DELIVERY_STATUSES)[number];
+
 export const reportRuns = pgTable('report_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
   // #3198 W01: ON DELETE CASCADE since migration 2026-10-27-130100.
@@ -176,6 +194,14 @@ export const reportRuns = pgTable('report_runs', {
    * technique as `contracts.ts`'s catalog_item_id / site_id.
    */
   artifactId: uuid('artifact_id'),
+  /** Multi-org report series W01 — see REPORT_DELIVERY_STATUSES. */
+  deliveryStatus: text('delivery_status').$type<ReportDeliveryStatus>(),
+  /**
+   * Multi-org report series W01 (spec §3.5): customer recipients the scheduled
+   * run resolved — for a non-series report, contacts plus valid
+   * `config.emailRecipients`; a W02 series child excludes its internal CC.
+   */
+  recipientCount: integer('recipient_count'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // (id, report_id) key so service_deliverable_evidence can prove a run belongs to
@@ -204,6 +230,19 @@ export const reportRuns = pgTable('report_runs', {
       )
     ) IS TRUE`,
   ),
+  deliveryStatusShape: check(
+    'report_runs_delivery_status_chk',
+    sql`(
+      ${table.deliveryStatus} IS NULL
+      OR ${table.deliveryStatus} IN ('sent', 'partial', 'no_recipients', 'failed', 'not_scheduled')
+    )`,
+  ),
+  recipientCountShape: check(
+    'report_runs_recipient_count_chk',
+    sql`(${table.recipientCount} IS NULL OR ${table.recipientCount} >= 0)`,
+  ),
+  reportIdCreatedAtIdx: index('report_runs_report_id_created_at_idx')
+    .on(table.reportId, table.createdAt.desc(), table.id.desc()),
 }));
 
 export const REPORT_RUN_DELIVERY_STATES = ['pending', 'claimed', 'sent', 'failed', 'unknown'] as const;

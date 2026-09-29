@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, or, sql, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { reports, reportRuns } from '../../db/schema';
+import { organizations, reports, reportRuns } from '../../db/schema';
+import type { ReportDeliveryStatus } from '../../services/reportDelivery';
 import {
   authMiddleware,
   hasSatisfiedMfa,
@@ -413,10 +414,29 @@ coreRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get reports
+    // Get reports. Multi-org series W01 (spec §3.6):
+    //  - orgName — LEFT join: a partner-owned row has no org (null), and an org
+    //    the caller's RLS context cannot read yields null instead of dropping
+    //    the row; which rows are listed is still decided by whereCondition.
+    //  - lastDeliveryStatus — the newest SCHEDULED delivery outcome (manual
+    //    'not_scheduled' runs and pre-W01 NULL runs are skipped), for the list's
+    //    no-recipients warning. One indexed lookup per listed row
+    //    (report_runs_report_id_created_at_idx); report_runs RLS applies inside.
     const reportsList = await db
-      .select()
+      .select({
+        ...getTableColumns(reports),
+        orgName: organizations.name,
+        lastDeliveryStatus: sql<Exclude<ReportDeliveryStatus, 'not_scheduled'> | null>`(
+          SELECT ${reportRuns.deliveryStatus}
+          FROM ${reportRuns}
+          WHERE ${reportRuns.reportId} = ${reports.id}
+            AND ${reportRuns.deliveryStatus} IN ('sent', 'partial', 'no_recipients', 'failed')
+          ORDER BY ${reportRuns.createdAt} DESC, ${reportRuns.id} DESC
+          LIMIT 1
+        )`,
+      })
       .from(reports)
+      .leftJoin(organizations, eq(organizations.id, reports.orgId))
       .where(whereCondition)
       .orderBy(desc(reports.updatedAt), desc(reports.id))
       .limit(limit)

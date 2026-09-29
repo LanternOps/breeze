@@ -437,7 +437,8 @@
         "completed": "Concluido",
         "report": "Relatório",
         "started": "Iniciado",
-        "status": "Status"
+        "status": "Status",
+        "organization": "Organização"
       },
       "schedules": {
         "daily": "Diario",
@@ -457,7 +458,8 @@
         "lastGenerated": "Ultima Geracao",
         "name": "Nome",
         "schedule": "Agenda",
-        "type": "Tipo"
+        "type": "Tipo",
+        "covers": "Abrange"
       },
       "tabs": {
         "recentRuns": "Execuções Recentes",
@@ -467,7 +469,20 @@
       "title": "Relatórios",
       "tryAgain": "Tentar novamente",
       "unknownReport": "Relatório Desconhecido",
-      "partnerWideIncomplete": "Não foi possível carregar alguns relatórios que abrangem todas as organizações, então esta lista pode estar incompleta. Mude para Todas as organizações para ver todos os relatórios."
+      "partnerWideIncomplete": "Não foi possível carregar alguns relatórios que abrangem todas as organizações, então esta lista pode estar incompleta. Mude para Todas as organizações para ver todos os relatórios.",
+      "covers": {
+        "combined": "Todas as organizações · Combinado",
+        "unknownOrg": "Organização desconhecida",
+        "seriesAll": "Todas as orgs · {{count}} · Um por organização",
+        "seriesSelected_one": "{{count}} org · Um por organização",
+        "seriesSelected_other": "{{count}} orgs · Um por organização"
+      },
+      "delivery": {
+        "noRecipients": "Sem destinatários",
+        "noRecipientsHint": "A última execução agendada não tinha ninguém para receber o e-mail. Adicione destinatários para entregar este relatório.",
+        "partial": "Entregue parcialmente",
+        "failed": "E-mail não enviado"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -1142,6 +1157,14 @@
       "singleOrganizationHint": "A organização selecionada no seletor de organizações.",
       "singleOrganizationDisabledHint": "Selecione uma organização no seletor de organizações para criar um relatório com escopo de organização.",
       "needsOrganizationHint": "Selecione uma organização no seletor de organizações para criar este relatório. Relatórios de todas as organizações exigem acesso a todas as organizações."
+    },
+    "orgPicker": {
+      "label": "Organização",
+      "placeholder": "Escolha uma organização",
+      "hint": "Você está vendo todas as organizações. Escolha a organização deste relatório.",
+      "required": "Escolha uma organização antes de salvar este relatório.",
+      "chooseFirst": "Escolha uma organização acima antes de usar um modelo.",
+      "previewNeedsOrg": "Escolha uma organização para ver uma prévia ao vivo."
     }
   }
 }

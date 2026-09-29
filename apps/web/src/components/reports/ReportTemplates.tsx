@@ -74,7 +74,7 @@ import {
 } from './ArAgingOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
+import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
@@ -607,7 +607,10 @@ const TemplateSection = ({
 export default function ReportTemplates() {
   const { t } = useTranslation('reports');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { currentOrgId } = useOrgStore();
+  // Multi-org series W01 (spec §3.7): the org a template creates for — the
+  // switcher's org, else the one picked on this page. "Choosing a template
+  // no longer posts the ambient currentOrgId blindly."
+  const orgTarget = useReportTargetOrg();
   const jwtClaims = useJwtClaims();
   const canUseBusinessReportType = useCanUseBusinessReportType();
   const [templates, setTemplates] = useState<ReportTemplate[]>(defaultTemplates);
@@ -688,6 +691,12 @@ export default function ReportTemplates() {
       postureConfig: Record<string, unknown> = {},
       owner: ReportOwnerScope = 'organization',
     ) => {
+      // Defense in depth — handleUseTemplate already refuses to open a
+      // template without an org; nothing that would 400 is ever sent.
+      if (owner === 'organization' && orgTarget.missing) {
+        setError(t('reports.orgPicker.chooseFirst'));
+        return;
+      }
       setCreatingId(template.id);
       const isBusiness = isBusinessReportType(template.defaults.type);
       try {
@@ -710,7 +719,7 @@ export default function ReportTemplates() {
                   ? { ownerScope: 'partner' as const }
                   : {
                       ...(isBusiness ? { ownerScope: 'organization' as const } : {}),
-                      ...(currentOrgId ? { orgId: currentOrgId } : {})
+                      ...(orgTarget.orgId ? { orgId: orgTarget.orgId } : {})
                     }),
                 // Business report config schemas (#3198) REFUSE a dateRange
                 // (and filters/sites/orgId/orgIds/siteIds/deviceIds) that
@@ -739,7 +748,7 @@ export default function ReportTemplates() {
         setCreatingId(null);
       }
     },
-    [currentOrgId, t]
+    [orgTarget.orgId, orgTarget.missing, t]
   );
 
   const handleUseTemplate = useCallback(
@@ -748,6 +757,12 @@ export default function ReportTemplates() {
       // would silently downgrade them) are created directly; everything the
       // builder round-trips losslessly goes through the builder for tailoring.
       const type = template.defaults.type;
+      // A business template carries its own ownership control (partner-owned
+      // by default under All organizations); every other template needs an org.
+      if (!isBusinessReportType(type) && orgTarget.missing) {
+        setError(t('reports.orgPicker.chooseFirst'));
+        return;
+      }
       if (type === 'security_compliance_posture') {
         setBackupRequired(false);
         setPostureTemplate(template);
@@ -801,7 +816,7 @@ export default function ReportTemplates() {
       }
       handleOpenBuilder(template);
     },
-    [defaultOwnerScope, handleCreateDirect, handleOpenBuilder]
+    [defaultOwnerScope, handleCreateDirect, handleOpenBuilder, orgTarget.missing, t]
   );
 
   const renderBusinessOptionsForm = (template: ReportTemplate) => {
@@ -1004,6 +1019,21 @@ export default function ReportTemplates() {
         </div>
       </div>
 
+      {orgTarget.pickerVisible && (
+        <div className="max-w-sm">
+          <OrgPickerField
+            testId="report-templates-org-picker"
+            id="report-templates-target-org"
+            value={orgTarget.pickedOrgId}
+            onChange={(orgId) => {
+              orgTarget.setPickedOrgId(orgId);
+              setError(undefined);
+            }}
+            options={orgTarget.options}
+          />
+        </div>
+      )}
+
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -1055,6 +1085,7 @@ export default function ReportTemplates() {
                 key={activeTemplate?.id ?? 'custom-template'}
                 mode="create"
                 defaultValues={builderDefaults}
+                defaultOrgId={orgTarget.orgId}
                 onSubmit={handleSubmit}
                 onCancel={handleCloseBuilder}
               />

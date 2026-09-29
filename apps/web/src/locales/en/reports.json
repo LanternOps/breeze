@@ -437,7 +437,8 @@
         "completed": "Completed",
         "report": "Report",
         "started": "Started",
-        "status": "Status"
+        "status": "Status",
+        "organization": "Organization"
       },
       "schedules": {
         "daily": "Daily",
@@ -457,7 +458,8 @@
         "lastGenerated": "Last Generated",
         "name": "Name",
         "schedule": "Schedule",
-        "type": "Type"
+        "type": "Type",
+        "covers": "Covers"
       },
       "tabs": {
         "recentRuns": "Recent Runs",
@@ -467,7 +469,20 @@
       "title": "Reports",
       "tryAgain": "Try again",
       "unknownReport": "Unknown Report",
-      "partnerWideIncomplete": "Some reports that cover all organizations could not be loaded, so this list may be incomplete. Switch to All organizations to see every report."
+      "partnerWideIncomplete": "Some reports that cover all organizations could not be loaded, so this list may be incomplete. Switch to All organizations to see every report.",
+      "covers": {
+        "combined": "All organizations · Combined",
+        "unknownOrg": "Unknown organization",
+        "seriesAll": "All orgs · {{count}} · One per organization",
+        "seriesSelected_one": "{{count}} org · One per organization",
+        "seriesSelected_other": "{{count}} orgs · One per organization"
+      },
+      "delivery": {
+        "noRecipients": "No recipients",
+        "noRecipientsHint": "The last scheduled run had nobody to email. Add recipients to deliver this report.",
+        "partial": "Partly delivered",
+        "failed": "Email not sent"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -1142,6 +1157,14 @@
       "singleOrganizationHint": "The organization selected in the organization switcher.",
       "singleOrganizationDisabledHint": "Pick an organization in the organization switcher to create an organization-scoped report.",
       "needsOrganizationHint": "Pick an organization in the organization switcher to create this report. Reports for all organizations require access to all organizations."
+    },
+    "orgPicker": {
+      "label": "Organization",
+      "placeholder": "Choose an organization",
+      "hint": "You are viewing all organizations. Choose the organization this report is for.",
+      "required": "Choose an organization before saving this report.",
+      "chooseFirst": "Choose an organization above before using a template.",
+      "previewNeedsOrg": "Choose an organization to see a live preview."
     }
   }
 }

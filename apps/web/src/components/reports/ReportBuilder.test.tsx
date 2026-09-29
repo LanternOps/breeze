@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ReportBuilder from './ReportBuilder';
 import { fetchWithAuth } from '../../stores/auth';
@@ -631,5 +631,73 @@ describe('ReportBuilder contact recipients refusal (#3198 W03, ruling W5)', () =
     expect(await screen.findByTestId('report-recipient-contact-contact-1')).toBeInTheDocument();
     expect(contactsFetched()).toBe(true);
     expect(screen.queryByTestId('report-partner-recipients-note')).toBeNull();
+  });
+});
+
+describe('ReportBuilder org picker under All organizations (multi-org series W01)', () => {
+  const orgs = [
+    { id: 'org-a', partnerId: 'p-1', name: 'Acme Dental', status: 'active' as const, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'org-b', partnerId: 'p-1', name: 'Bravo Law', status: 'active' as const, createdAt: '2026-01-01T00:00:00Z' },
+  ];
+  const postCalls = () =>
+    fetchWithAuthMock.mock.calls.filter(
+      ([url, init]) => url === '/reports' && (init as RequestInit | undefined)?.method === 'POST'
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: null, organizations: orgs });
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { id: 'report-9' } }, true, 201));
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null, organizations: [] });
+  });
+
+  it('blocks submit client-side with no org chosen: no POST /reports and no preview request (no 400 is reached)', async () => {
+    render(<ReportBuilder mode="create" defaultValues={{ name: 'Fleet health' }} onSubmit={vi.fn()} />);
+
+    expect(await screen.findByTestId('report-org-picker')).toBeInTheDocument();
+    expect(await screen.findByText('Choose an organization to see a live preview.')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('report-builder-submit'));
+
+    expect(await screen.findByText('Choose an organization before saving this report.')).toBeInTheDocument();
+    // Past the live preview's 300 ms debounce: it was never scheduled.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(postCalls()).toHaveLength(0);
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => url === '/reports/generate')).toBe(false);
+  });
+
+  it('posts the picked org in the body — the only org carrier for a create', async () => {
+    render(<ReportBuilder mode="create" defaultValues={{ name: 'Fleet health' }} onSubmit={vi.fn()} />);
+
+    await userEvent.setup().selectOptions(await screen.findByTestId('report-org-picker-select'), 'org-b');
+    fireEvent.click(screen.getByTestId('report-builder-submit'));
+
+    await waitFor(() => expect(postCalls()).toHaveLength(1));
+    const [, init] = postCalls()[0]!;
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({ orgId: 'org-b' });
+    // No pin/skip flag: fetchWithAuth's ambient ?orgId= is absent under All
+    // organizations and the create route reads the JSON body only.
+    expect(init).not.toHaveProperty('orgIdOverride');
+    expect(init).not.toHaveProperty('skipOrgIdInjection');
+  });
+
+  it('hides the picker and uses the focused org when the switcher names one', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-a' });
+    render(<ReportBuilder mode="create" defaultValues={{ name: 'Fleet health' }} onSubmit={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => expect(postCalls()).toHaveLength(1));
+    expect(screen.queryByTestId('report-org-picker')).toBeNull();
+    expect(JSON.parse(String((postCalls()[0]![1] as RequestInit).body))).toMatchObject({ orgId: 'org-a' });
+  });
+
+  it('never shows the picker when editing an existing report', async () => {
+    render(<ReportBuilder mode="edit" reportId="rep-1" defaultValues={{ name: 'Fleet health' }} onSubmit={vi.fn()} />);
+
+    expect(await screen.findByTestId('report-builder-submit')).toBeInTheDocument();
+    expect(screen.queryByTestId('report-org-picker')).toBeNull();
   });
 });

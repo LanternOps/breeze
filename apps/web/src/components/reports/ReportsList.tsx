@@ -20,7 +20,8 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { PageHeader } from '../shared/PageHeader';
 import { useJwtClaims } from '@/lib/authScope';
-import { ScopeBadge } from '../shared/ScopeBadge';
+import { CoversCell } from './CoversCell';
+import { DeliveryStatusChip, type ReportDeliveryStatus } from './DeliveryStatusChip';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
@@ -81,6 +82,10 @@ export type Report = {
    *  `orgId` set. Ownership is immutable after create. */
   orgId: string | null;
   partnerId: string | null;
+  /** Multi-org series W01: the owning org's name (GET /reports joins it); null for a partner-owned report. */
+  orgName?: string | null;
+  /** Multi-org series W01: the latest SCHEDULED run's delivery outcome (manual runs excluded). */
+  lastDeliveryStatus?: ReportDeliveryStatus | null;
   portalSelfService: boolean;
   lastGeneratedAt: string | null;
   createdAt: string;
@@ -98,6 +103,12 @@ export type ReportRun = {
   createdAt: string;
   reportName?: string;
   reportType?: ReportType;
+  /** Multi-org series W01 (GET /reports/runs): the owning org; null for a partner-owned report's run. */
+  orgId?: string | null;
+  orgName?: string | null;
+  deliveryStatus?: ReportDeliveryStatus | null;
+  /** Customer recipients the run resolved (non-series: contacts + typed addresses). Not rendered in W01. */
+  recipientCount?: number | null;
 };
 
 type ReportsListProps = {
@@ -582,6 +593,9 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                       {t('reports.reportsList.table.name')}
                     </th>
                     <th className="px-4 py-3">
+                      {t('reports.reportsList.table.covers')}
+                    </th>
+                    <th className="px-4 py-3">
                       {t('reports.reportsList.table.type')}
                     </th>
                     <th className="px-4 py-3">
@@ -613,15 +627,16 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               {t('reports.reportsList.visibleInPortal')}
                             </span>
                           )}
-                          {report.partnerId && !report.orgId && (
-                            // Partner-owned: covers all of the partner's
-                            // organizations (#3198). ScopeBadge keeps its own
-                            // fixed testid, so the per-row one lives here.
-                            <span data-testid={`report-scope-badge-${report.id}`} className="shrink-0">
-                              <ScopeBadge orgId={null} partnerId={report.partnerId} isSystem={false} />
-                            </span>
-                          )}
                         </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {/* Multi-org series W01 (spec §3.7): replaces the lone
+                            partner-owned ScopeBadge — every row says what it covers. */}
+                        <CoversCell
+                          testId={`report-covers-${report.id}`}
+                          orgId={report.orgId}
+                          orgName={report.orgName}
+                        />
                       </td>
                       <td className="px-4 py-3 text-sm">
                         {getReportTypeLabel(report.type)}
@@ -667,6 +682,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               </span>
                             )}
                           </p>
+                        )}
+                        {report.lastDeliveryStatus === 'no_recipients' && (
+                          <div className="mt-1">
+                            <DeliveryStatusChip
+                              testId={`report-no-recipients-${report.id}`}
+                              status="no_recipients"
+                              title={t('reports.reportsList.delivery.noRecipientsHint')}
+                            />
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm">
@@ -769,6 +793,9 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                       {t('reports.reportsList.runsTable.report')}
                     </th>
                     <th className="px-4 py-3">
+                      {t('reports.reportsList.runsTable.organization')}
+                    </th>
+                    <th className="px-4 py-3">
                       {t('reports.reportsList.runsTable.status')}
                     </th>
                     <th className="px-4 py-3">
@@ -796,6 +823,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         </div>
                       </td>
                       <td className="px-4 py-3">
+                        <CoversCell
+                          testId={`report-run-covers-${run.id}`}
+                          orgId={run.orgId}
+                          orgName={run.orgName}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           {getStatusIcon(run.status)}
                           <span
@@ -814,6 +848,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         {run.errorMessage && (
                           <p className="text-xs text-destructive mt-1">{run.errorMessage}</p>
                         )}
+                        <DeliveryStatusChip
+                          testId={`report-run-delivery-${run.id}`}
+                          status={run.deliveryStatus}
+                          className="mt-1"
+                        />
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {formatDate(run.startedAt)}

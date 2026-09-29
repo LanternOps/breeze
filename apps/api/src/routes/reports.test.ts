@@ -121,6 +121,9 @@ vi.mock('../services/reportGenerationService', async (importOriginal) => {
 });
 
 vi.mock('drizzle-orm', () => ({
+  // Multi-org series W01 — GET /reports spreads the table's columns into its
+  // projection; the mocked table object IS its column map here.
+  getTableColumns: (table: Record<string, unknown>) => ({ ...table }),
   and: (...conditions: any[]) => ({ op: 'and', conditions }),
   or: (...conditions: any[]) => ({ op: 'or', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
@@ -203,7 +206,9 @@ vi.mock('../db/schema', () => ({
     executionScopeUserId: 'reportRuns.executionScopeUserId',
     executionScopeFingerprint: 'reportRuns.executionScopeFingerprint',
     executionScopeCapturedAt: 'reportRuns.executionScopeCapturedAt',
-    executionScopePrincipalKind: 'reportRuns.executionScopePrincipalKind'
+    executionScopePrincipalKind: 'reportRuns.executionScopePrincipalKind',
+    deliveryStatus: 'reportRuns.deliveryStatus',
+    recipientCount: 'reportRuns.recipientCount'
   },
   devices: {
     id: 'devices.id',
@@ -272,7 +277,7 @@ vi.mock('../db/schema', () => ({
     id: 'alertRules.id',
     name: 'alertRules.name'
   },
-  organizations: {},
+  organizations: { id: 'organizations.id', name: 'organizations.name' },
   sites: {
     id: 'sites.id',
     name: 'sites.name'
@@ -784,6 +789,42 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
       }),
     );
   });
+
+  it.each([
+    ['weekly', 'not_scheduled'],
+    ['one_time', null],
+  ] as const)(
+    'stamps a manual run of a %s definition with deliveryStatus %s (multi-org series W01)',
+    async (schedule, expected) => {
+      const app = new Hono();
+      app.route('/reports', reportRoutes);
+      vi.mocked(db.update).mockReturnValue({
+        set: () => ({ where: () => Promise.resolve() })
+      } as any);
+      vi.mocked(db.select).mockImplementation(() =>
+        selectChain([{
+          id: 'rep-1',
+          orgId: ORG_ID,
+          type: 'device_inventory',
+          name: 'Inv',
+          config: {},
+          format: 'csv',
+          schedule
+        }])
+      );
+      const insertValuesMock = vi.fn(() => ({
+        returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]),
+      }));
+      vi.mocked(db.insert).mockReturnValue({ values: insertValuesMock } as any);
+
+      const res = await app.request('/reports/rep-1/generate', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryStatus: expected }),
+      );
+    },
+  );
 });
 
 describe('generateReport dispatch — security_compliance_posture', () => {
@@ -867,6 +908,18 @@ describe('report definition scope enforcement', () => {
     total: number,
     capturedConditions: unknown[]
   ) {
+    const pageWhere = () => vi.fn((condition) => {
+      capturedConditions.push(condition);
+      return {
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockReturnValue({
+            offset: vi.fn().mockResolvedValue(rows)
+          })
+        })
+      };
+    });
+    // GET /reports joins organizations (W01); GET /reports/templates does not.
+    const leftJoin = vi.fn(() => ({ where: pageWhere() }));
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -877,19 +930,9 @@ describe('report definition scope enforcement', () => {
         })
       } as any)
       .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn((condition) => {
-            capturedConditions.push(condition);
-            return {
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue(rows)
-                })
-              })
-            };
-          })
-        })
+        from: vi.fn().mockReturnValue({ leftJoin, where: pageWhere() })
       } as any);
+    return { leftJoin };
   }
 
   function mockPredicateFilteredDefinitionPage(
@@ -904,6 +947,19 @@ describe('report definition scope enforcement', () => {
         ? sourceRows.filter((row) => visibleIdSet.has(row.id))
         : sourceRows;
 
+    const pageWhere = vi.fn((condition: unknown) => {
+      capturedConditions.push(condition);
+      return {
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn((limit: number) => ({
+            offset: vi.fn((offset: number) =>
+              Promise.resolve(rowsFor(condition).slice(offset, offset + limit))
+            )
+          }))
+        })
+      };
+    });
+
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -915,18 +971,9 @@ describe('report definition scope enforcement', () => {
       } as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          where: vi.fn((condition) => {
-            capturedConditions.push(condition);
-            return {
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn((limit: number) => ({
-                  offset: vi.fn((offset: number) =>
-                    Promise.resolve(rowsFor(condition).slice(offset, offset + limit))
-                  )
-                }))
-              })
-            };
-          })
+          // GET /reports joins organizations (W01); GET /reports/templates does not.
+          leftJoin: vi.fn(() => ({ where: pageWhere })),
+          where: pageWhere
         })
       } as any);
   }
@@ -1134,6 +1181,36 @@ describe('report definition scope enforcement', () => {
       conditionContainsIdentity(condition, siteScopeState.compositePredicate)
     )).toBe(true);
     expect(reportDefinitionScopeSqlPredicate).not.toHaveBeenCalled();
+  });
+
+  it('joins the owning org name and the latest scheduled delivery onto every listed definition (multi-org series W01)', async () => {
+    const captured: unknown[] = [];
+    const { leftJoin } = mockDefinitionPage(
+      [{ id: REPORT_ID, orgId: ORG_ID, orgName: 'Acme Dental', lastDeliveryStatus: 'no_recipients' }],
+      1,
+      captured
+    );
+
+    const response = await app().request('/reports');
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toMatchObject({
+      orgName: 'Acme Dental',
+      lastDeliveryStatus: 'no_recipients'
+    });
+    const projection = vi.mocked(db.select).mock.calls[1]![0] as unknown as Record<string, unknown>;
+    // Every reports column is still returned (getTableColumns), plus the two new fields.
+    expect(projection).toMatchObject({
+      id: 'reports.id',
+      orgId: 'reports.orgId',
+      name: 'reports.name',
+      orgName: 'organizations.name'
+    });
+    expect(projection.lastDeliveryStatus).toMatchObject({ op: 'sql' });
+    expect(leftJoin).toHaveBeenCalledWith(
+      { id: 'organizations.id', name: 'organizations.name' },
+      { op: 'eq', column: 'organizations.id', value: 'reports.orgId' }
+    );
   });
 
   it.each(['', '/templates'])(
@@ -3033,6 +3110,47 @@ describe('report run immutable scope enforcement', () => {
       'reports.orgId',
       expect.anything(),
       [],
+    );
+  });
+
+  it('projects the owning org and the delivery summary onto every listed run (multi-org series W01)', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    siteScopeState.result = authority('unrestricted') as any;
+    const captured: unknown[] = [];
+    const page = capturedSelectChain(
+      [{
+        id: RUN_ID,
+        reportId: REPORT_ID,
+        orgId: ORG_A,
+        orgName: 'Acme Dental',
+        deliveryStatus: 'no_recipients',
+        recipientCount: 0,
+      }],
+      captured,
+    );
+    vi.mocked(db.select)
+      .mockReturnValueOnce(capturedSelectChain([{ count: 1 }], captured))
+      .mockReturnValueOnce(page);
+
+    const res = await app.request('/reports/runs?limit=2');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0]).toMatchObject({
+      orgId: ORG_A,
+      orgName: 'Acme Dental',
+      deliveryStatus: 'no_recipients',
+      recipientCount: 0,
+    });
+    expect(vi.mocked(db.select).mock.calls[1]![0]).toMatchObject({
+      orgId: 'reports.orgId',
+      orgName: 'organizations.name',
+      deliveryStatus: 'reportRuns.deliveryStatus',
+      recipientCount: 'reportRuns.recipientCount',
+    });
+    expect(page.leftJoin).toHaveBeenCalledWith(
+      { id: 'organizations.id', name: 'organizations.name' },
+      { op: 'eq', column: 'organizations.id', value: 'reports.orgId' },
     );
   });
 

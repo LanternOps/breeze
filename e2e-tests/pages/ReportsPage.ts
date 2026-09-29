@@ -41,7 +41,8 @@ export class ReportsPage {
   // Reports list — saved reports tab
   savedTab = () => this.page.getByTestId('reports-tab-saved');
   reportRow = (id: string) => this.page.getByTestId(`report-row-${id}`);
-  scopeBadge = (id: string) => this.page.getByTestId(`report-scope-badge-${id}`);
+  // Multi-org series W01: the Covers cell replaced the partner-owned ScopeBadge.
+  coversCell = (id: string) => this.page.getByTestId(`report-covers-${id}`);
   generate = (id: string) => this.page.getByTestId(`report-generate-${id}`);
 
   // Reports list — recent runs tab

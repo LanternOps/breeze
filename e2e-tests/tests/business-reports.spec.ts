@@ -57,10 +57,10 @@ test.describe('Business reports — partner-owned AR aging', () => {
 
     await page.waitForURL('**/reports');
 
-    await test.step('the row carries the all-organizations scope badge', async () => {
+    await test.step('the row says it covers all organizations, combined', async () => {
       await expect(reports.reportRow(reportId!)).toBeVisible({ timeout: 15_000 });
-      await expect(reports.scopeBadge(reportId!)).toBeVisible();
-      await expect(reports.scopeBadge(reportId!).getByTestId('scope-badge')).toBeVisible();
+      await expect(reports.coversCell(reportId!)).toBeVisible();
+      await expect(reports.coversCell(reportId!)).toHaveAttribute('data-covers-kind', 'combined');
     });
 
     // Generate. A partner-owned generate exercises the W01 path end to end:

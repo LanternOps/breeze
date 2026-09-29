@@ -437,7 +437,8 @@
         "completed": "Tamamlandı",
         "report": "Rapor Et",
         "started": "Başlatıldı",
-        "status": "Durum"
+        "status": "Durum",
+        "organization": "Kuruluş"
       },
       "schedules": {
         "daily": "Günlük",
@@ -457,7 +458,8 @@
         "lastGenerated": "Son Oluşturulan",
         "name": "İsim",
         "schedule": "Program",
-        "type": "Tür"
+        "type": "Tür",
+        "covers": "Kapsam"
       },
       "tabs": {
         "recentRuns": "Son Çalıştırmalar",
@@ -467,7 +469,20 @@
       "title": "Raporlar",
       "tryAgain": "Tekrar deneyin",
       "unknownReport": "Bilinmeyen Rapor",
-      "partnerWideIncomplete": "Tüm kuruluşları kapsayan bazı raporlar yüklenemedi, bu nedenle bu liste eksik olabilir. Tüm raporları görmek için Tüm kuruluşlar görünümüne geçin."
+      "partnerWideIncomplete": "Tüm kuruluşları kapsayan bazı raporlar yüklenemedi, bu nedenle bu liste eksik olabilir. Tüm raporları görmek için Tüm kuruluşlar görünümüne geçin.",
+      "covers": {
+        "combined": "Tüm kuruluşlar · Birleşik",
+        "unknownOrg": "Bilinmeyen kuruluş",
+        "seriesAll": "Tüm kuruluşlar · {{count}} · Kuruluş başına bir",
+        "seriesSelected_one": "{{count}} kuruluş · Kuruluş başına bir",
+        "seriesSelected_other": "{{count}} kuruluş · Kuruluş başına bir"
+      },
+      "delivery": {
+        "noRecipients": "Alıcı yok",
+        "noRecipientsHint": "Son zamanlanmış çalıştırmada e-posta gönderilecek kimse yoktu. Bu raporu teslim etmek için alıcı ekleyin.",
+        "partial": "Kısmen teslim edildi",
+        "failed": "E-posta gönderilmedi"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -1142,6 +1157,14 @@
       "singleOrganizationHint": "Kuruluş seçicide seçili olan kuruluş.",
       "singleOrganizationDisabledHint": "Kuruluş kapsamlı bir rapor oluşturmak için kuruluş seçicide bir kuruluş seçin.",
       "needsOrganizationHint": "Bu raporu oluşturmak için kuruluş seçicide bir kuruluş seçin. Tüm kuruluşları kapsayan raporlar, tüm kuruluşlara erişim gerektirir."
+    },
+    "orgPicker": {
+      "label": "Kuruluş",
+      "placeholder": "Bir kuruluş seçin",
+      "hint": "Tüm kuruluşları görüntülüyorsunuz. Bu raporun ait olduğu kuruluşu seçin.",
+      "required": "Bu raporu kaydetmeden önce bir kuruluş seçin.",
+      "chooseFirst": "Şablon kullanmadan önce yukarıdan bir kuruluş seçin.",
+      "previewNeedsOrg": "Canlı önizleme için bir kuruluş seçin."
     }
   }
 }

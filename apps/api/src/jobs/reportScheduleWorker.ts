@@ -53,7 +53,13 @@ import {
 } from '../services/reportGenerationService';
 import { reportScopeFromAuthority } from '../services/reportScope';
 import { reportTypeDef } from '../services/reportRegistry';
-import { emailReportFailure, emailReportRun } from '../services/reportDelivery';
+import {
+  emailReportFailure,
+  emailReportRun,
+  scheduledDeliveryStatus,
+  type ReportDeliveryStatus,
+  type ScheduledSendOutcome,
+} from '../services/reportDelivery';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import {
   lastOccurrenceKey,
@@ -336,13 +342,42 @@ function validEmail(value: unknown): value is string {
     && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-export async function resolveScheduledReportRecipients(args: {
+/**
+ * Who a scheduled run emails, split the way `report_runs` records it
+ * (multi-org report series W01, spec §3.2 / §3.5):
+ *
+ *  - `customer`: everyone the definition itself names — its contact
+ *    recipients (report_schedule_recipients → contacts of the owning org)
+ *    followed by its valid `config.emailRecipients` addresses, deduped
+ *    case-insensitively (contacts first). `recipient_count` is
+ *    `customer.length`. A non-series report has no internal-CC concept, so
+ *    typed addresses ARE customers: a report that emails only typed
+ *    addresses records recipient_count = N (coordinator ruling, 2026-09-28).
+ *  - `cc`: always `[]` from this resolver. Only a W02 series child has an
+ *    internal CC (its series' `internal_cc`), resolved by W02's
+ *    `resolveSeriesChildRecipients`, which returns the same shape.
+ *  - `recipients`: `customer` then `cc`, capped at 50 — exactly what is sent,
+ *    in the same order as before W01.
+ *  - `dropped`: configured addresses that will NOT be sent — a contact with no
+ *    or an invalid email, an invalid `emailRecipients` entry, anything past the
+ *    cap. A duplicate is not a drop: the address still receives the report.
+ */
+export interface ScheduledRecipientSets {
+  customer: string[];
+  cc: string[];
+  recipients: string[];
+  dropped: number;
+}
+
+const MAX_SCHEDULED_RECIPIENTS = 50;
+
+export async function resolveScheduledReportRecipientSets(args: {
   reportId: string;
   /** NULL for a partner-owned definition (#3198 W01): contact recipients are
    *  org-scoped rows, so only `config.emailRecipients` applies (spec §3.1a). */
   orgId: string | null;
   config: Record<string, unknown>;
-}): Promise<string[]> {
+}): Promise<ScheduledRecipientSets> {
   const contactRows = args.orgId === null ? [] : await db
     .select({
       contactId: contacts.id,
@@ -362,7 +397,22 @@ export async function resolveScheduledReportRecipients(args: {
       eq(contacts.orgId, args.orgId),
     ));
 
-  const candidates: string[] = [];
+  const seen = new Set<string>();
+  let dropped = 0;
+  const take = (value: unknown, into: string[]): void => {
+    if (!validEmail(value)) {
+      dropped += 1;
+      return;
+    }
+    const email = value.trim();
+    const key = email.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    into.push(email);
+  };
+
+  // Contacts first, then typed addresses — the pre-W01 union order.
+  const customerAll: string[] = [];
   for (const row of contactRows) {
     if (!row.email) {
       console.warn(
@@ -372,35 +422,40 @@ export async function resolveScheduledReportRecipients(args: {
           contactId: row.contactId,
         },
       );
+      dropped += 1;
       continue;
     }
-    if (validEmail(row.email)) candidates.push(row.email.trim());
+    take(row.email, customerAll);
   }
 
   const legacy = args.config.emailRecipients;
   if (Array.isArray(legacy)) {
-    candidates.push(
-      ...legacy.filter(validEmail).map((email) => email.trim()),
-    );
+    for (const value of legacy) take(value, customerAll);
   }
 
-  const deduped = new Map<string, string>();
-  for (const email of candidates) {
-    const key = email.toLowerCase();
-    if (!deduped.has(key)) deduped.set(key, email);
-  }
-
-  const resolved = [...deduped.values()];
-  if (resolved.length > 50) {
+  const requested = customerAll.length;
+  if (requested > MAX_SCHEDULED_RECIPIENTS) {
     console.warn(
       '[ReportScheduleWorker] Recipient union exceeds 50; truncating',
       {
         reportId: args.reportId,
-        requested: resolved.length,
+        requested,
       },
     );
+    dropped += requested - MAX_SCHEDULED_RECIPIENTS;
   }
-  return resolved.slice(0, 50);
+  const customer = customerAll.slice(0, MAX_SCHEDULED_RECIPIENTS);
+  const cc: string[] = [];
+  return { customer, cc, recipients: [...customer, ...cc], dropped };
+}
+
+/** The flat address list a scheduled run emails — `resolveScheduledReportRecipientSets(...).recipients`. */
+export async function resolveScheduledReportRecipients(args: {
+  reportId: string;
+  orgId: string | null;
+  config: Record<string, unknown>;
+}): Promise<string[]> {
+  return (await resolveScheduledReportRecipientSets(args)).recipients;
 }
 
 /** One-line trend summary for the email body — "Posture score 79 — up from
@@ -463,6 +518,24 @@ export async function resolveScheduledDeliveryContext(owner: ReportOwner): Promi
     .where(eq(organizations.id, owner.orgId))
     .limit(1);
   return { timeZone, branding, partnerId: orgRow?.partnerId ?? null };
+}
+
+/**
+ * Writes a scheduled run's delivery summary (multi-org report series W01,
+ * spec §3.2). Never throws: by the time it runs the report is stored and the
+ * email may already be out — a throw would reach the job's catch, mark a
+ * delivered run failed, and let BullMQ retry (re-send) the occurrence.
+ */
+async function recordRunDelivery(
+  runId: string,
+  summary: { deliveryStatus: ReportDeliveryStatus; recipientCount: number },
+): Promise<void> {
+  try {
+    await db.update(reportRuns).set(summary).where(eq(reportRuns.id, runId));
+  } catch (err) {
+    console.error('[ReportScheduleWorker] Could not record the delivery summary', { runId, err });
+    captureException(err);
+  }
 }
 
 export async function processRunScheduledReport(
@@ -799,12 +872,13 @@ export async function processRunScheduledReport(
       })
       .where(eq(reportRuns.id, run.id));
 
-    const recipients = await resolveScheduledReportRecipients({
+    const recipientSets = await resolveScheduledReportRecipientSets({
       reportId: report.id,
       orgId: owner.orgId ?? null,
       config,
     });
-    if (recipients.length > 0) {
+    let send: ScheduledSendOutcome = 'not_attempted';
+    if (recipientSets.recipients.length > 0) {
       try {
         // Timezone + branding are only needed to build the email — deferred
         // here (rather than fetched unconditionally for every run) so a
@@ -813,11 +887,11 @@ export async function processRunScheduledReport(
         // occurrence, and by this point the run row is already stored).
         const delivery = await resolveScheduledDeliveryContext(owner);
 
-        await emailReportRun({
+        const handedOff = await emailReportRun({
           reportName: report.name,
           reportType: report.type,
           format: report.format,
-          recipients,
+          recipients: recipientSets.recipients,
           rows,
           summary: result.summary,
           previous: result.previous,
@@ -826,13 +900,26 @@ export async function processRunScheduledReport(
           branding: delivery.branding,
           partnerId: delivery.partnerId,
         });
+        send = handedOff ? 'sent' : 'failed';
       } catch (err) {
         // Delivery failure must not fail the (already stored) run — but the
         // recipients silently got nothing, so it goes to error tracking.
         console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
         captureException(err);
+        send = 'failed';
       }
     }
+    // Multi-org series W01 (spec §1): a run that reached nobody used to be a
+    // silent skip. Record what the email did on the run itself, after the
+    // send, so the status is the send's real outcome.
+    await recordRunDelivery(run.id, {
+      deliveryStatus: scheduledDeliveryStatus({
+        deliverable: recipientSets.recipients.length,
+        dropped: recipientSets.dropped,
+        send,
+      }),
+      recipientCount: recipientSets.customer.length,
+    });
   } catch (err) {
     // #3198: a definition whose owner axis its type cannot run under is a
     // deterministic refusal, not a transient failure. It records the stable
