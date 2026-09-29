@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { expect, it } from 'vitest';
 import { TIME_SYNC_FINDING_CODES } from '@breeze/shared';
