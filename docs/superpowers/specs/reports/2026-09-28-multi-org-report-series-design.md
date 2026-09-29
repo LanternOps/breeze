@@ -104,8 +104,11 @@ Series restrictions:
   types:
   - `PARTNER_ONLY_DELIVERY_REPORT_TYPES`, i.e. business reports, which are
     aggregates by nature;
-  - narrative, `ai_fleet_design`, portal self-service and managed-evidence
-    types.
+  - narrative, `ai_fleet_design`, portal self-service and the four
+    managed-evidence types (registry `execution: 'managed_evidence'`). Loosening
+    the managed-evidence rule later is a one-line change; every
+    `execution: 'user'` org type is allowed.
+- **Recurring schedules only:** `one_time` is rejected.
 - **No org-specific references in `config`:** no site IDs, device IDs or group
   IDs, and no builder filters that name them. Rejected with 400 `series_config_org_specific`.
 - **Write gate:** requires `reports:write` **and**
@@ -150,10 +153,17 @@ Series restrictions:
   `included`.
 - **Org merge:** extend the custom `reports` merge pass
   (`orgMergeCustomExecutors.ts`) with a series pass modelled on the narrative
-  pass. It dedupes active children colliding on `(survivor, series_id)`. The
-  survivor keeps its row. The loser's runs are re-homed onto the survivor, and
-  its recipient overrides are unioned, with removes winning over adds. Runs are
-  never deleted.
+  pass. When active children collide on `(survivor, series_id)`, the survivor
+  keeps its row. The loser's child is **archived in place** and repointed into
+  the survivor org, with its runs, evidence and history untouched. Its
+  recipient overrides are unioned onto the survivor's child, with removes
+  winning over adds. Runs are never deleted.
+  - Why the loser's runs are not re-homed:
+    `service_deliverable_evidence.sd_evidence_report_run_fk
+    (report_run_id, report_id) → report_runs(id, report_id)` is neither
+    deferrable nor `ON UPDATE`, so `UPDATE report_runs SET report_id` on an
+    evidence-linked run raises 23503. The existing narrative, portal and
+    fleet-design passes have that latent fault; it is filed separately.
 
 **`report_schedule_recipients`** (new column)
 
@@ -168,7 +178,7 @@ Series restrictions:
 - `delivery_status` text NULL, CHECK IN ('sent','partial','no_recipients','failed','not_scheduled').
   - `NULL` for ad-hoc and legacy runs.
   - `not_scheduled` for manual runs of a scheduled definition when no email was requested.
-- `recipient_count` integer NULL. This counts customer recipients only; the internal CC is excluded.
+- `recipient_count` integer NULL. On a series child it counts customer recipients only, excluding the internal CC. On a non-series report there is no CC concept, so it counts contacts ∪ `config.emailRecipients`.
 - `report_runs` has no `org_id`, so no export-policy entry is needed. This is
   confirmed during planning against the export registry's discovery rule.
 - **Deliberately out of scope:** the per-recipient ledger
