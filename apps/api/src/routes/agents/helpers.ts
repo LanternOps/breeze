@@ -66,6 +66,10 @@ import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyP
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../../services/configPolicyOwnership';
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
+import {
+  buildResolvedTimeSyncConfigUpdate,
+  type TimeSyncConfigUpdate,
+} from '../../services/timeSync/configUpdate';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
@@ -2216,6 +2220,17 @@ export async function buildHardwareMonitoringConfigUpdate(deviceId: string): Pro
     poll_interval_minutes: settings.pollIntervalMinutes,
     disk_health_interval_minutes: settings.diskHealthIntervalMinutes,
   };
+}
+
+/**
+ * Build time_sync_settings config update payload for heartbeat response
+ * (time-sync index §F.2). Defaults are sent when no policy is linked; a
+ * resolver error throws so the heartbeat omits the key.
+ */
+export async function buildTimeSyncConfigUpdate(
+  deviceId: string,
+): Promise<TimeSyncConfigUpdate> {
+  return buildResolvedTimeSyncConfigUpdate(deviceId);
 }
 
 /**

@@ -178,6 +178,7 @@ vi.mock('./helpers', () => ({
   compareAgentVersions: vi.fn(() => 0),
   buildEventLogConfigUpdate: vi.fn(() => undefined),
   buildHardwareMonitoringConfigUpdate: vi.fn(),
+  buildTimeSyncConfigUpdate: vi.fn(),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
@@ -3773,6 +3774,45 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('hardware_monitoring_settings');
+  });
+
+  it('delivers time settings after releasing org scope inside the shared system context', async () => {
+    const { buildTimeSyncConfigUpdate } = await import('./helpers');
+    const payload = {
+      enforce_ntp: false,
+      ntp_servers: [],
+      poll_interval_minutes: 60,
+      timezone: { expected_windows_id: null, auto_fix: false },
+      fingerprint: 'sha256:test',
+    };
+    callOrder.length = 0;
+    vi.mocked(buildTimeSyncConfigUpdate).mockImplementationOnce(async () => {
+      expect(callOrder).toContain('dbContext:released');
+      expect(callOrder.lastIndexOf('systemCtx:enter')).toBeGreaterThan(
+        callOrder.lastIndexOf('systemCtx:exit'),
+      );
+      return payload;
+    });
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate.time_sync_settings).toEqual(payload);
+    expect(buildTimeSyncConfigUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits time settings on resolver failure while preserving the heartbeat', async () => {
+    const { buildTimeSyncConfigUpdate } = await import('./helpers');
+    vi.mocked(buildTimeSyncConfigUpdate).mockRejectedValueOnce(new Error('policy read failed'));
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('time_sync_settings');
   });
 
   it('includes monitoring_settings in configUpdate when the resolver succeeds', async () => {
