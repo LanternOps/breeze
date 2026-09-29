@@ -95,6 +95,9 @@ export function buildTimeStatusRow(
       ? `${expected.source}:${expected.sourceId}`
       : null,
     eventMarks: resolved.eventMarks,
+    // W03a Task 2 keeps the stored enforcement report untouched; W03a Task 6
+    // replaces this with the effective (reported-or-retained) snapshot value.
+    enforcement: previous?.enforcement ?? {},
     recentEvents: [...events.values()]
       .sort(
         (a, b) =>
