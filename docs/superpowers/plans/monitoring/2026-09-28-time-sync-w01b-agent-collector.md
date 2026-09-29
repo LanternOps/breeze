@@ -4,7 +4,7 @@
 
 **Goal:** Report Windows time configuration, synchronization evidence, domain role, timezone and Time-Service events to the W01a ingest endpoint without changing Windows configuration.
 
-**Architecture:** A fakeable `timesync.System` separates Windows reads from deterministic collection and classification. The collector persists sequence, acknowledged event watermark and an unsent snapshot in `timesync-state.json`; heartbeat schedules guarded, cancellable collection and PUT delivery. W01a owns findings and health; W03b will add writers and reconciliation.
+**Architecture:** A fakeable `timesync.System` separates Windows reads from deterministic collection and classification. The collector persists only `sequence` and `eventsSince` in `timesync-state.json` and reads fresh facts on every collection; heartbeat schedules guarded, cancellable collection and PUT delivery. W01a owns findings and health; W03b will add writers and reconciliation.
 
 **Tech Stack:** Go 1.26.6, standard testing/race detector, `golang.org/x/sys/windows`, registry, SCM, netapi32, kernel32, read-only PowerShell event projection, existing heartbeat transport.
 
@@ -22,7 +22,7 @@ All constraints in the index's Global constraints section apply.
 - Transport: `sendInventoryData("time-status", snapshot, "time sync")`.
 - State filename: `timesync-state.json`, under `config.GetDataDir()`.
 - Unknown nullable fields are JSON `null`; known empty collections are `[]`; no `omitempty` on snapshot fields.
-- Events: System log, `Microsoft-Windows-Time-Service`, all levels, first window `24 h`, snapshot maximum `100`, display tail `20`, message maximum `1000` UTF-16 units, properties maximum `10`, each maximum `500` UTF-16 units.
+- Events: System log, `Microsoft-Windows-Time-Service`, all levels, first window `24 h`, snapshot maximum `100`, display tail `20`, message maximum `1000` UTF-16 units, properties maximum `10`, each maximum `500` UTF-16 units; R5 serialized budget `256 KiB` with display IDs reserved during trimming.
 - Status method priority: `provider_api`, `w32tm_tokens`, `events`, `unavailable`; method names never change.
 - No agent findings, clock-offset measurement, configuration writes, resync, settings dispatch, reconciliation or command handlers in this PR.
 - No migration, database schema, API, shared-validator or web changes in this PR; all relevant contract names come from merged W01a.
@@ -30,7 +30,7 @@ All constraints in the index's Global constraints section apply.
 - Lab identifiers and raw lab evidence stay in private operator configuration; public evidence names only the Windows lab VM and the brzlab AD lab.
 - Plan-authoring output is this document only. Commands below are implementation instructions, not commands run while authoring.
 
-The provider ABI is an unresolved contract problem, not permission to invent an unsafe call. Task 1 can prove an export exists, and includes the published RPC data layouts, but the requested DLL signature and allocator are not established. The complete fallback implementation below is executable independently. The provider-first pure ladder is complete and tested, but activating a real provider call is blocked until the ABI problem in **Contract issues** is resolved. Do not claim a native provider implementation or successful lab results from this document.
+R7 approves the fallback ladder in advance. Task 1 probes the installed SDK and validates the token/event facts; the complete fallback below ships when method 1 lacks the required evidence. A real provider call ships only with its prototype and buffer ownership cited from the installed Windows SDK `w32time.h` and a passing L1/L3/L5/L9 comparison. Unproven source kinds remain `unknown`; they do not block a fallback release. Do not claim native-provider implementation or successful lab results from this document.
 
 ## Review Focus
 
@@ -39,7 +39,7 @@ The provider ABI is an unresolved contract problem, not permission to invent an 
    parser German `w32tm` text and asserts only locale-independent fields are extracted.
    Pinned by Tasks 1, 4 and 9; Task 9 explains fixed-input equality versus advancing live timestamps.
 
-- Input: restart or failed PUT after collecting a failure event; expected: the same durable snapshot is retried, sequence never reused for different facts, watermark advances only after acknowledgement; pinned by Tasks 7–8.
+- Input: restart or failed PUT after collecting a failure event; expected: fresh facts and a new sequence are collected, uncommitted events are queried again, and the cursor advances only after a qualified API response; pinned by Tasks 7–8.
 - Input: missing registry key, failed domain discovery, failed event query, or ambiguous reference token; expected: null/unknown or failed collection, never a fabricated healthy observation; pinned by Tasks 3–7.
 - Input: stop while collecting/uploading or simultaneous ticker dispatch; expected: one cycle, cancellation reaches HTTP and exec, tracked goroutines drain; pinned by Task 8.
 
@@ -71,10 +71,10 @@ Every path below is relative to the repository root. New files have no current l
 | Create | `agent/internal/collectors/timesync/system_other_test.go` | Non-Windows silence. |
 | Create | `agent/internal/collectors/command_export.go` | Context-aware wrapper over existing bounded command runner. |
 | Create | `agent/internal/collectors/command_export_test.go` | Wrapper cancellation behavior. |
-| Create | `agent/internal/collectors/timesync/collector.go` | Fact collection, durable pending snapshot and acknowledge seam. |
+| Create | `agent/internal/collectors/timesync/collector.go` | Fresh fact collection, sequence allocation and `Commit(*Snapshot)` seam. |
 | Create | `agent/internal/collectors/timesync/persist.go` | Bounded atomic JSON state, corruption recovery, sequence allocation. |
 | Create | `agent/internal/collectors/timesync/collector_test.go` | Watermark, restart, write failure, concurrency and unknowns. |
-| Create | `agent/internal/heartbeat/time_sync.go` | First-run timer, jitter, single-flight send, acknowledgement and stop. |
+| Create | `agent/internal/heartbeat/time_sync.go` | First-run timer, jitter, single-flight send, qualified response/commit and stop. |
 | Create | `agent/internal/heartbeat/time_sync_test.go` | Scheduling, PUT, panic and cancellation tests. |
 | Modify | `agent/internal/heartbeat/heartbeat.go:30,456,1002,1004,1845,2052,2136,2154,2175,2341,2361` | Mirror every hardware lifecycle wiring site. |
 | Create | `agent/internal/collectors/timesync/live_windows_test.go` | Opt-in native lab assertions and sanitized evidence checks. |
@@ -102,53 +102,71 @@ Choose a tagged `_windows_test.go` rather than an enrolled probe command. It run
 package timesync
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "os"
-    "os/exec"
-    "syscall"
-    "testing"
-    "time"
-    "unsafe"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+	"testing"
+	"time"
+	"unsafe"
 )
 
 func TestSpikePublishedRPCLayouts(t *testing.T) {
-    if unsafe.Sizeof(uintptr(0)) != 8 { t.Skip("this probe checks amd64 layouts") }
-    if unsafe.Sizeof(w32timeNTPProviderData{}) != 24 { t.Fatal("provider layout is not 24 bytes") }
-    if unsafe.Sizeof(w32timeNTPPeerInfo{}) != 56 { t.Fatal("peer layout is not 56 bytes") }
-    if unsafe.Offsetof(w32timeNTPPeerInfo{}.WszUniqueName) != 40 { t.Fatal("peer name offset is not 40") }
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("this probe checks amd64 layouts")
+	}
+	if unsafe.Sizeof(w32timeNTPProviderData{}) != 24 {
+		t.Fatal("provider layout is not 24 bytes")
+	}
+	if unsafe.Sizeof(w32timeNTPPeerInfo{}) != 56 {
+		t.Fatal("peer layout is not 56 bytes")
+	}
+	if unsafe.Offsetof(w32timeNTPPeerInfo{}.WszUniqueName) != 40 {
+		t.Fatal("peer name offset is not 40")
+	}
 }
 
 func TestTimeSyncStatusSpike(t *testing.T) {
-    if os.Getenv("TIMESYNC_SPIKE") != "1" { t.Skip("explicit native lab opt-in required") }
-    p := syscall.NewLazyDLL("w32time.dll").NewProc("W32TimeQueryNTPProviderStatus")
-    t.Logf("method1 export lookup: %v", p.Find())
-    t.Log("method1 invocation disabled: export presence does not establish DLL ABI or free function")
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-    output, err := exec.CommandContext(ctx, "w32tm.exe", "/query", "/status", "/verbose").CombinedOutput()
-    t.Logf("method2 exit=%v raw=%q", err, output)
-    ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel2()
-    output, err = exec.CommandContext(ctx2, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", spikeEvents).CombinedOutput()
-    if err != nil { t.Fatalf("method3 query failed: %v: %s", err, output) }
-    var rows []map[string]any
-    if err = json.Unmarshal(output, &rows); err != nil { t.Fatalf("method3 JSON: %v: %s", err, output) }
-    for _, row := range rows { t.Logf("method3 %s", mustSpikeJSON(row)) }
+	if os.Getenv("TIMESYNC_SPIKE") != "1" {
+		t.Skip("explicit native lab opt-in required")
+	}
+	p := syscall.NewLazyDLL("w32time.dll").NewProc("W32TimeQueryNTPProviderStatus")
+	t.Logf("method1 export lookup: %v", p.Find())
+	t.Log("method1 invocation disabled: export presence does not establish DLL ABI or free function")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "w32tm.exe", "/query", "/status", "/verbose").CombinedOutput()
+	t.Logf("method2 exit=%v raw=%q", err, output)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+	output, err = exec.CommandContext(ctx2, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", spikeEvents).CombinedOutput()
+	if err != nil {
+		t.Fatalf("method3 query failed: %v: %s", err, output)
+	}
+	var rows []map[string]any
+	if err = json.Unmarshal(output, &rows); err != nil {
+		t.Fatalf("method3 JSON: %v: %s", err, output)
+	}
+	for _, row := range rows {
+		t.Logf("method3 %s", mustSpikeJSON(row))
+	}
 }
 
 func mustSpikeJSON(v any) string {
-    b, err := json.Marshal(v)
-    if err != nil { return fmt.Sprint(err) }
-    return string(b)
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(err)
+	}
+	return string(b)
 }
 ```
 
 - [ ] Run from the repository root:
 
 ```bash
-cd agent && GOOS=windows GOARCH=amd64 go test -c -tags timesync_spike -o /tmp/timesync-spike.test.exe ./internal/collectors/timesync
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -tags timesync_spike -o /tmp/timesync-spike.test.exe ./internal/collectors/timesync)
 ```
 
 Expected FAIL: `undefined: w32timeNTPProviderData`, `undefined: w32timeNTPPeerInfo`, `undefined: spikeEvents`.
@@ -160,28 +178,28 @@ Expected FAIL: `undefined: w32timeNTPProviderData`, `undefined: w32timeNTPPeerIn
 // These are published RPC data declarations, NOT a verified DLL-call contract.
 // Do not cast a DLL return buffer to either until its actual SDK ABI is established.
 type w32timeNTPProviderData struct {
-    UlSize uint32
-    UlError uint32
-    UlErrorMsgId uint32
-    CPeerInfo uint32
-    PPeerInfo *w32timeNTPPeerInfo
+	UlSize       uint32
+	UlError      uint32
+	UlErrorMsgId uint32
+	CPeerInfo    uint32
+	PPeerInfo    *w32timeNTPPeerInfo
 }
 
 type w32timeNTPPeerInfo struct {
-    UlSize uint32
-    UlResolveAttempts uint32
-    U64TimeRemaining uint64
-    U64LastSuccessfulSync uint64
-    UlLastSyncError uint32
-    UlLastSyncErrorMsgId uint32
-    UlValidDataCounter uint32
-    UlAuthTypeMsgId uint32
-    WszUniqueName *uint16
-    UlMode byte
-    UlStratum byte
-    UlReachability byte
-    UlPeerPollInterval byte
-    UlHostPollInterval byte
+	UlSize                uint32
+	UlResolveAttempts     uint32
+	U64TimeRemaining      uint64
+	U64LastSuccessfulSync uint64
+	UlLastSyncError       uint32
+	UlLastSyncErrorMsgId  uint32
+	UlValidDataCounter    uint32
+	UlAuthTypeMsgId       uint32
+	WszUniqueName         *uint16
+	UlMode                byte
+	UlStratum             byte
+	UlReachability        byte
+	UlPeerPollInterval    byte
+	UlHostPollInterval    byte
 }
 
 const spikeEvents = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;
@@ -219,7 +237,7 @@ $headers=Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Filte
 $headers | ForEach-Object { Select-String -Path $_.FullName -Pattern 'W32TimeQueryNTPProviderStatus|W32TIME_NTP_PROVIDER_DATA|W32TIME_NTP_PEER_INFO' -Context 8,32 }
 ```
 
-Record SDK version, OS build/architecture, exact prototype, ownership/free function, whether `u64LastSuccessfulSync` is an NTP fixed-point timestamp or FILETIME, polling-interval units, and how an active peer is distinguished from merely configured peers. The layouts above alone establish none of these. If there is no authoritative callable prototype, record method 1 as **ABI unavailable**, not as “API absent” when `Find` succeeds. This is a concrete release/design gate; completing the hypothetical native branch requires resolving Contract issue 1.
+Record SDK version, OS build/architecture, exact prototype, ownership/free function, whether `u64LastSuccessfulSync` is an NTP fixed-point timestamp or FILETIME, polling-interval units, and how an active peer is distinguished from merely configured peers. The layouts above alone establish none of these. If there is no authoritative callable prototype, record method 1 as **ABI unavailable**, not as “API absent” when `Find` succeeds. Under R7 this gates only method 1; the fallback release is already approved. Require the installed `w32time.h` prototype/ownership citation and passing L1/L3/L5/L9 comparison before enabling method 1.
 
 - [ ] Run the probe in English and German, also on Windows 10 and Server 2016 floor images. Evaluate in order:
   1. Export plus verified ABI; do not invoke an unknown prototype.
@@ -236,7 +254,7 @@ Use local-clock, unsynchronized, VMIC, domain-hierarchy and manual-peer setups f
 | w32tm invariant tokens | Record actual result | Record actual result | Numeric stratum/poll; verified tags only | Seconds = 2^poll exponent | Keep only validated fields |
 | events 35/37 properties | Record actual result | Record actual result | Source and last-known-good time | UTC SystemTime and insertion index | Runtime fallback |
 
-- [ ] Select the ladder exactly. Task 4 supplies provider-first and fallback logic behind `System.ProviderStatus`; Task 6 supplies an explicit unavailable adapter because the DLL ABI is unverified. If native method 1 is ruled out, retain that adapter and delete the temporary probe at Task 9. If a verified method-1 implementation is supplied after resolving Contract issue 1, replace **only** `windowsSystem.ProviderStatus`; retain method 2 and method 3 for runtime failures. Do not delete runtime fallbacks merely because the primary works on one machine. If method 2's positions are not stable on all tested versions/languages, replace the body of `parseW32tmTokens` with the exact alternative in Task 4. Do not silently enable any special source tag that this spike did not establish.
+- [ ] Select the ladder exactly. Task 4 supplies provider-first and fallback logic behind `System.ProviderStatus`; Task 6 supplies an explicit unavailable adapter because the DLL ABI is unverified. If native method 1 is ruled out, retain that adapter and delete the temporary probe at Task 9. If a verified method-1 implementation is supplied after satisfying R7's installed-SDK and L1/L3/L5/L9 requirements, replace **only** `windowsSystem.ProviderStatus`; retain method 2 and method 3 for runtime failures. Do not delete runtime fallbacks merely because the primary works on one machine. If method 2's positions are not stable on all tested versions/languages, replace the body of `parseW32tmTokens` with the exact alternative in Task 4. Do not silently enable any special source tag that this spike did not establish.
 
 - [ ] Commit the spike only as a temporary implementation checkpoint; it must be removed before the final PR:
 
@@ -263,44 +281,65 @@ git commit -m "test(agent): probe time status sources on Windows" -m "Co-Authore
 package timesync
 
 import (
-    "encoding/json"
-    "reflect"
-    "sort"
-    "strings"
-    "testing"
-    "time"
+	"encoding/json"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+	"time"
 )
 
 func TestWireKeysAndNulls(t *testing.T) {
-    s := emptySnapshot(time.Unix(1, 0).UTC())
-    b, err := json.Marshal(s)
-    if err != nil { t.Fatal(err) }
-    var root map[string]json.RawMessage
-    if err = json.Unmarshal(b, &root); err != nil { t.Fatal(err) }
-    keys := func(m map[string]json.RawMessage) []string {
-        k := make([]string, 0, len(m)); for n := range m { k = append(k, n) }; sort.Strings(k); return k
-    }
-    want := strings.Fields("collectedAt config domain enforcement events schemaVersion sequence status timezone")
-    if !reflect.DeepEqual(keys(root), want) { t.Fatal(string(b)) }
-    for field, expected := range map[string]string{"enforcement":"null", "events":"[]", "schemaVersion":"1"} {
-        if string(root[field]) != expected { t.Fatalf("%s=%s", field, root[field]) }
-    }
-    for field, expected := range map[string]string{
-        "config":"hostTimeProviderEnabled ntpServer policyManaged policyManagedValues serviceStartType serviceState specialPollIntervalSeconds type",
-        "status":"lastSuccessfulSyncAt lastSyncError method pollIntervalSeconds source sourceKind stratum",
-        "domain":"domainDns forestDns joinType pdcName role",
-        "timezone":"autoUpdate biasMinutes dynamicDstDisabled windowsId",
-    } {
-        var nested map[string]json.RawMessage
-        if err := json.Unmarshal(root[field], &nested); err != nil { t.Fatal(err) }
-        if !reflect.DeepEqual(keys(nested), strings.Fields(expected)) { t.Fatalf("%s keys=%v", field, keys(nested)) }
-    }
-    if strings.Contains(string(b), `:""`) { t.Fatal("unknown serialized as empty string") }
-    var status map[string]json.RawMessage
-    _ = json.Unmarshal(root["status"], &status)
-    for _, name := range []string{"source","lastSuccessfulSyncAt","lastSyncError","stratum","pollIntervalSeconds"} {
-        if string(status[name]) != "null" { t.Fatalf("%s not null", name) }
-    }
+	s := emptySnapshot(time.Unix(1, 0).UTC())
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]json.RawMessage
+	if err = json.Unmarshal(b, &root); err != nil {
+		t.Fatal(err)
+	}
+	keys := func(m map[string]json.RawMessage) []string {
+		k := make([]string, 0, len(m))
+		for n := range m {
+			k = append(k, n)
+		}
+		sort.Strings(k)
+		return k
+	}
+	want := strings.Fields("collectedAt config domain enforcement events schemaVersion sequence status timezone")
+	if !reflect.DeepEqual(keys(root), want) {
+		t.Fatal(string(b))
+	}
+	for field, expected := range map[string]string{"enforcement": "null", "events": "[]", "schemaVersion": "1"} {
+		if string(root[field]) != expected {
+			t.Fatalf("%s=%s", field, root[field])
+		}
+	}
+	for field, expected := range map[string]string{
+		"config":   "hostTimeProviderEnabled ntpServer policyManaged policyManagedValues serviceStartType serviceState specialPollIntervalSeconds type",
+		"status":   "lastSuccessfulSyncAt lastSyncError method pollIntervalSeconds source sourceKind stratum",
+		"domain":   "domainDns forestDns joinType pdcName role",
+		"timezone": "autoUpdate biasMinutes dynamicDstDisabled windowsId",
+	} {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(root[field], &nested); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(keys(nested), strings.Fields(expected)) {
+			t.Fatalf("%s keys=%v", field, keys(nested))
+		}
+	}
+	if strings.Contains(string(b), `:""`) {
+		t.Fatal("unknown serialized as empty string")
+	}
+	var status map[string]json.RawMessage
+	_ = json.Unmarshal(root["status"], &status)
+	for _, name := range []string{"source", "lastSuccessfulSyncAt", "lastSyncError", "stratum", "pollIntervalSeconds"} {
+		if string(status[name]) != "null" {
+			t.Fatalf("%s not null", name)
+		}
+	}
 }
 ```
 
@@ -309,29 +348,53 @@ func TestWireKeysAndNulls(t *testing.T) {
 package timesync
 
 import (
-    "encoding/json"
-    "os"
-    "reflect"
-    "testing"
+	"encoding/json"
+	"os"
+	"reflect"
+	"testing"
 )
 
 func TestSharedHostFixture(t *testing.T) {
-    b, err := os.ReadFile("../../../../packages/shared/src/validators/__fixtures__/ntpServers.json")
-    if err != nil { t.Fatal(err) }
-    var f struct { Valid []string `json:"valid"`; Invalid []string `json:"invalid"` }
-    if err = json.Unmarshal(b, &f); err != nil { t.Fatal(err) }
-    if len(f.Valid)==0 || len(f.Invalid)==0 { t.Fatal("empty shared fixture") }
-    for _, s := range f.Valid { if !IsValidNtpServerHost(s) { t.Errorf("valid host rejected: %q", s) } }
-    for _, s := range f.Invalid { if IsValidNtpServerHost(s) { t.Errorf("invalid host accepted: %q", s) } }
+	b, err := os.ReadFile("../../../../packages/shared/src/validators/__fixtures__/ntpServers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Valid   []string `json:"valid"`
+		Invalid []string `json:"invalid"`
+	}
+	if err = json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Valid) == 0 || len(f.Invalid) == 0 {
+		t.Fatal("empty shared fixture")
+	}
+	for _, s := range f.Valid {
+		if !IsValidNtpServerHost(s) {
+			t.Errorf("valid host rejected: %q", s)
+		}
+	}
+	for _, s := range f.Invalid {
+		if IsValidNtpServerHost(s) {
+			t.Errorf("invalid host accepted: %q", s)
+		}
+	}
 }
 
 func TestParseNtpServerHosts(t *testing.T) {
-    for _, tc := range []struct { raw string; want []string }{
-        {"  time.a.com,0x9   time.b.com,0x8  ", []string{"time.a.com","time.b.com"}},
-        {"time.a.com,0x1,0x8", []string{"time.a.com"}},
-        {"", []string{}},
-        {"\tpeer.example.com,0x9\npeer.example.com,0x8", []string{"peer.example.com","peer.example.com"}},
-    } { if got := ParseNtpServerHosts(tc.raw); !reflect.DeepEqual(got,tc.want) { t.Fatalf("%q: %v",tc.raw,got) } }
+	for _, tc := range []struct {
+		raw  string
+		want []string
+	}{
+		{"  time.a.com,0x9   time.b.com,0x8  ", []string{"time.a.com", "time.b.com"}},
+		{"time.a.com,0x1,0x8", []string{"time.a.com"}},
+		{"", []string{}},
+		{"\tpeer.example.com,0x9\npeer.example.com,0x8", []string{"peer.example.com", "peer.example.com"}},
+	} {
+		if got := ParseNtpServerHosts(tc.raw); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%q: %v", tc.raw, got)
+		}
+	}
 }
 ```
 
@@ -345,87 +408,89 @@ package timesync
 import "time"
 
 type Snapshot struct {
-    SchemaVersion int `json:"schemaVersion"`
-    Sequence uint64 `json:"sequence"`
-    CollectedAt time.Time `json:"collectedAt"`
-    Config Config `json:"config"`
-    Status Status `json:"status"`
-    Domain Domain `json:"domain"`
-    Timezone Timezone `json:"timezone"`
-    Events []Event `json:"events"`
-    Enforcement *EnforcementReport `json:"enforcement"`
+	SchemaVersion int                `json:"schemaVersion"`
+	Sequence      uint64             `json:"sequence"`
+	CollectedAt   time.Time          `json:"collectedAt"`
+	Config        Config             `json:"config"`
+	Status        Status             `json:"status"`
+	Domain        Domain             `json:"domain"`
+	Timezone      Timezone           `json:"timezone"`
+	Events        []Event            `json:"events"`
+	Enforcement   *EnforcementReport `json:"enforcement"`
 }
 
 type Config struct {
-    Type *string `json:"type"`
-    NtpServer *string `json:"ntpServer"`
-    SpecialPollIntervalSeconds *uint32 `json:"specialPollIntervalSeconds"`
-    PolicyManaged bool `json:"policyManaged"`
-    PolicyManagedValues []string `json:"policyManagedValues"`
-    ServiceState string `json:"serviceState"`
-    ServiceStartType string `json:"serviceStartType"`
-    HostTimeProviderEnabled *bool `json:"hostTimeProviderEnabled"`
+	Type                       *string  `json:"type"`
+	NtpServer                  *string  `json:"ntpServer"`
+	SpecialPollIntervalSeconds *uint32  `json:"specialPollIntervalSeconds"`
+	PolicyManaged              bool     `json:"policyManaged"`
+	PolicyManagedValues        []string `json:"policyManagedValues"`
+	ServiceState               string   `json:"serviceState"`
+	ServiceStartType           string   `json:"serviceStartType"`
+	HostTimeProviderEnabled    *bool    `json:"hostTimeProviderEnabled"`
 }
 
 type Status struct {
-    Method string `json:"method"`
-    Source *string `json:"source"`
-    SourceKind string `json:"sourceKind"`
-    LastSuccessfulSyncAt *time.Time `json:"lastSuccessfulSyncAt"`
-    LastSyncError *string `json:"lastSyncError"`
-    Stratum *int `json:"stratum"`
-    PollIntervalSeconds *uint32 `json:"pollIntervalSeconds"`
+	Method               string     `json:"method"`
+	Source               *string    `json:"source"`
+	SourceKind           string     `json:"sourceKind"`
+	LastSuccessfulSyncAt *time.Time `json:"lastSuccessfulSyncAt"`
+	LastSyncError        *string    `json:"lastSyncError"`
+	Stratum              *int       `json:"stratum"`
+	PollIntervalSeconds  *uint32    `json:"pollIntervalSeconds"`
 }
 
 type Domain struct {
-    JoinType string `json:"joinType"`
-    Role string `json:"role"`
-    DomainDNS *string `json:"domainDns"`
-    ForestDNS *string `json:"forestDns"`
-    PDCName *string `json:"pdcName"`
+	JoinType  string  `json:"joinType"`
+	Role      string  `json:"role"`
+	DomainDNS *string `json:"domainDns"`
+	ForestDNS *string `json:"forestDns"`
+	PDCName   *string `json:"pdcName"`
 }
 
 type Timezone struct {
-    WindowsID *string `json:"windowsId"`
-    BiasMinutes *int32 `json:"biasMinutes"`
-    DynamicDSTDisabled *bool `json:"dynamicDstDisabled"`
-    AutoUpdate string `json:"autoUpdate"`
+	WindowsID          *string `json:"windowsId"`
+	BiasMinutes        *int32  `json:"biasMinutes"`
+	DynamicDSTDisabled *bool   `json:"dynamicDstDisabled"`
+	AutoUpdate         string  `json:"autoUpdate"`
 }
 
 type Event struct {
-    RecordID uint64 `json:"recordId"`
-    EventID uint32 `json:"eventId"`
-    Level int `json:"level"`
-    OccurredAt time.Time `json:"occurredAt"`
-    Message string `json:"message"`
-    Properties []string `json:"properties"`
+	RecordID   uint64    `json:"recordId"`
+	EventID    uint32    `json:"eventId"`
+	Level      int       `json:"level"`
+	OccurredAt time.Time `json:"occurredAt"`
+	Message    string    `json:"message"`
+	Properties []string  `json:"properties"`
+	// In-memory selection metadata only; never part of the wire or disk state.
+	displayReserved bool
 }
 
 type EnforcementResult struct {
-    ResultID string `json:"resultId"`
-    Fingerprint string `json:"fingerprint"`
-    At time.Time `json:"at"`
-    Outcome string `json:"outcome"`
-    Reason string `json:"reason"`
-    Before map[string]any `json:"before"`
-    After map[string]any `json:"after"`
-    Error *string `json:"error"`
+	ResultID    string         `json:"resultId"`
+	Fingerprint string         `json:"fingerprint"`
+	At          time.Time      `json:"at"`
+	Outcome     string         `json:"outcome"`
+	Reason      string         `json:"reason"`
+	Before      map[string]any `json:"before"`
+	After       map[string]any `json:"after"`
+	Error       *string        `json:"error"`
 }
 
 type EnforcementReport struct {
-    NTP *EnforcementResult `json:"ntp"`
-    Timezone *EnforcementResult `json:"timezone"`
+	NTP      *EnforcementResult `json:"ntp"`
+	Timezone *EnforcementResult `json:"timezone"`
 }
 
-func ptr[T any](v T) *T { return &v }
-func unknownStatus() Status { return Status{Method:"unavailable", SourceKind:"unknown"} }
+func ptr[T any](v T) *T     { return &v }
+func unknownStatus() Status { return Status{Method: "unavailable", SourceKind: "unknown"} }
 func emptySnapshot(at time.Time) Snapshot {
-    return Snapshot{
-        SchemaVersion:1, CollectedAt:at.UTC(),
-        Config:Config{PolicyManagedValues:[]string{}, ServiceState:"unknown", ServiceStartType:"unknown"},
-        Status:unknownStatus(), Domain:Domain{JoinType:"unknown", Role:"unknown"},
-        Timezone:Timezone{AutoUpdate:"unknown"}, Events:[]Event{},
-    }
+	return Snapshot{
+		SchemaVersion: 1, CollectedAt: at.UTC(),
+		Config: Config{PolicyManagedValues: []string{}, ServiceState: "unknown", ServiceStartType: "unknown"},
+		Status: unknownStatus(), Domain: Domain{JoinType: "unknown", Role: "unknown"},
+		Timezone: Timezone{AutoUpdate: "unknown"}, Events: []Event{},
+	}
 }
 ```
 
@@ -437,25 +502,35 @@ func emptySnapshot(at time.Time) Snapshot {
 package timesync
 
 import (
-    "net/netip"
-    "regexp"
-    "strings"
+	"net/netip"
+	"regexp"
+	"strings"
 )
 
 var hostLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 var peerFlags = regexp.MustCompile(`(?i)(?:,0x[0-9a-f]+)+$`)
 
 func IsValidNtpServerHost(s string) bool {
-    if len(s)==0 || len(s)>253 { return false }
-    if ip, err := netip.ParseAddr(s); err==nil { return ip.Zone()=="" }
-    for _, label := range strings.Split(s,".") { if !hostLabel.MatchString(label) { return false } }
-    return true
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	if ip, err := netip.ParseAddr(s); err == nil {
+		return ip.Zone() == ""
+	}
+	for _, label := range strings.Split(s, ".") {
+		if !hostLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 
 func ParseNtpServerHosts(raw string) []string {
-    out := []string{}
-    for _, item := range strings.Fields(raw) { out = append(out,peerFlags.ReplaceAllString(item,"")) }
-    return out
+	out := []string{}
+	for _, item := range strings.Fields(raw) {
+		out = append(out, peerFlags.ReplaceAllString(item, ""))
+	}
+	return out
 }
 ```
 
@@ -466,33 +541,38 @@ func ParseNtpServerHosts(raw string) []string {
 package timesync
 
 import (
-    "context"
-    "errors"
-    "time"
-    "github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"context"
+	"errors"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 )
 
 var errUnavailable = errors.New("time sync read unavailable")
+
 const serviceKey = `SYSTEM\CurrentControlSet\Services\W32Time`
 const policyKey = `SOFTWARE\Policies\Microsoft\W32Time`
 
-type RoleInfo struct { MachineRole uint32; DomainDNS, ForestDNS string }
-type ServiceInfo struct { State, StartType string }
+type RoleInfo struct {
+	MachineRole          uint32
+	DomainDNS, ForestDNS string
+}
+type ServiceInfo struct{ State, StartType string }
 
 type System interface {
-    ReadString(context.Context, string, string) (string,error)
-    ReadDWORD(context.Context, string, string) (uint32,error)
-    ValueNames(context.Context, string) ([]string,error)
-    W32TimeService(context.Context) (ServiceInfo,error)
-    ProviderStatus(context.Context) (Status,error)
-    W32tmStatus(context.Context) ([]byte,error)
-    Events(context.Context, time.Time, time.Time, int) ([]Event,error)
-    RecentEvents(context.Context, time.Time, int) ([]Event,error)
-    Identity(context.Context) (mgmtdetect.IdentityStatus,error)
-    PrimaryDomain(context.Context) (RoleInfo,error)
-    PDC(context.Context,string) (string,error)
-    ComputerDNSName(context.Context) (string,error)
-    DynamicTimezone(context.Context) (Timezone,error)
+	ReadString(context.Context, string, string) (string, error)
+	ReadDWORD(context.Context, string, string) (uint32, error)
+	ValueNames(context.Context, string) ([]string, error)
+	W32TimeService(context.Context) (ServiceInfo, error)
+	ProviderStatus(context.Context) (Status, error)
+	W32tmStatus(context.Context) ([]byte, error)
+	Events(context.Context, time.Time, time.Time, int) ([]Event, error)
+	RecentEvents(context.Context, time.Time, int) ([]Event, error)
+	Identity(context.Context) (mgmtdetect.IdentityStatus, error)
+	PrimaryDomain(context.Context) (RoleInfo, error)
+	PDC(context.Context, string) (string, error)
+	ComputerDNSName(context.Context) (string, error)
+	DynamicTimezone(context.Context) (Timezone, error)
 }
 ```
 
@@ -501,40 +581,97 @@ type System interface {
 package timesync
 
 import (
-    "context"
-    "time"
-    "github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"context"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 )
 
 type fakeSystem struct {
-    strings map[string]string
-    dwords map[string]uint32
-    names map[string][]string
-    service ServiceInfo
-    identity mgmtdetect.IdentityStatus
-    role RoleInfo
-    pdc, computer string
-    provider Status
-    providerErr error
-    tokens []byte
-    events, recent []Event
-    eventErr, roleErr, pdcErr, computerErr error
-    zone Timezone
-    since, until time.Time
+	strings                                map[string]string
+	dwords                                 map[string]uint32
+	names                                  map[string][]string
+	namesErr                               map[string]error
+	service                                ServiceInfo
+	identity                               mgmtdetect.IdentityStatus
+	role                                   RoleInfo
+	pdc, computer                          string
+	provider                               Status
+	providerErr                            error
+	tokens                                 []byte
+	events, recent                         []Event
+	eventErr, roleErr, pdcErr, computerErr error
+	zone                                   Timezone
+	since, until                           time.Time
 }
-func (f *fakeSystem) ReadString(_ context.Context,p,n string)(string,error){ v,ok:=f.strings[p+"|"+n]; if !ok{return "",errUnavailable};return v,nil }
-func (f *fakeSystem) ReadDWORD(_ context.Context,p,n string)(uint32,error){ v,ok:=f.dwords[p+"|"+n];if !ok{return 0,errUnavailable};return v,nil }
-func (f *fakeSystem) ValueNames(_ context.Context,p string)([]string,error){v,ok:=f.names[p];if !ok{return nil,errUnavailable};return v,nil}
-func (f *fakeSystem) W32TimeService(context.Context)(ServiceInfo,error){if f.service.State==""{return ServiceInfo{},errUnavailable};return f.service,nil}
-func (f *fakeSystem) ProviderStatus(context.Context)(Status,error){if f.provider.Source==nil{return unknownStatus(),errUnavailable};return f.provider,f.providerErr}
-func (f *fakeSystem) W32tmStatus(context.Context)([]byte,error){if f.tokens==nil{return nil,errUnavailable};return f.tokens,nil}
-func (f *fakeSystem) Events(_ context.Context,a,b time.Time,_ int)([]Event,error){f.since=a;f.until=b;return f.events,f.eventErr}
-func (f *fakeSystem) RecentEvents(context.Context,time.Time,int)([]Event,error){return f.recent,f.eventErr}
-func (f *fakeSystem) Identity(context.Context)(mgmtdetect.IdentityStatus,error){if f.identity.Source==""{return f.identity,errUnavailable};return f.identity,nil}
-func (f *fakeSystem) PrimaryDomain(context.Context)(RoleInfo,error){return f.role,f.roleErr}
-func (f *fakeSystem) PDC(context.Context,string)(string,error){return f.pdc,f.pdcErr}
-func (f *fakeSystem) ComputerDNSName(context.Context)(string,error){return f.computer,f.computerErr}
-func (f *fakeSystem) DynamicTimezone(context.Context)(Timezone,error){if f.zone.WindowsID==nil{return Timezone{},errUnavailable};return f.zone,nil}
+
+func (f *fakeSystem) ReadString(_ context.Context, p, n string) (string, error) {
+	v, ok := f.strings[p+"|"+n]
+	if !ok {
+		return "", errUnavailable
+	}
+	return v, nil
+}
+func (f *fakeSystem) ReadDWORD(_ context.Context, p, n string) (uint32, error) {
+	v, ok := f.dwords[p+"|"+n]
+	if !ok {
+		return 0, errUnavailable
+	}
+	return v, nil
+}
+func (f *fakeSystem) ValueNames(_ context.Context, p string) ([]string, error) {
+	v, ok := f.names[p]
+	if err := f.namesErr[p]; err != nil {
+		return v, err
+	}
+	if !ok {
+		return nil, errUnavailable
+	}
+	return v, nil
+}
+func (f *fakeSystem) W32TimeService(context.Context) (ServiceInfo, error) {
+	if f.service.State == "" {
+		return ServiceInfo{}, errUnavailable
+	}
+	return f.service, nil
+}
+func (f *fakeSystem) ProviderStatus(context.Context) (Status, error) {
+	if f.provider.Source == nil {
+		return unknownStatus(), errUnavailable
+	}
+	return f.provider, f.providerErr
+}
+func (f *fakeSystem) W32tmStatus(context.Context) ([]byte, error) {
+	if f.tokens == nil {
+		return nil, errUnavailable
+	}
+	return f.tokens, nil
+}
+func (f *fakeSystem) Events(_ context.Context, a, b time.Time, _ int) ([]Event, error) {
+	f.since = a
+	f.until = b
+	return f.events, f.eventErr
+}
+func (f *fakeSystem) RecentEvents(context.Context, time.Time, int) ([]Event, error) {
+	return f.recent, f.eventErr
+}
+func (f *fakeSystem) Identity(context.Context) (mgmtdetect.IdentityStatus, error) {
+	if f.identity.Source == "" {
+		return f.identity, errUnavailable
+	}
+	return f.identity, nil
+}
+func (f *fakeSystem) PrimaryDomain(context.Context) (RoleInfo, error) { return f.role, f.roleErr }
+func (f *fakeSystem) PDC(context.Context, string) (string, error)     { return f.pdc, f.pdcErr }
+func (f *fakeSystem) ComputerDNSName(context.Context) (string, error) {
+	return f.computer, f.computerErr
+}
+func (f *fakeSystem) DynamicTimezone(context.Context) (Timezone, error) {
+	if f.zone.WindowsID == nil {
+		return Timezone{}, errUnavailable
+	}
+	return f.zone, nil
+}
 ```
 
 - [ ] Re-run `cd agent && go test -race ./internal/collectors/timesync/...`; expected PASS with the merged W01a fixture. Verify Windows compile: `cd agent && GOOS=windows go vet ./internal/collectors/timesync/...`.
@@ -562,15 +699,19 @@ git commit -m "feat(agent): define time sync snapshot and read interface" -m "Co
 package mgmtdetect
 
 import (
-    "runtime"
-    "testing"
+	"runtime"
+	"testing"
 )
 
 func TestCollectIdentityStatusPublicWrapper(t *testing.T) {
-    var collect func() IdentityStatus = CollectIdentityStatus
-    if runtime.GOOS=="windows" || runtime.GOOS=="darwin" { return }
-    got := collect()
-    if got.DetectionSupported() { t.Fatal("unsupported platform advertised identity detection") }
+	var collect func() IdentityStatus = CollectIdentityStatus
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return
+	}
+	got := collect()
+	if got.DetectionSupported() {
+		t.Fatal("unsupported platform advertised identity detection")
+	}
 }
 ```
 
@@ -580,51 +721,70 @@ Write `domain_test.go`:
 package timesync
 
 import (
-    "context"
-    "testing"
-    "github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"context"
+	"testing"
+
+	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 )
 
 func TestDomainRoles(t *testing.T) {
-    for _, tc := range []struct{join string; machine uint32; domain,forest,pdc,local,want string}{
-        {"none",0,"","","","","workgroup"},
-        {"workplace",0,"","","","","workgroup"},
-        {"azure_ad",0,"","","","","entra_only"},
-        {"on_prem_ad",1,"ad.example.com","ad.example.com","pdc.ad.example.com","member.ad.example.com","member"},
-        {"hybrid_azure_ad",3,"ad.example.com","ad.example.com","pdc.ad.example.com","member.ad.example.com","member"},
-        {"on_prem_ad",4,"ad.example.com","ad.example.com","pdc.ad.example.com","dc.ad.example.com","dc"},
-        {"on_prem_ad",5,"child.example.com","example.com","pdc.child.example.com","PDC.CHILD.EXAMPLE.COM.","pdc_emulator"},
-        {"on_prem_ad",5,"EXAMPLE.COM","example.com",`\\pdc.example.com`,"pdc.example.com","forest_root_pdc_emulator"},
-        {"unknown",0,"","","","","unknown"},
-        {"on_prem_ad",0,"ad.example.com","ad.example.com","pdc.ad.example.com","pdc.ad.example.com","unknown"},
-    } {
-        t.Run(tc.join+"/"+tc.want,func(t *testing.T){
-            f:= &fakeSystem{identity:mgmtdetect.IdentityStatus{JoinType:mgmtdetect.JoinType(tc.join),Source:"dsregcmd"},
-                role:RoleInfo{tc.machine,tc.domain,tc.forest},pdc:tc.pdc,computer:tc.local}
-            got:=readDomain(context.Background(),f)
-            if got.Role!=tc.want {t.Fatalf("got %+v, want %s",got,tc.want)}
-            if tc.pdc!="" && got.PDCName==nil {t.Fatal("resolved PDC omitted")}
-        })
-    }
+	for _, tc := range []struct {
+		join                             string
+		machine                          uint32
+		domain, forest, pdc, local, want string
+	}{
+		{"none", 0, "", "", "", "", "workgroup"},
+		{"workplace", 0, "", "", "", "", "workgroup"},
+		{"azure_ad", 0, "", "", "", "", "entra_only"},
+		{"on_prem_ad", 1, "ad.example.com", "ad.example.com", "pdc.ad.example.com", "member.ad.example.com", "member"},
+		{"hybrid_azure_ad", 3, "ad.example.com", "ad.example.com", "pdc.ad.example.com", "member.ad.example.com", "member"},
+		{"on_prem_ad", 4, "ad.example.com", "ad.example.com", "pdc.ad.example.com", "dc.ad.example.com", "dc"},
+		{"on_prem_ad", 5, "child.example.com", "example.com", "pdc.child.example.com", "PDC.CHILD.EXAMPLE.COM.", "pdc_emulator"},
+		{"on_prem_ad", 5, "EXAMPLE.COM", "example.com", `\\pdc.example.com`, "pdc.example.com", "forest_root_pdc_emulator"},
+		{"unknown", 0, "", "", "", "", "unknown"},
+		{"on_prem_ad", 0, "ad.example.com", "ad.example.com", "pdc.ad.example.com", "pdc.ad.example.com", "unknown"},
+	} {
+		t.Run(tc.join+"/"+tc.want, func(t *testing.T) {
+			f := &fakeSystem{identity: mgmtdetect.IdentityStatus{JoinType: mgmtdetect.JoinType(tc.join), Source: "dsregcmd"},
+				role: RoleInfo{tc.machine, tc.domain, tc.forest}, pdc: tc.pdc, computer: tc.local}
+			got := readDomain(context.Background(), f)
+			if got.Role != tc.want {
+				t.Fatalf("got %+v, want %s", got, tc.want)
+			}
+			if tc.pdc != "" && got.PDCName == nil {
+				t.Fatal("resolved PDC omitted")
+			}
+		})
+	}
 }
 
 func TestDomainFailuresAreUnknown(t *testing.T) {
-    for _, fail:=range []string{"identity","role","pdc","computer","missing_forest","short_name","identity_fallback"}{
-        t.Run(fail,func(t *testing.T){
-            f:= &fakeSystem{identity:mgmtdetect.IdentityStatus{JoinType:mgmtdetect.JoinTypeOnPremAD,Source:"dsregcmd"},
-                role:RoleInfo{5,"ad.example.com","ad.example.com"},pdc:"pdc.ad.example.com",computer:"pdc.ad.example.com"}
-            switch fail {
-            case "identity":f.identity.Source=""
-            case "role":f.roleErr=errUnavailable
-            case "pdc":f.pdcErr=errUnavailable
-            case "computer":f.computerErr=errUnavailable
-            case "missing_forest":f.role.ForestDNS=""
-            case "short_name":f.computer="pdc"
-            case "identity_fallback":f.identity.JoinType=mgmtdetect.JoinTypeNone;f.identity.Source="dsregcmd_error_no_fallback"
-            }
-            if got:=readDomain(context.Background(),f);got.Role!="unknown"{t.Fatalf("%s: %+v",fail,got)}
-        })
-    }
+	for _, fail := range []string{"identity", "role", "pdc", "computer", "missing_forest", "short_name", "identity_fallback"} {
+		t.Run(fail, func(t *testing.T) {
+			f := &fakeSystem{identity: mgmtdetect.IdentityStatus{JoinType: mgmtdetect.JoinTypeOnPremAD, Source: "dsregcmd"},
+				role: RoleInfo{5, "ad.example.com", "ad.example.com"}, pdc: "pdc.ad.example.com", computer: "pdc.ad.example.com"}
+			switch fail {
+			case "identity":
+				f.identity.Source = ""
+			case "role":
+				f.roleErr = errUnavailable
+			case "pdc":
+				f.pdcErr = errUnavailable
+			case "computer":
+				f.computerErr = errUnavailable
+			case "missing_forest":
+				f.role.ForestDNS = ""
+			case "short_name":
+				f.computer = "pdc"
+			case "identity_fallback":
+				f.identity.JoinType = mgmtdetect.JoinTypeNone
+				f.identity.Source = "dsregcmd_error_no_fallback"
+			}
+			if got := readDomain(context.Background(), f); got.Role != "unknown" {
+				t.Fatalf("%s: %+v", fail, got)
+			}
+		})
+	}
 }
 ```
 
@@ -645,63 +805,100 @@ Create `domain.go`:
 package timesync
 
 import (
-    "context"
-    "strings"
+	"context"
+	"strings"
 )
 
 func nullableText(s string, max int) *string {
-    s=strings.TrimSpace(s)
-    if s=="" {return nil}
-    return ptr(limitText(s,max))
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	return ptr(limitText(s, max))
 }
 
-func dnsName(s string) string {return strings.ToLower(strings.TrimSuffix(strings.TrimLeft(strings.TrimSpace(s),`\`),"."))}
+func dnsName(s string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimLeft(strings.TrimSpace(s), `\`), "."))
+}
 
-func readDomain(ctx context.Context,sys System) Domain {
-    d:=Domain{JoinType:"unknown",Role:"unknown"}
-    id,err:=sys.Identity(ctx)
-    if err!=nil || !id.DetectionSupported() || id.Source=="dsregcmd_error_no_fallback" {return d}
-    switch string(id.JoinType) {
-    case "none","workplace":d.JoinType=string(id.JoinType);d.Role="workgroup";return d
-    case "azure_ad":d.JoinType="azure_ad";d.Role="entra_only";return d
-    case "on_prem_ad","hybrid_azure_ad":d.JoinType=string(id.JoinType)
-    default:return d
-    }
-    // dsregcmd's DomainName can be a NetBIOS name; only DsRole supplies domainDns.
-    role,err:=sys.PrimaryDomain(ctx)
-    if err!=nil {return d}
-    d.DomainDNS=nullableText(role.DomainDNS,255)
-    d.ForestDNS=nullableText(role.ForestDNS,255)
-    if d.DomainDNS==nil || d.ForestDNS==nil {return d}
-    pdc,pdcErr:=sys.PDC(ctx,role.DomainDNS)
-    if pdcErr==nil {d.PDCName=nullableText(dnsName(pdc),255)}
-    // Discovery failure remains fail-closed even on a known member.
-    if pdcErr!=nil || d.PDCName==nil {return d}
-    switch role.MachineRole {
-    case 1,3:d.Role="member";return d
-    case 4,5:
-        local,err:=sys.ComputerDNSName(ctx)
-        if err!=nil || !strings.Contains(local,".") {return d}
-        if dnsName(local)!=dnsName(pdc) {d.Role="dc";return d}
-        d.Role="pdc_emulator"
-        if strings.EqualFold(role.DomainDNS,role.ForestDNS) {d.Role="forest_root_pdc_emulator"}
-    }
-    return d
+func readDomain(ctx context.Context, sys System) Domain {
+	d := Domain{JoinType: "unknown", Role: "unknown"}
+	id, err := sys.Identity(ctx)
+	if err != nil || !id.DetectionSupported() || id.Source == "dsregcmd_error_no_fallback" {
+		return d
+	}
+	switch string(id.JoinType) {
+	case "none", "workplace":
+		d.JoinType = string(id.JoinType)
+		d.Role = "workgroup"
+		return d
+	case "azure_ad":
+		d.JoinType = "azure_ad"
+		d.Role = "entra_only"
+		return d
+	case "on_prem_ad", "hybrid_azure_ad":
+		d.JoinType = string(id.JoinType)
+	default:
+		return d
+	}
+	// dsregcmd's DomainName can be a NetBIOS name; only DsRole supplies domainDns.
+	role, err := sys.PrimaryDomain(ctx)
+	if err != nil {
+		return d
+	}
+	d.DomainDNS = nullableText(role.DomainDNS, 255)
+	d.ForestDNS = nullableText(role.ForestDNS, 255)
+	if d.DomainDNS == nil || d.ForestDNS == nil {
+		return d
+	}
+	pdc, pdcErr := sys.PDC(ctx, role.DomainDNS)
+	if pdcErr == nil {
+		d.PDCName = nullableText(dnsName(pdc), 255)
+	}
+	// Discovery failure remains fail-closed even on a known member.
+	if pdcErr != nil || d.PDCName == nil {
+		return d
+	}
+	switch role.MachineRole {
+	case 1, 3:
+		d.Role = "member"
+		return d
+	case 4, 5:
+		local, err := sys.ComputerDNSName(ctx)
+		if err != nil || !strings.Contains(local, ".") {
+			return d
+		}
+		if dnsName(local) != dnsName(pdc) {
+			d.Role = "dc"
+			return d
+		}
+		d.Role = "pdc_emulator"
+		if strings.EqualFold(role.DomainDNS, role.ForestDNS) {
+			d.Role = "forest_root_pdc_emulator"
+		}
+	}
+	return d
 }
 ```
 
 `nullableText` needs the following complete helper now, at the bottom of `domain.go`; Task 5 reuses it. Zod `.max()` measures JavaScript UTF-16 units, not bytes or Unicode scalar values.
 
 ```go
-func limitText(s string,max int) string {
-    used:=0
-    var b strings.Builder
-    for _,r:=range s {
-        n:=1;if r>0xffff{n=2}
-        if used+n>max {break}
-        b.WriteRune(r);used+=n
-    }
-    return b.String()
+func limitText(s string, max int) string {
+	used := 0
+	var b strings.Builder
+	for _, r := range s {
+		n := 1
+		if r > 0xffff {
+			n = 2
+		}
+		if used+n > max {
+			break
+		}
+		b.WriteRune(r)
+		used += n
+	}
+	return b.String()
 }
 ```
 
@@ -719,8 +916,8 @@ git commit -m "feat(agent): derive time sync domain role from native facts" -m "
 - Create: `agent/internal/collectors/timesync/{status.go,status_test.go}`.
 
 **Interfaces:**
-- Consumes: `System.ProviderStatus(context.Context) (Status,error)`, `W32tmStatus(context.Context) ([]byte,error)`, `Config`, `Domain`, `[]Event`, cached last successful event.
-- Produces: `readStatus(ctx context.Context, sys System, config Config, domain Domain, events []Event, previous Status) Status` and `parseW32tmTokens(raw string) Status`.
+- Consumes: `System.ProviderStatus(context.Context) (Status,error)`, `W32tmStatus(context.Context) ([]byte,error)`, `[]Event`.
+- Produces: `readStatus(ctx context.Context, sys System, events []Event) Status` and `parseW32tmTokens(raw string) Status`.
 
 This implementation never parses the localized source line or date line. Numeric fields may be read by position only after Task 1 proves that layout on the floor and German images. Unproven special tags deliberately produce no source. In the fallback branch, a structured event supplies source; method stays `events` even when numeric fields came from w32tm. Configured `NtpServer` is never substituted for an observed source.
 
@@ -730,11 +927,11 @@ This implementation never parses the localized source line or date line. Numeric
 package timesync
 
 import (
-    "context"
-    "reflect"
-    "strings"
-    "testing"
-    "time"
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
 )
 
 const germanStatus = `Sprungindikator: 0(keine Warnung)
@@ -749,55 +946,94 @@ Abrufintervall: 6 (64s)
 Phasenoffset: 0.00001s`
 
 func TestGermanTokensNeverParseTranslatedValues(t *testing.T) {
-    got:=parseW32tmTokens(germanStatus)
-    if got.Source!=nil || got.LastSuccessfulSyncAt!=nil || got.LastSyncError!=nil || got.SourceKind!="unknown" {
-        t.Fatalf("localized or ambiguous value inferred: %+v",got)
-    }
-    if got.Stratum==nil || *got.Stratum!=4 || got.PollIntervalSeconds==nil || *got.PollIntervalSeconds!=64 {t.Fatal(got)}
-    english:=strings.NewReplacer("Sprungindikator","Leap Indicator","Stratum","Stratum",
-        "Präzision","Precision","Stammverzögerung","Root Delay","Stammabweichung","Root Dispersion",
-        "Referenz-ID","ReferenceId","Letzte erfolgreiche Synchronisierungszeit","Last Successful Sync Time",
-        "Quelle","Source","Abrufintervall","Poll Interval","Lokale CMOS-Uhr","Local CMOS Clock").Replace(germanStatus)
-    if other:=parseW32tmTokens(english);!reflect.DeepEqual(got,other){t.Fatalf("locale changed facts: %+v %+v",got,other)}
-    for _,raw:=range []string{"", "Quelle: Zeitserver", strings.Replace(germanStatus,"0x4C4F434C","bad-reference",1)}{
-        got:=parseW32tmTokens(raw)
-        if got.Source!=nil || got.Stratum!=nil || got.PollIntervalSeconds!=nil {t.Fatalf("malformed layout accepted: %+v",got)}
-    }
+	got := parseW32tmTokens(germanStatus)
+	if got.Source != nil || got.LastSuccessfulSyncAt != nil || got.LastSyncError != nil || got.SourceKind != "unknown" {
+		t.Fatalf("localized or ambiguous value inferred: %+v", got)
+	}
+	if got.Stratum == nil || *got.Stratum != 4 || got.PollIntervalSeconds == nil || *got.PollIntervalSeconds != 64 {
+		t.Fatal(got)
+	}
+	english := strings.NewReplacer("Sprungindikator", "Leap Indicator", "Stratum", "Stratum",
+		"Präzision", "Precision", "Stammverzögerung", "Root Delay", "Stammabweichung", "Root Dispersion",
+		"Referenz-ID", "ReferenceId", "Letzte erfolgreiche Synchronisierungszeit", "Last Successful Sync Time",
+		"Quelle", "Source", "Abrufintervall", "Poll Interval", "Lokale CMOS-Uhr", "Local CMOS Clock").Replace(germanStatus)
+	if other := parseW32tmTokens(english); !reflect.DeepEqual(got, other) {
+		t.Fatalf("locale changed facts: %+v %+v", got, other)
+	}
+	for _, raw := range []string{"", "Quelle: Zeitserver", strings.Replace(germanStatus, "0x4C4F434C", "bad-reference", 1)} {
+		got := parseW32tmTokens(raw)
+		if got.Source != nil || got.Stratum != nil || got.PollIntervalSeconds != nil {
+			t.Fatalf("malformed layout accepted: %+v", got)
+		}
+	}
 }
 
 func TestProviderKindsAndLadder(t *testing.T) {
-    for _,kind:=range []string{"ntp_peer","domain_peer","local_clock","free_running","vm_host","unknown"}{
-        f:= &fakeSystem{provider:Status{Source:ptr("structured source"),SourceKind:kind,Stratum:ptr(2)}}
-        got:=readStatus(context.Background(),f,Config{},Domain{},nil,unknownStatus())
-        if got.Method!="provider_api" || got.SourceKind!=kind || *got.Source!="structured source" {t.Fatal(got)}
-    }
-    at:=time.Date(2026,9,28,12,0,0,0,time.UTC)
-    success:=Event{EventID:37,OccurredAt:at,Properties:[]string{"peer.example.com,0x9 (ntp.m|0x9|transport)"}}
-    for _,tc:=range []struct{typ,role,kind string}{
-        {"NTP","workgroup","ntp_peer"},{"NT5DS","member","domain_peer"},{"AllSync","member","unknown"},
-    }{
-        e:=success
-        if tc.kind=="domain_peer"{e.Properties=[]string{"dc.example.com (ntp.d|transport)"}}
-        if tc.kind=="unknown"{e.Properties=[]string{"peer.example.com"}}
-        f:= &fakeSystem{tokens:[]byte(germanStatus)}
-        got:=readStatus(context.Background(),f,Config{Type:ptr(tc.typ)},Domain{Role:tc.role},[]Event{e},unknownStatus())
-        if got.Method!="events" || got.SourceKind!=tc.kind || !got.LastSuccessfulSyncAt.Equal(at) {t.Fatal(got)}
-        if got.Stratum==nil || *got.Stratum!=4 {t.Fatal("numeric token lost")}
-    }
-    f:= &fakeSystem{}
-    if got:=readStatus(context.Background(),f,Config{},Domain{},nil,unknownStatus());got.Method!="unavailable"||got.Source!=nil{t.Fatal(got)}
-    f.provider=Status{Source:ptr("peer.example.com"),SourceKind:"ntp_peer"};f.providerErr=errUnavailable
-    if got:=readStatus(context.Background(),f,Config{},Domain{},[]Event{success},unknownStatus());got.Method!="events"{t.Fatal(got)}
+	for _, kind := range []string{"ntp_peer", "domain_peer", "local_clock", "free_running", "vm_host", "unknown"} {
+		f := &fakeSystem{provider: Status{Source: ptr("structured source"), SourceKind: kind, Stratum: ptr(2)}}
+		got := readStatus(context.Background(), f, nil)
+		if got.Method != "provider_api" || got.SourceKind != kind || *got.Source != "structured source" {
+			t.Fatal(got)
+		}
+	}
+	at := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	success := Event{EventID: 37, OccurredAt: at, Properties: []string{"peer.example.com,0x9 (ntp.m|0x9|transport)"}}
+	for _, tc := range []struct{ typ, role, kind string }{
+		{"NTP", "workgroup", "ntp_peer"}, {"NT5DS", "member", "domain_peer"}, {"AllSync", "member", "unknown"},
+	} {
+		e := success
+		if tc.kind == "domain_peer" {
+			e.Properties = []string{"dc.example.com (ntp.d|transport)"}
+		}
+		if tc.kind == "unknown" {
+			e.Properties = []string{"peer.example.com"}
+		}
+		f := &fakeSystem{tokens: []byte(germanStatus)}
+		got := readStatus(context.Background(), f, []Event{e})
+		if got.Method != "events" || got.SourceKind != tc.kind || !got.LastSuccessfulSyncAt.Equal(at) {
+			t.Fatal(got)
+		}
+		if got.Stratum == nil || *got.Stratum != 4 {
+			t.Fatal("numeric token lost")
+		}
+	}
+	f := &fakeSystem{}
+	if got := readStatus(context.Background(), f, nil); got.Method != "unavailable" || got.Source != nil {
+		t.Fatal(got)
+	}
+	f.provider = Status{Source: ptr("peer.example.com"), SourceKind: "ntp_peer"}
+	f.providerErr = errUnavailable
+	if got := readStatus(context.Background(), f, []Event{success}); got.Method != "events" {
+		t.Fatal(got)
+	}
+}
+
+func TestPlainEventHostsNeverInferKindFromConfiguration(t *testing.T) {
+	for _, typ := range []string{"NTP", "NT5DS"} {
+		t.Run(typ, func(t *testing.T) {
+			at := time.Unix(100, 0).UTC()
+			f := &fakeSystem{strings: map[string]string{serviceKey + `\Parameters|Type`: typ},
+				role: RoleInfo{MachineRole: 3, DomainDNS: "example.com", ForestDNS: "example.com"}}
+			e := Event{EventID: 37, OccurredAt: at, Properties: []string{"peer.example.com"}}
+			got := readStatus(context.Background(), f, []Event{e})
+			if got.Source == nil || *got.Source != "peer.example.com" || got.SourceKind != "unknown" || !got.LastSuccessfulSyncAt.Equal(at) {
+				t.Fatal(got)
+			}
+		})
+	}
 }
 
 func TestEventsAreLastKnownGoodNotTranslatedStatus(t *testing.T) {
-    at:=time.Unix(100,0).UTC()
-    previous:=Status{Method:"events",Source:ptr("peer.example.com"),SourceKind:"ntp_peer",LastSuccessfulSyncAt:&at}
-    got:=readStatus(context.Background(),&fakeSystem{},Config{},Domain{},nil,previous)
-    if !reflect.DeepEqual(got,previous){t.Fatalf("lost last known good: %+v",got)}
-    bad:=Event{EventID:35,OccurredAt:at.Add(time.Hour),Properties:[]string{"Freilaufende Systemuhr"},Message:"time.example.com"}
-    got=readStatus(context.Background(),&fakeSystem{},Config{},Domain{},[]Event{bad},unknownStatus())
-    if got.Source!=nil || got.SourceKind!="unknown"{t.Fatalf("display text parsed: %+v",got)}
+	at := time.Unix(100, 0).UTC()
+	bad := Event{EventID: 35, OccurredAt: at, Properties: []string{"Freilaufende Systemuhr"}, Message: "time.example.com"}
+	got := readStatus(context.Background(), &fakeSystem{}, []Event{bad})
+	if got.Source != nil || got.SourceKind != "unknown" {
+		t.Fatalf("display text parsed: %+v", got)
+	}
+	got = readStatus(context.Background(), &fakeSystem{}, nil)
+	if got.Source != nil || got.LastSuccessfulSyncAt != nil {
+		t.Fatal("invented cached status", got)
+	}
 }
 ```
 
@@ -808,99 +1044,146 @@ func TestEventsAreLastKnownGoodNotTranslatedStatus(t *testing.T) {
 package timesync
 
 import (
-    "context"
-    "regexp"
-    "strconv"
-    "strings"
+	"context"
+	"regexp"
+	"strconv"
+	"strings"
 )
 
-var referenceToken=regexp.MustCompile(`^0x[0-9A-Fa-f]{8}(?:\s|$)`)
-var integerToken=regexp.MustCompile(`^([0-9]+)(?:\s|\(|$)`)
+var referenceToken = regexp.MustCompile(`^0x[0-9A-Fa-f]{8}(?:\s|$)`)
+var integerToken = regexp.MustCompile(`^([0-9]+)(?:\s|\(|$)`)
 
 func parseW32tmTokens(raw string) Status {
-    s:=unknownStatus()
-    lines:=[]string{}
-    for _,line:=range strings.Split(strings.ReplaceAll(raw,"\r\n","\n"),"\n"){
-        if strings.TrimSpace(line)!=""{lines=append(lines,line)}
-    }
-    if len(lines)<9{return s}
-    value:=func(i int)string{_,v,ok:=strings.Cut(lines[i],":");if !ok{return ""};return strings.TrimSpace(v)}
-    if !referenceToken.MatchString(value(5)){return s}
-    number:=func(i int)(int,bool){m:=integerToken.FindStringSubmatch(value(i));if len(m)!=2{return 0,false};v,e:=strconv.Atoi(m[1]);return v,e==nil}
-    leap,ok:=number(0);if !ok || leap>3{return s}
-    stratum,ok:=number(1);if !ok || stratum>16{return s}
-    exponent,ok:=number(8);if !ok || exponent>30{return s}
-    s.Stratum=&stratum
-    s.PollIntervalSeconds=ptr(uint32(1)<<uint(exponent))
-    // ReferenceId is not a hostname. LOCL is ambiguous between clock modes.
-    // No special tag is enabled without Task 1 evidence for that exact mapping.
-    return s
+	s := unknownStatus()
+	lines := []string{}
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) < 9 {
+		return s
+	}
+	value := func(i int) string {
+		_, v, ok := strings.Cut(lines[i], ":")
+		if !ok {
+			return ""
+		}
+		return strings.TrimSpace(v)
+	}
+	if !referenceToken.MatchString(value(5)) {
+		return s
+	}
+	number := func(i int) (int, bool) {
+		m := integerToken.FindStringSubmatch(value(i))
+		if len(m) != 2 {
+			return 0, false
+		}
+		v, e := strconv.Atoi(m[1])
+		return v, e == nil
+	}
+	leap, ok := number(0)
+	if !ok || leap > 3 {
+		return s
+	}
+	stratum, ok := number(1)
+	if !ok || stratum > 16 {
+		return s
+	}
+	exponent, ok := number(8)
+	if !ok || exponent > 30 {
+		return s
+	}
+	s.Stratum = &stratum
+	s.PollIntervalSeconds = ptr(uint32(1) << uint(exponent))
+	// ReferenceId is not a hostname. LOCL is ambiguous between clock modes.
+	// No special tag is enabled without Task 1 evidence for that exact mapping.
+	return s
 }
 
-func sourceKind(source string, config Config, domain Domain) string {
-    if !IsValidNtpServerHost(source){return "unknown"}
-    if config.Type!=nil {
-        if *config.Type=="NT5DS" && (domain.Role=="member" || domain.Role=="dc" || domain.Role=="pdc_emulator" || domain.Role=="forest_root_pdc_emulator") {return "domain_peer"}
-        if *config.Type=="NTP" {return "ntp_peer"}
-    }
-    return "unknown"
+func eventSource(e Event) (string, string) {
+	if len(e.Properties) == 0 {
+		return "", "unknown"
+	}
+	raw := strings.TrimSpace(e.Properties[0])
+	kind := "unknown"
+	if i := strings.Index(raw, " ("); i >= 0 {
+		suffix := strings.ToLower(raw[i:])
+		switch {
+		case strings.HasPrefix(suffix, " (ntp.m|"):
+			kind = "ntp_peer"
+		case strings.HasPrefix(suffix, " (ntp.d|"):
+			kind = "domain_peer"
+		default:
+			return "", "unknown"
+		}
+		raw = raw[:i]
+	}
+	raw = peerFlags.ReplaceAllString(raw, "")
+	if !IsValidNtpServerHost(raw) {
+		return "", "unknown"
+	}
+	return raw, kind
 }
 
-func eventSource(e Event)(string,string) {
-    if len(e.Properties)==0{return "","unknown"}
-    raw:=strings.TrimSpace(e.Properties[0])
-    kind:="unknown"
-    if i:=strings.Index(raw," (");i>=0 {
-        suffix:=strings.ToLower(raw[i:])
-        switch {
-        case strings.HasPrefix(suffix," (ntp.m|"):kind="ntp_peer"
-        case strings.HasPrefix(suffix," (ntp.d|"):kind="domain_peer"
-        default:return "","unknown"
-        }
-        raw=raw[:i]
-    }
-    raw=peerFlags.ReplaceAllString(raw,"")
-    if !IsValidNtpServerHost(raw){return "","unknown"}
-    return raw,kind
+func validKind(k string) bool {
+	switch k {
+	case "ntp_peer", "domain_peer", "local_clock", "free_running", "vm_host", "unknown":
+		return true
+	}
+	return false
 }
 
-func validKind(k string)bool {
-    switch k {case "ntp_peer","domain_peer","local_clock","free_running","vm_host","unknown":return true}
-    return false
-}
-
-func readStatus(ctx context.Context,sys System,config Config,domain Domain,events []Event,previous Status) Status {
-    // Branch A: usable structured provider status wins; a failure takes Branch B.
-    native,err:=sys.ProviderStatus(ctx)
-    if err==nil && native.Source!=nil && strings.TrimSpace(*native.Source)!="" {
-        native.Source=nullableText(*native.Source,512)
-        native.Method="provider_api"
-        if !validKind(native.SourceKind){native.SourceKind="unknown"}
-        if native.LastSyncError!=nil {native.LastSyncError=nullableText(*native.LastSyncError,512)}
-        if native.Stratum!=nil && (*native.Stratum<0 || *native.Stratum>16){native.Stratum=nil}
-        return native
-    }
-    // Branch B: only proven numeric tokens, then event insertion strings.
-    tokens:=unknownStatus()
-    if raw,e:=sys.W32tmStatus(ctx);e==nil {tokens=parseW32tmTokens(string(raw))}
-    best:=unknownStatus()
-    if previous.Method=="events" && previous.Source!=nil {best=previous}
-    for _,e:=range events {
-        if e.EventID!=35 && e.EventID!=37 {continue}
-        if best.LastSuccessfulSyncAt!=nil && !e.OccurredAt.After(*best.LastSuccessfulSyncAt){continue}
-        src,kind:=eventSource(e)
-        if src==""{continue}
-        if kind=="unknown"{kind=sourceKind(src,config,domain)}
-        best=Status{Method:"events",Source:ptr(src),SourceKind:kind,LastSuccessfulSyncAt:ptr(e.OccurredAt.UTC())}
-    }
-    if tokens.Source!=nil {
-        tokens.Method="w32tm_tokens"
-        if best.Source!=nil && strings.EqualFold(*best.Source,*tokens.Source){tokens.LastSuccessfulSyncAt=best.LastSuccessfulSyncAt}
-        return tokens
-    }
-    if tokens.Stratum!=nil {best.Stratum=tokens.Stratum}
-    if tokens.PollIntervalSeconds!=nil {best.PollIntervalSeconds=tokens.PollIntervalSeconds}
-    return best
+func readStatus(ctx context.Context, sys System, events []Event) Status {
+	// Branch A: usable structured provider status wins; a failure takes Branch B.
+	native, err := sys.ProviderStatus(ctx)
+	if err == nil && native.Source != nil && strings.TrimSpace(*native.Source) != "" {
+		native.Source = nullableText(*native.Source, 512)
+		native.Method = "provider_api"
+		if !validKind(native.SourceKind) {
+			native.SourceKind = "unknown"
+		}
+		if native.LastSyncError != nil {
+			native.LastSyncError = nullableText(*native.LastSyncError, 512)
+		}
+		if native.Stratum != nil && (*native.Stratum < 0 || *native.Stratum > 16) {
+			native.Stratum = nil
+		}
+		return native
+	}
+	// Branch B: only proven numeric tokens, then event insertion strings.
+	tokens := unknownStatus()
+	if raw, e := sys.W32tmStatus(ctx); e == nil {
+		tokens = parseW32tmTokens(string(raw))
+	}
+	best := unknownStatus()
+	for _, e := range events {
+		if e.EventID != 35 && e.EventID != 37 {
+			continue
+		}
+		if best.LastSuccessfulSyncAt != nil && !e.OccurredAt.After(*best.LastSuccessfulSyncAt) {
+			continue
+		}
+		src, kind := eventSource(e)
+		if src == "" {
+			continue
+		}
+		best = Status{Method: "events", Source: ptr(src), SourceKind: kind, LastSuccessfulSyncAt: ptr(e.OccurredAt.UTC())}
+	}
+	if tokens.Source != nil {
+		tokens.Method = "w32tm_tokens"
+		if best.Source != nil && strings.EqualFold(*best.Source, *tokens.Source) {
+			tokens.LastSuccessfulSyncAt = best.LastSuccessfulSyncAt
+		}
+		return tokens
+	}
+	if tokens.Stratum != nil {
+		best.Stratum = tokens.Stratum
+	}
+	if tokens.PollIntervalSeconds != nil {
+		best.PollIntervalSeconds = tokens.PollIntervalSeconds
+	}
+	return best
 }
 ```
 
@@ -931,7 +1214,7 @@ git commit -m "feat(agent): add locale-independent time status fallback ladder" 
 - Consumes: `System.Events(ctx,since,until,100)` and `System.RecentEvents(ctx,until,20)`; `Event` from Task 2.
 - Produces: `collectEvents(ctx context.Context,sys System,since,until time.Time) ([]Event,error)`.
 
-Use two bounded queries: up to 100 new all-level Time-Service events plus the newest 20 any-ID display events. Keep up to 80 new recognized signal events first, union the display tail, then fill remaining capacity with new events. Deduplicate by record ID plus timestamp (record IDs can reset after log clearing); sort newest first. The single §B array remains at most 100. Event-query failure fails collection and cannot advance the watermark.
+Use two bounded queries: up to 100 new all-level Time-Service events plus the newest 20 any-ID display events. Reserve the newest-20 display IDs first, then use the remaining slots for fresh recognized signals and finally other fresh events. Deduplicate by `RecordID`, retaining the newest occurrence across both queries before selecting signals/display rows; sort newest first. Mark the newest-20 display IDs with unexported in-memory metadata so Task 7's serialized-size trimming cannot drop them. No reservation metadata is sent or persisted. The single §B array remains at most 100. Event-query failure fails collection and cannot advance the watermark.
 
 - [ ] Write `events_test.go`:
 
@@ -939,45 +1222,120 @@ Use two bounded queries: up to 100 new all-level Time-Service events plus the ne
 package timesync
 
 import (
-    "context"
-    "strings"
-    "testing"
-    "time"
-    "unicode/utf16"
+	"context"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf16"
 )
 
 func TestEventWindowAndCaps(t *testing.T) {
-    now:=time.Date(2026,9,28,12,0,0,0,time.UTC);since:=now.Add(-time.Hour)
-    f:= &fakeSystem{}
-    for i:=0;i<140;i++ {
-        f.events=append(f.events,Event{RecordID:uint64(i+1),EventID:134,Level:i%6,
-            OccurredAt:now.Add(-time.Duration(i)*time.Second),Message:strings.Repeat("😀",800),
-            Properties:[]string{strings.Repeat("ü",700),"2","3","4","5","6","7","8","9","10","11"}})
-    }
-    f.recent=[]Event{{RecordID:500,EventID:999,Level:4,OccurredAt:since.Add(-time.Hour),Properties:nil}}
-    got,err:=collectEvents(context.Background(),f,since,now)
-    if err!=nil || len(got)!=100{t.Fatalf("%d %v",len(got),err)}
-    if !f.since.Equal(since)||!f.until.Equal(now){t.Fatal("window not passed through")}
-    found:=false
-    for i,e:=range got {
-        if e.RecordID==500{found=true}
-        if len(utf16.Encode([]rune(e.Message)))>1000 || len(e.Properties)>10 || e.Properties==nil {t.Fatal("event cap")}
-        for _,p:=range e.Properties{if len(utf16.Encode([]rune(p)))>500{t.Fatal("property cap")}}
-        if i>0 && e.OccurredAt.After(got[i-1].OccurredAt){t.Fatal("not newest first")}
-    }
-    if !found {t.Fatal("recent display event lost on quiet window")}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	f := &fakeSystem{}
+	for i := 0; i < 140; i++ {
+		f.events = append(f.events, Event{RecordID: uint64(i + 1), EventID: 134, Level: i % 6,
+			OccurredAt: now.Add(-time.Duration(i) * time.Second), Message: strings.Repeat("😀", 800),
+			Properties: []string{strings.Repeat("ü", 700), "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}})
+	}
+	f.recent = []Event{{RecordID: 500, EventID: 999, Level: 4, OccurredAt: since.Add(-time.Hour), Properties: nil}}
+	got, err := collectEvents(context.Background(), f, since, now)
+	if err != nil || len(got) != 100 {
+		t.Fatalf("%d %v", len(got), err)
+	}
+	if !f.since.Equal(since) || !f.until.Equal(now) {
+		t.Fatal("window not passed through")
+	}
+	found := false
+	for i, e := range got {
+		if e.RecordID == 500 {
+			found = true
+		}
+		if len(utf16.Encode([]rune(e.Message))) > 1000 || len(e.Properties) > 10 || e.Properties == nil {
+			t.Fatal("event cap")
+		}
+		for _, p := range e.Properties {
+			if len(utf16.Encode([]rune(p))) > 500 {
+				t.Fatal("property cap")
+			}
+		}
+		if i > 0 && e.OccurredAt.After(got[i-1].OccurredAt) {
+			t.Fatal("not newest first")
+		}
+	}
+	if !found {
+		t.Fatal("recent display event lost on quiet window")
+	}
 }
 
 func TestEventErrorsAndBoundaries(t *testing.T) {
-    now:=time.Unix(100000,0).UTC();since:=now.Add(-time.Hour)
-    f:= &fakeSystem{eventErr:errUnavailable}
-    if _,err:=collectEvents(context.Background(),f,since,now);err==nil{t.Fatal("query error hidden")}
-    f.eventErr=nil
-    e:=Event{RecordID:3,EventID:37,Level:4,OccurredAt:now.Add(-time.Second)}
-    f.events=[]Event{e,{RecordID:1,OccurredAt:since},{RecordID:2,OccurredAt:now.Add(time.Second)}}
-    f.recent=[]Event{e}
-    got,err:=collectEvents(context.Background(),f,since,now)
-    if err!=nil || len(got)!=1 || got[0].RecordID!=3 {t.Fatalf("%+v %v",got,err)}
+	now := time.Unix(100000, 0).UTC()
+	since := now.Add(-time.Hour)
+	f := &fakeSystem{eventErr: errUnavailable}
+	if _, err := collectEvents(context.Background(), f, since, now); err == nil {
+		t.Fatal("query error hidden")
+	}
+	f.eventErr = nil
+	e := Event{RecordID: 3, EventID: 37, Level: 4, OccurredAt: now.Add(-time.Second)}
+	f.events = []Event{e, {RecordID: 1, OccurredAt: since}, {RecordID: 2, OccurredAt: now.Add(time.Second)}}
+	f.recent = []Event{e}
+	got, err := collectEvents(context.Background(), f, since, now)
+	if err != nil || len(got) != 1 || got[0].RecordID != 3 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestEventDeduplicationKeepsNewestOccurrenceByRecordID(t *testing.T) {
+	now := time.Unix(100000, 0).UTC()
+	since := now.Add(-time.Hour)
+	old := Event{RecordID: 7, EventID: 134, Level: 3, OccurredAt: now.Add(-time.Minute), Message: "older", Properties: []string{}}
+	latest := old
+	latest.OccurredAt = now.Add(-time.Second)
+	latest.Message = "newest"
+	latest.EventID = 37
+	for _, tc := range []struct {
+		name          string
+		fresh, recent []Event
+	}{
+		{"newest in recent", []Event{old}, []Event{latest}},
+		{"newest in fresh", []Event{latest, old}, []Event{old}},
+		{"duplicates within fresh", []Event{old, latest}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := collectEvents(context.Background(), &fakeSystem{events: tc.fresh, recent: tc.recent}, since, now)
+			if err != nil || len(got) != 1 || got[0].RecordID != 7 || got[0].Message != "newest" || got[0].EventID != 37 || !got[0].OccurredAt.Equal(latest.OccurredAt) {
+				t.Fatal(got, err)
+			}
+			if len(tc.recent) > 0 && !got[0].displayReserved {
+				t.Fatal("deduplication lost display reservation")
+			}
+		})
+	}
+}
+
+func TestAllTwentyDisplayEventsSurviveCountCap(t *testing.T) {
+	now := time.Unix(100000, 0).UTC()
+	since := now.Add(-time.Hour)
+	f := &fakeSystem{}
+	for i := 0; i < 100; i++ {
+		f.events = append(f.events, Event{RecordID: uint64(i + 1), EventID: 134, Level: 3, OccurredAt: now.Add(-time.Duration(i+1) * time.Second)})
+	}
+	for i := 0; i < 20; i++ {
+		f.recent = append(f.recent, Event{RecordID: uint64(1000 + i), EventID: 999, Level: 4, OccurredAt: since.Add(-time.Duration(i+1) * time.Hour)})
+	}
+	got, err := collectEvents(context.Background(), f, since, now)
+	if err != nil || len(got) != 100 {
+		t.Fatal(len(got), err)
+	}
+	reserved := 0
+	for _, e := range got {
+		if e.displayReserved {
+			reserved++
+		}
+	}
+	if reserved != 20 {
+		t.Fatal("display reservation lost", reserved)
+	}
 }
 ```
 
@@ -988,45 +1346,113 @@ func TestEventErrorsAndBoundaries(t *testing.T) {
 package timesync
 
 import (
-    "context"
-    "fmt"
-    "sort"
-    "time"
+	"context"
+	"sort"
+	"time"
 )
 
-func isSignal(id uint32)bool {
-    switch id {case 12,24,29,35,36,37,47,52,129,134:return true}
-    return false
+func isSignal(id uint32) bool {
+	switch id {
+	case 12, 24, 29, 35, 36, 37, 47, 52, 129, 134:
+		return true
+	}
+	return false
 }
 func newest(events []Event) {
-    sort.Slice(events,func(i,j int)bool{
-        if events[i].OccurredAt.Equal(events[j].OccurredAt){return events[i].RecordID>events[j].RecordID}
-        return events[i].OccurredAt.After(events[j].OccurredAt)
-    })
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].OccurredAt.Equal(events[j].OccurredAt) {
+			return events[i].RecordID > events[j].RecordID
+		}
+		return events[i].OccurredAt.After(events[j].OccurredAt)
+	})
 }
-func collectEvents(ctx context.Context,sys System,since,until time.Time)([]Event,error){
-    fresh,err:=sys.Events(ctx,since,until,100);if err!=nil{return nil,err}
-    recent,err:=sys.RecentEvents(ctx,until,20);if err!=nil{return nil,err}
-    fresh=append([]Event(nil),fresh...);recent=append([]Event(nil),recent...)
-    newest(fresh);newest(recent)
-    out:=[]Event{};seen:=map[string]bool{}
-    add:=func(e Event){
-        if len(out)>=100 || e.OccurredAt.IsZero() || e.OccurredAt.After(until) || e.Level<0 || e.Level>5 || e.RecordID>maxSafeSequence{return}
-        key:=fmt.Sprintf("%d/%s",e.RecordID,e.OccurredAt.UTC().Format(time.RFC3339Nano))
-        if seen[key]{return};seen[key]=true
-        e.OccurredAt=e.OccurredAt.UTC();e.Message=limitText(e.Message,1000)
-        properties:=[]string{}
-        for i,p:=range e.Properties{if i==10{break};properties=append(properties,limitText(p,500))}
-        e.Properties=properties;out=append(out,e)
-    }
-    for _,e:=range fresh{if len(out)>=80{break};if e.OccurredAt.After(since)&&isSignal(e.EventID){add(e)}}
-    for i,e:=range recent{if i==20{break};add(e)}
-    for _,e:=range fresh{if e.OccurredAt.After(since){add(e)}}
-    newest(out)
-    return out,nil
+func collectEvents(ctx context.Context, sys System, since, until time.Time) ([]Event, error) {
+	fresh, err := sys.Events(ctx, since, until, 100)
+	if err != nil {
+		return nil, err
+	}
+	recent, err := sys.RecentEvents(ctx, until, 20)
+	if err != nil {
+		return nil, err
+	}
+	valid := func(e Event) bool {
+		return !e.OccurredAt.IsZero() && !e.OccurredAt.After(until) && e.Level >= 0 && e.Level <= 5 && e.RecordID <= maxSafeSequence
+	}
+	// Sort before ID-only deduplication so a reused record ID retains its newest occurrence.
+	union := append(append([]Event(nil), fresh...), recent...)
+	newest(union)
+	latest := map[uint64]Event{}
+	for _, e := range union {
+		if !valid(e) {
+			continue
+		}
+		if _, ok := latest[e.RecordID]; !ok {
+			latest[e.RecordID] = e
+		}
+	}
+	recent = append([]Event(nil), recent...)
+	newest(recent)
+	reserved := map[uint64]bool{}
+	for _, e := range recent {
+		if len(reserved) == 20 {
+			break
+		}
+		if valid(e) {
+			reserved[e.RecordID] = true
+		}
+	}
+	candidates := []Event{}
+	freshIDs := map[uint64]bool{}
+	for _, e := range fresh {
+		if valid(e) && e.OccurredAt.After(since) {
+			freshIDs[e.RecordID] = true
+		}
+	}
+	for id, e := range latest {
+		if reserved[id] || freshIDs[id] {
+			candidates = append(candidates, e)
+		}
+	}
+	newest(candidates)
+	out := []Event{}
+	seen := map[uint64]bool{}
+	add := func(e Event) {
+		if len(out) >= 100 || seen[e.RecordID] {
+			return
+		}
+		seen[e.RecordID] = true
+		e.OccurredAt = e.OccurredAt.UTC()
+		e.Message = limitText(e.Message, 1000)
+		properties := []string{}
+		for i, p := range e.Properties {
+			if i == 10 {
+				break
+			}
+			properties = append(properties, limitText(p, 500))
+		}
+		e.Properties = properties
+		e.displayReserved = reserved[e.RecordID]
+		out = append(out, e)
+	}
+	// Reserve display rows first, then prioritize fresh signals within remaining capacity.
+	for _, e := range candidates {
+		if reserved[e.RecordID] {
+			add(e)
+		}
+	}
+	for _, e := range candidates {
+		if freshIDs[e.RecordID] && isSignal(e.EventID) {
+			add(e)
+		}
+	}
+	for _, e := range candidates {
+		add(e)
+	}
+	newest(out)
+	return out, nil
 }
 
-const maxSafeSequence uint64=9007199254740991
+const maxSafeSequence uint64 = 9007199254740991
 ```
 
 - [ ] Re-run the same race command and `cd agent && GOOS=windows go vet ./internal/collectors/timesync/...`; expected PASS.
@@ -1045,7 +1471,7 @@ git commit -m "feat(agent): collect bounded time service event evidence" -m "Co-
 - Read: `agent/internal/collectors/command_limits.go:34–68`, `agent/internal/svcquery/svcquery_windows.go:25–64,125–152`.
 
 **Interfaces:**
-- Consumes: `svcquery.GetStatus(name string) (svcquery.ServiceInfo,error)`, `mgmtdetect.CollectIdentityStatus() mgmtdetect.IdentityStatus`, Task 2's `System`.
+- Consumes: raw SCM reads through `mgr.Connect`, `Service.Query`, `Service.Config`; `mgmtdetect.CollectIdentityStatus() mgmtdetect.IdentityStatus`, Task 2's `System`.
 - Produces: `NewSystem() System`; `collectors.RunCollectorOutput(ctx context.Context,timeout time.Duration,name string,args ...string) ([]byte,error)`.
 
 Use the existing command runner through a small exported wrapper; it already uses `exec.CommandContext`, argument arrays, stdout 4 MiB/stderr 64 KiB caps and `WaitDelay=10s`. The existing `runCollectorOutput` is package-private and cannot be named from `timesync`. No parent-to-child import is introduced, so there is no import cycle.
@@ -1058,18 +1484,24 @@ Use `Get-WinEvent` with `.Properties` projection because the existing collector 
 package collectors
 
 import (
-    "context"
-    "errors"
-    "os"
-    "testing"
-    "time"
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
 )
 
 func TestRunCollectorOutputExportCancellation(t *testing.T) {
-    ctx,cancel:=context.WithCancel(context.Background());cancel()
-    exe,err:=os.Executable();if err!=nil{t.Fatal(err)}
-    _,err=RunCollectorOutput(ctx,time.Second,exe,"-test.run=^$")
-    if !errors.Is(err,context.Canceled){t.Fatalf("context lost: %v",err)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = RunCollectorOutput(ctx, time.Second, exe, "-test.run=^$")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("context lost: %v", err)
+	}
 }
 ```
 
@@ -1081,42 +1513,67 @@ Write `system_windows_test.go`:
 package timesync
 
 import (
-    "strings"
-    "testing"
-    "time"
-    "unsafe"
-    "golang.org/x/sys/windows/svc"
+	"strings"
+	"testing"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows/svc"
 )
 
 func TestNativeLayouts(t *testing.T) {
-    if unsafe.Sizeof(uintptr(0))!=8{t.Skip("amd64 layout assertion")}
-    for name,pair:=range map[string][2]uintptr{
-        "dsrole":{unsafe.Sizeof(dsRoleBasic{}),48},
-        "dcinfo":{unsafe.Sizeof(dcInfo{}),80},
-        "dynamic timezone":{unsafe.Sizeof(dynamicTimezone{}),432},
-        "domain DNS":{unsafe.Offsetof(dsRoleBasic{}.DomainNameDNS),16},
-        "DC domain":{unsafe.Offsetof(dcInfo{}.DomainName),40},
-        "TZ key":{unsafe.Offsetof(dynamicTimezone{}.TimeZoneKeyName),172},
-    } {if pair[0]!=pair[1]{t.Fatalf("%s: %v",name,pair)}}
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("amd64 layout assertion")
+	}
+	for name, pair := range map[string][2]uintptr{
+		"dsrole":           {unsafe.Sizeof(dsRoleBasic{}), 48},
+		"dcinfo":           {unsafe.Sizeof(dcInfo{}), 80},
+		"dynamic timezone": {unsafe.Sizeof(dynamicTimezone{}), 432},
+		"domain DNS":       {unsafe.Offsetof(dsRoleBasic{}.DomainNameDNS), 16},
+		"DC domain":        {unsafe.Offsetof(dcInfo{}.DomainName), 40},
+		"TZ key":           {unsafe.Offsetof(dynamicTimezone{}.TimeZoneKeyName), 172},
+	} {
+		if pair[0] != pair[1] {
+			t.Fatalf("%s: %v", name, pair)
+		}
+	}
 }
 
 func TestServiceStateMapping(t *testing.T) {
-    for _,tc:=range []struct{in svc.State;want string}{
-        {svc.Running,"running"},{svc.Stopped,"stopped"},{svc.StartPending,"start_pending"},
-        {svc.ContinuePending,"start_pending"},{svc.StopPending,"stop_pending"},
-        {svc.PausePending,"stop_pending"},{svc.Paused,"paused"},{svc.State(0),"unknown"},
-    }{if got:=timeServiceState(tc.in);got!=tc.want{t.Fatalf("%d=%s",tc.in,got)}}
+	for _, tc := range []struct {
+		in   svc.State
+		want string
+	}{
+		{svc.Running, "running"}, {svc.Stopped, "stopped"}, {svc.StartPending, "start_pending"},
+		{svc.ContinuePending, "start_pending"}, {svc.StopPending, "stop_pending"},
+		{svc.PausePending, "stop_pending"}, {svc.Paused, "paused"}, {svc.State(0), "unknown"},
+	} {
+		if got := timeServiceState(tc.in); got != tc.want {
+			t.Fatalf("%d=%s", tc.in, got)
+		}
+	}
 }
 
 func TestEventScriptUsesInsertionStringsAndAllLevels(t *testing.T) {
-    script:=eventScript(time.Unix(1,0),time.Unix(2,0),100)
-    for _,want:=range []string{"Microsoft-Windows-Time-Service",".Properties","InvariantCulture","-MaxEvents 100","NoMatchingEventsFound","ConvertTo-Json -InputObject"}{
-        if !strings.Contains(script,want){t.Fatalf("missing %s",want)}
-    }
-    if strings.Contains(script,"Level=")||strings.Contains(script,"Level ="){t.Fatal("events filtered by severity")}
-    if !strings.Contains(script,"StartTime")||!strings.Contains(script,"EndTime"){t.Fatal("missing window")}
-    if _,err:=decodeEvents([]byte(`not JSON`));err==nil{t.Fatal("bad query output hidden")}
-    rows,err:=decodeEvents([]byte(`[]`));if err!=nil||rows==nil||len(rows)!=0{t.Fatal(rows,err)}
+	script := eventScript(time.Unix(1, 0), time.Unix(2, 0), 100)
+	for _, want := range []string{"Microsoft-Windows-Time-Service", ".Properties", "InvariantCulture", "-MaxEvents 100", "NoMatchingEventsFound", "ConvertTo-Json -InputObject"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("missing %s", want)
+		}
+	}
+	if strings.Contains(script, "Level=") || strings.Contains(script, "Level =") {
+		t.Fatal("events filtered by severity")
+	}
+	if !strings.Contains(script, "StartTime") || !strings.Contains(script, "EndTime") {
+		t.Fatal("missing window")
+	}
+	if _, err := decodeEvents([]byte(`not JSON`)); err == nil {
+		t.Fatal("bad query output hidden")
+	}
+	rows, err := decodeEvents([]byte(`[]`))
+	if err != nil || rows == nil || len(rows) != 0 {
+		t.Fatal(rows, err)
+	}
 }
 ```
 
@@ -1128,13 +1585,13 @@ func TestEventScriptUsesInsertionStringsAndAllLevels(t *testing.T) {
 package collectors
 
 import (
-    "context"
-    "time"
+	"context"
+	"time"
 )
 
 // RunCollectorOutput shares the collector command limits with subpackages.
-func RunCollectorOutput(ctx context.Context,timeout time.Duration,name string,args ...string)([]byte,error){
-    return runCollectorOutputWithContext(ctx,timeout,name,args...)
+func RunCollectorOutput(ctx context.Context, timeout time.Duration, name string, args ...string) ([]byte, error) {
+	return runCollectorOutputWithContext(ctx, timeout, name, args...)
 }
 ```
 
@@ -1156,187 +1613,297 @@ Create `system_windows.go`:
 package timesync
 
 import (
-    "context"
-    "errors"
-    "fmt"
-    "syscall"
-    "time"
-    "unsafe"
-    "github.com/breeze-rmm/agent/internal/collectors"
-    "github.com/breeze-rmm/agent/internal/mgmtdetect"
-    "github.com/breeze-rmm/agent/internal/svcquery"
-    "golang.org/x/sys/windows"
-    "golang.org/x/sys/windows/registry"
-    "golang.org/x/sys/windows/svc"
-    "golang.org/x/sys/windows/svc/mgr"
+	"context"
+	"errors"
+	"fmt"
+	"syscall"
+	"time"
+	"unsafe"
+
+	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 type windowsSystem struct{}
-var _ System=(*windowsSystem)(nil)
-func NewSystem() System{return &windowsSystem{}}
 
-func (*windowsSystem) ReadString(ctx context.Context,path,name string)(string,error){
-    if err:=ctx.Err();err!=nil{return "",err}
-    key,err:=registry.OpenKey(registry.LOCAL_MACHINE,path,registry.QUERY_VALUE)
-    if err!=nil{return "",err};defer key.Close()
-    value,_,err:=key.GetStringValue(name);return value,err
-}
-func (*windowsSystem) ReadDWORD(ctx context.Context,path,name string)(uint32,error){
-    if err:=ctx.Err();err!=nil{return 0,err}
-    key,err:=registry.OpenKey(registry.LOCAL_MACHINE,path,registry.QUERY_VALUE)
-    if err!=nil{return 0,err};defer key.Close()
-    value,typ,err:=key.GetIntegerValue(name)
-    if err!=nil{return 0,err};if typ!=registry.DWORD{return 0,fmt.Errorf("%s is not DWORD",name)}
-    return uint32(value),nil
-}
-func (*windowsSystem) ValueNames(ctx context.Context,path string)([]string,error){
-    if err:=ctx.Err();err!=nil{return nil,err}
-    key,err:=registry.OpenKey(registry.LOCAL_MACHINE,path,registry.QUERY_VALUE)
-    if errors.Is(err,syscall.ERROR_FILE_NOT_FOUND){return []string{},nil}
-    if err!=nil{return nil,err};defer key.Close()
-    return key.ReadValueNames(-1)
-}
+var _ System = (*windowsSystem)(nil)
 
-func timeServiceState(state svc.State)string{
-    switch state {
-    case svc.Running:return "running"
-    case svc.Stopped:return "stopped"
-    case svc.StartPending,svc.ContinuePending:return "start_pending"
-    case svc.StopPending,svc.PausePending:return "stop_pending"
-    case svc.Paused:return "paused"
-    default:return "unknown"
-    }
+func NewSystem() System { return &windowsSystem{} }
+
+func (*windowsSystem) ReadString(ctx context.Context, path, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if err != nil {
+		return "", err
+	}
+	defer key.Close()
+	value, _, err := key.GetStringValue(name)
+	return value, err
 }
-func (*windowsSystem) W32TimeService(ctx context.Context)(ServiceInfo,error){
-    if err:=ctx.Err();err!=nil{return ServiceInfo{},err}
-    basic,err:=svcquery.GetStatus("W32Time")
-    if errors.Is(err,windows.ERROR_SERVICE_DOES_NOT_EXIST){return ServiceInfo{"not_installed","unknown"},nil}
-    if err!=nil{return ServiceInfo{},err}
-    info:=ServiceInfo{State:"unknown",StartType:"unknown"}
-    switch basic.StartType{case "automatic":info.StartType="auto";case "manual":info.StartType="manual";case "disabled":info.StartType="disabled"}
-    // svcquery collapses pending/paused states. Read the raw SCM facts too.
-    m,err:=mgr.Connect();if err!=nil{return info,err};defer m.Disconnect()
-    service,err:=m.OpenService("W32Time");if err!=nil{return info,err};defer service.Close()
-    state,err:=service.Query();if err!=nil{return info,err}
-    info.State=timeServiceState(state.State)
-    cfg,err:=service.Config();if err!=nil{return info,err}
-    switch cfg.StartType {
-    case mgr.StartAutomatic:
-        info.StartType="auto";if cfg.DelayedAutoStart{info.StartType="delayed_auto"}
-    case mgr.StartDisabled:info.StartType="disabled"
-    case mgr.StartManual:
-        info.StartType="manual"
-        key,e:=registry.OpenKey(registry.LOCAL_MACHINE,serviceKey+`\TriggerInfo`,registry.ENUMERATE_SUB_KEYS)
-        if e==nil {
-            names,readErr:=key.ReadSubKeyNames(-1);key.Close()
-            if readErr!=nil{return info,readErr}
-            if len(names)>0{info.StartType="trigger_manual"}
-        }else if !errors.Is(e,syscall.ERROR_FILE_NOT_FOUND){return info,e}
-    default:info.StartType="unknown"
-    }
-    return info,nil
+func (*windowsSystem) ReadDWORD(ctx context.Context, path, name string) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if err != nil {
+		return 0, err
+	}
+	defer key.Close()
+	value, typ, err := key.GetIntegerValue(name)
+	if err != nil {
+		return 0, err
+	}
+	if typ != registry.DWORD {
+		return 0, fmt.Errorf("%s is not DWORD", name)
+	}
+	return uint32(value), nil
+}
+func (*windowsSystem) ValueNames(ctx context.Context, path string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer key.Close()
+	return key.ReadValueNames(-1)
 }
 
-func (*windowsSystem) ProviderStatus(ctx context.Context)(Status,error){
-    if err:=ctx.Err();err!=nil{return unknownStatus(),err}
-    // Keep the SPI and wire method stable. Task 1 has not established a callable
-    // DLL ABI; a successful Find alone is insufficient to invoke this export.
-    return unknownStatus(),errUnavailable
+func timeServiceState(state svc.State) string {
+	switch state {
+	case svc.Running:
+		return "running"
+	case svc.Stopped:
+		return "stopped"
+	case svc.StartPending, svc.ContinuePending:
+		return "start_pending"
+	case svc.StopPending, svc.PausePending:
+		return "stop_pending"
+	case svc.Paused:
+		return "paused"
+	default:
+		return "unknown"
+	}
 }
-func (*windowsSystem) W32tmStatus(ctx context.Context)([]byte,error){
-    return collectors.RunCollectorOutput(ctx,10*time.Second,"w32tm.exe","/query","/status","/verbose")
-}
-func (*windowsSystem) Identity(ctx context.Context)(mgmtdetect.IdentityStatus,error){
-    if err:=ctx.Err();err!=nil{return mgmtdetect.IdentityStatus{},err}
-    id:=mgmtdetect.CollectIdentityStatus()
-    if err:=ctx.Err();err!=nil{return id,err}
-    if id.Source=="dsregcmd_error_no_fallback"||!id.DetectionSupported(){return id,errUnavailable}
-    return id,nil
+func (*windowsSystem) W32TimeService(ctx context.Context) (ServiceInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return ServiceInfo{}, err
+	}
+	info := ServiceInfo{State: "unknown", StartType: "unknown"}
+	// R8: keep svcquery unchanged for other callers; read raw SCM facts here.
+	m, err := mgr.Connect()
+	if err != nil {
+		return info, err
+	}
+	defer m.Disconnect()
+	service, err := m.OpenService("W32Time")
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		return ServiceInfo{"not_installed", "unknown"}, nil
+	}
+	if err != nil {
+		return info, err
+	}
+	defer service.Close()
+	state, err := service.Query()
+	if err != nil {
+		return info, err
+	}
+	info.State = timeServiceState(state.State)
+	cfg, err := service.Config()
+	if err != nil {
+		return info, err
+	}
+	switch cfg.StartType {
+	case mgr.StartAutomatic:
+		info.StartType = "auto"
+		if cfg.DelayedAutoStart {
+			info.StartType = "delayed_auto"
+		}
+	case mgr.StartDisabled:
+		info.StartType = "disabled"
+	case mgr.StartManual:
+		info.StartType = "manual"
+		key, e := registry.OpenKey(registry.LOCAL_MACHINE, serviceKey+`\TriggerInfo`, registry.ENUMERATE_SUB_KEYS)
+		if e == nil {
+			names, readErr := key.ReadSubKeyNames(-1)
+			key.Close()
+			if readErr != nil {
+				return info, readErr
+			}
+			if len(names) > 0 {
+				info.StartType = "trigger_manual"
+			}
+		} else if !errors.Is(e, syscall.ERROR_FILE_NOT_FOUND) {
+			return info, e
+		}
+	default:
+		info.StartType = "unknown"
+	}
+	return info, nil
 }
 
-var netapi32=windows.NewLazySystemDLL("netapi32.dll")
-var dsRoleProc=netapi32.NewProc("DsRoleGetPrimaryDomainInformation")
-var dsRoleFreeProc=netapi32.NewProc("DsRoleFreeMemory")
-var dsGetDCProc=netapi32.NewProc("DsGetDcNameW")
-var kernel32=windows.NewLazySystemDLL("kernel32.dll")
-var timezoneProc=kernel32.NewProc("GetDynamicTimeZoneInformation")
+func (*windowsSystem) ProviderStatus(ctx context.Context) (Status, error) {
+	if err := ctx.Err(); err != nil {
+		return unknownStatus(), err
+	}
+	// Keep the SPI and wire method stable. Task 1 has not established a callable
+	// DLL ABI; a successful Find alone is insufficient to invoke this export.
+	return unknownStatus(), errUnavailable
+}
+func (*windowsSystem) W32tmStatus(ctx context.Context) ([]byte, error) {
+	return collectors.RunCollectorOutput(ctx, 10*time.Second, "w32tm.exe", "/query", "/status", "/verbose")
+}
+func (*windowsSystem) Identity(ctx context.Context) (mgmtdetect.IdentityStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return mgmtdetect.IdentityStatus{}, err
+	}
+	id := mgmtdetect.CollectIdentityStatus()
+	if err := ctx.Err(); err != nil {
+		return id, err
+	}
+	if id.Source == "dsregcmd_error_no_fallback" || !id.DetectionSupported() {
+		return id, errUnavailable
+	}
+	return id, nil
+}
+
+var netapi32 = windows.NewLazySystemDLL("netapi32.dll")
+var dsRoleProc = netapi32.NewProc("DsRoleGetPrimaryDomainInformation")
+var dsRoleFreeProc = netapi32.NewProc("DsRoleFreeMemory")
+var dsGetDCProc = netapi32.NewProc("DsGetDcNameW")
+var kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+var timezoneProc = kernel32.NewProc("GetDynamicTimeZoneInformation")
 
 type dsRoleBasic struct {
-    MachineRole uint32
-    Flags uint32
-    DomainNameFlat *uint16
-    DomainNameDNS *uint16
-    DomainForestName *uint16
-    DomainGUID windows.GUID
+	MachineRole      uint32
+	Flags            uint32
+	DomainNameFlat   *uint16
+	DomainNameDNS    *uint16
+	DomainForestName *uint16
+	DomainGUID       windows.GUID
 }
 type dcInfo struct {
-    DomainControllerName *uint16
-    DomainControllerAddress *uint16
-    DomainControllerAddressType uint32
-    DomainGUID windows.GUID
-    DomainName *uint16
-    DNSForestName *uint16
-    Flags uint32
-    DCSiteName *uint16
-    ClientSiteName *uint16
+	DomainControllerName        *uint16
+	DomainControllerAddress     *uint16
+	DomainControllerAddressType uint32
+	DomainGUID                  windows.GUID
+	DomainName                  *uint16
+	DNSForestName               *uint16
+	Flags                       uint32
+	DCSiteName                  *uint16
+	ClientSiteName              *uint16
 }
-func wide(p *uint16)string{if p==nil{return ""};return windows.UTF16PtrToString(p)}
 
-func (*windowsSystem) PrimaryDomain(ctx context.Context)(RoleInfo,error){
-    if err:=ctx.Err();err!=nil{return RoleInfo{},err}
-    if err:=dsRoleProc.Find();err!=nil{return RoleInfo{},err}
-    if err:=dsRoleFreeProc.Find();err!=nil{return RoleInfo{},err}
-    var p *dsRoleBasic
-    result,_,_:=dsRoleProc.Call(0,1,uintptr(unsafe.Pointer(&p)))
-    if result!=0{return RoleInfo{},syscall.Errno(result)}
-    if p==nil{return RoleInfo{},errUnavailable}
-    defer dsRoleFreeProc.Call(uintptr(unsafe.Pointer(p)))
-    return RoleInfo{p.MachineRole,wide(p.DomainNameDNS),wide(p.DomainForestName)},nil
+func wide(p *uint16) string {
+	if p == nil {
+		return ""
+	}
+	return windows.UTF16PtrToString(p)
 }
-func (*windowsSystem) PDC(ctx context.Context,domain string)(string,error){
-    if err:=ctx.Err();err!=nil{return "",err}
-    if err:=dsGetDCProc.Find();err!=nil{return "",err}
-    name,err:=windows.UTF16PtrFromString(domain);if err!=nil{return "",err}
-    var p *dcInfo
-    const dsPDCRequired=0x00000080
-    const dsReturnDNSName=0x40000000
-    result,_,_:=dsGetDCProc.Call(0,uintptr(unsafe.Pointer(name)),0,0,dsPDCRequired|dsReturnDNSName,uintptr(unsafe.Pointer(&p)))
-    if result!=0{return "",syscall.Errno(result)}
-    if p==nil{return "",errUnavailable}
-    defer windows.NetApiBufferFree((*byte)(unsafe.Pointer(p)))
-    return wide(p.DomainControllerName),nil
+
+func (*windowsSystem) PrimaryDomain(ctx context.Context) (RoleInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return RoleInfo{}, err
+	}
+	if err := dsRoleProc.Find(); err != nil {
+		return RoleInfo{}, err
+	}
+	if err := dsRoleFreeProc.Find(); err != nil {
+		return RoleInfo{}, err
+	}
+	var p *dsRoleBasic
+	result, _, _ := dsRoleProc.Call(0, 1, uintptr(unsafe.Pointer(&p)))
+	if result != 0 {
+		return RoleInfo{}, syscall.Errno(result)
+	}
+	if p == nil {
+		return RoleInfo{}, errUnavailable
+	}
+	defer dsRoleFreeProc.Call(uintptr(unsafe.Pointer(p)))
+	return RoleInfo{p.MachineRole, wide(p.DomainNameDNS), wide(p.DomainForestName)}, nil
 }
-func (*windowsSystem) ComputerDNSName(ctx context.Context)(string,error){
-    if err:=ctx.Err();err!=nil{return "",err}
-    size:=uint32(256);buf:=make([]uint16,size)
-    err:=windows.GetComputerNameEx(windows.ComputerNameDnsFullyQualified,&buf[0],&size)
-    if errors.Is(err,windows.ERROR_MORE_DATA){buf=make([]uint16,size);err=windows.GetComputerNameEx(windows.ComputerNameDnsFullyQualified,&buf[0],&size)}
-    if err!=nil{return "",err}
-    return windows.UTF16ToString(buf),nil
+func (*windowsSystem) PDC(ctx context.Context, domain string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := dsGetDCProc.Find(); err != nil {
+		return "", err
+	}
+	name, err := windows.UTF16PtrFromString(domain)
+	if err != nil {
+		return "", err
+	}
+	var p *dcInfo
+	const dsPDCRequired = 0x00000080
+	const dsReturnDNSName = 0x40000000
+	result, _, _ := dsGetDCProc.Call(0, uintptr(unsafe.Pointer(name)), 0, 0, dsPDCRequired|dsReturnDNSName, uintptr(unsafe.Pointer(&p)))
+	if result != 0 {
+		return "", syscall.Errno(result)
+	}
+	if p == nil {
+		return "", errUnavailable
+	}
+	defer windows.NetApiBufferFree((*byte)(unsafe.Pointer(p)))
+	return wide(p.DomainControllerName), nil
+}
+func (*windowsSystem) ComputerDNSName(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	size := uint32(256)
+	buf := make([]uint16, size)
+	err := windows.GetComputerNameEx(windows.ComputerNameDnsFullyQualified, &buf[0], &size)
+	if errors.Is(err, windows.ERROR_MORE_DATA) {
+		buf = make([]uint16, size)
+		err = windows.GetComputerNameEx(windows.ComputerNameDnsFullyQualified, &buf[0], &size)
+	}
+	if err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buf), nil
 }
 
 type dynamicTimezone struct {
-    Bias int32
-    StandardName [32]uint16
-    StandardDate windows.Systemtime
-    StandardBias int32
-    DaylightName [32]uint16
-    DaylightDate windows.Systemtime
-    DaylightBias int32
-    TimeZoneKeyName [128]uint16
-    DynamicDaylightTimeDisabled byte
+	Bias                        int32
+	StandardName                [32]uint16
+	StandardDate                windows.Systemtime
+	StandardBias                int32
+	DaylightName                [32]uint16
+	DaylightDate                windows.Systemtime
+	DaylightBias                int32
+	TimeZoneKeyName             [128]uint16
+	DynamicDaylightTimeDisabled byte
 }
-func (*windowsSystem) DynamicTimezone(ctx context.Context)(Timezone,error){
-    if err:=ctx.Err();err!=nil{return Timezone{},err}
-    if err:=timezoneProc.Find();err!=nil{return Timezone{},err}
-    var info dynamicTimezone
-    result,_,callErr:=timezoneProc.Call(uintptr(unsafe.Pointer(&info)))
-    if uint32(result)==0xffffffff{return Timezone{},fmt.Errorf("GetDynamicTimeZoneInformation: %w",callErr)}
-    // Contract reports base Bias, not the current DST-adjusted UTC offset.
-    zone:=Timezone{WindowsID:nullableText(windows.UTF16ToString(info.TimeZoneKeyName[:]),128),
-        DynamicDSTDisabled:ptr(info.DynamicDaylightTimeDisabled!=0),AutoUpdate:"unknown"}
-    if info.Bias>=-1440&&info.Bias<=1440{zone.BiasMinutes=ptr(info.Bias)}
-    return zone,nil
+
+func (*windowsSystem) DynamicTimezone(ctx context.Context) (Timezone, error) {
+	if err := ctx.Err(); err != nil {
+		return Timezone{}, err
+	}
+	if err := timezoneProc.Find(); err != nil {
+		return Timezone{}, err
+	}
+	var info dynamicTimezone
+	result, _, callErr := timezoneProc.Call(uintptr(unsafe.Pointer(&info)))
+	if uint32(result) == 0xffffffff {
+		return Timezone{}, fmt.Errorf("GetDynamicTimeZoneInformation: %w", callErr)
+	}
+	// Contract reports base Bias, not the current DST-adjusted UTC offset.
+	zone := Timezone{WindowsID: nullableText(windows.UTF16ToString(info.TimeZoneKeyName[:]), 128),
+		DynamicDSTDisabled: ptr(info.DynamicDaylightTimeDisabled != 0), AutoUpdate: "unknown"}
+	if info.Bias >= -1440 && info.Bias <= 1440 {
+		zone.BiasMinutes = ptr(info.Bias)
+	}
+	return zone, nil
 }
 ```
 
@@ -1350,17 +1917,20 @@ Create `system_events_windows.go`:
 package timesync
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "time"
-    "github.com/breeze-rmm/agent/internal/collectors"
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/collectors"
 )
 
-func eventScript(since,until time.Time,limit int)string{
-    start:=""
-    if !since.IsZero(){start=fmt.Sprintf(";StartTime=[datetime]::Parse('%s',[Globalization.CultureInfo]::InvariantCulture)",since.UTC().Format(time.RFC3339Nano))}
-    return fmt.Sprintf(`[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;
+func eventScript(since, until time.Time, limit int) string {
+	start := ""
+	if !since.IsZero() {
+		start = fmt.Sprintf(";StartTime=[datetime]::Parse('%s',[Globalization.CultureInfo]::InvariantCulture)", since.UTC().Format(time.RFC3339Nano))
+	}
+	return fmt.Sprintf(`[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;
 $ErrorActionPreference='Stop';
 try {
  $rows=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Time-Service'%s;EndTime=[datetime]::Parse('%s',[Globalization.CultureInfo]::InvariantCulture)} -MaxEvents %d -ErrorAction Stop)
@@ -1381,33 +1951,41 @@ $result=@($rows | ForEach-Object {
   message=(Clip $message 1000);
   properties=@($entry.Properties | Select-Object -First 10 | ForEach-Object { Clip ([Convert]::ToString($_.Value,[Globalization.CultureInfo]::InvariantCulture)) 500 })
  }
-}); ConvertTo-Json -InputObject $result -Depth 5 -Compress`,start,until.UTC().Format(time.RFC3339Nano),limit)
+}); ConvertTo-Json -InputObject $result -Depth 5 -Compress`, start, until.UTC().Format(time.RFC3339Nano), limit)
 }
-func decodeEvents(b []byte)([]Event,error){
-    events:=[]Event{}
-    if err:=json.Unmarshal(b,&events);err!=nil{return nil,fmt.Errorf("decode Time-Service events: %w",err)}
-    if events==nil{return nil,fmt.Errorf("event query returned null instead of an array")}
-    return events,nil
+func decodeEvents(b []byte) ([]Event, error) {
+	events := []Event{}
+	if err := json.Unmarshal(b, &events); err != nil {
+		return nil, fmt.Errorf("decode Time-Service events: %w", err)
+	}
+	if events == nil {
+		return nil, fmt.Errorf("event query returned null instead of an array")
+	}
+	return events, nil
 }
-func (*windowsSystem) Events(ctx context.Context,since,until time.Time,limit int)([]Event,error){
-    if limit<1||limit>100{return nil,fmt.Errorf("invalid event limit %d",limit)}
-    b,err:=collectors.RunCollectorOutput(ctx,30*time.Second,"powershell.exe","-NoProfile","-NonInteractive","-Command",eventScript(since,until,limit))
-    if err!=nil{return nil,err}
-    return decodeEvents(b)
+func (*windowsSystem) Events(ctx context.Context, since, until time.Time, limit int) ([]Event, error) {
+	if limit < 1 || limit > 100 {
+		return nil, fmt.Errorf("invalid event limit %d", limit)
+	}
+	b, err := collectors.RunCollectorOutput(ctx, 30*time.Second, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", eventScript(since, until, limit))
+	if err != nil {
+		return nil, err
+	}
+	return decodeEvents(b)
 }
-func (s *windowsSystem) RecentEvents(ctx context.Context,until time.Time,limit int)([]Event,error){
-    return s.Events(ctx,time.Time{},until,limit)
+func (s *windowsSystem) RecentEvents(ctx context.Context, until time.Time, limit int) ([]Event, error) {
+	return s.Events(ctx, time.Time{}, until, limit)
 }
 ```
 
 - [ ] Run:
 
 ```bash
-cd agent && go test -race ./internal/collectors/... -run '^TestRunCollectorOutputExportCancellation$'
-cd agent && GOOS=windows go vet ./internal/collectors/timesync/... ./internal/mgmtdetect/... ./internal/collectors/...
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/mgmtdetect.test.exe ./internal/mgmtdetect
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/collectors.test.exe ./internal/collectors
+(cd agent && go test -race ./internal/collectors/... -run '^TestRunCollectorOutputExportCancellation$')
+(cd agent && GOOS=windows go vet ./internal/collectors/timesync/... ./internal/mgmtdetect/... ./internal/collectors/...)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/mgmtdetect.test.exe ./internal/mgmtdetect)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/collectors.test.exe ./internal/collectors)
 ```
 
 Expected PASS (cross-compile does not execute tests). Run natively in the Windows checkout: `cd agent; go test -race ./internal/collectors/timesync/... ./internal/mgmtdetect/...`. Expected PASS; lab-only tests remain opt-in.
@@ -1419,7 +1997,7 @@ git add agent/internal/collectors/command_export.go agent/internal/collectors/co
 git commit -m "feat(agent): read Windows time configuration and structured events" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-### Task 7: Collect facts and persist sequence, pending delivery and event watermark
+### Task 7: Collect fresh facts and persist only sequence and event cursor
 
 **Files:**
 - Create: `agent/internal/collectors/timesync/{collector.go,persist.go,collector_test.go,system_other_test.go}`.
@@ -1428,9 +2006,12 @@ git commit -m "feat(agent): read Windows time configuration and structured event
 **Interfaces:**
 - Consumes: `System`, `readDomain`, `readStatus`, `collectEvents` from Tasks 2–6.
 - Produces: `New(stateDir string,sys System) *Collector`; `(*Collector).Collect(ctx context.Context) (*Snapshot,error)` exactly as §H.
-- Additional internal delivery seam: `(*Collector).Acknowledge(sequence uint64) error`, used by Task 8 after successful PUT, and `(*Collector).Discard(sequence uint64) error`, used after permanent payload rejection without advancing the event watermark. W03b can continue using the contracted `Collect` method.
+- Produces: `(*Collector).Commit(snapshot *Snapshot) error` (R4), consumed by Task 8 and W03b only after a 2xx response with `accepted: true` or `accepted: false, reason: "stale_sequence"`.
+- Produces: `fitPayload(s *Snapshot) error`, the shared 256 KiB serialized budget helper. W03b calls it again after attaching enforcement to the same snapshot, preserving the collector's in-memory display reservation.
 
-The durable pending snapshot prevents a failed upload from advancing the event window or losing one-shot failure events. Repeated `Collect` calls return a deep copy of the same pending snapshot until acknowledged. Sequence reservation and pending payload are one atomic state replacement; an acknowledgement atomically removes pending and advances the watermark to that snapshot's query upper bound. A process crash after the API accepted but before acknowledgement causes a harmless duplicate PUT; W01a rejects its sequence with HTTP 200, and the transport can acknowledge it locally. Permanent payload rejections discard only pending data, preserve the event watermark, and reserve a fresh sequence on the next collection; transient failures retain the original payload.
+Every `Collect` performs fresh OS reads and reserves a new sequence atomically before returning. Only `sequence` and `eventsSince` persist; there is no pending snapshot, cached status or event-transfer buffer. Failed sends leave the committed cursor unchanged; the next call re-queries the events and reports current facts with a new sequence. `Commit` persists the accepted snapshot's collection boundary without changing the sequence. An older concurrent commit cannot move the cursor backward. Read-only management guards in W03b must use `System` directly, never `Collect` or `Commit`.
+
+W01a's merged route must implement R4's qualified response, including `reason: "stale_sequence"`; an unqualified `accepted: false` does not commit. Its draft's omitted reason is an upstream correction, not permission to weaken the sender.
 
 - [ ] Write `collector_test.go`:
 
@@ -1438,110 +2019,341 @@ The durable pending snapshot prevents a failed upload from advancing the event w
 package timesync
 
 import (
-    "context"
-    "encoding/json"
-    "errors"
-    "os"
-    "path/filepath"
-    "reflect"
-    "sync"
-    "testing"
-    "time"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
 )
 
-func TestPersistencePendingAndEventWatermark(t *testing.T) {
-    dir:=t.TempDir();at:=time.Date(2026,9,28,12,0,0,0,time.UTC)
-    f:= &fakeSystem{events:[]Event{{RecordID:1,EventID:134,Level:3,OccurredAt:at.Add(-time.Minute)}}}
-    c:=New(dir,f);c.now=func()time.Time{return at}
-    s,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-    if s.Sequence!=1 || !f.since.Equal(at.Add(-24*time.Hour)){t.Fatal(s,f.since)}
-    // Failed send means no acknowledgement. Restart must resend exactly this payload.
-    next:=New(dir,f);next.now=func()time.Time{return at.Add(time.Hour)}
-    again,err:=next.Collect(context.Background());if err!=nil||!reflect.DeepEqual(s,again){t.Fatal(again,err)}
-    again.Events[0].Message="caller mutation"
-    same,err:=next.Collect(context.Background());if err!=nil||same.Events[0].Message!=""{t.Fatal("pending state aliased")}
-    if err=next.Acknowledge(s.Sequence);err!=nil{t.Fatal(err)}
-    f.events=nil
-    newer,err:=next.Collect(context.Background());if err!=nil{t.Fatal(err)}
-    if newer.Sequence!=2 || !f.since.Equal(at){t.Fatal(newer,f.since)}
-    if err=next.Acknowledge(1);err==nil{t.Fatal("wrong acknowledgement accepted")}
+func TestFreshCollectionsAndCommittedEventCursor(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	f := &fakeSystem{}
+	c := New(dir, f)
+	c.now = func() time.Time { return at }
+	first, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Sequence != 1 || !f.since.Equal(at.Add(-24*time.Hour)) {
+		t.Fatal(first, f.since)
+	}
+	if err = c.Commit(first); err != nil {
+		t.Fatal(err)
+	}
+	f.events = []Event{{RecordID: 1, EventID: 134, Level: 3, OccurredAt: at.Add(time.Minute)}}
+	c.now = func() time.Time { return at.Add(time.Hour) }
+	failed, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Sequence != 2 || len(failed.Events) != 1 || !f.since.Equal(at) {
+		t.Fatal(failed, f.since)
+	}
+	failed.Events[0].Message = "caller mutation"
+	f.strings = map[string]string{serviceKey + `\Parameters|Type`: "NoSync"}
+	// No Commit after a failed send. Restart must read current facts and replay the event.
+	next := New(dir, f)
+	next.now = func() time.Time { return at.Add(2 * time.Hour) }
+	fresh, err := next.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Sequence != 3 || !fresh.CollectedAt.Equal(at.Add(2*time.Hour)) || *fresh.Config.Type != "NoSync" || !f.since.Equal(at) || len(fresh.Events) != 1 || fresh.Events[0].Message != "" {
+		t.Fatal(fresh, f.since)
+	}
+	if err = next.Commit(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err = next.Commit(failed); err != nil {
+		t.Fatal(err)
+	}
+	if !next.state.EventsSince.Equal(fresh.CollectedAt) {
+		t.Fatal("older commit rewound cursor")
+	}
+	next.now = func() time.Time { return at.Add(3 * time.Hour) }
+	newer, err := next.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newer.Sequence != 4 || len(newer.Events) != 0 || !f.since.Equal(fresh.CollectedAt) {
+		t.Fatal(newer, f.since)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, stateName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys["sequence"] == nil || keys["eventsSince"] == nil {
+		t.Fatal("extra persisted state", string(raw))
+	}
 }
 
-func TestPermanentRejectionCollectsFreshFactsWithoutAdvancingCursor(t *testing.T) {
-    at:=time.Date(2026,9,28,12,0,0,0,time.UTC)
-    f:= &fakeSystem{}
-    c:=New(t.TempDir(),f);c.now=func()time.Time{return at}
-    first,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-    if err=c.Acknowledge(first.Sequence);err!=nil{t.Fatal(err)}
-    c.now=func()time.Time{return at.Add(time.Hour)}
-    rejected,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-    if err=c.Discard(rejected.Sequence);err!=nil{t.Fatal(err)}
-    f.strings=map[string]string{serviceKey+`\Parameters|Type`:"NoSync"}
-    fresh,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-    if fresh.Sequence<=rejected.Sequence || fresh.Config.Type==nil || *fresh.Config.Type!="NoSync" || !f.since.Equal(at){t.Fatal(fresh,f.since)}
+func TestEveryCollectReadsFreshFactsWithoutCommit(t *testing.T) {
+	at := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	f := &fakeSystem{}
+	c := New(t.TempDir(), f)
+	c.now = func() time.Time { return at }
+	first, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.strings = map[string]string{serviceKey + `\Parameters|Type`: "NoSync"}
+	c.now = func() time.Time { return at.Add(time.Minute) }
+	fresh, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Sequence != first.Sequence+1 || fresh.CollectedAt.Equal(first.CollectedAt) || fresh.Config.Type == nil || *fresh.Config.Type != "NoSync" || !c.state.EventsSince.IsZero() {
+		t.Fatal(fresh)
+	}
 }
 
 func TestQueryAndPersistenceFailuresDoNotCommit(t *testing.T) {
-    for _,failure:=range []string{"events","save","ack"}{
-        t.Run(failure,func(t *testing.T){
-            c:=New(t.TempDir(),&fakeSystem{});f:=c.sys.(*fakeSystem)
-            if failure=="events"{f.eventErr=errUnavailable}
-            if failure=="save"{c.save=func(string,any)error{return errors.New("disk full")}}
-            s,err:=c.Collect(context.Background())
-            if failure!="ack"{
-                if err==nil||s!=nil||c.state.Sequence!=0{t.Fatal("failed collection advanced state")};return
-            }
-            if err!=nil{t.Fatal(err)}
-            c.save=func(string,any)error{return errors.New("disk full")}
-            if err=c.Acknowledge(s.Sequence);err==nil||c.state.Pending==nil||!c.state.Since.IsZero(){t.Fatal("failed ack advanced state")}
-        })
-    }
+	for _, failure := range []string{"events", "save", "commit"} {
+		t.Run(failure, func(t *testing.T) {
+			c := New(t.TempDir(), &fakeSystem{})
+			f := c.sys.(*fakeSystem)
+			if failure == "events" {
+				f.eventErr = errUnavailable
+			}
+			if failure == "save" {
+				c.save = func(string, any) error { return errors.New("disk full") }
+			}
+			snapshot, err := c.Collect(context.Background())
+			if failure != "commit" {
+				if err == nil || snapshot != nil || c.state.Sequence != 0 {
+					t.Fatal("failed collection advanced state")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.save = func(string, any) error { return errors.New("disk full") }
+			if err = c.Commit(snapshot); err == nil || c.state.Sequence != snapshot.Sequence || !c.state.EventsSince.IsZero() {
+				t.Fatal("failed commit advanced state")
+			}
+			restarted := New(c.dir, f)
+			if _, err = restarted.Collect(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if !restarted.state.EventsSince.IsZero() {
+				t.Fatal("failed commit reached disk")
+			}
+		})
+	}
 }
 
-func TestConcurrentCollectSingleSequence(t *testing.T) {
-    c:=New(t.TempDir(),&fakeSystem{})
-    var wg sync.WaitGroup
-    for i:=0;i<20;i++{wg.Add(1);go func(){defer wg.Done();s,e:=c.Collect(context.Background());if e!=nil||s.Sequence!=1{t.Errorf("%v %v",s,e)}}()}
-    wg.Wait()
+func TestCommitRejectsInvalidSnapshots(t *testing.T) {
+	c := New(t.TempDir(), &fakeSystem{})
+	snapshot, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []*Snapshot{nil, {}, {SchemaVersion: 1, Sequence: snapshot.Sequence + 1, CollectedAt: snapshot.CollectedAt}, {SchemaVersion: 1, Sequence: snapshot.Sequence}} {
+		if err = c.Commit(invalid); err == nil {
+			t.Fatal("invalid commit accepted")
+		}
+	}
+	if !c.state.EventsSince.IsZero() {
+		t.Fatal("invalid commit advanced cursor")
+	}
+}
+
+func TestConcurrentCollectAllocatesDistinctSequences(t *testing.T) {
+	c := New(t.TempDir(), &fakeSystem{})
+	var wg sync.WaitGroup
+	sequences := make(chan uint64, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			snapshot, err := c.Collect(context.Background())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			sequences <- snapshot.Sequence
+		}()
+	}
+	wg.Wait()
+	close(sequences)
+	seen := map[uint64]bool{}
+	for sequence := range sequences {
+		if seen[sequence] {
+			t.Fatal("sequence reused", sequence)
+		}
+		seen[sequence] = true
+	}
+	for sequence := uint64(1); sequence <= 20; sequence++ {
+		if !seen[sequence] {
+			t.Fatal("sequence missing", sequence)
+		}
+	}
 }
 
 func TestCorruptStateRecoversAndWriteFailureStaysVisible(t *testing.T) {
-    dir:=t.TempDir();p:=filepath.Join(dir,"timesync-state.json")
-    if err:=os.WriteFile(p,[]byte(`{"sequence":5000000000000,"pending":`),0600);err!=nil{t.Fatal(err)}
-    c:=New(dir,&fakeSystem{});s,err:=c.Collect(context.Background())
-    if err!=nil||s.Sequence<=5000000000000{t.Fatal(s,err)}
-    if _,err=os.Stat(p+".corrupt");err!=nil{t.Fatal("no quarantine",err)}
-    if err=c.Acknowledge(s.Sequence);err!=nil{t.Fatal(err)}
-    c.state.Sequence=maxSafeSequence
-    if s,err=c.Collect(context.Background());err==nil||s!=nil{t.Fatal("unsafe numeric sequence emitted")}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "timesync-state.json")
+	if err := os.WriteFile(p, []byte(`{"sequence":5000000000000,"eventsSince":`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := New(dir, &fakeSystem{})
+	snapshot, err := c.Collect(context.Background())
+	if err != nil || snapshot.Sequence <= 5000000000000 {
+		t.Fatal(snapshot, err)
+	}
+	if _, err = os.Stat(p + ".corrupt"); err != nil {
+		t.Fatal("no quarantine", err)
+	}
+	if err = c.Commit(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	c.state.Sequence = maxSafeSequence
+	if snapshot, err = c.Collect(context.Background()); err == nil || snapshot != nil {
+		t.Fatal("unsafe numeric sequence emitted")
+	}
+}
+
+func TestPolicyReadsFailClosedAndRetainReadableNames(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		names    map[string][]string
+		failures map[string]error
+		managed  bool
+		want     []string
+	}{
+		{"missing keys", map[string][]string{policyKey + `\Parameters`: {}, policyKey + `\TimeProviders\NtpClient`: {}}, nil, false, []string{}},
+		{"access denied", nil, map[string]error{policyKey + `\Parameters`: errUnavailable}, true, []string{}},
+		{"partial and sibling", map[string][]string{policyKey + `\Parameters`: {"Type"}, policyKey + `\TimeProviders\NtpClient`: {"SpecialPollInterval"}}, map[string]error{policyKey + `\Parameters`: errUnavailable}, true, []string{"SpecialPollInterval", "Type"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readConfig(context.Background(), &fakeSystem{names: tc.names, namesErr: tc.failures})
+			if got.PolicyManaged != tc.managed || !reflect.DeepEqual(got.PolicyManagedValues, tc.want) {
+				t.Fatal(got)
+			}
+		})
+	}
 }
 
 func TestConfigAndTimezoneFacts(t *testing.T) {
-    for _,tc:=range []struct{start uint32;auto string}{{3,"on"},{4,"off"},{2,"unknown"},{0,"unknown"}}{
-        f:= &fakeSystem{
-            strings:map[string]string{serviceKey+`\Parameters|Type`:"NTP",serviceKey+`\Parameters|NtpServer`:"peer.example.com,0x9"},
-            dwords:map[string]uint32{serviceKey+`\TimeProviders\NtpClient|SpecialPollInterval`:3600,
-                serviceKey+`\TimeProviders\VMICTimeProvider|Enabled`:1,`SYSTEM\CurrentControlSet\Services\tzautoupdate|Start`:tc.start},
-            names:map[string][]string{policyKey+`\Parameters`:{"Type"},policyKey+`\TimeProviders\NtpClient`:{"SpecialPollInterval"}},
-            service:ServiceInfo{"running","trigger_manual"},
-            zone:Timezone{WindowsID:ptr("Eastern Standard Time"),BiasMinutes:ptr(int32(300)),DynamicDSTDisabled:ptr(false)},
-        }
-        c:=New(t.TempDir(),f);s,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-        if s.Timezone.AutoUpdate!=tc.auto||*s.Timezone.BiasMinutes!=300||*s.Timezone.DynamicDSTDisabled{t.Fatal(s.Timezone)}
-        if !s.Config.PolicyManaged||len(s.Config.PolicyManagedValues)!=2||!*s.Config.HostTimeProviderEnabled||s.Config.ServiceStartType!="trigger_manual"{t.Fatal(s.Config)}
-    }
-    c:=New(t.TempDir(),&fakeSystem{});s,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-    if s.Config.Type!=nil||s.Config.NtpServer!=nil||s.Config.HostTimeProviderEnabled!=nil||s.Timezone.WindowsID!=nil{t.Fatal("unknown not null")}
-    if s.Status.Method!="unavailable"||s.Domain.Role!="unknown"||s.Enforcement!=nil{t.Fatal(s)}
-    ctx,cancel:=context.WithCancel(context.Background());cancel()
-    if _,err:=New(t.TempDir(),&fakeSystem{}).Collect(ctx);!errors.Is(err,context.Canceled){t.Fatal(err)}
+	for _, tc := range []struct {
+		start uint32
+		auto  string
+	}{{3, "on"}, {4, "off"}, {2, "unknown"}, {0, "unknown"}} {
+		f := &fakeSystem{
+			strings: map[string]string{serviceKey + `\Parameters|Type`: "NTP", serviceKey + `\Parameters|NtpServer`: "peer.example.com,0x9"},
+			dwords: map[string]uint32{serviceKey + `\TimeProviders\NtpClient|SpecialPollInterval`: 3600,
+				serviceKey + `\TimeProviders\VMICTimeProvider|Enabled`: 1, `SYSTEM\CurrentControlSet\Services\tzautoupdate|Start`: tc.start},
+			names:   map[string][]string{policyKey + `\Parameters`: {"Type"}, policyKey + `\TimeProviders\NtpClient`: {"SpecialPollInterval"}},
+			service: ServiceInfo{"running", "trigger_manual"},
+			zone:    Timezone{WindowsID: ptr("Eastern Standard Time"), BiasMinutes: ptr(int32(300)), DynamicDSTDisabled: ptr(false)},
+		}
+		c := New(t.TempDir(), f)
+		s, err := c.Collect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Timezone.AutoUpdate != tc.auto || *s.Timezone.BiasMinutes != 300 || *s.Timezone.DynamicDSTDisabled {
+			t.Fatal(s.Timezone)
+		}
+		if !s.Config.PolicyManaged || len(s.Config.PolicyManagedValues) != 2 || !*s.Config.HostTimeProviderEnabled || s.Config.ServiceStartType != "trigger_manual" {
+			t.Fatal(s.Config)
+		}
+	}
+	c := New(t.TempDir(), &fakeSystem{})
+	s, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Config.Type != nil || s.Config.NtpServer != nil || s.Config.HostTimeProviderEnabled != nil || s.Timezone.WindowsID != nil {
+		t.Fatal("unknown not null")
+	}
+	if s.Status.Method != "unavailable" || s.Domain.Role != "unknown" || s.Enforcement != nil {
+		t.Fatal(s)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := New(t.TempDir(), &fakeSystem{}).Collect(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
 }
 
-func TestSnapshotFitsIngestBodyCap(t *testing.T) {
-    s:=emptySnapshot(time.Now())
-    for i:=0;i<100;i++{e:=Event{RecordID:uint64(i),Message:string(make([]rune,1000)),Properties:[]string{}};for j:=0;j<10;j++{e.Properties=append(e.Properties,string(make([]rune,500)))};s.Events=append(s.Events,e)}
-    if err:=fitPayload(&s);err!=nil{t.Fatal(err)}
-    b,_:=json.Marshal(s);if len(b)>500*1024{t.Fatalf("%d bytes",len(b))}
+func TestSnapshotBudgetPreservesEntireDisplayReservation(t *testing.T) {
+	at := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	f := &fakeSystem{}
+	for i := 0; i < 100; i++ {
+		e := Event{RecordID: uint64(i + 1), EventID: 134, Level: 3, OccurredAt: at.Add(-time.Duration(i+1) * time.Second), Message: string(make([]rune, 1000)), Properties: []string{}}
+		for j := 0; j < 10; j++ {
+			e.Properties = append(e.Properties, string(make([]rune, 500)))
+		}
+		f.events = append(f.events, e)
+	}
+	// Older display rows must survive even when trimming the newest signal backlog.
+	for i := 0; i < 20; i++ {
+		e := f.events[i]
+		e.RecordID = uint64(1000 + i)
+		e.OccurredAt = at.Add(-25*time.Hour - time.Duration(i)*time.Second)
+		f.recent = append(f.recent, e)
+	}
+	c := New(t.TempDir(), f)
+	c.now = func() time.Time { return at }
+	snapshot, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBudget := func() {
+		t.Helper()
+		b, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) > 256*1024 {
+			t.Fatalf("%d bytes", len(b))
+		}
+		found := map[uint64]bool{}
+		for i, e := range snapshot.Events {
+			found[e.RecordID] = true
+			if e.displayReserved && (len(e.Properties) != 10 || e.Properties[0] != string(make([]rune, 500))) {
+				t.Fatal("reserved source evidence or property positions changed", e.RecordID)
+			}
+			if i > 0 && e.OccurredAt.After(snapshot.Events[i-1].OccurredAt) {
+				t.Fatal("not newest first")
+			}
+		}
+		for _, e := range f.recent {
+			if !found[e.RecordID] {
+				t.Fatal("reserved display row lost", e.RecordID)
+			}
+		}
+		if len(snapshot.Events) > 100 {
+			t.Fatal("event count cap")
+		}
+	}
+	assertBudget()
+	// W03b must use the same helper after attaching its enforcement report.
+	snapshot.Enforcement = &EnforcementReport{NTP: &EnforcementResult{Error: ptr(string(make([]rune, 512)))}}
+	if err = fitPayload(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	assertBudget()
+}
+
+func TestOversizedBasePayloadReturnsError(t *testing.T) {
+	snapshot := emptySnapshot(time.Now())
+	snapshot.Config.NtpServer = ptr(string(make([]rune, 256*1024)))
+	if err := fitPayload(&snapshot); err == nil {
+		t.Fatal("oversized base accepted")
+	}
 }
 ```
 
@@ -1553,18 +2365,24 @@ Write `system_other_test.go`:
 package timesync
 
 import (
-    "context"
-    "os"
-    "path/filepath"
-    "testing"
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 func TestNonWindowsCollectsNothing(t *testing.T) {
-    dir:=t.TempDir()
-    if NewSystem()!=nil{t.Fatal("non-Windows system exists")}
-    got,err:=New(dir,NewSystem()).Collect(context.Background())
-    if err!=nil||got!=nil{t.Fatal(got,err)}
-    if _,err=os.Stat(filepath.Join(dir,"timesync-state.json"));!os.IsNotExist(err){t.Fatal("non-Windows state written")}
+	dir := t.TempDir()
+	if NewSystem() != nil {
+		t.Fatal("non-Windows system exists")
+	}
+	got, err := New(dir, NewSystem()).Collect(context.Background())
+	if err != nil || got != nil {
+		t.Fatal(got, err)
+	}
+	if _, err = os.Stat(filepath.Join(dir, "timesync-state.json")); !os.IsNotExist(err) {
+		t.Fatal("non-Windows state written")
+	}
 }
 ```
 
@@ -1575,73 +2393,107 @@ func TestNonWindowsCollectsNothing(t *testing.T) {
 package timesync
 
 import (
-    "encoding/json"
-    "errors"
-    "fmt"
-    "io"
-    "log/slog"
-    "os"
-    "path/filepath"
-    "regexp"
-    "strconv"
-    "time"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"time"
 )
 
-const stateName="timesync-state.json"
-const maxStateBytes=4*1024*1024
-var salvageCounter=regexp.MustCompile(`"sequence"\s*:\s*([0-9]{1,20})`)
+const stateName = "timesync-state.json"
+const maxStateBytes = 4 * 1024 * 1024
+
+var salvageCounter = regexp.MustCompile(`"sequence"\s*:\s*([0-9]{1,20})`)
+
 type diskState struct {
-    Sequence uint64 `json:"sequence"`
-    Since time.Time `json:"since"`
-    LastGood Status `json:"lastGood"`
-    Pending *Snapshot `json:"pending"`
+	Sequence    uint64    `json:"sequence"`
+	EventsSince time.Time `json:"eventsSince"`
 }
-func writeState(path string,value any)error{
-    b,err:=json.Marshal(value);if err!=nil{return err}
-    if len(b)>maxStateBytes{return fmt.Errorf("time sync state exceeds 4 MiB")}
-    if err=os.MkdirAll(filepath.Dir(path),0700);err!=nil{return err}
-    tmp:=path+".tmp"
-    f,err:=os.OpenFile(tmp,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,0600);if err!=nil{return err}
-    defer func(){_ = os.Remove(tmp)}()
-    if _,err=f.Write(b);err!=nil{_ = f.Close();return err}
-    if err=f.Sync();err!=nil{_ = f.Close();return err}
-    if err=f.Close();err!=nil{return err}
-    for attempt:=0;attempt<4;attempt++{
-        if attempt>0{time.Sleep(25*time.Millisecond<<uint(attempt-1))}
-        if err=os.Rename(tmp,path);err==nil{return nil}
-    }
-    return fmt.Errorf("replace time sync state after 4 attempts: %w",err)
+
+func writeState(path string, value any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if len(b) > maxStateBytes {
+		return fmt.Errorf("time sync state exceeds 4 MiB")
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err = f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			time.Sleep(25 * time.Millisecond << uint(attempt-1))
+		}
+		if err = os.Rename(tmp, path); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("replace time sync state after 4 attempts: %w", err)
 }
-func readState(path string,now time.Time)(diskState,error){
-    f,err:=os.Open(path)
-    if errors.Is(err,os.ErrNotExist){
-        if _,e:=os.Stat(path+".corrupt");e==nil{return diskState{Sequence:sequenceFloor(now,0)},nil}
-        return diskState{},nil
-    }
-    if err!=nil{return diskState{},err}
-    b,readErr:=io.ReadAll(io.LimitReader(f,maxStateBytes+1));_ = f.Close()
-    if readErr!=nil{return diskState{},readErr}
-    var state diskState
-    decodeErr:=json.Unmarshal(b,&state)
-    if len(b)<=maxStateBytes && decodeErr==nil && state.Sequence<=maxSafeSequence &&
-        (state.Pending==nil || (state.Pending.Sequence==state.Sequence && state.Pending.SchemaVersion==1)) {return state,nil}
-    floor:=uint64(0)
-    if match:=salvageCounter.FindSubmatch(b);len(match)==2{floor,_=strconv.ParseUint(string(match[1]),10,64)}
-    _ = os.Remove(path+".corrupt")
-    if err=os.Rename(path,path+".corrupt");err!=nil{return diskState{},fmt.Errorf("quarantine time sync state: %w",err)}
-    slog.Warn("recovered corrupt time sync state; recent events will be replayed")
-    return diskState{Sequence:sequenceFloor(now,floor)},nil
+func readState(path string, now time.Time) (diskState, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if _, e := os.Stat(path + ".corrupt"); e == nil {
+			return diskState{Sequence: sequenceFloor(now, 0)}, nil
+		}
+		return diskState{}, nil
+	}
+	if err != nil {
+		return diskState{}, err
+	}
+	b, readErr := io.ReadAll(io.LimitReader(f, maxStateBytes+1))
+	_ = f.Close()
+	if readErr != nil {
+		return diskState{}, readErr
+	}
+	var state diskState
+	decodeErr := json.Unmarshal(b, &state)
+	if len(b) <= maxStateBytes && decodeErr == nil && state.Sequence <= maxSafeSequence {
+		return state, nil
+	}
+	floor := uint64(0)
+	if match := salvageCounter.FindSubmatch(b); len(match) == 2 {
+		floor, _ = strconv.ParseUint(string(match[1]), 10, 64)
+	}
+	_ = os.Remove(path + ".corrupt")
+	if err = os.Rename(path, path+".corrupt"); err != nil {
+		return diskState{}, fmt.Errorf("quarantine time sync state: %w", err)
+	}
+	slog.Warn("recovered corrupt time sync state; recent events will be replayed")
+	return diskState{Sequence: sequenceFloor(now, floor)}, nil
 }
-func sequenceFloor(now time.Time,salvaged uint64)uint64{
-    floor:=uint64(0);if now.UnixMilli()>0{floor=uint64(now.UnixMilli())}
-    if salvaged>floor && salvaged<=maxSafeSequence{floor=salvaged}
-    return floor
-}
-func copySnapshot(s *Snapshot)(*Snapshot,error){
-    b,err:=json.Marshal(s);if err!=nil{return nil,err}
-    var out Snapshot
-    if err=json.Unmarshal(b,&out);err!=nil{return nil,err}
-    return &out,nil
+func sequenceFloor(now time.Time, salvaged uint64) uint64 {
+	floor := uint64(0)
+	if now.UnixMilli() > 0 {
+		floor = uint64(now.UnixMilli())
+	}
+	if salvaged > floor && salvaged <= maxSafeSequence {
+		floor = salvaged
+	}
+	return floor
 }
 ```
 
@@ -1651,125 +2503,219 @@ Create `collector.go`:
 package timesync
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "path/filepath"
-    "sort"
-    "strings"
-    "sync"
-    "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 )
 
 type Collector struct {
-    mu sync.Mutex
-    dir string
-    sys System
-    now func()time.Time
-    save func(string,any)error
-    loaded bool
-    state diskState
+	mu     sync.Mutex
+	dir    string
+	sys    System
+	now    func() time.Time
+	save   func(string, any) error
+	loaded bool
+	state  diskState
 }
-func New(stateDir string,sys System)*Collector{
-    return &Collector{dir:stateDir,sys:sys,now:time.Now,save:writeState}
+
+func New(stateDir string, sys System) *Collector {
+	return &Collector{dir: stateDir, sys: sys, now: time.Now, save: writeState}
 }
-func (c *Collector) Collect(ctx context.Context)(*Snapshot,error){
-    if c.sys==nil{return nil,nil}
-    c.mu.Lock();defer c.mu.Unlock()
-    if err:=ctx.Err();err!=nil{return nil,err}
-    now:=c.now().UTC()
-    if !c.loaded{
-        state,err:=readState(filepath.Join(c.dir,stateName),now);if err!=nil{return nil,err}
-        c.state=state;c.loaded=true
-    }
-    if c.state.Pending!=nil{return copySnapshot(c.state.Pending)}
-    if c.state.Sequence>=maxSafeSequence{return nil,fmt.Errorf("time sync sequence exhausted")}
-    since:=c.state.Since
-    if since.IsZero()||since.After(now){since=now.Add(-24*time.Hour)}
-    events,err:=collectEvents(ctx,c.sys,since,now);if err!=nil{return nil,err}
-    s:=emptySnapshot(now);s.Sequence=c.state.Sequence+1;s.Events=events
-    s.Config=readConfig(ctx,c.sys)
-    s.Domain=readDomain(ctx,c.sys)
-    s.Status=readStatus(ctx,c.sys,s.Config,s.Domain,events,c.state.LastGood)
-    if zone,e:=c.sys.DynamicTimezone(ctx);e==nil{s.Timezone=zone;s.Timezone.AutoUpdate="unknown"}
-    if start,e:=c.sys.ReadDWORD(ctx,`SYSTEM\CurrentControlSet\Services\tzautoupdate`,"Start");e==nil{
-        switch start{case 3:s.Timezone.AutoUpdate="on";case 4:s.Timezone.AutoUpdate="off"}
-    }
-    if err=ctx.Err();err!=nil{return nil,err}
-    if err=fitPayload(&s);err!=nil{return nil,err}
-    next:=c.state;next.Sequence=s.Sequence;next.Pending=&s
-    if err=c.save(filepath.Join(c.dir,stateName),next);err!=nil{return nil,err}
-    c.state=next
-    return copySnapshot(&s)
+func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
+	if c.sys == nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	now := c.now().UTC()
+	if !c.loaded {
+		state, err := readState(filepath.Join(c.dir, stateName), now)
+		if err != nil {
+			return nil, err
+		}
+		c.state = state
+		c.loaded = true
+	}
+	if c.state.Sequence >= maxSafeSequence {
+		return nil, fmt.Errorf("time sync sequence exhausted")
+	}
+	since := c.state.EventsSince
+	if since.IsZero() || since.After(now) {
+		since = now.Add(-24 * time.Hour)
+	}
+	events, err := collectEvents(ctx, c.sys, since, now)
+	if err != nil {
+		return nil, err
+	}
+	s := emptySnapshot(now)
+	s.Sequence = c.state.Sequence + 1
+	s.Events = events
+	s.Config = readConfig(ctx, c.sys)
+	s.Domain = readDomain(ctx, c.sys)
+	s.Status = readStatus(ctx, c.sys, events)
+	if zone, e := c.sys.DynamicTimezone(ctx); e == nil {
+		s.Timezone = zone
+		s.Timezone.AutoUpdate = "unknown"
+	}
+	if start, e := c.sys.ReadDWORD(ctx, `SYSTEM\CurrentControlSet\Services\tzautoupdate`, "Start"); e == nil {
+		switch start {
+		case 3:
+			s.Timezone.AutoUpdate = "on"
+		case 4:
+			s.Timezone.AutoUpdate = "off"
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err = fitPayload(&s); err != nil {
+		return nil, err
+	}
+	next := c.state
+	next.Sequence = s.Sequence
+	if err = c.save(filepath.Join(c.dir, stateName), next); err != nil {
+		return nil, err
+	}
+	c.state = next
+	return &s, nil
 }
-func (c *Collector) Acknowledge(sequence uint64)error{
-    c.mu.Lock();defer c.mu.Unlock()
-    if c.state.Pending==nil||c.state.Pending.Sequence!=sequence{return fmt.Errorf("no pending time sync sequence %d",sequence)}
-    next:=c.state;next.Since=next.Pending.CollectedAt
-    if next.Pending.Status.Method=="events"{next.LastGood=next.Pending.Status}
-    next.Pending=nil
-    if err:=c.save(filepath.Join(c.dir,stateName),next);err!=nil{return err}
-    c.state=next
-    return nil
+func (c *Collector) Commit(snapshot *Snapshot) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loaded || snapshot == nil || snapshot.SchemaVersion != 1 || snapshot.Sequence == 0 || snapshot.Sequence > c.state.Sequence || snapshot.CollectedAt.IsZero() {
+		return fmt.Errorf("invalid time sync commit")
+	}
+	// Delayed commits are idempotent and cannot rewind an already committed boundary.
+	if !snapshot.CollectedAt.After(c.state.EventsSince) {
+		return nil
+	}
+	next := c.state
+	next.EventsSince = snapshot.CollectedAt.UTC()
+	if err := c.save(filepath.Join(c.dir, stateName), next); err != nil {
+		return err
+	}
+	c.state = next
+	return nil
 }
-func (c *Collector) Discard(sequence uint64)error{
-    c.mu.Lock();defer c.mu.Unlock()
-    if c.state.Pending==nil||c.state.Pending.Sequence!=sequence{return fmt.Errorf("no pending time sync sequence %d",sequence)}
-    next:=c.state;next.Pending=nil
-    // Keep Sequence reserved and Since unchanged: unaccepted events are replayed.
-    if err:=c.save(filepath.Join(c.dir,stateName),next);err!=nil{return err}
-    c.state=next
-    return nil
+func readConfig(ctx context.Context, sys System) Config {
+	c := Config{ServiceState: "unknown", ServiceStartType: "unknown", PolicyManagedValues: []string{}}
+	if value, err := sys.ReadString(ctx, serviceKey+`\Parameters`, "Type"); err == nil {
+		switch value {
+		case "NT5DS", "NTP", "NoSync", "AllSync":
+			c.Type = ptr(value)
+		}
+	}
+	if value, err := sys.ReadString(ctx, serviceKey+`\Parameters`, "NtpServer"); err == nil && strings.TrimSpace(value) != "" {
+		c.NtpServer = ptr(limitText(value, 1024))
+	}
+	if value, err := sys.ReadDWORD(ctx, serviceKey+`\TimeProviders\NtpClient`, "SpecialPollInterval"); err == nil {
+		c.SpecialPollIntervalSeconds = ptr(value)
+	}
+	if value, err := sys.ReadDWORD(ctx, serviceKey+`\TimeProviders\VMICTimeProvider`, "Enabled"); err == nil && value <= 1 {
+		c.HostTimeProviderEnabled = ptr(value == 1)
+	}
+	values := map[string]bool{}
+	for _, suffix := range []string{`\Parameters`, `\TimeProviders\NtpClient`} {
+		names, err := sys.ValueNames(ctx, policyKey+suffix)
+		if err != nil {
+			c.PolicyManaged = true
+		}
+		for _, name := range names {
+			if name != "" {
+				values[limitText(name, 64)] = true
+				c.PolicyManaged = true
+			}
+		}
+	}
+	for name := range values {
+		c.PolicyManagedValues = append(c.PolicyManagedValues, name)
+	}
+	sort.Strings(c.PolicyManagedValues)
+	if len(c.PolicyManagedValues) > 20 {
+		c.PolicyManagedValues = c.PolicyManagedValues[:20]
+	}
+	if service, err := sys.W32TimeService(ctx); err == nil {
+		c.ServiceState = service.State
+		c.ServiceStartType = service.StartType
+	}
+	return c
 }
-func readConfig(ctx context.Context,sys System)Config{
-    c:=Config{ServiceState:"unknown",ServiceStartType:"unknown",PolicyManagedValues:[]string{}}
-    if value,err:=sys.ReadString(ctx,serviceKey+`\Parameters`,"Type");err==nil{
-        switch value{case "NT5DS","NTP","NoSync","AllSync":c.Type=ptr(value)}
-    }
-    if value,err:=sys.ReadString(ctx,serviceKey+`\Parameters`,"NtpServer");err==nil && strings.TrimSpace(value)!=""{c.NtpServer=ptr(limitText(value,1024))}
-    if value,err:=sys.ReadDWORD(ctx,serviceKey+`\TimeProviders\NtpClient`,"SpecialPollInterval");err==nil{c.SpecialPollIntervalSeconds=ptr(value)}
-    if value,err:=sys.ReadDWORD(ctx,serviceKey+`\TimeProviders\VMICTimeProvider`,"Enabled");err==nil && value<=1{c.HostTimeProviderEnabled=ptr(value==1)}
-    values:=map[string]bool{}
-    for _,suffix:=range []string{`\Parameters`,`\TimeProviders\NtpClient`}{
-        names,err:=sys.ValueNames(ctx,policyKey+suffix)
-        if err!=nil{c.PolicyManaged=true;continue}
-        for _,name:=range names{if name!=""{values[limitText(name,64)]=true;c.PolicyManaged=true}}
-    }
-    for name:=range values{c.PolicyManagedValues=append(c.PolicyManagedValues,name)}
-    sort.Strings(c.PolicyManagedValues)
-    if len(c.PolicyManagedValues)>20{c.PolicyManagedValues=c.PolicyManagedValues[:20]}
-    if service,err:=sys.W32TimeService(ctx);err==nil{c.ServiceState=service.State;c.ServiceStartType=service.StartType}
-    return c
-}
-func fitPayload(s *Snapshot)error{
-    for {
-        b,err:=json.Marshal(s);if err!=nil{return err}
-        if len(b)<=500*1024{return nil}
-        if len(s.Events)==0{return fmt.Errorf("time sync base payload exceeds ingest cap")}
-        s.Events=s.Events[:len(s.Events)-1]
-    }
+
+const maxPayloadBytes = 256 * 1024
+
+func fitPayload(s *Snapshot) error {
+	for {
+		b, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		if len(b) <= maxPayloadBytes {
+			return nil
+		}
+		// Events are newest first. Remove only unreserved rows, oldest first.
+		removable := -1
+		for i := len(s.Events) - 1; i >= 0; i-- {
+			if !s.Events[i].displayReserved {
+				removable = i
+				break
+			}
+		}
+		if removable >= 0 {
+			s.Events = append(s.Events[:removable], s.Events[removable+1:]...)
+			continue
+		}
+		// Even 20 capped rows can exceed the byte budget after JSON escaping.
+		// Preserve every reserved ID/time/level, property position and the first
+		// insertion string (source evidence). Reduce display text and remaining
+		// insertion-string lengths until the serialized body fits.
+		changed := false
+		shrink := func(value string) string {
+			if value == "" {
+				return value
+			}
+			changed = true
+			return limitText(value, len([]rune(value))/2)
+		}
+		for i := range s.Events {
+			s.Events[i].Message = shrink(s.Events[i].Message)
+			for j := 1; j < len(s.Events[i].Properties); j++ {
+				s.Events[i].Properties[j] = shrink(s.Events[i].Properties[j])
+			}
+		}
+		if !changed {
+			return fmt.Errorf("time sync base payload and reserved event metadata exceed 256 KiB")
+		}
+	}
 }
 ```
 
-The bool-only `policyManaged` contract cannot express an access-denied read. Treat policy-read failure conservatively as managed with no claimed value names. Missing keys return an empty successful list in the Windows adapter; they are not the same as access denied. W03b must re-read management state immediately before writing, as its spec requires.
+The bool-only `policyManaged` contract cannot express an access-denied read. Treat policy-read failure conservatively as managed while retaining only value names actually read, including partial results and readable sibling keys. Missing keys return an empty successful list in the Windows adapter; they are not the same as access denied. W03b must re-read management state immediately before writing, as its spec requires.
 
-The 500 KiB payload budget leaves headroom under W01a's 512 KiB body limit. Caps on characters alone do not bound JSON bytes because escaping and Unicode can expand; trim oldest events if necessary and preserve the newest signal ordering. Corrupt-state recovery deliberately replays the first 24 hours and uses a safe numeric sequence floor, mirroring hwhealth; read/write permission failures remain visible errors.
+R5 requires a 256 KiB serialized snapshot budget, including enforcement when W03b adds it. Character limits alone do not bound JSON bytes. Remove oldest unreserved events first; if the reserved display rows alone exceed the budget, shorten their display text and later insertion strings while keeping all reserved IDs, timestamps, levels, property positions and the first insertion string used as source evidence. Return an error if the base payload plus reserved metadata cannot fit. W03b must retain the selected event slice and call `fitPayload` after attaching enforcement; it must not JSON-roundtrip the snapshot (which drops the private reservation metadata), rebuild events or introduce another budget. Corrupt-state recovery deliberately replays the first 24 hours and uses a safe numeric sequence floor, mirroring hwhealth; read/write permission failures remain visible errors.
 
 - [ ] Run:
 
 ```bash
-cd agent && go test -race ./internal/collectors/timesync/...
-cd agent && GOOS=windows go vet ./internal/collectors/timesync/...
-cd agent && GOOS=windows go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync
+(cd agent && go test -race ./internal/collectors/timesync/...)
+(cd agent && GOOS=windows go vet ./internal/collectors/timesync/...)
+(cd agent && GOOS=windows go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync)
 ```
 
-Expected PASS. Verify `TestPersistencePendingAndEventWatermark`, `TestConcurrentCollectSingleSequence` and the disk-error tests actually ran.
+Expected PASS. Verify `TestFreshCollectionsAndCommittedEventCursor`, `TestConcurrentCollectAllocatesDistinctSequences`, `TestSnapshotBudgetPreservesEntireDisplayReservation` and the disk-error tests actually ran.
 
 - [ ] Commit:
 
 ```bash
 git add agent/internal/collectors/timesync/collector.go agent/internal/collectors/timesync/persist.go agent/internal/collectors/timesync/collector_test.go agent/internal/collectors/timesync/system_other_test.go
-git commit -m "feat(agent): persist time sync snapshots and event watermarks" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "feat(agent): persist time sync sequences and committed event cursors" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ### Task 8: Schedule, guard, send and stop through heartbeat
@@ -1780,7 +2726,7 @@ git commit -m "feat(agent): persist time sync snapshots and event watermarks" -m
 - Read: `agent/internal/heartbeat/hardware_health.go:15–23,72–114,130–187`, `hardware_health_test.go:32–34,78–155`.
 
 **Interfaces:**
-- Consumes: `timesync.New(stateDir string,sys System) *timesync.Collector`, `Collect`, `Acknowledge` (Task 7); `collectors.Guard[T any](op string,fn func()(T,error)) (T,error)` at `collectors/safe.go:124`.
+- Consumes: `timesync.New(stateDir string,sys System) *timesync.Collector`, `Collect`, `Commit(*timesync.Snapshot)` (Task 7); `collectors.Guard[T any](op string,fn func()(T,error)) (T,error)` at `collectors/safe.go:124`.
 - Consumes: `(*Heartbeat).sendInventoryData(endpoint string,payload any,label string) error` at `heartbeat.go:2328`; `dueForRun(now,last time.Time,interval time.Duration) bool` at `heartbeat.go:2400`; `config.GetDataDir() string` at `config/config.go:1160`.
 - Produces: `startTimeSync`, `timeSyncDueLocked`, `dispatchTimeSync`, `sendTimeSync`, `stopTimeSync` and the `lastTimeSyncUpdate` ticker gate.
 
@@ -1790,104 +2736,256 @@ git commit -m "feat(agent): persist time sync snapshots and event watermarks" -m
 package heartbeat
 
 import (
-    "context"
-    "encoding/json"
-    "io"
-    "net/http"
-    "strings"
-    "sync/atomic"
-    "testing"
-    "time"
-    "github.com/breeze-rmm/agent/internal/collectors/timesync"
-    "github.com/breeze-rmm/agent/internal/config"
-    "github.com/breeze-rmm/agent/internal/httputil"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/collectors/timesync"
+	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
-type timeCollectorFake struct{
-    collect func(context.Context)(*timesync.Snapshot,error)
-    ack atomic.Uint64
-    discarded atomic.Uint64
+type timeCollectorFake struct {
+	collect           func(context.Context) (*timesync.Snapshot, error)
+	committed         atomic.Uint64
+	commitErr         error
+	committedSnapshot *timesync.Snapshot
 }
-func (f *timeCollectorFake) Collect(ctx context.Context)(*timesync.Snapshot,error){return f.collect(ctx)}
-func (f *timeCollectorFake) Acknowledge(sequence uint64)error{f.ack.Store(sequence);return nil}
-func (f *timeCollectorFake) Discard(sequence uint64)error{f.discarded.Store(sequence);return nil}
-func timeHeartbeat(t *testing.T,f *timeCollectorFake)*Heartbeat{
-    t.Helper();cfg:=config.Default();cfg.AgentID="fixture-agent";cfg.ServerURL="https://time.example.com";cfg.AuthToken="fixture-token"
-    ctx,cancel:=context.WithCancel(context.Background());t.Cleanup(cancel)
-    return &Heartbeat{config:cfg,timeSyncCol:f,timeSyncContext:ctx,timeSyncCancel:cancel,retryCfg:httputil.DefaultRetryConfig()}
+
+func (f *timeCollectorFake) Collect(ctx context.Context) (*timesync.Snapshot, error) {
+	return f.collect(ctx)
 }
-func TestTimeSyncScheduleAndSingleFlight(t *testing.T){
-    last:=time.Unix(1000,0)
-    for i:=0;i<100;i++{
-        id:=string(rune(i));d:=timeSyncFirstDelay(id)
-        if d<2*time.Minute||d>5*time.Minute{t.Fatal(d)}
-        interval:=timeSyncInterval(id,last)
-        if interval<27*time.Minute||interval>33*time.Minute{t.Fatal(interval)}
-    }
-    h:=timeHeartbeat(t,&timeCollectorFake{})
-    if h.timeSyncDueLocked(last,false){t.Fatal("ran before delayed first run")}
-    if !h.timeSyncDueLocked(last,true){t.Fatal("first cycle not claimed")}
-    if h.timeSyncDueLocked(last.Add(time.Hour),false){t.Fatal("overlapping cycle claimed")}
-    h.timeSyncRunning=false
-    due:=last.Add(timeSyncInterval(h.config.AgentID,last))
-    if h.timeSyncDueLocked(due,false){t.Fatal("strict gate boundary changed")}
-    if !h.timeSyncDueLocked(due.Add(time.Nanosecond),false){t.Fatal("due cycle missed")}
-    h.timeSyncRunning=false;h.stopTimeSync()
-    if h.timeSyncDueLocked(due.Add(time.Hour),true){t.Fatal("stopped collector restarted")}
+func (f *timeCollectorFake) Commit(snapshot *timesync.Snapshot) error {
+	if f.commitErr != nil {
+		return f.commitErr
+	}
+	f.committedSnapshot = snapshot
+	f.committed.Store(snapshot.Sequence)
+	return nil
 }
-func TestTimeSyncPUTAndAcknowledgement(t *testing.T){
-    for _,code:=range []int{200,400,401,413,422,429,503}{
-        f:= &timeCollectorFake{collect:func(context.Context)(*timesync.Snapshot,error){return &timesync.Snapshot{SchemaVersion:1,Sequence:7},nil}}
-        h:=timeHeartbeat(t,f);h.retryCfg.MaxRetries=0;var calls atomic.Int32
-        h.client=&http.Client{Transport:hardwareTransport(func(r *http.Request)(*http.Response,error){
-            calls.Add(1)
-            if r.Method!="PUT"||r.URL.Path!="/api/v1/agents/fixture-agent/time-status"||r.Header.Get("Authorization")!="Bearer fixture-token"{t.Error(r.Method,r.URL,r.Header)}
-            var s map[string]json.RawMessage
-            if err:=json.NewDecoder(r.Body).Decode(&s);err!=nil{t.Error(err)}
-            if string(s["enforcement"])!="null"||string(s["sequence"])!="7"{t.Error(s)}
-            return &http.Response{StatusCode:code,Header:http.Header{},Body:io.NopCloser(strings.NewReader(`{"accepted":true}`))},nil
-        })}
-        h.timeSyncRunning=true;h.dispatchTimeSync();h.inventoryWg.Wait()
-        if calls.Load()!=1{t.Fatal("unexpected request count",calls.Load())}
-        if code==200 && f.ack.Load()!=7{t.Fatal("successful delivery not acknowledged")}
-        if code!=200 && f.ack.Load()!=0{t.Fatal("failed delivery acknowledged")}
-        if code==400||code==413||code==422{
-            if f.discarded.Load()!=7{t.Fatal("permanently rejected pending payload retained")}
-        }else if f.discarded.Load()!=0{t.Fatal("retryable payload discarded")}
-        if h.timeSyncRunning{t.Fatal("running gate stranded")}
-    }
+func timeHeartbeat(t *testing.T, f *timeCollectorFake) *Heartbeat {
+	t.Helper()
+	cfg := config.Default()
+	cfg.AgentID = "fixture-agent"
+	cfg.ServerURL = "https://time.example.com"
+	cfg.AuthToken = "fixture-token"
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return &Heartbeat{config: cfg, timeSyncCol: f, timeSyncContext: ctx, timeSyncCancel: cancel, retryCfg: httputil.DefaultRetryConfig()}
 }
-func TestTimeSyncCollectionAndUploadCancellation(t *testing.T){
-    for _,phase:=range []string{"collect","upload"}{
-        t.Run(phase,func(t *testing.T){
-            entered:=make(chan struct{})
-            f:= &timeCollectorFake{collect:func(ctx context.Context)(*timesync.Snapshot,error){
-                if phase=="collect"{close(entered);<-ctx.Done();return nil,ctx.Err()}
-                return &timesync.Snapshot{SchemaVersion:1,Sequence:1},nil
-            }}
-            h:=timeHeartbeat(t,f)
-            h.client=&http.Client{Transport:hardwareTransport(func(r *http.Request)(*http.Response,error){close(entered);<-r.Context().Done();return nil,r.Context().Err()})}
-            h.timeSyncRunning=true;h.dispatchTimeSync();<-entered;h.stopTimeSync()
-            done:=make(chan struct{});go func(){h.inventoryWg.Wait();close(done)}()
-            select{case <-done:case <-time.After(time.Second):t.Fatal("uncancelled cycle")}
-            if f.ack.Load()!=0{t.Fatal("cancelled send acknowledged")}
-        })
-    }
+func TestTimeSyncScheduleAndSingleFlight(t *testing.T) {
+	last := time.Unix(1000, 0)
+	for i := 0; i < 100; i++ {
+		id := string(rune(i))
+		d := timeSyncFirstDelay(id)
+		if d < 2*time.Minute || d > 5*time.Minute {
+			t.Fatal(d)
+		}
+		interval := timeSyncInterval(id, last)
+		if interval < 27*time.Minute || interval > 33*time.Minute {
+			t.Fatal(interval)
+		}
+	}
+	h := timeHeartbeat(t, &timeCollectorFake{})
+	if h.timeSyncDueLocked(last, false) {
+		t.Fatal("ran before delayed first run")
+	}
+	if !h.timeSyncDueLocked(last, true) {
+		t.Fatal("first cycle not claimed")
+	}
+	if h.timeSyncDueLocked(last.Add(time.Hour), false) {
+		t.Fatal("overlapping cycle claimed")
+	}
+	h.timeSyncRunning = false
+	due := last.Add(timeSyncInterval(h.config.AgentID, last))
+	if h.timeSyncDueLocked(due, false) {
+		t.Fatal("strict gate boundary changed")
+	}
+	if !h.timeSyncDueLocked(due.Add(time.Nanosecond), false) {
+		t.Fatal("due cycle missed")
+	}
+	h.timeSyncRunning = false
+	h.stopTimeSync()
+	if h.timeSyncDueLocked(due.Add(time.Hour), true) {
+		t.Fatal("stopped collector restarted")
+	}
 }
-func TestTimeSyncPanicAndNilDoNotSend(t *testing.T){
-    for _,panicNow:=range []bool{false,true}{
-        f:= &timeCollectorFake{collect:func(context.Context)(*timesync.Snapshot,error){if panicNow{panic("fixture panic")};return nil,nil}}
-        h:=timeHeartbeat(t,f)
-        h.client=&http.Client{Transport:hardwareTransport(func(*http.Request)(*http.Response,error){t.Error("unexpected send");return nil,context.Canceled})}
-        h.timeSyncRunning=true;h.dispatchTimeSync();h.inventoryWg.Wait()
-        if h.timeSyncRunning||f.ack.Load()!=0{t.Fatal("guard failed to release gate")}
-    }
+func TestTimeSyncPUTAndQualifiedCommit(t *testing.T) {
+	cases := []struct {
+		name   string
+		code   int
+		body   string
+		commit bool
+	}{
+		{"accepted", 200, `{"accepted":true}`, true},
+		{"other 2xx accepted", 201, `{"accepted":true}`, true},
+		{"stale sequence", 200, `{"accepted":false,"reason":"stale_sequence"}`, true},
+		{"false without reason", 200, `{"accepted":false}`, false},
+		{"other reason", 200, `{"accepted":false,"reason":"disabled"}`, false},
+		{"missing accepted", 200, `{"reason":"stale_sequence"}`, false},
+		{"null accepted", 200, `{"accepted":null,"reason":"stale_sequence"}`, false},
+		{"wrong type", 200, `{"accepted":"true"}`, false},
+		{"malformed", 200, `{`, false},
+		{"trailing JSON", 200, `{"accepted":true}{}`, false},
+		{"empty response", 204, "", false},
+	}
+	for _, code := range []int{400, 401, 403, 413, 422, 429, 503} {
+		cases = append(cases, struct {
+			name   string
+			code   int
+			body   string
+			commit bool
+		}{fmt.Sprint(code), code, `{"accepted":true}`, false})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := &timesync.Snapshot{SchemaVersion: 1, Sequence: 7, CollectedAt: time.Unix(100, 0).UTC()}
+			f := &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) { return snapshot, nil }}
+			h := timeHeartbeat(t, f)
+			h.retryCfg.MaxRetries = 0
+			var calls atomic.Int32
+			h.client = &http.Client{Transport: hardwareTransport(func(r *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				if r.Method != "PUT" || r.URL.Path != "/api/v1/agents/fixture-agent/time-status" || r.Header.Get("Authorization") != "Bearer fixture-token" {
+					t.Error(r.Method, r.URL, r.Header)
+				}
+				var sent map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+					t.Error(err)
+				}
+				if string(sent["enforcement"]) != "null" || string(sent["sequence"]) != "7" {
+					t.Error(sent)
+				}
+				return &http.Response{StatusCode: tc.code, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+			})}
+			h.timeSyncRunning = true
+			h.dispatchTimeSync()
+			h.inventoryWg.Wait()
+			if calls.Load() != 1 {
+				t.Fatal("unexpected request count", calls.Load())
+			}
+			if tc.commit {
+				if f.committed.Load() != 7 || f.committedSnapshot != snapshot {
+					t.Fatal("qualified delivery did not commit exact snapshot")
+				}
+			} else if f.committed.Load() != 0 {
+				t.Fatal("unqualified delivery committed")
+			}
+			if h.timeSyncRunning {
+				t.Fatal("running gate stranded")
+			}
+		})
+	}
 }
-func TestTimeSyncStartupTimerDrains(t *testing.T){
-    h:=timeHeartbeat(t,&timeCollectorFake{collect:func(context.Context)(*timesync.Snapshot,error){t.Error("timer fired immediately");return nil,nil}})
-    h.startTimeSync();h.stopTimeSync()
-    done:=make(chan struct{});go func(){h.inventoryWg.Wait();close(done)}()
-    select{case <-done:case <-time.After(time.Second):t.Fatal("startup timer not tracked")}
+
+func TestTimeSyncTransportAndCommitFailures(t *testing.T) {
+	for _, phase := range []string{"transport", "commit"} {
+		t.Run(phase, func(t *testing.T) {
+			f := &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) {
+				return &timesync.Snapshot{SchemaVersion: 1, Sequence: 7}, nil
+			}}
+			if phase == "commit" {
+				f.commitErr = errors.New("disk full")
+			}
+			h := timeHeartbeat(t, f)
+			h.retryCfg.MaxRetries = 0
+			h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) {
+				if phase == "transport" {
+					return nil, errors.New("connection lost")
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"accepted":true}`))}, nil
+			})}
+			h.timeSyncRunning = true
+			h.dispatchTimeSync()
+			h.inventoryWg.Wait()
+			if f.committed.Load() != 0 || h.timeSyncRunning {
+				t.Fatal("failure committed or stranded gate")
+			}
+		})
+	}
+}
+
+func TestTimeSyncResponseValidationDoesNotChangeOtherInventory(t *testing.T) {
+	h := timeHeartbeat(t, &timeCollectorFake{})
+	h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	if err := h.sendInventoryData("hardware-health", map[string]string{}, "hardware health"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTimeSyncCollectionAndUploadCancellation(t *testing.T) {
+	for _, phase := range []string{"collect", "upload"} {
+		t.Run(phase, func(t *testing.T) {
+			entered := make(chan struct{})
+			f := &timeCollectorFake{collect: func(ctx context.Context) (*timesync.Snapshot, error) {
+				if phase == "collect" {
+					close(entered)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				return &timesync.Snapshot{SchemaVersion: 1, Sequence: 1}, nil
+			}}
+			h := timeHeartbeat(t, f)
+			h.client = &http.Client{Transport: hardwareTransport(func(r *http.Request) (*http.Response, error) {
+				close(entered)
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			})}
+			h.timeSyncRunning = true
+			h.dispatchTimeSync()
+			<-entered
+			h.stopTimeSync()
+			done := make(chan struct{})
+			go func() { h.inventoryWg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("uncancelled cycle")
+			}
+			if f.committed.Load() != 0 {
+				t.Fatal("cancelled send committed")
+			}
+		})
+	}
+}
+func TestTimeSyncPanicAndNilDoNotSend(t *testing.T) {
+	for _, panicNow := range []bool{false, true} {
+		f := &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) {
+			if panicNow {
+				panic("fixture panic")
+			}
+			return nil, nil
+		}}
+		h := timeHeartbeat(t, f)
+		h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) { t.Error("unexpected send"); return nil, context.Canceled })}
+		h.timeSyncRunning = true
+		h.dispatchTimeSync()
+		h.inventoryWg.Wait()
+		if h.timeSyncRunning || f.committed.Load() != 0 {
+			t.Fatal("guard failed to release gate")
+		}
+	}
+}
+func TestTimeSyncStartupTimerDrains(t *testing.T) {
+	h := timeHeartbeat(t, &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) { t.Error("timer fired immediately"); return nil, nil }})
+	h.startTimeSync()
+	h.stopTimeSync()
+	done := make(chan struct{})
+	go func() { h.inventoryWg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("startup timer not tracked")
+	}
 }
 ```
 
@@ -1898,95 +2996,164 @@ func TestTimeSyncStartupTimerDrains(t *testing.T){
 package heartbeat
 
 import (
-    "context"
-    "errors"
-    "fmt"
-    "hash/fnv"
-    "strconv"
-    "time"
-    "github.com/breeze-rmm/agent/internal/collectors"
-    "github.com/breeze-rmm/agent/internal/collectors/timesync"
-    "github.com/breeze-rmm/agent/internal/observability"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"io"
+	"strconv"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/collectors/timesync"
+	"github.com/breeze-rmm/agent/internal/observability"
 )
 
-type timeSyncCollector interface{
-    Collect(context.Context)(*timesync.Snapshot,error)
-    Acknowledge(uint64)error
-    Discard(uint64)error
+type timeSyncCollector interface {
+	Collect(context.Context) (*timesync.Snapshot, error)
+	Commit(*timesync.Snapshot) error
 }
-type timeSyncSubmissionError struct{status int}
-func (e *timeSyncSubmissionError) Error()string{return fmt.Sprintf("inventory send failed for time sync: status %d",e.status)}
-func newTimeSyncCollector(dir string)timeSyncCollector{
-    sys:=timesync.NewSystem();if sys==nil{return nil}
-    return timesync.New(dir,sys)
+
+// A 2xx alone does not establish acceptance. Keep this specific to time-status.
+func validateTimeSyncResponse(body io.Reader) error {
+	const maxResponseBytes = 64 * 1024
+	raw, err := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxResponseBytes {
+		return fmt.Errorf("time sync response exceeds 64 KiB")
+	}
+	var result struct {
+		Accepted *bool  `json:"accepted"`
+		Reason   string `json:"reason"`
+	}
+	if err = json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("invalid time sync response: %w", err)
+	}
+	if result.Accepted != nil && (*result.Accepted || result.Reason == "stale_sequence") {
+		return nil
+	}
+	return errors.New("time sync response did not qualify for cursor commit")
 }
-func timeSyncHash(id string,last time.Time)uint64{
-    h:=fnv.New64a();_,_=h.Write([]byte(id+":time-sync:"+strconv.FormatInt(last.UnixNano(),10)));return h.Sum64()
+
+type timeSyncSubmissionError struct{ status int }
+
+func (e *timeSyncSubmissionError) Error() string {
+	return fmt.Sprintf("inventory send failed for time sync: status %d", e.status)
 }
-func timeSyncFirstDelay(id string)time.Duration{
-    return 2*time.Minute+time.Duration(timeSyncHash(id,time.Time{})%uint64(3*time.Minute+1))
+func newTimeSyncCollector(dir string) timeSyncCollector {
+	sys := timesync.NewSystem()
+	if sys == nil {
+		return nil
+	}
+	return timesync.New(dir, sys)
 }
-func timeSyncInterval(id string,last time.Time)time.Duration{
-    const interval=30*time.Minute
-    offset:=int64(timeSyncHash(id,last)%20001)-10000
-    return interval+time.Duration(int64(interval)*offset/100000)
+func timeSyncHash(id string, last time.Time) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(id + ":time-sync:" + strconv.FormatInt(last.UnixNano(), 10)))
+	return h.Sum64()
 }
+func timeSyncFirstDelay(id string) time.Duration {
+	return 2*time.Minute + time.Duration(timeSyncHash(id, time.Time{})%uint64(3*time.Minute+1))
+}
+func timeSyncInterval(id string, last time.Time) time.Duration {
+	const interval = 30 * time.Minute
+	offset := int64(timeSyncHash(id, last)%20001) - 10000
+	return interval + time.Duration(int64(interval)*offset/100000)
+}
+
 // Caller holds h.mu. Claim before dispatch so ticks cannot overlap.
-func (h *Heartbeat) timeSyncDueLocked(now time.Time,first bool)bool{
-    if h.timeSyncCol==nil||h.timeSyncStopping||h.timeSyncRunning{return false}
-    if !h.timeSyncStarted&&!first{return false}
-    if !first&&!dueForRun(now,h.lastTimeSyncUpdate,timeSyncInterval(h.config.AgentID,h.lastTimeSyncUpdate)){return false}
-    h.timeSyncStarted=true;h.timeSyncRunning=true;h.lastTimeSyncUpdate=now
-    return true
+func (h *Heartbeat) timeSyncDueLocked(now time.Time, first bool) bool {
+	if h.timeSyncCol == nil || h.timeSyncStopping || h.timeSyncRunning {
+		return false
+	}
+	if !h.timeSyncStarted && !first {
+		return false
+	}
+	if !first && !dueForRun(now, h.lastTimeSyncUpdate, timeSyncInterval(h.config.AgentID, h.lastTimeSyncUpdate)) {
+		return false
+	}
+	h.timeSyncStarted = true
+	h.timeSyncRunning = true
+	h.lastTimeSyncUpdate = now
+	return true
 }
-func (h *Heartbeat) startTimeSync(){
-    h.mu.Lock()
-    if h.timeSyncCol==nil||h.timeSyncStopping||h.timeSyncArmed{h.mu.Unlock();return}
-    h.timeSyncArmed=true;h.inventoryWg.Add(1);h.mu.Unlock()
-    go func(){
-        defer h.inventoryWg.Done();defer observability.Recoverer("heartbeat.timeSyncStartup")
-        timer:=time.NewTimer(timeSyncFirstDelay(h.config.AgentID));defer timer.Stop()
-        select{
-        case <-h.timeSyncContext.Done():return
-        case now:=<-timer.C:
-            h.mu.Lock();due:=h.timeSyncDueLocked(now,true);h.mu.Unlock()
-            if due{h.dispatchTimeSync()}
-        }
-    }()
+func (h *Heartbeat) startTimeSync() {
+	h.mu.Lock()
+	if h.timeSyncCol == nil || h.timeSyncStopping || h.timeSyncArmed {
+		h.mu.Unlock()
+		return
+	}
+	h.timeSyncArmed = true
+	h.inventoryWg.Add(1)
+	h.mu.Unlock()
+	go func() {
+		defer h.inventoryWg.Done()
+		defer observability.Recoverer("heartbeat.timeSyncStartup")
+		timer := time.NewTimer(timeSyncFirstDelay(h.config.AgentID))
+		defer timer.Stop()
+		select {
+		case <-h.timeSyncContext.Done():
+			return
+		case now := <-timer.C:
+			h.mu.Lock()
+			due := h.timeSyncDueLocked(now, true)
+			h.mu.Unlock()
+			if due {
+				h.dispatchTimeSync()
+			}
+		}
+	}()
 }
-func (h *Heartbeat) dispatchTimeSync(){
-    h.mu.Lock()
-    if h.timeSyncStopping{h.timeSyncRunning=false;h.mu.Unlock();return}
-    h.inventoryWg.Add(1);h.mu.Unlock()
-    go func(){
-        defer h.inventoryWg.Done();defer observability.Recoverer("heartbeat.timeSync")
-        h.sendTimeSync()
-    }()
+func (h *Heartbeat) dispatchTimeSync() {
+	h.mu.Lock()
+	if h.timeSyncStopping {
+		h.timeSyncRunning = false
+		h.mu.Unlock()
+		return
+	}
+	h.inventoryWg.Add(1)
+	h.mu.Unlock()
+	go func() {
+		defer h.inventoryWg.Done()
+		defer observability.Recoverer("heartbeat.timeSync")
+		h.sendTimeSync()
+	}()
 }
-func (h *Heartbeat) sendTimeSync(){
-    defer func(){h.mu.Lock();h.timeSyncRunning=false;h.mu.Unlock()}()
-    snapshot,err:=collectors.Guard("time-sync",func()(*timesync.Snapshot,error){return h.timeSyncCol.Collect(h.timeSyncContext)})
-    if err!=nil{log.Warn("time sync collection failed","error",err);return}
-    if snapshot==nil{return}
-    if err=h.sendInventoryData("time-status",snapshot,"time sync");err!=nil{
-        log.Warn("time sync submission failed","error",err)
-        var rejection *timeSyncSubmissionError
-        if errors.As(err,&rejection)&&(rejection.status==400||rejection.status==413||rejection.status==422){
-            if discardErr:=h.timeSyncCol.Discard(snapshot.Sequence);discardErr!=nil{log.Warn("time sync rejected payload could not be discarded","error",discardErr)}
-        }
-        return
-    }
-    if err=h.timeSyncCol.Acknowledge(snapshot.Sequence);err!=nil{log.Warn("time sync acknowledgement persistence failed","error",err)}
+func (h *Heartbeat) sendTimeSync() {
+	defer func() { h.mu.Lock(); h.timeSyncRunning = false; h.mu.Unlock() }()
+	snapshot, err := collectors.Guard("time-sync", func() (*timesync.Snapshot, error) { return h.timeSyncCol.Collect(h.timeSyncContext) })
+	if err != nil {
+		log.Warn("time sync collection failed", "error", err)
+		return
+	}
+	if snapshot == nil {
+		return
+	}
+	if err = h.sendInventoryData("time-status", snapshot, "time sync"); err != nil {
+		log.Warn("time sync submission failed", "error", err)
+		return
+	}
+	if err = h.timeSyncCol.Commit(snapshot); err != nil {
+		log.Warn("time sync cursor commit failed", "error", err)
+	}
 }
-func (h *Heartbeat) stopTimeSync(){
-    h.mu.Lock();h.timeSyncStopping=true;cancel:=h.timeSyncCancel;h.mu.Unlock()
-    if cancel!=nil{cancel()}
+func (h *Heartbeat) stopTimeSync() {
+	h.mu.Lock()
+	h.timeSyncStopping = true
+	cancel := h.timeSyncCancel
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 ```
 
 No extra import is needed in `heartbeat.go`: the interface and constructor are in the same package. The original import at line 30 remains exactly `"github.com/breeze-rmm/agent/internal/collectors/hwhealth"`; this is an audited template site, not a needless import edit.
 
-- [ ] Apply these exact replacements to `heartbeat.go`, checking the quoted anchors if line numbers moved after W01a:
+- [ ] Apply these exact replacements to `heartbeat.go`, checking the quoted anchors if line numbers moved after W01a. These partial excerpts are formatted in their enclosing Go declarations; retain the surrounding code and run `gofmt` on the completed file:
 
 Anchor `heartbeat.go:456`:
 
@@ -2144,6 +3311,33 @@ Replacement:
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 ```
 
+Anchor in `sendInventoryData`, immediately after `defer resp.Body.Close()` (before the generic 2xx return):
+
+```go
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		log.Debug("inventory sent", "label", label)
+		return nil
+	} else {
+		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
+	}
+```
+
+Replace that complete response-status branch:
+
+```go
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if endpoint == "time-status" {
+			if err := validateTimeSyncResponse(resp.Body); err != nil {
+				return err
+			}
+		}
+		log.Debug("inventory sent", "label", label)
+		return nil
+	} else {
+		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
+	}
+```
+
 Anchor `heartbeat.go:2361–2364`:
 
 ```go
@@ -2165,15 +3359,15 @@ Replacement:
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 ```
 
-Permanent payload errors 400/413/422 discard only the pending payload, retaining its reserved sequence and the last acknowledged event watermark. The next cycle gathers fresh facts and replays unaccepted events. Authentication errors, 429, 5xx and transport failures keep the pending snapshot. A failure to persist the discard also keeps it for retry.
+Only qualified 2xx responses reach `Commit(snapshot)`. HTTP errors (including 400/413/422), authentication errors, 429, 5xx, transport failures, empty/malformed bodies and unqualified rejections leave `eventsSince` unchanged. There is nothing to discard: the next run always collects fresh facts and a new sequence. A failed cursor save is logged and the event window is replayed on the next run. Keep `validateTimeSyncResponse` when W03b adapts this transport; its send callback must have the same qualified-success meaning.
 
 - [ ] Run:
 
 ```bash
-cd agent && go test -race ./internal/heartbeat/... -run '^TestTimeSync'
-cd agent && go test -race ./internal/collectors/timesync/...
-cd agent && GOOS=windows go vet ./internal/heartbeat/... ./internal/collectors/timesync/...
-cd agent && GOOS=windows go test -c -o /tmp/heartbeat.test.exe ./internal/heartbeat
+(cd agent && go test -race ./internal/heartbeat/... -run '^TestTimeSync')
+(cd agent && go test -race ./internal/collectors/timesync/...)
+(cd agent && GOOS=windows go vet ./internal/heartbeat/... ./internal/collectors/timesync/...)
+(cd agent && GOOS=windows go test -c -o /tmp/heartbeat.test.exe ./internal/heartbeat)
 ```
 
 Expected PASS. No settings dispatch belongs in `applyConfigUpdate` in W01b; that is explicitly W03b's seam above its policy-probe early return.
@@ -2206,62 +3400,110 @@ The native test below has no network calls and never starts or enrolls an agent.
 package timesync
 
 import (
-    "context"
-    "encoding/json"
-    "os"
-    "reflect"
-    "strings"
-    "testing"
-    "time"
-    "github.com/breeze-rmm/agent/internal/mgmtdetect"
+	"context"
+	"encoding/json"
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 )
 
-func TestLocaleSnapshotReplay(t *testing.T){
-    at:=time.Date(2026,9,28,12,0,0,0,time.UTC)
-    snapshots:=[]*Snapshot{}
-    for _,german:=range []bool{false,true}{
-        tokens:=germanStatus;message:="Receiving valid time data"
-        if !german{tokens=strings.NewReplacer("Sprungindikator","Leap Indicator","Quelle","Source","Abrufintervall","Poll Interval").Replace(tokens)}else{message="Gültige Zeitdaten werden empfangen"}
-        f:= &fakeSystem{tokens:[]byte(tokens),identity:mgmtdetect.IdentityStatus{JoinType:mgmtdetect.JoinTypeNone,Source:"dsregcmd"},
-            strings:map[string]string{serviceKey+`\Parameters|Type`:"NTP"},
-            events:[]Event{{RecordID:1,EventID:37,Level:4,OccurredAt:at.Add(-time.Minute),Message:message,
-                Properties:[]string{"peer.example.com,0x9 (ntp.m|0x9|transport)"}}}}
-        c:=New(t.TempDir(),f);c.now=func()time.Time{return at}
-        s,err:=c.Collect(context.Background());if err!=nil{t.Fatal(err)}
-        snapshots=append(snapshots,s)
-    }
-    if snapshots[0].Events[0].Message==snapshots[1].Events[0].Message{t.Fatal("fixture does not exercise locale")}
-    for _,s:=range snapshots{for i:=range s.Events{s.Events[i].Message=""}}
-    if !reflect.DeepEqual(snapshots[0],snapshots[1]){a,_:=json.Marshal(snapshots[0]);b,_:=json.Marshal(snapshots[1]);t.Fatalf("locale affected facts:\n%s\n%s",a,b)}
+func TestLocaleSnapshotReplay(t *testing.T) {
+	at := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	snapshots := []*Snapshot{}
+	for _, german := range []bool{false, true} {
+		tokens := germanStatus
+		message := "Receiving valid time data"
+		if !german {
+			tokens = strings.NewReplacer("Sprungindikator", "Leap Indicator", "Quelle", "Source", "Abrufintervall", "Poll Interval").Replace(tokens)
+		} else {
+			message = "Gültige Zeitdaten werden empfangen"
+		}
+		f := &fakeSystem{tokens: []byte(tokens), identity: mgmtdetect.IdentityStatus{JoinType: mgmtdetect.JoinTypeNone, Source: "dsregcmd"},
+			strings: map[string]string{serviceKey + `\Parameters|Type`: "NTP"},
+			events: []Event{{RecordID: 1, EventID: 37, Level: 4, OccurredAt: at.Add(-time.Minute), Message: message,
+				Properties: []string{"peer.example.com,0x9 (ntp.m|0x9|transport)"}}}}
+		c := New(t.TempDir(), f)
+		c.now = func() time.Time { return at }
+		s, err := c.Collect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshots = append(snapshots, s)
+	}
+	if snapshots[0].Events[0].Message == snapshots[1].Events[0].Message {
+		t.Fatal("fixture does not exercise locale")
+	}
+	for _, s := range snapshots {
+		for i := range s.Events {
+			s.Events[i].Message = ""
+		}
+	}
+	if !reflect.DeepEqual(snapshots[0], snapshots[1]) {
+		a, _ := json.Marshal(snapshots[0])
+		b, _ := json.Marshal(snapshots[1])
+		t.Fatalf("locale affected facts:\n%s\n%s", a, b)
+	}
 }
 
-func TestLiveTimeSyncFacts(t *testing.T){
-    if os.Getenv("TIMESYNC_LIVE")!="1"{t.Skip("explicit lab-only opt-in required")}
-    wantRole:=os.Getenv("TIMESYNC_EXPECT_ROLE")
-    if wantRole==""{t.Fatal("TIMESYNC_EXPECT_ROLE must describe this lab scenario")}
-    ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second);defer cancel()
-    sys:=NewSystem();if sys==nil{t.Fatal("Windows constructor returned nil")}
-    c:=New(t.TempDir(),sys);s,err:=c.Collect(ctx);if err!=nil{t.Fatal(err)}
-    if s.Domain.Role!=wantRole{t.Fatalf("role=%s want=%s",s.Domain.Role,wantRole)}
-    if s.Config.ServiceState=="unknown"||s.Timezone.WindowsID==nil{t.Fatal("native service/timezone read unavailable")}
-    if want:=os.Getenv("TIMESYNC_EXPECT_KIND");want!=""&&s.Status.SourceKind!=want{t.Fatalf("source kind=%s want=%s",s.Status.SourceKind,want)}
-    if want:=os.Getenv("TIMESYNC_EXPECT_VMIC");want!=""{
-        if s.Config.HostTimeProviderEnabled==nil||(*s.Config.HostTimeProviderEnabled)!=(want=="1"){t.Fatal("VMIC provider fact mismatch")}
-    }
-    // Full output is private diagnostic evidence; redact source/domain strings
-    // before copying anything to a public PR.
-    if os.Getenv("TIMESYNC_PRINT_PRIVATE")=="1"{b,_:=json.MarshalIndent(s,"","  ");t.Log(string(b))}
-    if err=c.Acknowledge(s.Sequence);err!=nil{t.Fatal(err)}
-    second,err:=New(c.dir,sys).Collect(ctx);if err!=nil{t.Fatal(err)}
-    if second.Sequence<=s.Sequence{t.Fatal("restart reused sequence")}
-    t.Logf("schema=%d role=%s method=%s sourceKind=%s events=%d sequence advanced",s.SchemaVersion,s.Domain.Role,s.Status.Method,s.Status.SourceKind,len(s.Events))
+func TestLiveTimeSyncFacts(t *testing.T) {
+	if os.Getenv("TIMESYNC_LIVE") != "1" {
+		t.Skip("explicit lab-only opt-in required")
+	}
+	wantRole := os.Getenv("TIMESYNC_EXPECT_ROLE")
+	if wantRole == "" {
+		t.Fatal("TIMESYNC_EXPECT_ROLE must describe this lab scenario")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	sys := NewSystem()
+	if sys == nil {
+		t.Fatal("Windows constructor returned nil")
+	}
+	c := New(t.TempDir(), sys)
+	s, err := c.Collect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Domain.Role != wantRole {
+		t.Fatalf("role=%s want=%s", s.Domain.Role, wantRole)
+	}
+	if s.Config.ServiceState == "unknown" || s.Timezone.WindowsID == nil {
+		t.Fatal("native service/timezone read unavailable")
+	}
+	if want := os.Getenv("TIMESYNC_EXPECT_KIND"); want != "" && s.Status.SourceKind != want {
+		t.Fatalf("source kind=%s want=%s", s.Status.SourceKind, want)
+	}
+	if want := os.Getenv("TIMESYNC_EXPECT_VMIC"); want != "" {
+		if s.Config.HostTimeProviderEnabled == nil || (*s.Config.HostTimeProviderEnabled) != (want == "1") {
+			t.Fatal("VMIC provider fact mismatch")
+		}
+	}
+	// Full output is private diagnostic evidence; redact source/domain strings
+	// before copying anything to a public PR.
+	if os.Getenv("TIMESYNC_PRINT_PRIVATE") == "1" {
+		b, _ := json.MarshalIndent(s, "", "  ")
+		t.Log(string(b))
+	}
+	// No API response exists in this read-only test, so do not Commit.
+	second, err := New(c.dir, sys).Collect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Sequence <= s.Sequence {
+		t.Fatal("restart reused sequence")
+	}
+	t.Logf("schema=%d role=%s method=%s sourceKind=%s events=%d sequence advanced", s.SchemaVersion, s.Domain.Role, s.Status.Method, s.Status.SourceKind, len(s.Events))
 }
 ```
 
 - [ ] Establish the red lab baseline before updating the installed agent: W01a's device Time section reads “no data yet” for an agent that has never sent time status. Record that observation; do not manufacture a failing unit test. Cross-build the new test binary:
 
 ```bash
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync)
 ```
 
 On Windows, prove the live assertion is sensitive to the scenario by setting `TIMESYNC_EXPECT_ROLE=forest_root_pdc_emulator` on the workgroup Windows lab VM and running the command below. Expected FAIL: `role=workgroup want=forest_root_pdc_emulator`. Restore the correct role immediately before continuing. No Windows setting changes are needed for this negative check.
@@ -2269,7 +3511,7 @@ On Windows, prove the live assertion is sensitive to the scenario by setting `TI
 - [ ] Implement the concrete lab setup and installed-agent update. Use the already-private `.env.dev` values read by the Makefile; set `BREEZE_DEV_DEVICE` to the appropriate enrolled test device in the operator's private environment before each push. Do not paste that ID, an access token or a lab hostname into this plan or a tracked script.
 
 ```bash
-cd agent && make dev-push PLATFORM=windows/amd64
+(cd agent && make dev-push PLATFORM=windows/amd64)
 ```
 
 This builds a version `dev-<epoch>` and updates the existing installed agent through `/api/v1/dev/push` (`agent/Makefile:263–300`). Confirm that version in the device overview. Never run `breeze-agent run` beside the installed service. Wait up to 5 minutes plus one heartbeat tick for the first Time snapshot. To trigger a fresh first-run timer after changing lab configuration, restart the existing service:
@@ -2369,7 +3611,7 @@ $env:TIMESYNC_EXPECT_VMIC='1'
 go test -race ./internal/collectors/timesync/... -run '^TestLiveTimeSyncFacts$' -v
 ```
 
-Restart the installed agent and expect `hostTimeProviderEnabled=true` and `dc_vm_host_sync` in Time even if the currently observed source is still a domain/manual peer. Record sourceKind independently: enabling a provider is not proof it is the selected source. If method 1 or a verified invariant tag can identify selected VM-host time, require `sourceKind=vm_host` in the native test using `TIMESYNC_EXPECT_KIND`; otherwise mark the classification acceptance gate unresolved.
+Restart the installed agent and expect `hostTimeProviderEnabled=true` and `dc_vm_host_sync` in Time even if the currently observed source is still a domain/manual peer. Record sourceKind independently: enabling a provider is not proof it is the selected source. If method 1 or a verified invariant tag can identify selected VM-host time, require `sourceKind=vm_host` in the native test using `TIMESYNC_EXPECT_KIND`; otherwise retain only the kind actually proved by the selected method (which may still prove a domain/manual peer), or `unknown` when none is proved. Record unsupported VM-host classification as the R7-approved limitation; do not fail the release for an unproven kind.
 
 - [ ] **L5: member server on hierarchy.** On the member server in the brzlab AD lab:
 
@@ -2378,12 +3620,23 @@ w32tm.exe /config /syncfromflags:domhier /update
 Restart-Service W32Time
 w32tm.exe /resync /rediscover
 $env:TIMESYNC_EXPECT_ROLE='member'
-$env:TIMESYNC_EXPECT_KIND='domain_peer'
+$env:TIMESYNC_EXPECT_KIND='unknown'
 Remove-Item Env:TIMESYNC_EXPECT_VMIC -ErrorAction SilentlyContinue
+```
+
+Use `unknown` for a plain-hostname fallback. Only if Task 1's chosen method proved domain-peer metadata for this scenario, set the stronger expectation before the test:
+
+```powershell
+$env:TIMESYNC_EXPECT_KIND='domain_peer'
+```
+
+Run the native assertion with that evidence-based expectation:
+
+```powershell
 go test -race ./internal/collectors/timesync/... -run '^TestLiveTimeSyncFacts$' -v
 ```
 
-Expected Time section: `role=member`, `Type=NT5DS`, source is an actual DC from structured evidence, recent success and no time-source findings. Set the site's expected timezone to match the test VM, or leave the site at the `UTC` default, so an unrelated informational timezone mismatch does not confuse the assertion. A stopped/unreachable DC or actual stale event is a real finding, not a reason to weaken the test.
+Expected Time section: `role=member`, `Type=NT5DS`, source matches the observed DC, with `sourceKind=domain_peer` only when the selected metadata proves it and `unknown` for a plain hostname; recent success and no time-source findings. Set the site's expected timezone to match the test VM, or leave the site at the `UTC` default, so an unrelated informational timezone mismatch does not confuse the assertion. A stopped/unreachable DC or actual stale event is a real finding, not a reason to weaken the test.
 
 - [ ] **L9: German display language.** Use a disposable Windows client VM with a language-pack-capable edition. First take English probe/live evidence with the correct identity/role. Install the matching German language pack; on supported Windows 11 images:
 
@@ -2437,10 +3690,10 @@ Prefer reverting the disposable VM snapshot after L9 to undo the system-account 
 | L2 | Invalid manual peer, repair, repeat failure | 134 raises; later 35/37 clears; later 134 raises again | Record UTC ordering, IDs, levels, insertion index and UI finding | Record result |
 | L3 | brzlab AD lab, forest-root PDC with NT5DS | Forest-root role and no-external-source finding | Record structured role and event evidence | Record result |
 | L4 | Same PDC, VMIC Enabled=1 | VMIC fact and DC VM-host warning | Separate provider enabled from selected-source proof | Record result |
-| L5 | brzlab AD lab member on hierarchy | Member, domain peer, successful sync, no source findings | Record native and web state | Record result |
+| L5 | brzlab AD lab member on hierarchy | Member, observed DC source, proven domain kind or unknown, successful sync, no source findings | Record native and web state | Record result |
 | L9 | German client and service display context | Fixed-input equality except message; live facts remain locale-independent | Record OS/language/context, extraction methods and explained time changes | Record result |
 
-Include a second method-coverage row for each `sourceKind` required by §4.2: `local_clock`, `free_running`, `vm_host`, `domain_peer`, `ntp_peer`. Unit fake coverage does not establish native capability. If the unresolved ABI/token limitations prevent one of these, record FAIL and keep the release gate open; do not relabel it PASS because the field says unknown.
+Include a second method-coverage row for each §4.2 `sourceKind`: `local_clock`, `free_running`, `vm_host`, `domain_peer`, `ntp_peer`. Record what the chosen method proves and which kinds intentionally remain `unknown` under R7. Unit fake coverage does not establish native capability. An unsupported kind reported as `unknown` is an approved fallback limitation; a fabricated kind or a mismatch with proven evidence is FAIL. Method 1 additionally requires the installed `w32time.h` prototype/ownership citation and a passing L1/L3/L5/L9 comparison before shipping.
 
 - [ ] Delete only the temporary spike file after recording evidence:
 
@@ -2452,21 +3705,22 @@ Keep the permanent native-layout tests and fixed-input German regression. Run fi
 
 ```bash
 gofmt -w agent/internal/collectors/timesync/*.go agent/internal/collectors/command_export.go agent/internal/collectors/command_export_test.go agent/internal/mgmtdetect/identity.go agent/internal/mgmtdetect/identity_test.go agent/internal/heartbeat/time_sync.go agent/internal/heartbeat/time_sync_test.go agent/internal/heartbeat/heartbeat.go
-cd agent && go test -race ./internal/collectors/timesync/... ./internal/mgmtdetect/... ./internal/heartbeat/...
-cd agent && GOOS=windows go vet ./internal/collectors/timesync/... ./internal/mgmtdetect/... ./internal/heartbeat/...
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/mgmtdetect.test.exe ./internal/mgmtdetect
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/heartbeat.test.exe ./internal/heartbeat
-cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/collectors.test.exe ./internal/collectors
+gofmt -l agent/internal/collectors/timesync/*.go agent/internal/collectors/command_export.go agent/internal/collectors/command_export_test.go agent/internal/mgmtdetect/identity.go agent/internal/mgmtdetect/identity_test.go agent/internal/heartbeat/time_sync.go agent/internal/heartbeat/time_sync_test.go agent/internal/heartbeat/heartbeat.go
+(cd agent && go test -race ./internal/collectors/timesync/... ./internal/mgmtdetect/... ./internal/heartbeat/...)
+(cd agent && GOOS=windows go vet ./internal/collectors/timesync/... ./internal/mgmtdetect/... ./internal/heartbeat/...)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/timesync.test.exe ./internal/collectors/timesync)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/mgmtdetect.test.exe ./internal/mgmtdetect)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/heartbeat.test.exe ./internal/heartbeat)
+(cd agent && GOOS=windows GOARCH=amd64 go test -c -o /tmp/collectors.test.exe ./internal/collectors)
 ```
 
-These commands are separate invocations from the repo root; do not execute repeated `cd agent` lines in a shell that retains the previous command's working directory. On a Windows lab checkout, run the changed packages natively with the race detector and opt-in live test. Preserve the source checkout structure so the shared fixture resolves.
+`gofmt -l` must print nothing. Run these commands from the repo root; each `cd agent` uses a subshell so the block also works when pasted as a whole. On a Windows lab checkout, run the changed packages natively with the race detector and opt-in live test. Preserve the source checkout structure so the shared fixture resolves.
 
 - [ ] Final release checks (executor only, after the targeted suites and lab gates pass):
 
 ```bash
-cd agent && go test -race ./...
-cd agent && GOOS=windows go vet ./...
+(cd agent && go test -race ./...)
+(cd agent && GOOS=windows go vet ./...)
 git diff --check
 git status --short
 ```
@@ -2487,17 +3741,17 @@ git commit -m "test(agent): verify native time sync collection and locale parity
 | Owned spec/index requirement | Task(s) | Coverage / limit |
 |---|---|---|
 | §4.2 first-task status-source spike | 1 | Tagged Go probe, ordered evaluation, English/German and OS-floor evidence; native DLL invocation blocked on verified ABI. |
-| §4.2 provider structures and provider-first ladder | 1, 4, 6 | Published RPC layout assertions, complete SPI ladder; real DLL adapter is explicitly unresolved, not claimed implemented. |
-| §4.2 five source kinds, locale-independent reads | 4, 9 | Every kind tested through fake provider; native fallback distinguishes peer kinds, leaves unsupported local/free/VM kinds unknown; release acceptance remains gated. |
-| §4.1 W32Time config, policy presence and VMIC | 2, 6, 7 | Registry adapter, nullable facts, conservative managed flag on read failure, bounded value names. |
-| §4.1 service state/start type | 6, 7 | Reuses svcquery, supplements lossy fields with raw SCM and trigger presence. |
+| §4.2 provider structures and provider-first ladder | 1, 4, 6 | Published RPC layout assertions, complete SPI ladder; method 1 requires installed-SDK ABI/ownership plus L1/L3/L5/L9 proof; R7 approves the complete fallback otherwise. |
+| §4.2 five source kinds, locale-independent reads | 4, 9 | Every kind tested through fake provider; only validated provider/token/event metadata establishes a kind; plain hosts under NTP and NT5DS remain unknown (R7). |
+| §4.1 W32Time config, policy presence and VMIC | 2, 6, 7 | Registry adapter, nullable facts, fail-closed managed flag on read failure, preserving readable names including partial-error results (R6). |
+| §4.1 service state/start type | 6, 7 | Collector owns raw SCM reads and trigger presence; svcquery stays unchanged for other callers (R8). |
 | §4.3 existing identity and role derivation | 3, 6 | Minimal exported wrapper; every role and API-failure path; DNS/forest equality; correct native buffers/frees. |
 | §4.4 all-level Time-Service events | 5, 6 | Provider filter with insertion properties, UTC, no message parsing, query failures preserved. |
-| §4.4 first 24 hours, since last successful run, max100 | 5, 7 | Query bounds and durable acknowledgement cursor; failed delivery retries its pending snapshot. |
-| §4.4 recent20 any-ID display tail | 5 | Bounded union and deduplication; resolved interpretation documented in Contract issues. |
+| §4.4 first 24 hours, since last successful run, max100 | 5, 7 | Fresh reads and distinct sequences on every call; only a qualified send commits eventsSince; failures/restarts replay uncommitted events (R4). |
+| §4.4 recent20 any-ID display tail and serialized budget | 5, 7 | ID-only deduplication keeps newest occurrence; all display IDs survive the count/256 KiB caps, including after enforcement is attached (R5). |
 | §4.5 native zone ID, Bias, DST-disabled and tzautoupdate | 6, 7 | Exact struct layout; raw base Bias; Start3/on,4/off,other/unknown tests. |
 | §4.6 JSON and monotonic sequence | 2, 7 | Exact keys/nullability; persisted safe-integer sequence; restart/corruption/write-failure/concurrency cases. |
-| §4.6 cadence and upload | 8 | 2–5m first timer, 27–33m repeat gate, PUT endpoint, single-flight, stop/drain and cancellation. |
+| §4.6 cadence and upload | 8 | 2–5m first timer, 27–33m repeat gate, PUT endpoint, qualified accepted/stale-sequence response validation, single-flight, stop/drain and cancellation. |
 | §4 Guard and bounded exec | 6, 8 | Existing bounded runner wrapper, Guard at heartbeat boundary, panic test. |
 | §B shared NTP host fixture and odd-spacing parser | 2 | Exact relative path; shared valid/invalid sets; multi-flag suffixes and empty array. |
 | §H package layout and non-Windows behavior | 2–8 | All named files exist in implementation plan; additional files separate persistence/event exec and tests; nil/no send on other OSes. |
@@ -2508,7 +3762,7 @@ git commit -m "test(agent): verify native time sync collection and locale parity
 
 ### 2. Placeholder scan
 
-Authoring scan result: 0 unfinished-marker hits; 0 IPv4 literals; every complete Go code block passes `gofmt` syntax parsing through stdin without writing implementation files. Source anchors and cross-wave names were read-checked; an independent read-only review identified the permanent-rejection retry trap, now covered by Task 7/8 tests and discard semantics. Implementation tests were not run. There are no deferred implementation markers in the fallback path. The one explicit implementation blocker is the unverified native-provider ABI, recorded below rather than disguised as a code placeholder. PR evidence cells are instructions to record future observations, not fabricated results. Commands and native tests in this document have not been executed while authoring.
+All nine tasks remain. Embedded Go is formatted with `gofmt`, including partial heartbeat replacements formatted in enclosing declarations; no implementation files are written during authoring. Source anchors and cross-wave names were read-checked against W01a and W03b. Tasks 5, 7 and 8 now include ID-only newest-occurrence deduplication, display reservation under count/byte limits, fresh reads, distinct concurrent sequences, two-key persistence, cursor-save failures and qualified-response tests. Implementation and native lab tests are executor work and have not been run while authoring. R7 approves the complete fallback; the optional provider method still needs SDK/lab evidence before activation. PR evidence cells instruct the executor to record observations, not fabricate results.
 
 ### 3. Type consistency against the cross-wave contract
 
@@ -2517,34 +3771,38 @@ Authoring scan result: 0 unfinished-marker hits; 0 IPv4 literals; every complete
 - `uint64` sequences and record IDs are bounded to JavaScript safe integers; status strata are 0–16; DWORD intervals remain nonnegative; Bias is -1440–1440.
 - Timestamp fields use `time.Time` and UTC output, acceptable to `z.string().datetime({offset:true})`. No locale date parser exists.
 - Status uses only `provider_api`, `w32tm_tokens`, `events`, `unavailable`; unsupported distinctions stay `unknown`.
-- `New`, `Collect`, `ParseNtpServerHosts`, `IsValidNtpServerHost`, `NewSystem`, package paths, state filename and `sendInventoryData("time-status", snapshot, "time sync")` match §H verbatim.
+- `New`, `Collect`, `Commit`, `ParseNtpServerHosts`, `IsValidNtpServerHost`, `NewSystem`, package paths, state filename and `sendInventoryData("time-status", snapshot, "time sync")` match §H verbatim.
 - Shared host fixture path is exactly `../../../../packages/shared/src/validators/__fixtures__/ntpServers.json`; four parents are correct from the package directory.
 - No migration slot, schema version, built-in monitor version or W03b settings/command name changes.
-- Additional `Acknowledge`/`Discard` methods are local delivery seams, not a wire-contract change. Acknowledgement defines “successful run” as successfully delivered, preserving evidence across outages.
+- R4 defines `Commit(*Snapshot) error`; only `sequence` and `eventsSince` persist. W03b consumes this interface, retains `System` for direct guard reads, and reuses `fitPayload` after attaching enforcement without rebuilding the collector-selected events.
+- R1 has no locale step in this Go-only plan; it adds no catalogs, translations or translation-baseline changes. R2–R3 and R11–R15 belong to the API/web or management waves; W01b does not redefine those contracts. R6–R10 and R16–R17 are covered here.
 
 ### 4. Review Focus coverage
 
 | Input | Expected behavior | Pin |
 |---|---|---|
 | German w32tm text | No translated source/date parsing; same stable facts | Task 4 `TestGermanTokensNeverParseTranslatedValues`; Task 9 `TestLocaleSnapshotReplay` and L9 |
-| Failed delivery and restart | Byte-equivalent pending payload, sequence reuse only for that payload, no watermark loss | Task 7 `TestPersistencePendingAndEventWatermark`; Task 8 acknowledgement tests |
+| Failed delivery and restart | Fresh facts/new sequence, unchanged committed cursor, unaccepted events replayed | Task 7 `TestFreshCollectionsAndCommittedEventCursor`; Task 8 `TestTimeSyncPUTAndQualifiedCommit` |
+| Large/duplicate event sets | Newest occurrence per ID, all newest-20 display IDs retained, body ≤256 KiB | Task 5 deduplication/count tests; Task 7 `TestSnapshotBudgetPreservesEntireDisplayReservation` |
 | Failed native reads and ambiguous tokens | Null/unknown, fail-closed role, no fabricated source | Tasks 3–7 table cases and explicit unavailable adapter |
 | Overlap, panic, collect/upload cancellation | Single flight, released gate, tracked goroutine drain | Task 8 scheduling, panic and cancellation cases |
 
 ## Contract issues
 
-1. **Unverified DLL ABI prevents the requested complete native method-1 branch.** The spec names `W32TimeQueryNTPProviderStatus` and describes its peer fields at `docs/superpowers/specs/monitoring/2026-09-28-time-sync-monitoring-design.md:132–138`. The published Microsoft material cited in Task 1 defines RPC data and `W32TimeQueryProviderStatus`, not a verified `w32time.dll` prototype/allocator for the requested export. Export lookup is not enough to know parameter order, buffer ownership, timestamp encoding or active-peer selection. Proposed fix: amend the contract with an authoritative SDK prototype and ownership/selection semantics after the spike, or explicitly approve the fallback-only release. This plan supplies actual RPC layouts and a complete provider-first SPI plus fallback, but deliberately does **not** invent an unsafe DLL call. Native method-1 acceptance remains unresolved.
+1. **RESOLVED — unverified DLL ABI (R7).** The fallback ladder is approved in advance. Method 1 ships only if Task 1 cites its prototype and buffer-ownership rules from the installed Windows SDK `w32time.h` and passes the L1/L3/L5/L9 comparison. RPC layouts and export lookup alone do not establish a callable DLL ABI. Tasks 1, 4, 6 and 9 preserve the complete fallback without an unresolved release-design gate.
 
-2. **The no-guessing rule and five-kind acceptance can exceed fallback evidence.** The spec requires `local_clock`, `free_running`, `vm_host`, `domain_peer`, `ntp_peer` at `docs/superpowers/specs/monitoring/2026-09-28-time-sync-monitoring-design.md:145–150`, while the token allowance at `:139–143` does not establish that a tag distinguishes local versus free-running time or that a numeric ReferenceId identifies a source. Proposed fix: record proven token mappings in the spike and amend the native-read contract with those facts; until then null/unknown takes precedence over guessing. The complete conservative fallback reports peer/event evidence and numeric fields only. Fake coverage for every kind is not native capability proof; Task 9 keeps this release gate open.
+2. **RESOLVED — source-kind acceptance versus no guessing (R7).** Only kinds proved by the chosen provider, invariant token or validated event metadata are emitted. Unsupported kinds are `unknown`, an approved limitation. Task 4 removes config/role-based classification of plain hostnames and tests both NTP and NT5DS; Task 9 records supported and unknown kinds separately.
 
-3. **Existing svcquery loses required state distinctions.** The spec points to `svcquery.GetStatus` at `docs/superpowers/specs/monitoring/2026-09-28-time-sync-monitoring-design.md:122`, but `agent/internal/svcquery/svcquery_windows.go:125–151` maps paused to stopped, start-pending to running and emits only automatic/manual/disabled. Index enum values at `docs/superpowers/plans/monitoring/2026-09-28-time-sync.md:173–174` also include pending, paused, delayed-auto and trigger-manual. Proposed fix, implemented in Task 6: retain svcquery reuse and supplement it with raw SCM config/state plus trigger presence; do not change other svcquery consumers.
+3. **RESOLVED — lossy svcquery state (R8).** Task 6 uses its own raw SCM reads for paused/pending state and delayed-auto/trigger-manual startup. Existing `svcquery.GetStatus` remains unchanged for other consumers.
 
-4. **The specified exec helper is private to the parent package.** The spec calls for `runCollectorOutput` at `docs/superpowers/specs/monitoring/2026-09-28-time-sync-monitoring-design.md:111–112`; actual helpers at `agent/internal/collectors/command_limits.go:34,41` are unexported. `timesync` cannot call them directly. Proposed fix, implemented in Task 6: add `collectors.RunCollectorOutput` as a thin context-aware wrapper over `runCollectorOutputWithContext`; keep the bounded runner implementation shared.
+4. **RESOLVED — private exec helper (R9).** Task 6 adds `collectors.RunCollectorOutput` as a thin context-aware wrapper over the existing bounded runner; `timesync` calls that exported helper.
 
-5. **Since-cursor events and the recent20 display tail need an explicit union rule.** The spec's since-last-run/max100 requirement is at `docs/superpowers/specs/monitoring/2026-09-28-time-sync-monitoring-design.md:166–169`; recent20 any-ID is at `:183–185`; the index gives only one `events` array at `docs/superpowers/plans/monitoring/2026-09-28-time-sync.md:243–251`. Proposed fix, implemented in Task 5: query both windows, reserve space for the display tail, merge/deduplicate and cap at100. The API can then preserve display history on quiet snapshots without a new wire field. The 512 KiB body cap also requires a byte budget beyond character caps; Task 7 enforces it.
+5. **RESOLVED — cursor/display event union and budget (R4, R5).** Tasks 5 and 7 union since-cursor all-level events with the newest 20 of any age, deduplicate solely by record ID retaining the newest occurrence, reserve display IDs at both count and byte limits, sort newest first and cap at 100 / 256 KiB serialized. Only `sequence` and `eventsSince` persist. Every collection reads fresh facts, and Task 8 commits the cursor only after the qualified API response. W03b consumes `Commit(*Snapshot)` and the same budget helper; the old pending/acknowledge/discard design is removed.
 
-6. **Literal equality across independent live L9 snapshots is impossible.** Index Review Focus 2 at `docs/superpowers/plans/monitoring/2026-09-28-time-sync.md:110–112` and L9 at `:596` say equal except messages, while sequence/collectedAt at `:209–210` must advance and real events can change between runs. Proposed fix, implemented in Task 9: require strict complete equality for fixed-input replay after removing only message, and document advancing observation metadata separately for live stable-field comparison. Do not silently strip arbitrary differing facts.
+6. **RESOLVED — L9 equality (R10).** Task 9 requires whole-snapshot fixed-input equality after removing only `events[].message`. Independent live runs compare stable fields while recording legitimate sequence, time and event differences.
 
-7. **Index branch prefix conflicts with the supplied repo naming instructions.** Index `docs/superpowers/plans/monitoring/2026-09-28-time-sync.md:7–8` prescribes `feature/...`; `AGENTS.md:307–312` and the supplied AGENTS instructions prescribe `feat/<issue>-<short-slug>` for features. Proposed fix: use `feat/<issue>-time-sync-w01b` when execution has its issue number, and correct the index separately. This authoring task creates no branch and does not edit the index.
+7. **RESOLVED — branch convention (R16).** CLAUDE.md's feature-lifecycle rule takes precedence: `feature/<parent#>-time-sync/wave-<sub-issue#>`, with the index's `-b` suffix for W01b as the second PR in W01. This authoring task creates no branch.
 
-8. **Spike-driven event-map corrections cannot precede an already merged W01a resolver.** Spec `docs/superpowers/specs/monitoring/2026-09-28-time-sync-monitoring-design.md:183–185` says lab evidence corrects event meanings before the resolver is written, but index `docs/superpowers/plans/monitoring/2026-09-28-time-sync.md:15` and this task require W01a merged before W01b. Proposed fix: if the spike disproves an event ID/property mapping, make a separately reviewed W01a/API follow-up before the W01b release; do not silently expand this Go-only PR or emit translated-text heuristics. Task 9 records a failed mapping as FAIL until corrected.
+8. **RESOLVED — spike corrections after merged W01a (R7).** If lab evidence disproves an event-ID meaning, a small API follow-up fixes it before the W01b agent release. Task 9 records a proved mapping mismatch as FAIL until corrected; this plan does not expand the Go-only PR or parse translated messages.
+
+No contract decisions remain open. Native Windows observations and optional method-1 proof remain execution evidence, not completed work. R17 formatting applies to all nine tasks, with `gofmt -l` and Go vet included in final verification.
