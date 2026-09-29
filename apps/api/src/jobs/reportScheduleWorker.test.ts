@@ -1056,6 +1056,48 @@ describe('processRunScheduledReport', () => {
     expect(generateReportMock).not.toHaveBeenCalled();
   });
 
+  // Series W04 final review F2: Combine archives ordinary (non-series) rows. A
+  // job enqueued before the combine, or retried with backoff, must not send
+  // for the archived duplicate — its contacts now also sit on the adopted row.
+  it('returns early for an ARCHIVED non-series row: no run row, generation or delivery', async () => {
+    /** SQL-faithful load: the mocked table returns the archived row unless the
+     *  load predicate carries `archived_at IS NULL` (what Postgres would do). */
+    const archivedRow = { ...report, seriesId: null, archivedAt: new Date('2026-09-29T07:00:00.000Z') };
+    const excludesArchived = (condition: unknown): boolean => {
+      const seen = new Set<unknown>();
+      const walk = (node: unknown): boolean => {
+        if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+        seen.add(node);
+        const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+        if (Array.isArray(chunks)
+          && chunks.includes('reports.archived_at')
+          && chunks.some((c) => JSON.stringify((c as { value?: unknown })?.value ?? null).includes('is null'))) {
+          return true;
+        }
+        return Object.values(node as Record<string, unknown>).some(walk);
+      };
+      return walk(condition);
+    };
+    const load: Record<string, unknown> = {};
+    load.from = vi.fn(() => load);
+    load.where = vi.fn((condition: unknown) => {
+      load.rows = excludesArchived(condition) ? [] : [archivedRow];
+      return load;
+    });
+    load.limit = vi.fn(async () => load.rows);
+    selectMock.mockReturnValueOnce(load);
+    insertMock.mockReturnValue(insertChain([{ id: RUN_ID }]));
+    generateReportMock.mockResolvedValue({ rows: [{ hostname: 'pc-1' }], rowCount: 1 });
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(load.where).toHaveBeenCalledTimes(1);
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a system-principal definition before resolving any authority', async () => {
     // P2-3 (#4190): the report scheduler has no acting user to reauthorize a
     // system-authored definition against, and must never invent one. A7 also

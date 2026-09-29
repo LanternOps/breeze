@@ -675,12 +675,16 @@ export async function processRunScheduledReport(
   data: RunScheduledReportJobData,
   opts: { finalAttempt?: boolean; occurrenceClaimed?: boolean } = {},
 ): Promise<void> {
+  // Multi-org report series W04: Combine archives ordinary (non-series) org
+  // rows, which no gate below would stop. A job enqueued before the row was
+  // archived, or retried with backoff, returns here like a deleted row —
+  // findDueReports never polls an archived row, so nothing re-enqueues it.
   const [loadedReport] = await db
     .select()
     .from(reports)
-    .where(and(eq(reports.id, data.reportId), ne(reports.schedule, 'one_time')))
+    .where(and(eq(reports.id, data.reportId), ne(reports.schedule, 'one_time'), isNull(reports.archivedAt)))
     .limit(1);
-  if (!loadedReport) return; // deleted or switched to one_time since enqueue
+  if (!loadedReport) return; // deleted, archived or switched to one_time since enqueue
   let report: NonNullable<typeof loadedReport> = loadedReport;
 
   // P2-3 (#4190) — a job already on the queue when the type exclusion in
