@@ -246,6 +246,7 @@ import {
   processRunScheduledReport,
   buildOccurrenceClaimCas,
   resolveScheduledReportRecipients,
+  resolveScheduledReportRecipientSets,
   resolveScheduledDeliveryContext,
 } from './reportScheduleWorker';
 import { persistedSiteScopeValues } from '../services/siteScope';
@@ -488,6 +489,86 @@ describe('resolveScheduledReportRecipients', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('resolveScheduledReportRecipientSets (multi-org report series W01)', () => {
+  const ORG = '11111111-1111-4111-8111-111111111111';
+
+  it('treats contacts and valid typed addresses alike as customers of a non-series report (no CC), counting every dropped address', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    selectMock.mockReturnValueOnce(selectChain([
+      { contactId: 'contact-a', email: 'Ops@Example.test' },
+      { contactId: 'contact-b', email: null },
+      { contactId: 'contact-c', email: 'not-an-email' },
+      { contactId: 'contact-d', email: 'owner@example.test' },
+    ]));
+
+    try {
+      const sets = await resolveScheduledReportRecipientSets({
+        reportId: 'report-1',
+        orgId: ORG,
+        config: {
+          emailRecipients: ['ops@example.test', 'typed@customer.test', 'invalid', 42],
+        },
+      });
+
+      // Coordinator ruling: a non-series report has no internal CC.
+      expect(sets.customer).toEqual(['Ops@Example.test', 'owner@example.test', 'typed@customer.test']);
+      expect(sets.cc).toEqual([]);
+      // A typed address that is also a contact is delivered (and counted) once.
+      expect(sets.recipients).toEqual(sets.customer);
+      // contact-b (no email), contact-c (invalid), 'invalid', 42 — a duplicate is not a drop.
+      expect(sets.dropped).toBe(4);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('counts recipients cut by the 50-address cap as dropped, contacts kept first', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    selectMock.mockReturnValueOnce(selectChain(
+      Array.from({ length: 48 }, (_, index) => ({
+        contactId: `contact-${index}`,
+        email: `user${index}@example.test`,
+      })),
+    ));
+
+    try {
+      const sets = await resolveScheduledReportRecipientSets({
+        reportId: 'report-1',
+        orgId: ORG,
+        config: { emailRecipients: ['a@typed.test', 'b@typed.test', 'c@typed.test', 'd@typed.test'] },
+      });
+
+      expect(sets.customer).toHaveLength(50);
+      expect(sets.customer.slice(48)).toEqual(['a@typed.test', 'b@typed.test']);
+      expect(sets.cc).toEqual([]);
+      expect(sets.recipients).toHaveLength(50);
+      expect(sets.dropped).toBe(2);
+      expect(warn).toHaveBeenCalledWith(
+        '[ReportScheduleWorker] Recipient union exceeds 50; truncating',
+        expect.objectContaining({ reportId: 'report-1', requested: 52 }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('resolves only the typed addresses for a partner-owned definition: no contact query', async () => {
+    const sets = await resolveScheduledReportRecipientSets({
+      reportId: 'report-1',
+      orgId: null,
+      config: { emailRecipients: ['cfo@msp.test'] },
+    });
+
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(sets).toEqual({
+      customer: ['cfo@msp.test'],
+      cc: [],
+      recipients: ['cfo@msp.test'],
+      dropped: 0,
+    });
   });
 });
 

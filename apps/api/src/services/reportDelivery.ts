@@ -23,6 +23,41 @@ import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 import type { ReportResult } from './reportGenerationService';
 
+import type { ReportDeliveryStatus } from '../db/schema/reports';
+
+export type { ReportDeliveryStatus } from '../db/schema/reports';
+
+/** What happened to a scheduled run's one `sendEmail` hand-off. */
+export type ScheduledSendOutcome = 'sent' | 'failed' | 'not_attempted';
+
+/**
+ * A scheduled run's `report_runs.delivery_status` (multi-org report series W01,
+ * spec §3.2 / §3.5). Pure — the worker passes what it resolved and the outcome
+ * of its single send (`emailReportRun` sends ONE message to every recipient,
+ * so there is no per-recipient outcome to aggregate):
+ *
+ *  - `no_recipients`: nothing deliverable resolved (customer and CC both
+ *    empty). Nothing was sent.
+ *  - `failed`: there were recipients, but the message did not leave — the
+ *    transport threw, or no email service is configured.
+ *  - `partial`: sent, but at least one CONFIGURED recipient was dropped (a
+ *    contact with no or an invalid email, an invalid address, the 50 cap).
+ *  - `sent`: sent to everyone configured. (A W02 series child with CC but
+ *    no customer recipient is still `sent`, spec §3.5; its
+ *    `recipient_count = 0` says so. A non-series report has no CC.)
+ *
+ * Never returns `not_scheduled` — that is the manual generate route's value.
+ */
+export function scheduledDeliveryStatus(args: {
+  deliverable: number;
+  dropped: number;
+  send: ScheduledSendOutcome;
+}): Exclude<ReportDeliveryStatus, 'not_scheduled'> {
+  if (args.deliverable === 0) return 'no_recipients';
+  if (args.send !== 'sent') return 'failed';
+  return args.dropped > 0 ? 'partial' : 'sent';
+}
+
 // Attachments above this size are dropped in favour of the in-app link.
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
@@ -69,6 +104,11 @@ export async function emailReportFailure(opts: {
   });
 }
 
+/**
+ * Resolves `true` once the transport accepted the message, `false` when no
+ * email service is configured (nothing was sent — the schedule worker records
+ * that as a failed delivery); throws whatever the transport throws.
+ */
 export async function emailReportRun(opts: {
   reportName: string;
   reportType: string;
@@ -91,11 +131,11 @@ export async function emailReportRun(opts: {
    * resolve one (spec §8.1).
    */
   partnerId: string | null;
-}): Promise<void> {
+}): Promise<boolean> {
   const email = getEmailService();
   if (!email) {
     console.warn('[ReportScheduleWorker] Email service not configured; skipping recipients for', opts.reportName);
-    return;
+    return false;
   }
   const base = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
   const link = `${base}/reports`;
@@ -186,4 +226,5 @@ export async function emailReportRun(opts: {
     text: `${bodyText}${trendLine ? `\n${trendLine}` : ''}\n${attachmentNote}\n${link}`,
     attachments,
   });
+  return true;
 }
