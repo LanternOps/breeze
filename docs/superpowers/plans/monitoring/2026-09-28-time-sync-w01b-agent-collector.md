@@ -3158,7 +3158,7 @@ No extra import is needed in `heartbeat.go`: the interface and constructor are i
 Anchor `heartbeat.go:456`:
 
 ```go
-	hwDisabledSnapshot *hwhealth.Snapshot
+	hwDisabledSnapshot * hwhealth.Snapshot
 ```
 
 Replacement:

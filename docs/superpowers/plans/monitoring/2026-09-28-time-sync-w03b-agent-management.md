@@ -2500,8 +2500,8 @@ Replace W01b's field group:
 with:
 
 ```go
-	hwDisabledSnapshot *hwhealth.Snapshot
-	timeSync           *timeSyncRuntime
+	hwDisabledSnapshot * hwhealth.Snapshot
+	timeSync * timeSyncRuntime
 ```
 
 Replace the constructor entries:
@@ -3012,7 +3012,7 @@ with:
 
 ```go
 	// Time synchronization management (Windows).
-	CmdTimeResync      = "time_resync"
+	CmdTimeResync = "time_resync"
 	CmdTimeSetTimezone = "time_set_timezone"
 	CmdTimeApplyPolicy = "time_apply_policy"
 
