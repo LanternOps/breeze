@@ -143,8 +143,10 @@ spike on the Windows lab VM that evaluates, in this order:
    last-known-good fallback.
 
 Acceptance: identical results on an English and a non-English display language; works on Windows 10
-and Server 2016 or newer; `sourceKind` distinguishes `local_clock`, `free_running`, `vm_host`,
-`domain_peer`, `ntp_peer`. The spike records the chosen method(s) in the W01 plan. The snapshot carries
+and Server 2016 or newer; `sourceKind` distinguishes as many of `local_clock`, `free_running`,
+`vm_host`, `domain_peer`, `ntp_peer` as the chosen method can prove, and reports `unknown` for the
+rest. Method 1 ships only if its prototype and buffer-ownership rules are confirmed from the Windows
+SDK `w32time.h`; otherwise the fallback ladder ships (plan index R7). The spike records the chosen method(s) in the W01 plan. The snapshot carries
 `status.method` (`provider_api` | `w32tm_tokens` | `events` | `unavailable`, the first one that produced
 `source`) so the UI can say how a value was read. A field no method can read is `null` and
 `sourceKind` is `unknown`.
@@ -305,9 +307,10 @@ Offline devices are covered by the existing `offline` monitor.
 ### 5.6 Daily rollup
 
 Upsert on `(device_id, day)` where `day = (collectedAt AT TIME ZONE 'UTC')::date`: `worst_health`
-(max), `finding_codes` (union), `source`, `source_kind`, `sync_type` (latest), `last_successful_sync_at`
-(max), `snapshot_count` (+1), `expected_timezone`, `timezone_windows_id` (latest). A day with no row is a
-gap.
+(order `critical > warning > unknown > healthy`), `finding_codes` (union), `source`, `source_kind`,
+`sync_type` (latest), `last_successful_sync_at` (max), `snapshot_count` (+1), `expected_timezone`,
+`timezone_windows_id` (latest). "Latest" is the latest accepted snapshot in ingest order. A day with no
+row is a gap.
 
 ## 6. Schema and tenancy
 
@@ -406,17 +409,20 @@ row per device and is removed by the device cascade.
 
 `apps/api/src/services/alertConditions/handlers/timeSync.ts`, registered in `alertConditions/index.ts`:
 
-1. Load `device_time_status`. Missing → `{ passed: false, dataAvailable: false, subjects: [] }`.
+1. Load `device_time_status`. Missing → every selected code gets `unknown` evidence, `dataAvailable: false`.
 2. Stale (§5.5) → every in-scope subject `unknown`, `dataAvailable: false`.
 3. For each selected finding code: `breaching` when present in `findings` for ≥ `consecutiveSnapshots`
    accepted snapshots, `recovered` when absent for ≥ `consecutiveSnapshots`, otherwise `unknown`.
    Streaks are counted at ingest per accepted snapshot (`finding_streaks jsonb` on the status row, kept
    next to `event_marks`), never per sweep, because the sweep runs every 60 s against a 30-min snapshot.
 4. `subjectKey = finding code`. Alert context: `{ source: 'time_sync', findingCode, findingLabel,
-   findingDetail, domainRole, source, lastSuccessfulSyncAt }`.
+   findingDetail, domainRole, timeSource, lastSuccessfulSyncAt }`.
 
 Subject alerts ride the existing `subject_key` path in `alertService.ts` (dedupe, auto-resolve on
-`recovered`, one automation-response owner per episode). No alert-service changes are expected.
+`recovered`, one automation-response owner per episode). Two narrow fixes are needed where that path
+still assumes hardware (plan index R11): `services/alertSubjects.ts` stamps every subject as
+`hardware_health`, and the maintenance-suppression recovery check in `services/alertService.ts` only
+admits hardware subjects.
 
 ### 7.3 Built-in defaults
 
@@ -506,8 +512,9 @@ Runs after each collection when `enforce_ntp` or `timezone.auto_fix` is set, and
    `policy_not_applied` (reason `role_unknown`).
 2. **Guards**, re-read immediately before any write: role unchanged, and `policyManaged = false`.
    If `policyManaged`, skip and report `conflict_gpo`.
-3. **Compare** desired with current (`Type`, the normalized `NtpServer` host list,
-   `SpecialPollInterval`, service start type). Equal → nothing to do.
+3. **Compare** desired with current. Manual-peer roles: `Type`, the normalized `NtpServer` host
+   list, `SpecialPollInterval`, service start type. Domain-hierarchy roles: `Type` (`NT5DS` or
+   `AllSync` is compliant) and service start type only. Equal → nothing to do.
 4. **Apply** with `exec.Command` argument arrays (never a shell):
    - Manual peers: `w32tm /config /manualpeerlist:"<h1>,0x9 <h2>,0x9" /syncfromflags:manual /update`,
      and `/reliable:yes` added on the forest-root PDC. Then set `SpecialPollInterval =
@@ -531,8 +538,9 @@ values are in the audit log.
 ### 8.4 Timezone auto-fix
 
 When `auto_fix` is on, `expected_windows_id` is set, `autoUpdate ≠ on` and `windowsId ≠ expected`: run
-`tzutil /s "<expected_windows_id>"` (the value is re-validated against an embedded list of Windows zone
-IDs before exec). It shares the rate limits above, and its result goes in `enforcement.timezone`.
+`tzutil /s "<expected_windows_id>"`, after checking that
+`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones\<id>` exists on the device (the
+installed catalog is authoritative; no embedded list). It shares the rate limits above, and its result goes in `enforcement.timezone`.
 
 ### 8.5 Audit
 
@@ -546,7 +554,7 @@ device resource) with `outcome`, `before` and `after`. Commands are audited by t
 | Type | Payload | Agent action | Offline |
 |---|---|---|---|
 | `time_resync` | — | Start W32Time if stopped; `w32tm /resync /rediscover`; return exit code plus `lastSuccessfulSyncAt` before/after; trigger a snapshot | expire after 1 h |
-| `time_set_timezone` | `{ windowsId }` (server-resolved expected zone; validated against the embedded list) | `tzutil /s`; return before/after; trigger a snapshot | expire after 1 h |
+| `time_set_timezone` | `{ windowsId }` (server-resolved expected zone; validated by `isKnownWindowsZone` on the server and the Time Zones registry key on the device) | `tzutil /s`; return before/after; trigger a snapshot | expire after 1 h |
 | `time_apply_policy` | — | Run §8.3 now, ignoring rate limits; return the enforcement result | expire after 1 h |
 
 Registered in `apps/api/src/services/commandTypes.ts`, `commandOfflinePolicy.ts`, `commandTimeouts.ts`
@@ -559,7 +567,7 @@ device and show each device's outcome. The web handlers use `runAction`.
 
 ## 10. Web UI
 
-- **Device → Info tab, "Time" section** (`apps/web/src/components/devices/DeviceTimeSection.tsx`,
+- **Device → Info tab, "Time" section** (`apps/web/src/components/devices/time/DeviceTimeSection.tsx`,
   rendered by `DeviceInfoTab.tsx` next to Operating System ~874). It shows:
   - the health badge and findings with fix hints (§5.2);
   - source and source kind, sync type, role (PDC emulator names the domain), last successful sync,
@@ -584,7 +592,8 @@ device and show each device's outcome. The web handlers use `runAction`.
     line "Observed synchronization reported by the Breeze agent; days without a report are listed as
     gaps."
 
-  The page is added to the Devices nav. Selected view and filters use `window.location.hash`.
+  The nav entry sits next to Fleet Posture under Reporting. Selected view and filters use
+  `window.location.hash`.
 - **Configuration policy → Time sync tab** (`TimeSyncTab.tsx`, `FeatureTabShell` + `useFeatureLink`,
   `FEATURE_META`, `ConfigPolicyDetailPage` wiring, Effective Config parity). It contains:
   - the enforcement switch;
