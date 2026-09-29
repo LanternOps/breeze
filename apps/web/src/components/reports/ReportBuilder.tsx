@@ -39,6 +39,11 @@ import { useTranslation } from 'react-i18next';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { isBusinessReportType } from './businessReportAccess';
 import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
+import { CoversControl } from './series/CoversControl';
+import { SeriesRecipientsSection } from './series/SeriesRecipientsSection';
+import { ORG_SPECIFIC_CONDITION_FIELDS, coversFromSeries, firstCoveredOrgId, sameTargets, stripSeriesConfig } from './series/seriesConfig';
+import { createSeries, replaceSeriesTargets, updateSeries } from './series/seriesApi';
+import type { CoversValue, SeriesDetail } from './series/types';
 
 type BuilderReportType = 'devices' | 'alerts' | 'patches' | 'compliance' | 'activity';
 type ReportBuilderType = BuilderReportType | LegacyReportType;
@@ -120,6 +125,13 @@ type ReportBuilderProps = {
    * partner-owned row, `null` included, and ownership never changes on edit.
    */
   partnerOwned?: boolean;
+  /**
+   * Edit an existing multi-org report series (W03). The builder renders the
+   * Covers control locked to series mode and saves through
+   * PATCH /reports/series/:id (+ PUT /targets when the targets changed).
+   * Mutually exclusive with `reportId`.
+   */
+  series?: SeriesDetail;
   /**
    * Multi-org series W01: the org to preselect in the All-organizations org
    * picker (the templates page passes the org chosen on the page). Ignored
@@ -772,6 +784,7 @@ export default function ReportBuilder({
   reportId,
   baseConfig,
   partnerOwned = false,
+  series,
   defaultOrgId,
   submitBlocked = false,
   onSubmit,
@@ -785,10 +798,22 @@ export default function ReportBuilder({
   const { currentOrgId } = useOrgStore();
   // Multi-org series W01 (spec §3.7): create/builder/adhoc need an org; edit
   // never re-homes a report, and a partner-owned report has no org at all.
+  // Covers (W03): one org / one per org / combined. Create mode, and the locked
+  // series edit; ownership is immutable once a report exists. Which org a
+  // single-org report targets stays with W01's useReportTargetOrg below.
+  const [covers, setCovers] = useState<CoversValue>(() => (series ? coversFromSeries(series) : { mode: 'org' }));
+  const seriesMode = covers.mode === 'series';
+  const showCovers = mode === 'create' || Boolean(series);
   const orgTarget = useReportTargetOrg(defaultOrgId ?? null);
   const orgPickerApplies = mode !== 'edit' && !partnerOwned;
-  const targetOrgId = orgPickerApplies ? orgTarget.orgId : currentOrgId;
-  const orgMissing = orgPickerApplies && orgTarget.missing;
+  // W03: a series has no single org. Its live preview reads the first org it
+  // covers; its create/edit never sends an orgId (submitSeries returns before
+  // the org payload is used). The org-required guard applies to org mode only.
+  const targetOrgId =
+    covers.mode === 'series'
+      ? firstCoveredOrgId(covers, orgTarget.options)
+      : orgPickerApplies ? orgTarget.orgId : currentOrgId;
+  const orgMissing = orgPickerApplies && covers.mode === 'org' && orgTarget.missing;
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
@@ -901,6 +926,13 @@ export default function ReportBuilder({
   }, [currentOrgId, reportId, schedule, contactRecipientsRefused, stableT]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
+  // Series mode (spec §3.7): nothing that names one org's sites/devices/groups.
+  const conditionFieldDefinitions = seriesMode
+    ? fieldDefinitions.filter((field) => !ORG_SPECIFIC_CONDITION_FIELDS.has(field.id))
+    : fieldDefinitions;
+  useEffect(() => {
+    if (seriesMode) setFilterMode('simple');
+  }, [seriesMode]);
   const dataSourceFields = dataSourceFieldsByType[builderType];
   const numericFields = useMemo(
     () => fieldDefinitions.filter(field => field.dataType === 'number'),
@@ -1436,6 +1468,63 @@ export default function ReportBuilder({
     }
   };
 
+  type SeriesSubmitPayload = {
+    name: string;
+    type: string;
+    schedule: ReportSchedule;
+    format: ReportFormat;
+    config: Record<string, unknown>;
+  };
+
+  /** Create or edit a series. Owns its navigation: a saved series lands on its
+   *  drill-down (`/reports#series/<id>`), not on the host's onSubmit. */
+  const submitSeries = async (payload: SeriesSubmitPayload) => {
+    if (covers.mode !== 'series') return;
+    if (covers.targetMode === 'selected' && covers.orgIds.length === 0) {
+      setError(t('reports.series.targeting.noneSelected'));
+      return;
+    }
+    // Recurring-only. The builder's schedule select never offers one_time, so
+    // this only narrows the type; it is never a silent substitution.
+    if (payload.schedule === 'one_time') {
+      setError(t('reports.series.schedule.required'));
+      return;
+    }
+    const config = stripSeriesConfig(payload.config);
+    const targets = { targetMode: covers.targetMode, orgIds: covers.orgIds };
+    setSaving(true);
+    try {
+      if (series) {
+        const id = series.series.id;
+        await updateSeries(
+          id,
+          { name: payload.name, format: payload.format, schedule: payload.schedule, config, recipientRule: covers.recipientRule, internalCc: covers.internalCc },
+          { errorFallback: t('reports.series.builder.saveFailed'), successMessage: t('reports.series.builder.saved', { name: payload.name }) },
+        );
+        // Only when changed: PUT /targets bumps the revision and reconciles.
+        // A failure here throws past the navigation (Review Focus 4).
+        if (!sameTargets(targets, { targetMode: series.series.targetMode, orgIds: series.targets })) {
+          await replaceSeriesTargets(id, targets, { errorFallback: t('reports.series.builder.targetsFailed') });
+        }
+        void navigateTo(`/reports#series/${id}`);
+        return;
+      }
+      const created = await createSeries(
+        { name: payload.name, type: payload.type, format: payload.format, schedule: payload.schedule, config, ...targets, recipientRule: covers.recipientRule, internalCc: covers.internalCc },
+        { errorFallback: t('reports.series.builder.saveFailed'), successMessage: t('reports.series.builder.created', { name: payload.name }) },
+      );
+      const id = created?.series?.id;
+      void navigateTo(id ? `/reports#series/${id}` : '/reports');
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : t('reports.series.builder.saveFailed'));
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (submitBlocked) return;
@@ -1515,6 +1604,11 @@ export default function ReportBuilder({
             dateRange: defaultValues?.dateRange
           }
     };
+
+    if (covers.mode === 'series') {
+      await submitSeries(payload);
+      return;
+    }
 
     setSaving(true);
     try {
@@ -1750,13 +1844,36 @@ export default function ReportBuilder({
           </div>
         )}
 
+        {showCovers && (
+          <div data-testid="report-builder-covers" className="rounded-lg border bg-card p-6 shadow-xs">
+            <CoversControl
+              reportType={series ? series.series.type : builderToLegacyType[builderType]}
+              value={covers}
+              onChange={setCovers}
+              lockMode={Boolean(series)}
+              orgField={
+                orgPickerApplies && orgTarget.pickerVisible ? (
+                  <OrgPickerField
+                    value={orgTarget.pickedOrgId}
+                    onChange={(orgId) => {
+                      orgTarget.setPickedOrgId(orgId);
+                      setError(undefined);
+                    }}
+                    options={orgTarget.options}
+                  />
+                ) : null
+              }
+            />
+          </div>
+        )}
+
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div>
             <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.reportDetails.title')}</h2>
             <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.reportDetails.description')}</p>
           </div>
 
-          {orgPickerApplies && orgTarget.pickerVisible && (
+          {orgPickerApplies && orgTarget.pickerVisible && !showCovers && (
             <OrgPickerField
               value={orgTarget.pickedOrgId}
               onChange={(orgId) => {
@@ -1774,6 +1891,7 @@ export default function ReportBuilder({
               </label>
               <input
                 id="report-name"
+                data-testid="report-builder-name"
                 placeholder={t('reports.reportBuilder.placeholders.reportName')}
                 value={reportName}
                 onChange={event => setReportName(event.target.value)}
@@ -2012,8 +2130,10 @@ export default function ReportBuilder({
               <button
                 type="button"
                 onClick={() => setFilterMode('advanced')}
+                data-testid="report-builder-filter-mode-advanced"
+                disabled={seriesMode}
                 className={cn(
-                  'px-3 py-1.5 text-xs font-medium rounded-r-md transition',
+                  'px-3 py-1.5 text-xs font-medium rounded-r-md transition disabled:opacity-50',
                   filterMode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                 )}
               >
@@ -2022,6 +2142,11 @@ export default function ReportBuilder({
               </button>
             </div>
           </div>
+          {seriesMode && (
+            <p data-testid="series-filters-disabled-note" role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              {t('reports.series.builder.filtersDisabled')}
+            </p>
+          )}
 
           {filterMode === 'simple' ? (
             <>
@@ -2054,7 +2179,7 @@ export default function ReportBuilder({
                         onChange={event => updateFilterCondition(condition.id, { field: event.target.value })}
                         className="h-9 px-2 text-xs"
                       >
-                        {fieldDefinitions.map(field => (
+                        {conditionFieldDefinitions.map(field => (
                           <option key={field.id} value={field.id}>
                             {getFieldLabel(field.id)}
                           </option>
@@ -2339,97 +2464,107 @@ export default function ReportBuilder({
                 <Mail className="h-4 w-4 text-muted-foreground" />
                 <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.emailDistributionList')}</p>
               </div>
-              <div className="space-y-3">
-                {contactRecipientsRefused ? (
-                  <p data-testid="report-partner-recipients-note" className="text-xs text-muted-foreground">
-                    {businessType
-                      ? t('reports.reportBuilder.recipients.businessEmailOnly')
-                      : t('reports.reportBuilder.recipients.partnerOwnedEmailOnly')}
-                  </p>
-                ) : (
+              {seriesMode && covers.mode === 'series' ? (
+                <SeriesRecipientsSection
+                  value={{ recipientRule: covers.recipientRule, internalCc: covers.internalCc }}
+                  onChange={(recipients) => setCovers({ ...covers, ...recipients })}
+                  targets={{ targetMode: covers.targetMode, orgIds: covers.orgIds }}
+                />
+              ) : (
                 <>
-                <p className="text-xs font-medium text-muted-foreground">
-                  {t('reports.reportBuilder.recipients.contacts')}
-                </p>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                  {contacts.map(contact => (
-                    <label
-                      key={contact.id}
-                      data-testid={`report-recipient-contact-${contact.id}`}
-                      className="flex items-center gap-2 rounded-md border p-3 text-sm"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedContactIds.has(contact.id)}
-                        onChange={() => void toggleContact(contact.id)}
-                      />
-                      <span>
-                        {contact.name || contact.email}
-                        {contact.name && (
-                          <span className="block text-xs text-muted-foreground">
-                            {contact.email}
-                          </span>
-                        )}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                </>
-                )}
-
-                {emailRecipients.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {contactRecipientsRefused
-                        ? t('reports.reportBuilder.recipients.emailAddresses')
-                        : t('reports.reportBuilder.recipients.legacy')}
+                <div className="space-y-3">
+                  {contactRecipientsRefused ? (
+                    <p data-testid="report-partner-recipients-note" className="text-xs text-muted-foreground">
+                      {businessType
+                        ? t('reports.reportBuilder.recipients.businessEmailOnly')
+                        : t('reports.reportBuilder.recipients.partnerOwnedEmailOnly')}
                     </p>
-                    {emailRecipients.map(email => (
-                      <div key={email} className="flex items-center justify-between gap-3 py-2">
-                        <span className="text-sm">{email}</span>
-                        <div className="flex items-center gap-2">
-                          {reportId && !contactRecipientsRefused && (
-                            <button
-                              type="button"
-                              data-testid={`report-recipient-convert-${email}`}
-                              onClick={() => void convertLegacyRecipient(email)}
-                              className="text-xs font-medium text-primary"
-                            >
-                              {t('reports.reportBuilder.recipients.convert')}
-                            </button>
+                  ) : (
+                  <>
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {t('reports.reportBuilder.recipients.contacts')}
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                    {contacts.map(contact => (
+                      <label
+                        key={contact.id}
+                        data-testid={`report-recipient-contact-${contact.id}`}
+                        className="flex items-center gap-2 rounded-md border p-3 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedContactIds.has(contact.id)}
+                          onChange={() => void toggleContact(contact.id)}
+                        />
+                        <span>
+                          {contact.name || contact.email}
+                          {contact.name && (
+                            <span className="block text-xs text-muted-foreground">
+                              {contact.email}
+                            </span>
                           )}
-                          <button type="button" onClick={() => removeEmailRecipient(email)}>
-                            <X className="h-3 w-3 text-muted-foreground" />
-                          </button>
-                        </div>
-                      </div>
+                        </span>
+                      </label>
                     ))}
                   </div>
-                )}
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <input
-                  type="email"
-                  value={emailInput}
-                  onChange={event => setEmailInput(event.target.value)}
-                  onKeyDown={event => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      addEmailRecipient();
-                    }
-                  }}
-                  placeholder={t('reports.reportBuilder.placeholders.email')}
-                  className="h-9 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-                <button
-                  type="button"
-                  onClick={addEmailRecipient}
-                  className="h-9 rounded-md border px-3 text-xs font-medium hover:bg-muted"
-                >
-                  {t('reports.reportBuilder.addRecipient')}
-                </button>
-              </div>
-              {emailError && <p className="text-xs text-destructive">{emailError}</p>}
+                  </>
+                  )}
+
+                  {emailRecipients.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {contactRecipientsRefused
+                          ? t('reports.reportBuilder.recipients.emailAddresses')
+                          : t('reports.reportBuilder.recipients.legacy')}
+                      </p>
+                      {emailRecipients.map(email => (
+                        <div key={email} className="flex items-center justify-between gap-3 py-2">
+                          <span className="text-sm">{email}</span>
+                          <div className="flex items-center gap-2">
+                            {reportId && !contactRecipientsRefused && (
+                              <button
+                                type="button"
+                                data-testid={`report-recipient-convert-${email}`}
+                                onClick={() => void convertLegacyRecipient(email)}
+                                className="text-xs font-medium text-primary"
+                              >
+                                {t('reports.reportBuilder.recipients.convert')}
+                              </button>
+                            )}
+                            <button type="button" onClick={() => removeEmailRecipient(email)}>
+                              <X className="h-3 w-3 text-muted-foreground" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    type="email"
+                    value={emailInput}
+                    onChange={event => setEmailInput(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addEmailRecipient();
+                      }
+                    }}
+                    placeholder={t('reports.reportBuilder.placeholders.email')}
+                    className="h-9 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  />
+                  <button
+                    type="button"
+                    onClick={addEmailRecipient}
+                    className="h-9 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+                  >
+                    {t('reports.reportBuilder.addRecipient')}
+                  </button>
+                </div>
+                {emailError && <p className="text-xs text-destructive">{emailError}</p>}
+                </>
+              )}
             </div>
           </div>
         )}
