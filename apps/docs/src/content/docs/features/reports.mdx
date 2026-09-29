@@ -361,6 +361,52 @@ Scheduled business reports are delivered only to the **email distribution list**
 
 ---
 
+## Multi-org reports (one per organization)
+
+A multi-org report is one definition that produces a **separate copy for every organization it covers**. Each copy is sent to that organization's own contacts. It is not a combined report: combined, cross-organization reports are the partner-owned reports described under [Business Reports](#business-reports).
+
+Only partner users with access to every organization can create or change one.
+
+### Creating one
+
+On **New Report** (or a Hardware Lifecycle / Security & Compliance Posture template), set **Covers** to **One report per organization**, then choose which organizations it covers:
+
+- **All organizations** (default): every current *and future* organization is included automatically. Untick any organization to exclude it. A new organization starts receiving the report within about five minutes of being created.
+- **Chosen organizations**: exactly the organizations you tick.
+
+Only active and trial organizations receive a copy. A suspended or offboarding organization's copy is archived, and it comes back automatically if the organization is reactivated.
+
+Site, device and group filters are unavailable here, because each organization's copy covers the whole organization.
+
+A multi-org report always runs on a schedule (daily, weekly or monthly); it can't be one-time. When you start from a one-time template, choose how often it is sent before creating it.
+
+### Who receives each copy
+
+- **The organization's primary contact** and/or **contacts with these roles**. This rule is worked out separately in every organization.
+- **Internal copies**: fixed addresses on your team, sent every organization's copy.
+- The form previews the result, for example "Resolves to 23 contacts across 17 organizations · 1 organization has no customer recipient: Acme Dental". An organization with no customer recipient is always flagged, never silently skipped.
+
+To change who receives one organization's copy, open that copy (**Edit recipients**). For each contact, choose **Follow rule**, **Always send** or **Never send**.
+
+### The Saved Reports list
+
+On the **All organizations** view, each multi-org report is one row. Its last-run column reads, for example, *Oct 1 · 17/18 delivered · 1 no recipient*. Expand the row to see one line per organization, with these actions:
+
+- **Run now** generates that organization's copy immediately.
+- **Edit recipients** opens that organization's copy.
+- **Exclude** / **Include** stops or restarts that organization's copy. An excluded copy is archived with its run history, and including it again restores the same copy.
+- **Detach** turns that organization's copy into a standalone report you can edit freely. It keeps its run history and stops following the multi-org report. While that standalone copy exists, the organization stays out of the multi-org report, even if you include it again, so it never receives two copies.
+
+**Pause** (on the row, or at the top of the expanded list) stops every organization's copy from running until you **Resume** it. A paused report is marked **Paused** in the list.
+
+The **All · Multi-org · Single-org · Combined** chips filter the list. With one organization selected in the switcher, its copy appears as an ordinary row with a **Multi-org** badge that links to the multi-org report.
+
+An organization's copy is locked: only its recipients can be changed there. Organization users see it marked **Managed by your MSP**.
+
+### Owner
+
+Scheduled copies run with the **owner's** access (the creator, by default). If the owner loses access to an organization, that organization's copy shows **Blocked: owner has no access** and does not run. It is never run with anyone else's access. Use **Transfer owner** on the row to hand the report to another partner user with access to every organization.
+
 ## Downloading and Exporting
 
 When a report run reaches the `completed` status, download its stored snapshot from `GET /reports/runs/:id/download`. Pass the desired format as a query parameter -- `?format=csv`, `?format=pdf`, or `?format=excel`. Because the run captured the data at generation time, the download is stable: re-downloading the same run always yields the same data. Downloading a run that hasn't completed returns `409 Conflict`.
