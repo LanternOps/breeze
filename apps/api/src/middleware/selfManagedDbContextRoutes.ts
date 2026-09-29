@@ -292,6 +292,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // commits — the same shape as the #6849 patch-job route.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run-all\/?$/ },
+  // On-demand MSSQL / Hyper-V backups. Each creates a backup_jobs row and
+  // dispatches a backup write whose storage access is resolved at delivery,
+  // on the delivery path's own connection: a helper that reports brokered
+  // writes gets a write session only for a job that connection can see.
+  // Under the ambient request transaction the job was still uncommitted when
+  // the command was pushed, so the helper was sent the storage destination
+  // instead — and the handler then held the transaction across a device wait
+  // of up to 10 minutes. The handlers create the job in a short
+  // withAuthDbAccessContext block and dispatch strictly after it commits.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/mssql\/backup\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/hyperv\/backup\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection

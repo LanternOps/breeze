@@ -216,6 +216,14 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/jobs/run-all'],
     ['POST', '/api/v1/backup/jobs/run-all/'],
     ['post', '/api/v1/backup/jobs/run-all'], // method is case-insensitive
+    // On-demand MSSQL / Hyper-V backups create a backup_jobs row and dispatch
+    // a backup write whose write session is minted at delivery, on another
+    // connection, only for a job that connection can see — so the row must
+    // commit before the dispatch.
+    ['POST', '/api/v1/backup/mssql/backup'],
+    ['POST', '/api/v1/backup/mssql/backup/'],
+    ['POST', '/api/v1/backup/hyperv/backup'],
+    ['POST', '/api/v1/backup/hyperv/backup/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -224,6 +232,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/backup/jobs/run-all/preview', 'read-only preview keeps the ambient tx'],
     ['POST', '/api/v1/backup/jobs/job-1/cancel', 'cancel enqueues nothing'],
     ['POST', '/api/v1/backup/jobs/run/device-1/extra', 'deeper path is not the run route'],
+    ['POST', '/api/v1/backup/mssql/restore', 'restore sibling keeps the ambient tx'],
+    ['POST', '/api/v1/backup/hyperv/restore', 'restore sibling keeps the ambient tx'],
+    ['GET', '/api/v1/backup/mssql/backup', 'only the POST dispatches a backup'],
     // #6593 — the Microsoft mailbox /connect builds a consent URL with no
     // server-side Graph call, so it keeps the ambient tx; only the Gmail sibling
     // (which probes Google at connect time) opts out.

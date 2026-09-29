@@ -16,6 +16,7 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { refreshClaimedPayloadForPush } from './commandDelivery';
+import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredentials';
 import { commandAuditDetails } from './commandAudit';
 import {
   AGENT_BINARY_UPDATE_COMMAND_TYPES,
@@ -1566,6 +1567,28 @@ async function dispatchPreparedCommand(
 }
 
 /**
+ * A backup write (MSSQL / Hyper-V) carries only a reference to its storage
+ * destination; what the helper receives is decided at delivery, on the
+ * delivery path's own connection. A helper that reports brokered writes is
+ * given a write session scoped to the command's backup job — but only when
+ * that connection can see the job. Dispatched from inside a held context, the
+ * job the caller just created is still uncommitted, so delivery cannot see it
+ * and falls back to sending the storage destination itself. That is decided by
+ * dispatch timing, not by the helper, so it is refused here rather than left
+ * to each caller to remember: create the job in a context that commits, then
+ * dispatch at depth 0 (`executeCommandWithSystemPrecheck`).
+ */
+function assertBackupWriteDispatchedAfterCommit(type: CommandType | string): void {
+  if (!BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES.includes(type)) return;
+  if (!getCurrentDbAccessContext()) return;
+  throw new Error(
+    `${type} must be dispatched after the transaction that created its backup job has committed, `
+      + 'with no DB access context held — create the job in its own context, then dispatch with '
+      + 'executeCommandWithSystemPrecheck.',
+  );
+}
+
+/**
  * Execute a command and wait for result (convenience wrapper).
  *
  * When called from routes protected by authMiddleware, the entire request
@@ -1592,6 +1615,7 @@ export async function executeCommand(
   payload: CommandPayload = {},
   options: ExecuteCommandOptions = {}
 ): Promise<CommandResult> {
+  assertBackupWriteDispatchedAfterCommit(type);
   const precheck = await precheckCommandExecution(deviceId, type, payload, options);
   if (!precheck.ok) return precheck.result;
   return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
@@ -1683,6 +1707,7 @@ export async function executeCommandWithSystemPrecheck(
   payload: CommandPayload = {},
   options: SystemPrecheckCommandOptions,
 ): Promise<CommandResult> {
+  assertBackupWriteDispatchedAfterCommit(type);
   const ambient = getCurrentDbAccessContext();
   if (ambient) {
     reportHeldContextDispatch(ambient.scope, deviceId, type);
