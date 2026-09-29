@@ -106,6 +106,7 @@
   "previewExpired": "This preview expired. Generate a new preview to continue.",
   "applyReviewed": "Apply reviewed changes",
   "recurringUnavailable": "Recurring monitoring is not available in this release. Saved drafts will not run.",
+  "recurringAvailable": "Recurring monitoring is available for this site. Turn it on from the Operations panel.",
   "enableRecurring": "Enable recurring monitoring",
   "configurationFailed": "Unable to save configuration",
   "configurationSaved": "Configuration saved",

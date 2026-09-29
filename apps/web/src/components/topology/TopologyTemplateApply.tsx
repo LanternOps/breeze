@@ -5,7 +5,7 @@ import type { TopologyTemplatePreview, TopologyTemplateApplication, TopologyTemp
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { topologyRead } from './topologyApi';
 import { topologyConfigurationApi } from './topologyConfigurationApi';
-export default function TopologyTemplateApply({ request, canApply, onComplete }: { request: TopologyTemplatePreviewRequest; canApply: boolean; onComplete: () => void }) {
+export default function TopologyTemplateApply({ request, canApply, recurringAvailable = false, onComplete }: { request: TopologyTemplatePreviewRequest; canApply: boolean; recurringAvailable?: boolean; onComplete: () => void }) {
   const { t } = useTranslation('topology');
   const [preview, setPreview] = useState<TopologyTemplatePreview>(), [operation, setOperation] = useState<TopologyTemplateApplication>(), [busy, setBusy] = useState(false), [expired, setExpired] = useState(false);
   const [applyKey, setApplyKey] = useState('');
@@ -61,7 +61,7 @@ export default function TopologyTemplateApply({ request, canApply, onComplete }:
       <button data-testid="topology-template-apply" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy || previewExpired || !canApply || preview.sites.some((site) => site.errors.length > 0) || !!operation} onClick={() => void apply()}>{t('applyReviewed')}</button>
     </div>}
     {operation && <div data-testid="topology-template-status" role="status"><p>{operation.state}</p>{operation.sites.map((site) => <p key={site.siteId}>{site.siteId}: {site.state}{site.code ? ` · ${site.code}` : ''}</p>)}</div>}
-    <p data-testid="topology-recurring-capability" className="text-sm text-muted-foreground">{t('recurringUnavailable')}</p>
-    <button data-testid="topology-enable-recurring" disabled className="rounded border px-3 py-2 opacity-50">{t('enableRecurring')}</button>
+    <p data-testid="topology-recurring-capability" className="text-sm text-muted-foreground">{recurringAvailable ? t('recurringAvailable') : t('recurringUnavailable')}</p>
+    {!recurringAvailable && <button data-testid="topology-enable-recurring" disabled className="rounded border px-3 py-2 opacity-50">{t('enableRecurring')}</button>}
   </div>;
 }

@@ -106,6 +106,7 @@
   "previewExpired": "Diese Vorschau ist abgelaufen. Erstellen Sie eine neue Vorschau, um fortzufahren.",
   "applyReviewed": "Überprüfte Änderungen anwenden",
   "recurringUnavailable": "Wiederkehrende Überwachung ist in dieser Version nicht verfügbar. Gespeicherte Entwürfe werden nicht ausgeführt.",
+  "recurringAvailable": "Wiederkehrende Überwachung ist für diesen Standort verfügbar. Aktivieren Sie sie im Bereich „Vorgänge“.",
   "enableRecurring": "Wiederkehrende Überwachung aktivieren",
   "configurationFailed": "Konfiguration konnte nicht gespeichert werden",
   "configurationSaved": "Konfiguration gespeichert",

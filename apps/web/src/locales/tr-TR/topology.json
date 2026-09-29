@@ -106,6 +106,7 @@
   "previewExpired": "Bu önizleme süresi doldu. Devam etmek için yeni bir önizleme oluşturun.",
   "applyReviewed": "İncelenen değişiklikleri uygula",
   "recurringUnavailable": "Yinelenen izleme bu sürümde kullanılamaz. Kaydedilen taslaklar çalışmayacak.",
+  "recurringAvailable": "Yinelenen izleme bu site için kullanılabilir. Operasyonlar panelinden etkinleştirin.",
   "enableRecurring": "Yinelenen izlemeyi etkinleştir",
   "configurationFailed": "Yapılandırma kaydedilemedi",
   "configurationSaved": "Yapılandırma kaydedildi",

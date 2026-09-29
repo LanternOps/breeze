@@ -106,6 +106,7 @@
   "previewExpired": "Esta vista previa venció. Genere una nueva vista previa para continuar.",
   "applyReviewed": "Aplicar cambios revisados",
   "recurringUnavailable": "El monitoreo recurrente no está disponible en esta versión. Los borradores guardados no se ejecutarán.",
+  "recurringAvailable": "El monitoreo recurrente está disponible para este sitio. Actívelo desde el panel Operaciones.",
   "enableRecurring": "Habilitar monitoreo recurrente",
   "configurationFailed": "No se pudo guardar la configuración",
   "configurationSaved": "Configuración guardada",

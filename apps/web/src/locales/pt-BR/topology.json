@@ -106,6 +106,7 @@
   "previewExpired": "Esta prévia expirou. Gere uma nova prévia para continuar.",
   "applyReviewed": "Aplicar alterações revisadas",
   "recurringUnavailable": "O monitoramento recorrente não está disponível nesta versão. Rascunhos salvos não serão executados.",
+  "recurringAvailable": "O monitoramento recorrente está disponível para este site. Ative-o no painel Operações.",
   "enableRecurring": "Habilitar monitoramento recorrente",
   "configurationFailed": "Não foi possível salvar a configuração",
   "configurationSaved": "Configuração salva",

@@ -106,6 +106,7 @@
   "previewExpired": "Cet aperçu a expiré. Générez un nouvel aperçu pour continuer.",
   "applyReviewed": "Appliquer les modifications vérifiées",
   "recurringUnavailable": "La surveillance récurrente n'est pas disponible dans cette version. Les brouillons enregistrés ne seront pas exécutés.",
+  "recurringAvailable": "La surveillance récurrente est disponible pour ce site. Activez-la depuis le panneau Opérations.",
   "enableRecurring": "Activer la surveillance récurrente",
   "configurationFailed": "Impossible d'enregistrer la configuration",
   "configurationSaved": "Configuration enregistrée",

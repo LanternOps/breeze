@@ -5,6 +5,13 @@ import { topologySettingsFixture, SITE } from './topologyFixtures';
 import TopologyConfiguration from './TopologyConfiguration';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 afterEach(cleanup);
+it('reflects the site recurringMonitoring capability instead of a hardcoded unavailable notice', async () => {
+  const settings = topologySettingsFixture(); settings.capabilities.recurringMonitoring = { available: true, reason: null };
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith('settings') ? settings : { items: [], nextCursor: null })));
+  render(<TopologyConfiguration siteId={SITE} />);
+  expect(await screen.findByTestId('topology-recurring-capability')).not.toHaveTextContent(/not available/i);
+  expect(screen.queryByTestId('topology-enable-recurring')).toBeNull();
+});
 it('read-only users inspect eligible published choices without mutation authority', async () => {
   const settings = topologySettingsFixture(); settings.permissions.canEdit = false; settings.permissions.canConfigureMonitoring = false;
   vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith('settings') ? settings : { items: [], nextCursor: null })));

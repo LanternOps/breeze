@@ -106,6 +106,7 @@
   "previewExpired": "Questa anteprima è scaduta. Genera una nuova anteprima per continuare.",
   "applyReviewed": "Applica le modifiche riviste",
   "recurringUnavailable": "Il monitoraggio ricorrente non è disponibile in questa versione. Le bozze salvate non verranno eseguite.",
+  "recurringAvailable": "Il monitoraggio ricorrente è disponibile per questa sede. Attivalo dal pannello Operazioni.",
   "enableRecurring": "Abilita monitoraggio ricorrente",
   "configurationFailed": "Impossibile salvare la configurazione",
   "configurationSaved": "Configurazione salvata",
