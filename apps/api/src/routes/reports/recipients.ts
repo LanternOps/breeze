@@ -231,18 +231,36 @@ recipientsRoutes.delete(
     if (!report) return c.json({ error: 'Report not found' }, 404);
     if (partnerOwned || !orgId) return c.json(PARTNER_OWNED_REPORT, 409);
 
+    // Multi-org report series W02: deleting a 'remove' override on a series
+    // child restores a rule match — a delivery-adding write, so it needs the
+    // same export + MFA gate as an 'add'. Deleting an 'add' row stays ungated.
+    // Without the gate the DELETE is restricted to 'add' rows, so a caller who
+    // fails it can never widen delivery through this route.
+    const contactId = c.req.param('contactId')!;
+    const mayRestoreRuleMatch = typeof report.seriesId !== 'string'
+      || callerMaySetEmailRecipients(c.get('auth'), c.get('permissions') as UserPermissions | undefined);
     const rows = await db.delete(reportScheduleRecipients)
       .where(and(
         eq(reportScheduleRecipients.reportId, report.id),
         eq(reportScheduleRecipients.orgId, orgId),
-        eq(
-          reportScheduleRecipients.contactId,
-          c.req.param('contactId')!,
-        ),
+        eq(reportScheduleRecipients.contactId, contactId),
+        ...(mayRestoreRuleMatch ? [] : [eq(reportScheduleRecipients.mode, 'add')]),
       ))
       .returning({ id: reportScheduleRecipients.id });
 
     if (rows.length === 0) {
+      if (!mayRestoreRuleMatch) {
+        const [removeOverride] = await db.select({ id: reportScheduleRecipients.id })
+          .from(reportScheduleRecipients)
+          .where(and(
+            eq(reportScheduleRecipients.reportId, report.id),
+            eq(reportScheduleRecipients.orgId, orgId),
+            eq(reportScheduleRecipients.contactId, contactId),
+            eq(reportScheduleRecipients.mode, 'remove'),
+          ))
+          .limit(1);
+        if (removeOverride) return c.json(RECIPIENTS_NEED_EXPORT_AND_MFA, 403);
+      }
       return c.json({ error: 'Recipient not found' }, 404);
     }
     return c.json({ data: { deleted: true } });

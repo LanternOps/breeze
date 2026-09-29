@@ -450,6 +450,45 @@ export async function previewSavedSeriesRecipients(
 }
 
 /**
+ * Detach a series child (spec §3.6). LOCK ORDER (series, then child) matches
+ * updateSeries / deleteSeries / reconcile: the caller passes the seriesId it
+ * read WITHOUT a lock; this takes the SERIES row lock first, then the child
+ * row lock, then re-checks the child is still an active child of that series
+ * (else report_not_series_child). Never lock the child before the series: a
+ * concurrent series edit would deadlock (40P01).
+ */
+export async function detachSeriesChild(
+  tx: SeriesTx,
+  args: { seriesId: string; orgId: string; reportId: string },
+  auth: SeriesAuth,
+): Promise<{ row: typeof reports.$inferSelect; recipients: { added: number; removedDropped: number } }> {
+  const partnerId = requireSeriesPartner(auth);
+  await lockOwnSeries(args.seriesId, partnerId, tx);
+  const [locked] = await tx
+    .select({ seriesId: reports.seriesId, archivedAt: reports.archivedAt })
+    .from(reports)
+    .where(and(eq(reports.id, args.reportId), eq(reports.orgId, args.orgId)))
+    .limit(1)
+    .for('update');
+  if (!locked || locked.seriesId !== args.seriesId || locked.archivedAt !== null) {
+    throw new ReportSeriesError('report_not_series_child', 409);
+  }
+  const [row] = await tx
+    .update(reports)
+    .set({ seriesId: null, seriesRevision: null, updatedAt: new Date() })
+    .where(and(
+      eq(reports.id, args.reportId),
+      eq(reports.orgId, args.orgId),
+      eq(reports.seriesId, args.seriesId),
+      isNull(reports.archivedAt),
+    ))
+    .returning();
+  if (!row) throw new ReportSeriesError('report_not_series_child', 409);
+  const recipients = await finishDetach(tx, args, auth);
+  return { row, recipients };
+}
+
+/**
  * Detach bookkeeping (plan Contract concern 7), called by POST
  * /reports/:id/detach inside its transaction AFTER it cleared series_id:
  * un-target the org without bumping the revision, then keep the org's current

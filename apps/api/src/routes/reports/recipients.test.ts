@@ -4,6 +4,10 @@ import { Hono } from 'hono';
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const REPORT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CONTACT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const RECIPIENTS_NEED_EXPORT_AND_MFA_BODY = {
+  error:
+    'Setting or changing email recipients on a report requires the export permission and an MFA-verified session',
+};
 
 const state = vi.hoisted(() => ({
   results: [] as unknown[][],
@@ -24,6 +28,7 @@ const state = vi.hoisted(() => ({
   permissionSet: { permissions: [{ resource: '*', action: '*' }] } as unknown,
   gateMfa: true,
   conflictUpdates: [] as unknown[],
+  deleteRows: null as unknown[] | null,
 }));
 
 function selectChain(result: unknown[]) {
@@ -77,7 +82,7 @@ function database() {
     delete: vi.fn(() => ({
       where: vi.fn((condition) => {
         state.deleted.push(condition);
-        return { returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])) };
+        return { returning: vi.fn(() => Promise.resolve(state.deleteRows ?? [{ id: 'recipient-1' }])) };
       }),
     })),
     update: vi.fn(() => ({
@@ -224,6 +229,7 @@ describe('report recipient routes', () => {
     state.permissionSet = { permissions: [{ resource: '*', action: '*' }] };
     state.gateMfa = true;
     state.conflictUpdates.length = 0;
+    state.deleteRows = null;
     const tx = database();
     rootDb.current = {
       ...database(),
@@ -702,6 +708,52 @@ describe('report recipient routes', () => {
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
       expect(state.updated).toHaveLength(0);
+    });
+
+    describe('DELETE override rows (W02)', () => {
+      const del = () => app().request(`/${REPORT_ID}/recipients/${CONTACT_ID}`, { method: 'DELETE' });
+      const mayNot = () => { state.gateMfa = false; };
+
+      it("deleting a 'remove' override on a child needs the delivery gate (403, row stays)", async () => {
+        state.getReport.mockResolvedValue(child());
+        mayNot();
+        state.deleteRows = []; // the gate-restricted DELETE matched no 'add' row
+        state.results.push([{ id: 'override-1' }]); // ...but a 'remove' row exists
+        const res = await del();
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual(RECIPIENTS_NEED_EXPORT_AND_MFA_BODY);
+        // the DELETE itself was restricted to 'add' rows: it cannot remove a 'remove' row
+        expect(hasEquality(state.deleted[0], 'recipients.mode', 'add')).toBe(true);
+      });
+
+      it("deleting an 'add' override on a child stays ungated", async () => {
+        state.getReport.mockResolvedValue(child());
+        mayNot();
+        const res = await del();
+        expect(res.status).toBe(200);
+      });
+
+      it("with the gate satisfied a child's 'remove' override is deleted unrestricted", async () => {
+        state.getReport.mockResolvedValue(child());
+        const res = await del();
+        expect(res.status).toBe(200);
+        expect(hasEquality(state.deleted[0], 'recipients.mode', 'add')).toBe(false);
+      });
+
+      it('an ordinary report is never gated', async () => {
+        mayNot();
+        const res = await del();
+        expect(res.status).toBe(200);
+        expect(hasEquality(state.deleted[0], 'recipients.mode', 'add')).toBe(false);
+      });
+
+      it('a missing recipient is still 404 when the gate fails', async () => {
+        state.getReport.mockResolvedValue(child());
+        mayNot();
+        state.deleteRows = [];
+        const res = await del();
+        expect(res.status).toBe(404);
+      });
     });
   });
 });

@@ -270,6 +270,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ])],
   ['src/services/reportSeries/store.ts', new Map([
     ['buildSeriesDetail', pinned(1, `latest run per active child id returned by listSeriesChildren for a series its callers (listSeries / getSeriesDetail) already loaded under requireSeriesPartner + eq(partner_id, token partner); ${SERIES_CHILD_PIN}`, AUD_SERIES)],
+    ['detachSeriesChild', pinned(2, `locks (series row FIRST, then the child) and clears series_id on ONE org-owned child of a series the caller owns (requireSeriesPartner + lockOwnSeries); the route authorized the caller's tenancy on it (tenantAuthorizedReportCondition) before calling; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
     ['deleteSeries', pinned(1, `archives children of ONE series the caller owns (requireSeriesPartner + FOR UPDATE lock on the series row); ${SERIES_CHILD_PIN}`, AUD_SERIES)],
   ])],
   ['src/services/serviceDeliverableService.ts', new Map([

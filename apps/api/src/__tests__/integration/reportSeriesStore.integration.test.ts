@@ -18,7 +18,7 @@ import { reconcileAllSeries } from '../../services/reportSeries/reconcile';
 import { parseSeriesRecipientRule } from '../../services/reportSeries/types';
 import { ReportSeriesError } from '../../services/reportSeries/errors';
 import {
-  createSeries, deleteSeries, finishDetach, getSeriesDetail, replaceSeriesTargets,
+  createSeries, deleteSeries, detachSeriesChild, finishDetach, getSeriesDetail, replaceSeriesTargets,
   transferSeriesOwner, updateSeries, type CreateSeriesInput, type SeriesAuth,
 } from '../../services/reportSeries/store';
 
@@ -206,5 +206,78 @@ describe('series store (partner request context)', () => {
     expect(forA).toHaveLength(0);
     const standalone = await system(() => db.select().from(reports).where(eq(reports.id, child.id)));
     expect(standalone[0]?.archivedAt).toBeNull();
+  });
+
+  // Fix round 1: lock order is series row THEN child row (like updateSeries /
+  // deleteSeries / reconcile). Hold the SERIES lock on connection A; Detach on
+  // connection B must block on the series lock WITHOUT having taken the child
+  // lock (a third connection can still NOWAIT-lock the child), then finish.
+  it('detach takes the series lock before the child lock (no child-first deadlock)', async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = s.inPartner(async (tx) => {
+      await tx.execute(sql`SELECT id FROM report_series WHERE id = ${series.id} FOR UPDATE`);
+      locked();
+      await held;
+    });
+    await lockTaken;
+    let detachDone = false;
+    const detaching = s.inPartner((tx) => detachSeriesChild(
+      tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth,
+    )).then((r) => { detachDone = true; return r; });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(detachDone).toBe(false); // blocked on the series lock
+    // The child row is NOT locked by the blocked detach.
+    await system(() => db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+      await tx.execute(sql`SELECT id FROM reports WHERE id = ${child.id} FOR UPDATE NOWAIT`);
+    }));
+    release();
+    await holder;
+    const out = await detaching;
+    expect(out.row.seriesId).toBeNull();
+  });
+
+  it('a concurrent detach and series edit both complete (no 40P01)', async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    const results = await Promise.allSettled([
+      s.inPartner((tx) => detachSeriesChild(tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth)),
+      s.inPartner((tx) => updateSeries(series.id, { name: 'Renamed' }, s.auth, tx, { mayAddDelivery: true })),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+  });
+
+  it('detaches a blocked_no_authority child (all-NULL execution scope); the standalone keeps NULL scope', async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    await system(() => db.execute(sql`
+      UPDATE reports SET execution_scope_version = NULL, execution_scope_kind = NULL,
+        execution_scope_site_ids = NULL, execution_scope_user_id = NULL,
+        execution_scope_fingerprint = NULL, execution_scope_captured_at = NULL,
+        execution_scope_principal_kind = NULL WHERE id = ${child.id}`));
+    const out = await s.inPartner((tx) => detachSeriesChild(
+      tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth,
+    ));
+    expect(out.row.seriesId).toBeNull();
+    expect(out.row.executionScopeKind).toBeNull();
+    expect(out.row.archivedAt).toBeNull();
+  });
+
+  it('detach refuses a report that is no longer an active child of that series (409 report_not_series_child)', async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    await system(() => db.execute(sql`UPDATE reports SET archived_at = now() WHERE id = ${child.id}`));
+    expect(await codeOf(s.inPartner((tx) => detachSeriesChild(
+      tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth,
+    )))).toBe('report_not_series_child');
   });
 });

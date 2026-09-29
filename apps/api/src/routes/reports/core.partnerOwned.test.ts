@@ -60,6 +60,7 @@ const state = vi.hoisted(() => ({
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
   deletes: [] as Array<{ where: unknown }>,
   mfaSatisfied: true,
+  lockedChildSelects: 0,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -88,9 +89,13 @@ vi.mock('../../db', () => {
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve(projected).then(resolve, reject),
     };
-    for (const method of ['from', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'limit', 'for']) {
+    for (const method of ['from', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'limit']) {
       chain[method] = vi.fn(() => chain);
     }
+    chain.for = vi.fn(() => {
+      state.lockedChildSelects += 1;
+      return chain;
+    });
     chain.where = vi.fn((condition: unknown) => {
       state.wheres.push(condition);
       return chain;
@@ -187,11 +192,14 @@ vi.mock('../../services/siteScope', async (importOriginal) => {
 });
 
 const seriesStore = vi.hoisted(() => ({
-  finishDetach: vi.fn(async () => ({ added: 1, removedDropped: 0 })),
+  detachSeriesChild: vi.fn(async () => ({
+    row: { id: '44444444-4444-4444-8444-444444444444', name: 'Monthly summary' },
+    recipients: { added: 1, removedDropped: 0 },
+  })),
 }));
 vi.mock('../../services/reportSeries/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/reportSeries/store')>();
-  return { ...actual, finishDetach: seriesStore.finishDetach };
+  return { ...actual, detachSeriesChild: seriesStore.detachSeriesChild };
 });
 
 import { coreRoutes } from './core';
@@ -332,6 +340,7 @@ beforeEach(() => {
   state.updates = [];
   state.deletes = [];
   state.mfaSatisfied = true;
+  state.lockedChildSelects = 0;
 });
 
 describe('POST /reports ownerScope=partner (#3198 W01)', () => {
@@ -1585,13 +1594,14 @@ describe('multi-org report series children (W02)', () => {
 
   describe('POST /reports/:id/detach', () => {
     // Review Focus 1 + 2: finishDetach un-targets the org and materializes recipients.
-    it('clears series_id + series_revision, hands off to finishDetach, and audits', async () => {
-      state.rows = [childRow(), childRow()];
+    it('hands off to detachSeriesChild (series lock first, in the store) and audits', async () => {
+      state.rows = [childRow()];
       const res = await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' });
       expect(res.status).toBe(200);
-      expect(state.updates).toHaveLength(1);
-      expect(state.updates[0]!.set).toMatchObject({ seriesId: null, seriesRevision: null });
-      expect(seriesStore.finishDetach).toHaveBeenCalledWith(
+      // The route itself does ONE unlocked authorization read and takes no
+      // child row lock: locking is the store's job, series row first.
+      expect(state.lockedChildSelects).toBe(0);
+      expect(seriesStore.detachSeriesChild).toHaveBeenCalledWith(
         expect.anything(),
         { seriesId: SERIES_ID, orgId: ORG_ID, reportId: REPORT_ID },
         expect.objectContaining({ partnerId: PARTNER_ID }),
@@ -1599,6 +1609,17 @@ describe('multi-org report series children (W02)', () => {
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         orgId: ORG_ID, action: 'report.detach', details: expect.objectContaining({ seriesId: SERIES_ID }),
       }));
+    });
+
+    it('detaches a blocked_no_authority child (all-NULL execution scope) instead of 404', async () => {
+      state.rows = [childRow({
+        executionScopeVersion: null, executionScopeKind: null, executionScopeSiteIds: null,
+        executionScopeUserId: null, executionScopeFingerprint: null, executionScopeCapturedAt: null,
+        executionScopePrincipalKind: null,
+      })];
+      const res = await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(seriesStore.detachSeriesChild).toHaveBeenCalledTimes(1);
     });
 
     it("refuses a 'selected' partner user before any read", async () => {
@@ -1610,14 +1631,14 @@ describe('multi-org report series children (W02)', () => {
     });
 
     it('refuses a standalone report and an archived child with 409 report_not_series_child', async () => {
-      state.rows = [standalone(), standalone()];
+      state.rows = [standalone()];
       const first = await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' });
       expect(first.status).toBe(409);
       expect(await first.json()).toEqual({ error: 'report_not_series_child' });
-      state.rows = [childRow({ archivedAt: new Date() }), childRow({ archivedAt: new Date() })];
+      state.rows = [childRow({ archivedAt: new Date() })];
       expect((await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' })).status).toBe(409);
       expect(state.updates).toHaveLength(0);
-      expect(seriesStore.finishDetach).not.toHaveBeenCalled();
+      expect(seriesStore.detachSeriesChild).not.toHaveBeenCalled();
     });
   });
 });

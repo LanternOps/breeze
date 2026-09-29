@@ -13,7 +13,7 @@ import {
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { ReportSeriesError } from '../../services/reportSeries/errors';
-import { finishDetach, seriesWriteAllowed } from '../../services/reportSeries/store';
+import { detachSeriesChild, seriesWriteAllowed } from '../../services/reportSeries/store';
 import { seriesManagedRefusal } from '../../services/reportSeries/types';
 import { seriesErrorResponse } from './seriesErrors';
 import { callerMaySetEmailRecipients, RECIPIENTS_NEED_EXPORT_AND_MFA } from './recipientGate';
@@ -1001,33 +1001,35 @@ coreRoutes.post(
         throw new ReportSeriesError('series_write_denied', 403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
       }
       const detached = await db.transaction(async (tx) => {
-        const locked = await loadLockedDefinition(tx, reportId, auth, 'write', permissions);
+        // Authorization + which series, read WITHOUT a lock. Detach does not
+        // read or change the child's execution scope, so it deliberately does
+        // not go through loadLockedDefinition (whose scope decode 404s a
+        // blocked_no_authority child with an all-NULL scope — the very child
+        // an operator most needs to detach). Tenant, type-permission, audience
+        // and system-managed checks are the same ones that loader applies.
+        const [meta] = await tx
+          .select(reportDefinitionMetadataProjection)
+          .from(reports)
+          .where(tenantAuthorizedReportCondition(reportId, auth, permissions))
+          .limit(1);
         if (
-          locked === SYSTEM_MANAGED
-          || locked === PARTNER_WIDE_DENIED
-          || locked === AUDIENCE_DENIED
-          || !locked
+          !meta
+          || reportTypeHiddenByPermission(meta.type, permissions)
+          || reportTypeHiddenFromCaller(meta.type, auth)
+          || isSystemManagedReportDefinition(meta)
         ) {
           return null;
         }
-        const seriesId = locked.locked.seriesId;
-        const orgId = locked.locked.orgId;
-        if (!seriesId || !orgId || locked.locked.archivedAt !== null) {
+        if (!meta.seriesId || !meta.orgId || meta.archivedAt !== null) {
           throw new ReportSeriesError('report_not_series_child', 409);
         }
-        const [row] = await tx
-          .update(reports)
-          .set({ seriesId: null, seriesRevision: null, updatedAt: new Date() })
-          .where(and(
-            eq(reports.id, reportId),
-            eq(reports.orgId, orgId),
-            eq(reports.seriesId, seriesId),
-            isNull(reports.archivedAt),
-          ))
-          .returning();
-        if (!row) return null;
-        const recipients = await finishDetach(tx, { seriesId, orgId, reportId }, auth);
-        return { row, seriesId, orgId, recipients };
+        // Lock order: series row, THEN child row (see detachSeriesChild).
+        const { row, recipients } = await detachSeriesChild(
+          tx,
+          { seriesId: meta.seriesId, orgId: meta.orgId, reportId },
+          auth,
+        );
+        return { row, seriesId: meta.seriesId, orgId: meta.orgId, recipients };
       });
       if (!detached) return c.json(REPORT_NOT_FOUND, 404);
       writeRouteAudit(c, {
