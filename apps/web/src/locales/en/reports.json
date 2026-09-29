@@ -1399,7 +1399,12 @@
       "confirm": "Combine",
       "success": "Combined into “{{name}}”",
       "failed": "Could not combine these reports.",
-      "groupChanged": "These reports changed since you opened this dialog. The list has been refreshed."
+      "groupChanged": "These reports changed since you opened this dialog. The list has been refreshed.",
+      "stalled": "Not sending today (its owner lost access). Combining resumes it.",
+      "ccHeldBy": "Currently CC'd on: {{list}}",
+      "ownerIneligible": "You can't own a report for these organizations: {{list}}",
+      "ccTooMany": "Too many internal CC addresses (max {{max}}).",
+      "otherOrgs": "other organizations"
     }
   }
 }

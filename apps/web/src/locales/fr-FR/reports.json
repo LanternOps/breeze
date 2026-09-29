@@ -1399,7 +1399,12 @@
       "confirm": "Regrouper",
       "success": "Regroupé dans « {{name}} »",
       "failed": "Impossible de regrouper ces rapports.",
-      "groupChanged": "Ces rapports ont changé depuis l'ouverture de cette fenêtre. La liste a été actualisée."
+      "groupChanged": "Ces rapports ont changé depuis l'ouverture de cette fenêtre. La liste a été actualisée.",
+      "stalled": "N'est pas envoyé actuellement (son propriétaire a perdu l'accès). Le regroupement relance l'envoi.",
+      "ccHeldBy": "Actuellement en copie sur : {{list}}",
+      "ownerIneligible": "Vous ne pouvez pas être propriétaire d'un rapport pour ces organisations : {{list}}",
+      "ccTooMany": "Trop d'adresses en copie interne (maximum {{max}}).",
+      "otherOrgs": "d'autres organisations"
     }
   }
 }

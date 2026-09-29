@@ -117,6 +117,8 @@ export interface CombineCandidateRow {
   lastGeneratedAt: string | null;
   action: 'adopt' | 'archive';
   deliverableLinked: boolean;
+  /** Latest run was a scope denial: not sending today; combining resumes it. */
+  stalled: boolean;
   contactRecipients: { contactId: string; name: string | null; email: string | null }[];
   emailRecipients: string[];
 }
@@ -136,10 +138,13 @@ export interface CombineCandidateGroup {
   orgs: CombineCandidateOrg[];
   sharedCc: string[];
   conflictingCc: { email: string; reportIds: string[] }[];
+  /** The plan this group shows; the combine POST echoes it. */
+  planFingerprint: string;
 }
 
 export interface CombineRequest {
   groupKey: string;
+  planFingerprint: string;
   reportIds: string[];
   name: string;
   targetMode: CombineTargetMode;

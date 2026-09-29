@@ -5,9 +5,17 @@ import { ActionError, runAction } from '@/lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { showToast } from '../../shared/Toast';
 import { Dialog } from '../../shared/Dialog';
+import { seriesFriendlyError } from './seriesApi';
 import type { CombineCandidateGroup, CombineCcConflictBody, CombineRequest, CombineTargetMode } from './types';
 
 type CcChoice = 'include' | 'drop';
+
+/** A machine error token (`series_type_unsupported`), never shown raw. */
+const ERROR_TOKEN = /^[a-z][a-z0-9_]*$/;
+
+function bodyField(body: unknown, key: string): unknown {
+  return body && typeof body === 'object' ? (body as Record<string, unknown>)[key] : undefined;
+}
 
 export interface CombineDialogProps {
   open: boolean;
@@ -46,6 +54,30 @@ export default function CombineDialog({ open, groups, timezone, onClose, onChang
   if (!group) return null;
 
   const unresolved = group.conflictingCc.filter((c) => !ccChoices[c.email]);
+  const rowLabels = new Map(group.orgs.flatMap((o) => o.rows.map((r) => [r.reportId, `${o.orgName} — ${r.name}`] as const)));
+  const orgNames = new Map(group.orgs.map((o) => [o.orgId, o.orgName] as const));
+  /** Blocked org ids as names; ids outside this group read as "other organizations". */
+  const blockedOrgList = (orgIds: string[]): string => {
+    const names = orgIds.map((id) => orgNames.get(id) ?? t('reports.seriesCombine.otherOrgs'));
+    return [...new Set(names)].join(', ');
+  };
+  const friendlyError = (code: string, body: unknown): string | undefined => {
+    if (code === 'combine_cc_conflict') return t('reports.seriesCombine.ccUnresolved');
+    if (code === 'combine_group_changed') return t('reports.seriesCombine.groupChanged');
+    if (code === 'series_owner_ineligible') {
+      const orgIds = bodyField(body, 'orgIds');
+      // Without orgIds it is the partner-level refusal (W02, { reason }):
+      // W03's message below says it.
+      if (Array.isArray(orgIds) && orgIds.length > 0) {
+        return t('reports.seriesCombine.ownerIneligible', { list: blockedOrgList(orgIds.map(String)) });
+      }
+    }
+    if (code === 'combine_cc_too_many') {
+      const max = bodyField(body, 'max');
+      if (typeof max === 'number') return t('reports.seriesCombine.ccTooMany', { max });
+    }
+    return seriesFriendlyError(code) ?? (ERROR_TOKEN.test(code) ? t('reports.seriesCombine.failed') : undefined);
+  };
   const canConfirm = !busy && name.trim().length > 0 && unresolved.length === 0;
   const typeLabel = t(/* i18n-dynamic */ `reports.reportsList.reportTypes.${group.type}`);
   const scheduleLabel = t(/* i18n-dynamic */ `reports.reportsList.schedules.${group.schedule}`);
@@ -56,6 +88,7 @@ export default function CombineDialog({ open, groups, timezone, onClose, onChang
     setBusy(true);
     const body: CombineRequest = {
       groupKey: group.groupKey,
+      planFingerprint: group.planFingerprint,
       reportIds: group.orgs.flatMap((o) => o.rows.map((r) => r.reportId)),
       name: name.trim(),
       targetMode,
@@ -73,11 +106,7 @@ export default function CombineDialog({ open, groups, timezone, onClose, onChang
         }),
         errorFallback: t('reports.seriesCombine.failed'),
         successMessage: t('reports.seriesCombine.success', { name: body.name }),
-        friendly: (code) => {
-          if (code === 'combine_cc_conflict') return t('reports.seriesCombine.ccUnresolved');
-          if (code === 'combine_group_changed') return t('reports.seriesCombine.groupChanged');
-          return undefined;
-        },
+        friendly: (code, _message, errorBody) => friendlyError(code, errorBody),
       });
       onChanged();
     } catch (err) {
@@ -148,6 +177,11 @@ export default function CombineDialog({ open, groups, timezone, onClose, onChang
                         {t('reports.seriesCombine.deliverableLinked')}
                       </span>
                     )}
+                    {row.stalled && (
+                      <span data-testid={`combine-row-${row.reportId}-stalled`} className="text-xs text-warning">
+                        {t('reports.seriesCombine.stalled')}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -200,6 +234,11 @@ export default function CombineDialog({ open, groups, timezone, onClose, onChang
                   className={serverUnresolved.includes(cc.email) ? 'rounded-md border border-destructive/60 px-3 py-2' : 'rounded-md border px-3 py-2'}
                 >
                   <span className="font-mono text-xs">{cc.email}</span>
+                  <p data-testid={`combine-cc-${cc.email}-held-by`} className="text-xs text-muted-foreground">
+                    {t('reports.seriesCombine.ccHeldBy', {
+                      list: cc.reportIds.map((id) => rowLabels.get(id) ?? id).join(', '),
+                    })}
+                  </p>
                   <div className="mt-1 flex flex-wrap gap-4">
                     <label className="flex items-center gap-2">
                       <input type="radio" name={`combine-cc-${cc.email}`} data-testid={`combine-cc-include-${cc.email}`}

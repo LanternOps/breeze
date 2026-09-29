@@ -1399,7 +1399,12 @@
       "confirm": "Zusammenführen",
       "success": "Zusammengeführt zu „{{name}}“",
       "failed": "Diese Berichte konnten nicht zusammengeführt werden.",
-      "groupChanged": "Diese Berichte haben sich seit dem Öffnen des Dialogs geändert. Die Liste wurde aktualisiert."
+      "groupChanged": "Diese Berichte haben sich seit dem Öffnen des Dialogs geändert. Die Liste wurde aktualisiert.",
+      "stalled": "Wird derzeit nicht versendet (der Besitzer hat keinen Zugriff mehr). Durch das Zusammenführen wird der Versand fortgesetzt.",
+      "ccHeldBy": "Derzeit in CC bei: {{list}}",
+      "ownerIneligible": "Sie können keinen Bericht für diese Organisationen besitzen: {{list}}",
+      "ccTooMany": "Zu viele interne CC-Adressen (maximal {{max}}).",
+      "otherOrgs": "weitere Organisationen"
     }
   }
 }

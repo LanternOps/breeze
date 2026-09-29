@@ -1399,7 +1399,12 @@
       "confirm": "Birleştir",
       "success": "“{{name}}” içinde birleştirildi",
       "failed": "Bu raporlar birleştirilemedi.",
-      "groupChanged": "Bu raporlar pencereyi açtığınızdan beri değişti. Liste yenilendi."
+      "groupChanged": "Bu raporlar pencereyi açtığınızdan beri değişti. Liste yenilendi.",
+      "stalled": "Bugün gönderilmiyor (sahibi erişimini kaybetti). Birleştirme gönderimi sürdürür.",
+      "ccHeldBy": "Şu anda bilgi kopyası olarak eklendiği raporlar: {{list}}",
+      "ownerIneligible": "Bu kuruluşlar için bir raporun sahibi olamazsınız: {{list}}",
+      "ccTooMany": "Çok fazla dahili bilgi kopyası adresi (en fazla {{max}}).",
+      "otherOrgs": "diğer kuruluşlar"
     }
   }
 }

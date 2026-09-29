@@ -1399,7 +1399,12 @@
       "confirm": "Combinar",
       "success": "Combinado en “{{name}}”",
       "failed": "No se pudieron combinar estos informes.",
-      "groupChanged": "Estos informes cambiaron desde que abriste esta ventana. La lista se actualizó."
+      "groupChanged": "Estos informes cambiaron desde que abriste esta ventana. La lista se actualizó.",
+      "stalled": "No se envía hoy (su propietario perdió el acceso). Al combinar se reanuda el envío.",
+      "ccHeldBy": "Actualmente en copia en: {{list}}",
+      "ownerIneligible": "No puedes ser propietario de un informe para estas organizaciones: {{list}}",
+      "ccTooMany": "Demasiadas direcciones en copia interna (máximo {{max}}).",
+      "otherOrgs": "otras organizaciones"
     }
   }
 }

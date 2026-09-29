@@ -1399,7 +1399,12 @@
       "confirm": "Unisci",
       "success": "Uniti in “{{name}}”",
       "failed": "Impossibile unire questi report.",
-      "groupChanged": "Questi report sono cambiati da quando hai aperto questa finestra. L'elenco è stato aggiornato."
+      "groupChanged": "Questi report sono cambiati da quando hai aperto questa finestra. L'elenco è stato aggiornato.",
+      "stalled": "Oggi non viene inviato (il proprietario ha perso l'accesso). L'unione ne riprende l'invio.",
+      "ccHeldBy": "Attualmente in copia su: {{list}}",
+      "ownerIneligible": "Non puoi essere proprietario di un report per queste organizzazioni: {{list}}",
+      "ccTooMany": "Troppi indirizzi in copia interna (massimo {{max}}).",
+      "otherOrgs": "altre organizzazioni"
     }
   }
 }

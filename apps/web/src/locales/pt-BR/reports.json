@@ -1399,7 +1399,12 @@
       "confirm": "Combinar",
       "success": "Combinado em “{{name}}”",
       "failed": "Não foi possível combinar estes relatórios.",
-      "groupChanged": "Estes relatórios mudaram desde que você abriu esta janela. A lista foi atualizada."
+      "groupChanged": "Estes relatórios mudaram desde que você abriu esta janela. A lista foi atualizada.",
+      "stalled": "Não está sendo enviado hoje (o proprietário perdeu o acesso). Combinar retoma o envio.",
+      "ccHeldBy": "Atualmente em cópia em: {{list}}",
+      "ownerIneligible": "Você não pode ser proprietário de um relatório para estas organizações: {{list}}",
+      "ccTooMany": "Há endereços demais em cópia interna (máximo {{max}}).",
+      "otherOrgs": "outras organizações"
     }
   }
 }
