@@ -32,6 +32,7 @@ import {
   peripheralEventTypeEnum
 } from '../db/schema/peripheralControl';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
 
 // Reusable validators
@@ -46,58 +47,14 @@ const ipAddress = z.string().trim().max(45).refine(
   { message: 'Invalid IP address format' }
 );
 
-// Path traversal defense
-const BLOCKED_PATH_PREFIXES = [
-  '/etc/shadow', '/etc/passwd', '/etc/sudoers',
-  '/proc', '/sys', '/dev',
-  '/root/.ssh', '/home/*/.ssh',
-  '/var/run', '/var/lib/docker',
-  'C:\\Windows\\System32\\config',
-  'C:\\Windows\\SAM',
-  'C:\\Users\\*\\AppData',
-];
+// Default AI path restriction: one chokepoint for every AI-supplied device
+// path (aiPathRestriction.ts). Re-exported for existing importers.
+export { isBlockedPath, normalizePath } from './aiPathRestriction';
 
-export function normalizePath(path: string): string {
-  let result = path
-    .replace(/\\/g, '/')      // Normalize backslashes
-    .replace(/\/+/g, '/')     // Collapse redundant separators (/etc///shadow → /etc/shadow)
-    .toLowerCase();
-  // Iteratively remove dot components until stable
-  let prev: string;
-  do {
-    prev = result;
-    result = result.replace(/\/\.\//g, '/').replace(/\/\.$/, '/');
-  } while (result !== prev);
-  return result;
-}
-
-export function isBlockedPath(path: string): boolean {
-  if (path.includes('..')) return true;
-  const normalized = normalizePath(path);
-  return BLOCKED_PATH_PREFIXES.some(prefix => {
-    const normalizedPrefix = normalizePath(prefix);
-    // Handle wildcard prefixes like /home/*/.ssh
-    if (normalizedPrefix.includes('*')) {
-      const parts = normalizedPrefix.split('*');
-      return parts.length === 2 &&
-        normalized.startsWith(parts[0]!) &&
-        normalized.includes(parts[1]!);
-    }
-    return normalized.startsWith(normalizedPrefix) ||
-      normalized === normalizedPrefix.replace(/\/$/, '');
-  });
-}
-
-export const safePath = z.string().max(4096).refine(
-  (path) => !path.includes('\0'),
-  { message: 'Path contains null bytes' }
-).refine(
-  (path) => !path.includes('..'),
-  { message: 'Path traversal (..) not allowed' }
-).refine(
-  (path) => !isBlockedPath(path),
-  { message: 'Access to this path is blocked' }
-);
+export const safePath = z.string().max(4096).superRefine((path, ctx) => {
+  const refusal = aiPathRefusal(path);
+  if (refusal) ctx.addIssue({ code: 'custom', message: refusal });
+});
 
 const cleanupPath = z.string().max(4096).refine(
   (path) => !path.includes('\0'),
@@ -982,7 +939,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     }
   }),
 
-  execute_command: z.object(executeCommandShape),
+  // file_list / file_read read `payload.path` on the device, so it goes through
+  // the same path restriction as file_operations (and is required: the agent
+  // reads an empty path as its own home directory).
+  execute_command: z.object(executeCommandShape).superRefine((value, ctx) => {
+    if (value.commandType !== 'file_list' && value.commandType !== 'file_read') return;
+    const refusal = aiPathRefusal(value.payload?.path);
+    if (refusal) ctx.addIssue({ code: 'custom', path: ['payload', 'path'], message: refusal });
+  }),
 
   // AI script authoring (spec §4.2). The full propose_script input contract
   // lives in @breeze/shared so the tool handler, a future HTTP route and the

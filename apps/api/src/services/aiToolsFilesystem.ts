@@ -30,6 +30,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { AGENT_MAX_FILE_WRITE_BYTES } from '../routes/systemTools/schemas';
 import { isAgentConfigPath } from '../routes/systemTools/sensitiveTargets';
+import { aiPathRefusal } from './aiPathRestriction';
 import {
   buildCleanupPreview,
   getLatestFilesystemSnapshot,
@@ -244,6 +245,10 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         osType,
         typeof input.path === 'string' && input.path.length > 0 ? input.path : osRootScanPath(osType),
       );
+      // The schema checked the raw input; normalisation can respell it
+      // (`C:Users\x` becomes `C:\Users\x`), so check what is actually scanned.
+      const scanRootRefusal = aiPathRefusal(scanPath);
+      if (scanRootRefusal) return JSON.stringify({ error: scanRootRefusal });
       // Narrower than the route's check on purpose: the tool has no volume
       // list, so only the OS root auto-continues a checkpointed baseline. A
       // second volume's scan simply does not self-resume from the AI lane.
