@@ -104,9 +104,10 @@ Success looks like:
 
 ## 4. Agent collector (Windows)
 
-New package `agent/internal/timesync/` with `timesync.go` (shared types, `Collect() *Snapshot` returning
-nil when unsupported), `timesync_windows.go` (`//go:build windows`) and `timesync_other.go` (returns nil,
-so non-Windows agents send nothing). Collection runs inside `collectors.Guard`
+New package `agent/internal/collectors/timesync/` (next to `collectors/hwhealth/`), with every OS read
+behind a `System` interface whose Windows implementation lives in `system_windows.go` and whose
+non-Windows constructor returns nil, so non-Windows agents send nothing. The file layout is fixed in
+the plan index (§H). Collection runs inside `collectors.Guard`
 (`agent/internal/collectors/safe.go` ~124); any exec uses `runCollectorOutput` with a timeout
 (`collectors/command_limits.go` ~17–41).
 
@@ -244,7 +245,7 @@ context:
 2. Build the resolver context (expected timezone §5.4, effective `time_sync` settings in W03).
 3. `resolveTimeFindings(snapshot, ctx)` → `{ health, findings[], findingDetails }`.
 4. Upsert `device_time_status`; upsert today's `device_time_daily` (§5.6).
-5. W03: when `snapshot.enforcement.resultId` differs from the stored one, write an audit entry (§8.5).
+5. W03: for each enforcement kind whose `resultId` differs from the stored one, write an audit entry (§8.5).
 
 ### 5.2 Finding catalogue
 
@@ -327,8 +328,9 @@ Both tables are tenancy shape 5 (device-scoped, denormalized `org_id`, hot agent
 `forest_dns text`, `pdc_name text`, `timezone_windows_id text`, `timezone_bias_minutes int`,
 `timezone_auto_update text`, `expected_timezone text` (IANA), `expected_timezone_windows_id text`,
 `expected_timezone_source text`, `event_marks jsonb`, `finding_streaks jsonb` (W02, §7.2),
-`recent_events jsonb`, and (W03)
-`enforcement jsonb`, `enforcement_result_id text`, `created_at`, `updated_at`.
+`recent_events jsonb`, `policy_managed_values text[]`, and (W03) `enforcement jsonb` (the latest
+report per kind; its `resultId`s are what ingest compares to decide whether to audit), `created_at`,
+`updated_at`.
 Indexes: `(org_id, health)`, `(org_id, domain_dns, domain_role)`, GIN on `findings`.
 
 **`device_time_daily`**: `device_id`, `org_id`, `day date`, PK `(device_id, day)`, `worst_health`,
@@ -350,8 +352,8 @@ moves).
 - W01: `…-time-sync-tables.sql` — `device_time_status` + RLS + FK.
 - W02: `…-time-sync-daily.sql` — `device_time_daily` + RLS + FK, and `ADD COLUMN IF NOT EXISTS
   finding_streaks` on `device_time_status`; `…-monitor-kind-time-sync.sql` — `monitorKindEnum` value.
-- W03: `…-time-sync-enforcement-columns.sql` — `enforcement`, `enforcement_result_id` on
-  `device_time_status`; `…-time-sync-config-feature.sql` — `configFeatureTypeEnum` value, `config_policy_time_sync_settings`
+- W03: `…-time-sync-config-feature.sql` — `enforcement` on `device_time_status`,
+  `configFeatureTypeEnum` value, `config_policy_time_sync_settings`
   (keyed by `feature_link_id`, parent-predicate RLS copied from
   `2026-10-30-110100-hardware-monitoring-config-feature.sql`, plus the SELECT-only partner-wide branch
   from `2026-10-05-110000-config-policy-partner-wide-select.sql`).
@@ -518,8 +520,10 @@ Runs after each collection when `enforce_ntp` or `timezone.auto_fix` is set, and
 5. **Read back** the registry values. Result `ok` only if they equal the desired values.
 6. **Rate limit**: at most one apply per hour for the same `fingerprint`; on failure back off
    1 h → 2 h → 4 h … capped at 24 h; a new fingerprint resets both. `time_apply_policy` bypasses them.
-7. **Report** `enforcement = { resultId, fingerprint, at, outcome: 'ok'|'failed'|'skipped', reason,
-   before, after, error }` in the next snapshot (sent immediately after an apply).
+7. **Report** `enforcement = { ntp, timezone }`, each `{ resultId, fingerprint, at, outcome:
+   'ok'|'failed'|'skipped', reason, before, after, error }` or null, in the next snapshot (sent
+   immediately after an apply). The latest result per kind is resent in every snapshot; a
+   rate-limited run produces no new result. Exact schema: plan index §F.3.
 
 Turning enforcement off, or removing the policy, leaves the configuration as it is. The before and after
 values are in the audit log.
@@ -528,12 +532,12 @@ values are in the audit log.
 
 When `auto_fix` is on, `expected_windows_id` is set, `autoUpdate ≠ on` and `windowsId ≠ expected`: run
 `tzutil /s "<expected_windows_id>"` (the value is re-validated against an embedded list of Windows zone
-IDs before exec). It shares the rate limits above, and its result goes in `enforcement` with
-`kind: 'timezone'`.
+IDs before exec). It shares the rate limits above, and its result goes in `enforcement.timezone`.
 
 ### 8.5 Audit
 
-On ingest, a new `enforcement.resultId` writes one audit entry `time_sync.enforced` (system actor,
+On ingest, each `enforcement.ntp.resultId` / `enforcement.timezone.resultId` not equal to the stored
+one writes one audit entry `time_sync.enforced` (system actor,
 device resource) with `outcome`, `before` and `after`. Commands are audited by the existing
 `device.command.queue` path.
 
@@ -564,9 +568,8 @@ device and show each device's outcome. The web handlers use `runAction`.
     overrides the site timezone");
   - recent Time-Service events;
   - freshness (§5.5);
-  - "Requires a newer agent" (naming the first agent release that carries W01) when a Windows agent has
-    never sent a snapshot and its version predates the collector; "Not supported on this OS yet" for
-    macOS and Linux.
+  - "No time data yet — this needs an agent update that includes time sync" when a Windows device has
+    never sent a snapshot; "Not supported on this OS yet" for macOS and Linux.
 
   W03 adds Resync, Set timezone to expected and Apply time policy now.
 - **Fleet page `/devices/time`** (`pages/devices/time.astro` → `FleetTimeSyncReport`, the
