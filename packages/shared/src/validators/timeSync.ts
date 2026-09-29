@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ianaToWindowsZone } from '../utils/windowsZones';
 import {
   TIME_SYNC_TYPES,
   TIME_SYNC_SERVICE_STATES,
@@ -142,3 +143,57 @@ export function parseNtpServerHosts(raw: string | null): string[] {
     .filter(Boolean)
     .map((host) => host.replace(/(?:,0x[0-9a-f]+)+$/i, ''));
 }
+
+export const TIME_SYNC_DEFAULTS = {
+  enforceNtp: false,
+  ntpServers: [] as string[],
+  pollIntervalMinutes: 60,
+  timezone: {
+    expected: 'site' as const,
+    pinnedTimezone: null as string | null,
+    autoFix: false,
+  },
+};
+
+export const timeSyncInlineSettingsSchema = z
+  .object({
+    enforceNtp: z.boolean().default(false),
+    ntpServers: z.array(ntpServerHostSchema).max(5).default([]),
+    pollIntervalMinutes: z.number().int().min(15).max(1440).default(60),
+    timezone: z
+      .object({
+        expected: z.enum(['site', 'pinned']).default('site'),
+        pinnedTimezone: z.string().max(64).nullable().default(null),
+        autoFix: z.boolean().default(false),
+      })
+      .strict()
+      .default(TIME_SYNC_DEFAULTS.timezone),
+  })
+  .strict()
+  .superRefine((settings, ctx) => {
+    if (settings.enforceNtp && settings.ntpServers.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ntpServers'],
+        message:
+          'At least one NTP server is required when enforcement is enabled.',
+      });
+    }
+    const pin = settings.timezone.pinnedTimezone;
+    if (pin !== null && ianaToWindowsZone(pin) === null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['timezone', 'pinnedTimezone'],
+        message: 'Choose a timezone with a Windows mapping.',
+      });
+    } else if (settings.timezone.expected === 'pinned' && pin === null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['timezone', 'pinnedTimezone'],
+        message: 'A pinned timezone is required.',
+      });
+    }
+  });
+export type TimeSyncInlineSettings = z.infer<
+  typeof timeSyncInlineSettingsSchema
+>;
