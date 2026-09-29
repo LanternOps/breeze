@@ -288,3 +288,95 @@ func TestManagementCorruptStateFailsClosed(t *testing.T) {
 		t.Fatal(m, e)
 	}
 }
+func TestManagementRepeatedInvalidDeliveryReportsOnceThenReconcilesLastValid(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	sends := 0
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { sends++; return nil })
+	valid := settingsFixture()
+	if changed, e := m.Apply(rawSettings(t, valid)); e != nil || !changed {
+		t.Fatal(changed, e)
+	}
+	bad := settingsFixture()
+	bad.NTPServers = []string{"a;bad"}
+	if changed, e := m.Apply(rawSettings(t, bad)); e == nil || !changed {
+		t.Fatal("first rejection", changed, e)
+	}
+	id := m.state.Report.NTP.ResultID
+	// The API re-sends the same settings on every heartbeat; a repeat is not news.
+	for i := 0; i < 3; i++ {
+		if changed, e := m.Apply(rawSettings(t, bad)); e != nil || changed {
+			t.Fatal("repeat rejection", i, changed, e)
+		}
+	}
+	if m.state.Report.NTP.ResultID != id {
+		t.Fatal("repeat rejection minted a new audit result")
+	}
+	if e := m.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if len(f.calls) != 0 || m.state.Report.NTP.ResultID != id || sends != 1 {
+		t.Fatal("rejection cycle", f.calls, m.state.Report.NTP, sends)
+	}
+	// The skip is spent once; the retained last-valid settings reconcile next cycle.
+	if e := m.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if len(f.calls) == 0 || m.state.Report.NTP.Reason == "invalid_settings" || m.state.Report.NTP.Fingerprint != valid.Fingerprint {
+		t.Fatal("last valid settings not reconciled", f.calls, m.state.Report.NTP)
+	}
+	next := settingsFixture()
+	next.PollIntervalMinutes = 120
+	next.Fingerprint = "sha256:" + fmt.Sprintf("%064x", 3)
+	if changed, e := m.Apply(rawSettings(t, next)); e != nil || !changed {
+		t.Fatal("later valid delivery", changed, e)
+	}
+	// A valid delivery clears the rejection memory, so the same bad payload is news again.
+	if changed, e := m.Apply(rawSettings(t, bad)); e == nil || !changed || m.state.Report.NTP.ResultID == id {
+		t.Fatal("rejection after valid delivery", changed, e)
+	}
+}
+func TestManagementRepeatedBlockedDeliveryIsNotAnError(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	saves := 0
+	m.save = func(ManagementState) error { saves++; return errors.New("read-only state directory") }
+	s := settingsFixture()
+	if changed, e := m.Apply(rawSettings(t, s)); e == nil || changed {
+		t.Fatal("first blocked", changed, e)
+	}
+	if changed, e := m.Apply(rawSettings(t, s)); e != nil || changed {
+		t.Fatal("repeat blocked", changed, e)
+	}
+	if saves != 2 {
+		t.Fatal("repeat did not retry persistence", saves)
+	}
+	other := settingsFixture()
+	other.PollIntervalMinutes = 120
+	other.Fingerprint = "sha256:" + fmt.Sprintf("%064x", 4)
+	if changed, e := m.Apply(rawSettings(t, other)); e == nil || changed {
+		t.Fatal("different blocked settings", changed, e)
+	}
+	m.save = func(ManagementState) error { return nil }
+	if changed, e := m.Apply(rawSettings(t, other)); e != nil || !changed || m.blocked != nil {
+		t.Fatal("recovery", changed, e)
+	}
+}
+func TestManagementResyncIgnoresConfigurationGuards(t *testing.T) {
+	for _, tc := range []struct {
+		role string
+		gpo  bool
+	}{{"member", true}, {"unknown", false}, {"dc", true}} {
+		t.Run(tc.role, func(t *testing.T) {
+			f := newFakeTimeSystem(tc.role)
+			f.obs.Config.PolicyManaged = tc.gpo
+			m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+			result, e := m.Command(context.Background(), "time_resync", map[string]any{})
+			if e != nil || result.(ResyncResult).ExitCode != 0 || result.(ResyncResult).Error != nil {
+				t.Fatal(result, e)
+			}
+			if fmt.Sprint(f.calls) != "[start resync]" {
+				t.Fatal(f.calls)
+			}
+		})
+	}
+}

@@ -2265,6 +2265,8 @@ func TestInvalidTimeSettingsStillWakeSnapshot(t *testing.T) {
 }
 ```
 
+- [ ] Add a dispatcher test (Task 4 review follow-up): a fake `Apply` returning `(false, err)` on every delivery (the Manager's answer to a repeated rejection or a repeated persistence failure) must not run `Cycle` on each heartbeat; only `changed=true` or the scheduled/due tick may. Task 4's Manager tests pin the Manager half (`TestManagementRepeatedInvalidDeliveryReportsOnceThenReconcilesLastValid`, `TestManagementRepeatedBlockedDeliveryIsNotAnError`).
+
 - [ ] Run `cd agent && go test -race ./internal/heartbeat/...`; expected FAIL: unknown `timeSync` field / `timeSyncRuntime` before production code.
 - [ ] Replace W01b Task 8's `time_sync.go` with this complete body. Keep W01b's response validator and typed status error exactly as shown. The runtime owns the sole collector through Manager:
 
@@ -2440,8 +2442,11 @@ func (h *Heartbeat) startTimeSync() {
 				if err != nil {
 					log.Warn("time sync settings rejected or not persisted", "error", err)
 				}
-				// Repeated identical delivery does not turn a heartbeat into a collection tick.
-				if !changed && err == nil {
+				// Only a change forces an immediate cycle. Apply returns changed=false for a
+				// repeated identical delivery, a repeated rejection, and a repeated
+				// persistence failure; an error alone must never turn every heartbeat
+				// into an upload (and a new enforcement audit row per minute).
+				if !changed {
 					h.mu.Lock()
 					last := r.lastTimeSyncUpdate
 					due := !last.IsZero() && time.Now().After(last.Add(timeSyncInterval(h.config.AgentID, last)))

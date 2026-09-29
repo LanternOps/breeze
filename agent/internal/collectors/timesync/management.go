@@ -2,8 +2,10 @@ package timesync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"reflect"
 	"time"
@@ -27,6 +29,12 @@ type Manager struct {
 	state    ManagementState
 	skipOnce bool
 	blocked  error
+	// blockedFingerprint names the settings whose persistence last failed, so a
+	// heartbeat that re-sends them retries the save without re-reporting the error.
+	blockedFingerprint string
+	// lastRejected identifies the most recent invalid delivery (payload + reason).
+	// The API re-sends settings on every heartbeat; a repeat is not a new rejection.
+	lastRejected string
 }
 
 func NewManagement(dir string, sys System, w Writer, send func(context.Context, any) error) (*Manager, error) {
@@ -101,6 +109,12 @@ func (m *Manager) Apply(raw any) (bool, error) {
 		e = fmt.Errorf("settings changed without a new fingerprint")
 	}
 	if e != nil {
+		key := rejectionKey(raw, e)
+		if key == m.lastRejected {
+			// Already reported under one result ID; the retained last-valid settings
+			// keep reconciling on the normal schedule.
+			return false, nil
+		}
 		next := m.state
 		next.Report.NTP = newResult(s, m.now(), "skipped", "invalid_settings", ntpValues(Observation{}), ntpValues(Observation{}), e)
 		if s.Timezone.AutoFix {
@@ -109,21 +123,40 @@ func (m *Manager) Apply(raw any) (bool, error) {
 		// Keep last valid settings, but upload this rejection before reconciling them again.
 		m.state = next
 		m.skipOnce = true
+		m.lastRejected = key
 		return true, errors.Join(e, m.save(next))
 	}
+	m.lastRejected = ""
 	if m.state.Settings != nil && reflect.DeepEqual(*m.state.Settings, s) && m.blocked == nil {
 		return false, nil
 	}
 	next := m.state
 	next.Settings = &s
 	if e = m.save(next); e != nil {
+		repeat := m.blocked != nil && m.blockedFingerprint == s.Fingerprint
 		m.blocked = e
+		m.blockedFingerprint = s.Fingerprint
+		if repeat {
+			slog.Warn("time sync settings still not persisted", "fingerprint", s.Fingerprint, "error", e)
+			return false, nil
+		}
 		return false, e
 	}
 	m.state = next
 	m.skipOnce = false
 	m.blocked = nil
+	m.blockedFingerprint = ""
 	return true, nil
+}
+
+// rejectionKey is the canonical delivery (json.Marshal sorts map keys) plus the
+// reason, so an identical re-delivery is recognised across heartbeats.
+func rejectionKey(raw any, reason error) string {
+	b, e := json.Marshal(raw)
+	if e != nil {
+		return "unencodable\x00" + reason.Error()
+	}
+	return string(b) + "\x00" + reason.Error()
 }
 func (m *Manager) read(ctx context.Context) (Observation, error) { return m.observe(ctx) }
 func (m *Manager) reconciler() *Reconciler {

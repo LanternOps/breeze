@@ -70,12 +70,17 @@ func (m *Manager) resync(ctx context.Context, payload map[string]any) (ResyncRes
 	if e == nil && len(payload) != 0 {
 		e = fmt.Errorf("time_resync payload must be empty")
 	}
-	r := m.reconciler()
+	// Spec §9: resync changes no configuration, so the W32Time configuration-write
+	// guards (known/unchanged role, not policy-managed) do not apply. GPO-managed and
+	// role-unknown hosts are exactly where sync_stale hints send the operator here.
+	if e == nil {
+		e = ctx.Err()
+	}
 	if e == nil && before.Config.ServiceState != "running" {
-		e = r.guarded(ctx, before.Domain.Role, false, func() error { return m.writer.Start(ctx) })
+		e = m.writer.Start(ctx)
 	}
 	if e == nil {
-		e = r.guarded(ctx, before.Domain.Role, false, func() error { var x error; out.ExitCode, x = m.writer.Resync(ctx); return x })
+		out.ExitCode, e = m.writer.Resync(ctx)
 	}
 	after, readErr := m.read(ctx)
 	out.After = after.Status.LastSuccessfulSyncAt
