@@ -15,7 +15,7 @@
  * Tests job. Anywhere else and it runs in zero CI jobs.
  */
 import './setup';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -393,6 +393,16 @@ describe('time_suggestion_decisions — RLS Shape 3 (partner-axis)', () => {
 // ── the signal read path, under real RLS ────────────────────────────────────
 
 describe('the signal read path under real RLS', () => {
+  // The fixtures are dated 2026-08-29 and listTimeSuggestions refuses dates
+  // more than 31 days back, so pin Date (only Date) for this block.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-01T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   function actorFor(partnerId: string, userId: string, accessibleOrgIds: string[] | null) {
     return {
       userId, name: 'Tess Tech', email: 'tess@msp.example',
