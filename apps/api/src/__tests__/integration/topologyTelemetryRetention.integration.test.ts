@@ -212,9 +212,10 @@ describe('topology interface retention', () => {
   });
 
   it('provisions leaves ahead with forced RLS through the worker tick', async () => {
-    const tick = await runTopologyTelemetryMaintenanceTick(new Date());
+    const now = Date.now(); // one instant for the tick and the leaf it must create (#7409)
+    const tick = await runTopologyTelemetryMaintenanceTick(new Date(now));
     expect(tick.failed).toBe(0);
-    const ahead = new Date(Date.now() + 7 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
+    const ahead = new Date(now + 7 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
     const [leaf] = await system(() => db.execute<{ rls: boolean; forced: boolean; policies: number }>(sql`SELECT c.relrowsecurity AS rls, c.relforcerowsecurity AS forced,
       (SELECT count(*)::int FROM pg_policies p WHERE p.tablename = c.relname) AS policies FROM pg_class c WHERE c.relname = ${`topology_interface_samples_raw_p${ahead}`}`));
     expect(leaf).toEqual({ rls: true, forced: true, policies: 4 });
