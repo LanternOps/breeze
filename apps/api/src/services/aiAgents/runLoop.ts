@@ -1655,6 +1655,19 @@ export function fullRunToolExposure(agentAllowlist: readonly string[]): string[]
   return [...names];
 }
 
+/**
+ * #7427 — `fullRunToolExposure` intersected with the names the SDK server
+ * actually declares under the current env (`listChatSurfaceToolNames`), i.e.
+ * exactly what a full run may pass as `onlyTools` without
+ * `createBreezeMcpServer` rejecting it. See the call site in `driveSdkLoop`.
+ * Exported for the unmocked contract test
+ * (`runLoop.fullExposure.contract.test.ts`).
+ */
+export function declaredFullRunToolExposure(agentAllowlist: readonly string[]): string[] {
+  const declared = new Set(listChatSurfaceToolNames());
+  return fullRunToolExposure(agentAllowlist).filter((name) => declared.has(name));
+}
+
 async function driveSdkLoop(
   ctx: RunContext,
   effective: AiAgentPolicy,
@@ -1987,11 +2000,7 @@ async function driveSdkLoop(
   // same list. Profile allowlists are NOT filtered: they are hardcoded, so an
   // undeclared name there is a bug `createBreezeMcpServer` should keep
   // surfacing (#4447). Exposure only — authority is unchanged.
-  let fullExposure: string[] | null = null;
-  if (run.profile === 'full') {
-    const declared = new Set(listChatSurfaceToolNames());
-    fullExposure = fullRunToolExposure(effective.toolAllowlist).filter((name) => declared.has(name));
-  }
+  const fullExposure = run.profile === 'full' ? declaredFullRunToolExposure(effective.toolAllowlist) : null;
   const exposureList = profileAllowlist ?? fullExposure;
   const exposedNames = exposureList
     ? exposureList.map((name) => (
