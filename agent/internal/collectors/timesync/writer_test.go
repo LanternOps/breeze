@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestManagementWriterArgv(t *testing.T) {
@@ -76,5 +77,57 @@ func TestManagementWriterRegistrySCMAndFailures(t *testing.T) {
 	cancel()
 	if err := w.Start(c); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+func TestManagementStartServiceWait(t *testing.T) {
+	const tick, limit = time.Millisecond, 200 * time.Millisecond
+	running := func(after int) (func() (bool, error), *int) {
+		n := 0
+		return func() (bool, error) { n++; return n > after, nil }, &n
+	}
+	ok := func() error { return nil }
+
+	// Already running (platform maps ERROR_SERVICE_ALREADY_RUNNING to nil): success, no wait.
+	q, n := running(0)
+	if err := startAndWaitRunning(context.Background(), ok, q, tick, limit); err != nil || *n != 1 {
+		t.Fatal(err, *n)
+	}
+	// Start-pending, then running: success after polling.
+	q, n = running(3)
+	if err := startAndWaitRunning(context.Background(), ok, q, tick, limit); err != nil || *n != 4 {
+		t.Fatal(err, *n)
+	}
+	// A context that ends once the service is running is not a failure.
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := startAndWaitRunning(ctx, ok, func() (bool, error) { cancel(); return true, nil }, tick, limit); err != nil {
+		t.Fatal("successful start reported as failure:", err)
+	}
+	// Start errors and query errors propagate; a service that never runs times out.
+	if err := startAndWaitRunning(context.Background(), func() error { return errors.New("denied") }, q, tick, limit); err == nil {
+		t.Fatal("start error swallowed")
+	}
+	if err := startAndWaitRunning(context.Background(), ok, func() (bool, error) { return false, errors.New("query") }, tick, limit); err == nil {
+		t.Fatal("query error swallowed")
+	}
+	if err := startAndWaitRunning(context.Background(), ok, func() (bool, error) { return false, nil }, tick, 20*time.Millisecond); err == nil {
+		t.Fatal("never-running service reported started")
+	}
+	// Cancellation while still pending ends the wait with the context error, not the 30 s limit.
+	ctx, cancel = context.WithCancel(context.Background())
+	polls := 0
+	pending := func() (bool, error) {
+		polls++
+		if polls == 2 {
+			cancel()
+		}
+		return false, nil
+	}
+	if err := startAndWaitRunning(ctx, ok, pending, tick, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	// An already-cancelled context never issues the start.
+	starts := 0
+	if err := startAndWaitRunning(ctx, func() error { starts++; return nil }, q, tick, limit); !errors.Is(err, context.Canceled) || starts != 0 {
+		t.Fatal(err, starts)
 	}
 }

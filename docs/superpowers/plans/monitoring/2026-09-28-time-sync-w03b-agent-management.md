@@ -688,7 +688,7 @@ func startTimeService(ctx context.Context) error {
 }
 ```
 
-SCM start cannot be cancelled while inside the existing helper; it is bounded by its 30-second wait. Do not abandon it in an untracked goroutine. A role/GPO change cannot be made atomic with a Windows service operation; the immediate read guard narrows that race, and subsequent writes re-check.
+**Lab correction (supersedes the block above):** the shipped `startTimeService` opens W32Time through `svc/mgr` directly, maps `ERROR_SERVICE_ALREADY_RUNNING` to success (trigger-start W32Time can start itself), and waits for Running through the portable `startAndWaitRunning` (ctx-aware, 30 s limit, 500 ms poll) — so it no longer demands 31 s of deadline or returns `ctx.Err()` after a successful start. SCM start cannot be cancelled while inside the existing helper; it is bounded by its 30-second wait. Do not abandon it in an untracked goroutine. A role/GPO change cannot be made atomic with a Windows service operation; the immediate read guard narrows that race, and subsequent writes re-check.
 
 - [ ] Create `writer_other.go`:
 
@@ -753,6 +753,8 @@ git commit -m 'feat(timesync): add validated Windows time writers' -m 'Co-Author
 - Consumes: `ReadObservation`, `Writer`, `Settings`, `ManagementState`.
 - Produces: `Reconciler.Run(ctx context.Context, force bool) error`; fields `Read ReadObservation`, `Writer Writer`, `Now func() time.Time`, `Save func(ManagementState) error`, `State *ManagementState`.
 - Save occurs before the first mutation of a kind, and again after its result; a failed reservation performs zero writes. Caller serializes Run and settings changes.
+
+**Lab correction (supersedes the `applyNTP` order and matrix `want` below):** `w32tm /config … /update` fails with `0x80070426` while W32Time is stopped, so the shipped order is `auto → start (only if not running) → manual|reliable|hierarchy → poll → update → resync`, each write still behind its fresh role/GPO guard; pinned by `TestReconcileStartsStoppedServiceBeforeConfigWrites`.
 
 **Comparison decision:** for manual roles compare `Type=NTP`, normalized host **sets** (case-insensitive, flags stripped with `ParseNtpServerHosts`, duplicate/order independent), poll seconds, `serviceStartType=auto`, and running service. For hierarchy roles compare `Type=NT5DS` or `Type=AllSync`, automatic/running service; preserve dormant manual peers and poll because §8.3's hierarchy branch does not change them. This resolves the compare/apply inconsistency explicitly in Contract issue 4. `/reliable:yes` is emitted whenever applying on the forest-root PDC; reliability itself is not a field in index B and cannot participate in its read-back comparison.
 
@@ -3725,6 +3727,15 @@ Get-CimInstance Win32_Service -Filter "Name='W32Time'" | Select-Object State,Sta
 
 Expect workgroup and forest-root PDC `Type=NTP`, two separate peers both with `,0x9`, SpecialPollInterval 3600, Automatic and running service. Expect member `Type=NT5DS`, Automatic and running; its dormant manual list/poll need not change. Verify the root PDC's reliable advertisement in the configuration read-back, and inspect the w32tm manual-peer argv evidence from Task 2. Do not infer native argv success from cross-compilation alone. `enforcement.ntp` is `ok/applied` or `ok/already_compliant` with before/after facts; non-zero resync can accompany `ok` only when configuration read-back matches, with its diagnostic preserved in `error`.
 
+- [ ] **Stopped-service case (workgroup host, then each available AD role).** `w32tm /config … /update` exits `0x80070426` while W32Time is stopped, so enforcement must set Automatic and start the service *before* the first config write (reconcile order: `auto → start (only if not running) → manual|reliable|hierarchy → poll → update → resync`). With the W32Time key exported, the start type recorded and the timezone saved (as above), make the service trigger/demand-start and stopped, then click Apply time policy now:
+
+```powershell
+& sc.exe config W32Time start= demand
+Stop-Service W32Time
+Get-CimInstance Win32_Service -Filter "Name='W32Time'" | Select-Object State,StartMode
+```
+
+Expect `enforcement.ntp=ok/applied` (never `failed/exec_failed` with `0x80070426`), `before.serviceStartType` `manual`/`trigger_manual`, `after.serviceStartType=auto`, service Running, and the role's expected read-back. Then, with the service already running (trigger-started or started by hand), drift one value (e.g. `w32tm /config /manualpeerlist:old.example,0x8 /update`) and Apply again: expect `ok/applied` with no start failure — an already-running service is a successful start, never `ERROR_SERVICE_ALREADY_RUNNING`. Without an installed agent, the same two cases run from a cross-compiled test binary with the lab-only write opt-in: `TIMESYNC_LAB_WRITE=1` and `.\timesync.test.exe '-test.run=TestLab' '-test.v'` (quote each `-test.*` flag as one token: Windows PowerShell 5.1 splits an unquoted `-test.run` at the dot). Restore the export, start type, service state and timezone afterwards. Owed on the AD lab: the forest-root PDC (`reliable`) and member (`hierarchy`) stopped-service runs.
 - [ ] Confirm one `time_sync.enforced` audit event per distinct kind/resultId, system actor/device resource, correct fingerprint, outcome and before/after. Confirm command queuing has its separate `device.command.queue` audit entry. Trigger another snapshot before one hour and verify unchanged result IDs/no new enforcement audit; click Apply now again and verify a new result despite the rate gate.
 - [ ] Restart the **installed** Breeze service on one test device without deleting state. Observe the same settings, gate and result IDs in `timesync-management.json` and subsequent snapshots. Remove its policy assignment; wait for a delivered default payload (not a missing key), then verify settings are persisted disabled, Windows configuration remains unchanged, and a restart does not resume enforcement.
 

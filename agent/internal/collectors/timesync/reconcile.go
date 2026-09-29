@@ -227,6 +227,21 @@ func (e *resyncDiagnostic) Error() string { return "resync after apply: " + e.er
 func (r *Reconciler) applyNTP(ctx context.Context, before Observation, s Settings) error {
 	role := before.Domain.Role
 	guarded := func(fn func() error) error { return r.guarded(ctx, role, false, fn) }
+	// W32Time must be running before any `w32tm /config ... /update`: with the
+	// service stopped (the default for trigger-start W32Time on workgroup
+	// Windows 10/11) /update exits 0x80070426 and every apply would fail.
+	if e := guarded(func() error { return r.Writer.Automatic(ctx) }); e != nil {
+		return e
+	}
+	fresh, e := r.Read(ctx)
+	if e != nil {
+		return e
+	}
+	if fresh.Config.ServiceState != "running" {
+		if e = guarded(func() error { return r.Writer.Start(ctx) }); e != nil {
+			return e
+		}
+	}
 	if manualRole(role) {
 		if e := guarded(func() error { return r.Writer.Manual(ctx, s.NTPServers, role == "forest_root_pdc_emulator") }); e != nil {
 			return e
@@ -239,18 +254,6 @@ func (r *Reconciler) applyNTP(ctx context.Context, before Observation, s Setting
 		}
 	} else if e := guarded(func() error { return r.Writer.Hierarchy(ctx) }); e != nil {
 		return e
-	}
-	if e := guarded(func() error { return r.Writer.Automatic(ctx) }); e != nil {
-		return e
-	}
-	fresh, e := r.Read(ctx)
-	if e != nil {
-		return e
-	}
-	if fresh.Config.ServiceState != "running" {
-		if e = guarded(func() error { return r.Writer.Start(ctx) }); e != nil {
-			return e
-		}
 	}
 	var resyncErr error
 	e = guarded(func() error { _, resyncErr = r.Writer.Resync(ctx); return nil })

@@ -18,6 +18,9 @@ type fakeTimeSystem struct {
 	beforeRead func(*fakeTimeSystem)
 	fail       string
 	mismatch   bool
+	// requireRunning models Windows: `w32tm /config ... /update` exits
+	// 0x80070426 while W32Time is stopped.
+	requireRunning bool
 }
 
 func newFakeTimeSystem(role string) *fakeTimeSystem {
@@ -46,6 +49,12 @@ func (f *fakeTimeSystem) write(name string, apply func()) error {
 	f.calls = append(f.calls, name)
 	if f.fail == name {
 		return errors.New(name + " failed")
+	}
+	switch name {
+	case "manual", "reliable", "hierarchy", "update":
+		if f.requireRunning && f.obs.Config.ServiceState != "running" {
+			return errors.New(name + ": the service has not been started (0x80070426)")
+		}
 	}
 	if !f.mismatch {
 		apply()
@@ -164,13 +173,13 @@ func TestReconcileRoleGuardOutcomeMatrix(t *testing.T) {
 						}
 					}
 					if reason == "applied" {
-						want := []string{"hierarchy", "auto", "start", "resync"}
+						want := []string{"auto", "start", "hierarchy", "resync"}
 						if manual {
 							first := "manual"
 							if role == "forest_root_pdc_emulator" {
 								first = "reliable"
 							}
-							want = []string{first, "poll", "update", "auto", "start", "resync"}
+							want = []string{"auto", "start", first, "poll", "update", "resync"}
 						}
 						if !reflect.DeepEqual(f.calls, want) {
 							t.Fatal(f.calls, want)
@@ -432,5 +441,37 @@ func TestReconcileGateKeepsLegitimateBackoff(t *testing.T) {
 	}
 	if len(f.calls) != calls {
 		t.Fatal("legitimate 24h back-off bypassed", f.calls)
+	}
+}
+func TestReconcileStartsStoppedServiceBeforeConfigWrites(t *testing.T) {
+	for _, tc := range []struct {
+		role, state string
+		want        []string
+	}{
+		{"workgroup", "stopped", []string{"auto", "start", "manual", "poll", "update", "resync"}},
+		{"forest_root_pdc_emulator", "stopped", []string{"auto", "start", "reliable", "poll", "update", "resync"}},
+		{"member", "stopped", []string{"auto", "start", "hierarchy", "resync"}},
+		{"dc", "stopped", []string{"auto", "start", "hierarchy", "resync"}},
+		// An already-running service (e.g. trigger-started) is never re-started.
+		{"workgroup", "running", []string{"auto", "manual", "poll", "update", "resync"}},
+		{"member", "running", []string{"auto", "hierarchy", "resync"}},
+	} {
+		t.Run(tc.role+"/"+tc.state, func(t *testing.T) {
+			now := time.Now()
+			f := newFakeTimeSystem(tc.role)
+			f.requireRunning = true
+			f.obs.Config.ServiceState = tc.state
+			r := fakeReconciler(f, &now)
+			if e := r.Run(context.Background(), true); e != nil {
+				t.Fatal(e)
+			}
+			got := r.State.Report.NTP
+			if got.Outcome != "ok" || got.Reason != "applied" || got.Error != nil {
+				t.Fatalf("%+v calls=%v", got, f.calls)
+			}
+			if !reflect.DeepEqual(f.calls, tc.want) {
+				t.Fatal(f.calls, tc.want)
+			}
+		})
 	}
 }

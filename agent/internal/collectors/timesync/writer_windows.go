@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 func NewWriter() Writer {
@@ -60,18 +61,32 @@ func windowsZoneExists(id string) error {
 	}
 	return key.Close()
 }
+
+// scmStartError treats ERROR_SERVICE_ALREADY_RUNNING as success: trigger-start
+// W32Time can start itself (or be start-pending) between our read and the start.
+func scmStartError(err error) error {
+	if err == nil || errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+		return nil
+	}
+	return fmt.Errorf("start W32Time: %w", err)
+}
 func startTimeService(ctx context.Context) error {
 	if e := ctx.Err(); e != nil {
 		return e
 	}
-	// The reused SCM helper has a 30 s wait and no context parameter.
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 31*time.Second {
-		return context.DeadlineExceeded
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	// services_windows.go:114-133 uses SCM, closes handles, and waits at most 30 s.
-	result := tools.StartService(map[string]any{"name": "W32Time"})
-	if result.Status != "completed" {
-		return fmt.Errorf("start W32Time: %s", result.Error)
+	defer m.Disconnect()
+	s, err := m.OpenService("W32Time")
+	if err != nil {
+		return fmt.Errorf("open W32Time: %w", err)
 	}
-	return ctx.Err()
+	defer s.Close()
+	// Synchronous SCM calls; the running-state wait is bounded by ctx and 30 s.
+	return startAndWaitRunning(ctx, func() error { return scmStartError(s.Start()) }, func() (bool, error) {
+		st, e := s.Query()
+		return st.State == svc.Running, e
+	}, 500*time.Millisecond, 30*time.Second)
 }

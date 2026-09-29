@@ -3,6 +3,7 @@
 package timesync
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -23,6 +24,20 @@ func TestManagementInstalledZoneValidation(t *testing.T) {
 	for _, id := range []string{"", `..\UTC`, "UTC/child", "Breeze Nonexistent Test Zone"} {
 		if err := windowsZoneExists(id); err == nil {
 			t.Fatalf("accepted %q", id)
+		}
+	}
+}
+func TestManagementSCMStartErrorMapping(t *testing.T) {
+	// A trigger-start W32Time that started itself (or is start-pending) is success.
+	if err := scmStartError(windows.ERROR_SERVICE_ALREADY_RUNNING); err != nil {
+		t.Fatal(err)
+	}
+	if err := scmStartError(nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []error{windows.ERROR_SERVICE_DISABLED, windows.ERROR_ACCESS_DENIED} {
+		if err := scmStartError(e); !errors.Is(err, e) {
+			t.Fatal(err)
 		}
 	}
 }
