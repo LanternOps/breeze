@@ -68,4 +68,27 @@ describe('ComplianceTab', () => {
     expect(await screen.findByText(/More than one rule set is named "Baseline"/)).toBeTruthy();
     expect(saveMock).not.toHaveBeenCalled();
   });
+
+  // The tab's own default name must never be the duplicate: with "Compliance
+  // Rule Set 1" deleted and "…2" left, a new set used to be named "…2" again.
+  it('names a new rule set so it never repeats a name already in the list', async () => {
+    const rule = { type: 'disk_space_minimum', minGb: 5 };
+    const existingLink = {
+      id: 'link-1',
+      featureType: 'compliance',
+      inlineSettings: {
+        items: [{ name: 'Compliance Rule Set 2', rules: [rule], enforcementLevel: 'warn', checkIntervalMinutes: 60 }],
+      },
+    } as unknown as FeatureTabProps['existingLink'];
+    render(<ComplianceTab {...baseProps} existingLink={existingLink} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Compliance Rule/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: { items: Array<{ name: string }> } }];
+    const names = call[1].inlineSettings.items.map((i) => i.name);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+  });
 });

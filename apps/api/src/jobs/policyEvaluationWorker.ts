@@ -11,7 +11,7 @@ import { automationPolicies } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { evaluatePolicy, scanAndEvaluateConfigPolicyCompliance } from '../services/policyEvaluationService';
-import { reconcileComplianceAlerts, type ComplianceAlertReconcileResult } from '../services/complianceAlertReconcile';
+import type { ComplianceAlertReconcileResult } from '../services/complianceAlertReconcile';
 import type { ComplianceAlertReconcileScope } from '../services/complianceAlertReconcileTrigger';
 
 const { db } = dbModule;
@@ -243,6 +243,9 @@ let sweepCursor: string | null = null;
  * ambient context (see the #7347 note in the processor below).
  */
 async function processReconcileComplianceAlerts(data: ReconcileComplianceAlertsJob): Promise<ComplianceAlertReconcileResult> {
+  // Loaded on first use, like the automation worker below: it pulls in the
+  // alert service and both alert bridges, which the evaluation jobs never need.
+  const { reconcileComplianceAlerts } = await import('../services/complianceAlertReconcile');
   const scope = reconcileScopeOf(data);
   if (scope) return reconcileComplianceAlerts(scope);
   const result = await reconcileComplianceAlerts(undefined, { afterDeviceId: sweepCursor });

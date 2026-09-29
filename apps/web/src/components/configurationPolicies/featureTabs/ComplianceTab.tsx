@@ -435,9 +435,20 @@ export default function ComplianceTab({
   };
   const addItem = () => {
     const ruleType: RuleType = "required_software";
+    // The first "Compliance Rule Set <n>" not already in the list: after a
+    // delete, `items.length + 1` can repeat a name that is still there, and
+    // two rule sets with one name cannot be saved.
+    const taken = new Set(items.map((item) => item.name));
+    let n = items.length + 1;
+    for (let i = 1; i <= items.length + 1; i++) {
+      if (!taken.has(`Compliance Rule Set ${i}`)) {
+        n = i;
+        break;
+      }
+    }
     const newItem: ComplianceItem = {
       ...defaultItem,
-      name: `Compliance Rule Set ${items.length + 1}`,
+      name: `Compliance Rule Set ${n}`,
       rules: [
         {
           ...defaultItem.rules[0],

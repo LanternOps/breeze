@@ -78,12 +78,12 @@ type OpenAlert = {
   overrideSettings: Record<string, unknown> | null;
 };
 
-const OPEN_ALERT_COLUMNS = {
+const openAlertColumns = () => ({
   id: alerts.id,
   deviceId: alerts.deviceId,
   context: alerts.context,
   overrideSettings: alertRules.overrideSettings,
-};
+});
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -225,7 +225,7 @@ async function reconcileConfigPolicyAlerts(
 /** One resolver lookup for the device, then a reason for each alert whose rule it no longer follows. */
 async function reconcileConfigDevice(deviceId: string, condition: SQL): Promise<number> {
   const open = (await db
-    .select(OPEN_ALERT_COLUMNS)
+    .select(openAlertColumns())
     .from(alerts)
     .innerJoin(alertRules, eq(alertRules.id, alerts.ruleId))
     .where(and(condition, eq(alerts.deviceId, deviceId)))).map(toOpenAlert);
@@ -320,7 +320,7 @@ async function reconcileAutomationPolicyAlerts(scope: AlertScope): Promise<{ pol
 
 async function reconcileAutomationPolicy(policyId: string, condition: SQL): Promise<number> {
   const open = (await db
-    .select(OPEN_ALERT_COLUMNS)
+    .select(openAlertColumns())
     .from(alerts)
     .innerJoin(alertRules, eq(alertRules.id, alerts.ruleId))
     .where(and(condition, sql`${alertRules.overrideSettings}->>'policyId' = ${policyId}`))).map(toOpenAlert);
