@@ -20,6 +20,8 @@ import {
   getStringValue,
   resolveSnapshotProviderConfig,
 } from './recoveryBootstrap';
+import { RECOVERY_REFUSAL_MESSAGES } from './recoveryCapabilities';
+import { normalizeStorageIdentity } from '../jobs/backupRetention';
 
 type RecoveryDownloadRow = Pick<
   typeof recoveryTokens.$inferSelect,
@@ -290,6 +292,25 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     return { unavailable: true, reason: 'Recovery snapshot storage is unavailable.' } as const;
   }
 
+  // #6490: resolveSnapshotProviderConfig prefers the LIVE backup_configs row
+  // over snapshot-pinned metadata, so a destination changed after this
+  // snapshot was written would stream every key — own-prefix or external —
+  // from the wrong bucket/root. Authenticate/exchange already refuse that
+  // drift up front (negotiateRecoveryCapabilities); this re-checks on every
+  // object because the destination can change mid-session. A legacy
+  // snapshot with no pinned identity has nothing to compare against.
+  const pinnedStorageIdentity = resolved.snapshot.storageIdentity ?? null;
+  if (pinnedStorageIdentity) {
+    const resolvedStorageIdentity = normalizeStorageIdentity(resolved.providerType, asRecord(resolved.providerConfig));
+    if (resolvedStorageIdentity !== pinnedStorageIdentity) {
+      console.warn(
+        `[getAuthenticatedRecoveryDownloadTarget] refused token ${tokenRow.id}: storage identity drift`,
+        { tokenId: tokenRow.id, snapshotDbId, pinnedStorageIdentity, resolvedStorageIdentity },
+      );
+      return { unavailable: true, reason: RECOVERY_REFUSAL_MESSAGES.storage_identity_drift } as const;
+    }
+  }
+
   const ownSnapshotId = resolved.snapshot.snapshotId;
   // No leading-slash stripping: the shared object-key contract
   // (`agent/internal/backup/bmr/testdata/object-key-vectors.json`) treats a
@@ -317,7 +338,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       originSnapshotId: scope.originSnapshotId,
       orgId: tokenRow.orgId,
       deviceId: tokenRow.deviceId,
-      pinnedStorageIdentity: resolved.snapshot.storageIdentity ?? '',
+      pinnedStorageIdentity: pinnedStorageIdentity ?? '',
     });
     if (!authorization.ok) {
       return {
