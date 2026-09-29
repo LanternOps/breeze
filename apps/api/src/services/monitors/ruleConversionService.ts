@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { alertRules, alertTemplates } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
+import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import type { DbExecutor } from './monitorCompiler';
 import { mapStandaloneRule } from './conversion/mapping';
 import { previewTemplateGroup, convertTemplateGroup, withCallerContext } from './conversion/convert';
@@ -17,7 +18,10 @@ export type ConversionFailure =
   // #7206: a built-in system anchor rule (systemManagedRules.ts). It keeps
   // alerting on its own; there is nothing to convert.
   | { kind: 'system_managed' }
-  | { kind: 'partner_wide_denied'; message: string };
+  | { kind: 'partner_wide_denied'; message: string }
+  // The group converter requires full governance (no site/device ceiling);
+  // refused here so it is a readable 403, not a ConversionError mid-transaction.
+  | { kind: 'governance_denied' };
 
 export interface ConversionSuccess {
   monitorId: string;
@@ -72,7 +76,10 @@ export async function convertRuleToMonitor(ruleId: string, auth: AuthContext, ex
   // rule's route did not name. The group writer repeats authorization and hash
   // checks under its transaction locks before creating a single ledger entry.
   const preview = await previewTemplateGroup(template.id, auth, executor);
-  if (preview.blockedBy) return { ok: false, failure: { kind: 'not_convertible' } };
+  // A behavior delta would make convertTemplateGroup refuse (equivalence_delta)
+  // inside its transaction; the admin path lists the same group as
+  // unconvertible:equivalence_delta.
+  if (preview.blockedBy || preview.equivalence?.deltas.length) return { ok: false, failure: { kind: 'not_convertible' } };
   const converted = await convertTemplateGroup(template.id, preview.previewHash, auth, executor);
   const primary = converted.outputs.find((output) => output.sourceRuleId === rule.id && output.role === 'primary');
   if (!primary?.monitorId || !primary.policyId) throw new Error('Converted group missing primary rule output');
@@ -108,6 +115,7 @@ async function checkRuleConvertible(ruleId: string, auth: AuthContext, executor:
   if (rule.orgId === null && !canManagePartnerWidePolicies(auth)) {
     return { ok: false, failure: { kind: 'partner_wide_denied', message: PARTNER_WIDE_WRITE_DENIED_MESSAGE } };
   }
+  if (!canMutateOrgWideGovernance(auth)) return { ok: false, failure: { kind: 'governance_denied' } };
 
   const [template] = await executor
     .select()

@@ -233,6 +233,7 @@ test('cross-area scan finds the known references (guards against a vacuous scan)
     'api apps/portal/src',
     'portal apps/api/src/routes/portal/tickets.ts',
     'web apps/api/src/services/accounting/types.ts',
+    'web apps/api/src/services/monitors',
   ]) {
     assert.ok(seen.has(known), `scanner no longer finds "${known}" — it is stale, or the reference moved`);
   }

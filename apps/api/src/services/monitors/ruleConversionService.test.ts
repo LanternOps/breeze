@@ -238,6 +238,20 @@ describe('template group conversion adapter', () => {
     expect(convertGroup).not.toHaveBeenCalled();
   });
 
+  it('refuses a site-restricted caller before any group transaction (the group writer requires full governance)', async () => {
+    resultsQueue.push([ruleRow()], [templateRow()]);
+    expect(await convertRuleToMonitor('rule-1', auth({ allowedSiteIds: ['site-1'] } as Partial<AuthContext>)))
+      .toEqual({ ok: false, failure: { kind: 'governance_denied' } });
+    expect(previewGroup).not.toHaveBeenCalled();
+  });
+
+  it('treats a group whose conversion would change behavior as not convertible, never attempting the convert', async () => {
+    resultsQueue.push([ruleRow()], [templateRow()]);
+    previewGroup.mockResolvedValue({ previewHash: 'group-hash', equivalence: { deltas: [{ deviceId: 'd1' }] } });
+    expect(await convertRuleToMonitor('rule-1', auth())).toEqual({ ok: false, failure: { kind: 'not_convertible' } });
+    expect(convertGroup).not.toHaveBeenCalled();
+  });
+
   it('reads the rule and template inside ONE caller-scoped context, and opens the group transactions only after it closed (self-managed route)', async () => {
     callerContext.entered = 0;
     const depthAtSelect: number[] = [];

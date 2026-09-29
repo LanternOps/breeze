@@ -973,6 +973,28 @@ describe('POST /monitor-definitions/convert-from-rule/:ruleId', () => {
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
+  it('maps governance_denied (site-restricted caller) to 403', async () => {
+    const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
+    vi.mocked(convertRuleToMonitor).mockResolvedValueOnce({ ok: false, failure: { kind: 'governance_denied' } });
+
+    const res = await jsonRequest(buildApp(), 'POST', '/convert-from-rule/rule-1');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: expect.stringMatching(/Site-restricted/) });
+  });
+
+  it('maps a conversion refusal raised inside the group transaction to its status, not a 500', async () => {
+    const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
+    const { ConversionError } = await import('../services/monitors/conversion/errors');
+    vi.mocked(convertRuleToMonitor).mockRejectedValueOnce(new ConversionError('preview_stale', 'Template group changed'));
+
+    const res = await jsonRequest(buildApp(), 'POST', '/convert-from-rule/rule-1');
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'preview_stale' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
   it('still maps template_not_found to 404', async () => {
     const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
     vi.mocked(convertRuleToMonitor).mockResolvedValueOnce({ ok: false, failure: { kind: 'template_not_found' } });

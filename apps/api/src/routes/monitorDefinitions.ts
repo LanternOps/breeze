@@ -40,6 +40,7 @@ import { isMonitorAttachableToPolicy } from '../services/monitors/monitorAttacha
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
+import { conversionErrorResponse } from './monitorConversionErrors';
 import {
   listMonitorDeviceActivity,
   listMonitorEpisodes,
@@ -804,6 +805,8 @@ monitorDefinitionRoutes.post(
             }, 409);
           case 'partner_wide_denied':
             return c.json({ error: result.failure.message }, 403);
+          case 'governance_denied':
+            return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
         }
       }
 
@@ -819,7 +822,10 @@ monitorDefinitionRoutes.post(
 
       return c.json({ data: { monitorId, configPolicyId } }, 201);
     } catch (error) {
-      const mapped = errorResponse(error);
+      // The group converter re-checks access, hashes and state under its own
+      // row locks and refuses with a ConversionError (e.g. a concurrent
+      // convert of the same group → preview_stale / already_converted).
+      const mapped = errorResponse(error) ?? conversionErrorResponse(error);
       if (mapped) return c.json(mapped.body, mapped.status);
       throw error;
     }
