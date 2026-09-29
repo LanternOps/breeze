@@ -1924,11 +1924,17 @@ jobs:
       # the "/"-separated target to "\" on write, so os.Readlink then
       # faithfully reads it back with backslashes), was fixed to compare
       # after filepath.ToSlash on Windows — the Linux assertion is unchanged.
+      # ./internal/backup/hosttool resolves the host System32 tools that bmr
+      # and hyperv run (pnputil, powershell, bcdboot); its windows-tagged test proves the
+      # real GetSystemWindowsDirectory seam, which no other job exercises.
+      # Verified like winsvcinstall: with GOOS=windows GOARCH=amd64
+      # CGO_ENABLED=0 it vets, its test binary compiles, and its Windows
+      # dependency graph contains no cgo and no other first-party package.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two

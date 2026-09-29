@@ -6,7 +6,16 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/hosttool"
 )
+
+// powerShellExe is the host's own Windows PowerShell, by absolute path from
+// the host's System32 (hosttool.SystemTool), never resolved through PATH:
+// a restore gives the restored volume a drive letter while its scripts run.
+func powerShellExe() string {
+	return hosttool.SystemTool(`WindowsPowerShell\v1.0\powershell.exe`)
+}
 
 // psWaitDelay bounds how long a killed command's output pipes may stay open
 // (held by a grandchild) before Wait gives up on them, so a cancelled or timed

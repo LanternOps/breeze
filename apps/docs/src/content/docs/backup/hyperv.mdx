@@ -98,6 +98,8 @@ You can also restore a backup snapshot as a new VM from the Restore Wizard. This
 
 From v0.118.0 (with the 0.118 agent), a restore as new VM that cannot place every file fails before any VM is created. Earlier releases could report it as completed.
 
+A restore as new VM copies the snapshot's files onto the new disk and leaves the restored Windows installation as it was: no drivers are added to it on the Hyper-V host. The VM is Generation 2, which needs a Windows 8 / Windows Server 2012 or later guest, and those already include the Hyper-V storage and network drivers. Install any other drivers from inside the running VM.
+
 ### Instant Boot
 
 For fast recovery validation, use **Instant Boot** to boot a VM directly from a snapshot without fully restoring it. This lets you verify that the backup is usable without waiting for a full import. Instant boot status is tracked on the Hyper-V tab.
