@@ -1165,6 +1165,209 @@
       "required": "Wählen Sie vor dem Speichern dieses Berichts eine Organisation aus.",
       "chooseFirst": "Wählen Sie oben eine Organisation aus, bevor Sie eine Vorlage verwenden.",
       "previewNeedsOrg": "Wählen Sie eine Organisation aus, um eine Live-Vorschau zu sehen."
+    },
+    "series": {
+      "covers": {
+        "legend": "Umfasst",
+        "org": "Eine Organisation",
+        "orgHint": "Ein Bericht für einen Kunden, der an die Kontakte dieser Organisation gesendet wird.",
+        "series": "Ein Bericht pro Organisation",
+        "seriesHint": "Eine Definition mit einer eigenen Kopie für jede abgedeckte Organisation, die jeweils an die Kontakte dieser Organisation gesendet wird.",
+        "combined": "Alle Organisationen zusammengefasst",
+        "combinedHint": "Ein zusammengefasster Bericht über alle Ihre Organisationen für Ihr eigenes Team.",
+        "seriesUnavailableType": "Dieser Berichtstyp kann nicht als ein Bericht pro Organisation gesendet werden."
+      },
+      "schedule": {
+        "label": "Wie oft die Kopie jeder Organisation gesendet wird",
+        "placeholder": "Zeitplan auswählen",
+        "hint": "Ein Bericht, der an viele Organisationen gesendet wird, läuft nach einem Zeitplan und kann daher nicht einmalig sein. Wählen Sie, wie oft die Kopie jeder Organisation gesendet wird.",
+        "required": "Wählen Sie, wie oft der Bericht gesendet wird."
+      },
+      "targeting": {
+        "legend": "Welche Organisationen",
+        "all": "Alle Organisationen",
+        "allHint": "Umfasst jede aktuelle und künftige Organisation. Entfernen Sie das Häkchen bei denen, die Sie überspringen möchten.",
+        "selected": "Ausgewählte Organisationen",
+        "selectedHint": "Umfasst genau die Organisationen, die Sie ankreuzen.",
+        "search": "Organisationen suchen",
+        "summary": "Umfasst {{covered}} von {{total}} Organisationen",
+        "noneSelected": "Wählen Sie mindestens eine Organisation aus.",
+        "empty": "Keine Organisationen gefunden."
+      },
+      "recipients": {
+        "legend": "Wer die Kopie jeder Organisation erhält",
+        "primaryContact": "Hauptkontakt der Organisation",
+        "roles": "Kontakte mit diesen Rollen",
+        "noRuleWarning": "Es ist keine Regel ausgewählt. Eine Organisation erhält ihre Kopie daher nur, wenn Sie in der Kopie dieser Organisation Kontakte hinzufügen.",
+        "internalCc": "Interne Kopien",
+        "internalCcHint": "Die Kopie jeder Organisation wird zusätzlich an diese Adressen in Ihrem Team gesendet.",
+        "ccPlaceholder": "name@example.com",
+        "ccAdd": "Hinzufügen",
+        "ccInvalid": "Geben Sie eine gültige E-Mail-Adresse ein.",
+        "ccRemove": "{{email}} entfernen",
+        "previewLoading": "Empfänger werden geprüft…",
+        "previewContacts_one": "Entspricht {{count}} Kontakt",
+        "previewContacts_other": "Entspricht {{count}} Kontakten",
+        "previewOrgs_one": "in {{count}} Organisation",
+        "previewOrgs_other": "in {{count}} Organisationen",
+        "previewMissing_one": "{{count}} Organisation hat keinen Kundenempfänger: {{names}}",
+        "previewMissing_other": "{{count}} Organisationen haben keinen Kundenempfänger: {{names}}",
+        "previewMore": "und {{count}} weitere",
+        "previewFailed": "Die Empfänger konnten nicht geprüft werden. Sie werden weiterhin für jede Organisation ermittelt, wenn deren Bericht läuft.",
+        "previewNoTargets": "Wählen Sie Organisationen aus, um zu sehen, wer den Bericht erhält."
+      },
+      "builder": {
+        "filtersDisabled": "Standort-, Geräte- und Gruppenfilter sind hier nicht verfügbar: Die Kopie jeder Organisation umfasst die gesamte Organisation.",
+        "created": "Multi-Organisations-Bericht „{{name}}“ erstellt",
+        "saved": "Multi-Organisations-Bericht „{{name}}“ gespeichert",
+        "saveFailed": "Der Multi-Organisations-Bericht konnte nicht gespeichert werden.",
+        "targetsFailed": "Die Einstellungen wurden gespeichert, aber die abgedeckten Organisationen wurden nicht aktualisiert. Versuchen Sie erneut zu speichern."
+      },
+      "list": {
+        "filtersLabel": "Anzeigen",
+        "filters": {
+          "all": "Alle",
+          "multi": "Multi-Organisation",
+          "single": "Einzelne Organisation",
+          "combined": "Zusammengefasst"
+        },
+        "noMatches": "Keine Berichte entsprechen diesem Filter.",
+        "loadFailed": "Multi-Organisations-Berichte konnten nicht geladen werden. Andere Berichte werden angezeigt.",
+        "multiOrgBadge": "Multi-Organisation",
+        "multiOrgBadgeTitle": "Teil des Multi-Organisations-Berichts „{{name}}“",
+        "expand": "Organisationen anzeigen",
+        "collapse": "Organisationen ausblenden",
+        "summary": "{{date}} · {{delivered}}/{{total}} zugestellt",
+        "summaryNoRecipient_one": "{{count}} ohne Empfänger",
+        "summaryNoRecipient_other": "{{count}} ohne Empfänger",
+        "summaryBlocked_one": "{{count}} blockiert",
+        "summaryBlocked_other": "{{count}} blockiert",
+        "summaryNever": "Noch nicht ausgeführt",
+        "runsSeriesColumn": "Multi-Organisations-Bericht",
+        "actions": {
+          "edit": "Multi-Organisations-Bericht bearbeiten",
+          "transferOwner": "Eigentümer übertragen",
+          "delete": "Multi-Organisations-Bericht löschen",
+          "pause": "Pausieren",
+          "resume": "Fortsetzen"
+        },
+        "pausedBadge": "Pausiert",
+        "pausedTitle": "Pausiert: Keine Organisationskopie läuft, bis Sie fortsetzen.",
+        "paused": "„{{name}}“ pausiert",
+        "resumed": "„{{name}}“ fortgesetzt",
+        "pauseFailed": "Der Multi-Organisations-Bericht konnte nicht pausiert oder fortgesetzt werden.",
+        "deleteTitle": "Multi-Organisations-Bericht löschen?",
+        "deleteMessage": "„{{name}}“ wird nicht mehr ausgeführt. Die Kopie jeder Organisation wird mit ihrem Ausführungsverlauf archiviert.",
+        "deleteConfirm": "Löschen",
+        "deleted": "Multi-Organisations-Bericht „{{name}}“ gelöscht",
+        "deleteFailed": "Der Multi-Organisations-Bericht konnte nicht gelöscht werden."
+      },
+      "drilldown": {
+        "columns": {
+          "org": "Organisation",
+          "state": "Status",
+          "lastRun": "Letzte Ausführung",
+          "delivery": "Zustellung",
+          "recipients": "Empfänger",
+          "actions": "Aktionen"
+        },
+        "states": {
+          "active": "Aktiv",
+          "excluded": "Ausgeschlossen",
+          "ineligible": "Nicht berechtigt",
+          "blocked_no_authority": "Blockiert: Eigentümer hat keinen Zugriff",
+          "blocked_no_recipients": "Kein Kundenempfänger"
+        },
+        "delivery": {
+          "sent": "Gesendet",
+          "not_scheduled": "Nicht per E-Mail versendet"
+        },
+        "neverRun": "Noch nicht ausgeführt",
+        "actions": {
+          "runNow": "Jetzt ausführen",
+          "editRecipients": "Empfänger bearbeiten",
+          "exclude": "Ausschließen",
+          "include": "Einschließen",
+          "detach": "Abkoppeln"
+        },
+        "lastOrgHint": "Ein Multi-Organisations-Bericht mit ausgewählten Organisationen braucht mindestens eine. Löschen Sie ihn stattdessen.",
+        "noAuthorityHint": "Der Eigentümer hat keinen Zugriff auf diese Organisation, daher läuft deren Kopie nicht. Übertragen Sie den Eigentümer, um das zu beheben.",
+        "excludeTitle": "{{org}} ausschließen?",
+        "excludeMessage": "{{org}} erhält diesen Bericht nicht mehr. Die Kopie wird mit ihrem Ausführungsverlauf archiviert, und beim erneuten Einschließen wird dieselbe Kopie wiederhergestellt.",
+        "excludeConfirm": "Ausschließen",
+        "detachTitle": "{{org}} abkoppeln?",
+        "detachMessage": "Die Kopie von {{org}} wird zu einem eigenständigen Bericht, den Sie frei bearbeiten können. Sie behält ihren Ausführungsverlauf und folgt diesem Multi-Organisations-Bericht nicht mehr. Solange diese eigenständige Kopie existiert, bleibt {{org}} außerhalb des Multi-Organisations-Berichts, auch wenn Sie die Organisation erneut einschließen.",
+        "detachConfirm": "Abkoppeln",
+        "excluded": "{{org}} ausgeschlossen",
+        "included": "{{org}} eingeschlossen",
+        "detached": "{{org}} abgekoppelt",
+        "generated": "Bericht für {{org}} erstellt",
+        "updateFailed": "Der Multi-Organisations-Bericht konnte nicht aktualisiert werden.",
+        "detachFailed": "Der Bericht konnte nicht abgekoppelt werden.",
+        "generateFailed": "Der Bericht konnte nicht erstellt werden."
+      },
+      "transferOwner": {
+        "title": "Eigentümer übertragen",
+        "description": "Die Kopie jeder Organisation läuft mit den Zugriffsrechten des Eigentümers. Wählen Sie einen Partnerbenutzer mit Zugriff auf jede Organisation.",
+        "label": "Neuer Eigentümer",
+        "placeholder": "Benutzer auswählen",
+        "current": "{{name}} (aktueller Eigentümer)",
+        "confirm": "Übertragen",
+        "loadFailed": "Benutzer konnten nicht geladen werden.",
+        "forbidden": "Sie benötigen die Berechtigung zum Anzeigen von Benutzern, um den Eigentümer zu übertragen.",
+        "noCandidates": "Kein anderer Benutzer hat Zugriff auf jede Organisation.",
+        "transferred": "Eigentümer an {{name}} übertragen",
+        "failed": "Der Eigentümer konnte nicht übertragen werden."
+      },
+      "child": {
+        "partOf": "Teil des Multi-Organisations-Berichts „{{name}}“",
+        "partOfUnnamed": "Teil eines Multi-Organisations-Berichts",
+        "lockedExplanation": "Gemeinsame Einstellungen werden im Multi-Organisations-Bericht bearbeitet. Hier können nur die Empfänger dieser Organisation geändert werden.",
+        "managedByMsp": "Von Ihrem MSP verwaltet",
+        "managedExplanation": "Ihr MSP verwaltet diesen Bericht. Sie können ändern, wer in Ihrer Organisation ihn erhält.",
+        "editSeries": "Multi-Organisations-Bericht bearbeiten",
+        "detach": "Abkoppeln",
+        "archived": "Diese Kopie ist archiviert: Die Organisation wird vom Multi-Organisations-Bericht nicht mehr abgedeckt.",
+        "summary": {
+          "type": "Typ",
+          "schedule": "Zeitplan",
+          "format": "Dateiformat"
+        },
+        "recipients": {
+          "title": "Empfänger für diese Organisation",
+          "description": "Wählen Sie, wer die Kopie dieser Organisation erhält, zusätzlich zur Regel des Multi-Organisations-Berichts.",
+          "default": "Regel befolgen",
+          "add": "Immer senden",
+          "remove": "Nie senden",
+          "byRule": "Per Regel eingeschlossen",
+          "loadFailed": "Empfänger konnten nicht geladen werden.",
+          "updated": "Empfänger aktualisiert",
+          "updateFailed": "Die Empfänger konnten nicht aktualisiert werden.",
+          "empty": "Diese Organisation hat keine Kontakte mit E-Mail-Adresse."
+        }
+      },
+      "editPage": {
+        "title": "Multi-Organisations-Bericht bearbeiten",
+        "description": "Änderungen gelten für die Kopie jeder Organisation von „{{name}}“.",
+        "breadcrumb": "Berichte",
+        "back": "Zurück zu den Berichten",
+        "loading": "Multi-Organisations-Bericht wird geladen…",
+        "notFound": "Dieser Multi-Organisations-Bericht existiert nicht mehr.",
+        "loadFailed": "Der Multi-Organisations-Bericht konnte nicht geladen werden."
+      },
+      "errors": {
+        "seriesTypeUnsupported": "Dieser Berichtstyp kann nicht als ein Bericht pro Organisation gesendet werden.",
+        "seriesConfigOrgSpecific": "Entfernen Sie die Standort-, Geräte- und Gruppenfilter: Ein Multi-Organisations-Bericht umfasst ganze Organisationen.",
+        "seriesManaged": "Dieser Bericht gehört zu einem Multi-Organisations-Bericht. Bearbeiten Sie den Multi-Organisations-Bericht oder koppeln Sie diese Kopie zuerst ab.",
+        "seriesOwnerIneligible": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Er benötigt Zugriff auf jede Organisation und jeden Standort.",
+        "seriesNotFound": "Dieser Multi-Organisations-Bericht existiert nicht mehr.",
+        "seriesWriteDenied": "Nur Partnerbenutzer mit Zugriff auf jede Organisation können Multi-Organisations-Berichte ändern.",
+        "seriesTargetOrgInaccessible": "Eine der ausgewählten Organisationen steht Ihnen nicht zur Verfügung.",
+        "reportNotSeriesChild": "Dieser Bericht ist nicht mehr Teil eines Multi-Organisations-Berichts.",
+        "recipientModeRequiresSeries": "„Nie senden“ gilt nur für eine Kopie eines Multi-Organisations-Berichts.",
+        "recipientsNeedExportAndMfa": "Das Senden von Berichten an Empfänger erfordert die Exportberechtigung und die Multi-Faktor-Anmeldung.",
+        "seriesAuthorityUnverifiable": "Der Zugriff des Eigentümers konnte gerade nicht bestätigt werden. Versuchen Sie es gleich noch einmal."
+      }
     }
   }
 }

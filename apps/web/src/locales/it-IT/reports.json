@@ -1165,6 +1165,209 @@
       "required": "Scegli un’organizzazione prima di salvare questo report.",
       "chooseFirst": "Scegli un’organizzazione qui sopra prima di usare un modello.",
       "previewNeedsOrg": "Scegli un’organizzazione per vedere un’anteprima dal vivo."
+    },
+    "series": {
+      "covers": {
+        "legend": "Il report copre",
+        "org": "Una organizzazione",
+        "orgHint": "Un report per un cliente, inviato ai contatti di quella organizzazione.",
+        "series": "Un report per organizzazione",
+        "seriesHint": "Una definizione, con una copia separata per ogni organizzazione coperta, inviata ai contatti di quella organizzazione.",
+        "combined": "Tutte le organizzazioni combinate",
+        "combinedHint": "Un report combinato su tutte le tue organizzazioni, per il tuo team.",
+        "seriesUnavailableType": "Questo tipo di report non può essere inviato come un report per organizzazione."
+      },
+      "schedule": {
+        "label": "Frequenza di invio della copia di ogni organizzazione",
+        "placeholder": "Scegli una pianificazione",
+        "hint": "Un report inviato a molte organizzazioni viene eseguito secondo una pianificazione, quindi non può essere singolo. Scegli la frequenza di invio della copia di ogni organizzazione.",
+        "required": "Scegli la frequenza di invio del report."
+      },
+      "targeting": {
+        "legend": "Quali organizzazioni",
+        "all": "Tutte le organizzazioni",
+        "allHint": "Include ogni organizzazione attuale e futura. Deseleziona quelle che vuoi saltare.",
+        "selected": "Organizzazioni scelte",
+        "selectedHint": "Include esattamente le organizzazioni che selezioni.",
+        "search": "Cerca organizzazioni",
+        "summary": "Copre {{covered}} organizzazioni su {{total}}",
+        "noneSelected": "Scegli almeno un’organizzazione.",
+        "empty": "Nessuna organizzazione corrisponde."
+      },
+      "recipients": {
+        "legend": "Chi riceve la copia di ogni organizzazione",
+        "primaryContact": "Il contatto principale dell’organizzazione",
+        "roles": "Contatti con questi ruoli",
+        "noRuleWarning": "Nessuna regola è selezionata, quindi un’organizzazione riceve la sua copia solo se aggiungi contatti sulla copia di quell’organizzazione.",
+        "internalCc": "Copie interne",
+        "internalCcHint": "La copia di ogni organizzazione viene inviata anche a questi indirizzi del tuo team.",
+        "ccPlaceholder": "name@example.com",
+        "ccAdd": "Aggiungi",
+        "ccInvalid": "Inserisci un indirizzo e-mail valido.",
+        "ccRemove": "Rimuovi {{email}}",
+        "previewLoading": "Controllo dei destinatari…",
+        "previewContacts_one": "Corrisponde a {{count}} contatto",
+        "previewContacts_other": "Corrisponde a {{count}} contatti",
+        "previewOrgs_one": "in {{count}} organizzazione",
+        "previewOrgs_other": "in {{count}} organizzazioni",
+        "previewMissing_one": "{{count}} organizzazione non ha destinatari cliente: {{names}}",
+        "previewMissing_other": "{{count}} organizzazioni non hanno destinatari cliente: {{names}}",
+        "previewMore": "e altre {{count}}",
+        "previewFailed": "Impossibile controllare i destinatari. Vengono comunque determinati per ogni organizzazione quando viene eseguito il suo report.",
+        "previewNoTargets": "Scegli le organizzazioni per vedere chi riceve il report."
+      },
+      "builder": {
+        "filtersDisabled": "I filtri per sito, dispositivo e gruppo non sono disponibili qui: la copia di ogni organizzazione copre l’intera organizzazione.",
+        "created": "Report multi-organizzazione “{{name}}” creato",
+        "saved": "Report multi-organizzazione “{{name}}” salvato",
+        "saveFailed": "Impossibile salvare il report multi-organizzazione.",
+        "targetsFailed": "Le impostazioni sono state salvate, ma le organizzazioni coperte non sono state aggiornate. Riprova a salvare."
+      },
+      "list": {
+        "filtersLabel": "Mostra",
+        "filters": {
+          "all": "Tutti",
+          "multi": "Multi-organizzazione",
+          "single": "Organizzazione singola",
+          "combined": "Combinato"
+        },
+        "noMatches": "Nessun report corrisponde a questo filtro.",
+        "loadFailed": "Impossibile caricare i report multi-organizzazione. Vengono mostrati gli altri report.",
+        "multiOrgBadge": "Multi-organizzazione",
+        "multiOrgBadgeTitle": "Parte del report multi-organizzazione “{{name}}”",
+        "expand": "Mostra organizzazioni",
+        "collapse": "Nascondi organizzazioni",
+        "summary": "{{date}} · {{delivered}}/{{total}} consegnati",
+        "summaryNoRecipient_one": "{{count}} senza destinatario",
+        "summaryNoRecipient_other": "{{count}} senza destinatari",
+        "summaryBlocked_one": "{{count}} bloccata",
+        "summaryBlocked_other": "{{count}} bloccate",
+        "summaryNever": "Non ancora eseguito",
+        "runsSeriesColumn": "Report multi-organizzazione",
+        "actions": {
+          "edit": "Modifica report multi-organizzazione",
+          "transferOwner": "Trasferisci proprietario",
+          "delete": "Elimina report multi-organizzazione",
+          "pause": "Sospendi",
+          "resume": "Riprendi"
+        },
+        "pausedBadge": "In pausa",
+        "pausedTitle": "In pausa: nessuna copia di organizzazione viene eseguita finché non riprendi.",
+        "paused": "“{{name}}” sospeso",
+        "resumed": "“{{name}}” ripreso",
+        "pauseFailed": "Impossibile sospendere o riprendere il report multi-organizzazione.",
+        "deleteTitle": "Eliminare il report multi-organizzazione?",
+        "deleteMessage": "“{{name}}” non viene più eseguito. La copia di ogni organizzazione viene archiviata con la sua cronologia di esecuzione.",
+        "deleteConfirm": "Elimina",
+        "deleted": "Report multi-organizzazione “{{name}}” eliminato",
+        "deleteFailed": "Impossibile eliminare il report multi-organizzazione."
+      },
+      "drilldown": {
+        "columns": {
+          "org": "Organizzazione",
+          "state": "Stato",
+          "lastRun": "Ultima esecuzione",
+          "delivery": "Consegna",
+          "recipients": "Destinatari",
+          "actions": "Azioni"
+        },
+        "states": {
+          "active": "Attiva",
+          "excluded": "Esclusa",
+          "ineligible": "Non idonea",
+          "blocked_no_authority": "Bloccata: il proprietario non ha accesso",
+          "blocked_no_recipients": "Nessun destinatario cliente"
+        },
+        "delivery": {
+          "sent": "Inviato",
+          "not_scheduled": "Non inviato via e-mail"
+        },
+        "neverRun": "Non ancora eseguito",
+        "actions": {
+          "runNow": "Esegui ora",
+          "editRecipients": "Modifica destinatari",
+          "exclude": "Escludi",
+          "include": "Includi",
+          "detach": "Scollega"
+        },
+        "lastOrgHint": "Un report multi-organizzazione con organizzazioni scelte ne richiede almeno una. Eliminalo invece.",
+        "noAuthorityHint": "Il proprietario non può raggiungere questa organizzazione, quindi la sua copia non viene eseguita. Trasferisci il proprietario per risolvere.",
+        "excludeTitle": "Escludere {{org}}?",
+        "excludeMessage": "{{org}} non riceve più questo report. La sua copia viene archiviata con la cronologia di esecuzione e, se la includi di nuovo, viene ripristinata la stessa copia.",
+        "excludeConfirm": "Escludi",
+        "detachTitle": "Scollegare {{org}}?",
+        "detachMessage": "La copia di {{org}} diventa un report autonomo che puoi modificare liberamente. Mantiene la cronologia di esecuzione e smette di seguire questo report multi-organizzazione. Finché esiste quella copia autonoma, {{org}} resta fuori dal report multi-organizzazione anche se la includi di nuovo.",
+        "detachConfirm": "Scollega",
+        "excluded": "{{org}} esclusa",
+        "included": "{{org}} inclusa",
+        "detached": "{{org}} scollegata",
+        "generated": "Report generato per {{org}}",
+        "updateFailed": "Impossibile aggiornare il report multi-organizzazione.",
+        "detachFailed": "Impossibile scollegare il report.",
+        "generateFailed": "Impossibile generare il report."
+      },
+      "transferOwner": {
+        "title": "Trasferisci proprietario",
+        "description": "La copia di ogni organizzazione viene eseguita con l’accesso del proprietario. Scegli un utente del partner con accesso a tutte le organizzazioni.",
+        "label": "Nuovo proprietario",
+        "placeholder": "Scegli un utente",
+        "current": "{{name}} (proprietario attuale)",
+        "confirm": "Trasferisci",
+        "loadFailed": "Impossibile caricare gli utenti.",
+        "forbidden": "Serve l’autorizzazione a visualizzare gli utenti per trasferire il proprietario.",
+        "noCandidates": "Nessun altro utente ha accesso a tutte le organizzazioni.",
+        "transferred": "Proprietario trasferito a {{name}}",
+        "failed": "Impossibile trasferire il proprietario."
+      },
+      "child": {
+        "partOf": "Parte del report multi-organizzazione “{{name}}”",
+        "partOfUnnamed": "Parte di un report multi-organizzazione",
+        "lockedExplanation": "Le impostazioni condivise si modificano nel report multi-organizzazione. Qui si possono cambiare solo i destinatari di questa organizzazione.",
+        "managedByMsp": "Gestito dal tuo MSP",
+        "managedExplanation": "Il tuo MSP gestisce questo report. Puoi cambiare chi, nella tua organizzazione, lo riceve.",
+        "editSeries": "Modifica report multi-organizzazione",
+        "detach": "Scollega",
+        "archived": "Questa copia è archiviata: l’organizzazione non è più coperta dal report multi-organizzazione.",
+        "summary": {
+          "type": "Tipo",
+          "schedule": "Pianificazione",
+          "format": "Formato"
+        },
+        "recipients": {
+          "title": "Destinatari per questa organizzazione",
+          "description": "Scegli chi riceve la copia di questa organizzazione, oltre alla regola del report multi-organizzazione.",
+          "default": "Segui la regola",
+          "add": "Invia sempre",
+          "remove": "Non inviare mai",
+          "byRule": "Incluso dalla regola",
+          "loadFailed": "Impossibile caricare i destinatari.",
+          "updated": "Destinatari aggiornati",
+          "updateFailed": "Impossibile aggiornare i destinatari.",
+          "empty": "Questa organizzazione non ha contatti con un indirizzo e-mail."
+        }
+      },
+      "editPage": {
+        "title": "Modifica report multi-organizzazione",
+        "description": "Le modifiche si applicano alla copia di ogni organizzazione di “{{name}}”.",
+        "breadcrumb": "Report",
+        "back": "Torna a Report",
+        "loading": "Caricamento del report multi-organizzazione…",
+        "notFound": "Questo report multi-organizzazione non esiste più.",
+        "loadFailed": "Impossibile caricare il report multi-organizzazione."
+      },
+      "errors": {
+        "seriesTypeUnsupported": "Questo tipo di report non può essere inviato come un report per organizzazione.",
+        "seriesConfigOrgSpecific": "Rimuovi i filtri per sito, dispositivo e gruppo: un report multi-organizzazione copre intere organizzazioni.",
+        "seriesManaged": "Questo report appartiene a un report multi-organizzazione. Modifica il report multi-organizzazione o scollega prima questa copia.",
+        "seriesOwnerIneligible": "Quell’utente non può essere proprietario di un report multi-organizzazione: ha bisogno di accesso a tutte le organizzazioni e a tutti i siti.",
+        "seriesNotFound": "Questo report multi-organizzazione non esiste più.",
+        "seriesWriteDenied": "Solo gli utenti del partner con accesso a tutte le organizzazioni possono modificare i report multi-organizzazione.",
+        "seriesTargetOrgInaccessible": "Una delle organizzazioni scelte non è disponibile per te.",
+        "reportNotSeriesChild": "Questo report non fa più parte di un report multi-organizzazione.",
+        "recipientModeRequiresSeries": "\"Non inviare mai\" si applica solo a una copia di un report multi-organizzazione.",
+        "recipientsNeedExportAndMfa": "L’invio di report ai destinatari richiede l’autorizzazione di esportazione e l’accesso con autenticazione a più fattori.",
+        "seriesAuthorityUnverifiable": "Impossibile confermare ora l’accesso del proprietario. Riprova tra un attimo."
+      }
     }
   }
 }
