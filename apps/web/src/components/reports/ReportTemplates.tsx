@@ -75,6 +75,12 @@ import {
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
+import { CoversControl } from './series/CoversControl';
+import { createSeries } from './series/seriesApi';
+import { SeriesScheduleField } from './series/SeriesScheduleField';
+import { isSeriesEligibleReportType, isSeriesSchedule, stripSeriesConfig } from './series/seriesConfig';
+import type { CoversValue, SeriesSchedule } from './series/types';
+import { showToast } from '../shared/Toast';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
@@ -620,6 +626,14 @@ export default function ReportTemplates() {
   const [postureTemplate, setPostureTemplate] = useState<ReportTemplate | null>(null);
   const [backupRequired, setBackupRequired] = useState(false);
   const [lifecycleTemplate, setLifecycleTemplate] = useState<ReportTemplate | null>(null);
+  // W03: Covers for the posture / lifecycle modals (the two curated
+  // direct-create types a series supports). Reset on every modal open. The
+  // single-org target stays W01's page-level orgTarget.
+  const [templateCovers, setTemplateCovers] = useState<CoversValue>({ mode: 'org' });
+  // Recurring-only (Contract concern 7c): pre-filled from a recurring template,
+  // empty for a one-time one; never substituted.
+  const [templateSeriesSchedule, setTemplateSeriesSchedule] = useState<SeriesSchedule | ''>('');
+  const [seriesScheduleMissing, setSeriesScheduleMissing] = useState(false);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
   const [threatTemplate, setThreatTemplate] = useState<ReportTemplate | null>(null);
   const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
@@ -690,16 +704,50 @@ export default function ReportTemplates() {
       template: ReportTemplate,
       postureConfig: Record<string, unknown> = {},
       owner: ReportOwnerScope = 'organization',
+      covers?: CoversValue,
+      seriesSchedule?: SeriesSchedule | '',
     ) => {
       // Defense in depth — handleUseTemplate already refuses to open a
       // template without an org; nothing that would 400 is ever sent.
-      if (owner === 'organization' && orgTarget.missing) {
+      if (owner === 'organization' && covers?.mode !== 'series' && orgTarget.missing) {
         setError(t('reports.orgPicker.chooseFirst'));
         return;
       }
       setCreatingId(template.id);
       const isBusiness = isBusinessReportType(template.defaults.type);
       try {
+        if (covers?.mode === 'series') {
+          if (covers.targetMode === 'selected' && covers.orgIds.length === 0) {
+            showToast({ type: 'error', message: t('reports.series.targeting.noneSelected') });
+            return;
+          }
+          // Recurring-only: the user must have picked a schedule (never defaulted
+          // from a one-time template). The field shows the required message.
+          if (!seriesSchedule) {
+            setSeriesScheduleMissing(true);
+            return;
+          }
+          const name = template.defaults.name ?? template.name;
+          const created = await createSeries(
+            {
+              name,
+              type: template.defaults.type as string,
+              format: template.defaults.format ?? 'pdf',
+              schedule: seriesSchedule,
+              config: stripSeriesConfig({ dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' }, ...postureConfig }),
+              targetMode: covers.targetMode,
+              orgIds: covers.orgIds,
+              recipientRule: covers.recipientRule,
+              internalCc: covers.internalCc,
+            },
+            {
+              errorFallback: t('reports.series.builder.saveFailed'),
+              successMessage: t('reports.series.builder.created', { name }),
+            },
+          );
+          void navigateTo(created?.series?.id ? `/reports#series/${created.series.id}` : '/reports');
+          return;
+        }
         await runAction({
           request: () =>
             fetchWithAuth('/reports', {
@@ -759,17 +807,28 @@ export default function ReportTemplates() {
       const type = template.defaults.type;
       // A business template carries its own ownership control (partner-owned
       // by default under All organizations); every other template needs an org.
-      if (!isBusinessReportType(type) && orgTarget.missing) {
+      // W03: a partner-wide user may open a series-eligible template with no
+      // org picked — it can be sent as one report per organization. The org
+      // is still required (handleCreateDirect, and the builder's own guard)
+      // if they keep it to one organization.
+      const mayFanOut = canChooseOwnerScope && isSeriesEligibleReportType(type);
+      if (!isBusinessReportType(type) && orgTarget.missing && !mayFanOut) {
         setError(t('reports.orgPicker.chooseFirst'));
         return;
       }
       if (type === 'security_compliance_posture') {
         setBackupRequired(false);
+        setTemplateCovers({ mode: 'org' });
+        setTemplateSeriesSchedule(isSeriesSchedule(template.defaults.schedule) ? template.defaults.schedule : '');
+        setSeriesScheduleMissing(false);
         setPostureTemplate(template);
         return;
       }
       if (type === 'hardware_lifecycle') {
         setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+        setTemplateCovers({ mode: 'org' });
+        setTemplateSeriesSchedule(isSeriesSchedule(template.defaults.schedule) ? template.defaults.schedule : '');
+        setSeriesScheduleMissing(false);
         setLifecycleTemplate(template);
         return;
       }
@@ -816,7 +875,7 @@ export default function ReportTemplates() {
       }
       handleOpenBuilder(template);
     },
-    [defaultOwnerScope, handleCreateDirect, handleOpenBuilder, orgTarget.missing, t]
+    [defaultOwnerScope, handleCreateDirect, handleOpenBuilder, orgTarget.missing, t, canChooseOwnerScope]
   );
 
   const renderBusinessOptionsForm = (template: ReportTemplate) => {
@@ -1102,7 +1161,32 @@ export default function ReportTemplates() {
                 name: getTemplateDisplayName(lifecycleTemplate),
               })}
             </h2>
-            <div className="mt-5">
+            <div className="mt-5 space-y-4">
+              <div data-testid={`template-covers-${lifecycleTemplate.defaults.type}`}>
+                <CoversControl
+                  reportType="hardware_lifecycle"
+                  value={templateCovers}
+                  onChange={setTemplateCovers}
+                  withSeriesRecipients
+                  seriesExtra={
+                    <SeriesScheduleField
+                      value={templateSeriesSchedule}
+                      onChange={(next) => {
+                        setTemplateSeriesSchedule(next);
+                        setSeriesScheduleMissing(false);
+                      }}
+                      showRequired={seriesScheduleMissing}
+                    />
+                  }
+                  orgField={
+                    orgTarget.missing ? (
+                      <p data-testid="template-covers-org-hint" role="status" className="text-xs text-muted-foreground">
+                        {t('reports.orgPicker.chooseFirst')}
+                      </p>
+                    ) : null
+                  }
+                />
+              </div>
               <HardwareLifecycleOptionsForm
                 value={lifecycleOptions}
                 onChange={setLifecycleOptions}
@@ -1110,7 +1194,7 @@ export default function ReportTemplates() {
                 submitLabel={t('reports.lifecycleOptions.createReport')}
                 onCancel={() => setLifecycleTemplate(null)}
                 onSubmit={() => {
-                  void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions });
+                  void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions }, 'organization', templateCovers, templateSeriesSchedule);
                 }}
               />
             </div>
@@ -1285,7 +1369,32 @@ export default function ReportTemplates() {
                 name: getTemplateDisplayName(postureTemplate),
               })}
             </h2>
-            <div className="mt-5">
+            <div className="mt-5 space-y-4">
+              <div data-testid={`template-covers-${postureTemplate.defaults.type}`}>
+                <CoversControl
+                  reportType="security_compliance_posture"
+                  value={templateCovers}
+                  onChange={setTemplateCovers}
+                  withSeriesRecipients
+                  seriesExtra={
+                    <SeriesScheduleField
+                      value={templateSeriesSchedule}
+                      onChange={(next) => {
+                        setTemplateSeriesSchedule(next);
+                        setSeriesScheduleMissing(false);
+                      }}
+                      showRequired={seriesScheduleMissing}
+                    />
+                  }
+                  orgField={
+                    orgTarget.missing ? (
+                      <p data-testid="template-covers-org-hint" role="status" className="text-xs text-muted-foreground">
+                        {t('reports.orgPicker.chooseFirst')}
+                      </p>
+                    ) : null
+                  }
+                />
+              </div>
               <PostureReportOptionsForm
                 backupRequired={backupRequired}
                 busy={creatingId === postureTemplate.id}
@@ -1293,7 +1402,7 @@ export default function ReportTemplates() {
                 onBackupRequiredChange={setBackupRequired}
                 onCancel={() => setPostureTemplate(null)}
                 onSubmit={() => {
-                  void handleCreateDirect(postureTemplate, { backupRequired });
+                  void handleCreateDirect(postureTemplate, { backupRequired }, 'organization', templateCovers, templateSeriesSchedule);
                 }}
               />
             </div>
