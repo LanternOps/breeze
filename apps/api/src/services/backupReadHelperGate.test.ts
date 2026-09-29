@@ -11,9 +11,15 @@ const s3Read = { snapshotId: 'snap-1', provider: 's3', providerConfigRef: { conf
 describe('backupReadHelperRefusal', () => {
   it.each(BACKUP_READ_CREDENTIAL_COMMAND_TYPES)('refuses %s to a helper below the brokered read protocol', (type) => {
     expect(backupReadHelperRefusal(type, s3Read, 0)).toBe(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
-    expect(backupReadHelperRefusal(type, s3Read, null)).toBe(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
     expect(backupReadHelperRefusal(type, s3Read, undefined)).toBe(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
   });
+
+  it.each(BACKUP_READ_CREDENTIAL_COMMAND_TYPES)(
+    'queues %s for a device that has not reported its helper yet (delivery waits for the report)',
+    (type) => {
+      expect(backupReadHelperRefusal(type, s3Read, null)).toBeNull();
+    },
+  );
 
   it.each(BACKUP_READ_CREDENTIAL_COMMAND_TYPES)('allows %s to a helper that supports the protocol', (type) => {
     expect(backupReadHelperRefusal(type, s3Read, 1)).toBeNull();

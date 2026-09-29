@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, closeMock } = vi.hoisted(() => ({
+const { addMock, closeMock, getJobMock } = vi.hoisted(() => ({
   addMock: vi.fn(),
   closeMock: vi.fn(),
+  getJobMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
   Queue: class {
     add = addMock;
     close = closeMock;
+    getJob = getJobMock;
   }
 }));
 
@@ -29,7 +31,9 @@ import type { z } from 'zod';
 import {
   closeBackupQueue,
   enqueueBackupDispatch,
+  enqueueBackupDispatchCapabilityWait,
   enqueueBackupResults,
+  removeQueuedBackupDispatch,
 } from './backupEnqueue';
 import { backupProcessResultSchema } from './queueSchemas';
 
@@ -123,6 +127,52 @@ describe('backup enqueue helpers', () => {
     expect(payload.result.snapshot?.baseSnapshotId).toBe('snap-0');
     expect(payload.result.snapshot?.formatVersion).toBe(2);
     expect(payload.result.snapshot?.backupIdentity).toBe('s3::e::b');
+  });
+});
+
+describe('waiting for a device to report its backup helper protocols', () => {
+  const DATA = {
+    type: 'dispatch-backup' as const, jobId: 'job-123', configId: 'cfg-1', orgId: 'org-1', deviceId: 'dev-1', configGeneration: 7,
+  };
+  const SINCE = '2026-09-29T10:00:00.000Z';
+
+  beforeEach(async () => {
+    addMock.mockReset();
+    getJobMock.mockReset();
+    dbSelectMock.mockReset();
+    addMock.mockResolvedValue({ id: 'queue-job-1' });
+    await closeBackupQueue();
+  });
+
+  it('re-queues the same dispatch, delayed, under a fresh id per check, without re-reading the config generation', async () => {
+    await enqueueBackupDispatchCapabilityWait(DATA, { attempt: 3, since: SINCE }, 15_000);
+
+    expect(dbSelectMock).not.toHaveBeenCalled();
+    expect(addMock).toHaveBeenCalledWith(
+      'dispatch-backup',
+      expect.objectContaining({
+        jobId: 'job-123', configGeneration: 7, capabilityWaitAttempt: 3, capabilityWaitSince: SINCE,
+      }),
+      expect.objectContaining({ jobId: 'backup-dispatch-job-123-capability-wait-3', delay: 15_000, attempts: 1 }),
+    );
+  });
+
+  it('cancelling a waiting backup removes whichever check is queued', async () => {
+    const remove = vi.fn();
+    getJobMock.mockImplementation(async (id: string) =>
+      id === 'backup-dispatch-job-123-capability-wait-4' ? { getState: async () => 'delayed', remove } : undefined);
+
+    await expect(removeQueuedBackupDispatch('job-123')).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('still removes a dispatch that never waited', async () => {
+    const remove = vi.fn();
+    getJobMock.mockImplementation(async (id: string) =>
+      id === 'backup-dispatch-job-123' ? { getState: async () => 'waiting', remove } : undefined);
+
+    await expect(removeQueuedBackupDispatch('job-123')).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 });
 

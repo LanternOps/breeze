@@ -25,6 +25,9 @@
  *     file.
  *
  * When one does not hold, the storage destination is NEVER sent instead:
+ *   - the device has not reported its helper yet (stored protocol NULL and
+ *     no report on this delivery) → DEFERRED: the next heartbeat carries the
+ *     report and decides; unknown is never treated as an older helper;
  *   - index not yet server-verified → the delivery is DEFERRED
  *     (CommandDeliveryDeferredError): hydration has been requested and the
  *     row is released for the next claim;
@@ -68,6 +71,7 @@ import {
   CommandDeliveryRefusedError,
   type DeliveryRefreshContext,
 } from './commandDeliveryRefusal';
+import { BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE, effectiveHelperProtocol } from './backupHelperProtocols';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE, MIN_BACKUP_READ_PROTOCOL_VERSION } from './backupReadHelperGate';
 import { getCommandTimeoutMs } from './commandTimeouts';
 import { CommandTypes } from './commandTypes';
@@ -185,7 +189,8 @@ export interface BrokeredReadStore {
   loadDevice(deviceId: string): Promise<{
     id: string;
     orgId: string;
-    backupReadProtocolVersion: number;
+    /** NULL until the device's first heartbeat reports its helper. */
+    backupReadProtocolVersion: number | null;
     agentServerUrl: string | null;
   } | null>;
   findSnapshots(args: { orgId: string; externalSnapshotId: string; configId: string | null }): Promise<StorageSnapshotRow[]>;
@@ -400,6 +405,11 @@ const REFUSAL_MESSAGES: Record<string, string> = {
 
 const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
 const SEALING_DEFERRAL_MESSAGE = 'The backup was still being finalized in storage.';
+const DEFERRAL_MESSAGES: Record<string, string> = {
+  index_unavailable: DEFERRAL_MESSAGE,
+  snapshot_sealing: SEALING_DEFERRAL_MESSAGE,
+  helper_unreported: BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE,
+};
 
 function refusalMessage(reason: string): string {
   return REFUSAL_MESSAGES[reason] ?? 'This backup cannot be read securely.';
@@ -430,12 +440,13 @@ export async function deliverBrokeredReadCommand(
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
     return decision.payload;
   }
-  if (decision.reason === 'index_unavailable' || decision.reason === 'snapshot_sealing') {
+  const deferral = DEFERRAL_MESSAGES[decision.reason];
+  if (deferral) {
+    // Every type waits, the two VM types included: they are only delivered
+    // as queued once the device has reported a helper that cannot broker.
     deps.recordMint('snapshot_read', 'deferred', decision.reason);
     deps.recordDispatch(ctx.type, 'deferred', decision.reason);
-    throw new CommandDeliveryDeferredError(
-      decision.reason === 'snapshot_sealing' ? SEALING_DEFERRAL_MESSAGE : DEFERRAL_MESSAGE,
-    );
+    throw new CommandDeliveryDeferredError(deferral);
   }
   if (REF_TYPES.has(ctx.type)) {
     deps.recordMint('snapshot_read', 'refused', decision.reason);
@@ -498,9 +509,8 @@ async function mint(
   const device = await store.loadDevice(ctx.deviceId);
   if (!device || device.orgId !== orgId) return { mode: 'unbrokered', reason: 'device_org_mismatch' };
 
-  const protocol = typeof ctx.reportedBackupReadProtocolVersion === 'number'
-    ? ctx.reportedBackupReadProtocolVersion
-    : device.backupReadProtocolVersion;
+  const protocol = effectiveHelperProtocol(ctx.reportedBackupReadProtocolVersion, device.backupReadProtocolVersion);
+  if (protocol === null) return { mode: 'unbrokered', reason: 'helper_unreported' };
   if (!(protocol >= MIN_BACKUP_READ_PROTOCOL_VERSION)) return { mode: 'unbrokered', reason: 'helper_unsupported' };
 
   // The helper only accepts a bare https origin equal to a server URL it is

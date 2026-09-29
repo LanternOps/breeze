@@ -5124,6 +5124,14 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       expect(changes).toContainEqual({ field: 'backupIntegrityProtocolVersion', before: 2, after: 1 });
     });
 
+    it('the first report after enrollment (stored NULL) is recorded, and is not a regression', async () => {
+      arrange({ backupReadProtocolVersion: null, backupIntegrityProtocolVersion: null, backupWriteProtocolVersion: null });
+      const resp = await beat({ ...minimalHeartbeatBody });
+      expect(resp.status).toBe(200);
+      expect(await regressionAudits()).toEqual([]);
+      expect(regressed).not.toHaveBeenCalled();
+    });
+
     it('a steady report after the drop is not audited again', async () => {
       arrange({ backupIntegrityProtocolVersion: 1 });
       const resp = await beat({ ...minimalHeartbeatBody, backupIntegrityProtocolVersion: 1 });
