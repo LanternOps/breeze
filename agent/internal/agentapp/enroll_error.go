@@ -45,10 +45,15 @@ func (c enrollErrCategory) exitCode() int { return int(c) + 10 }
 // enroll request may have reached the server and created a device despite
 // the failure the agent observed (a network error can mean the response was
 // merely lost in flight; a 5xx can mean the transaction committed before an
-// unrelated later failure). catConfig is excluded because it fires before
-// any HTTP call is ever made — there is nothing to refund. catUnknown is
-// excluded because it covers genuinely ambiguous failures (including a
-// non-JSON or unparseable 2xx body, i.e. a call that may have succeeded).
+// unrelated later failure). catConfig is excluded for two reasons: most
+// catConfig failures (input validation, the hostname check, the config
+// directory pre-flight) fire before the enroll request is sent, and the rest
+// (the backup-host gate on the enroll response, and a config save that fails
+// after the server accepted the enrollment) fire AFTER the server created the
+// device row, when the slot is genuinely in use and must not be refunded.
+// catUnknown is excluded because it covers genuinely ambiguous failures
+// (including a non-JSON or unparseable 2xx body, i.e. a call that may have
+// succeeded).
 func (c enrollErrCategory) isRefundable4xx() bool {
 	switch c {
 	case catAuth, catNotFound, catRateLimit, catIdentityConflict:

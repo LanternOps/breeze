@@ -1581,6 +1581,34 @@ func (e *enrollFailure) Error() string {
 
 func (e *enrollFailure) Unwrap() error { return e.detail }
 
+// saveEnrollmentFn persists a successful enrollment. A seam so tests can fail
+// the save after the server has accepted the enrollment.
+var saveEnrollmentFn = config.SaveEnrollment
+
+// enrollPreflightFailure reports a config directory the agent could not
+// create or secure BEFORE the enroll request, so nothing exists server-side.
+func enrollPreflightFailure(cfgFile string, err error) *enrollFailure {
+	return &enrollFailure{cat: catConfig, friendly: fmt.Sprintf(
+		"could not create or secure the config directory %s, so no enrollment request was sent — run enrollment as SYSTEM (the MSI does) or from an elevated administrator prompt, then retry",
+		filepath.Dir(config.ResolveSavePath(cfgFile))), detail: err}
+}
+
+// enrollSaveFailure reports a save that failed AFTER the server accepted the
+// enrollment. The server has already created the device row by then and there
+// is no agent-side call that removes it, so the message says so and tells the
+// operator how to recover instead of leaving a pending device unexplained
+// (#7394). The path is the resolved agent.yaml, never the raw --config flag,
+// which is empty by default.
+func enrollSaveFailure(cfg *config.Config, cfgFile string, err error) *enrollFailure {
+	device := "agentId=" + cfg.AgentID
+	if cfg.DeviceID != "" {
+		device += ", deviceId=" + cfg.DeviceID
+	}
+	return &enrollFailure{cat: catConfig, friendly: fmt.Sprintf(
+		"the server enrolled this device (%s) but its credentials could not be saved to %s, so the agent cannot check in. The device was created on the server and will stay pending: delete it in the dashboard, fix the cause below, then run enrollment again",
+		device, config.ResolveSavePath(cfgFile)), detail: err}
+}
+
 // enrollWithConfig is the core of enrollment: collect system + hardware
 // identity, POST /agents/enroll, apply the response to cfg, and persist it to
 // cfgFile (agent.yaml + the sibling root-only secrets.yaml).
@@ -1714,6 +1742,14 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		},
 	}
 
+	// Create and secure the config directory before the enroll request. The
+	// server creates the device row as soon as it accepts the request, and
+	// nothing agent-side can remove it again, so a directory this process
+	// cannot secure must fail here rather than after (#7394).
+	if err := config.PrepareSaveDir(cfgFile); err != nil {
+		return enrollPreflightFailure(cfgFile, err)
+	}
+
 	enrollLog.Info("sending enrollment request")
 	if !quietEnroll {
 		fmt.Println("Sending enrollment request...")
@@ -1801,10 +1837,8 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		}
 	}
 
-	if err := config.SaveEnrollment(cfg, cfgFile); err != nil {
-		return &enrollFailure{cat: catConfig, friendly: fmt.Sprintf(
-			"enrollment succeeded but could not save config to %s — check that the directory exists and SYSTEM has write access (agentID=%s)",
-			cfgFile, cfg.AgentID), detail: err}
+	if err := saveEnrollmentFn(cfg, cfgFile); err != nil {
+		return enrollSaveFailure(cfg, cfgFile, err)
 	}
 
 	enrollLog.Info("enrollment successful",
