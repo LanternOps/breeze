@@ -157,6 +157,16 @@ describe('isBlockedPath: POSIX link aliases of restricted locations', () => {
     '/var/root/.ssh/id_rsa',
     '/private/var/root/.ssh',
     '/private/etc/breeze/secrets.yaml',
+    // macOS: the boot volume is also mounted under /Volumes, and the data
+    // volume under /System/Volumes/Data.
+    '/Volumes/Macintosh HD/Users/bob/.ssh',
+    '/Volumes/Macintosh HD/private/var/run',
+    '/Volumes/Macintosh HD/var/root/.ssh',
+    '/volumes/renamed boot disk/etc/sudoers',
+    '/System/Volumes/Data/Users/bob/.ssh/config',
+    // Image-based Linux (Fedora Atomic, CoreOS, bootc): /home and /root live under /var.
+    '/var/home/bob/.ssh',
+    '/var/roothome/.ssh/authorized_keys',
   ])('refuses %s', (path) => {
     expect(isBlockedPath(path)).toBe(true);
   });
@@ -191,6 +201,8 @@ describe('isBlockedPath: ordinary paths stay allowed', () => {
     '/private/var/log/system.log',
     '/Users/bob/Documents/report.pdf',
     '/Users/bob/Library/Logs/app.log',
+    '/Volumes/Backup/Projects/report.pdf',
+    '/var/homework/notes.txt',
     '/opt/app/file~backup.txt',
     '/etc/hosts',
   ])('allows %s', (path) => {

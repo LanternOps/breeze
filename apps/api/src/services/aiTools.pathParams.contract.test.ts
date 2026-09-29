@@ -46,7 +46,7 @@ const PATH_FIELDS: Record<string, Classification> = {
   },
   'restore_snapshot.targetPath': {
     kind: 'exempt',
-    why: 'Restore destination for data from the device\'s own backup; approval-gated, writes backup content, returns none to the model.',
+    why: 'Restore destination for data from the device\'s own backup; approval-gated (tier 3). The restored copy keeps its source layout under this folder, where file tools can then read it: which snapshot entries an AI may restore is a separate decision, not a path-spelling check.',
   },
   'restore_snapshot.selectedPaths': {
     kind: 'exempt',
@@ -99,7 +99,8 @@ function collectPathFields(tool: string, root: z.ZodType): Found[] {
     const key = keyPath[keyPath.length - 1] ?? '';
     const field = [tool, ...keyPath].join('.');
     if (node === safePath) {
-      if (PATH_KEY.test(key)) found.set(field, { field, guarded: true });
+      // Guarded only if no other branch under the same field is a plain string.
+      if (PATH_KEY.test(key)) found.set(field, { field, guarded: found.get(field)?.guarded ?? true });
       return;
     }
     if (ancestors.has(node)) return;
@@ -144,7 +145,7 @@ function collectPathFields(tool: string, root: z.ZodType): Found[] {
         visit((def.getter as () => z.ZodType)(), keyPath);
         return;
       case 'string':
-        if (PATH_KEY.test(key) && !found.has(field)) found.set(field, { field, guarded: false });
+        if (PATH_KEY.test(key)) found.set(field, { field, guarded: false });
         return;
       default:
         return;
@@ -163,6 +164,20 @@ describe('AI tool path parameters go through the default path restriction', () =
     expect(foundByField.get('file_operations.path')).toEqual({ field: 'file_operations.path', guarded: true });
     expect(foundByField.get('execute_command.payload.path')?.guarded).toBe(false);
     expect(foundByField.has('restore_snapshot.selectedPaths')).toBe(true);
+  });
+
+  it('a field is guarded only when every branch under it is safePath', async () => {
+    const { z: zod } = await import('zod');
+    const mixed = collectPathFields('fixture', zod.object({
+      path: zod.union([zod.string(), safePath]),
+      otherPath: zod.union([safePath, zod.string()]),
+      newPath: safePath.optional(),
+    }));
+    expect(Object.fromEntries(mixed.map((f) => [f.field, f.guarded]))).toEqual({
+      'fixture.path': false,
+      'fixture.otherPath': false,
+      'fixture.newPath': true,
+    });
   });
 
   it('every path-like field is classified', () => {

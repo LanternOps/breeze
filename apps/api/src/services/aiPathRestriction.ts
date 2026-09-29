@@ -61,11 +61,22 @@ const WINDOWS_LINK_TARGETS: ReadonlyArray<readonly [RegExp, string]> = [
   ],
 ];
 
-/** Built-in POSIX links (Linux `/run`, macOS `/private`, macOS home and root). */
+/**
+ * Built-in POSIX links and mounts that reach the same tree under another name:
+ * macOS mounts the boot volume under /Volumes (any name, it can be renamed)
+ * and the data volume under /System/Volumes/Data, and keeps /etc, /var and
+ * root's home under /private; Linux /run is /var/run; image-based Linux
+ * (Fedora Atomic, CoreOS, bootc) keeps /home and /root under /var; macOS
+ * homes live in /Users.
+ */
 const POSIX_LINK_TARGETS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^\/run(?=\/|$)/, '/var/run'],
+  [/^\/volumes\/[^/]+(?=\/|$)/, ''],
+  [/^\/system\/volumes\/data(?=\/|$)/, ''],
   [/^\/private\/(etc|var|tmp)(?=\/|$)/, '/$1'],
+  [/^\/run(?=\/|$)/, '/var/run'],
   [/^\/var\/root(?=\/|$)/, '/root'],
+  [/^\/var\/roothome(?=\/|$)/, '/root'],
+  [/^\/var\/home(?=\/|$)/, '/home'],
   [/^\/users\/([^/]+)(?=\/|$)/, '/home/$1'],
 ];
 
