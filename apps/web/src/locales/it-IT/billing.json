@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "La sua e-mail (facoltativa)",
         "consequenceInvoice": "Verrà emessa e numerata subito una fattura di {{amount}}.",
         "consequenceContracts": "Le righe ricorrenti diventano contratti in bozza da attivare in seguito.",
-        "consequenceEmail": "La fattura verrà inviata via e-mail al cliente.",
+        "consequenceEmail": "La fattura verrà inviata via e-mail a {{recipients}}.",
         "consequenceDraft": "Questo preventivo non è mai stato inviato. La prima cosa che il cliente ne vedrà sarà la fattura.",
         "submit": "Accetta ed emetti fattura",
         "success": "Preventivo accettato. Fattura {{number}} emessa.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG o JPEG, fino a 10 MB — ad esempio l'ordine d'acquisto firmato o il documento.",
         "evidenceTooLarge": "Questo file supera i 10 MB. Scegli un file più piccolo.",
         "evidenceAttached": "Prova allegata.",
-        "evidenceError": "L'accettazione è stata registrata, ma non è stato possibile allegare il file di prova. Allegalo dalla pagina del preventivo."
+        "evidenceError": "L'accettazione è stata registrata, ma non è stato possibile allegare il file di prova. Allegalo dalla pagina del preventivo.",
+        "consequenceEmailNoRecipient": "Nessun destinatario è registrato su questo preventivo, quindi la fattura potrebbe non essere inviata via e-mail. Se necessario, inviala tu stesso al cliente.",
+        "successNoRecipient": "Preventivo accettato. Fattura {{number}} emessa. Potrebbe non essere stata inviata via e-mail: nessun destinatario è registrato su questo preventivo."
       },
       "declineOnBehalf": {
         "button": "Rifiuta per conto del cliente",

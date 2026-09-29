@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "E-posta adresi (isteğe bağlı)",
         "consequenceInvoice": "{{amount}} tutarında bir fatura şimdi oluşturulup numaralandırılacak.",
         "consequenceContracts": "Yinelenen satırlar, sonradan etkinleştireceğiniz taslak sözleşmelere dönüşür.",
-        "consequenceEmail": "Fatura müşteriye e-postayla gönderilecek.",
+        "consequenceEmail": "Fatura {{recipients}} adresine e-postayla gönderilecek.",
         "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG veya JPEG, 10 MB'a kadar — örneğin imzalı sipariş formu veya belge.",
         "evidenceTooLarge": "Bu dosya 10 MB'tan büyük. Daha küçük bir dosya seçin.",
         "evidenceAttached": "Kanıt eklendi.",
-        "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin."
+        "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin.",
+        "consequenceEmailNoRecipient": "Bu teklifte kayıtlı alıcı yok; bu nedenle fatura e-postayla gönderilmeyebilir. Gerekirse müşteriye kendiniz gönderin.",
+        "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok."
       },
       "declineOnBehalf": {
         "button": "Müşteri adına reddet",

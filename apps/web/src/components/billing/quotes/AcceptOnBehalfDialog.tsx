@@ -91,6 +91,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   // renders no promise at all — the honest answer while we don't know — same
   // as `false` (auto-email genuinely off). Only an explicit `true` renders it.
   const autoEmail = autoEmailInvoiceOnAccept === true;
+  const hasRecipients = recipients.length > 0;
 
   // Reset to the quote's own values each time the dialog opens, so a cancelled
   // attempt doesn't leave last time's reference sitting in the field.
@@ -158,9 +159,15 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
         // A recurring-only quote leaves the invoice in draft with no number
         // allocated, so there is no number to name — say what actually happened
         // rather than printing a blank where a number belongs.
-        successMessage: (data) => (data.invoiceNumber
-          ? t('quotes.actions.acceptOnBehalf.success', { number: data.invoiceNumber })
-          : t('quotes.actions.acceptOnBehalf.successDraftInvoice')),
+        successMessage: (data) => {
+          if (!data.invoiceNumber) return t('quotes.actions.acceptOnBehalf.successDraftInvoice');
+          // Auto-email is on but nobody is on record to receive it: be honest
+          // that the customer may not have the invoice.
+          if (autoEmail && !hasRecipients) {
+            return t('quotes.actions.acceptOnBehalf.successNoRecipient', { number: data.invoiceNumber });
+          }
+          return t('quotes.actions.acceptOnBehalf.success', { number: data.invoiceNumber });
+        },
         onUnauthorized: UNAUTHORIZED,
       });
       // The accept succeeded — an evidence upload failure past this point must
@@ -186,7 +193,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, ready, quote.id, method, reference, signerName, signerEmail, evidenceFile, onAccepted, t]);
+  }, [submitting, ready, quote.id, method, reference, signerName, signerEmail, evidenceFile, onAccepted, autoEmail, hasRecipients, t]);
 
   return (
     <Dialog
@@ -306,9 +313,16 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
             {t('quotes.actions.acceptOnBehalf.consequenceContracts')}
           </li>
         )}
-        {autoEmail === true && (
+        {autoEmail && hasRecipients && (
           <li data-testid="accept-on-behalf-consequence-email">
-            {t('quotes.actions.acceptOnBehalf.consequenceEmail')}
+            {t('quotes.actions.acceptOnBehalf.consequenceEmail', { recipients: recipients.join(', ') })}
+          </li>
+        )}
+        {/* The API exposes no signal for the server's org-billing-contact
+            fallback, so with no recorded recipients don't promise an email. */}
+        {autoEmail && !hasRecipients && (
+          <li data-testid="accept-on-behalf-consequence-email-none">
+            {t('quotes.actions.acceptOnBehalf.consequenceEmailNoRecipient')}
           </li>
         )}
         {/* A draft was never sent, so the customer has never seen the document

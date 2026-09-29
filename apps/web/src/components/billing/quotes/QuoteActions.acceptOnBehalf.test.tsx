@@ -205,6 +205,39 @@ describe('Accept on behalf', () => {
     expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull();
   });
 
+  // The API exposes no signal for the org billing-contact fallback, so the
+  // copy is conditional on the quote's recorded recipients: name them when we
+  // know them, and be honest when there are none.
+  it('names the recorded recipients in the email line when auto-email is on', () => {
+    render(<QuoteActions detail={sent({}, { autoEmailInvoiceOnAccept: true, recipients: ['ap@customer.example', 'cfo@customer.example'] })} variant="header" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    const line = screen.getByTestId('accept-on-behalf-consequence-email').textContent ?? '';
+    expect(line).toContain('ap@customer.example');
+    expect(line).toContain('cfo@customer.example');
+  });
+
+  it('does not promise an email when auto-email is on but the quote has no recorded recipients', () => {
+    render(<QuoteActions detail={sent({}, { autoEmailInvoiceOnAccept: true, recipients: [] })} variant="header" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull();
+    expect(screen.getByTestId('accept-on-behalf-consequence-email-none').textContent).toMatch(/no recipient/i);
+  });
+
+  it('the success toast says the invoice may not have been emailed when there were no recipients', async () => {
+    render(<QuoteActions detail={sent({}, { autoEmailInvoiceOnAccept: true, recipients: [] })} variant="header" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('quote-accept-on-behalf'));
+    fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 4471' } });
+    fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+    await waitFor(() => expect(runAction).toHaveBeenCalled());
+    const opts = runAction.mock.calls.at(-1)?.[0] as unknown as {
+      parseSuccess: (d: unknown) => unknown;
+      successMessage: (d: unknown) => string;
+    };
+    const msg = opts.successMessage(opts.parseSuccess({ data: { invoiceId: 'inv-1', invoiceNumber: 'INV-2026-0007' } }));
+    expect(msg).toContain('INV-2026-0007');
+    expect(msg).toMatch(/may not have been emailed/i);
+  });
+
   // Unknown (field omitted — an older payload/fixture) must read the same as
   // "off": no false promise, never fetched client-side to find out.
   it('shows no email promise when the quote detail omits the flag, and never fetches partner settings to find out', async () => {

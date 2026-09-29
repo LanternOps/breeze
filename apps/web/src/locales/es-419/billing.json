@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "Su correo electrónico (opcional)",
         "consequenceInvoice": "Se emitirá y numerará ahora una factura por {{amount}}.",
         "consequenceContracts": "Las líneas recurrentes se convierten en contratos en borrador que activas después.",
-        "consequenceEmail": "La factura se enviará por correo electrónico al cliente.",
+        "consequenceEmail": "La factura se enviará por correo electrónico a {{recipients}}.",
         "consequenceDraft": "Esta propuesta nunca se envió. Lo primero que el cliente verá de ella será la factura.",
         "submit": "Aceptar y emitir factura",
         "success": "Propuesta aceptada. Factura {{number}} emitida.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG o JPEG, hasta 10 MB — por ejemplo, la orden de compra firmada o el documento.",
         "evidenceTooLarge": "Este archivo supera los 10 MB. Elige un archivo más pequeño.",
         "evidenceAttached": "Evidencia adjuntada.",
-        "evidenceError": "La aceptación quedó registrada, pero no se pudo adjuntar el archivo de evidencia. Adjúntalo desde la página de la propuesta."
+        "evidenceError": "La aceptación quedó registrada, pero no se pudo adjuntar el archivo de evidencia. Adjúntalo desde la página de la propuesta.",
+        "consequenceEmailNoRecipient": "Esta cotización no tiene destinatarios registrados, por lo que es posible que la factura no se envíe por correo. Envíasela al cliente tú mismo si es necesario.",
+        "successNoRecipient": "Cotización aceptada. Factura {{number}} emitida. Es posible que no se haya enviado por correo: esta cotización no tiene destinatarios registrados."
       },
       "declineOnBehalf": {
         "button": "Rechazar en nombre del cliente",

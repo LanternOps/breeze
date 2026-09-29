@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "E-mail dessa pessoa (opcional)",
         "consequenceInvoice": "Uma fatura de {{amount}} será emitida e numerada agora.",
         "consequenceContracts": "Linhas recorrentes viram contratos em rascunho que você ativa depois.",
-        "consequenceEmail": "A fatura será enviada por e-mail ao cliente.",
+        "consequenceEmail": "A fatura será enviada por e-mail para {{recipients}}.",
         "consequenceDraft": "Esta proposta nunca foi enviada. O primeiro contato do cliente com ela será a fatura.",
         "submit": "Aceitar e emitir fatura",
         "success": "Proposta aceita. Fatura {{number}} emitida.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG ou JPEG, até 10 MB — por exemplo, o pedido de compra assinado ou o documento.",
         "evidenceTooLarge": "Este arquivo é maior que 10 MB. Escolha um arquivo menor.",
         "evidenceAttached": "Evidência anexada.",
-        "evidenceError": "A aceitação foi registrada, mas não foi possível anexar o arquivo de evidência. Anexe-o a partir da página da proposta."
+        "evidenceError": "A aceitação foi registrada, mas não foi possível anexar o arquivo de evidência. Anexe-o a partir da página da proposta.",
+        "consequenceEmailNoRecipient": "Nenhum destinatário está registrado nesta proposta, então a fatura pode não ser enviada por e-mail. Envie-a ao cliente você mesmo, se necessário.",
+        "successNoRecipient": "Proposta aceita. Fatura {{number}} emitida. Ela pode não ter sido enviada por e-mail: nenhum destinatário está registrado nesta proposta."
       },
       "declineOnBehalf": {
         "button": "Recusar em nome do cliente",
