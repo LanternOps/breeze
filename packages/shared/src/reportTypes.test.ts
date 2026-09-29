@@ -10,6 +10,7 @@ describe('REPORT_TYPES', () => {
       'threat_detection_review', 'endpoint_management_review',
       'vulnerability_management', 'identity_access_review',
       'ticket_sla_attainment', 'technician_time_billability', 'ar_aging',
+      'backup_status',
     ]);
   });
 

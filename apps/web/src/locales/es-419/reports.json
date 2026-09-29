@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Planificar reemplazo de servidores después de (años)",
       "serverReplaceAgeYearsHelp": "Los servidores siguen su propio calendario y se listan en una sección separada del informe."
     },
+    "backupStatusOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Crear informe",
+      "includeDevicesWithoutBackup": "Incluir equipos sin ningún respaldo",
+      "includeDevicesWithoutBackupHelp": "Si está desactivado, el informe solo lista equipos con alguna evidencia de respaldo, como el correo resumen propio del proveedor.",
+      "sources": "Fuentes de respaldo",
+      "sourcesHelp": "Elija qué fuentes de respaldo incluir en el informe.",
+      "sourceBreeze": "Respaldo de Breeze",
+      "sourceProvider": "Proveedores de respaldo conectados"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Cancelar",
       "createReport": "Crear informe",
@@ -286,6 +296,13 @@
         "replaceNow": "Reemplazar ahora",
         "unknownAge": "Antigüedad desconocida"
       },
+      "backupStatus": {
+        "healthy": "Correcto",
+        "warning": "Advertencia",
+        "critical": "Crítico",
+        "unknown": "Desconocido",
+        "truncated": "La lista de equipos alcanzó su límite de filas y está incompleta."
+      },
       "vulnerabilityManagement": {
         "critical": "Críticos abiertos",
         "expiringExceptions": "Excepciones que vencen el próximo período",
@@ -311,7 +328,8 @@
         "endpoint_management_review": "Revisión de administración de endpoints",
         "ticket_sla_attainment": "Cumplimiento de SLA de tickets",
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
-        "ar_aging": "Antigüedad de cuentas por cobrar"
+        "ar_aging": "Antigüedad de cuentas por cobrar",
+        "backup_status": "Estado de respaldo"
       },
       "threatDetection": {
         "agents": "Equipos con agente de detección",
@@ -411,7 +429,8 @@
         "endpoint_management_review": "Revisión de administración de endpoints",
         "ticket_sla_attainment": "Cumplimiento de SLA de tickets",
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
-        "ar_aging": "Antigüedad de cuentas por cobrar"
+        "ar_aging": "Antigüedad de cuentas por cobrar",
+        "backup_status": "Estado de respaldo"
       },
       "runsTable": {
         "actions": "Acciones",
@@ -939,7 +958,8 @@
         "endpoint_management_review": "Revisión de administración de endpoints",
         "ticket_sla_attainment": "Cumplimiento de SLA de tickets",
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
-        "ar_aging": "Antigüedad de cuentas por cobrar"
+        "ar_aging": "Antigüedad de cuentas por cobrar",
+        "backup_status": "Estado de respaldo"
       },
       "schedules": {
         "daily": "A diario",
@@ -1007,6 +1027,10 @@
         "ar_aging": {
           "name": "Antigüedad de cuentas por cobrar",
           "description": "Saldos de facturas impagas agrupados en corriente / 1–30 / 31–60 / 61–90 / más de 90 días de mora, un conjunto de totales por moneda sin conversión. Las facturas sin fecha de vencimiento reciben su propio grupo, nunca \"corriente\"."
+        },
+        "backup_status": {
+          "name": "Informe de estado de respaldo",
+          "description": "Estado de respaldo de cada equipo en Breeze y los proveedores de respaldo conectados, en una sola instantánea: categorías de cobertura, último respaldo exitoso y un historial de 28 días por equipo."
         }
       },
       "title": "Plantillas de informes",

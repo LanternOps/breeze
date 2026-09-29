@@ -294,6 +294,40 @@ export default function ReportPreview({
         );
       })()}
 
+      {/* Backup Status (#6013 W05): health counts instead of the generic
+          summary cards — its summary is the whole snapshot (rows with a 28-day
+          history each), which the generic cards would print as JSON. */}
+      {data.type === 'backup_status' && data.data.summary && previewMode === 'table' && (() => {
+        const s = data.data.summary as {
+          summary?: { byHealth?: Record<string, number> };
+          truncated?: boolean;
+        };
+        const health = s.summary?.byHealth ?? {};
+        const tiles: { key: string; value: number; tone: string }[] = [
+          { key: 'healthy', value: health.healthy ?? 0, tone: 'text-success' },
+          { key: 'warning', value: health.warning ?? 0, tone: 'text-warning' },
+          { key: 'critical', value: health.critical ?? 0, tone: 'text-destructive' },
+          { key: 'unknown', value: health.unknown ?? 0, tone: 'text-muted-foreground' },
+        ];
+        return (
+          <div className="space-y-4" data-testid="backup-status-summary">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {tiles.map((tile) => (
+                <div key={tile.key} className="rounded-lg border bg-card p-4">
+                  <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `reports.reportPreview.backupStatus.${tile.key}`)}</p>
+                  <p className={cn('text-2xl font-bold mt-1', tile.tone)}>{tile.value}</p>
+                </div>
+              ))}
+            </div>
+            {s.truncated === true && (
+              <p data-testid="backup-status-truncated" className="text-sm text-warning">
+                {t('reports.reportPreview.backupStatus.truncated')}
+              </p>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Threat Detection Review (#5784 W02): coverage first, then the counts,
           with an unmeasured value rendered as N/A rather than a zero. Its
           summary carries nested objects, so the generic cards are suppressed
@@ -516,7 +550,7 @@ export default function ReportPreview({
       })()}
 
       {/* Summary Cards */}
-      {data.type !== 'hardware_lifecycle' && data.type !== 'threat_detection_review' && data.type !== 'endpoint_management_review' && data.type !== 'vulnerability_management' && data.type !== 'identity_access_review' && data.data.summary && previewMode === 'table' && (
+      {data.type !== 'hardware_lifecycle' && data.type !== 'backup_status' && data.type !== 'threat_detection_review' && data.type !== 'endpoint_management_review' && data.type !== 'vulnerability_management' && data.type !== 'identity_access_review' && data.data.summary && previewMode === 'table' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Object.entries(data.data.summary).map(([key, value]) => (
             <div key={key} className="rounded-lg border bg-card p-4">

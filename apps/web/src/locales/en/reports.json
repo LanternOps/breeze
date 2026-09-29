@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Plan server replacement after (years)",
       "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
     },
+    "backupStatusOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "includeDevicesWithoutBackup": "Include devices without any backup",
+      "includeDevicesWithoutBackupHelp": "Off, the report only lists devices with some backup evidence, like the provider's own summary email.",
+      "sources": "Backup sources",
+      "sourcesHelp": "Choose which backup sources to include in the report.",
+      "sourceBreeze": "Breeze backup",
+      "sourceProvider": "Connected backup providers"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Cancel",
       "createReport": "Create report",
@@ -286,6 +296,13 @@
         "replaceNow": "Replace now",
         "unknownAge": "Purchase date unknown"
       },
+      "backupStatus": {
+        "healthy": "Healthy",
+        "warning": "Warning",
+        "critical": "Critical",
+        "unknown": "Unknown",
+        "truncated": "The device list reached its row limit and is incomplete."
+      },
       "vulnerabilityManagement": {
         "critical": "Open critical",
         "expiringExceptions": "Exceptions expiring next period",
@@ -311,7 +328,8 @@
         "endpoint_management_review": "Endpoint Management Review",
         "ticket_sla_attainment": "Ticket SLA attainment",
         "technician_time_billability": "Technician time & billability",
-        "ar_aging": "AR aging"
+        "ar_aging": "AR aging",
+        "backup_status": "Backup Status"
       },
       "threatDetection": {
         "agents": "Endpoints with a detection agent",
@@ -411,7 +429,8 @@
         "endpoint_management_review": "Endpoint Management Review",
         "ticket_sla_attainment": "Ticket SLA attainment",
         "technician_time_billability": "Technician time & billability",
-        "ar_aging": "AR aging"
+        "ar_aging": "AR aging",
+        "backup_status": "Backup Status"
       },
       "runsTable": {
         "actions": "Actions",
@@ -939,7 +958,8 @@
         "endpoint_management_review": "Endpoint Management Review",
         "ticket_sla_attainment": "Ticket SLA attainment",
         "technician_time_billability": "Technician time & billability",
-        "ar_aging": "AR aging"
+        "ar_aging": "AR aging",
+        "backup_status": "Backup Status"
       },
       "schedules": {
         "daily": "Daily",
@@ -1007,6 +1027,10 @@
         "ar_aging": {
           "name": "AR aging",
           "description": "Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency with no conversion. Invoices with no due date get their own bucket, never \"current\"."
+        },
+        "backup_status": {
+          "name": "Backup Status Report",
+          "description": "Every device's backup status across Breeze and connected backup providers, in one snapshot: coverage buckets, last successful backup, and a 28-day history per device."
         }
       },
       "title": "Report Templates",

@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Planejar substituição de servidores após (anos)",
       "serverReplaceAgeYearsHelp": "Os servidores seguem seu próprio cronograma e aparecem em uma seção separada do relatório."
     },
+    "backupStatusOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório",
+      "includeDevicesWithoutBackup": "Incluir dispositivos sem nenhum backup",
+      "includeDevicesWithoutBackupHelp": "Desativado, o relatório lista apenas dispositivos com alguma evidência de backup, como o próprio e-mail-resumo do provedor.",
+      "sources": "Fontes de backup",
+      "sourcesHelp": "Escolha quais fontes de backup incluir no relatório.",
+      "sourceBreeze": "Backup do Breeze",
+      "sourceProvider": "Provedores de backup conectados"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Cancelar",
       "createReport": "Criar relatório",
@@ -286,6 +296,13 @@
         "replaceNow": "Substituir agora",
         "unknownAge": "Idade desconhecida"
       },
+      "backupStatus": {
+        "healthy": "Saudável",
+        "warning": "Aviso",
+        "critical": "Crítico",
+        "unknown": "Desconhecido",
+        "truncated": "A lista de dispositivos atingiu o limite de linhas e está incompleta."
+      },
       "vulnerabilityManagement": {
         "critical": "Críticos abertos",
         "expiringExceptions": "Exceções que vencem no próximo período",
@@ -311,7 +328,8 @@
         "endpoint_management_review": "Revisão de gerenciamento de endpoints",
         "ticket_sla_attainment": "Cumprimento de SLA de chamados",
         "technician_time_billability": "Tempo e faturabilidade do técnico",
-        "ar_aging": "Envelhecimento de contas a receber"
+        "ar_aging": "Envelhecimento de contas a receber",
+        "backup_status": "Status do backup"
       },
       "threatDetection": {
         "agents": "Endpoints com agente de detecção",
@@ -411,7 +429,8 @@
         "endpoint_management_review": "Revisão de gerenciamento de endpoints",
         "ticket_sla_attainment": "Cumprimento de SLA de chamados",
         "technician_time_billability": "Tempo e faturabilidade do técnico",
-        "ar_aging": "Envelhecimento de contas a receber"
+        "ar_aging": "Envelhecimento de contas a receber",
+        "backup_status": "Status do backup"
       },
       "runsTable": {
         "actions": "Acoes",
@@ -939,7 +958,8 @@
         "endpoint_management_review": "Revisão de gerenciamento de endpoints",
         "ticket_sla_attainment": "Cumprimento de SLA de chamados",
         "technician_time_billability": "Tempo e faturabilidade do técnico",
-        "ar_aging": "Envelhecimento de contas a receber"
+        "ar_aging": "Envelhecimento de contas a receber",
+        "backup_status": "Status do backup"
       },
       "schedules": {
         "daily": "Diario",
@@ -1007,6 +1027,10 @@
         "ar_aging": {
           "name": "Envelhecimento de contas a receber",
           "description": "Saldos de faturas em aberto agrupados em corrente / 1–30 / 31–60 / 61–90 / mais de 90 dias vencidos, um conjunto de totais por moeda sem conversão. Faturas sem data de vencimento recebem seu próprio grupo, nunca \"corrente\"."
+        },
+        "backup_status": {
+          "name": "Relatório de status de backup",
+          "description": "Status de backup de cada dispositivo no Breeze e nos provedores de backup conectados, em um único instantâneo: categorias de cobertura, último backup bem-sucedido e um histórico de 28 dias por dispositivo."
         }
       },
       "title": "Modelos de Relatório",

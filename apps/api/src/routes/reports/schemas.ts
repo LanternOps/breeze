@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BUSINESS_REPORT_TYPES, REPORT_TYPES } from '@breeze/shared';
 import {
+  backupStatusReportConfigSchema,
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,
@@ -18,6 +19,7 @@ import { REPORT_GENERATORS, reportTypeDef, type ReportTypeDef } from '../../serv
  *  `services/reportConfigSchemas.ts` (the service layer must not import the
  *  route layer). Re-exported here so existing importers keep working. */
 export {
+  backupStatusReportConfigSchema,
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,

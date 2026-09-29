@@ -34,6 +34,7 @@ import type {
 } from './reportGenerationService';
 import type { generateSecurityCompliancePostureReport } from './securityComplianceReport';
 import type { generateHardwareLifecycleReport } from './hardwareLifecycleReport';
+import type { generateBackupStatusReport } from './backupStatusReport';
 import type { generateThreatDetectionReport } from './threatDetectionReport';
 import type { generateEndpointManagementReport } from './endpointManagementReport';
 import type { generateVulnerabilityManagementReport } from './vulnerabilityManagementReport';
@@ -167,15 +168,17 @@ type OrgAxisOnly = {
   endpointManagement: RefusesPartnerAxis<typeof generateEndpointManagementReport>;
   vulnerabilityManagement: RefusesPartnerAxis<typeof generateVulnerabilityManagementReport>;
   identityAccess: RefusesPartnerAxis<typeof generateIdentityAccessReport>;
+  backupStatus: RefusesPartnerAxis<typeof generateBackupStatusReport>;
 };
 const ORG_AXIS_ONLY: OrgAxisOnly = {
   deviceInventory: true, softwareInventory: true, alertSummary: true, compliance: true,
   performance: true, executiveSummary: true, securityCompliance: true, hardwareLifecycle: true,
   threatDetection: true, endpointManagement: true, vulnerabilityManagement: true, identityAccess: true,
+  backupStatus: true,
 };
 
 describe('org-axis authority narrowing (#3198 W02 addendum B5)', () => {
-  it('the twelve org generators are typed org-axis only (the compile-time table above)', () => {
+  it('the thirteen org generators are typed org-axis only (the compile-time table above)', () => {
     expect(Object.values(ORG_AXIS_ONLY).every(Boolean)).toBe(true);
   });
 

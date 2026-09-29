@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Server-Austausch planen nach (Jahren)",
       "serverReplaceAgeYearsHelp": "Server folgen ihrem eigenen Zeitplan und werden in einem eigenen Abschnitt des Berichts aufgeführt."
     },
+    "backupStatusOptions": {
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen",
+      "includeDevicesWithoutBackup": "Geräte ohne Sicherung einbeziehen",
+      "includeDevicesWithoutBackupHelp": "Ausgeschaltet listet der Bericht nur Geräte mit vorhandenem Sicherungsnachweis auf, wie die eigene Übersichts-E-Mail des Anbieters.",
+      "sources": "Sicherungsquellen",
+      "sourcesHelp": "Wählen Sie, welche Sicherungsquellen im Bericht enthalten sein sollen.",
+      "sourceBreeze": "Breeze-Sicherung",
+      "sourceProvider": "Verbundene Backup-Anbieter"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen",
@@ -286,6 +296,13 @@
         "replaceNow": "Jetzt austauschen",
         "unknownAge": "Alter unbekannt"
       },
+      "backupStatus": {
+        "healthy": "Gesund",
+        "warning": "Warnung",
+        "critical": "Kritisch",
+        "unknown": "Unbekannt",
+        "truncated": "Die Geräteliste hat ihr Zeilenlimit erreicht und ist unvollständig."
+      },
       "vulnerabilityManagement": {
         "critical": "Offen kritisch",
         "expiringExceptions": "Ausnahmen mit Ablauf im nächsten Zeitraum",
@@ -311,7 +328,8 @@
         "endpoint_management_review": "Endpunktverwaltungs-Bericht",
         "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
-        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
+        "backup_status": "Sicherungsstatus"
       },
       "threatDetection": {
         "agents": "Endgeräte mit Erkennungsagent",
@@ -411,7 +429,8 @@
         "endpoint_management_review": "Endpunktverwaltungs-Bericht",
         "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
-        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
+        "backup_status": "Sicherungsstatus"
       },
       "runsTable": {
         "actions": "Aktionen",
@@ -939,7 +958,8 @@
         "endpoint_management_review": "Endpunktverwaltungs-Bericht",
         "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
-        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)"
+        "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
+        "backup_status": "Sicherungsstatus"
       },
       "schedules": {
         "daily": "Täglich",
@@ -1007,6 +1027,10 @@
         "ar_aging": {
           "name": "Offene Forderungen (Fälligkeitsanalyse)",
           "description": "Unbezahlte Rechnungssalden gruppiert nach aktuell / 1–30 / 31–60 / 61–90 / über 90 Tage überfällig, jeweils eine Summe pro Währung ohne Umrechnung. Rechnungen ohne Fälligkeitsdatum erhalten eine eigene Gruppe, niemals „aktuell“."
+        },
+        "backup_status": {
+          "name": "Sicherungsstatusbericht",
+          "description": "Sicherungsstatus jedes Geräts über Breeze und verbundene Backup-Anbieter hinweg in einer Momentaufnahme: Abdeckungsgruppen, letzte erfolgreiche Sicherung und eine 28-Tage-Historie pro Gerät."
         }
       },
       "title": "Berichtsvorlagen",
