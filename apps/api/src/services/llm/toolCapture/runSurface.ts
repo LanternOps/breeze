@@ -32,7 +32,8 @@ import { composeStaticSystemPrompt } from '../../aiToolIndex';
 import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
 import { buildHelperSystemPrompt } from '../../helperAiAgent';
 import { buildAgentRunSystemPrompt } from '../../aiAgents/runnerPrompt';
-import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures';
+import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE, AGENT_ANALYSIS_CAPTURE_FIXTURE } from './promptFixtures';
+import { buildOutcomeSdkTools } from '../../aiAgents/outcomeTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
@@ -58,6 +59,17 @@ export interface RunSurfaceOptions {
    * surface resolves tenant tools in production. See `tenantFixtures.ts`.
    */
   tenantTools?: readonly TenantToolDescriptor[];
+  /**
+   * Replaces the surface's static prompt — an agent golden task passes the
+   * production `buildAgentRunSystemPrompt(ctx)` for its own run context.
+   */
+  systemPrompt?: string;
+  /**
+   * Replaces the surface's `toolSearch` opt-in, so the eval can measure a
+   * surface that does not opt in today as if it did (#7428). The rest of the
+   * production policy (host, override, turn budget) still applies.
+   */
+  surfaceSearch?: boolean;
 }
 
 export interface SurfaceCaptureResult {
@@ -97,9 +109,9 @@ const CAPTURE_TENANT_ORG_ID = 'capture-org';
 
 /**
  * A fresh production chat session's turn budget (`ai_sessions.max_turns`
- * default). The policy's low-budget rule is judged against this, not against
- * the harness's own `maxTurns`, which the eval caps artificially low to score
- * the first call.
+ * default), for surfaces without their own `turnBudget`. The policy's
+ * low-budget rule is judged against this, not against the harness's own
+ * `maxTurns`, which the eval caps artificially low to score the first call.
  */
 const CAPTURE_SESSION_TURN_BUDGET = 50;
 
@@ -108,11 +120,12 @@ export function captureToolSearchPolicy(
   surface: CaptureSurface,
   env: Record<string, string>,
   override: ToolSearchOverride = 'auto',
+  surfaceSearch: boolean = surface.toolSearch,
 ): ToolSearchPolicy {
   return resolveToolSearchPolicy({
-    surfaceSearch: surface.toolSearch,
+    surfaceSearch,
     childEnv: env,
-    remainingTurns: CAPTURE_SESSION_TURN_BUDGET,
+    remainingTurns: surface.turnBudget ?? CAPTURE_SESSION_TURN_BUDGET,
     override,
   });
 }
@@ -130,8 +143,11 @@ export function getCaptureSystemPrompt(surface: CaptureSurface): string {
       if (!surface.helperPermissionLevel) throw new Error(`Missing Helper permission level: ${surface.id}`);
       return buildHelperSystemPrompt({ ...HELPER_CAPTURE_FIXTURE, permissionLevel: surface.helperPermissionLevel });
     case 'agent-full':
+    case 'agent-full-remediation':
       // Production runLoop.driveSdkLoop uses this pure builder with run context.
       return buildAgentRunSystemPrompt(AGENT_CAPTURE_FIXTURE);
+    case 'agent-analysis':
+      return buildAgentRunSystemPrompt(AGENT_ANALYSIS_CAPTURE_FIXTURE);
   }
 }
 
@@ -145,8 +161,12 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   // is denyAuth: denyPreToolUse refuses first, so a tenant handler never runs.
   const tenantSdkTools = buildTenantSdkTools(tenantTools, denyAuth, () => CAPTURE_TENANT_ORG_ID);
   const tenantToolNames = tenantSdkTools.map((t) => t.name);
+  // An agent profile's outcome tools ride on `extraTools`, as in runLoop; they
+  // are validate-only and never reach a handler that touches the DB. A surface
+  // has either outcome tools (agent) or tenant tools (chat), never both.
+  const outcomeTools = buildOutcomeSdkTools(surface.outcomeTools ?? []);
   const mcpServer = surface.server === 'breeze'
-    ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, tenantSdkTools, surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
+    ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, [...outcomeTools, ...tenantSdkTools], surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
     : createScriptBuilderMcpServer(denyAuth, denyPreToolUse);
   // Derived from the tools the server actually registers (buildBreezeSdkTools),
   // not TOOL_TIERS — TOOL_TIERS is a system-prompt promotion index, and the
@@ -156,11 +176,11 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
     ? [...new Set(buildBreezeSdkTools(denyAuth, denyPreToolUse)
         .map((t) => t.name)
         .filter((name) => !surface.onlyTools || surface.onlyTools.has(name))
-        .concat(tenantToolNames))].sort()
+        .concat(outcomeTools.map((t) => t.name), tenantToolNames))].sort()
     : [...SCRIPT_BUILDER_MCP_TOOL_NAMES].sort();
   const allowedTools = [...surface.allowedTools, ...tenantMcpToolNames(tenantTools)];
   const registeredToolCount = registeredToolNames.length;
-  const toolSearch = captureToolSearchPolicy(surface, opts.env, opts.toolSearchOverride);
+  const toolSearch = captureToolSearchPolicy(surface, opts.env, opts.toolSearchOverride, opts.surfaceSearch);
   const observer = createStreamObserver();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), opts.timeoutMs ?? 90_000);
@@ -170,7 +190,7 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
     const session = query({
       prompt: opts.prompt,
       options: {
-        systemPrompt: getCaptureSystemPrompt(surface),
+        systemPrompt: opts.systemPrompt ?? getCaptureSystemPrompt(surface),
         model: opts.model,
         maxTurns: opts.maxTurns ?? 2,
         tools: toolSearch.tools,

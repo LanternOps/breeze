@@ -43,6 +43,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentRunVerdict,
   AiAgentKind,
+  AiAgentLimits,
   AiAgentPolicy,
   AiAgentRunProfile,
   AiSweepKind,
@@ -1659,13 +1660,123 @@ export function fullRunToolExposure(agentAllowlist: readonly string[]): string[]
  * #7427 — `fullRunToolExposure` intersected with the names the SDK server
  * actually declares under the current env (`listChatSurfaceToolNames`), i.e.
  * exactly what a full run may pass as `onlyTools` without
- * `createBreezeMcpServer` rejecting it. See the call site in `driveSdkLoop`.
+ * `createBreezeMcpServer` rejecting it. See `resolveRunToolExposure`.
  * Exported for the unmocked contract test
  * (`runLoop.fullExposure.contract.test.ts`).
  */
 export function declaredFullRunToolExposure(agentAllowlist: readonly string[]): string[] {
   const declared = new Set(listChatSurfaceToolNames());
   return fullRunToolExposure(agentAllowlist).filter((name) => declared.has(name));
+}
+
+type RunProfileRef = { profile: AiAgentRunProfile };
+
+/**
+ * The run's effective limits: each narrow profile pins its own turn, budget
+ * (and, for `analysis`, wall-clock) ceilings; `full` keeps the policy's. See
+ * `driveSdkLoop` for why each arm exists. Exported so the tool-selection
+ * harness judges tool search against the run's REAL turn cap.
+ */
+export function resolveRunProfileLimits(run: RunProfileRef, limits: AiAgentLimits): AiAgentLimits {
+  if (isVerdictProfile(run)) return verdictLimits(limits);
+  if (isSweepProfile(run)) return sweepLimits(limits);
+  if (isNarrativeProfile(run)) return narrativeLimits(limits);
+  if (isTriageProfile(run)) return triageLimits(limits);
+  if (isDesignProfile(run)) return designLimits(limits);
+  if (isPatchProfile(run)) return patchLimits(limits);
+  if (isAnalysisProfile(run)) return analysisLimits(limits);
+  return limits;
+}
+
+/**
+ * A narrow profile's pinned tool floor — used for BOTH authority
+ * (`guardrailPolicy.toolAllowlist`) and exposure. `null` for `full`: nothing
+ * to narrow, authority stays the agent's own allowlist.
+ */
+export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlist: string[]): string[] | null {
+  if (isVerdictProfile(run)) return verdictToolAllowlist(agentAllowlist);
+  if (isSweepProfile(run)) return sweepToolAllowlist(agentAllowlist);
+  if (isNarrativeProfile(run)) return narrativeToolAllowlist(agentAllowlist);
+  if (isTriageProfile(run)) return triageToolAllowlist(agentAllowlist);
+  if (isDesignProfile(run)) return designToolAllowlist(agentAllowlist);
+  if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
+  if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
+  return null;
+}
+
+/**
+ * What the SDK is told about this run's tools: `exposedNames` feeds
+ * `query({ allowedTools })` and `onlyTools` feeds `createBreezeMcpServer`'s
+ * registration filter. EXPOSURE ONLY — `checkAgentGuardrails` stays the sole
+ * authority. Exported so the tool-selection harness registers what a run
+ * registers (`llm/toolCapture/surfaces.ts`).
+ */
+export function resolveRunToolExposure(
+  run: RunProfileRef,
+  agentAllowlist: string[],
+): { exposedNames: string[]; onlyTools: Set<string> | undefined } {
+  // A full-profile run (profileAllowlist undefined) used to expose EVERY
+  // name in TOOL_TIERS (via BREEZE_MCP_TOOL_NAMES), including names
+  // `checkAgentGuardrails` denies unconditionally regardless of policy
+  // (AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS, BLOCKED_TOOLS,
+  // secret-bearing — see `isNeverAgentTool`). Those names still reached the
+  // model as full tool schemas and only failed once actually called (W01
+  // quorum amendment WQ3, #6755). Filtering here, once, keeps a
+  // profile-allowlisted run untouched (it was already narrower than this)
+  // and makes a full-profile run's exposure agree with what the guardrail
+  // would allow anyway.
+  const fullProfileReachableToolNames = Object.keys(TOOL_TIERS).filter((name) => !isNeverAgentTool(name));
+
+  // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
+  // second guardrail — `checkAgentGuardrails` (via `driveSdkLoop`'s `guardrailPolicy`)
+  // is still the sole authority for anything the model does manage to call;
+  // see `verdictToolAllowlist`'s own docstring. Reuses
+  // `resolveRunProfileToolAllowlist` — the SAME list that narrows
+  // `guardrailPolicy.toolAllowlist` in `driveSdkLoop`, so exposure and authority can
+  // never drift apart.
+  //
+  // #6909 Task A — `exposureList` adds a SEPARATE, exposure-only source for
+  // `full`: `fullRunToolExposure`'s bare-tool-name floor (see its own
+  // docstring for why this must never reach `guardrailPolicy.toolAllowlist`
+  // above, which stays built from `effective.toolAllowlist` unchanged).
+  // `profileAllowlist` itself is untouched — still `null` for `full` — so
+  // authority for a full run is exactly what it was before this task.
+  //
+  // #7427 — the floor walks the `aiTools` registry, which still carries tools
+  // the SDK server has no `tool()` declaration for (the
+  // KNOWN_MISSING_TOOL_TIERS set: manage_tags, manage_tickets, …). Handed to
+  // `createBreezeMcpServer` as `onlyTools`, those names throw outside
+  // production and log an error on every full run in production. Intersect
+  // with the names the server actually declares under the current env, ONCE,
+  // here, so `exposedNames`/`allowedTools` and `onlyTools` below both see the
+  // same list. Profile allowlists are NOT filtered: they are hardcoded, so an
+  // undeclared name there is a bug `createBreezeMcpServer` should keep
+  // surfacing (#4447). Exposure only — authority is unchanged.
+  const fullExposure = run.profile === 'full' ? declaredFullRunToolExposure(agentAllowlist) : null;
+  const exposureList = resolveRunProfileToolAllowlist(run, agentAllowlist) ?? fullExposure;
+  const exposedNames = exposureList
+    ? exposureList.map((name) => (
+      isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
+    ))
+    : fullProfileReachableToolNames.map((name) => `mcp__breeze__${name}`);
+
+  // F2 fix (P2-1 second live check): `allowedTools` above only gates
+  // PERMISSION to call a tool — the MCP server still sends every REGISTERED
+  // tool's full schema to the model on every turn regardless of
+  // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
+  // what gets registered in the first place. Reuses `exposureList` again
+  // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
+  // (or, for `full`, `declaredFullRunToolExposure`) above — collapsed to bare tool
+  // names (`manage_alerts:list` and `manage_alerts:get` both collapse to
+  // `manage_alerts`) with the outcome tool excluded: an outcome tool is
+  // never in the registry `tools` array to begin with (see outcomeTools.ts)
+  // — it rides on `extraTools` below instead, which `createBreezeMcpServer`
+  // always includes regardless of `onlyTools`.
+  const onlyTools = exposureList
+    ? new Set(exposureList.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+    : undefined;
+
+  return { exposedNames, onlyTools };
 }
 
 async function driveSdkLoop(
@@ -1710,58 +1821,28 @@ async function driveSdkLoop(
   // three siblings, does NOT zero `maxActionsPerRun`: see `triageProfile.ts`'s
   // `triageLimits` docstring for why that field is a deliberate passthrough
   // here (task A8's post-run minting cap).
-  const verdict = isVerdictProfile(run);
-  const sweep = isSweepProfile(run);
-  const narrative = isNarrativeProfile(run);
-  const triage = isTriageProfile(run);
   // Fleet Designer W01 (#5651) added the sixth arm. A design run's
   // `profileAllowlist` is NOT the outcome tool alone — `DESIGN_TOOL_ALLOWLIST`
   // gives it a small read-only drill-down floor, same shape as
   // verdict/sweep's — but `designLimits`, like narrative/triage/verdict/sweep,
   // still zeroes `maxActionsPerRun`: a design run is read-only by
   // construction (Global Constraints), never just by convention.
-  const design = isDesignProfile(run);
   // AI patch agent W01 (#5747) — the seventh arm: a small read-only
   // drill-down floor plus `submit_patch_plan`; `patchLimits` zeroes
   // `maxActionsPerRun`.
-  const patchRun = isPatchProfile(run);
   // Execution plane W04 (#5715) — the eighth arm. An analysis run is the
   // first profile whose floor carries NON-read-only tools (the four
   // `workspace_*`, Tier 1 but allowlist-gated), so
   // `guardrailPolicy.toolAllowlist` below is load-bearing in a way it is not
   // for the read-only floors. Same single computation feeds authority,
   // `allowedTools` and `onlyTools`.
+  // The per-profile arms (limits, pinned floor, exposure) live in
+  // `resolveRunProfileLimits` / `resolveRunProfileToolAllowlist` /
+  // `resolveRunToolExposure` below, so the tool-selection harness
+  // (`llm/toolCapture/surfaces.ts`) measures exactly what a run registers.
   const analysis = isAnalysisProfile(run);
-  const runLimits = verdict
-    ? verdictLimits(limits)
-    : sweep
-      ? sweepLimits(limits)
-      : narrative
-        ? narrativeLimits(limits)
-        : triage
-          ? triageLimits(limits)
-          : design
-            ? designLimits(limits)
-            : patchRun
-              ? patchLimits(limits)
-              : analysis
-                ? analysisLimits(limits)
-                : limits;
-  const profileAllowlist = verdict
-    ? verdictToolAllowlist(effective.toolAllowlist)
-    : sweep
-      ? sweepToolAllowlist(effective.toolAllowlist)
-      : narrative
-        ? narrativeToolAllowlist(effective.toolAllowlist)
-        : triage
-          ? triageToolAllowlist(effective.toolAllowlist)
-          : design
-            ? designToolAllowlist(effective.toolAllowlist)
-            : patchRun
-              ? patchToolAllowlist(effective.toolAllowlist)
-              : analysis
-                ? analysisToolAllowlist(effective.toolAllowlist)
-                : null;
+  const runLimits = resolveRunProfileLimits(run, limits);
+  const profileAllowlist = resolveRunProfileToolAllowlist(run, effective.toolAllowlist);
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1963,66 +2044,10 @@ async function driveSdkLoop(
     patch: patchRefs,
   });
 
-  // A full-profile run (profileAllowlist undefined) used to expose EVERY
-  // name in TOOL_TIERS (via BREEZE_MCP_TOOL_NAMES), including names
-  // `checkAgentGuardrails` denies unconditionally regardless of policy
-  // (AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS, BLOCKED_TOOLS,
-  // secret-bearing — see `isNeverAgentTool`). Those names still reached the
-  // model as full tool schemas and only failed once actually called (W01
-  // quorum amendment WQ3, #6755). Filtering here, once, keeps a
-  // profile-allowlisted run untouched (it was already narrower than this)
-  // and makes a full-profile run's exposure agree with what the guardrail
-  // would allow anyway.
-  const fullProfileReachableToolNames = Object.keys(TOOL_TIERS).filter((name) => !isNeverAgentTool(name));
-
-  // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
-  // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
-  // is still the sole authority for anything the model does manage to call;
-  // see `verdictToolAllowlist`'s own docstring. Reuses `profileAllowlist`
-  // computed at the top of this function — the SAME list that narrowed
-  // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
-  // never drift apart.
-  //
-  // #6909 Task A — `exposureList` adds a SEPARATE, exposure-only source for
-  // `full`: `fullRunToolExposure`'s bare-tool-name floor (see its own
-  // docstring for why this must never reach `guardrailPolicy.toolAllowlist`
-  // above, which stays built from `effective.toolAllowlist` unchanged).
-  // `profileAllowlist` itself is untouched — still `null` for `full` — so
-  // authority for a full run is exactly what it was before this task.
-  //
-  // #7427 — the floor walks the `aiTools` registry, which still carries tools
-  // the SDK server has no `tool()` declaration for (the
-  // KNOWN_MISSING_TOOL_TIERS set: manage_tags, manage_tickets, …). Handed to
-  // `createBreezeMcpServer` as `onlyTools`, those names throw outside
-  // production and log an error on every full run in production. Intersect
-  // with the names the server actually declares under the current env, ONCE,
-  // here, so `exposedNames`/`allowedTools` and `onlyTools` below both see the
-  // same list. Profile allowlists are NOT filtered: they are hardcoded, so an
-  // undeclared name there is a bug `createBreezeMcpServer` should keep
-  // surfacing (#4447). Exposure only — authority is unchanged.
-  const fullExposure = run.profile === 'full' ? declaredFullRunToolExposure(effective.toolAllowlist) : null;
-  const exposureList = profileAllowlist ?? fullExposure;
-  const exposedNames = exposureList
-    ? exposureList.map((name) => (
-      isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
-    ))
-    : fullProfileReachableToolNames.map((name) => `mcp__breeze__${name}`);
-
-  // F2 fix (P2-1 second live check): `allowedTools` above only gates
-  // PERMISSION to call a tool — the MCP server still sends every REGISTERED
-  // tool's full schema to the model on every turn regardless of
-  // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
-  // what gets registered in the first place. Reuses `exposureList` again
-  // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
-  // (or, for `full`, `fullRunToolExposure`) above — collapsed to bare tool
-  // names (`manage_alerts:list` and `manage_alerts:get` both collapse to
-  // `manage_alerts`) with the outcome tool excluded: an outcome tool is
-  // never in the registry `tools` array to begin with (see outcomeTools.ts)
-  // — it rides on `extraTools` below instead, which `createBreezeMcpServer`
-  // always includes regardless of `onlyTools`.
-  const onlyTools = exposureList
-    ? new Set(exposureList.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
-    : undefined;
+  // Exposure (`allowedTools`) and registration (`onlyTools`) — see
+  // `resolveRunToolExposure` for the full-profile floor, the F2 `onlyTools`
+  // fix and the outcome-tool exclusion.
+  const { exposedNames, onlyTools } = resolveRunToolExposure(run, effective.toolAllowlist);
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
