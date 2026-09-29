@@ -247,7 +247,7 @@ describe('SnapshotBrowser', () => {
 
     expect(await screen.findByRole('option', { name: 'Mac Mini — Nightly' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'SRV01 — Whole machine — System image' })).toBeTruthy();
-    expect(screen.getByTestId('snapshot-device-name').textContent).toBe('Mac Mini');
+    expect((await screen.findByTestId('snapshot-device-name')).textContent).toBe('Mac Mini');
   });
 
   it('labels the storage location in the details card', async () => {
