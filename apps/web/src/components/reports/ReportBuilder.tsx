@@ -227,7 +227,12 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // `reportTypeSurvivesBuilder` is false for all three.
   ticket_sla_attainment: 'alerts',
   technician_time_billability: 'activity',
-  ar_aging: 'compliance'
+  ar_aging: 'compliance',
+  // Backup Status Report (#6013 W05) — same reasoning as Hardware Lifecycle:
+  // delivered only via its own curated template and options form
+  // (BackupStatusOptionsForm.tsx). Mapping to the devices source keeps this
+  // Record exhaustive and `reportTypeSurvivesBuilder` false.
+  backup_status: 'devices'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [
