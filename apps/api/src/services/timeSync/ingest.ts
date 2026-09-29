@@ -13,6 +13,8 @@ import {
 import { resolveTimeFindings, type TimeFindingsResult } from './findings';
 import { applyStreaks } from './applyStreaks';
 import { upsertDaily } from './upsertDaily';
+import { resolveDeviceTimeSyncSettings } from './settings';
+import { auditEnforcement, readEnforcement } from './enforcement';
 type StatusRow = typeof deviceTimeStatus.$inferSelect;
 export interface IngestTimeStatusResult {
   accepted: boolean;
@@ -95,9 +97,9 @@ export function buildTimeStatusRow(
       ? `${expected.source}:${expected.sourceId}`
       : null,
     eventMarks: resolved.eventMarks,
-    // W03a Task 2 keeps the stored enforcement report untouched; W03a Task 6
-    // replaces this with the effective (reported-or-retained) snapshot value.
-    enforcement: previous?.enforcement ?? {},
+    // Ingest passes the effective (reported-or-retained) report; a direct
+    // builder call with a null report stores the migrated empty object.
+    enforcement: s.enforcement ?? {},
     recentEvents: [...events.values()]
       .sort(
         (a, b) =>
@@ -143,12 +145,31 @@ export async function ingestTimeStatusSnapshot(
       .from(sites)
       .where(and(eq(sites.id, owner.siteId), eq(sites.orgId, args.orgId)))
       .limit(1);
-    const expected = resolveExpectedTimezone({ site: site ?? null });
-    const resolved = resolveTimeFindings(args.snapshot, {
+    // Uncached: policy edits take effect on the next accepted snapshot.
+    const resolvedTimeSettings = await resolveDeviceTimeSyncSettings(
+      args.deviceId,
+    );
+    const expected = resolveExpectedTimezone({
+      site: site ?? null,
+      policy: resolvedTimeSettings.policy,
+    });
+    // A snapshot without a report retains the stored one, for both storage and
+    // findings, so a missing report can never advance a false recovery streak.
+    const effectiveEnforcement =
+      args.snapshot.enforcement ?? readEnforcement(previous?.enforcement);
+    const effectiveArgs = {
+      ...args,
+      snapshot: { ...args.snapshot, enforcement: effectiveEnforcement },
+    };
+    const resolved = resolveTimeFindings(effectiveArgs.snapshot, {
       expectedTimezone: expected,
       previousEventMarks: previous?.eventMarks ?? {},
+      enforcementSettings: {
+        enforceNtp: resolvedTimeSettings.settings.enforceNtp,
+        timezoneAutoFix: resolvedTimeSettings.settings.timezone.autoFix,
+      },
     });
-    const row = buildTimeStatusRow(args, previous, expected, resolved);
+    const row = buildTimeStatusRow(effectiveArgs, previous, expected, resolved);
     await db
       .insert(deviceTimeStatus)
       .values(row)
@@ -160,6 +181,14 @@ export async function ingestTimeStatusSnapshot(
       result: resolved,
       expectedTimezone: expected,
       receivedAt: args.receivedAt,
+    });
+    // Same transaction and row lock as the status write: a failed audit rolls
+    // the observation back, and a replayed result id is never audited twice.
+    await auditEnforcement({
+      deviceId: args.deviceId,
+      orgId: args.orgId,
+      previous: readEnforcement(previous?.enforcement),
+      report: effectiveEnforcement,
     });
     return { accepted: true, health: resolved.health };
   });

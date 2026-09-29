@@ -12,6 +12,7 @@ import {
   type TimeSyncStatusMethod,
 } from '@breeze/shared';
 import type { ExpectedTimezone } from './expectedTimezone';
+import { managementFindings } from './enforcement';
 export type EventMarks = Record<string, string>;
 export interface TimeSyncFinding {
   code: TimeSyncFindingCode;
@@ -207,6 +208,13 @@ export function resolveTimeFindings(
       expectedSource: expected.source,
       expectedSourceName: expected.sourceName,
     });
+  for (const finding of managementFindings(
+    snapshot.enforcement,
+    config.policyManagedValues,
+    ctx.enforcementSettings,
+  )) {
+    found.set(finding.code, finding);
+  }
   const findings = TIME_SYNC_FINDING_CODES.flatMap((code) =>
     found.has(code) ? [found.get(code)!] : [],
   );

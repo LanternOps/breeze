@@ -122,9 +122,12 @@ it('validates vocabulary and bounded pages', () => {
   });
 });
 it('finds a PDC beyond the filtered page', async () => {
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    findings: [{ code: 'sync_stale', severity: 'warning', detail: {} }],
+  }));
   m.queue.push(
-    [{ total: 20 }],
-    [header(device)],
+    [header(site), header(device)],
     [{ orgId: org, domainDns: 'example.com', pdcExpected: true, pdcId: pdc }],
     [header(pdc)],
   );
@@ -134,7 +137,7 @@ it('finds a PDC beyond the filtered page', async () => {
       auth(),
     ),
   ).toMatchObject({
-    total: 20,
+    total: 2,
     page: 2,
     limit: 1,
     data: [{ deviceId: device }],
@@ -149,17 +152,16 @@ it('finds a PDC beyond the filtered page', async () => {
     ],
   });
   const query = new PgDialect().sqlToQuery(
-    m.select.mock.results[2]!.value.where.mock.calls[0][0],
+    m.select.mock.results[1]!.value.where.mock.calls[0][0],
   );
   expect(query.params).toContain(org);
   expect(query.params).not.toContain('sync_stale');
   expect(query.params).not.toContain('member');
-  expect(m.view.mock.calls).toEqual([[device], [pdc]]);
+  expect(m.view.mock.calls).toEqual([[site], [device], [pdc]]);
 });
 it('keeps equal DNS names in different organizations separate', async () => {
   const other = pdc;
   m.queue.push(
-    [{ total: 2 }],
     [header(device), { ...header(site), orgId: other }],
     [
       { orgId: org, domainDns: 'example.com', pdcExpected: true, pdcId: null },
@@ -183,7 +185,6 @@ it('keeps equal DNS names in different organizations separate', async () => {
 });
 it('reports an expected missing PDC without inventing a device', async () => {
   m.queue.push(
-    [{ total: 1 }],
     [header(device)],
     [{ orgId: org, domainDns: 'example.com', pdcExpected: true, pdcId: null }],
   );
@@ -197,21 +198,54 @@ it('reports an expected missing PDC without inventing a device', async () => {
     },
   ]);
 });
-it('recomputes timezone filtering from the live site mapping', () => {
-  const query = new PgDialect().sqlToQuery(
-    fleetScope({ finding: 'timezone_mismatch' }, auth())!,
+it('filters and counts canonical policy findings before selecting a page', async () => {
+  m.queue.push([header(site), header(device), header(pdc)]);
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    domain: null,
+    health: id === site ? 'healthy' : 'warning',
+    findings:
+      id === site
+        ? []
+        : [{ code: 'policy_not_applied', severity: 'warning', detail: {} }],
+  }));
+  const result = await listFleetTimeStatus(
+    { finding: 'policy_not_applied', health: 'warning', page: 2, limit: 1 },
+    auth(),
   );
-  expect(query.sql).toContain('array_remove');
-  expect(query.sql).toContain('IS DISTINCT FROM');
-  expect(query.sql).toContain('"sites"."timezone"');
-  expect(
-    query.params.some(
-      (p) => typeof p === 'string' && p.includes('Eastern Standard Time'),
-    ),
-  ).toBe(true);
+  expect(result.total).toBe(2);
+  expect(result.data.map((row) => row.deviceId)).toEqual([pdc]);
+  expect(m.view.mock.calls).toEqual([[site], [device], [pdc]]);
+  const query = new PgDialect().sqlToQuery(
+    m.select.mock.results[0]!.value.where.mock.calls[0][0],
+  );
+  expect(query.params).not.toContain('policy_not_applied');
+  expect(query.params).not.toContain('warning');
+});
+it('re-reads changed policy findings on every fleet request', async () => {
+  for (const findings of [
+    [{ code: 'timezone_mismatch', severity: 'info', detail: {} }],
+    [],
+    [{ code: 'policy_not_applied', severity: 'warning', detail: {} }],
+    [],
+  ]) {
+    m.queue.push([header(device)]);
+    m.view.mockResolvedValue({ ...view(device), domain: null, findings });
+    const result = await listFleetTimeStatus(
+      {
+        finding:
+          findings[0]?.code === 'policy_not_applied'
+            ? 'policy_not_applied'
+            : 'timezone_mismatch',
+      },
+      auth(),
+    );
+    expect(result.total).toBe(findings.length);
+    expect(result.data).toHaveLength(findings.length);
+  }
 });
 it('returns an empty report with no visible devices', async () => {
-  m.queue.push([{ total: 0 }], []);
+  m.queue.push([]);
   expect(await listFleetTimeStatus({}, auth({ allowedSiteIds: [] }))).toEqual({
     data: [],
     total: 0,

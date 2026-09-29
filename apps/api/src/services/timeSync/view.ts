@@ -23,6 +23,8 @@ import {
 } from './expectedTimezone';
 import { healthForFindings, type TimeSyncFinding } from './findings';
 import { isTimeStatusStale } from './freshness';
+import { resolveDeviceTimeSyncSettings } from './settings';
+import { managementFindings, readEnforcement } from './enforcement';
 export interface DeviceTimeStatusView {
   deviceId: string;
   state: 'reported' | 'not_reported' | 'unsupported_os';
@@ -119,14 +121,31 @@ export async function getDeviceTimeStatusView(
     .from(sites)
     .where(and(eq(sites.id, device.siteId), eq(sites.orgId, device.orgId)))
     .limit(1);
-  const expected = resolveExpectedTimezone({ site: site ?? null });
+  // Policy-dependent findings are recomputed from live policy on every read,
+  // so a pin change or a disabled enforcement takes effect without a snapshot.
+  const resolvedTimeSettings = await resolveDeviceTimeSyncSettings(deviceId);
+  const expected = resolveExpectedTimezone({
+    site: site ?? null,
+    policy: resolvedTimeSettings.policy,
+  });
+  const enforcement = readEnforcement(row.enforcement);
   const findings: TimeSyncFinding[] = TIME_SYNC_FINDING_CODES.filter(
-    (code) => code !== 'timezone_mismatch' && row.findings.includes(code),
+    (code) =>
+      code !== 'timezone_mismatch' &&
+      code !== 'policy_not_applied' &&
+      code !== 'policy_conflict_gpo' &&
+      row.findings.includes(code),
   ).map((code) => ({
     code,
     severity: TIME_SYNC_FINDING_SEVERITY[code],
     detail: row.findingDetails[code] ?? {},
   }));
+  findings.push(
+    ...managementFindings(enforcement, row.policyManagedValues, {
+      enforceNtp: resolvedTimeSettings.settings.enforceNtp,
+      timezoneAutoFix: resolvedTimeSettings.settings.timezone.autoFix,
+    }),
+  );
   if (
     expected &&
     row.timezoneAutoUpdate !== 'on' &&
@@ -199,6 +218,6 @@ export async function getDeviceTimeStatusView(
             : 'unmapped',
     },
     recentEvents: row.recentEvents,
-    enforcement: null,
+    enforcement,
   };
 }
