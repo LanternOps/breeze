@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Planifier le remplacement des serveurs après (années)",
       "serverReplaceAgeYearsHelp": "Les serveurs suivent leur propre calendrier et figurent dans une section distincte du rapport."
     },
+    "backupStatusOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeDevicesWithoutBackup": "Inclure les appareils sans aucune sauvegarde",
+      "includeDevicesWithoutBackupHelp": "Désactivé, le rapport ne liste que les appareils disposant d’une preuve de sauvegarde, comme l’e-mail récapitulatif du fournisseur.",
+      "sources": "Sources de sauvegarde",
+      "sourcesHelp": "Choisissez les sources de sauvegarde à inclure dans le rapport.",
+      "sourceBreeze": "Sauvegarde Breeze",
+      "sourceProvider": "Fournisseurs de sauvegarde connectés"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Annuler",
       "createReport": "Créer le rapport",
@@ -311,7 +321,8 @@
         "endpoint_management_review": "Revue de gestion des postes",
         "ticket_sla_attainment": "Respect des SLA des billets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
-        "ar_aging": "Balance âgée des comptes clients"
+        "ar_aging": "Balance âgée des comptes clients",
+        "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
         "agents": "Postes avec agent de détection",
@@ -411,7 +422,8 @@
         "endpoint_management_review": "Revue de gestion des postes",
         "ticket_sla_attainment": "Respect des SLA des billets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
-        "ar_aging": "Balance âgée des comptes clients"
+        "ar_aging": "Balance âgée des comptes clients",
+        "backup_status": "État des sauvegardes"
       },
       "runsTable": {
         "actions": "Actions",
@@ -939,7 +951,8 @@
         "endpoint_management_review": "Revue de gestion des postes",
         "ticket_sla_attainment": "Respect des SLA des billets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
-        "ar_aging": "Balance âgée des comptes clients"
+        "ar_aging": "Balance âgée des comptes clients",
+        "backup_status": "État des sauvegardes"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -1007,6 +1020,10 @@
         "ar_aging": {
           "name": "Balance âgée des comptes clients",
           "description": "Soldes de factures impayées répartis en courant / 1–30 / 31–60 / 61–90 / plus de 90 jours de retard, un ensemble de totaux par devise sans conversion. Les factures sans date d'échéance obtiennent leur propre catégorie, jamais « courant »."
+        },
+        "backup_status": {
+          "name": "Rapport d’état des sauvegardes",
+          "description": "État de sauvegarde de chaque appareil sur Breeze et les fournisseurs de sauvegarde connectés, en un instantané : catégories de couverture, dernière sauvegarde réussie et historique de 28 jours par appareil."
         }
       },
       "title": "Modèles de rapports",

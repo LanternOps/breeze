@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Pianifica la sostituzione dei server dopo (anni)",
       "serverReplaceAgeYearsHelp": "I server seguono una propria tempistica e sono elencati in una sezione separata del report."
     },
+    "backupStatusOptions": {
+      "cancel": "Annulla",
+      "createReport": "Crea report",
+      "includeDevicesWithoutBackup": "Includi dispositivi senza alcun backup",
+      "includeDevicesWithoutBackupHelp": "Se disattivato, il report elenca solo i dispositivi con qualche prova di backup, come l’email di riepilogo del provider.",
+      "sources": "Origini dei backup",
+      "sourcesHelp": "Scegli quali origini di backup includere nel report.",
+      "sourceBreeze": "Backup Breeze",
+      "sourceProvider": "Provider di backup collegati"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Annulla",
       "createReport": "Crea report",
@@ -311,7 +321,8 @@
         "endpoint_management_review": "Revisione della gestione degli endpoint",
         "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
-        "ar_aging": "Analisi anzianità crediti (AR aging)"
+        "ar_aging": "Analisi anzianità crediti (AR aging)",
+        "backup_status": "Stato dei backup"
       },
       "threatDetection": {
         "agents": "Endpoint con agente di rilevamento",
@@ -411,7 +422,8 @@
         "endpoint_management_review": "Revisione della gestione degli endpoint",
         "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
-        "ar_aging": "Analisi anzianità crediti (AR aging)"
+        "ar_aging": "Analisi anzianità crediti (AR aging)",
+        "backup_status": "Stato dei backup"
       },
       "runsTable": {
         "actions": "Azioni",
@@ -939,7 +951,8 @@
         "endpoint_management_review": "Revisione della gestione degli endpoint",
         "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
-        "ar_aging": "Analisi anzianità crediti (AR aging)"
+        "ar_aging": "Analisi anzianità crediti (AR aging)",
+        "backup_status": "Stato dei backup"
       },
       "schedules": {
         "daily": "Giornaliero",
@@ -1007,6 +1020,10 @@
         "ar_aging": {
           "name": "Analisi anzianità crediti (AR aging)",
           "description": "Saldi delle fatture non pagate suddivisi in corrente / 1–30 / 31–60 / 61–90 / oltre 90 giorni di ritardo, un insieme di totali per valuta senza conversione. Le fatture senza data di scadenza ricevono una propria fascia, mai «corrente»."
+        },
+        "backup_status": {
+          "name": "Report sullo stato dei backup",
+          "description": "Stato di backup di ogni dispositivo su Breeze e sui provider di backup collegati, in un’unica istantanea: categorie di copertura, ultimo backup riuscito e cronologia di 28 giorni per dispositivo."
         }
       },
       "title": "Template report",
