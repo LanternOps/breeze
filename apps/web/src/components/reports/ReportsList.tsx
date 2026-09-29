@@ -27,6 +27,7 @@ import { useHashState } from '@/lib/useHashState';
 import { fetchSeriesList } from './series/seriesApi';
 import { ReportsFilterChips } from './series/ReportsFilterChips';
 import { SeriesListRow } from './series/SeriesListRow';
+import CombineBanner from './series/CombineBanner';
 import {
   buildListEntries,
   DEFAULT_REPORTS_LIST_VIEW,
@@ -200,6 +201,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   // one org focused, children are ordinary rows with a Multi-org badge.
   const seriesGate =
     jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && canManagePartnerWide;
+  // Series W04: Combine spans every org of the partner, so it is offered only
+  // under All organizations, and only to users who may administer
+  // partner-wide state (the server gates regardless).
+  const showCombineBanner =
+    jwtClaims.status === 'resolved' &&
+    jwtClaims.claims.scope === 'partner' &&
+    canManagePartnerWide &&
+    !currentOrgId;
   // A session that passes the client gate but may not read series (403) falls
   // back to the ungrouped list, so no per-org copy disappears (W03 final review).
   const [seriesForbidden, setSeriesForbidden] = useState(false);
@@ -805,6 +814,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
               {t('reports.reportsList.partnerWideIncomplete')}
             </p>
           )}
+          {showCombineBanner && <CombineBanner timezone={effectiveTimezone} onCombined={fetchReports} />}
             {seriesLoadFailed && (
               <p data-testid="reports-series-load-failed" role="status" className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm">
                 {t('reports.series.list.loadFailed')}
