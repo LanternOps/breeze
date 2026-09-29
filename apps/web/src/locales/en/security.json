@@ -932,7 +932,9 @@
     "errors": {
       "windowsHello": "Windows Hello verification failed",
       "actionFailed": "Failed to {{decision}} request",
-      "network": "Network error"
+      "network": "Network error",
+      "notApproved": "The server did not confirm this elevation as approved. Close this dialog to see its current status.",
+      "notApprovedReason": "Elevation not approved: {{reason}}"
     },
     "toasts": {
       "approved": "Elevation approved",

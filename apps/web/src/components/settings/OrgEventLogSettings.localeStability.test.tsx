@@ -13,10 +13,6 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: () => ({ currentOrgId: 'org-1' }),
-}));
-
 const fetchMock = vi.mocked(fetchWithAuth);
 const SERVER_URL = 'https://es.server.test:9200';
 
@@ -48,7 +44,7 @@ describe('OrgEventLogSettings: a locale change must not reload the form', () => 
   });
 
   it('keeps the user edit and does not GET again when the language changes', async () => {
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId="org-1" />);
 
     const input = await screen.findByDisplayValue(SERVER_URL);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -72,7 +68,7 @@ describe('OrgEventLogSettings: a locale change must not reload the form', () => 
   it('still reports a load failure with a translated message', async () => {
     fetchMock.mockReset();
     fetchMock.mockRejectedValue('network down');
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId="org-1" />);
     await waitFor(() =>
       expect(
         screen.getByText(i18n.t('settings:orgEventLogSettings.errors.load')),

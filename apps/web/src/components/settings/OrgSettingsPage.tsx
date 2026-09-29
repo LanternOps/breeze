@@ -353,14 +353,19 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     }
   }, [activeTab, effectiveOrgId]);
 
-  const fetchOrgDetails = useCallback(async () => {
+  // `silent`: refresh after a tab saved through its OWN route (mTLS, log
+  // forwarding) — the page's copy of `settings` must pick that write up, since
+  // every section save re-posts the whole blob and the org PATCH replaces it
+  // wholesale. Silent skips the loading screen, so the open tab stays mounted
+  // with its drafts, and leaves the name/type drafts alone.
+  const fetchOrgDetails = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!effectiveOrgId) {
       setLoading(false);
       return;
     }
 
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`);
       if (!response.ok) {
@@ -372,8 +377,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       }
       const data = await response.json();
       setOrgDetails(data);
-      setNameDraft(data.name ?? '');
-      setTypeDraft(data.type ?? 'customer');
+      if (!silent) {
+        setNameDraft(data.name ?? '');
+        setTypeDraft(data.type ?? 'customer');
+      }
 
       // Fetch effective settings to determine partner-locked fields
       const effRes = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}/effective-settings`);
@@ -595,7 +602,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchOrgDetails}
+          onClick={() => void fetchOrgDetails()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('orgSettingsPage.actions.tryAgain')}
@@ -641,10 +648,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return (
           <>
             <OrgSecuritySettings
+              orgId={effectiveOrgId}
               security={orgDetails?.settings?.security}
               mtls={orgDetails?.settings?.mtls}
               onDirty={handleDirty}
               onSave={(data) => handleSave('security', data)}
+              onMtlsSaved={() => void fetchOrgDetails({ silent: true })}
               locked={locked}
             />
             {/* Execution plane W05 (#5716, spec §8, §11). Lives under Security
@@ -694,7 +703,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       case 'event-logs':
         return (
           <OrgEventLogSettings
+            orgId={effectiveOrgId}
             onDirty={handleDirty}
+            onSaved={() => void fetchOrgDetails({ silent: true })}
             locked={locked}
           />
         );
