@@ -2,7 +2,11 @@ package timesync
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os/exec"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -108,3 +112,21 @@ func collectEvents(ctx context.Context, sys System, since, until time.Time) ([]E
 }
 
 const maxSafeSequence uint64 = 9007199254740991
+
+// eventQueryError names the failed Time-Service event query and keeps
+// PowerShell's own reason. The script rethrows every Get-WinEvent failure except
+// "no matching events" (access denied on the System log, EventLog service
+// stopped, AppLocker/WDAC blocking powershell.exe), and PowerShell writes that
+// reason to stderr. The command runner copies stderr into ExitError.Stderr,
+// but ExitError.Error() is only "exit status 1". A failed query fails the whole
+// collection (R5), so without the reason the heartbeat's Warn is the device's
+// only trace of why the time section went dark.
+func eventQueryError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if detail := strings.Join(strings.Fields(string(exitErr.Stderr)), " "); detail != "" {
+			return fmt.Errorf("query Time-Service events: %w: %s", err, limitText(detail, 512))
+		}
+	}
+	return fmt.Errorf("query Time-Service events: %w", err)
+}

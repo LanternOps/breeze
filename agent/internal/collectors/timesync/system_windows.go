@@ -18,11 +18,23 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-type windowsSystem struct{}
+type commandRunner func(ctx context.Context, timeout time.Duration, name string, args ...string) ([]byte, error)
+
+type windowsSystem struct {
+	// run executes external commands (w32tm, PowerShell); tests replace it.
+	run commandRunner
+}
 
 var _ System = (*windowsSystem)(nil)
 
-func NewSystem() System { return &windowsSystem{} }
+func NewSystem() System { return &windowsSystem{run: collectors.RunCollectorOutput} }
+
+func (s *windowsSystem) runCommand(ctx context.Context, timeout time.Duration, name string, args ...string) ([]byte, error) {
+	if s.run == nil {
+		return collectors.RunCollectorOutput(ctx, timeout, name, args...)
+	}
+	return s.run(ctx, timeout, name, args...)
+}
 
 func (*windowsSystem) ReadString(ctx context.Context, path, name string) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -150,8 +162,8 @@ func (*windowsSystem) ProviderStatus(ctx context.Context) (Status, error) {
 	// DLL ABI; a successful Find alone is insufficient to invoke this export.
 	return unknownStatus(), errUnavailable
 }
-func (*windowsSystem) W32tmStatus(ctx context.Context) ([]byte, error) {
-	return collectors.RunCollectorOutput(ctx, 10*time.Second, "w32tm.exe", "/query", "/status", "/verbose")
+func (s *windowsSystem) W32tmStatus(ctx context.Context) ([]byte, error) {
+	return s.runCommand(ctx, 10*time.Second, "w32tm.exe", "/query", "/status", "/verbose")
 }
 func (*windowsSystem) Identity(ctx context.Context) (mgmtdetect.IdentityStatus, error) {
 	if err := ctx.Err(); err != nil {

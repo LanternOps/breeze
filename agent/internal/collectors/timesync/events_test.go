@@ -2,6 +2,8 @@ package timesync
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -156,5 +158,37 @@ func TestFreshSignalsWinRemainingSlotsOverNewerNonSignals(t *testing.T) {
 		if !gotIDs[id] {
 			t.Fatalf("fresh signal event %d dropped in favour of newer non-signal events", id)
 		}
+	}
+}
+
+// A failed Get-WinEvent fails the whole collection (R5), so the only evidence
+// on the device is the heartbeat's Warn. PowerShell's reason lives on stderr,
+// which ExitError.Error() ("exit status 1") drops; it must reach the error.
+func TestEventQueryErrorKeepsPowerShellReason(t *testing.T) {
+	stderr := "Get-WinEvent : Attempted to perform an unauthorized operation.\r\nAt line:3 char:9\r\n+  $rows=@(Get-WinEvent -FilterHashtable @{LogName='System'  \r\n\r\n"
+	cause := &exec.ExitError{Stderr: []byte(stderr)}
+	err := eventQueryError(cause)
+	if err == nil || !strings.Contains(err.Error(), "Attempted to perform an unauthorized operation. At line:3 char:9") {
+		t.Fatalf("stderr reason dropped or not collapsed to one line: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Time-Service event") || strings.ContainsAny(err.Error(), "\r\n") {
+		t.Fatalf("error does not name the operation on one line: %q", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatal("wrapped error no longer unwraps to the ExitError")
+	}
+	long := &exec.ExitError{Stderr: []byte(strings.Repeat("x", 4096))}
+	if got := eventQueryError(long).Error(); len(got) > 700 {
+		t.Fatalf("stderr detail not capped: %d bytes", len(got))
+	}
+	// A failure without a process exit (timeout, missing powershell.exe) still
+	// names the operation.
+	timeout := errors.New("powershell.exe timed out: context deadline exceeded")
+	if err = eventQueryError(timeout); !errors.Is(err, timeout) || !strings.Contains(err.Error(), "Time-Service event") {
+		t.Fatalf("non-exit error not wrapped: %v", err)
+	}
+	if err = eventQueryError(&exec.ExitError{}); !strings.Contains(err.Error(), "Time-Service event") {
+		t.Fatalf("empty-stderr exit not wrapped: %v", err)
 	}
 }

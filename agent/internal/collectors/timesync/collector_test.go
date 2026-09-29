@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,7 +184,7 @@ func TestConcurrentCollectAllocatesDistinctSequences(t *testing.T) {
 	}
 }
 
-func TestCorruptStateRecoversAndWriteFailureStaysVisible(t *testing.T) {
+func TestCorruptStateSalvagesSequenceAndExhaustionFails(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "timesync-state.json")
 	if err := os.WriteFile(p, []byte(`{"sequence":5000000000000,"eventsSince":`), 0600); err != nil {
@@ -203,6 +204,76 @@ func TestCorruptStateRecoversAndWriteFailureStaysVisible(t *testing.T) {
 	c.state.Sequence = maxSafeSequence
 	if snapshot, err = c.Collect(context.Background()); err == nil || snapshot != nil {
 		t.Fatal("unsafe numeric sequence emitted")
+	}
+}
+
+// Every corrupt-state path must resume ABOVE the wall-clock millisecond floor.
+// A sequence that restarts at 1 is answered with stale_sequence, which the
+// heartbeat treats as qualified and commits, so the device would go silently
+// dark on the server while its events are marked delivered.
+func TestCorruptStateNeverRewindsSequence(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	floor := uint64(now.UnixMilli())
+	// Valid JSON (trailing whitespace is legal) with a low sequence, and still
+	// valid after the 4 MiB read cap truncates it, so only the size check can
+	// reject it.
+	oversized := []byte(`{"sequence":1}` + strings.Repeat(" ", maxStateBytes))
+	for _, tc := range []struct {
+		name       string
+		state      []byte // nil: no state file at all
+		corrupt    bool   // a previous run already quarantined the state
+		failSave   bool   // the first post-quarantine save fails (disk full)
+		quarantine bool   // this run must quarantine the state file
+	}{
+		{name: "quarantined earlier and state file missing", corrupt: true},
+		{name: "unparseable bytes with no salvageable sequence", state: []byte("not json"), quarantine: true},
+		{name: "state file over 4 MiB", state: oversized, quarantine: true},
+		{name: "salvaged sequence above the safe integer range", state: []byte(`{"sequence":9007199254740995}`), quarantine: true},
+		{name: "quarantine succeeds then save fails", state: []byte("not json"), failSave: true, quarantine: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, stateName)
+			if tc.state != nil {
+				if err := os.WriteFile(p, tc.state, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.corrupt {
+				if err := os.WriteFile(p+".corrupt", []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := New(dir, &fakeSystem{})
+			c.now = func() time.Time { return now }
+			if tc.failSave {
+				c.save = func(string, any) error { return errors.New("disk full") }
+				if snapshot, err := c.Collect(context.Background()); err == nil || snapshot != nil {
+					t.Fatal("failed save emitted a snapshot", snapshot, err)
+				}
+				if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("state file survived quarantine", err)
+				}
+				// Restart: only the .corrupt marker is left to prove the floor.
+				c = New(dir, &fakeSystem{})
+				c.now = func() time.Time { return now }
+			}
+			snapshot, err := c.Collect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Sequence <= floor {
+				t.Fatalf("sequence %d rewound to or below the millisecond floor %d", snapshot.Sequence, floor)
+			}
+			if snapshot.Sequence > maxSafeSequence {
+				t.Fatalf("sequence %d above the safe integer range", snapshot.Sequence)
+			}
+			if tc.quarantine {
+				if _, err := os.Stat(p + ".corrupt"); err != nil {
+					t.Fatal("no quarantine", err)
+				}
+			}
+		})
 	}
 }
 

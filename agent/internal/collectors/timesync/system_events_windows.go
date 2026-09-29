@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/breeze-rmm/agent/internal/collectors"
 )
 
 func eventScript(since, until time.Time, limit int) string {
@@ -49,13 +47,13 @@ func decodeEvents(b []byte) ([]Event, error) {
 	}
 	return events, nil
 }
-func (*windowsSystem) Events(ctx context.Context, since, until time.Time, limit int) ([]Event, error) {
+func (s *windowsSystem) Events(ctx context.Context, since, until time.Time, limit int) ([]Event, error) {
 	if limit < 1 || limit > 100 {
 		return nil, fmt.Errorf("invalid event limit %d", limit)
 	}
-	b, err := collectors.RunCollectorOutput(ctx, 30*time.Second, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", eventScript(since, until, limit))
+	b, err := s.runCommand(ctx, 30*time.Second, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", eventScript(since, until, limit))
 	if err != nil {
-		return nil, err
+		return nil, eventQueryError(err)
 	}
 	return decodeEvents(b)
 }

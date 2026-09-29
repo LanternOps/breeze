@@ -3,6 +3,9 @@
 package timesync
 
 import (
+	"context"
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -63,5 +66,21 @@ func TestEventScriptUsesInsertionStringsAndAllLevels(t *testing.T) {
 	rows, err := decodeEvents([]byte(`[]`))
 	if err != nil || rows == nil || len(rows) != 0 {
 		t.Fatal(rows, err)
+	}
+}
+
+func TestEventsSurfacesPowerShellStderr(t *testing.T) {
+	var gotName string
+	s := &windowsSystem{run: func(_ context.Context, _ time.Duration, name string, _ ...string) ([]byte, error) {
+		gotName = name
+		return nil, &exec.ExitError{Stderr: []byte("Get-WinEvent : The EventLog service is not running.\r\n")}
+	}}
+	_, err := s.Events(context.Background(), time.Unix(1, 0), time.Unix(2, 0), 10)
+	if gotName != "powershell.exe" {
+		t.Fatalf("event query ran %q", gotName)
+	}
+	var exitErr *exec.ExitError
+	if err == nil || !strings.Contains(err.Error(), "The EventLog service is not running.") || !errors.As(err, &exitErr) {
+		t.Fatalf("PowerShell reason lost: %v", err)
 	}
 }
