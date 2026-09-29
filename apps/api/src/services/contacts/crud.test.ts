@@ -69,15 +69,28 @@ function thenable(rows: Array<Record<string, unknown>>, call: SelectCall) {
  * so a test seeds exactly the reads the code under test performs, in order.
  *
  * Read budget per operation, which the seeds below have to match exactly:
- *   assertSiteInOrg .... 1 (sites)
- *   getContact ......... 1 (contacts)
- *   reprojectScope ..... 2 (the primary lookup, then compat's own re-read)
+ *   assertSiteInOrg ........... 1 (sites)
+ *   getContact ................ 1 (contacts)
+ *   org / site pre-lock ....... 1 each (organizations, then sites)
+ *   locked re-read ............ 1 (contacts) — after any pre-lock in updateContact
+ *   site re-projection ........ 2 (the primary lookup, then compat's own re-read)
+ *   billing re-projection ..... 1 (the billing-role lookup)
  */
 function makeExec(
   selectRows: Array<Array<Record<string, unknown>>> = [],
-  options: { updateError?: unknown; deleteRows?: Array<Record<string, unknown>> } = {},
+  options: {
+    updateError?: unknown;
+    deleteRows?: Array<Record<string, unknown>>;
+    /**
+     * RETURNING rows for successive `contacts` UPDATEs, in order (the
+     * demotion, then the patch). An exhausted queue falls back to the last
+     * selected row merged with the SET.
+     */
+    updateReturns?: Array<Array<Record<string, unknown>>>;
+  } = {},
 ) {
   const queue = [...selectRows];
+  const updateQueue = [...(options.updateReturns ?? [])];
   const calls: Capture = { selects: [], inserts: [], updates: [], deletes: [] };
   let lastSelected: Record<string, unknown> | undefined;
   let generated = 0;
@@ -119,8 +132,9 @@ function makeExec(
                 returning: () => Promise.reject(options.updateError),
               });
             }
-            const row = { ...(lastSelected ?? {}), ...set };
-            return Object.assign(Promise.resolve([row]), { returning: () => Promise.resolve([row]) });
+            const queued = table === contacts ? updateQueue.shift() : undefined;
+            const rows = queued ?? [{ ...(lastSelected ?? {}), ...set }];
+            return Object.assign(Promise.resolve(rows), { returning: () => Promise.resolve(rows) });
           },
         };
       },
@@ -129,8 +143,9 @@ function makeExec(
       where: (condition: unknown) => {
         calls.deletes.push({ table, where: condition, seq: (seq += 1) });
         // `deleteRows: []` is a DELETE that matched nothing — the row was
-        // already gone when the statement ran.
-        const rows = options.deleteRows ?? [{ id: 'deleted' }];
+        // already gone when the statement ran. By default RETURNING yields the
+        // stored row, as it would for a real DELETE of it.
+        const rows = options.deleteRows ?? [{ ...(lastSelected ?? {}), id: 'deleted' }];
         return Object.assign(Promise.resolve(rows), { returning: () => Promise.resolve(rows) });
       },
     }),
@@ -142,7 +157,7 @@ function makeExec(
 /** `listContacts` requires a window; this one is the route's own default. */
 const PAGE = { limit: 50, offset: 0 };
 
-/** The org/site pre-locks a primary re-projection takes. */
+/** The org/site pre-locks a re-projection takes, plus the locked target re-read. */
 function lockReads(calls: Capture) {
   return calls.selects.filter((s) => s.lockMode !== undefined);
 }
@@ -154,7 +169,14 @@ function orgBlobWrites(calls: Capture) {
 function siteBlobWrites(calls: Capture) {
   return calls.updates.filter((u) => u.table === sites).map((u) => u.set.contact);
 }
+/** The billing re-projection's read: the last `contacts` select before the org blob write. */
+function billingProjectionRead(calls: Capture) {
+  const write = calls.updates.find((u) => u.table === organizations);
+  if (!write) return undefined;
+  return calls.selects.filter((s) => s.table === contacts && s.seq < write.seq).at(-1);
+}
 
+/** Org-level, primary AND the billing contact — the shape the #3258 backfill produced. */
 const PRIMARY_ROW = {
   id: CONTACT,
   orgId: ORG,
@@ -168,6 +190,10 @@ const PRIMARY_ROW = {
   isPrimary: true,
   notes: null,
 };
+/** The sweep's Dana: the org's primary contact, a technical one, NOT the billing contact. */
+const DANA_ROW = { ...PRIMARY_ROW, name: 'Dana Tech', email: 'dana@acme.example', roles: ['technical'] };
+/** An org-level contact that is neither primary nor billing. */
+const PLAIN_ORG_ROW = { ...PRIMARY_ROW, roles: [], isPrimary: false };
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -233,12 +259,12 @@ describe('createContact', () => {
     expect(params).toEqual([SITE, ORG]);
   });
 
-  it('demotes the existing scope primary and projects the new one into billing_contact', async () => {
-    const primary = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
-    // reprojectScope: primary lookup, then compat's re-read of the same row.
-    const { exec, calls } = makeExec([[primary], [{ id: CONTACT, ...primary }]]);
+  it('demotes the existing org primary but leaves billing_contact alone for a non-billing primary', async () => {
+    // The sweep bug's CRUD half: making a technical contact primary re-pointed
+    // organizations.billing_contact — the invoice recipient — at them.
+    const { exec, calls } = makeExec([[]]);
     await createContact(exec, {
-      orgId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', isPrimary: true,
+      orgId: ORG, name: 'Dana Tech', email: 'dana@acme.example', roles: ['technical'], isPrimary: true,
     }, ACTOR);
 
     const demotion = calls.updates.find((u) => u.table === contacts && u.set.isPrimary === false);
@@ -247,9 +273,40 @@ describe('createContact', () => {
     expect(demoteSql).toContain('"site_id" is null');
     expect(demoteSql).toContain('"is_primary"');
 
-    expect(orgBlobWrites(calls)).toEqual([
-      { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' },
-    ]);
+    expect(orgBlobWrites(calls)).toEqual([]);
+  });
+
+  it('projects a new org-level billing contact into billing_contact via the billing-role lookup', async () => {
+    const billing = { name: 'Bill Payer', email: 'bill@acme.example', phone: null };
+    // The org pre-lock, then the billing re-projection read.
+    const { exec, calls } = makeExec([[], [billing]]);
+    await createContact(exec, { orgId: ORG, name: 'Bill Payer', email: 'bill@acme.example', roles: ['billing'] }, ACTOR);
+
+    expect(orgBlobWrites(calls)).toEqual([billing]);
+    const read = compile(billingProjectionRead(calls)!.where);
+    expect(read.sql).toContain('"roles" @>');
+    expect(read.sql).toContain('"site_id" is null');
+    expect(read.sql).not.toContain('"is_primary"');
+    // Parent-first: the org is locked before the INSERT.
+    expect(lockReads(calls)[0]!.table).toBe(organizations);
+    expect(lockReads(calls)[0]!.seq).toBeLessThan(calls.inserts[0]!.seq);
+  });
+
+  it('a site-level contact with the billing role does not feed billing_contact', async () => {
+    const { exec, calls } = makeExec([[{ id: SITE }]]);
+    await createContact(exec, { orgId: ORG, siteId: SITE, name: 'Site AP', roles: ['billing'] }, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([]);
+    expect(lockReads(calls)).toEqual([]);
+  });
+
+  it('re-projects billing_contact when the demoted primary was a billing contact', async () => {
+    // Primacy is the first tiebreak among billing contacts, so demoting one can
+    // change which of them invoices go to.
+    const { exec, calls } = makeExec([[], [{ name: 'Carol AP', email: 'carol@acme.example', phone: null }]], {
+      updateReturns: [[{ siteId: null, roles: ['billing'] }]],
+    });
+    await createContact(exec, { orgId: ORG, name: 'Dana Tech', roles: ['technical'], isPrimary: true }, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([{ name: 'Carol AP', email: 'carol@acme.example', phone: null }]);
   });
 
   it('leaves the legacy jsonb alone for a non-primary contact', async () => {
@@ -325,12 +382,12 @@ describe('updateContact', () => {
     expect(params).toEqual([OTHER_CONTACT, ORG]);
   });
 
-  it('re-projects the legacy jsonb when a primary contact is edited', async () => {
-    const patched = { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100', mobile: null };
+  it('re-projects billing_contact when the billing contact is edited', async () => {
+    const patched = { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100' };
     // getContact, the org pre-lock, the target re-read UNDER that lock, then
-    // reprojectScope's two reads.
+    // the billing re-projection's read.
     const { exec, calls } = makeExec([
-      [PRIMARY_ROW], [], [PRIMARY_ROW], [patched], [{ id: CONTACT, ...patched }],
+      [PRIMARY_ROW], [], [PRIMARY_ROW], [patched],
     ]);
     const updated = await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
 
@@ -340,22 +397,55 @@ describe('updateContact', () => {
     ]);
   });
 
-  it('clears the legacy jsonb when the primary flag is dropped', async () => {
-    // getContact, the org pre-lock, the locked re-read, then reprojectScope:
-    // no primary remains, and compat agrees.
-    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [PRIMARY_ROW], [], []]);
-    await updateContact(exec, CONTACT, ORG, { isPrimary: false }, ACTOR);
-    expect(orgBlobWrites(calls)).toEqual([null]);
+  it('leaves billing_contact alone when the PRIMARY contact (not a billing contact) is edited', async () => {
+    // The sweep bug through the Contacts list: editing Dana re-projected her
+    // details into organizations.billing_contact because she was primary.
+    const { exec, calls } = makeExec([[DANA_ROW], [], [DANA_ROW]]);
+    await updateContact(exec, CONTACT, ORG, { email: 'dana.new@acme.example' }, ACTOR);
+    expect(calls.updates.filter((u) => u.table === contacts)).toHaveLength(1);
+    expect(orgBlobWrites(calls)).toEqual([]);
   });
 
-  it('re-projects BOTH scopes when a primary contact moves from a site to the org', async () => {
-    const moved = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
+  it('re-projects billing_contact when a contact gains the billing role', async () => {
+    const { exec, calls } = makeExec([[PLAIN_ORG_ROW], [], [PLAIN_ORG_ROW], [{ name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' }]]);
+    await updateContact(exec, CONTACT, ORG, { roles: ['billing'] }, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([{ name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' }]);
+  });
+
+  it('re-projects billing_contact — to null, never to the primary — when the billing role is removed', async () => {
+    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [PRIMARY_ROW], []]);
+    await updateContact(exec, CONTACT, ORG, { roles: [] }, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([null]);
+    expect(compile(billingProjectionRead(calls)!.where).sql).not.toContain('"is_primary"');
+  });
+
+  it('keeps billing_contact on the billing contact when only its primary flag is dropped', async () => {
+    const billing = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' };
+    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [PRIMARY_ROW], [billing]]);
+    await updateContact(exec, CONTACT, ORG, { isPrimary: false }, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([billing]);
+  });
+
+  it('classifies the row from the LOCKED re-read — a concurrent billing grant is not missed', async () => {
+    // The unlocked read says "no billing role"; by the time the org lock is
+    // held another writer has granted it. Acting on the unlocked read would
+    // commit an email change to THE billing contact without re-projecting it.
+    const { exec, calls } = makeExec([
+      [PLAIN_ORG_ROW], [], [{ isPrimary: false, siteId: null, roles: ['billing'] }],
+      [{ name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100' }],
+    ]);
+    await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([{ name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100' }]);
+  });
+
+  it('re-projects BOTH columns when a primary billing contact moves from a site to the org', async () => {
+    const moved = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' };
     const { exec, calls } = makeExec([
       [{ ...PRIMARY_ROW, siteId: SITE }], // getContact
       [], [],                             // parent pre-locks: org, then site
       [{ ...PRIMARY_ROW, siteId: SITE }], // the target, re-read under them
       [], [],                             // vacated site scope: no primary left
-      [moved], [{ id: CONTACT, ...moved }], // claimed org scope
+      [moved],                            // billing re-projection: it now feeds the org
     ]);
     await updateContact(exec, CONTACT, ORG, { siteId: null }, ACTOR);
 
@@ -399,12 +489,21 @@ describe('parent-first locking around a primary re-projection', () => {
     expect(locks[0]!.seq).toBeLessThan(contactWrite.seq);
   });
 
-  it('takes NO lock for a field-only patch on a non-primary contact', async () => {
-    // Nothing re-projects, so there is no cycle to order and no reason to
-    // serialise unrelated writers on the org row.
-    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+  it('takes NO lock for a field-only patch on a non-primary SITE contact', async () => {
+    // It can feed neither projection, so there is no cycle to order and no
+    // reason to serialise unrelated writers on the org row.
+    const { exec, calls } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]]);
     await updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR);
     expect(lockReads(calls)).toEqual([]);
+  });
+
+  it('locks the organization for any org-level contact, and re-projects nothing when it holds no billing role', async () => {
+    // Whether it holds the billing role can only be decided under the lock
+    // every billing-projection writer takes.
+    const { exec, calls } = makeExec([[PLAIN_ORG_ROW], [], [PLAIN_ORG_ROW]]);
+    await updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR);
+    expect(lockReads(calls).map((l) => l.table)).toEqual([organizations, contacts]);
+    expect(orgBlobWrites(calls)).toEqual([]);
   });
 
   it('locks the organization before the site, and before the demotion write', async () => {
@@ -446,14 +545,14 @@ describe('parent-first locking around a primary re-projection', () => {
     expect(lockReads(calls)).toEqual([]);
   });
 
-  it('locks before deleting a primary contact, and not otherwise', async () => {
-    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [], []]);
+  it('locks before deleting an org-level contact, and not a plain site contact', async () => {
+    const { exec, calls } = makeExec([[PRIMARY_ROW], [], []]);
     await deleteContact(exec, CONTACT, ORG, ACTOR);
     const locks = lockReads(calls);
     expect(locks.map((l) => l.table)).toEqual([organizations]);
     expect(locks[0]!.seq).toBeLessThan(calls.deletes[0]!.seq);
 
-    const plain = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    const plain = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]]);
     await deleteContact(plain.exec, CONTACT, ORG, ACTOR);
     expect(lockReads(plain.calls)).toEqual([]);
   });
@@ -539,7 +638,7 @@ describe('updateContact writes only what the patch names', () => {
   it('SETs exactly the patched column plus updated_at', async () => {
     // Writing every identifier back on every PATCH makes two concurrent
     // disjoint patches overwrite each other.
-    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    const { exec, calls } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]]);
     await updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR);
 
     const write = calls.updates.find((u) => u.table === contacts)!;
@@ -555,7 +654,7 @@ describe('updateContact writes only what the patch names', () => {
   });
 
   it('still writes an explicit null, which is a real clear', async () => {
-    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    const { exec, calls } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]]);
     await updateContact(exec, CONTACT, ORG, { email: null }, ACTOR);
     const write = calls.updates.find((u) => u.table === contacts)!;
     expect(write.set).toMatchObject({ email: null });
@@ -567,7 +666,7 @@ describe('updateContact writes only what the patch names', () => {
     // cleared the other identifier between the read and the write lands as
     // 23514 — which must be the caller's 400, not an uncaught 500.
     const { exec } = makeExec(
-      [[{ ...PRIMARY_ROW, isPrimary: false, phone: null, mobile: null }]],
+      [[{ ...PLAIN_ORG_ROW, siteId: SITE, phone: null, mobile: null }]],
       { updateError: Object.assign(new Error('violates check constraint'), { code: '23514' }) },
     );
     await expect(updateContact(exec, CONTACT, ORG, { name: null }, ACTOR))
@@ -576,7 +675,7 @@ describe('updateContact writes only what the patch names', () => {
 
   it('lets an unrelated database error propagate', async () => {
     const { exec } = makeExec(
-      [[{ ...PRIMARY_ROW, isPrimary: false }]],
+      [[{ ...PLAIN_ORG_ROW, siteId: SITE }]],
       { updateError: Object.assign(new Error('deadlock detected'), { code: '40P01' }) },
     );
     await expect(updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR))
@@ -585,8 +684,9 @@ describe('updateContact writes only what the patch names', () => {
 });
 
 describe('deleteContact', () => {
-  it('deletes the row and clears the legacy jsonb when it was primary', async () => {
-    // getContact, then reprojectScope: the row is gone, so both reads are empty.
+  it('deletes the row and re-projects billing_contact when it was the billing contact', async () => {
+    // getContact, the org pre-lock, then the billing re-projection: nobody
+    // else holds the role.
     const { exec, calls } = makeExec([[PRIMARY_ROW], [], []]);
     const deleted = await deleteContact(exec, CONTACT, ORG, ACTOR);
 
@@ -597,11 +697,21 @@ describe('deleteContact', () => {
     expect(orgBlobWrites(calls)).toEqual([null]);
   });
 
-  it('leaves the legacy jsonb alone when the deleted contact was not primary', async () => {
-    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+  it('leaves billing_contact alone when the deleted contact was the primary but not a billing contact', async () => {
+    const { exec, calls } = makeExec([[DANA_ROW], []]);
     await deleteContact(exec, CONTACT, ORG, ACTOR);
     expect(calls.deletes).toHaveLength(1);
     expect(orgBlobWrites(calls)).toEqual([]);
+  });
+
+  it('classifies from the row the DELETE removed, not the unlocked read', async () => {
+    // The unlocked read says "no billing role"; the row actually deleted holds
+    // it (granted concurrently). Its removal must re-project.
+    const { exec, calls } = makeExec([[PLAIN_ORG_ROW], [], []], {
+      deleteRows: [{ id: CONTACT, siteId: null, isPrimary: false, roles: ['billing'] }],
+    });
+    await deleteContact(exec, CONTACT, ORG, ACTOR);
+    expect(orgBlobWrites(calls)).toEqual([null]);
   });
 
   it('returns null when the contact is not in the organization', async () => {

@@ -2169,11 +2169,11 @@
       "title": "Adresse de facturation"
     },
     "contact": {
-      "description": "Les devis et factures sont envoyés par courriel à cette adresse. Sans elle, l'envoi d'une proposition la marque Envoyée, mais aucun courriel n'est envoyé.",
-      "email": "Courriel du contact",
-      "emailInvalid": "Saisissez une adresse courriel valide",
-      "emailPlaceholder": "billing@customer.example",
-      "name": "Nom du contact",
+      "description": "Les devis et factures sont envoyés par défaut par courriel au contact de facturation de l'organisation — le contact au niveau de l'organisation qui a le rôle Facturation. Vous pouvez toujours changer les destinataires à chaque envoi.",
+      "manage": "Gérer les contacts",
+      "noEmail": "{{name}} a le rôle Facturation mais aucune adresse courriel; les devis et factures ne peuvent pas être envoyés par courriel tant qu'une adresse n'est pas ajoutée.",
+      "none": "Aucun contact n'a le rôle Facturation. D'ici là, l'envoi d'une proposition la marque Envoyée, mais aucun courriel n'est envoyé.",
+      "recipientLabel": "Destinataire par défaut :",
       "title": "Contact de facturation"
     },
     "currency": {

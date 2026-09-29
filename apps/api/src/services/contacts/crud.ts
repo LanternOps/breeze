@@ -6,22 +6,35 @@
  * so validation and the legacy-jsonb re-projection live HERE, not at the route.
  * Anything that bypasses this module bypasses both.
  *
- * ── The projection invariant ────────────────────────────────────────────────
- * `organizations.billing_contact` and `sites.contact` are a permanent
- * compatibility projection of the `is_primary` contact for their scope (see
- * services/contacts/compat.ts for why they cannot be dropped). Every write
- * here that creates, edits, deletes or re-assigns a primary contact re-projects
- * the affected scope through compat.ts, which is the ONLY writer of either
- * jsonb column. Route handlers already run inside the request's
- * `withDbAccessContext` transaction, so the row write and the projection commit
- * together or not at all.
+ * ── The projection invariants ───────────────────────────────────────────────
+ * Two permanent compatibility projections live in legacy jsonb columns (see
+ * services/contacts/compat.ts for why they cannot be dropped), and compat.ts
+ * is the ONLY writer of either:
+ *
+ *   - `sites.contact` projects the SITE's `is_primary` contact. Every write here
+ *     that creates, edits, deletes or re-assigns a site primary re-projects it.
+ *   - `organizations.billing_contact` — the invoice/quote recipient — projects
+ *     the org's BILLING contact: the org-level contact holding the `billing`
+ *     role. NOT the org's primary contact. Every write here that touches an
+ *     org-level contact holding that role (before or after the write), or that
+ *     demotes one from primary, re-projects it.
+ *
+ * Route handlers already run inside the request's `withDbAccessContext`
+ * transaction, so the row write and the projection commit together or not at
+ * all.
  */
 
 import { and, arrayContains, asc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { contacts, type Contact } from '../../db/schema/contacts';
-import { organizations, sites } from '../../db/schema/orgs';
+import { sites } from '../../db/schema/orgs';
 import { pgErrorCode } from '../../utils/pgErrors';
-import { replaceBillingContact, replaceSiteContact, type ContactExecutor } from './compat';
+import {
+  BILLING_ROLE,
+  lockOrganizationForProjection,
+  projectBillingContact,
+  replaceSiteContact,
+  type ContactExecutor,
+} from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import type { DestinationSource } from '../callerVerification/types';
@@ -149,13 +162,13 @@ function assertIdentifiable(fields: Identifiers): void {
 }
 
 /**
- * Take the row locks a primary re-projection is about to need, parent-first.
+ * Take the row locks a re-projection is about to need, parent-first.
  *
  * ── The deadlock this closes (#3911 class) ──────────────────────────────────
  * This module writes the `contacts` row and THEN re-projects into
  * `organizations.billing_contact` / `sites.contact`, while
- * `compat.mergeBillingContact` (compat.ts:167, the billing-settings path)
- * updates `organizations` FIRST and the contact row second. Two concurrent
+ * `compat.mergeBillingContact` (the billing-settings path) locks
+ * `organizations` FIRST and writes the contact row second. Two concurrent
  * writers on one organization therefore end up holding each other's next lock —
  * A holds the contact row and wants the org row, B holds the org row and wants
  * the contact row — which Postgres breaks with 40P01. Acquiring the parent
@@ -174,11 +187,7 @@ async function lockProjectionScopes(
   orgId: string,
   siteIds: Array<string | null>,
 ): Promise<void> {
-  await exec
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .for('no key update');
+  await lockOrganizationForProjection(exec, orgId);
 
   const pinned = [...new Set(siteIds.filter((id): id is string => id !== null))].sort();
   if (pinned.length === 0) return;
@@ -227,19 +236,45 @@ async function demoteScopePrimary(
   orgId: string,
   siteId: string | null,
   exceptContactId?: string,
-): Promise<void> {
+): Promise<{ demotedBillingContact: boolean }> {
   const scope = primaryScopeWhere(orgId, siteId);
-  await exec
+  const demoted = await exec
     .update(contacts)
     .set({ isPrimary: false, updatedAt: new Date() })
-    .where(exceptContactId ? and(scope, ne(contacts.id, exceptContactId))! : scope);
+    .where(exceptContactId ? and(scope, ne(contacts.id, exceptContactId))! : scope)
+    .returning({ siteId: contacts.siteId, roles: contacts.roles });
+  // Primacy is the first tiebreak among billing contacts (compat.ts
+  // `billingContactOrder`), so demoting one can change which of them is THE
+  // billing contact even though nobody's billing role moved.
+  return {
+    demotedBillingContact: (demoted as Array<{ siteId: string | null; roles: string[] | null }>)
+      .some((row) => holdsOrgBillingRole(row)),
+  };
 }
 
 /**
- * The projection scopes one patch touches for a given stored row: the scope it
- * VACATES (the row's current one, if it holds a primary there) and the scope it
- * CLAIMS. Also the exact set of parents `lockProjectionScopes` has to take, so
- * the lock set and the re-projection set cannot drift apart.
+ * Whether a contact row feeds `organizations.billing_contact`: org-level and
+ * holding the `billing` role. A write that touches such a row — before or
+ * after the write — re-projects the org's billing contact.
+ */
+function holdsOrgBillingRole(row: { siteId: string | null; roles: string[] | null }): boolean {
+  return row.siteId === null && (row.roles ?? []).includes(BILLING_ROLE);
+}
+
+/**
+ * The projection scopes one patch touches for a given stored row: the SITE
+ * scopes it vacates or claims a primary in (`sites.contact`), and whether the
+ * organization level is in play at all (the row is, or becomes, org-level).
+ * Also the exact set of parents `lockProjectionScopes` has to take, so the
+ * lock set and the re-projection set cannot drift apart.
+ *
+ * Every write to an org-level contact takes the org lock, not only the ones
+ * that look billing-related from an unlocked read: a concurrent writer can
+ * grant or remove the `billing` role between that read and this write, and the
+ * only way to classify the row authoritatively is to re-read it under the same
+ * org lock every billing-projection writer takes. Contact edits are
+ * human-paced, so serialising them per organization costs nothing that
+ * matters.
  *
  * Split out because `updateContact` computes it TWICE: once from the unlocked
  * `getContact` read, to know which parents to lock, and again from the row
@@ -248,32 +283,31 @@ async function demoteScopePrimary(
 function projectionScopesFor(
   row: Pick<ContactRecord, 'isPrimary' | 'siteId'>,
   patch: UpdateContactInput,
-): { nextSiteId: string | null; nextIsPrimary: boolean; scopes: Set<string | null> } {
+): { nextSiteId: string | null; nextIsPrimary: boolean; siteScopes: Set<string>; orgLevel: boolean } {
   const nextSiteId = patch.siteId === undefined ? row.siteId : (patch.siteId ?? null);
   const nextIsPrimary = patch.isPrimary === undefined ? row.isPrimary : patch.isPrimary;
-  const scopes = new Set<string | null>();
-  if (row.isPrimary) scopes.add(row.siteId);
-  if (nextIsPrimary) scopes.add(nextSiteId);
-  return { nextSiteId, nextIsPrimary, scopes };
+  const siteScopes = new Set<string>();
+  if (row.isPrimary && row.siteId !== null) siteScopes.add(row.siteId);
+  if (nextIsPrimary && nextSiteId !== null) siteScopes.add(nextSiteId);
+  return { nextSiteId, nextIsPrimary, siteScopes, orgLevel: row.siteId === null || nextSiteId === null };
 }
 
 /**
- * Re-derive one scope's legacy jsonb from whatever contact now holds
+ * Re-derive a site's `sites.contact` from whatever contact now holds
  * `is_primary` there (or clear it when nothing does).
  *
- * Deliberately routed through compat's `replace*` entry points — the two
- * functions reserved for exactly this caller — so the jsonb keeps a single
- * writer. They also re-assert the row side, which is a redundant no-op UPDATE
- * here; correctness of the invariant is worth one statement.
+ * Deliberately routed through compat's `replaceSiteContact` — the function
+ * reserved for exactly this caller — so the jsonb keeps a single writer. It
+ * also re-asserts the row side, which is a redundant no-op UPDATE here;
+ * correctness of the invariant is worth one statement.
  *
- * Exported because the contact IMPORTER edits primary contacts too (an
- * acknowledged match can land on one), and the invariant has to hold on every
- * path that writes the table, not just the CRUD one.
+ * The organization's `billing_contact` is NOT derived from a primary: see
+ * compat.ts `projectBillingContact`.
  */
-export async function reprojectPrimaryContact(
+async function reprojectSiteContact(
   exec: ContactExecutor,
   orgId: string,
-  siteId: string | null,
+  siteId: string,
   actorId: string | null,
 ): Promise<void> {
   const [primary] = await exec
@@ -294,11 +328,7 @@ export async function reprojectPrimaryContact(
     ? { name: primary.name, email: primary.email, phone: primary.phone }
     : null;
 
-  if (siteId === null) {
-    await replaceBillingContact(exec, orgId, blob, actorId);
-  } else {
-    await replaceSiteContact(exec, orgId, siteId, blob, actorId);
-  }
+  await replaceSiteContact(exec, orgId, siteId, blob, actorId);
 }
 
 function contactListWhere(orgId: string, filters: ContactListFilters): SQL {
@@ -490,13 +520,18 @@ export async function createContact(
   if (siteId !== null) await assertSiteInOrg(exec, input.orgId, siteId);
 
   const isPrimary = input.isPrimary === true;
+  // A new org-level contact carrying the billing role can become THE billing
+  // contact, so it re-projects organizations.billing_contact.
+  const billing = holdsOrgBillingRole({ siteId, roles: roles ?? [] });
   // Parent-first, before the demotion UPDATE and the INSERT — see
-  // lockProjectionScopes. A non-primary create re-projects nothing and takes
-  // no lock, so ordinary contact creation never serialises on the org row.
-  if (isPrimary) {
-    await lockProjectionScopes(exec, input.orgId, [siteId]);
-    await demoteScopePrimary(exec, input.orgId, siteId);
+  // lockProjectionScopes. A create that claims no primary slot and carries no
+  // org-level billing role re-projects nothing and takes no lock, so ordinary
+  // contact creation never serialises on the org row.
+  let demotedBillingContact = false;
+  if (isPrimary || billing) {
+    await lockProjectionScopes(exec, input.orgId, isPrimary && siteId !== null ? [siteId] : []);
   }
+  if (isPrimary) ({ demotedBillingContact } = await demoteScopePrimary(exec, input.orgId, siteId));
 
   const [created] = await exec
     .insert(contacts)
@@ -521,7 +556,8 @@ export async function createContact(
     }
   }
 
-  if (isPrimary) await reprojectPrimaryContact(exec, input.orgId, siteId, actor.userId);
+  if (isPrimary && siteId !== null) await reprojectSiteContact(exec, input.orgId, siteId, actor.userId);
+  if (billing || demotedBillingContact) await projectBillingContact(exec, input.orgId);
   return created as ContactRecord;
 }
 
@@ -537,7 +573,8 @@ export async function updateContact(
   if (!existing) return null;
 
   const roles = assertValidRoles(patch.roles);
-  let { nextSiteId, nextIsPrimary, scopes } = projectionScopesFor(existing, patch);
+  const initialScopes = projectionScopesFor(existing, patch);
+  let { nextSiteId, nextIsPrimary, siteScopes } = initialScopes;
   const fields: Identifiers = {
     name: patch.name === undefined ? existing.name : clean(patch.name),
     email: patch.email === undefined ? existing.email : normalizeContactEmail(patch.email),
@@ -551,29 +588,34 @@ export async function updateContact(
 
   // Everything above derives from `existing`, which `getContact` read WITHOUT a
   // lock. `current` is that same reading once it has been confirmed under one.
-  let current: Pick<ContactRecord, 'isPrimary' | 'siteId'> = existing;
+  let current: Pick<ContactRecord, 'isPrimary' | 'siteId' | 'roles'> = existing;
 
-  // Both the vacated and the claimed scope can have lost or gained a primary,
-  // and that is EXACTLY the set of parents the re-projection will write.
-  if (scopes.size > 0) {
-    await lockProjectionScopes(exec, orgId, [...scopes]);
+  // The organization (whenever the row is or becomes org-level — its billing
+  // role decides organizations.billing_contact) plus every site that can lose
+  // or gain a primary: EXACTLY the set of parents the re-projection may write.
+  if (initialScopes.orgLevel || siteScopes.size > 0) {
+    await lockProjectionScopes(exec, orgId, [...siteScopes]);
 
     // Re-read the target under those locks, and only then act. Without this,
     // the demotion and the re-projection ran on the strength of the unlocked
     // read: a concurrent DELETE landing in that window left the patch UPDATE
     // below matching nothing — the route maps the resulting null to a 404 —
-    // while the incumbent primary had ALREADY been demoted and
-    // `organizations.billing_contact` / `sites.contact` re-projected to null,
-    // and the enclosing request transaction committed both. A call that
-    // reported failure took the organization's billing contact with it.
+    // while the incumbent primary had ALREADY been demoted and the legacy
+    // jsonb re-projected, and the enclosing request transaction committed
+    // both — a call that reported failure still changed the projection.
+    //
+    // `roles` is read here too: whether this row feeds the org's billing
+    // contact is decided by the LOCKED row, never by the unlocked one — a
+    // concurrent writer may have granted or removed the billing role since.
     const [locked] = await exec
-      .select({ isPrimary: contacts.isPrimary, siteId: contacts.siteId })
+      .select({ isPrimary: contacts.isPrimary, siteId: contacts.siteId, roles: contacts.roles })
       .from(contacts)
       .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
       .limit(1)
       .for('no key update');
     if (!locked) return null;
 
+    current = locked;
     if (locked.isPrimary !== existing.isPrimary || locked.siteId !== existing.siteId) {
       // The narrow window the re-read exists to close, in its other shape: a
       // concurrent patch moved or (de)promoted this row between the two reads,
@@ -586,19 +628,19 @@ export async function updateContact(
       // parent-first order that closes the #3911 deadlock still holds. The
       // alternative — locking every scope the patch could conceivably touch up
       // front — would serialise unrelated writers on sites nothing writes.
-      current = locked;
       const relocked = projectionScopesFor(locked, patch);
-      const unlockedScopes = [...relocked.scopes].filter((scope) => !scopes.has(scope));
+      const unlockedScopes = [...relocked.siteScopes].filter((scope) => !siteScopes.has(scope));
       if (unlockedScopes.length > 0) await lockProjectionScopes(exec, orgId, unlockedScopes);
       ({ nextSiteId, nextIsPrimary } = relocked);
-      scopes = relocked.scopes;
+      siteScopes = relocked.siteScopes;
     }
   }
 
   // Demote the incumbent whenever this row is claiming a primary slot it does
   // not already hold — a scope move counts, even with is_primary unchanged.
+  let demotedBillingContact = false;
   if (nextIsPrimary && !(current.isPrimary && current.siteId === nextSiteId)) {
-    await demoteScopePrimary(exec, orgId, nextSiteId, contactId);
+    ({ demotedBillingContact } = await demoteScopePrimary(exec, orgId, nextSiteId, contactId));
   }
 
   // SET only what the patch actually names. Writing all four identifiers (and
@@ -651,7 +693,12 @@ export async function updateContact(
     });
   }
 
-  for (const scope of scopes) await reprojectPrimaryContact(exec, orgId, scope, actor.userId);
+  for (const siteId of siteScopes) await reprojectSiteContact(exec, orgId, siteId, actor.userId);
+  // Before OR after: gaining the role, losing it, moving on or off the org
+  // level, or a field edit while holding it all change what invoices use.
+  if (holdsOrgBillingRole(current) || holdsOrgBillingRole(updated) || demotedBillingContact) {
+    await projectBillingContact(exec, orgId);
+  }
 
   return updated;
 }
@@ -666,13 +713,20 @@ export async function deleteContact(
   const existing = await getContact(exec, contactId, orgId);
   if (!existing) return null;
 
-  // Parent-first before the DELETE, for the same reason updateContact does it.
-  if (existing.isPrimary) await lockProjectionScopes(exec, orgId, [existing.siteId]);
+  // Parent-first before the DELETE, for the same reason updateContact does it:
+  // the org whenever the contact is org-level (it may be the billing contact),
+  // and its site when it is that site's primary.
+  const sitePrimary = existing.isPrimary && existing.siteId !== null ? existing.siteId : null;
+  if (existing.siteId === null || sitePrimary !== null) {
+    await lockProjectionScopes(exec, orgId, sitePrimary === null ? [] : [sitePrimary]);
+  }
 
+  // RETURNING the row as it was deleted, so what gets re-projected is decided
+  // by the row this statement actually removed, not by the unlocked read.
   const [deleted] = await exec
     .delete(contacts)
     .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
-    .returning({ id: contacts.id });
+    .returning({ id: contacts.id, siteId: contacts.siteId, isPrimary: contacts.isPrimary, roles: contacts.roles });
 
   // `existing` came from an unlocked read, so the DELETE is the first statement
   // that can say whether this call actually removed anything. Clearing the
@@ -681,6 +735,10 @@ export async function deleteContact(
   // 404 — the same false-success the update path re-reads to avoid.
   if (!deleted) return null;
 
-  if (existing.isPrimary) await reprojectPrimaryContact(exec, orgId, existing.siteId, actor.userId);
+  const removed = deleted as { siteId: string | null; isPrimary: boolean; roles: string[] | null };
+  if (removed.isPrimary && removed.siteId !== null) {
+    await reprojectSiteContact(exec, orgId, removed.siteId, actor.userId);
+  }
+  if (holdsOrgBillingRole(removed)) await projectBillingContact(exec, orgId);
   return existing;
 }

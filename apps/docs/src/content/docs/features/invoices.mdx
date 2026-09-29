@@ -112,7 +112,8 @@ When an invoice is created from an accepted [quote](/features/quotes/) that requ
 Each customer organization has a **Billing** tab (**Settings → Organizations → [organization] → Billing**) that holds the details Breeze prints on and calculates for that customer's invoices:
 
 - **Tax ID**, a **tax-exempt** flag, and a per-organization **tax rate**. When a rate is set here it applies to that customer's invoices; otherwise Breeze falls back to your partner default tax rate (**Settings → Billing**).
-- A **billing contact** and full **billing address** (address lines, city, region, postal code, and country), which appear on the invoice PDF.
+- The **billing contact** — shown here, but managed in the organization's **Contacts** tab: it is the organization-level contact with the **Billing** role. Quotes and invoices are emailed to that contact by default (you can change the recipients on each send). If no contact has the role, nothing is emailed until one does.
+- A full **billing address** (address lines, city, region, postal code, and country), which appears on the invoice PDF.
 - **Payment terms** (v0.117.0+) -- the number of days (0-365) between issue and due date for this customer. Leave it blank to inherit your partner default from **Settings → Billing**; the field shows the inherited value. `0` means due on receipt.
 
 Setting these once per customer means invoices carry the right tax and address without re-entering them each time.

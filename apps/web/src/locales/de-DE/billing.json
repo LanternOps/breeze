@@ -2169,11 +2169,11 @@
       "title": "Rechnungsadresse"
     },
     "contact": {
-      "description": "Angebote und Rechnungen werden per E-Mail an diese Adresse gesendet. Ohne diese Angabe wird das Senden eines Angebots als „Gesendet“ gekennzeichnet, es wird jedoch nichts per E-Mail gesendet.",
-      "email": "Kontakt-E-Mail",
-      "emailInvalid": "Geben Sie eine gültige E-Mail-Adresse ein",
-      "emailPlaceholder": "billing@customer.example",
-      "name": "Kontaktname",
+      "description": "Angebote und Rechnungen werden standardmäßig per E-Mail an den Rechnungskontakt der Organisation gesendet – den Kontakt auf Organisationsebene mit der Rolle „Buchhaltung“. Die Empfänger können Sie bei jedem Versand weiterhin ändern.",
+      "manage": "Kontakte verwalten",
+      "noEmail": "{{name}} hat die Rolle „Buchhaltung“, aber keine E-Mail-Adresse. Angebote und Rechnungen können erst per E-Mail gesendet werden, wenn eine hinzugefügt wurde.",
+      "none": "Kein Kontakt hat die Rolle „Buchhaltung“. Bis dahin wird ein gesendetes Angebot als „Gesendet“ markiert, aber nichts per E-Mail verschickt.",
+      "recipientLabel": "Standardempfänger:",
       "title": "Rechnungskontakt"
     },
     "currency": {

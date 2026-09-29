@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
@@ -6,51 +7,100 @@ vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWi
 import {
   readContactBlob,
   mergeBillingContact,
-  replaceBillingContact,
+  projectBillingContact,
   replaceSiteContact,
+  syncBillingContactRow,
   syncSiteContactRow,
   type ContactExecutor,
 } from './compat';
+import { contacts } from '../../db/schema/contacts';
+import { organizations } from '../../db/schema/orgs';
+
+const dialect = new PgDialect();
+/** Compile a captured Drizzle fragment so tests assert SQL, not object identity. */
+function compile(fragment: unknown): { sql: string; params: unknown[] } {
+  const query = dialect.sqlToQuery(fragment as never);
+  return { sql: query.sql, params: query.params };
+}
+
+interface Statement {
+  verb: 'select' | 'update' | 'insert' | 'delete';
+  table: unknown;
+  where?: unknown;
+  orderBy?: unknown[];
+  lockMode?: string;
+  values?: Record<string, unknown>;
+}
 
 /**
- * Minimal fake executor recording the Drizzle calls the compat service makes.
- * Only the four chains it actually uses are modelled:
- *   select().from().where().limit()  update().set().where()
- *   insert().values()                delete().where()
+ * Fake executor. `selectRows` is a queue consumed one entry per SELECT, in the
+ * order the code under test issues them; every statement is recorded, in
+ * order, with its table and (for reads) its WHERE / ORDER BY / lock mode — the
+ * fake cannot APPLY a WHERE, so which rows a statement may touch is asserted on
+ * the compiled condition.
  */
-function makeExec(existingRows: Array<Record<string, unknown>> = []) {
-  const calls = {
-    inserts: [] as Array<Record<string, unknown>>,
-    updates: [] as Array<Record<string, unknown>>,
-    deletes: 0,
+function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
+  const queue = [...selectRows];
+  const log: Statement[] = [];
+
+  const settled = (rows: Array<Record<string, unknown>>, entry: Statement) => {
+    const promise = Promise.resolve(rows) as Promise<unknown[]> & Record<string, unknown>;
+    promise.orderBy = (...args: unknown[]) => { entry.orderBy = args; return settled(rows, entry); };
+    promise.limit = () => settled(rows, entry);
+    promise.for = (mode: string) => { entry.lockMode = mode; return settled(rows, entry); };
+    return promise;
   };
+
   const exec = {
     select: () => ({
-      from: () => ({
-        where: () => ({ limit: async () => existingRows }),
-      }),
+      from: (table: unknown) => {
+        const entry: Statement = { verb: 'select', table };
+        log.push(entry);
+        const rows = queue.shift() ?? [];
+        const chain = settled(rows, entry);
+        return Object.assign(chain, {
+          where: (condition: unknown) => { entry.where = condition; return settled(rows, entry); },
+        });
+      },
     }),
-    insert: () => ({
-      values: (v: Record<string, unknown>) => {
-        calls.inserts.push(v);
+    insert: (table: unknown) => ({
+      values: (values: Record<string, unknown>) => {
+        log.push({ verb: 'insert', table, values });
         return { returning: async () => [{ id: 'c-new' }] };
       },
     }),
-    update: () => ({
-      set: (v: Record<string, unknown>) => ({
-        where: async () => { calls.updates.push(v); },
-      }),
+    update: (table: unknown) => ({
+      set: (values: Record<string, unknown>) => {
+        const entry: Statement = { verb: 'update', table, values };
+        log.push(entry);
+        return { where: async (condition: unknown) => { entry.where = condition; } };
+      },
     }),
-    delete: () => ({
-      where: async () => { calls.deletes += 1; },
+    delete: (table: unknown) => ({
+      where: async (condition: unknown) => { log.push({ verb: 'delete', table, where: condition }); },
     }),
   } as unknown as ContactExecutor;
-  return { exec, calls };
+
+  const of = (verb: Statement['verb'], table: unknown) => log.filter((s) => s.verb === verb && s.table === table);
+  return {
+    exec,
+    log,
+    contactSelects: () => of('select', contacts),
+    contactUpdates: () => of('update', contacts),
+    contactInserts: () => of('insert', contacts),
+    deletes: () => log.filter((s) => s.verb === 'delete'),
+    blobWrites: () => of('update', organizations).map((s) => s.values!.billingContact),
+  };
 }
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const SITE = '22222222-2222-4222-8222-222222222222';
-const EXISTING_ID = '33333333-3333-4333-8333-333333333333';
+const BILL = '33333333-3333-4333-8333-333333333333';
+const DANA = '44444444-4444-4444-8444-444444444444';
+
+const BILL_ROW = { id: BILL, name: 'Bill Payer', email: 'bill@acme.com', phone: '555' };
+/** The organization pre-lock `mergeBillingContact` reads first; its rows are ignored. */
+const LOCK: Array<Record<string, unknown>> = [];
 
 describe('readContactBlob', () => {
   it('extracts the three modelled fields', () => {
@@ -75,115 +125,180 @@ describe('readContactBlob', () => {
   });
 });
 
-describe('mergeBillingContact', () => {
-  let exec: ContactExecutor;
-  let calls: ReturnType<typeof makeExec>['calls'];
+describe('the billing path targets the billing-role contact, never the primary', () => {
+  // The sweep bug: this lookup was `is_primary = true`, so an org whose primary
+  // was a technical contact had THAT person's email rewritten by the Billing
+  // tab, and deleted when the field was cleared.
+  it('looks the contact up by the billing role at org level — not by is_primary', async () => {
+    const f = makeExec([LOCK, [BILL_ROW], [BILL_ROW]]);
+    await mergeBillingContact(f.exec, ORG, { email: 'ap@acme.com' });
 
-  beforeEach(() => { ({ exec, calls } = makeExec()); });
+    const lookup = compile(f.contactSelects()[0]!.where);
+    expect(lookup.sql).toContain('"contacts"."org_id" = $1');
+    expect(lookup.sql).toContain('"contacts"."site_id" is null');
+    expect(lookup.sql).toContain('"contacts"."roles" @> $2');
+    expect(lookup.params).toEqual([ORG, '{"billing"}']);
+    // Primacy may ORDER the billing contacts; it must never SELECT the target.
+    expect(lookup.sql).not.toContain('"is_primary"');
+  });
+
+  it('prefers the primary billing contact, then the current recipient, then the oldest', async () => {
+    const f = makeExec([LOCK, [BILL_ROW], [BILL_ROW]]);
+    await mergeBillingContact(f.exec, ORG, { email: 'ap@acme.com' });
+
+    const order = f.contactSelects()[0]!.orderBy!.map((o) => compile(o).sql);
+    expect(order).toHaveLength(4);
+    expect(order[0]).toBe('"contacts"."is_primary" desc');
+    // The incumbent: matches the email invoices currently go to.
+    expect(order[1]).toContain('"organizations"."billing_contact" ->> \'email\'');
+    expect(order[1]).toMatch(/ desc$/);
+    expect(order[2]).toBe('"contacts"."created_at" asc');
+    expect(order[3]).toBe('"contacts"."id" asc');
+  });
+
+  it('edits the billing contact it found, and only that row', async () => {
+    const f = makeExec([LOCK, [BILL_ROW], [BILL_ROW]]);
+    await mergeBillingContact(f.exec, ORG, { email: 'AP@Acme.com' });
+
+    expect(f.contactUpdates()).toHaveLength(1);
+    const write = f.contactUpdates()[0]!;
+    // Merge: omitted fields keep the stored value; the email is stored lower-cased.
+    expect(write.values).toMatchObject({ name: 'Bill Payer', email: 'ap@acme.com', phone: '555' });
+    expect(compile(write.where).params).toEqual([BILL, ORG]);
+    expect(f.contactInserts()).toHaveLength(0);
+    expect(f.deletes()).toHaveLength(0);
+  });
+
+  it('creates a non-primary billing contact when nobody holds the role and a primary exists', async () => {
+    // billing lookup: none; primary probe: Dana; projection read: the new row.
+    const f = makeExec([LOCK, [], [{ id: DANA }], [{ name: null, email: 'ap@acme.com', phone: null }]]);
+    await mergeBillingContact(f.exec, ORG, { email: 'ap@acme.com' });
+
+    expect(f.contactInserts()).toHaveLength(1);
+    expect(f.contactInserts()[0]!.values).toMatchObject({
+      orgId: ORG, siteId: null, email: 'ap@acme.com', roles: ['billing'], isPrimary: false,
+    });
+    // Dana is never written.
+    expect(f.contactUpdates()).toHaveLength(0);
+  });
+
+  it('makes the new billing contact primary only when the org has no primary at all', async () => {
+    const f = makeExec([LOCK, [], [], [{ name: null, email: 'ap@acme.com', phone: null }]]);
+    await mergeBillingContact(f.exec, ORG, { email: 'ap@acme.com' });
+    expect(f.contactInserts()[0]!.values).toMatchObject({ roles: ['billing'], isPrimary: true });
+  });
+
+  it('a null email unassigns the billing role and changes nothing else — never a DELETE', async () => {
+    const f = makeExec([LOCK, [BILL_ROW], []]);
+    await mergeBillingContact(f.exec, ORG, { email: null, name: null });
+
+    expect(f.deletes()).toHaveLength(0);
+    expect(f.contactUpdates()).toHaveLength(1);
+    const write = f.contactUpdates()[0]!;
+    // Only the role array (and updated_at) — name/email/phone are left intact.
+    expect(Object.keys(write.values!).sort()).toEqual(['roles', 'updatedAt']);
+    expect(compile(write.values!.roles).sql).toBe('array_remove("contacts"."roles", $1)');
+    expect(compile(write.values!.roles).params).toEqual(['billing']);
+    expect(compile(write.where).params).toEqual([BILL, ORG]);
+    // Nobody holds the role any more: no recipient, and no fallback to a primary.
+    expect(f.blobWrites()).toEqual([null]);
+  });
+
+  it('a null email with no billing contact writes no contact at all', async () => {
+    const f = makeExec([LOCK, [], []]);
+    await mergeBillingContact(f.exec, ORG, { email: null });
+    expect(f.contactUpdates()).toHaveLength(0);
+    expect(f.contactInserts()).toHaveLength(0);
+    expect(f.deletes()).toHaveLength(0);
+  });
 
   it('is a no-op when the patch carries no contact field', async () => {
-    await mergeBillingContact(exec, ORG, {});
-    expect(calls.updates).toHaveLength(0);
-    expect(calls.inserts).toHaveLength(0);
+    const f = makeExec();
+    await mergeBillingContact(f.exec, ORG, {});
+    expect(f.log).toEqual([]);
   });
 
-  it('creates the org-level primary contact with the billing role', async () => {
-    await mergeBillingContact(exec, ORG, { email: 'ap@acme.com' });
-    expect(calls.inserts).toHaveLength(1);
-    expect(calls.inserts[0]).toMatchObject({
-      orgId: ORG, siteId: null, email: 'ap@acme.com', roles: ['billing'], isPrimary: true,
-    });
-  });
+  it('locks the organization before touching any contact, then re-projects last', async () => {
+    const f = makeExec([LOCK, [BILL_ROW], [BILL_ROW]]);
+    await mergeBillingContact(f.exec, ORG, { email: 'ap@acme.com' });
 
-  it('writes the jsonb column through an atomic SQL merge, not a read-modify-write', async () => {
-    await mergeBillingContact(exec, ORG, { email: 'ap@acme.com' });
-    // The organizations update is the first recorded update; its billingContact
-    // must be a Drizzle SQL expression rather than a plain object, which is what
-    // makes the write immune to a lost update.
-    expect(calls.updates[0]?.billingContact).toBeTypeOf('object');
-    expect(calls.updates[0]?.billingContact).not.toBeNull();
-    expect(Object.prototype.hasOwnProperty.call(calls.updates[0]!.billingContact as object, 'email'))
-      .toBe(false);
-  });
-
-  it('preserves fields the patch omits', async () => {
-    ({ exec, calls } = makeExec([
-      { id: EXISTING_ID, name: 'Jane', email: 'jane@acme.com', phone: '555' },
-    ]));
-    await mergeBillingContact(exec, ORG, { email: 'new@acme.com' });
-    // updates[0] is the organizations jsonb write; updates[1] is the contact row.
-    expect(calls.updates[1]).toMatchObject({ name: 'Jane', email: 'new@acme.com', phone: '555' });
-  });
-
-  it('deletes the contact row when the last identifying field is cleared', async () => {
-    ({ exec, calls } = makeExec([
-      { id: EXISTING_ID, name: null, email: 'jane@acme.com', phone: null },
-    ]));
-    await mergeBillingContact(exec, ORG, { email: null });
-    // contacts_identifiable_chk forbids an all-null row, so clearing the last
-    // field must remove the contact rather than violate the constraint.
-    expect(calls.deletes).toBe(1);
-    expect(calls.updates).toHaveLength(1); // the jsonb write only
-  });
-
-  it('keeps a mobile-only contact when the blob fields are all cleared', async () => {
-    // `mobile` is a real contacts column with NO key in the legacy blob, and
-    // contacts_identifiable_chk accepts it alone — so a row identified only by
-    // mobile is legal. Judging emptiness on name/email/phone alone would delete
-    // it here, cascading contact_external_links and destroying the re-import
-    // identity key, the first time anyone cleared the billing email.
-    ({ exec, calls } = makeExec([
-      { id: EXISTING_ID, name: null, email: 'jane@acme.com', phone: null, mobile: '+1 555 0100' },
-    ]));
-    await mergeBillingContact(exec, ORG, { email: null });
-
-    expect(calls.deletes).toBe(0);
-    // The jsonb write, then the contacts row with its modelled fields cleared.
-    expect(calls.updates).toHaveLength(2);
-    expect(calls.updates[1]).toMatchObject({ name: null, email: null, phone: null });
-    // ...and mobile is left alone rather than written back as null.
-    expect(calls.updates[1]).not.toHaveProperty('mobile');
+    // Parent-first, the order every billing-projection writer takes (#3911).
+    expect(f.log[0]).toMatchObject({ verb: 'select', table: organizations, lockMode: 'no key update' });
+    expect(f.log.at(-1)).toMatchObject({ verb: 'update', table: organizations });
   });
 });
 
-describe('replaceBillingContact', () => {
-  it('drops fields absent from the new blob, matching the org PATCH contract', async () => {
-    const { exec, calls } = makeExec([
-      { id: EXISTING_ID, name: 'Jane', email: 'jane@acme.com', phone: '555' },
-    ]);
-    await replaceBillingContact(exec, ORG, { name: 'Bob' });
-    expect(calls.updates[1]).toMatchObject({ name: 'Bob', email: null, phone: null });
+describe('syncBillingContactRow (org create / PATCH whole-blob replace)', () => {
+  it('replaces the billing contact\'s fields, dropping those absent from the blob', async () => {
+    const f = makeExec([[BILL_ROW], [{ name: 'Accounts', email: null, phone: null }]]);
+    const projected = await syncBillingContactRow(f.exec, ORG, { name: 'Accounts' });
+    expect(f.contactUpdates()[0]!.values).toMatchObject({ name: 'Accounts', email: null, phone: null });
+    expect(compile(f.contactUpdates()[0]!.where).params).toEqual([BILL, ORG]);
+    expect(projected).toEqual({ name: 'Accounts', email: null, phone: null });
   });
 
-  it('removes the contact row when the blob is cleared entirely', async () => {
-    const { exec, calls } = makeExec([
-      { id: EXISTING_ID, name: 'Jane', email: null, phone: null },
-    ]);
-    await replaceBillingContact(exec, ORG, null);
-    expect(calls.deletes).toBe(1);
+  it('an empty blob unassigns the billing role — never a DELETE', async () => {
+    const f = makeExec([[BILL_ROW], []]);
+    const projected = await syncBillingContactRow(f.exec, ORG, null);
+    expect(f.deletes()).toHaveLength(0);
+    expect(Object.keys(f.contactUpdates()[0]!.values!).sort()).toEqual(['roles', 'updatedAt']);
+    expect(projected).toBeNull();
   });
 
   it('creates nothing for a blob with no usable field', async () => {
-    const { exec, calls } = makeExec();
-    await replaceBillingContact(exec, ORG, { name: '  ' });
-    expect(calls.inserts).toHaveLength(0);
-    expect(calls.deletes).toBe(0);
+    const f = makeExec([[], []]);
+    await syncBillingContactRow(f.exec, ORG, { name: '  ' });
+    expect(f.contactInserts()).toHaveLength(0);
+    expect(f.deletes()).toHaveLength(0);
+  });
+});
+
+describe('projectBillingContact', () => {
+  let f: ReturnType<typeof makeExec>;
+  beforeEach(() => { f = makeExec([[{ name: 'Bill Payer', email: 'bill@acme.com', phone: null }]]); });
+
+  it('is one-way: reads contacts, writes only organizations.billing_contact', async () => {
+    const blob = await projectBillingContact(f.exec, ORG);
+    expect(blob).toEqual({ name: 'Bill Payer', email: 'bill@acme.com', phone: null });
+    expect(f.log.map((s) => [s.verb, s.table])).toEqual([['select', contacts], ['update', organizations]]);
+    expect(f.blobWrites()).toEqual([{ name: 'Bill Payer', email: 'bill@acme.com', phone: null }]);
+    expect(compile(f.log[1]!.where).params).toEqual([ORG]);
+  });
+
+  it('writes null — not the primary contact — when no org-level contact holds the billing role', async () => {
+    f = makeExec([[]]);
+    expect(await projectBillingContact(f.exec, ORG)).toBeNull();
+    expect(f.blobWrites()).toEqual([null]);
+    // One read, and it is the billing-role read: no second lookup of a primary.
+    expect(f.contactSelects()).toHaveLength(1);
+    expect(compile(f.contactSelects()[0]!.where).sql).not.toContain('"is_primary"');
+  });
+
+  it('writes null for a billing contact with nothing the blob can model (mobile only)', async () => {
+    f = makeExec([[{ name: null, email: null, phone: null }]]);
+    expect(await projectBillingContact(f.exec, ORG)).toBeNull();
   });
 });
 
 describe('site contacts', () => {
   it('pins the contact to the site with the site role', async () => {
-    const { exec, calls } = makeExec();
-    await replaceSiteContact(exec, ORG, SITE, { name: 'Front desk', phone: '555' });
-    expect(calls.inserts[0]).toMatchObject({
+    const f = makeExec();
+    await replaceSiteContact(f.exec, ORG, SITE, { name: 'Front desk', phone: '555' });
+    expect(f.contactInserts()[0]!.values).toMatchObject({
       orgId: ORG, siteId: SITE, name: 'Front desk', phone: '555', roles: ['site'], isPrimary: true,
     });
   });
 
   it('syncSiteContactRow does not touch the jsonb column', async () => {
-    const { exec, calls } = makeExec();
-    await syncSiteContactRow(exec, ORG, SITE, { name: 'Front desk' });
-    expect(calls.inserts).toHaveLength(1);
-    expect(calls.updates).toHaveLength(0);
+    const f = makeExec();
+    await syncSiteContactRow(f.exec, ORG, SITE, { name: 'Front desk' });
+    expect(f.contactInserts()).toHaveLength(1);
+    expect(f.log.filter((s) => s.verb === 'update')).toHaveLength(0);
+  });
+
+  it('still removes a site contact whose blob is cleared entirely (site scope keeps its old contract)', async () => {
+    const f = makeExec([[{ id: DANA, name: 'Front desk', email: null, phone: null, mobile: null }]]);
+    await syncSiteContactRow(f.exec, ORG, SITE, null);
+    expect(f.deletes()).toHaveLength(1);
   });
 });

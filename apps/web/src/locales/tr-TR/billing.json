@@ -2169,11 +2169,11 @@
       "title": "Fatura adresi"
     },
     "contact": {
-      "description": "Fiyat teklifleri ve faturalar bu adrese e-postayla gönderilir. Bu olmadan, bir teklif gönderildiğinde, teklif Gönderildi olarak işaretlenir ancak hiçbir şey e-postayla gönderilmez.",
-      "email": "İletişim e-postası",
-      "emailInvalid": "Geçerli bir e-posta adresi girin",
-      "emailPlaceholder": "faturalama@müşteri.örnek",
-      "name": "Kişi adı",
+      "description": "Fiyat teklifleri ve faturalar varsayılan olarak kuruluşun faturalandırma iletişim kişisine, yani Faturalama rolüne sahip kuruluş düzeyindeki kişiye e-postayla gönderilir. Her gönderimde alıcıları yine de değiştirebilirsiniz.",
+      "manage": "Kişileri yönet",
+      "noEmail": "{{name}} Faturalama rolüne sahip ancak e-posta adresi yok; bir adres eklenene kadar fiyat teklifleri ve faturalar e-postayla gönderilemez.",
+      "none": "Hiçbir kişi Faturalama rolüne sahip değil. Biri bu role sahip olana kadar, bir teklif gönderildiğinde Gönderildi olarak işaretlenir ancak hiçbir şey e-postayla gönderilmez.",
+      "recipientLabel": "Varsayılan alıcı:",
       "title": "Faturalandırma iletişim kişisi"
     },
     "currency": {
