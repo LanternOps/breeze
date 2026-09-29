@@ -776,6 +776,7 @@
     "remove": "Kaldır",
     "removed": "Kaldırıldı",
     "searchThreats": "Arama tehditleri...",
+    "selectAllThreats": "Tüm tehditleri seç",
     "selectThreat": "Tehdidi seçin {{name}}",
     "selectedCount": "{{count}} seçildi",
     "severity": "Önem",

@@ -86,6 +86,7 @@
     },
     "filters": {
       "allDevices": "All Devices ({{count}})",
+      "statusFilterLabel": "Compliance status filter",
       "pendingPatches": "Pending Patches ({{count}})",
       "critical": "Critical ({{count}})",
       "pendingReboot": "Pending Reboot ({{count}})",

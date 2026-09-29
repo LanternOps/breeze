@@ -86,6 +86,7 @@
     },
     "filters": {
       "allDevices": "Tutti i dispositivi ({{count}})",
+      "statusFilterLabel": "Filtra per stato di conformità",
       "pendingPatches": "Patch in sospeso ({{count}})",
       "critical": "Critiche ({{count}})",
       "pendingReboot": "Riavvio in sospeso ({{count}})",

@@ -413,6 +413,7 @@ export default function VulnerabilitiesPage() {
                 <th className="px-4 py-3">
                   <input
                     type="checkbox"
+                    aria-label={t("securityVulnerabilitiesPage.selectAllThreats")}
                     checked={allSelected}
                     ref={(el) => {
                       if (el) el.indeterminate = someSelected && !allSelected;
@@ -457,6 +458,9 @@ export default function VulnerabilitiesPage() {
                     <td className="px-4 py-3">
                       <input
                         type="checkbox"
+                        aria-label={t("securityVulnerabilitiesPage.selectThreat", {
+                          name: threat.name,
+                        })}
                         checked={selectedIds.has(threat.id)}
                         onChange={(e) => toggleOne(threat.id, e.target.checked)}
                         className="h-4 w-4 rounded border-border"

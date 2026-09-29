@@ -60,6 +60,22 @@ describe('AiChatSidebar collapsed-shell interactivity', () => {
   });
 });
 
+// #7150 (same as HelpPanel): a collapsed panel's shadow bleeds back onto the
+// right edge of the viewport, so shadow-2xl must apply only while open.
+describe('AiChatSidebar shadow', () => {
+  it('has no shadow when collapsed', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: false });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-sidebar').className).not.toContain('shadow-2xl');
+  });
+
+  it('has a shadow when open', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-sidebar').className).toContain('shadow-2xl');
+  });
+});
+
 describe('AiChatSidebar permission gate (#6396)', () => {
   it('renders nothing when the user lacks ai_sessions:use', () => {
     permState.canUseAi = false;

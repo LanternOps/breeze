@@ -1031,6 +1031,7 @@
     "noDeviceGroupsYetCreateOne": "Henüz cihaz grubu yok. Cihazları düzenlemeye başlamak için bir tane oluşturun.",
     "createYourFirstGroup": "İlk grubunuzu oluşturun",
     "selectAllGroups": "Tüm grupları seç",
+    "selectGroup": "{{name}} grubunu seç",
     "dynamic": "Dinamik",
     "static": "Statik",
     "device": "cihaz",

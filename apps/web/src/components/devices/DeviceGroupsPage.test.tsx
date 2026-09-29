@@ -119,6 +119,12 @@ describe('DeviceGroupsPage list unwrapping', () => {
     expect(await screen.findByRole('checkbox', { name: /select all groups/i })).toBeInTheDocument();
   });
 
+  it('gives each per-group checkbox an accessible name', async () => {
+    render(<DeviceGroupsPage />);
+
+    expect(await screen.findByRole('checkbox', { name: 'Select group Servers' })).toBeInTheDocument();
+  });
+
   it('fetches sites from /orgs/sites, not the non-existent /sites', async () => {
     render(<DeviceGroupsPage />);
 

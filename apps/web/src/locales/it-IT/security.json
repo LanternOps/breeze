@@ -776,6 +776,7 @@
     "remove": "Rimuovi",
     "removed": "Rimossa",
     "searchThreats": "Cerca minacce...",
+    "selectAllThreats": "Seleziona tutte le minacce",
     "selectThreat": "Seleziona minaccia {{name}}",
     "selectedCount": "{{count}} selezionati",
     "severity": "Gravità",
