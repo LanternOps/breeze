@@ -1064,6 +1064,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'patching',
     searchHint: 'missing patches, KB approval, not CVEs: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback',
+    alwaysLoad: true,
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',

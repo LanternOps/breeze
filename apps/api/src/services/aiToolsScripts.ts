@@ -651,6 +651,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     tier: 3,
     domain: 'scripts',
     searchHint: 'device system commands, process and service control, files and event log diagnostics',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
@@ -969,6 +970,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'scripts',
     searchHint: 'organization script library, names, descriptions, languages, OS targets and categories',
+    alwaysLoad: true,
     definition: {
       name: 'list_scripts',
       description: 'Search and filter scripts in the organization library. Returns a list of matching scripts including name, description, language, OS targets, and category.',

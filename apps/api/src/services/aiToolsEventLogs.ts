@@ -99,6 +99,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     domain: 'monitoring',
     searchHint: 'event logs across devices, full-text search, severity, source, category and time filters',
+    alwaysLoad: true,
     definition: {
       name: 'search_logs',
       description:

@@ -16,7 +16,18 @@ import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 import { TOOL_TIERS, listChatSurfaceToolNames, buildBreezeSdkTools } from './aiAgentSdkTools';
 
 /** Provisional core set (spec "Domains" row `core`). A-W04 replaces this from A-W01 telemetry. */
-const CORE_ALWAYS_LOAD = ['list_organizations', 'query_devices', 'resolve_device_context', 'search_documentation'];
+// A-W04 (#6151): the `core` domain (context tools) plus the production-hot
+// tools from the 90-day EU+US hot list (baseline doc §4). With tool search on,
+// everything else is deferred; a change here needs a golden-eval rerun
+// (baseline doc §8), not just an edit.
+const CORE_DOMAIN_TOOLS = ['list_organizations', 'query_devices', 'resolve_device_context', 'search_documentation'];
+const HOT_ALWAYS_LOAD = [
+  'analyze_metrics', 'execute_command', 'get_device_details', 'get_fleet_health', 'get_security_posture',
+  'list_scripts', 'manage_alerts', 'manage_patches', 'query_change_log', 'search_logs',
+];
+const ALWAYS_LOAD = [...CORE_DOMAIN_TOOLS, ...HOT_ALWAYS_LOAD].sort();
+// Session tools outside the registry that must never be deferred.
+const ALWAYS_LOAD_SESSION_TOOLS = ['propose_action_plan'];
 
 describe('AI tool domain metadata (A-W02)', () => {
   const names = getAllRegisteredToolNames();
@@ -46,13 +57,15 @@ describe('AI tool domain metadata (A-W02)', () => {
     expect(bad).toEqual([]);
   });
 
-  it('alwaysLoad implies domain core, and the core set is the frozen provisional set', () => {
+  it('the alwaysLoad set is exactly core + the measured hot list, capped at 15 with session tools', () => {
     const always = names.filter((n) => getToolAlwaysLoad(n)).sort();
-    expect(always).toEqual(CORE_ALWAYS_LOAD);
-    for (const n of always) expect(getToolDomain(n)).toBe('core');
+    expect(always).toEqual(ALWAYS_LOAD);
     const coreNotAlways = names.filter((n) => getToolDomain(n) === 'core' && !getToolAlwaysLoad(n));
     expect(coreNotAlways).toEqual([]);
-    expect(always.length).toBeLessThanOrEqual(15);
+    // Hot tools keep their semantic domain — alwaysLoad is a load decision, not a relabel.
+    for (const n of HOT_ALWAYS_LOAD) expect(getToolDomain(n)).not.toBe('core');
+    for (const n of ALWAYS_LOAD_SESSION_TOOLS) expect(getToolAlwaysLoad(n)).toBe(true);
+    expect(always.length + ALWAYS_LOAD_SESSION_TOOLS.length).toBeLessThanOrEqual(15);
   });
 
   it('session-aware hint tables mirror their tier tables key-for-key', () => {

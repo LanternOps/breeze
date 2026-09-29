@@ -50,6 +50,7 @@ import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
+import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -902,7 +903,18 @@ export class StreamingSessionManager {
       onPostToolUse: ReturnType<typeof createSessionPostToolUse>,
       getSession: () => ActiveSession,
     ) => { server: McpSdkServerConfigWithInstance; name: string },
-    options?: { injectApprovalModeInstructions?: boolean; budgetReservationId?: string; topologyInvestigation?: TopologyTurnRuntime },
+    options?: {
+      injectApprovalModeInstructions?: boolean;
+      budgetReservationId?: string;
+      topologyInvestigation?: TopologyTurnRuntime;
+      /**
+       * A-W04 (#6151): this surface registers the full Breeze registry and may
+       * defer it behind the SDK's ToolSearch built-in. Only web chat opts in;
+       * `resolveToolSearchPolicy` still decides per host, budget and operator
+       * override. Static-subset surfaces leave it unset.
+       */
+      toolSearch?: boolean;
+    },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext ? getTrustedClientIpOrUndefined(requestContext) : undefined,
@@ -1270,6 +1282,12 @@ export class StreamingSessionManager {
     // request completes and the transaction commits.
     try {
       runOutsideDbContextSafe(() => {
+        const childEnv = buildClaudeSdkChildEnv(resolved, process.env, { egressProxyUrl });
+        const toolSearchPolicy = resolveToolSearchPolicy({
+          surfaceSearch: options?.toolSearch === true,
+          childEnv,
+          remainingTurns: maxTurns,
+        });
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
@@ -1282,12 +1300,12 @@ export class StreamingSessionManager {
             model: wire.model,
             maxTurns,
             maxBudgetUsd,
-            tools: [],
+            tools: toolSearchPolicy.tools,
             allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
             includePartialMessages: true,
             abortController,
-            env: buildClaudeSdkChildEnv(resolved, process.env, { egressProxyUrl }),
+            env: { ...childEnv, ...toolSearchPolicy.env },
             resume: dbSession.sdkSessionId ?? undefined,
             persistSession: true,
             settingSources: [],
@@ -1609,7 +1627,14 @@ export class StreamingSessionManager {
                   session.eventBus.publish({ type: 'content_delta', delta: '\n\n' });
                 }
                 sawTextBlockThisMessage = true;
-              } else if ('content_block' in event && event.content_block.type === 'tool_use') {
+              } else if (
+                'content_block' in event
+                && event.content_block.type === 'tool_use'
+                // A-W04: ToolSearch never reaches the MCP hooks — queueing it
+                // would misattribute the next postToolUse and turn its result
+                // into a #3094 "rejected before execution" drop.
+                && !isSdkBuiltinToolUse(event.content_block.name)
+              ) {
                 const block = event.content_block;
 
                 // Track toolUseId for postToolUse correlation.
@@ -1716,7 +1741,9 @@ export class StreamingSessionManager {
             }
 
             for (const block of message.message.content) {
-              if (block.type === 'tool_use') {
+              // ToolSearch stays in the assistant row's contentBlocks above but
+              // gets no tool row or tool card (A-W04).
+              if (block.type === 'tool_use' && !isSdkBuiltinToolUse(block.name)) {
                 const bareName = block.name.startsWith(session.mcpPrefix)
                   ? block.name.slice(session.mcpPrefix.length)
                   : block.name;

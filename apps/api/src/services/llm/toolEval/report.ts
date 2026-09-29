@@ -6,6 +6,8 @@ export interface EvalReport {
   generatedAt: string;
   model: string;
   toolSearch: string;
+  /** What the production policy resolved for this surface + env + override. */
+  toolSearchEnabled: boolean;
   surface: CaptureSurfaceId;
   systemPromptBytes: number;
   cases: Array<CaseScore & {
@@ -15,9 +17,14 @@ export interface EvalReport {
     cacheCreationInputTokens: number;
     ttftMs: number | null;
     toolSearchUsed: boolean;
+    /** API responses up to and including the one that made the first real (non-ToolSearch) call. */
+    apiCallsToFirstTool: number;
+    /** input + cache read + cache creation tokens summed over those responses. */
+    contextTokensToFirstTool: number;
   }>;
   summary: ReturnType<typeof summarize>;
   meanFirstCallInputTokens: number;
+  meanContextTokensToFirstTool: number;
 }
 
 function cell(value: string): string {
@@ -29,7 +36,7 @@ export function renderMarkdownReport(input: EvalReport): string {
   const lines = [
     `# Tool-selection accuracy ${summary.hits}/${summary.total} = ${(summary.accuracy * 100).toFixed(1)}%`,
     '',
-    `Generated: ${input.generatedAt}; model: ${input.model}; surface: ${input.surface}; tool search: ${input.toolSearch}.`,
+    `Generated: ${input.generatedAt}; model: ${input.model}; surface: ${input.surface}; tool search: ${input.toolSearch} (${input.toolSearchEnabled ? 'enabled' : 'disabled'} by policy).`,
     '',
     '| id | prompt | expected | observed |',
     '| --- | --- | --- | --- |',
@@ -42,6 +49,6 @@ export function renderMarkdownReport(input: EvalReport): string {
     lines.push(`| ${[miss.id, golden?.prompt ?? '', expected.map((e) =>
       `${e.tool}${e.action === undefined ? '' : `.${e.action}`}`).join(', '), observed].map(cell).join(' | ')} |`);
   }
-  lines.push('', `Mean first-call input tokens: ${input.meanFirstCallInputTokens}; system prompt bytes: ${input.systemPromptBytes}.`, '');
+  lines.push('', `Mean first-call input tokens: ${input.meanFirstCallInputTokens}; mean context tokens through the first real tool call: ${input.meanContextTokensToFirstTool}; system prompt bytes: ${input.systemPromptBytes}.`, '');
   return lines.join('\n');
 }

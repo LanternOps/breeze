@@ -12,11 +12,16 @@ vi.mock('../../streamingSessionManager', () => ({
   buildClaudeSdkChildEnv: () => ({ ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'inherited' }),
 }));
 vi.mock('../llmConfigResolver', () => ({ resolveLlmConfig: async () => ({ source: 'env' }) }));
-vi.mock('../toolCapture/runSurface', () => ({ runSurfaceCapture: vi.fn(), getCaptureSystemPrompt: () => 'complete prompt — index and tail' }));
+vi.mock('../toolCapture/runSurface', () => ({
+  runSurfaceCapture: vi.fn(),
+  getCaptureSystemPrompt: () => 'complete prompt — index and tail',
+  captureToolSearchPolicy: (surface: { toolSearch: boolean }, _env: unknown, override: string) =>
+    ({ enabled: surface.toolSearch && override !== 'off' }),
+}));
 vi.mock('../toolCapture/surfaces', () => ({
   CAPTURE_SURFACES: {
-    chat: { id: 'chat', allowedTools: ['mcp__breeze__query_devices'] },
-    'helper-standard': { id: 'helper-standard', allowedTools: ['mcp__breeze__query_devices'] },
+    chat: { id: 'chat', allowedTools: ['mcp__breeze__query_devices'], toolSearch: true },
+    'helper-standard': { id: 'helper-standard', allowedTools: ['mcp__breeze__query_devices'], toolSearch: false },
   },
 }));
 
@@ -28,6 +33,7 @@ const capture = () => ({
       { inputTokens: 100, cacheCreationInputTokens: 20, cacheReadInputTokens: 30, outputTokens: 5 },
       { inputTokens: 999, cacheCreationInputTokens: 999, cacheReadInputTokens: 999, outputTokens: 5 },
     ],
+    firstToolApiCallIndex: 1,
     ttftMs: 12, toolSearchUses: 0, toolSearchResultBlocks: 0,
     toolReferenceNames: ['query_devices'], stderrToolSearchLines: [], sessionId: null, result: null,
   },
@@ -47,13 +53,16 @@ it('writes JSON and markdown using only first-call usage, and closes the DB', as
     '--out', 'result.json', '--summary-md', 'result.md'])).toBe(0);
   expect(runSurfaceCapture).toHaveBeenCalledWith(expect.objectContaining({
     surface: expect.objectContaining({ id: 'chat' }), model: 'chosen', maxTurns: 1,
-    env: { ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'false' },
+    // The policy (runSurface) owns ENABLE_TOOL_SEARCH; the inherited value is dropped.
+    env: { ANTHROPIC_API_KEY: 'test-key' }, toolSearchOverride: 'off',
   }));
   const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
   expect(report).toMatchObject({ systemPromptBytes: Buffer.byteLength('complete prompt — index and tail', 'utf8'),
-    summary: { total: 1, hits: 1 }, meanFirstCallInputTokens: 100,
+    summary: { total: 1, hits: 1 }, meanFirstCallInputTokens: 100, toolSearchEnabled: false,
+    // Through the response that made the first real call: (100+20+30) + 3×999.
+    meanContextTokensToFirstTool: 3147,
     cases: [{ inputTokens: 100, cacheReadInputTokens: 30, cacheCreationInputTokens: 20,
-      ttftMs: 12, toolSearchUsed: true }] });
+      ttftMs: 12, toolSearchUsed: true, apiCallsToFirstTool: 2, contextTokensToFirstTool: 3147 }] });
   expect(writeFile).toHaveBeenNthCalledWith(2, 'result.md', expect.stringContaining('accuracy 1/1'));
   expect(console.log).toHaveBeenCalledWith(expect.stringContaining('accuracy 1/1'));
   expect(closeDb).toHaveBeenCalledOnce();
@@ -67,11 +76,14 @@ it('retries once, records permanent SDK errors, and keeps the report non-gating'
   expect(report.cases[0]).toMatchObject({ observedTool: null, error: 'SDK unavailable', hit: false });
 });
 
-it('recovers on retry and leaves default tool search unset', async () => {
+it('recovers on retry and, with default tool search on a searching surface, leaves room for the search turn', async () => {
   vi.mocked(runSurfaceCapture).mockRejectedValueOnce(new Error('temporary'));
   expect(await runCli(['--cases', 'g01'])).toBe(0);
   expect(runSurfaceCapture).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(runSurfaceCapture).mock.calls[1]![0].env).not.toHaveProperty('ENABLE_TOOL_SEARCH');
+  const call = vi.mocked(runSurfaceCapture).mock.calls[1]![0];
+  expect(call.env).not.toHaveProperty('ENABLE_TOOL_SEARCH');
+  expect(call.toolSearchOverride).toBe('auto');
+  expect(call.maxTurns).toBe(3);
 });
 
 it('bounds concurrency and preserves golden case order', async () => {
@@ -89,7 +101,7 @@ it('bounds concurrency and preserves golden case order', async () => {
   const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
   expect(report.cases.map((c: { id: string }) => c.id)).toEqual(['g01', 'g02', 'g03', 'g04']);
   expect(vi.mocked(runSurfaceCapture).mock.calls[0]![0]).toMatchObject({
-    surface: expect.objectContaining({ id: 'helper-standard' }), env: { ENABLE_TOOL_SEARCH: 'true' },
+    surface: expect.objectContaining({ id: 'helper-standard' }), toolSearchOverride: 'on', maxTurns: 1,
   });
 });
 

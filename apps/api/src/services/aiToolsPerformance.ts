@@ -286,6 +286,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     domain: 'devices',
     searchHint: 'device CPU, RAM, disk and network metrics over time, time ranges and aggregation',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_metrics',

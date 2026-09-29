@@ -43,6 +43,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // AI_*
   AI_COMPUTE_PRICE_MULTIPLIER: 'AI billing price multiplier',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
+  AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
@@ -177,7 +178,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ENABLE_AI_PATCH_TESTING: 'feature flag',
   ENABLE_API_DOCS_UI: 'feature flag',
   ENABLE_REGISTRATION: 'signup policy flag',
-  ENABLE_TOOL_SEARCH: 'dev script (services/llm/__scripts__)',
+  ENABLE_TOOL_SEARCH: 'SDK child env, written per session by aiToolSearchPolicy',
   // ENROLLMENT_*
   ENROLLMENT_KEY_CLEANUP_ENABLED: 'cleanup job toggle',
   ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: 'timing knob',

@@ -3,6 +3,9 @@ import { Hono } from 'hono';
 
 // Mirror the db/schema/middleware mock shape used by the sibling index.test.ts
 // harness so helperAuth resolves an authenticated device for our request.
+// The route statically imports the SDK tool server (A-W04 Helper onlyTools).
+vi.mock('../../services/aiAgentSdkTools', () => ({ createBreezeMcpServer: vi.fn() }));
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
