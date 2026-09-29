@@ -209,11 +209,28 @@ type VMEstimate struct {
 	OSVersion           string `json:"osVersion"`
 }
 
+// RestoreReport is what a platform Restorer's RestoreSystemState concluded
+// beyond a hard failure (which it returns as an error instead).
+type RestoreReport struct {
+	// Warnings are non-fatal notes that applySystemState appends to
+	// RecoveryResult.Warnings. On Windows they name the artifacts that were
+	// collected for reference only and never applied to the running OS
+	// (registry hives, boot configuration, inventories; #5470).
+	Warnings []string
+	// NothingApplied, when non-empty, means the restorer applied no system
+	// state at all, and says why. applySystemState then reports the state as
+	// not applied, rather than letting a successful no-op read as
+	// stateApplied: true (#5470).
+	NothingApplied string
+}
+
 // Restorer is the platform-specific interface for applying system state
 // during a bare metal recovery.
 type Restorer interface {
-	// RestoreSystemState applies collected system state artifacts from stagingDir.
-	RestoreSystemState(stagingDir string) error
+	// RestoreSystemState applies collected system state artifacts from
+	// stagingDir. A returned error means at least one artifact the restorer
+	// tried to apply failed.
+	RestoreSystemState(stagingDir string) (RestoreReport, error)
 	// InjectDrivers installs drivers from the given directory.
 	InjectDrivers(driverDir string) (int, error)
 }

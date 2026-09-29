@@ -39,7 +39,7 @@ var etcTargetDir = "/etc"
 // apart from "system state was fully applied". A step finding its OPTIONAL
 // artifact simply absent from staging (e.g. no packages/rpm.txt on a dpkg
 // system) is not an error — that's logged at info level and skipped.
-func (r *linuxRestorer) RestoreSystemState(stagingDir string) error {
+func (r *linuxRestorer) RestoreSystemState(stagingDir string) (RestoreReport, error) {
 	slog.Info("bmr: restoring Linux system state", "stagingDir", stagingDir)
 
 	var errs []error
@@ -60,11 +60,11 @@ func (r *linuxRestorer) RestoreSystemState(stagingDir string) error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("bmr: linux system state restore had errors: %w", errors.Join(errs...))
+		return RestoreReport{}, fmt.Errorf("bmr: linux system state restore had errors: %w", errors.Join(errs...))
 	}
 
 	slog.Info("bmr: Linux system state restore complete")
-	return nil
+	return RestoreReport{}, nil
 }
 
 // InjectDrivers is a no-op on Linux (kernel modules are handled by packages).

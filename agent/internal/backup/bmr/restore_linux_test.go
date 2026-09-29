@@ -84,7 +84,7 @@ func TestRestoreSystemStateUsesCollectorDpkgSelectionsPath(t *testing.T) {
 	mustWriteFile(t, filepath.Join(staging, "packages", "dpkg.txt"), "vim\tinstall\n")
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestRestoreSystemStateFallsBackToRpmList(t *testing.T) {
 	mustWriteFile(t, filepath.Join(staging, "packages", "rpm.txt"), "vim-8.2.x86_64\n")
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestRestoreSystemStateParsesSystemdServiceTable(t *testing.T) {
 	}, "\n"))
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestRestoreSystemStateUsesFirewallRulesPath(t *testing.T) {
 	mustWriteFile(t, filepath.Join(staging, "firewall", "iptables.rules"), "*filter\nCOMMIT\n")
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestRestoreSystemStateRestoresSpoolCrontabsAndIgnoresEtcCrontabCopy(t *test
 	mustWriteFile(t, filepath.Join(staging, "crontabs", "spool", "crontabs", "alice"), "* * * * * alice-job\n")
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestRestoreSystemStateEtcTreeHonoursExcludesAndCopiesTheRest(t *testing.T) 
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestRestoreEtcTreeRecreatesSymlinksIncludingDangling(t *testing.T) {
 	}
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestRestoreEtcRegularFileOverExistingSymlinkDoesNotClobberTarget(t *testing
 	mustWriteFile(t, filepath.Join(staging, "etc", "resolv.conf"), "staged resolv.conf contents\n")
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -384,7 +384,7 @@ func TestRestoreEtcDirOverExistingSymlinkDoesNotFollowIt(t *testing.T) {
 	}
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -424,7 +424,7 @@ func TestRestoreEtcTreeChmodsExistingDestinationFile(t *testing.T) {
 	}
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -458,7 +458,7 @@ func TestRestoreEtcTreePreservesDirMode(t *testing.T) {
 	}
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 
@@ -479,7 +479,7 @@ func TestRestoreSystemStateOptionalArtifactsMissingIsNotAnError(t *testing.T) {
 	staging := t.TempDir() // completely empty staging dir
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState with no artifacts at all: %v, want nil (all-optional-missing is not a failure)", err)
 	}
 	if len(*calls) != 0 {
@@ -497,7 +497,7 @@ func TestRestoreSystemStateReturnsErrorNamingFailedArtifact(t *testing.T) {
 	mustWriteFile(t, filepath.Join(staging, "packages", "dpkg.txt"), "vim\tinstall\n")
 
 	r := &linuxRestorer{}
-	err := r.RestoreSystemState(staging)
+	_, err := r.RestoreSystemState(staging)
 	if err == nil {
 		t.Fatal("RestoreSystemState: want error when apt-get dselect-upgrade fails, got nil")
 	}
@@ -564,7 +564,7 @@ func TestRestoreSystemStateSkipsSourceBreezeAgentState(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
 	r := &linuxRestorer{}
-	if err := r.RestoreSystemState(staging); err != nil {
+	if _, err := r.RestoreSystemState(staging); err != nil {
 		t.Fatalf("RestoreSystemState: %v", err)
 	}
 

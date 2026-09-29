@@ -20,7 +20,7 @@ func newRestorer() Restorer {
 // RestoreSystemState applies macOS system state from the staging directory.
 // This includes system preferences, LaunchDaemons/LaunchAgents, and network
 // configuration.
-func (r *darwinRestorer) RestoreSystemState(stagingDir string) error {
+func (r *darwinRestorer) RestoreSystemState(stagingDir string) (RestoreReport, error) {
 	slog.Info("bmr: restoring macOS system state", "stagingDir", stagingDir)
 
 	if err := r.restorePreferences(stagingDir); err != nil {
@@ -34,7 +34,7 @@ func (r *darwinRestorer) RestoreSystemState(stagingDir string) error {
 	}
 
 	slog.Info("bmr: macOS system state restore complete")
-	return nil
+	return RestoreReport{}, nil
 }
 
 // InjectDrivers is a no-op on macOS (kext injection is not supported via BMR).

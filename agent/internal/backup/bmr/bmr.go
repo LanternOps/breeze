@@ -412,10 +412,11 @@ type systemStateResult struct {
 	// applied is true only when: the state manifest was downloaded, every
 	// required-step gate passed, every artifact download+verification
 	// succeeded (see verifyArtifactIntegrity), and the platform Restorer
-	// returned nil. Before this fix, applied (then a naked `applied` return)
-	// was set unconditionally to true right after a successful
-	// RestoreSystemState call, with no regard for whether any artifacts
-	// actually verified — including the degenerate case where every
+	// returned nil without reporting NothingApplied (a Windows snapshot with
+	// only reference-only hives/BCD, #5470). Before this fix, applied (then
+	// a naked `applied` return) was set unconditionally to true right after
+	// a successful RestoreSystemState call, with no regard for whether any
+	// artifacts actually verified — including the degenerate case where every
 	// artifact failed to download and RestoreSystemState ran against an
 	// empty staging dir (D15/O10's "completed, stateApplied: false" was the
 	// closest observed symptom of the sibling status bug this also feeds).
@@ -740,7 +741,9 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 
 	// Apply system state via platform-specific restorer.
 	restorer := newRestorerFunc()
-	if restoreErr := restorer.RestoreSystemState(stagingDir); restoreErr != nil {
+	report, restoreErr := restorer.RestoreSystemState(stagingDir)
+	warnings = append(warnings, report.Warnings...)
+	if restoreErr != nil {
 		return systemStateResult{
 			manifestFound:        true,
 			warnings:             warnings,
@@ -759,6 +762,14 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			warnings = append(warnings, fmt.Sprintf("driver injection errors: %s", dErr.Error()))
 		}
 		drivers = count
+	}
+
+	// A restorer that applied nothing (on Windows: the snapshot carried no
+	// certificate or firewall state, only reference-only hives and BCD) must
+	// not read as stateApplied: true. Its reason becomes the first failure so
+	// RunRecoveryContext names it in the terminal error (#5470).
+	if report.NothingApplied != "" {
+		recordFailure(report.NothingApplied)
 	}
 
 	return systemStateResult{

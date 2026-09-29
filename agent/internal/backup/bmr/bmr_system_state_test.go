@@ -40,7 +40,9 @@ func (p *countingDownloadProvider) Download(remotePath, localPath string) error 
 // directory — RestoreSystemState runs before applySystemState's staging-dir
 // defer fires) so tests can assert on which artifacts actually landed there.
 type fakeStateRestorer struct {
-	restoreErr       error
+	restoreErr error
+	// report is returned from RestoreSystemState alongside restoreErr.
+	report           RestoreReport
 	restoreStagingAt string
 	restoreCalls     int
 	injectCount      int
@@ -53,13 +55,13 @@ type fakeStateRestorer struct {
 	onRestore func(stagingDir string)
 }
 
-func (f *fakeStateRestorer) RestoreSystemState(stagingDir string) error {
+func (f *fakeStateRestorer) RestoreSystemState(stagingDir string) (RestoreReport, error) {
 	f.restoreCalls++
 	f.restoreStagingAt = stagingDir
 	if f.onRestore != nil {
 		f.onRestore(stagingDir)
 	}
-	return f.restoreErr
+	return f.report, f.restoreErr
 }
 
 func (f *fakeStateRestorer) InjectDrivers(_ string) (int, error) {
@@ -1258,5 +1260,109 @@ func TestRunRecoveryContext_FirstFailureWins_AcrossFailureKinds(t *testing.T) {
 	}
 	if !sawSecond {
 		t.Fatalf("the later failure must still be warned about, warnings: %v", result.Warnings)
+	}
+}
+
+// --- Restorer report (#5470): reference-only warnings and nothing-applied ---
+
+// uploadOneStateArtifact stages a single verified system-state artifact so
+// applySystemState reaches the platform restorer.
+func uploadOneStateArtifact(t *testing.T, provider *providers.LocalProvider, snapshotID string) {
+	t.Helper()
+	content := []byte("hive bytes")
+	uploadSystemStateArtifact(t, provider, snapshotID, "registry/SYSTEM", content)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		SchemaVersion: 1,
+		Artifacts: []systemstate.Artifact{
+			{Name: "registry_SYSTEM", Category: "registry", Path: "registry/SYSTEM", SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content)},
+		},
+	})
+}
+
+// TestRunRecoveryContext_RestorerWarnings_ReachResult: the restorer's
+// reference-only warnings reach RecoveryResult.Warnings, and on their own do
+// not stop state from counting as applied.
+func TestRunRecoveryContext_RestorerWarnings_ReachResult(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-restorer-warnings"
+	buildOrdinaryManifestFixture(t, provider, snapshotID)
+	uploadOneStateArtifact(t, provider, snapshotID)
+
+	const warning = "collected for reference only, not applied: registry hives (SYSTEM)"
+	useFakeRestorer(t, &fakeStateRestorer{report: RestoreReport{Warnings: []string{warning}}})
+
+	result, err := RunRecoveryContext(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+	if err != nil {
+		t.Fatalf("RunRecoveryContext: %v", err)
+	}
+	if !result.StateApplied || result.Status != "completed" {
+		t.Fatalf("stateApplied=%v status=%q, want true/completed; warnings %v", result.StateApplied, result.Status, result.Warnings)
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if w == warning {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restorer warning missing from result warnings %v", result.Warnings)
+	}
+}
+
+// TestRunRecoveryContext_RestorerNothingApplied_NotReportedAsApplied: a
+// restorer that applied nothing must not yield stateApplied: true, and its
+// reason must be the terminal error the server persists (#5470, #5479).
+func TestRunRecoveryContext_RestorerNothingApplied_NotReportedAsApplied(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-restorer-nothing-applied"
+	buildOrdinaryManifestFixture(t, provider, snapshotID)
+	uploadOneStateArtifact(t, provider, snapshotID)
+
+	const reason = "no certificate or firewall state to apply"
+	useFakeRestorer(t, &fakeStateRestorer{report: RestoreReport{NothingApplied: reason}})
+
+	result, err := RunRecoveryContext(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+	if err != nil {
+		t.Fatalf("RunRecoveryContext: %v", err)
+	}
+	if result.StateApplied {
+		t.Fatal("StateApplied=true for a restorer that applied nothing")
+	}
+	if result.Status != "partial" {
+		t.Fatalf("status = %q, want partial (files restored, state not applied)", result.Status)
+	}
+	if !strings.Contains(result.Error, reason) {
+		t.Fatalf("error %q does not carry the nothing-applied reason", result.Error)
+	}
+}
+
+// TestApplySystemState_RestorerError_KeepsRestorerWarnings: when the
+// restorer fails, the warnings it produced are still returned.
+func TestApplySystemState_RestorerError_KeepsRestorerWarnings(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-restorer-error-warnings"
+	uploadOneStateArtifact(t, provider, snapshotID)
+
+	const warning = "collected for reference only, not applied: boot configuration (BCD)"
+	useFakeRestorer(t, &fakeStateRestorer{
+		restoreErr: errors.New("firewall: netsh advfirewall import failed"),
+		report:     RestoreReport{Warnings: []string{warning}},
+	})
+
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+	if result.err == nil || result.applied {
+		t.Fatalf("err=%v applied=%v, want an error and applied=false", result.err, result.applied)
+	}
+	found := false
+	for _, w := range result.warnings {
+		if w == warning {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restorer warning dropped on error: %v", result.warnings)
 	}
 }
