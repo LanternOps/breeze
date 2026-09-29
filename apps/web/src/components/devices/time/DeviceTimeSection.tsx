@@ -5,6 +5,7 @@ import { formatLastSeen } from '@/lib/formatTime';
 import type { DeviceTimeStatusView } from './types';
 import { findingCopy } from './timeSyncCopy';
 import TimeEventsList from './TimeEventsList';
+import TimeSyncActions from './TimeSyncActions';
 type Load =
   | { state: 'loading' | 'error' }
   | { state: 'ready'; view: DeviceTimeStatusView };
@@ -216,6 +217,9 @@ export default function DeviceTimeSection({
               </div>
             ))}
           </dl>
+          <TimeSyncActions
+            targets={[{ deviceId: data.deviceId, name: deviceName ?? deviceId }]}
+          />
           <TimeEventsList events={data.recentEvents} />
         </>
       )}
