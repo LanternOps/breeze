@@ -400,7 +400,7 @@ The route is single-use: it atomically transitions the request from `approved` t
 | `400` | Invalid body, or device decommissioned |
 | `403` | PAM actuator disabled, site access denied, or MFA not satisfied |
 | `404` | Device or elevation request not found |
-| `409` | Request not approved (`wrong_status`) or already being actuated (`race_lost`) |
+| `409` | Request not approved (`wrong_status`) or already being actuated (`RACE_LOST`) |
 
 <Aside type="caution">
   The actuator is **disabled by default in every environment** and must be explicitly enabled server-side once just-in-time credentials and agent-side re-validation are deployed. While disabled, this endpoint returns `403`.
