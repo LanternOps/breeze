@@ -250,6 +250,38 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByTestId('snapshot-device-name').textContent).toBe('Mac Mini');
   });
 
+  it('labels the storage location in the details card', async () => {
+    render(<SnapshotBrowser />);
+
+    await screen.findByText(/Snapshot Details/i);
+    const location = screen.getByTestId('snapshot-location');
+    expect(location.textContent).toContain('Location:');
+    expect(location.textContent).toContain('snapshots/provider-snap-1');
+  });
+
+  it('says the file index is unavailable (not "still processing") when the API reports manifestUnavailable', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({ snapshotId: 'snap-1', manifestUnavailable: true, data: [] });
+      }
+      return base(input, init);
+    });
+
+    render(<SnapshotBrowser />);
+
+    expect(await screen.findByText(/file index isn't available/i)).toBeTruthy();
+    expect(screen.queryByText(/may still be processing/i)).toBeNull();
+  });
+
+  it('gives the snapshot picker and the immutability select accessible names', async () => {
+    render(<SnapshotBrowser />);
+
+    await screen.findByText(/Protection Controls/i);
+    expect(screen.getByRole('combobox', { name: 'Snapshot' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Immutability enforcement' })).toBeTruthy();
+  });
+
   it('badges a system_image snapshot with its backup type', async () => {
     fetchMock.mockImplementationOnce(async () => makeJsonResponse({
       data: [

@@ -75,6 +75,9 @@ type Snapshot = {
   bareMetalReasons?: string[] | null;
   tree?: TreeNode;
   files?: SnapshotFile[];
+  // Set from GET /snapshots/:id/browse: the snapshot recorded files but has no
+  // file index to list them from (not "still processing").
+  manifestUnavailable?: boolean;
 };
 
 type SnapshotTreeItem = {
@@ -214,6 +217,7 @@ export default function SnapshotBrowser() {
                   ? { id: '/', name: 'Root', type: 'folder', children: treeNodes }
                   : undefined,
                 files,
+                manifestUnavailable: payload?.manifestUnavailable === true,
               }
             : snapshot
         )));
@@ -470,11 +474,12 @@ export default function SnapshotBrowser() {
           </div>
         )}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <label htmlFor="snapshot-browser-picker" className="flex items-center gap-2 text-sm text-muted-foreground">
             <History className="h-4 w-4" />
-            {t('snapshotBrowser.snapshot')} </div>
+            {t('snapshotBrowser.snapshot')} </label>
           <div className="flex flex-wrap items-center gap-2">
             <select
+              id="snapshot-browser-picker"
               className="rounded-md border bg-background px-3 py-2 text-sm"
               value={selectedSnapshotId}
               onChange={(event) => setSelectedSnapshotId(event.target.value)}
@@ -552,7 +557,10 @@ export default function SnapshotBrowser() {
                   <div className="mt-2 space-y-1 text-sm text-foreground">
                     <div>{t('snapshotBrowser.size')} {formatBytes(selectedSnapshot.sizeBytes)}</div>
                     <div>{t('snapshotBrowser.files')} {selectedSnapshot.fileCount ?? '-'}</div>
-                    <div className="break-all text-muted-foreground">{selectedSnapshot.location ?? '-'}</div>
+                    <div data-testid="snapshot-location" className="break-all">
+                      {t('snapshotBrowser.location')}{' '}
+                      <span className="text-muted-foreground">{selectedSnapshot.location ?? '-'}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -631,8 +639,9 @@ export default function SnapshotBrowser() {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">{t('snapshotBrowser.immutabilityEnforcement')}</label>
+                <label htmlFor="snapshot-immutability-enforcement" className="text-xs font-medium text-muted-foreground">{t('snapshotBrowser.immutabilityEnforcement')}</label>
                 <select
+                  id="snapshot-immutability-enforcement"
                   value={immutabilityMode}
                   onChange={(event) => setImmutabilityMode(event.target.value as 'application' | 'provider')}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -765,7 +774,9 @@ export default function SnapshotBrowser() {
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
                 {selectedSnapshot?.files?.length
                   ? 'Select a folder in the tree to view its files.'
-                  : 'No files in this snapshot. The backup may still be processing.'}
+                  : selectedSnapshot?.manifestUnavailable
+                    ? t('snapshotBrowser.fileIndexUnavailable')
+                    : 'No files in this snapshot. The backup may still be processing.'}
               </div>
             )}
           </div>
