@@ -1,10 +1,19 @@
-import { pgTable, uuid, varchar, text, timestamp, pgEnum, integer, bigint, boolean } from 'drizzle-orm/pg-core';
+import { sql, type AnyColumn, type SQL } from 'drizzle-orm';
+import { pgTable, uuid, varchar, text, timestamp, pgEnum, integer, bigint, boolean, index } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { users } from './users';
 import { organizations } from './orgs';
 
 export const tunnelTypeEnum = pgEnum('tunnel_type', ['vnc', 'proxy']);
 export const tunnelStatusEnum = pgEnum('tunnel_status', ['pending', 'connecting', 'active', 'disconnected', 'failed']);
+// A VNC tunnel that is still live (or coming up). Inline literals on purpose,
+// so the planner can use tunnel_sessions_device_live_vnc_idx under generic
+// plans; must match that index's predicate as created by its migration
+// (2026-11-29-110000-device-live-session-indexes.sql). Parenthesised so
+// it stays one term inside not()/or().
+export const tunnelSessionIsLiveVnc = (type: AnyColumn | SQL, status: AnyColumn | SQL) =>
+  sql`(${type} = 'vnc' AND ${status} IN ('pending', 'connecting', 'active'))`;
+
 export const tunnelAllowlistDirectionEnum = pgEnum('tunnel_allowlist_direction', ['destination', 'source']);
 
 export const tunnelSessions = pgTable('tunnel_sessions', {
@@ -35,7 +44,13 @@ export const tunnelSessions = pgTable('tunnel_sessions', {
   // no activity yet. Drives the server-computed idleSeconds the client polls
   // instead of comparing a server timestamp against the browser clock.
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
-});
+}, (t) => [
+  // GET /remote/devices/:deviceId/active-sessions reads a device's live VNC rows.
+  // Created CONCURRENTLY by 2026-11-29-110000-device-live-session-indexes.sql.
+  index('tunnel_sessions_device_live_vnc_idx')
+    .on(t.deviceId)
+    .where(tunnelSessionIsLiveVnc(t.type, t.status)),
+]);
 
 export const tunnelAllowlistSourceEnum = pgEnum('tunnel_allowlist_source', ['manual', 'discovery', 'policy']);
 

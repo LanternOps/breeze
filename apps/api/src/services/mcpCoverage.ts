@@ -527,6 +527,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'quotesPublic.ts': { exempt: 'portal' },
   'reliability.ts': { gap: '#6777' },
   'remediationSuggestions.ts': { tools: ['list_remediation_suggestions', 'find_proven_fixes'] },
+  'remote/deviceActiveSessions.ts': { tools: ['list_remote_sessions'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
   'remote/sessions.ts': { tools: ['create_remote_session', 'list_remote_sessions'] },
   'remote/supportSessions.ts': { gap: '#6783' },

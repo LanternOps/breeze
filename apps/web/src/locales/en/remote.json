@@ -846,5 +846,23 @@
       "unlabeled": "Unlabelled session",
       "openSession": "Open session detail"
     }
+  },
+  "activeSessionsBanner": {
+    "title_one": "Someone else has a session on this device",
+    "title_other": "{{count}} other people have sessions on this device",
+    "session": "{{name}} — {{type}}, {{duration}}",
+    "unknownUser": "Unknown user",
+    "sessionConnecting": "{{name}} — {{type}}, connecting…",
+    "duration": {
+      "minutes_one": "{{count}} min",
+      "minutes_other": "{{count}} min",
+      "hoursMinutes": "{{hours}} h {{minutes}} min",
+      "lessThanMinute": "less than a minute",
+      "hours_one": "{{count}} h",
+      "hours_other": "{{count}} h"
+    },
+    "announcement_one": "{{names}} has a session on this device",
+    "announcement_other": "{{names}} have sessions on this device",
+    "announcementNone": "No one else has a session on this device"
   }
 }
