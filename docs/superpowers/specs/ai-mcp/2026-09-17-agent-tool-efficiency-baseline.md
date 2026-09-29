@@ -276,3 +276,45 @@ The +32 tool delta is this PR's wiring total: 28 newly tiered read-only tools pl
 | `get_fleet_health` | 2005 / 7859 | Offset paging through `aiToolPagination.ts` (`offset`/`cursor`/`hasMore`/`nextCursor`). `topIssues` is behind `includeTopIssues`, with `topIssueCount` always present. `summary` is now a SQL aggregate over the filtered set (it was computed over the page). A frozen device set is pushed into the SQL. | 25→15 | 100 | 7424 |
 | `analyze_boot_performance` | 4237 / 4299 | Startup-item `path` is behind `includePaths`; `manage_startup_items` resolves by `itemId`. Adds `startupItemsNotShown`. | n/a (top 10 items, ≤5 recent boots) | n/a | 3202 (30 boots, 80 items) |
 | `get_effective_configuration` | 2940 / 3222 | Per-feature `inlineSettings` is behind `includeSettings`; without it each feature carries `hasInlineSettings` instead. New `featureType` narrows the features and the inheritance chain. The redundant `featureType` key and null `inheritedFrom*` pair are dropped. Stays in `UNBOUNDED_LIST_READS`: the feature map is bounded by `CONFIG_FEATURE_TYPES`, not paged. | n/a | n/a | 7111 (all 20 feature types) · 1556 (one type with settings) |
+
+## 8. Load policy (A-W04, #6151)
+
+**Date measured:** 2026-09-28 · **Branch:** `feature/6147-agent-tool-efficiency/wave-6151` · **SDK:** `@anthropic-ai/claude-agent-sdk` 0.3.282 · **Model:** `claude-sonnet-4-6` · **Doc:** `plans/ai-mcp/2026-09-17-agent-tool-efficiency-a04-load-policy.md`
+
+**§2 revisited.** Tool search never activated because every Breeze `query()` passed `tools: []`, which removes the `ToolSearch` built-in (`Tool search disabled: ToolSearchTool is not available` in the CLI). A proxy capture with `tools: ['ToolSearch']` sent 6 tools (`ToolSearch`, the alwaysLoad set and a placeholder) instead of 192.
+
+**Golden eval, chat, final code, three runs per arm** (`pnpm --filter @breeze/api ai:tool-eval` vs `--tool-search off`):
+
+| arm | hits / 67 | mean context tokens, first call | mean context tokens through first real tool call | mean TTFT ms | cases that searched |
+|---|---|---|---|---|---|
+| off | 25, 24, 25 | 82,707 | 82,707 | 2,254 | 0 |
+| on (policy default, 15 alwaysLoad) | 23, 23, 23 | 23,811 | 31,107 / 31,113 / 30,376 | 1,864 | 25 |
+
+Earlier probes on the same day, used to pick the set:
+- search on with only the 4 `core` tools always-loaded: 22 and 23 hits, 17,630 tokens, 44–45 cases searched;
+- 4 core + 10 hot: 24 hits, 23,716 tokens, 31 searched.
+
+The loss is concentrated in g59, g60 and g62. The model first calls an always-loaded context tool (`list_organizations`, `query_devices`) to resolve the named org or device, then the domain tool.
+
+**Per-surface capture** (`ai:tool-capture --surface all --turns 2`, default policy):
+
+| surface | turn-1 cache_create | turn-1 cache_read | turn-2 cache_read | vs §2 appendix (turn 1 total) |
+|---|---|---|---|---|
+| chat | 12,631 | 35,138 (2 responses) | 23,963 | 111,813 → ~24k per response |
+| helper-basic | 14,245 | 0 | 14,245 | 111,906 → 14,245 |
+| helper-standard | 16,051 | 0 | 16,051 | 111,906 → 16,051 |
+| helper-extended | 18,804 | 0 | 18,804 | — → 18,804 |
+| agent-full (read-only exposure) | 64,714 | 64,557 | 129,645 | unchanged by this wave |
+| script-builder | 15,754 | 15,596 | 15,754 | unchanged |
+
+**Not measured:**
+- BYO/catalog endpoints (no credentials here; policy keeps them on the full list);
+- Haiku;
+- second-turn cache behaviour across differing tenant tool sets;
+- a Helper resume after a level downgrade with an out-of-level `tool_use` in history. The probe could not make the model call `execute_command` (it declined); a resume under a narrower tool set did run cleanly.
+
+**Success measures:**
+- chat first-turn input −71% (target −60%): **met**;
+- turn-2 cache-read share: unchanged, high;
+- golden eval: **−1.5 cases, target +10 points not met**.
+

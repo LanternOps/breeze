@@ -6,7 +6,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   return { ...actual, query: queryMock };
 });
 
-import { denyPreToolUse, getCaptureSystemPrompt, runSurfaceCapture } from './runSurface';
+import { captureToolSearchPolicy, denyPreToolUse, getCaptureSystemPrompt, runSurfaceCapture } from './runSurface';
 import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
@@ -155,7 +155,9 @@ describe('runSurfaceCapture', () => {
     expect(queryMock).toHaveBeenCalledWith({
       prompt: 'test prompt',
       options: expect.objectContaining({
-        tools: [],
+        // Empty env = first-party host: chat searches, exactly as production.
+        tools: ['ToolSearch'],
+        env: { ENABLE_TOOL_SEARCH: 'true' },
         allowedTools: [...CAPTURE_SURFACES.chat.allowedTools],
         mcpServers: { [CAPTURE_SURFACES.chat.mcpServerName]: expect.anything() },
         includePartialMessages: CAPTURE_SURFACES.chat.includePartialMessages,
@@ -167,6 +169,26 @@ describe('runSurfaceCapture', () => {
         persistSession: true,
       }),
     });
+  });
+
+  it.each([
+    ['a static-subset surface', { surface: CAPTURE_SURFACES['helper-standard'] }, [], 'false'],
+    ['a non-first-party base URL', { env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999' } }, [], 'false'],
+    ['a proxy the operator forces on', { env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999' }, toolSearchOverride: 'on' as const }, ['ToolSearch'], 'true'],
+    ['the operator kill switch', { toolSearchOverride: 'off' as const }, [], 'false'],
+  ])('resolves tools/ENABLE_TOOL_SEARCH through the production policy for %s', async (_label, overrides, tools, flag) => {
+    queryMock.mockReturnValueOnce(messages([
+      { type: 'result', subtype: 'success', session_id: 's-policy', num_turns: 1, duration_ms: 5, total_cost_usd: 0 },
+    ]));
+    await runSurfaceCapture({ ...baseOpts, ...overrides });
+    const options = queryMock.mock.calls.at(-1)![0].options;
+    expect(options.tools).toEqual(tools);
+    expect(options.env.ENABLE_TOOL_SEARCH).toBe(flag);
+  });
+
+  it('captureToolSearchPolicy judges the budget against a production session, not the harness turn cap', () => {
+    expect(captureToolSearchPolicy(CAPTURE_SURFACES.chat, {}).enabled).toBe(true);
+    expect(captureToolSearchPolicy(CAPTURE_SURFACES['agent-full'], {}).enabled).toBe(false);
   });
 
   it('an onlyTools surface reports the subset size, not the full registry', async () => {

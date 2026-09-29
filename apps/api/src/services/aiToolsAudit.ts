@@ -266,6 +266,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     domain: 'security',
     searchHint: 'device change history: software, services, startup, network, scheduled tasks, users, hardware and OS versions',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_change_log',

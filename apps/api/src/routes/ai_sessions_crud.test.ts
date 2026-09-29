@@ -549,7 +549,7 @@ describe('AI routes', () => {
         expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 3 }),
         undefined,
         undefined,
-        expect.objectContaining({ budgetReservationId: expect.any(String) }),
+        expect.objectContaining({ budgetReservationId: expect.any(String), toolSearch: true }),
       );
     });
   });

@@ -36,6 +36,7 @@ import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures'
 import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
+import { resolveToolSearchPolicy, type ToolSearchOverride, type ToolSearchPolicy } from '../../aiToolSearchPolicy';
 import type { CaptureSurface, CaptureSurfaceId } from './surfaces';
 
 export interface RunSurfaceOptions {
@@ -46,6 +47,8 @@ export interface RunSurfaceOptions {
   resume?: string;
   maxTurns?: number;
   timeoutMs?: number;
+  /** Stands in for the `AI_TOOL_SEARCH` operator override; default auto. */
+  toolSearchOverride?: ToolSearchOverride;
 }
 
 export interface SurfaceCaptureResult {
@@ -66,6 +69,28 @@ const denyAuth = () => { throw new Error('tool-capture: handlers never execute (
 // Exported for runSurface.test.ts — the handler-level denial contract is
 // what the query()-mocked test can exercise without the real SDK dispatch.
 export const denyPreToolUse: PreToolUseCallback = async () => ({ allowed: false, error: DENY_MESSAGE });
+
+/**
+ * A fresh production chat session's turn budget (`ai_sessions.max_turns`
+ * default). The policy's low-budget rule is judged against this, not against
+ * the harness's own `maxTurns`, which the eval caps artificially low to score
+ * the first call.
+ */
+const CAPTURE_SESSION_TURN_BUDGET = 50;
+
+/** The tool-search decision production would make for this surface and child env. */
+export function captureToolSearchPolicy(
+  surface: CaptureSurface,
+  env: Record<string, string>,
+  override: ToolSearchOverride = 'auto',
+): ToolSearchPolicy {
+  return resolveToolSearchPolicy({
+    surfaceSearch: surface.toolSearch,
+    childEnv: env,
+    remainingTurns: CAPTURE_SESSION_TURN_BUDGET,
+    override,
+  });
+}
 
 /** Shared by capture and report byte counts, including failed SDK runs. */
 export function getCaptureSystemPrompt(surface: CaptureSurface): string {
@@ -100,6 +125,7 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         .filter((name) => !surface.onlyTools || surface.onlyTools.has(name)))].sort()
     : [...SCRIPT_BUILDER_MCP_TOOL_NAMES].sort();
   const registeredToolCount = registeredToolNames.length;
+  const toolSearch = captureToolSearchPolicy(surface, opts.env, opts.toolSearchOverride);
   const observer = createStreamObserver();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), opts.timeoutMs ?? 90_000);
@@ -112,11 +138,11 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         systemPrompt: getCaptureSystemPrompt(surface),
         model: opts.model,
         maxTurns: opts.maxTurns ?? 2,
-        tools: [],
+        tools: toolSearch.tools,
         allowedTools: [...surface.allowedTools],
         mcpServers: { [surface.mcpServerName]: mcpServer },
         includePartialMessages: surface.includePartialMessages,
-        env: opts.env,
+        env: { ...opts.env, ...toolSearch.env },
         resume: opts.resume,
         persistSession: true,
         settingSources: [],

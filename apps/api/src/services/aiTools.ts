@@ -481,6 +481,9 @@ export function getToolSearchHint(toolName: string): string | undefined {
 }
 
 export function getToolAlwaysLoad(toolName: string): boolean {
+  // Approval-mode prompts instruct the model to call this chat-only tool by
+  // name, so it is never deferred behind tool search (A-W04).
+  if (toolName === 'propose_action_plan') return true;
   return aiTools.get(toolName)?.alwaysLoad === true;
 }
 

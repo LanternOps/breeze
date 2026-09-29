@@ -1,24 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { BREEZE_MCP_TOOL_NAMES } from '../../aiAgentSdkTools';
-import { getHelperAllowedMcpToolNames } from '../../helperToolFilter';
+import { BREEZE_MCP_TOOL_NAMES, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
+import { getHelperAllowedMcpToolNames, getHelperAllowedTools } from '../../helperToolFilter';
+import { fullRunToolExposure } from '../../aiAgents/runLoop';
 import { SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { CAPTURE_SURFACES } from './surfaces';
 
 describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
-  it('chat and agent-full expose the whole TOOL_TIERS surface with no registration subset', () => {
+  it('chat registers the whole TOOL_TIERS surface and is the only surface that may use tool search', () => {
     expect(CAPTURE_SURFACES.chat.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
     expect(CAPTURE_SURFACES.chat.onlyTools).toBeUndefined();
-    expect(CAPTURE_SURFACES['agent-full'].allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
-    expect(CAPTURE_SURFACES['agent-full'].onlyTools).toBeUndefined();
+    expect(CAPTURE_SURFACES.chat.toolSearch).toBe(true);
+    for (const s of Object.values(CAPTURE_SURFACES).filter((x) => x.id !== 'chat')) expect(s.toolSearch, s.id).toBe(false);
+  });
+
+  it('agent-full registers and allows the full-profile exposure of a read-only agent (empty allowlist)', () => {
+    const exposure = fullRunToolExposure([]);
+    const declared = new Set(listChatSurfaceToolNames());
+    expect([...CAPTURE_SURFACES['agent-full'].onlyTools!].sort()).toEqual(exposure.filter((n) => declared.has(n)).sort());
+    expect(CAPTURE_SURFACES['agent-full'].allowedTools).toEqual(exposure.map((n) => `mcp__breeze__${n}`));
     expect(CAPTURE_SURFACES['agent-full'].includePartialMessages).toBe(false);
   });
 
-  it('helper levels are permission allowlists over the full server (basic = 9 tools)', () => {
-    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toEqual(getHelperAllowedMcpToolNames('basic'));
-    expect(CAPTURE_SURFACES['helper-standard'].allowedTools).toEqual(getHelperAllowedMcpToolNames('standard'));
-    expect(CAPTURE_SURFACES['helper-extended'].allowedTools).toEqual(getHelperAllowedMcpToolNames('extended'));
+  it('helper levels register only their own tools (A-W04 onlyTools; basic = 9 tools)', () => {
+    for (const level of ['basic', 'standard', 'extended'] as const) {
+      const s = CAPTURE_SURFACES[`helper-${level}`];
+      expect(s.allowedTools).toEqual(getHelperAllowedMcpToolNames(level));
+      expect([...s.onlyTools!].sort()).toEqual(getHelperAllowedTools(level).sort());
+    }
     expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(9);
-    expect(CAPTURE_SURFACES['helper-extended'].onlyTools).toBeUndefined();
   });
 
   it('script builder uses its own server', () => {

@@ -520,6 +520,7 @@ x-api-env: &api-env
   MCP_TOOLS_LIST_PAGE_SIZE: ${MCP_TOOLS_LIST_PAGE_SIZE:-}
   # AI provider overrides (ANTHROPIC_API_KEY is mapped further up)
   ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+  AI_TOOL_SEARCH: ${AI_TOOL_SEARCH:-}
   ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
   ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
   # External billing service (hosted only; empty on self-host)

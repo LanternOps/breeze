@@ -182,6 +182,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'security',
     searchHint: 'control scores (AV, firewall, encryption) — not CVEs',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_security_posture',

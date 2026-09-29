@@ -251,6 +251,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'devices',
     searchHint: 'device hardware, RAM slots and memory modules, network interfaces, disk usage and recent metrics',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_device_details',

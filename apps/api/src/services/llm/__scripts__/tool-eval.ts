@@ -17,13 +17,21 @@ import { closeDb } from '../../../db';
 import { resolveDefaultModel } from '../../aiModel';
 import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
 import { resolveLlmConfig } from '../llmConfigResolver';
-import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
+import { captureToolSearchPolicy, getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 import { GOLDEN_CASES, type GoldenCase } from '../toolEval/goldenPrompts';
 import { renderMarkdownReport, type EvalReport } from '../toolEval/report';
 import { scoreFirstCall, summarize } from '../toolEval/score';
 
 class UsageError extends Error {}
+
+/**
+ * A searching run spends a turn on ToolSearch before its first real call
+ * (plus one spare for a second search), so a 1-turn cap would score every
+ * searched case as "no tool call". Non-searching runs keep the strict 1-turn
+ * first-call cap. ToolSearch itself is never scored (streamObserver).
+ */
+const FIRST_CALL_MAX_TURNS_WITH_SEARCH = 3;
 type EvalCaseResult = EvalReport['cases'][number] & { error?: string };
 
 function parseArgs(args: string[]) {
@@ -67,8 +75,13 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     const resolved = await resolveLlmConfig(null);
     if (resolved.source === 'unavailable') throw new UsageError(`LLM configuration unavailable: ${resolved.reason}`);
     const env = buildClaudeSdkChildEnv(resolved);
+    // The production policy (runSurface → aiToolSearchPolicy) owns
+    // ENABLE_TOOL_SEARCH; --tool-search stands in for the AI_TOOL_SEARCH override.
     delete env.ENABLE_TOOL_SEARCH;
-    if (args.toolSearch !== 'default') env.ENABLE_TOOL_SEARCH = args.toolSearch === 'on' ? 'true' : 'false';
+    const toolSearchOverride = args.toolSearch === 'default' ? 'auto' : args.toolSearch as 'on' | 'off';
+    const surface = CAPTURE_SURFACES[args.surface];
+    const toolSearchEnabled = captureToolSearchPolicy(surface, env, toolSearchOverride).enabled;
+    const maxTurns = toolSearchEnabled ? FIRST_CALL_MAX_TURNS_WITH_SEARCH : 1;
 
     const allowedTools = new Set(CAPTURE_SURFACES[args.surface].allowedTools);
 
@@ -76,9 +89,12 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       for (let attempt = 0; ; attempt++) {
         try {
           const { observation } = await runSurfaceCapture({
-            surface: CAPTURE_SURFACES[args.surface], prompt: c.prompt, model: args.model, env, maxTurns: 1,
+            surface, prompt: c.prompt, model: args.model, env, maxTurns, toolSearchOverride,
           });
           const usage = observation.apiCalls[0];
+          const throughFirstTool = observation.firstToolApiCallIndex === null
+            ? observation.apiCalls
+            : observation.apiCalls.slice(0, observation.firstToolApiCallIndex + 1);
           return {
             ...scoreFirstCall(c, observation, allowedTools), expected: c.expect,
             inputTokens: usage?.inputTokens ?? 0,
@@ -87,13 +103,16 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
             ttftMs: observation.ttftMs,
             toolSearchUsed: observation.toolSearchUses > 0 || observation.toolSearchResultBlocks > 0
               || observation.toolReferenceNames.length > 0,
+            apiCallsToFirstTool: throughFirstTool.length,
+            contextTokensToFirstTool: throughFirstTool.reduce(
+              (sum, call) => sum + call.inputTokens + call.cacheReadInputTokens + call.cacheCreationInputTokens, 0),
           };
         } catch (error) {
           if (attempt === 0) continue;
           return {
             ...scoreFirstCall(c, { toolUses: [] }), expected: c.expect,
             inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
-            ttftMs: null, toolSearchUsed: false,
+            ttftMs: null, toolSearchUsed: false, apiCallsToFirstTool: 0, contextTokensToFirstTool: 0,
             error: error instanceof Error ? error.message : String(error),
           };
         }
@@ -110,9 +129,12 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }));
     const report: EvalReport = {
       generatedAt: new Date().toISOString(), model: args.model, surface: args.surface,
-      toolSearch: args.toolSearch, systemPromptBytes: Buffer.byteLength(getCaptureSystemPrompt(CAPTURE_SURFACES[args.surface]), 'utf8'),
+      toolSearch: args.toolSearch, toolSearchEnabled, systemPromptBytes: Buffer.byteLength(getCaptureSystemPrompt(surface), 'utf8'),
       cases, summary: summarize(cases),
       meanFirstCallInputTokens: cases.length ? cases.reduce((sum, c) => sum + c.inputTokens, 0) / cases.length : 0,
+      meanContextTokensToFirstTool: cases.length
+        ? Math.round(cases.reduce((sum, c) => sum + c.contextTokensToFirstTool, 0) / cases.length)
+        : 0,
     };
     const markdown = renderMarkdownReport(report);
     await writeFile(args.out, JSON.stringify(report, null, 2) + '\n');

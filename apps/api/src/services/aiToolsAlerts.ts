@@ -118,6 +118,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     domain: 'monitoring',
     searchHint: 'alerts: list, get, acknowledge, resolve, suppress',
+    alwaysLoad: true,
     definition: {
       name: 'manage_alerts',
       description: 'Query, view, acknowledge, resolve, or suppress alerts. Use action "list" to search alerts, "get" for details, "acknowledge" to mark as seen, "resolve" to close, or "suppress" to temporarily silence an alert.',

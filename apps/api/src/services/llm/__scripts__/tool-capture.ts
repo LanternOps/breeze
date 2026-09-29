@@ -78,8 +78,12 @@ async function main(): Promise<void> {
       if (authToken) env.ANTHROPIC_AUTH_TOKEN = authToken;
       if (apiKey) env.ANTHROPIC_API_KEY = apiKey;
     }
+    // The production policy (runSurface → aiToolSearchPolicy) owns
+    // ENABLE_TOOL_SEARCH; --tool-search stands in for the AI_TOOL_SEARCH
+    // override. The local proxy is a non-first-party host, so a proxy run
+    // needs `on` to search — the same rule a self-host gateway follows.
     delete env.ENABLE_TOOL_SEARCH;
-    if (args.toolSearch !== 'default') env.ENABLE_TOOL_SEARCH = args.toolSearch === 'on' ? 'true' : 'false';
+    const toolSearchOverride = args.toolSearch === 'default' ? 'auto' : args.toolSearch as 'on' | 'off';
     const upstreamHost = new URL(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').host;
     if (args.proxy) {
       proxy = await startCaptureProxy(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com');
@@ -95,7 +99,7 @@ async function main(): Promise<void> {
       for (let turn = 1; turn <= args.turns; turn++) {
         const requestStart = proxy?.records().length ?? 0;
         const result = await runSurfaceCapture({
-          surface, model, env, resume,
+          surface, model, env, resume, toolSearchOverride,
           prompt: turn === 1
             ? args.values.get('--prompt') ?? 'Which Windows devices in the fleet are offline right now?'
             : 'Thanks. And how many of those are servers?',

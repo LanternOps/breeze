@@ -63,6 +63,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     domain: 'devices',
     searchHint: 'fleet device reliability, uptime, crashes, hangs, hardware and service failures',
+    alwaysLoad: true,
     definition: {
       name: 'get_fleet_health',
       description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics; the summary covers every matching device, not just the page. Per-device topIssues are opt-in (includeTopIssues).',
