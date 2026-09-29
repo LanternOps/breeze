@@ -33,6 +33,7 @@ import { createAccessToken } from '../../services/jwt';
 import { combineIntoSeries, findCombineCandidates, type CombineInput } from '../../services/reportSeries/combine';
 import { siteScopeFingerprint } from '../../services/siteScope';
 import {
+  assignUserToOrganization,
   assignUserToPartner,
   createOrganization,
   createPartner,
@@ -488,6 +489,77 @@ describe('Combine on the day of an occurrence (W04 final review F1)', () => {
     // Never lowered: B1's own value is untouched.
     expect((await reportRow(d.rB1)).lastGeneratedAt?.getTime()).toBe((await reportRow(d.rA2)).lastGeneratedAt?.getTime());
     expect(await dueIds([d.rA1, d.rA2, d.rB1])).toEqual([]);
+  });
+});
+
+// W04 final review F6: the cases most likely to hurt an MSP.
+describe('Combine isolation, concurrency and owner authority (W04 final review F6)', () => {
+  runDb("another partner never lists P1's rows, and posting P1's group gets 409 with nothing touched", async () => {
+    const f = await seedFixture();
+    const s = await seedGroup(f);
+    const p2 = await seedFixture();
+    const p2Group = await seedGroup(p2);
+    const p1Input = await inputFor(f);
+
+    const p2Groups = await candidatesFor(p2);
+    expect(p2Groups).toHaveLength(1); // non-vacuous: P2 sees its own group
+    const p2Listed = p2Groups.flatMap((g) => g.orgs.flatMap((o) => o.rows.map((r) => r.reportId)));
+    expect(p2Listed.sort()).toEqual([p2Group.rA1, p2Group.rA2, p2Group.rB1].sort());
+    for (const id of p1Input.reportIds) expect(p2Listed).not.toContain(id);
+    // Belt and braces: even a P2 context whose org list names P1's orgs (RLS
+    // would admit them) gets nothing of P1's from the service's own partner filter.
+    const widened = await asAdmin(p2, (tx) => findCombineCandidates(p2.partner.id, tx), [f.orgA.id, f.orgB.id]);
+    const widenedListed = widened.flatMap((g) => g.orgs.flatMap((o) => o.rows.map((r) => r.reportId)));
+    for (const id of p1Input.reportIds) expect(widenedListed).not.toContain(id);
+
+    await expect(asAdmin(p2, (tx) => combineIntoSeries(p1Input, adminAuth(p2), tx)))
+      .rejects.toMatchObject({ code: 'combine_group_changed', status: 409 });
+    await expect(asAdmin(p2, (tx) => combineIntoSeries(p1Input, adminAuth(p2), tx), [f.orgA.id, f.orgB.id]))
+      .rejects.toMatchObject({ code: 'combine_group_changed', status: 409 });
+    expect(await seriesOf(f.partner.id)).toEqual([]);
+    expect(await seriesOf(p2.partner.id)).toEqual([]);
+    for (const id of [s.rA1, s.rA2, s.rB1]) {
+      expect(await reportRow(id)).toMatchObject({ seriesId: null, archivedAt: null });
+    }
+  });
+
+  runDb('two truly concurrent combines of one group: exactly one wins, the other gets combine_group_changed', async () => {
+    const f = await seedFixture();
+    await seedGroup(f);
+    const input = await inputFor(f);
+    const results = await Promise.allSettled([
+      asAdmin(f, (tx) => combineIntoSeries(input, adminAuth(f), tx)),
+      asAdmin(f, (tx) => combineIntoSeries(input, adminAuth(f), tx)),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toMatchObject({ code: 'combine_group_changed', status: 409 });
+    expect(await seriesOf(f.partner.id)).toHaveLength(1);
+  });
+
+  runDb('an owner without report authority in one org gets series_owner_ineligible naming it, and nothing is written', async () => {
+    const f = await seedFixture();
+    const s = await seedGroup(f);
+    // An org membership wins over the partner one for that org
+    // (resolveLiveReportAuthority), and this role lacks reports:export, so
+    // captureChildExecutionScope answers no_authority for Bravo only.
+    const orgRole = (await createRole({ scope: 'organization', orgId: f.orgB.id }))!;
+    await grantRolePermissions(orgRole.id, [{ resource: 'reports', action: 'read' }]);
+    await assignUserToOrganization(f.admin.id, f.orgB.id, orgRole.id);
+    const input = await inputFor(f);
+
+    await expect(asAdmin(f, (tx) => combineIntoSeries(input, adminAuth(f), tx))).rejects.toMatchObject({
+      code: 'series_owner_ineligible',
+      status: 400,
+      body: { error: 'series_owner_ineligible', orgIds: [f.orgB.id] },
+    });
+    expect(await seriesOf(f.partner.id)).toEqual([]);
+    for (const id of [s.rA1, s.rA2, s.rB1]) {
+      expect(await reportRow(id)).toMatchObject({ seriesId: null, archivedAt: null });
+    }
+    expect((await getTestDb().select().from(serviceDeliverables).where(eq(serviceDeliverables.id, s.dA2)))[0]!.autoEvidenceReportId)
+      .toBe(s.rA2);
   });
 });
 
