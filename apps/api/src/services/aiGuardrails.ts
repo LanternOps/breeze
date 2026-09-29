@@ -830,6 +830,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },
   get_device_time_status: { resource: 'devices', action: 'read' },
+  list_time_sync_issues: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
   // routes/patches/operations.ts:29 (/scan) and :171 (/:id/rollback) both

@@ -303,6 +303,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_scripts',
   'list_sites', // A-W06 Tier-1 read
   'list_time_entries', // A-W06 Tier-1 read
+  'list_time_sync_issues',
   'lookup_distributor_product',
   'm365_list_group_memberships',
   'm365_lookup_user',

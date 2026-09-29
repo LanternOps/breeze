@@ -158,7 +158,13 @@ export async function listFleetTimeStatus(
   auth: AuthContext,
 ): Promise<FleetTimeResult> {
   const q = fleetTimeFiltersSchema.parse(filters),
-    where = fleetScope(q, auth);
+    // Site + device axes named at the entry point (idempotent with fleetScope)
+    // so the aiToolsDeviceScope/SiteScope contracts can verify this delegate.
+    where = and(
+      fleetScope(q, auth),
+      siteScopeCondition(auth, devices.siteId),
+      deviceScopeCondition(auth, devices.id),
+    );
   const [count] = await db
     .select({ total: sql<number>`count(*)::int` })
     .from(devices)

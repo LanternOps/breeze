@@ -7,6 +7,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
  * from the AI model.
  */
 
+import { fleetTimeFiltersSchema } from './timeSync/fleet';
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
@@ -172,6 +173,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_device_time_status: z.object({ deviceId: uuid }),
+  list_time_sync_issues: fleetTimeFiltersSchema,
   get_device_hardware_health: z.object({
     deviceId: uuid,
     includeEvents: z.boolean().optional(),

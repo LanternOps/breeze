@@ -5,6 +5,7 @@
  * Includes 2 custom apply tools (code + metadata) and 8 existing tools.
  */
 
+import { fleetTimeFiltersSchema } from './timeSync/fleet';
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
@@ -45,6 +46,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   get_device_details: 1,
   get_device_hardware_health: 1,
   get_device_time_status: 1,
+  list_time_sync_issues: 1,
   manage_alerts: 1,
   list_scripts: 1,
   get_script_details: 1,
@@ -315,6 +317,13 @@ export function buildScriptBuilderTools(
       'Get Windows time health, expected timezone, findings and recent events.',
       { deviceId: uuid },
       makeExistingHandler('get_device_time_status', getAuth, onPreToolUse, onPostToolUse),
+    ),
+
+    tool(
+      'list_time_sync_issues',
+      'List observed time synchronization findings in the accessible fleet.',
+      fleetTimeFiltersSchema.shape,
+      makeExistingHandler('list_time_sync_issues', getAuth, onPreToolUse, onPostToolUse),
     ),
 
     tool(

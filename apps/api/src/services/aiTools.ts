@@ -520,6 +520,7 @@ export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
   get_device_details: 'deviceId',
   get_device_hardware_health: 'deviceId',
   get_device_time_status: 'deviceId',
+  list_time_sync_issues: 'deviceId',
   analyze_metrics: 'deviceId',
   analyze_disk_usage: 'deviceId',
   get_cis_device_report: 'deviceId',

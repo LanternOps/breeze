@@ -582,6 +582,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'timeEntries/suggestions.ts': { gap: '#6776' },
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
+  'timeStatus.ts': { tools: ['list_time_sync_issues'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
   // M4-D5 (#6000): run reads and the ONE approval-gated start are the M4 tools.
   // NOT covered, deliberately (no implicit parity): collector selection and

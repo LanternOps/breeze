@@ -26,7 +26,7 @@ import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentLimits, type AiAgentRunProfile } f
 export const PATCH_TOOL_ALLOWLIST = [
   'get_device_details',
   'get_device_hardware_health',
-  'get_device_time_status',
+  'get_device_time_status', 'list_time_sync_issues',
   'get_device_context',
   'get_device_vulnerabilities',
   'manage_patches:list',
