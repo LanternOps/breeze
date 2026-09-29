@@ -111,17 +111,33 @@ type Descriptor struct {
 	Deadline     string   `json:"deadline"`
 	Capabilities []string `json:"capabilities"`
 	MaxBatch     int      `json:"maxBatch"`
+	// ControlRate, when present, is the rate the control plane lets this
+	// session's calls through (its own limiter, separate from the agent's).
+	ControlRate *ControlRate `json:"controlRate,omitempty"`
 
 	// Write sessions only.
 	Scope             string `json:"scope,omitempty"`
 	SnapshotID        string `json:"snapshotId,omitempty"`
 	PartSizeBytes     int64  `json:"partSizeBytes,omitempty"`
 	ConditionalWrites bool   `json:"conditionalWrites,omitempty"`
+	// StorageIdentity names the destination the way the credential-based
+	// S3 provider does (s3|<endpoint>|<region>|<bucket>); optional.
+	StorageIdentity string `json:"storageIdentity,omitempty"`
 
 	baseURL   *url.URL
 	expiresAt time.Time
 	deadline  time.Time
 }
+
+// ControlRate is a token bucket: PerMinute calls a minute after a burst of
+// Burst.
+type ControlRate struct {
+	PerMinute int `json:"perMinute"`
+	Burst     int `json:"burst"`
+}
+
+// maxControlRate bounds an advertised rate (per minute and burst).
+const maxControlRate = 100_000
 
 // String never includes the token. Value receivers, so a pointer, a nil
 // pointer and a copied value all format safely.
@@ -240,10 +256,13 @@ func (d *Descriptor) validate(now time.Time) error {
 	if d.MaxBatch < 1 || d.MaxBatch > maxBatchLimit {
 		return sessionErr("maxBatch %d is outside 1..%d", d.MaxBatch, maxBatchLimit)
 	}
+	if r := d.ControlRate; r != nil && (r.PerMinute < 1 || r.PerMinute > maxControlRate || r.Burst < 1 || r.Burst > maxControlRate) {
+		return sessionErr("controlRate must name perMinute and burst in 1..%d", maxControlRate)
+	}
 	switch d.Scope {
 	case "":
-		if d.SnapshotID != "" {
-			return sessionErr("a read session must not name a snapshotId")
+		if d.SnapshotID != "" || d.StorageIdentity != "" {
+			return sessionErr("a read session must not name a snapshotId or storageIdentity")
 		}
 	case ScopeSnapshotWrite:
 		if !validSnapshotID(d.SnapshotID) {
@@ -253,6 +272,9 @@ func (d *Descriptor) validate(now time.Time) error {
 			if !hasCapability(d.Capabilities, c) {
 				return sessionErr("write session does not offer the %s capability", c)
 			}
+		}
+		if d.StorageIdentity != "" && !validStorageIdentity(d.StorageIdentity) {
+			return sessionErr("write session storageIdentity is malformed")
 		}
 		if d.PartSizeBytes < minPartSizeBytes || d.PartSizeBytes > maxPartSizeBytes {
 			return sessionErr("write session partSizeBytes %d is outside %d..%d", d.PartSizeBytes, int64(minPartSizeBytes), int64(maxPartSizeBytes))
@@ -293,6 +315,20 @@ func (d Descriptor) scopeName() string {
 		return "snapshot_read"
 	}
 	return d.Scope
+}
+
+// validStorageIdentity accepts s3|<endpoint>|<region>|<bucket> of printable
+// characters, at most 1024 bytes.
+func validStorageIdentity(id string) bool {
+	if len(id) > 1024 || !strings.HasPrefix(id, "s3|") || strings.Count(id, "|") < 3 {
+		return false
+	}
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // validSnapshotID reports whether id is a single well-formed snapshot-id

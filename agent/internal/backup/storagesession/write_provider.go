@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,10 +31,18 @@ const (
 	// maxMultipartParts is the S3 part-count limit.
 	maxMultipartParts = 10_000
 
+	// serverTransferMargin is how long past its expiry the control plane
+	// still counts an issued upload URL as live (a transfer started before
+	// the expiry may still be running). Every attempt here ends at the
+	// URL's expiry plus urlTransferGrace, well inside it.
+	serverTransferMargin = 15 * time.Minute
 	// previousWriterMaxWait bounds how long one call waits for an earlier
-	// writer of the same snapshot to be fenced (every upload URL it was
-	// issued lasts at most five minutes, plus clock skew).
-	previousWriterMaxWait = 7 * time.Minute
+	// writer of the same snapshot to be fenced: a URL it was issued lasts up
+	// to maxURLLifetime and counts as live for serverTransferMargin more,
+	// plus a minute of skew. Past that the call gives up
+	// (providers.ErrPreviousWriterActive); a resume then starts afresh under
+	// the issued id.
+	previousWriterMaxWait = serverTransferMargin + maxURLLifetime + time.Minute
 	// previousWriterDefaultWait is the wait between attempts when the
 	// control plane names no Retry-After.
 	previousWriterDefaultWait = 30 * time.Second
@@ -78,6 +85,7 @@ type WriteProvider struct {
 	storage     *http.Client
 	idleTimeout time.Duration
 	identity    string
+	configID    string
 
 	// singlePutMax and partSize are fields so tests can reach the multipart
 	// path with small files.
@@ -86,8 +94,12 @@ type WriteProvider struct {
 	// minPartSize is the smallest part a multipart upload shrinks to when
 	// parts outlast their URLs (the S3 minimum for every part but the last).
 	minPartSize int64
+	// partLimit is the most parts one upload may have (the S3 limit; a field
+	// so tests can reach it).
+	partLimit int
 
 	mu           sync.Mutex
+	batch        batchState
 	snapshotID   string
 	readOnly     bool
 	resumeCalled bool
@@ -103,6 +115,10 @@ var (
 	_ providers.SnapshotIDIssuer     = (*WriteProvider)(nil)
 	_ providers.StoredObjectDigester = (*WriteProvider)(nil)
 	_ providers.JournalIdentity      = (*WriteProvider)(nil)
+	_ providers.JournalScoper        = (*WriteProvider)(nil)
+	_ providers.WriterFence          = (*WriteProvider)(nil)
+	_ providers.UploadPlanner        = (*WriteProvider)(nil)
+	_ providers.DownloadPlanner      = (*WriteProvider)(nil)
 )
 
 // NewWriteProvider builds a write provider for a validated write-scope
@@ -120,10 +136,18 @@ func NewWriteProvider(ctx context.Context, d *Descriptor, creds Credentials, opt
 		singlePutMax:   defaultSinglePutMax,
 		partSize:       ctl.desc.PartSizeBytes,
 		minPartSize:    minPartSizeBytes,
+		partLimit:      maxMultipartParts,
 		snapshotID:     ctl.desc.SnapshotID,
 	}
-	if hint := strings.TrimSpace(opts.IdentityHint); hint != "" {
-		p.identity += "|" + hint
+	p.configID = strings.TrimSpace(opts.IdentityHint)
+	switch {
+	case ctl.desc.StorageIdentity != "":
+		// The control plane names the destination exactly as the
+		// credential-based S3 provider would, so checkpoints and dedupe
+		// bases from earlier unbrokered runs to it still match.
+		p.identity = ctl.desc.StorageIdentity
+	case strings.TrimSpace(opts.IdentityHint) != "":
+		p.identity += "|" + strings.TrimSpace(opts.IdentityHint)
 	}
 	p.idleTimeout = opts.StorageIdleTimeout
 	if p.idleTimeout <= 0 {
@@ -135,10 +159,21 @@ func NewWriteProvider(ctx context.Context, d *Descriptor, creds Credentials, opt
 // Close stops the background renewer and cancels in-flight operations.
 func (p *WriteProvider) Close() { p.close() }
 
-// BackupIdentity implements providers.JournalIdentity. The helper does not
-// know the destination behind a write session, so the identity names the
+// BackupIdentity implements providers.JournalIdentity: the destination
+// identity the control plane delivered (the string the S3 provider reports
+// for the same destination), or — from a control plane that sends none — the
 // session kind plus the caller's hint (the backup configuration).
 func (p *WriteProvider) BackupIdentity() string { return p.identity }
+
+// JournalScope implements providers.JournalScoper: the backup configuration,
+// so two configurations writing to one destination keep separate checkpoint
+// journals.
+func (p *WriteProvider) JournalScope() string {
+	if p.configID == "" {
+		return ""
+	}
+	return "config=" + p.configID
+}
 
 // SnapshotID is the snapshot id this writer currently owns.
 func (p *WriteProvider) SnapshotID() string {
@@ -199,12 +234,18 @@ func errorCode(resp *http.Response) string {
 // off within bounds; "previous_writer_active" is waited out for at most
 // previousWriterMaxWait; a rejected or ended session ends the provider.
 func (p *WriteProvider) call(ctx context.Context, op string, body any, out any) error {
+	return p.callWithHeader(ctx, op, body, out, nil)
+}
+
+// callWithHeader is call that also returns the 200 answer's headers in hdr.
+func (p *WriteProvider) callWithHeader(ctx context.Context, op string, body any, out any, hdr *http.Header) error {
 	if err := p.ensureLease(ctx); err != nil {
 		return err
 	}
 	delay := retryInitialDelay
 	var rateWaited, writerWaited time.Duration
 	transient := 0
+	throttled := 0
 	for {
 		if err := p.checkDeadline(); err != nil {
 			return err
@@ -224,6 +265,9 @@ func (p *WriteProvider) call(ctx context.Context, op string, body any, out any) 
 			status := resp.StatusCode
 			switch {
 			case status == http.StatusOK:
+				if hdr != nil {
+					*hdr = resp.Header.Clone()
+				}
 				var decodeErr error
 				if out != nil {
 					decodeErr = json.NewDecoder(io.LimitReader(resp.Body, maxControlResponseBytes)).Decode(out)
@@ -234,14 +278,16 @@ func (p *WriteProvider) call(ctx context.Context, op string, body any, out any) 
 				}
 				return nil
 			case status == http.StatusTooManyRequests:
-				wait = httputil.ParseRetryAfter(resp.Header, time.Now())
-				if wait <= 0 {
-					wait = delay
-				}
+				retryAfter := httputil.ParseRetryAfter(resp.Header, time.Now())
 				drain(resp)
 				if rateWaited >= rateLimitMaxTotalWait {
 					return sessionErr("%s still rate limited after %s", op, rateWaited.Round(time.Second))
 				}
+				var throttleErr error
+				if wait, throttleErr = p.throttleWait(retryAfter, throttled); throttleErr != nil {
+					return throttleErr
+				}
+				throttled++
 				rateWaited += wait
 			case status == http.StatusConflict:
 				retryAfter := httputil.ParseRetryAfter(resp.Header, time.Now())
@@ -249,6 +295,9 @@ func (p *WriteProvider) call(ctx context.Context, op string, body any, out any) 
 				drain(resp)
 				if code != "previous_writer_active" {
 					return &controlError{op: op, status: status, code: code}
+				}
+				if noWriterWait(ctx) {
+					return fmt.Errorf("%w (%s)", providers.ErrPreviousWriterActive, op)
 				}
 				wait = retryAfter
 				if wait <= 0 {
@@ -288,6 +337,40 @@ func (p *WriteProvider) call(ctx context.Context, op string, body any, out any) 
 			delay = retryMaxDelay
 		}
 	}
+}
+
+// noWriterWaitKey marks a context whose calls answer
+// providers.ErrPreviousWriterActive at once instead of waiting (uploads: the
+// caller waits outside the file's own deadline, via AwaitWriteAccess).
+type noWriterWaitKey struct{}
+
+func withoutWriterWait(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noWriterWaitKey{}, true)
+}
+
+func noWriterWait(ctx context.Context) bool {
+	v, _ := ctx.Value(noWriterWaitKey{}).(bool)
+	return v
+}
+
+// AwaitWriteAccess implements providers.WriterFence: it asks for an upload
+// URL for this snapshot's upload lease (never used), which the control plane
+// grants only once no earlier writer of the snapshot can still write it —
+// waiting within previousWriterMaxWait. A read-only session has nothing to
+// wait for.
+func (p *WriteProvider) AwaitWriteAccess(ctx context.Context) error {
+	p.mu.Lock()
+	readOnly := p.readOnly
+	id := p.snapshotID
+	p.mu.Unlock()
+	if readOnly {
+		return nil
+	}
+	ctx, stop := p.merge(ctx)
+	defer stop()
+	var zero int64
+	_, err := p.resolveOne(ctx, writeRequest{Method: http.MethodPut, Key: "snapshots/" + id + "/upload.lease", Size: &zero})
+	return err
 }
 
 // --- keys ---
@@ -346,6 +429,7 @@ func (p *WriteProvider) ResumeSnapshot(ctx context.Context, journalID string) (p
 	var out struct {
 		SnapshotID string `json:"snapshotId"`
 		Mode       string `json:"mode"`
+		Takeover   bool   `json:"takeover"`
 	}
 	err := p.call(ctx, "snapshot:resume", map[string]any{"snapshotId": journalID}, &out)
 	switch {
@@ -363,6 +447,9 @@ func (p *WriteProvider) ResumeSnapshot(ctx context.Context, journalID string) (p
 	switch out.Mode {
 	case "write":
 		p.snapshotID = journalID
+		if out.Takeover {
+			return providers.ResumeTakeover, nil
+		}
 		return providers.ResumeWrite, nil
 	case "read_only_completion":
 		p.snapshotID = journalID
@@ -389,77 +476,11 @@ type resolvedWrite struct {
 	expiresAt time.Time
 }
 
-// resolveOne exchanges one write request for a presigned URL.
+// resolveOne exchanges one write request for a presigned URL, taking it
+// from the batch cache when an earlier batch already resolved it (see
+// resolveWithLookahead).
 func (p *WriteProvider) resolveOne(ctx context.Context, req writeRequest) (*resolvedWrite, error) {
-	if req.Method != http.MethodGet {
-		p.markWrote()
-	}
-	var wire struct {
-		Objects []struct {
-			Key        string            `json:"key"`
-			Method     string            `json:"method"`
-			URL        string            `json:"url"`
-			Headers    map[string]string `json:"headers"`
-			ExpiresAt  string            `json:"expiresAt"`
-			UploadID   string            `json:"uploadId"`
-			PartNumber int               `json:"partNumber"`
-		} `json:"objects"`
-		Denied []struct {
-			Key        string `json:"key"`
-			Method     string `json:"method"`
-			PartNumber int    `json:"partNumber"`
-			Code       string `json:"code"`
-		} `json:"denied"`
-	}
-	if err := p.call(ctx, "objects:resolve", map[string]any{"requests": []writeRequest{req}}, &wire); err != nil {
-		return nil, err
-	}
-	if len(wire.Objects)+len(wire.Denied) != 1 {
-		return nil, sessionErr("resolve answered %d objects for one request", len(wire.Objects)+len(wire.Denied))
-	}
-	if len(wire.Denied) == 1 {
-		d := wire.Denied[0]
-		if d.Key != req.Key || d.Method != req.Method {
-			return nil, sessionErr("resolve denied an object that was not requested")
-		}
-		return nil, &controlError{op: "objects:resolve", status: http.StatusForbidden, code: d.Code}
-	}
-	o := wire.Objects[0]
-	if o.Key != req.Key || o.Method != req.Method {
-		return nil, sessionErr("resolve answered an object that was not requested")
-	}
-	if req.Method == "UPLOAD_PART" && (o.UploadID != req.UploadID || o.PartNumber != req.PartNumber) {
-		return nil, sessionErr("resolve answered a different multipart part")
-	}
-	u, err := url.Parse(o.URL)
-	if err != nil || u.Host == "" || u.User != nil || !schemeAllowed(u) {
-		return nil, sessionErr("resolve returned an unacceptable storage URL")
-	}
-	headers := http.Header{}
-	for name, value := range o.Headers {
-		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))
-		if canonical == "" {
-			return nil, sessionErr("resolve returned an empty header name")
-		}
-		if canonical == "Content-Length" && req.Size != nil {
-			if value != strconv.FormatInt(*req.Size, 10) {
-				return nil, sessionErr("resolve signed a content length of %q for a %d-byte object", value, *req.Size)
-			}
-			continue
-		}
-		if _, bad := forbiddenObjectHeaders[canonical]; bad {
-			return nil, sessionErr("resolve returned forbidden header %q", canonical)
-		}
-		headers.Set(canonical, value)
-	}
-	expiresAt, err := time.Parse(time.RFC3339, o.ExpiresAt)
-	if err != nil {
-		return nil, sessionErr("resolve returned an object without a valid expiry")
-	}
-	if limit := p.now().Add(maxURLLifetime); expiresAt.After(limit) {
-		expiresAt = limit
-	}
-	return &resolvedWrite{url: u, headers: headers, expiresAt: expiresAt}, nil
+	return p.resolveWithLookahead(ctx, req, nil)
 }
 
 func (p *WriteProvider) checkEncryption(h http.Header) error {
@@ -476,6 +497,29 @@ func (p *WriteProvider) checkEncryption(h http.Header) error {
 		return sessionErr("the upload URL names a different server-side encryption key")
 	}
 	return nil
+}
+
+// localURLExpiry is when an issued URL expires on THIS device's clock, so a
+// device clock that is off the control plane's neither cancels every attempt
+// nor lets one run long past its URL: received plus the URL's remaining
+// lifetime (expiresIn, whole seconds) when the control plane states it;
+// otherwise the stated expiry moved by the clock difference the answer's
+// Date header shows; otherwise the stated expiry as is. Never later than
+// maxURLLifetime after receipt.
+func localURLExpiry(received time.Time, expiresIn *int64, dateHeader string, expiresAt time.Time) time.Time {
+	local := expiresAt
+	switch {
+	case expiresIn != nil && *expiresIn >= 0:
+		local = received.Add(time.Duration(*expiresIn) * time.Second)
+	case dateHeader != "":
+		if serverNow, err := http.ParseTime(dateHeader); err == nil {
+			local = expiresAt.Add(received.Sub(serverNow))
+		}
+	}
+	if limit := received.Add(maxURLLifetime); local.After(limit) {
+		local = limit
+	}
+	return local
 }
 
 // --- storage requests ---
@@ -660,6 +704,7 @@ func (p *WriteProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 	}
 	ctx, stop := p.merge(ctx)
 	defer stop()
+	ctx = withoutWriterWait(ctx)
 	info, err := os.Stat(localPath)
 	if err != nil {
 		return providers.UploadDigest{}, fmt.Errorf("failed to open source file: %w", err)
@@ -739,9 +784,11 @@ func (p *WriteProvider) putAttempt(ctx context.Context, localPath, key string) (
 	body := &hashingReader{r: io.LimitReader(file, size), h: sha256.New(), onRead: progress}
 	attemptCtx, touch, mapErr, done := p.idleContext(ctx, obj.expiresAt)
 	defer done()
+	started := time.Now()
 	if _, err := p.sendPut(attemptCtx, obj, body, size, touch); err != nil {
 		return providers.UploadDigest{}, mapErr(err)
 	}
+	p.recordThroughput(size, time.Since(started))
 	if body.n != size {
 		return providers.UploadDigest{}, sessionErr("source file %s changed size while it was uploaded", filepath.Base(localPath))
 	}
@@ -798,7 +845,7 @@ func (p *WriteProvider) multipartPlan(size, want int64) (int64, error) {
 	if want > 0 {
 		partSize = want
 	}
-	if need := minPartFor(size, maxMultipartParts); partSize < need {
+	if need := minPartFor(size, p.partLimit); partSize < need {
 		partSize = need
 	}
 	if partSize > maxPartSizeBytes {
@@ -821,34 +868,34 @@ type completedPart struct {
 	ETag       string `json:"etag"`
 }
 
-// appliedEncryption is the server-side encryption the control plane applied
-// when it created a multipart upload.
+// appliedEncryption is what multipart:create reports about the new upload's
+// server-side encryption: the algorithm (and KMS key) storage confirmed, and
+// whether that matches what the control plane requested. The answer is null
+// when nothing was requested and storage confirmed nothing.
 type appliedEncryption struct {
-	Algorithm string `json:"algorithm"`
-	KMSKeyID  string `json:"kmsKeyId"`
+	Algorithm *string `json:"algorithm"`
+	KMSKeyID  string  `json:"kmsKeyId"`
+	Matches   bool    `json:"matches"`
 }
 
-// checkAppliedEncryption compares the encryption a multipart upload was
-// created with against the planned one. An answer that names none (an older
-// control plane) is accepted only when no encryption is planned.
+// checkAppliedEncryption decides whether parts may be sent to a new
+// multipart upload. With encryption planned, the answer must confirm the
+// planned algorithm and match the request (the control plane compares the KMS
+// key, which storage reports by its full name). With none planned, a null
+// answer or a matching one is accepted. An absent answer (an older control
+// plane) counts as null.
 func (p *WriteProvider) checkAppliedEncryption(applied *appliedEncryption) error {
 	p.mu.Lock()
-	alg, kms := p.sseAlgorithm, p.sseKMSKeyID
+	alg := p.sseAlgorithm
 	p.mu.Unlock()
-	if applied == nil {
-		if alg != "" {
-			return sessionErr("the multipart upload does not report the planned server-side encryption (%s)", alg)
+	if alg != "" {
+		if applied == nil || !applied.Matches || applied.Algorithm == nil || *applied.Algorithm != alg {
+			return sessionErr("the multipart upload was not created with the planned server-side encryption (%s)", alg)
 		}
 		return nil
 	}
-	if alg == "" {
-		return nil
-	}
-	if applied.Algorithm != alg {
-		return sessionErr("the multipart upload was created without the planned server-side encryption (%s)", alg)
-	}
-	if alg == "aws:kms" && kms != "" && applied.KMSKeyID != kms {
-		return sessionErr("the multipart upload was created with a different server-side encryption key")
+	if applied != nil && !applied.Matches {
+		return sessionErr("the multipart upload's server-side encryption does not match what was requested")
 	}
 	return nil
 }
@@ -862,6 +909,13 @@ func (p *WriteProvider) checkAppliedEncryption(applied *appliedEncryption) error
 // creates and completes the upload; any failure aborts it (best effort — the
 // control plane's cleanup makes the abort durable). initialPart (0 = the
 // session's part size) sets the first part size.
+//
+// Size limit: every part must finish within its URL's lifetime (at most
+// maxURLLifetime, plus urlTransferGrace) and an upload has at most
+// maxMultipartParts parts, so the largest object a link can carry is about
+// maxMultipartParts × (the bytes it moves in ~5.5 minutes) — for example
+// about 3.3 TB at 1 MB/s. A larger object fails with an error naming this
+// limit once its parts cannot shrink any further.
 func (p *WriteProvider) multipartUpload(ctx context.Context, localPath, key string, initialPart int64) (providers.UploadDigest, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
@@ -907,9 +961,9 @@ func (p *WriteProvider) multipartUpload(ctx context.Context, localPath, key stri
 	var sent int64
 	var parts []completedPart
 	for number := 1; sent < size; number++ {
-		if number > maxMultipartParts {
+		if number > p.partLimit {
 			abort()
-			return providers.UploadDigest{}, sessionErr("object %s needs more than %d parts", key, maxMultipartParts)
+			return providers.UploadDigest{}, sessionErr("object %s needs more than %d parts", key, p.partLimit)
 		}
 		etag, n, err := p.streamPart(ctx, file, key, uploadID, number, sent, size, partSize, h, progress)
 		if err != nil {
@@ -949,14 +1003,14 @@ func (p *WriteProvider) streamPart(ctx context.Context, file *os.File, key, uplo
 		return "", 0, fmt.Errorf("storage session: save digest state: %w", err)
 	}
 	remaining := size - offset
-	floor := max(minPartFor(remaining, maxMultipartParts-number+1), min(p.minPartSize, remaining))
+	floor := max(minPartFor(remaining, p.partLimit-number+1), min(p.minPartSize, remaining))
 	n := min(max(partSize, floor), remaining)
 	var retry retryState
 	for {
 		if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(before); err != nil {
 			return "", 0, fmt.Errorf("storage session: restore digest state: %w", err)
 		}
-		etag, err := p.partAttempt(ctx, file, key, uploadID, number, offset, n, h, progress)
+		etag, err := p.partAttempt(ctx, file, key, uploadID, number, offset, n, h, progress, p.nextParts(key, uploadID, number, offset+n, size, n))
 		if err == nil {
 			return etag, n, nil
 		}
@@ -967,15 +1021,42 @@ func (p *WriteProvider) streamPart(ctx context.Context, file *os.File, key, uplo
 		}
 		again, finalErr := retry.next(ctx, err)
 		if !again {
+			if errors.As(finalErr, &expiredErr) {
+				return "", 0, sessionErr("object of %d bytes is too large to upload over this link: with at most %d parts every part must be at least %d bytes, "+
+					"and a part that size does not finish within its upload URL's lifetime (at most %s, plus %s)",
+					size, p.partLimit, n, maxURLLifetime, urlTransferGrace)
+			}
 			return "", 0, finalErr
 		}
 	}
 }
 
+// nextParts plans UploadPart requests for the parts after part number,
+// sized as streamPart will size them while no part shrinks (a shrink makes
+// the planned sizes stale; their URLs are then resolved again), within the
+// batch window.
+func (p *WriteProvider) nextParts(key, uploadID string, number int, offset, size, partSize int64) []writeRequest {
+	budget := p.windowBytes()
+	var out []writeRequest
+	var planned int64
+	for n := number + 1; offset < size && len(out) < p.desc.MaxBatch-1 && n <= p.partLimit; n++ {
+		remaining := size - offset
+		floor := max(minPartFor(remaining, p.partLimit-n+1), min(p.minPartSize, remaining))
+		part := min(max(partSize, floor), remaining)
+		if planned+part > budget {
+			break
+		}
+		planned += part
+		out = append(out, writeRequest{Method: "UPLOAD_PART", Key: key, Size: &part, UploadID: uploadID, PartNumber: n})
+		offset += part
+	}
+	return out
+}
+
 // partAttempt resolves an UploadPart URL for n bytes at offset and sends
 // them from the file, hashing them into h as they are read.
-func (p *WriteProvider) partAttempt(ctx context.Context, file *os.File, key, uploadID string, number int, offset, n int64, h hash.Hash, progress func(int64)) (string, error) {
-	obj, err := p.resolveOne(ctx, writeRequest{Method: "UPLOAD_PART", Key: key, Size: &n, UploadID: uploadID, PartNumber: number})
+func (p *WriteProvider) partAttempt(ctx context.Context, file *os.File, key, uploadID string, number int, offset, n int64, h hash.Hash, progress func(int64), lookahead []writeRequest) (string, error) {
+	obj, err := p.resolveWithLookahead(ctx, writeRequest{Method: "UPLOAD_PART", Key: key, Size: &n, UploadID: uploadID, PartNumber: number}, lookahead)
 	if err != nil {
 		return "", err
 	}
@@ -986,10 +1067,12 @@ func (p *WriteProvider) partAttempt(ctx context.Context, file *os.File, key, upl
 	body := &hashingReader{r: io.NewSectionReader(file, offset, n), h: h, onRead: onRead}
 	attemptCtx, touch, mapErr, done := p.idleContext(ctx, obj.expiresAt)
 	defer done()
+	started := time.Now()
 	etag, err := p.sendPut(attemptCtx, obj, body, n, touch)
 	if err != nil {
 		return "", mapErr(err)
 	}
+	p.recordThroughput(n, time.Since(started))
 	if body.n != n {
 		return "", sessionErr("source file changed size while it was uploaded")
 	}

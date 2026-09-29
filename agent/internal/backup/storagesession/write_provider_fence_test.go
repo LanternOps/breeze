@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,15 @@ func shortTransferGrace(t *testing.T, d time.Duration) {
 	orig := urlTransferGrace
 	urlTransferGrace = d
 	t.Cleanup(func() { urlTransferGrace = orig })
+}
+
+// boundedCtx fails an expiry test quickly instead of letting it hang until
+// the idle timeout when the expiry cutoff does not fire.
+func boundedCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // blockUntilCancelled holds a storage request open until the client gives up
@@ -49,7 +59,7 @@ func TestWriteProviderAbandonsAnAttemptPastItsURLExpiry(t *testing.T) {
 	p := newTestWriteProvider(t, b, Options{StorageIdleTimeout: time.Minute})
 	data := []byte("payload")
 	start := time.Now()
-	d, err := p.UploadWithDigest(context.Background(), writeTempData(t, data), objKey("files/a"))
+	d, err := p.UploadWithDigest(boundedCtx(t), writeTempData(t, data), objKey("files/a"))
 	if err != nil || d.SHA256 != digestHex(data) {
 		t.Fatalf("upload: %+v %v", d, err)
 	}
@@ -81,7 +91,7 @@ func TestWriteProviderShrinksPartsThatOutlastTheirURL(t *testing.T) {
 	p.partSize = 16 << 10
 	p.minPartSize = 2 << 10
 	data := patternBytes(40<<10 + 3)
-	d, err := p.UploadWithDigest(context.Background(), writeTempData(t, data), objKey("files/big"))
+	d, err := p.UploadWithDigest(boundedCtx(t), writeTempData(t, data), objKey("files/big"))
 	if err != nil || d.SHA256 != digestHex(data) {
 		t.Fatalf("upload: %+v %v", d, err)
 	}
@@ -111,7 +121,7 @@ func TestWriteProviderSwitchesToMultipartWhenAPutOutlastsItsURL(t *testing.T) {
 	p.partSize = 4 << 10
 	p.minPartSize = 2 << 10
 	data := patternBytes(10 << 10)
-	d, err := p.UploadWithDigest(context.Background(), writeTempData(t, data), objKey("files/mid"))
+	d, err := p.UploadWithDigest(boundedCtx(t), writeTempData(t, data), objKey("files/mid"))
 	if err != nil || d.SHA256 != digestHex(data) {
 		t.Fatalf("upload: %+v %v", d, err)
 	}
@@ -163,24 +173,31 @@ func TestWriteProviderMultipartDigestFollowsRetriedPartBytes(t *testing.T) {
 }
 
 func TestWriteProviderMultipartEncryption(t *testing.T) {
+	kmsReq := map[string]any{"algorithm": "aws:kms", "kmsKeyId": "key-1"}
 	cases := []struct {
 		name      string
 		alg, kms  string
 		applied   map[string]any
+		null      bool
 		wantError bool
 	}{
-		{"applied matches", "AES256", "", map[string]any{"algorithm": "AES256"}, false},
-		{"applied differs", "AES256", "", map[string]any{"algorithm": "aws:kms"}, true},
-		{"kms key differs", "aws:kms", "key-1", map[string]any{"algorithm": "aws:kms", "kmsKeyId": "key-2"}, true},
-		{"kms key matches", "aws:kms", "key-1", map[string]any{"algorithm": "aws:kms", "kmsKeyId": "key-1"}, false},
-		{"not reported but required", "AES256", "", nil, true},
-		{"not reported and not required", "", "", nil, false},
+		{"confirmed as planned", "AES256", "", map[string]any{"algorithm": "AES256", "requested": map[string]any{"algorithm": "AES256"}, "matches": true}, false, false},
+		{"storage ignored the request", "AES256", "", map[string]any{"algorithm": nil, "requested": map[string]any{"algorithm": "AES256"}, "matches": false}, false, true},
+		{"other algorithm", "AES256", "", map[string]any{"algorithm": "aws:kms", "kmsKeyId": "k", "requested": map[string]any{"algorithm": "AES256"}, "matches": true}, false, true},
+		{"kms key confirmed by its full name", "aws:kms", "key-1", map[string]any{"algorithm": "aws:kms", "kmsKeyId": "arn:aws:kms:us-east-1:111:key/key-1", "requested": kmsReq, "matches": true}, false, false},
+		{"kms key differs", "aws:kms", "key-1", map[string]any{"algorithm": "aws:kms", "kmsKeyId": "arn:aws:kms:us-east-1:111:key/key-2", "requested": kmsReq, "matches": false}, false, true},
+		{"required, none reported", "AES256", "", nil, true, true},
+		{"required, field absent", "AES256", "", nil, false, true},
+		{"not required, none reported", "", "", nil, true, false},
+		{"not required, bucket default applied", "", "", map[string]any{"algorithm": "AES256", "requested": nil, "matches": true}, false, false},
+		{"not required, mismatch", "", "", map[string]any{"algorithm": nil, "requested": nil, "matches": false}, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newFakeWriteBackend(t)
 			b.set(func(b *fakeWriteBackend) {
 				b.createEncryption = tc.applied
+				b.createEncryptionNull = tc.null
 				if tc.alg != "" {
 					b.sse = map[string]string{"x-amz-server-side-encryption": tc.alg}
 				}
@@ -306,7 +323,7 @@ func TestWriteProviderAbortsAfterContextCancel(t *testing.T) {
 	}
 }
 
-func TestWriteProviderGivesUpWaitingForAPreviousWriterOnResolve(t *testing.T) {
+func TestWriteProviderGivesUpWaitingForAnEarlierWriter(t *testing.T) {
 	waits := noSleep(t)
 	b := newFakeWriteBackend(t)
 	b.set(func(b *fakeWriteBackend) {
@@ -320,7 +337,7 @@ func TestWriteProviderGivesUpWaitingForAPreviousWriterOnResolve(t *testing.T) {
 		}
 	})
 	p := newTestWriteProvider(t, b, Options{})
-	_, err := p.UploadWithDigest(context.Background(), writeTempData(t, []byte("x")), objKey("files/a"))
+	err := p.AwaitWriteAccess(context.Background())
 	if !errors.Is(err, providers.ErrPreviousWriterActive) {
 		t.Fatalf("err = %v", err)
 	}
@@ -330,5 +347,52 @@ func TestWriteProviderGivesUpWaitingForAPreviousWriterOnResolve(t *testing.T) {
 	}
 	if total > previousWriterMaxWait || len(*waits) == 0 {
 		t.Fatalf("waited %s over %d waits", total, len(*waits))
+	}
+}
+
+func TestWriteProviderRaisesPartsToStayWithinThePartLimit(t *testing.T) {
+	b := newFakeWriteBackend(t)
+	p := newTestWriteProvider(t, b, Options{})
+	p.singlePutMax = 1 << 10
+	p.partSize = 1 << 10
+	p.minPartSize = 1 << 10
+	p.partLimit = 3
+	data := patternBytes(10<<10 + 5)
+	d, err := p.UploadWithDigest(boundedCtx(t), writeTempData(t, data), objKey("files/big"))
+	if err != nil || d.SHA256 != digestHex(data) {
+		t.Fatalf("upload: %+v %v", d, err)
+	}
+	complete := b.callsFor("multipart:complete")
+	if len(complete) != 1 || len(complete[0].body["parts"].([]any)) > 3 {
+		t.Fatalf("completed with more parts than the limit: %v", complete)
+	}
+}
+
+func TestWriteProviderNamesTheSizeLimitWhenPartsCannotShrinkEnough(t *testing.T) {
+	shortTransferGrace(t, 100*time.Millisecond)
+	b := newFakeWriteBackend(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	b.set(func(b *fakeWriteBackend) {
+		b.urlTTL = 500 * time.Millisecond
+		b.storageHook = func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/part" && r.ContentLength > 3<<10 {
+				blockUntilCancelled(r, release)
+				return true
+			}
+			return false
+		}
+	})
+	p := newTestWriteProvider(t, b, Options{StorageIdleTimeout: time.Minute})
+	p.singlePutMax = 1 << 10
+	p.partSize = 8 << 10
+	p.minPartSize = 1 << 10
+	p.partLimit = 2
+	_, err := p.UploadWithDigest(boundedCtx(t), writeTempData(t, patternBytes(8<<10)), objKey("files/big"))
+	if err == nil || !strings.Contains(err.Error(), "too large to upload over this link") {
+		t.Fatalf("err = %v, want the size limit named", err)
+	}
+	if len(b.callsFor("multipart:abort")) != 1 {
+		t.Fatal("upload not aborted")
 	}
 }

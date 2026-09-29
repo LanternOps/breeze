@@ -39,6 +39,9 @@ type writeEnv struct {
 	nextUpload     int
 	ops            []string
 	storageHeaders []http.Header
+	// busyResolves answers that many objects:resolve calls with
+	// previous_writer_active (Retry-After 1).
+	busyResolves int
 }
 
 func newWriteEnv(t *testing.T) *writeEnv {
@@ -97,6 +100,12 @@ func newWriteEnv(t *testing.T) *writeEnv {
 		case "renew":
 			reply(200, map[string]string{"expiresAt": time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)})
 		case "objects:resolve":
+			if e.busyResolves > 0 {
+				e.busyResolves--
+				w.Header().Set("Retry-After", "1")
+				reply(409, map[string]string{"code": "previous_writer_active"})
+				return
+			}
 			objects, denied := []map[string]any{}, []map[string]any{}
 			for _, raw := range body["requests"].([]any) {
 				req := raw.(map[string]any)
@@ -477,6 +486,40 @@ func TestBrokeredWrite_DatabaseAndVMBackupsRequireThePlannedEncryption(t *testin
 				t.Fatalf("stored %v without the planned encryption", keys)
 			}
 			assertDirEmpty(t, decoyDir)
+		})
+	}
+}
+
+func TestBrokeredWrite_DatabaseAndVMBackupsWaitOutAnEarlierWriter(t *testing.T) {
+	for _, command := range []string{"mssql_backup", "hyperv_backup"} {
+		t.Run(command, func(t *testing.T) {
+			e := newWriteEnv(t)
+			e.mu.Lock()
+			e.busyResolves = 1
+			e.mu.Unlock()
+			payload := map[string]any{"jobId": "0b7f3c2e-5a1d-4c8e-9f60-2d4b8a1e7c35", "provider": "s3", "storageSession": e.session()}
+			if command == "mssql_backup" {
+				orig := runMSSQLBackup
+				t.Cleanup(func() { runMSSQLBackup = orig })
+				runMSSQLBackup = func(_, _, _, outputPath string) (*mssql.BackupResult, error) {
+					f := filepath.Join(outputPath, "Db_full.bak")
+					if err := os.WriteFile(f, []byte("bak-bytes"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					return &mssql.BackupResult{InstanceName: "MSSQLSERVER", DatabaseName: "Db", BackupType: "full", BackupFile: f}, nil
+				}
+				payload["instance"], payload["database"], payload["backupType"] = "MSSQLSERVER", "Db", "full"
+			} else {
+				stubHypervSeams(t, func(string) (int64, error) { return 1 << 20, nil }, constFree(1<<40), nil, fakeExport(false))
+				payload["vmName"], payload["consistencyType"] = "vm1", "application"
+			}
+			mgr, _ := decoyStore(t)
+			result := executeCommand(backupipc.BackupCommandRequest{CommandID: "w", CommandType: command,
+				Payload: sessionPayloadJSON(t, payload)}, mgr, nil, nil, newActiveCommandCanceller())
+			if !result.Success {
+				t.Fatalf("%s did not wait out the earlier writer: %q", command, result.Stderr)
+			}
+			e.assertOnlyIssuedKeys()
 		})
 	}
 }

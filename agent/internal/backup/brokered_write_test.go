@@ -35,6 +35,23 @@ type fakeIssuer struct {
 	resume        func(journalID string) (providers.ResumeMode, error)
 	digestErr     error
 	storedDigests int
+	// fenceErr / fenceDelay shape AwaitWriteAccess; busyOnce names keys
+	// (substrings) whose first upload finds an earlier writer still active.
+	fenceErr   error
+	fenceDelay time.Duration
+	busyOnce   map[string]bool
+}
+
+func (p *fakeIssuer) AwaitWriteAccess(ctx context.Context) error {
+	p.record("fence")
+	if p.fenceDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(p.fenceDelay):
+		}
+	}
+	return p.fenceErr
 }
 
 func newFakeIssuer(id string) *fakeIssuer {
@@ -104,6 +121,15 @@ func (p *fakeIssuer) UploadWithDigest(_ context.Context, localPath, remotePath s
 	if err := p.owns(remotePath); err != nil {
 		return providers.UploadDigest{}, err
 	}
+	p.mu.Lock()
+	for sub, busy := range p.busyOnce {
+		if busy && strings.Contains(remotePath, sub) {
+			p.busyOnce[sub] = false
+			p.mu.Unlock()
+			return providers.UploadDigest{}, fmt.Errorf("%w: test", providers.ErrPreviousWriterActive)
+		}
+	}
+	p.mu.Unlock()
 	if p.digestErr != nil {
 		return providers.UploadDigest{}, p.digestErr
 	}
@@ -454,7 +480,7 @@ func TestJournal_ContinuedRunKeepsEntriesAndRequiresStoredChecks(t *testing.T) {
 	if j2.VerifyStoredEntries() {
 		t.Fatal("a journal continued by its own job requires stored checks")
 	}
-	if err := j2.ContinueRun(testJobID, ""); err != nil {
+	if err := j2.ContinueRun(testJobID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	if !j2.VerifyStoredEntries() || len(j2.entries) != 1 || j2.Header().JobID != testJobID {
@@ -489,5 +515,137 @@ func TestUploadWithDigest_BrokeredProviderNeverStagesACopy(t *testing.T) {
 	}
 	if _, ok := storedObjectDigesterOf(gate); !ok {
 		t.Fatal("leaseGate hides the stored-object digester")
+	}
+}
+
+func TestBrokeredRun_TakeoverAlwaysChecksStoredObjects(t *testing.T) {
+	// The control plane reports a takeover: even a journal whose header
+	// names this job is continued only after the stored objects are checked,
+	// and its control objects are rebuilt.
+	src := t.TempDir()
+	a := createTempFile(t, src, "a.txt", "alpha")
+	staging := t.TempDir()
+	p := newFakeIssuer(brokeredIssuedID)
+	p.resume = func(string) (providers.ResumeMode, error) { return providers.ResumeTakeover, nil }
+	ea := journaledEntry(t, a, brokeredJournalID, "alpha")
+	p.backing.files[ea.BackupPath] = []byte("other bytes")
+	manifestKey := path.Join(snapshotRootDir, brokeredJournalID, snapshotManifestKey)
+	stale, _ := json.Marshal(&Snapshot{ID: brokeredJournalID, Timestamp: time.Now().UTC(), Files: []SnapshotFile{ea}})
+	p.backing.files[manifestKey] = stale
+	seedBrokeredJournal(t, staging, backupIdentity(p, []string{src}), brokeredJournalID, testJobID, "", ea)
+
+	job, err := brokeredManager(p, src, staging, testJobID).RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	if job.Snapshot.ID != brokeredJournalID {
+		t.Fatalf("snapshot id = %s", job.Snapshot.ID)
+	}
+	if p.storedDigests == 0 {
+		t.Fatal("a takeover reused journal entries without checking storage")
+	}
+	uploadedA, uploadedManifest := false, false
+	for _, k := range p.uploadedKeys() {
+		uploadedA = uploadedA || strings.Contains(k, "/a.txt")
+		uploadedManifest = uploadedManifest || k == manifestKey
+	}
+	if !uploadedA || !uploadedManifest {
+		t.Fatalf("mismatching object not re-uploaded or manifest adopted: %v", p.uploadedKeys())
+	}
+}
+
+func TestBrokeredRun_WaitsForAnEarlierWriterBeforeUploading(t *testing.T) {
+	src := t.TempDir()
+	createTempFile(t, src, "a.txt", "alpha")
+	p := newFakeIssuer(brokeredIssuedID)
+	job, err := brokeredManager(p, src, t.TempDir(), testJobID).RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	events := p.eventList()
+	fenced := false
+	for _, e := range events {
+		if e == "fence" {
+			fenced = true
+		}
+		if strings.HasPrefix(e, "upload:") && !fenced {
+			t.Fatalf("uploaded before waiting for earlier writers: %v", events)
+		}
+	}
+	if !fenced || job.Snapshot == nil {
+		t.Fatalf("no wait for earlier writers: %v", events)
+	}
+
+	// Still fenced after the wait: the run fails before writing anything.
+	p2 := newFakeIssuer(brokeredIssuedID)
+	p2.fenceErr = fmt.Errorf("%w: test", providers.ErrPreviousWriterActive)
+	if _, err := brokeredManager(p2, src, t.TempDir(), testJobID).RunBackupContext(context.Background(), nil); err == nil {
+		t.Fatal("a run with an earlier writer still active succeeded")
+	}
+	if len(p2.uploadedKeys()) != 0 {
+		t.Fatalf("uploaded while an earlier writer was active: %v", p2.uploadedKeys())
+	}
+}
+
+func TestBrokeredRun_EarlierWriterMidRunIsAWaitNotAFileFailure(t *testing.T) {
+	restore := setUploadTimeoutFloorForTest(50 * time.Millisecond)
+	defer restore()
+	src := t.TempDir()
+	createTempFile(t, src, "a.txt", "alpha")
+	createTempFile(t, src, "b.txt", "bravo")
+	p := newFakeIssuer(brokeredIssuedID)
+	p.busyOnce = map[string]bool{"/a.txt": true}
+	// Longer than the file's own deadline: the wait must not run inside it.
+	p.fenceDelay = 200 * time.Millisecond
+	job, err := brokeredManager(p, src, t.TempDir(), testJobID).RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	if len(job.Snapshot.UploadFailures) != 0 || len(job.Snapshot.Files) != 2 {
+		t.Fatalf("a wait for an earlier writer cost a file: failures=%v files=%d", job.Snapshot.UploadFailures, len(job.Snapshot.Files))
+	}
+	fences := 0
+	for _, e := range p.eventList() {
+		if e == "fence" {
+			fences++
+		}
+	}
+	if fences != 2 {
+		t.Fatalf("fence waits = %d, want one before the run and one mid-run", fences)
+	}
+}
+
+// plannedIssuer is a fakeIssuer that records the upload plan it is given.
+type plannedIssuer struct {
+	*fakeIssuer
+	plan []providers.PlannedUpload
+}
+
+func (p *plannedIssuer) PrepareUploads(entries []providers.PlannedUpload) {
+	p.plan = append([]providers.PlannedUpload(nil), entries...)
+}
+
+func TestBrokeredRun_PlansItsUploadsInOrder(t *testing.T) {
+	src := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
+		createTempFile(t, src, name, "content of "+name)
+	}
+	p := &plannedIssuer{fakeIssuer: newFakeIssuer(brokeredIssuedID)}
+	if _, err := brokeredManager(p, src, t.TempDir(), testJobID).RunBackupContext(context.Background(), nil); err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	var fileUploads []string
+	for _, k := range p.uploadedKeys() {
+		if strings.Contains(k, "/files/") {
+			fileUploads = append(fileUploads, k)
+		}
+	}
+	if len(p.plan) != len(fileUploads) || len(fileUploads) != 4 {
+		t.Fatalf("plan %v, uploads %v", p.plan, fileUploads)
+	}
+	for i, e := range p.plan {
+		if e.Key != fileUploads[i] || !strings.HasPrefix(pathpkg.Base(e.LocalPath), strings.TrimSuffix(pathpkg.Base(e.Key), ".gz")) {
+			t.Fatalf("planned upload %d = %+v, uploaded %s", i, e, fileUploads[i])
+		}
 	}
 }

@@ -572,7 +572,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	} else {
 		journalDirsForExclude = append(journalDirsForExclude, journalDir)
 		var journalErr error
-		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
+		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, journalIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
 		if journalErr != nil {
 			// A journal is a best-effort checkpoint, never a correctness
 			// requirement: degrade to a journal-less run rather than failing
@@ -727,6 +727,20 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		job.CompletedAt = time.Now().UTC()
 		job.Error = errors.New("the interrupted snapshot this backup continued is already published, but its manifest could not be read")
 		return job, job.Error
+	}
+	if fence, ok := writerFenceOf(m.config.Provider); ok {
+		// An earlier writer of this snapshot (a redelivered or continued
+		// job) is waited out once, here, before any file's own deadline
+		// starts — not inside the first file's upload.
+		if err := fence.AwaitWriteAccess(runCtx); err != nil {
+			if runCtx.Err() != nil {
+				return stopBackupRun()
+			}
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = fmt.Errorf("%w: %w", errWriterStillActive, err)
+			return job, job.Error
+		}
 	}
 	if journal != nil {
 		// Best effort, like every journal write.

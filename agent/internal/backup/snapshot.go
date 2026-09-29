@@ -49,6 +49,21 @@ func sha256File(path string) (string, error) { return SHA256File(path) }
 // checksumMatches reports whether the file at path hashes to want. A hashing
 // error counts as a mismatch (fail-closed) so verification never passes a file
 // it could not read.
+// plannedDecision is a dedupe decision made while planning uploads.
+type plannedDecision struct {
+	decided  bool
+	decision referenceDecision
+	ref      SnapshotFile
+}
+
+// plannedOrDecide returns the planned decision for files[i], or decides now.
+func plannedOrDecide(planned []plannedDecision, i int, file backupFile, prevIndex map[string]SnapshotFile) (referenceDecision, SnapshotFile) {
+	if i < len(planned) && planned[i].decided {
+		return planned[i].decision, planned[i].ref
+	}
+	return decideFile(file, prevIndex)
+}
+
 func checksumMatches(path, want string) bool {
 	got, err := sha256File(path)
 	return err == nil && got == want
@@ -209,6 +224,12 @@ func snapshotIDIssuerOf(provider providers.BackupProvider) (providers.SnapshotID
 func storedObjectDigesterOf(provider providers.BackupProvider) (providers.StoredObjectDigester, bool) {
 	d, ok := unwrapProvider(provider).(providers.StoredObjectDigester)
 	return d, ok
+}
+
+// writerFenceOf returns the brokered writer's fence behind provider, if any.
+func writerFenceOf(provider providers.BackupProvider) (providers.WriterFence, bool) {
+	f, ok := unwrapProvider(provider).(providers.WriterFence)
+	return f, ok
 }
 
 // runSnapshotID is the id a new snapshot written through provider takes: the
@@ -989,6 +1010,17 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// object to still hold the recorded bytes (see ContinueRun).
 		verifyStored := journal.VerifyStoredEntries()
 		digester, canVerifyStored := storedObjectDigesterOf(provider)
+		if verifyStored && canVerifyStored {
+			// Each check reads the stored object back; let a batching
+			// provider authorize those reads in batches.
+			var keys []string
+			for _, file := range files {
+				if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok && entry.BackupPath != "" {
+					keys = append(keys, entry.BackupPath)
+				}
+			}
+			providers.PrepareDownloads(unwrapProvider(provider), keys)
+		}
 		for _, file := range files {
 			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
 				// Size and modification time can match a file whose content
@@ -1054,6 +1086,32 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// that appears to go backwards is precisely what the counters are not
 	// allowed to do (see startRunKeepalive in backup.go).
 	emitProgress(true)
+
+	// A provider that authorizes uploads in batches (a brokered writer)
+	// learns the uploads ahead, in order, with the keys the loop below will
+	// assign. The dedupe decisions are made once, here, and reused below.
+	var plannedDecisions []plannedDecision
+	if planner, ok := unwrapProvider(provider).(providers.UploadPlanner); ok {
+		plannedDecisions = make([]plannedDecision, len(files))
+		claims := keyClaims.clone()
+		var entries []providers.PlannedUpload
+		for i, file := range files {
+			if file.kind != "" {
+				continue
+			}
+			if _, resumed := resumedFiles[journalLookupKey(file)]; resumed {
+				continue
+			}
+			decision, refEntry := decideFile(file, prevIndex)
+			plannedDecisions[i] = plannedDecision{decided: true, decision: decision, ref: refEntry}
+			if decision == decideReference {
+				continue
+			}
+			naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
+			entries = append(entries, providers.PlannedUpload{LocalPath: file.sourcePath, Key: claims.assign(prefix, file.snapshotPath, naturalKey)})
+		}
+		planner.PrepareUploads(entries)
+	}
 
 	// abortStopped is the single exit point for every errBackupStopped
 	// return. See the journal parameter doc above for why cleanup is
@@ -1150,7 +1208,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return snapshot, detail
 	}
 
-	for _, file := range files {
+	for i, file := range files {
 		if err := ctx.Err(); err != nil {
 			return abortStopped()
 		}
@@ -1177,7 +1235,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			snapshot.Size += entry.Size
 			continue
 		}
-		if decision, refEntry := decideFile(file, prevIndex); decision == decideReference {
+		decision, refEntry := plannedOrDecide(plannedDecisions, i, file, prevIndex)
+		if decision == decideReference {
 			// A referenced file carries THIS run's descriptor, like the
 			// other current-stat fields referenceEntry documents.
 			refEntry.SDIndex = sdTbl.index(file.sd)
@@ -1247,7 +1306,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 		uploadStart := time.Now()
 		uploadCtx := inFlight.track(ctx, file.size)
-		uploaded, uploadErr := attemptFileUpload(uploadCtx, provider, stagingDir, uploadFile, backupPath)
+		uploaded, uploadErr := attemptFileUploadFenced(uploadCtx, provider, stagingDir, uploadFile, backupPath)
+		if errors.Is(uploadErr, errWriterStillActive) {
+			// Not this file's fault: the snapshot cannot be written at all.
+			return nil, uploadErr
+		}
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
 			// Before spending anything else on this failure, make sure the
 			// source we are reading from still exists. If the shadow copy died,
@@ -1310,7 +1373,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				case <-ctx.Done():
 					uploadErr = errBackupStopped
 				case <-time.After(retryDelay):
-					uploaded, uploadErr = attemptFileUpload(uploadCtx, provider, stagingDir, uploadFile, backupPath)
+					uploaded, uploadErr = attemptFileUploadFenced(uploadCtx, provider, stagingDir, uploadFile, backupPath)
+					if errors.Is(uploadErr, errWriterStillActive) {
+						return nil, uploadErr
+					}
 				}
 			}
 		}
@@ -1770,6 +1836,38 @@ func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, s
 	return uploadWithDeadline(ctx, provider, stagingDir, file.sourcePath, backupPath, file.size)
 }
 
+// errWriterStillActive ends a brokered run: an earlier writer of the
+// snapshot could not be fenced within the wait bound.
+var errWriterStillActive = errors.New("an earlier writer of this snapshot is still active")
+
+// maxWriterFenceWaits bounds the run-level waits for one file.
+const maxWriterFenceWaits = 3
+
+// attemptFileUploadFenced is attemptFileUpload for a run whose writer may be
+// told an earlier writer of the snapshot is still active. That is not the
+// file's failure: the wait for the fence runs here, on ctx — outside the
+// file's own deadline, which covers each attempt only — and the file is sent
+// again. A fence that does not clear ends the run (errWriterStillActive).
+func attemptFileUploadFenced(ctx context.Context, provider providers.BackupProvider, stagingDir string, file backupFile, backupPath string) (providers.UploadDigest, error) {
+	for waits := 0; ; waits++ {
+		d, err := attemptFileUpload(ctx, provider, stagingDir, file, backupPath)
+		if err == nil || !errors.Is(err, providers.ErrPreviousWriterActive) {
+			return d, err
+		}
+		fence, ok := writerFenceOf(provider)
+		if !ok || waits >= maxWriterFenceWaits {
+			return d, fmt.Errorf("%w: %w", errWriterStillActive, err)
+		}
+		log.Info("an earlier writer of this snapshot is still active; waiting before sending the file again", "path", file.sourcePath)
+		if werr := fence.AwaitWriteAccess(ctx); werr != nil {
+			if ctx.Err() != nil {
+				return d, errBackupStopped
+			}
+			return d, fmt.Errorf("%w: %w", errWriterStillActive, werr)
+		}
+	}
+}
+
 // uploadWithDeadline uploads localPath to remotePath under a per-attempt
 // context bounded by uploadDeadline(size) and returns the digest of the bytes
 // the stored object holds (see uploadWithDigest). It is the ONLY way a
@@ -1867,7 +1965,7 @@ func reconcileAfterUpload(ctx context.Context, provider providers.BackupProvider
 		return first, true, nil
 	}
 	reuploadFile := backupFile{sourcePath: sourcePath, size: pre2.size}
-	second, uploadErr := attemptFileUpload(ctx, provider, stagingDir, reuploadFile, backupPath)
+	second, uploadErr := attemptFileUploadFenced(ctx, provider, stagingDir, reuploadFile, backupPath)
 	if uploadErr != nil {
 		if errors.Is(uploadErr, errBackupStopped) {
 			return first, true, errBackupStopped
@@ -2073,6 +2171,18 @@ func backupIdentity(provider providers.BackupProvider, paths []string) string {
 		material = idp.BackupIdentity()
 	}
 	return material + "|" + strings.Join(paths, ",")
+}
+
+// journalIdentity is the checkpoint journal's identity (and so its file name):
+// backupIdentity plus the provider's journal scope, when it has one.
+func journalIdentity(provider providers.BackupProvider, paths []string) string {
+	id := backupIdentity(provider, paths)
+	if s, ok := unwrapProvider(provider).(providers.JournalScoper); ok {
+		if scope := s.JournalScope(); scope != "" {
+			id += "|" + scope
+		}
+	}
+	return id
 }
 
 // runBackupIdentity returns the BackupIdentity this run should stamp onto

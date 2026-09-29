@@ -138,6 +138,10 @@ type snapshotJournal struct {
 	// control objects are rebuilt, never adopted.
 	continuedFromOtherJob bool
 
+	// lock is this run's exclusive hold on the journal path, released by
+	// Complete or Abandon.
+	lock *journalLock
+
 	// createdAt is the journal's original creation time (from its header,
 	// preserved verbatim across a resume — NOT reset on resume). Age()
 	// reports time.Since(createdAt), used at publish time to fence a
@@ -189,6 +193,24 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 		return nil, false, fmt.Errorf("failed to create backup journal directory: %w", err)
 	}
 	path := filepath.Join(dir, journalFileName(identity))
+	// One run per journal: a second run for the same destination identity
+	// proceeds without a checkpoint rather than share (and truncate) this one.
+	lock, err := acquireJournalLock(path)
+	if err != nil {
+		return nil, false, err
+	}
+	j, resumed, err := openSnapshotJournalAt(path, identity, maxAge)
+	if err != nil || j == nil {
+		lock.release()
+		return j, resumed, err
+	}
+	j.lock = lock
+	return j, resumed, nil
+}
+
+// openSnapshotJournalAt is openSnapshotJournal for a journal path the caller
+// holds the lock of.
+func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapshotJournal, bool, error) {
 
 	// Refuse to trust anything at the journal path that isn't a regular file
 	// (symlink, directory, device node, ...). The helper runs as root/SYSTEM:
@@ -482,16 +504,16 @@ func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 }
 
 // ContinueRun binds a resumed journal to this run's job WITHOUT discarding
-// its entries: the control plane let this job take over the unpublished
-// snapshot an earlier job of the same dispatched base was writing (a
-// brokered write). The earlier job's entries are then reused only after the
-// stored objects are checked (VerifyStoredEntries), and its control objects
-// are rebuilt rather than adopted.
-func (j *snapshotJournal) ContinueRun(jobID, dispatchedBaseSnapshotID string) error {
+// its entries: the control plane let this run continue the unpublished
+// snapshot (a brokered write). When it was an earlier job's — takeover, or
+// the journal names another job — the earlier job's entries are reused only
+// after the stored objects are checked (VerifyStoredEntries), and its control
+// objects are rebuilt rather than adopted.
+func (j *snapshotJournal) ContinueRun(jobID, dispatchedBaseSnapshotID string, takeover bool) error {
 	if j == nil {
 		return nil
 	}
-	if j.header.JobID != jobID {
+	if takeover || j.header.JobID != jobID {
 		j.continuedFromOtherJob = true
 		j.header.VerifyStoredEntries = true
 	}
@@ -739,6 +761,7 @@ func (j *snapshotJournal) Complete() error {
 	if j == nil {
 		return nil
 	}
+	defer j.lock.release()
 	var closeErr error
 	if j.file != nil {
 		closeErr = j.file.Close()
@@ -766,7 +789,11 @@ func poisonJournalFile(path string) error {
 // state for a stopped or failed run. Call this on every exit path except a
 // fully successful Complete.
 func (j *snapshotJournal) Abandon() {
-	if j == nil || j.file == nil {
+	if j == nil {
+		return
+	}
+	defer j.lock.release()
+	if j.file == nil {
 		return
 	}
 	if err := j.file.Close(); err != nil {

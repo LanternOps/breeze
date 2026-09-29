@@ -43,6 +43,19 @@ type fakeWriteBackend struct {
 	// createEncryption, when set, is returned by multipart:create as
 	// appliedEncryption.
 	createEncryption map[string]any
+	// createEncryptionNull answers appliedEncryption: null.
+	createEncryptionNull bool
+	// clockOffset is how far the control plane's clock is ahead of the
+	// device's; sendExpiresIn adds expiresIn (whole seconds) to issued URLs.
+	clockOffset   time.Duration
+	sendExpiresIn bool
+	// discardBodies keeps only each upload's size and digest (large-object
+	// tests); completed multipart objects are then not stored.
+	discardBodies bool
+	partDigests   map[string]map[int]string
+	// nowFn is the control plane's clock before clockOffset (default
+	// time.Now).
+	nowFn func() time.Time
 
 	// hooks answer a request themselves when they return true.
 	storageHook func(w http.ResponseWriter, r *http.Request) bool
@@ -79,6 +92,7 @@ func newFakeWriteBackend(t *testing.T) *fakeWriteBackend {
 		b.mu.Lock()
 		b.calls = append(b.calls, writeCall{op: op, body: body, headers: r.Header.Clone()})
 		hook := b.controlHook
+		w.Header().Set("Date", b.serverNowLocked().UTC().Format(http.TimeFormat))
 		b.mu.Unlock()
 		if hook != nil && hook(op, body, w) {
 			return
@@ -109,6 +123,24 @@ func (b *fakeWriteBackend) serveStorage(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		_, _ = w.Write(data)
+	case r.Method == http.MethodPut && r.URL.Path == "/part" && b.discard():
+		h := sha256.New()
+		if _, err := io.Copy(h, r.Body); err != nil {
+			http.Error(w, "read", http.StatusBadRequest)
+			return
+		}
+		n, _ := strconv.Atoi(q.Get("n"))
+		sum := hex.EncodeToString(h.Sum(nil))
+		b.mu.Lock()
+		if b.partDigests == nil {
+			b.partDigests = map[string]map[int]string{}
+		}
+		if b.partDigests[q.Get("u")] == nil {
+			b.partDigests[q.Get("u")] = map[int]string{}
+		}
+		b.partDigests[q.Get("u")][n] = sum
+		b.mu.Unlock()
+		w.Header().Set("ETag", fmt.Sprintf(`"part-%d-%s"`, n, sum[:8]))
 	case r.Method == http.MethodPut && r.URL.Path == "/put":
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -145,6 +177,20 @@ func (b *fakeWriteBackend) serveStorage(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (b *fakeWriteBackend) serverNowLocked() time.Time {
+	now := time.Now
+	if b.nowFn != nil {
+		now = b.nowFn
+	}
+	return now().Add(b.clockOffset)
+}
+
+func (b *fakeWriteBackend) discard() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.discardBodies
+}
+
 func (b *fakeWriteBackend) underReservation(key string) bool {
 	return strings.HasPrefix(key, "snapshots/"+b.snapshotID+"/")
 }
@@ -162,10 +208,11 @@ func (b *fakeWriteBackend) serveControl(op string, body map[string]any, w http.R
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
-	expires := time.Now().Add(ttl).UTC().Format(time.RFC3339Nano)
+	serverNow := b.serverNowLocked()
+	expires := serverNow.Add(ttl).UTC().Format(time.RFC3339Nano)
 	switch op {
 	case "renew":
-		writeJSON(w, 200, map[string]string{"expiresAt": time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339)})
+		writeJSON(w, 200, map[string]string{"expiresAt": b.serverNowLocked().Add(15 * time.Minute).UTC().Format(time.RFC3339)})
 	case "objects:resolve":
 		reqs, _ := body["requests"].([]any)
 		objects := []map[string]any{}
@@ -179,6 +226,9 @@ func (b *fakeWriteBackend) serveControl(op string, body map[string]any, w http.R
 				continue
 			}
 			o := map[string]any{"key": key, "method": method, "expiresAt": expires}
+			if b.sendExpiresIn {
+				o["expiresIn"] = int(ttl / time.Second)
+			}
 			switch method {
 			case "GET":
 				o["url"] = b.storage.URL + "/obj?k=" + url.QueryEscape(key)
@@ -219,9 +269,17 @@ func (b *fakeWriteBackend) serveControl(op string, body map[string]any, w http.R
 		answer := map[string]any{"uploadId": id}
 		if b.createEncryption != nil {
 			answer["appliedEncryption"] = b.createEncryption
+		} else if b.createEncryptionNull {
+			answer["appliedEncryption"] = nil
 		}
 		writeJSON(w, 200, answer)
 	case "multipart:complete":
+		if b.discardBodies {
+			id, _ := body["uploadId"].(string)
+			delete(b.uploads, id)
+			writeJSON(w, 200, map[string]any{})
+			return
+		}
 		id, _ := body["uploadId"].(string)
 		key, _ := body["key"].(string)
 		parts := b.uploads[id]
@@ -372,6 +430,9 @@ func newTestWriteProvider(t *testing.T, b *fakeWriteBackend, opts Options) *Writ
 	}
 	if opts.StorageClient == nil {
 		opts.StorageClient = b.storage.Client()
+	}
+	if opts.ControlCallsPerMinute == 0 {
+		opts.ControlCallsPerMinute = -1
 	}
 	creds := Credentials{AgentID: testAgentID, AgentToken: testAgentToken, ControlPlaneOrigins: []string{b.control.URL}}
 	p, err := NewWriteProvider(context.Background(), testWriteDescriptor(b, time.Now()), creds, opts)

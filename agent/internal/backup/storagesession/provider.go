@@ -110,6 +110,10 @@ type Options struct {
 	// StorageIdleTimeout aborts a storage transfer that receives no bytes for
 	// this long. Zero means defaultStorageIdleTimeout.
 	StorageIdleTimeout time.Duration
+	// ControlCallsPerMinute paces control-plane calls; 0 means
+	// defaultControlCallsPerMinute, a negative value disables pacing
+	// (tests).
+	ControlCallsPerMinute int
 	// IdentityHint (write provider only) distinguishes destinations in the
 	// provider's BackupIdentity; the helper passes the backup configuration
 	// id. It never carries a secret.
@@ -479,6 +483,7 @@ func (p *Provider) resolve(ctx context.Context, keys []string) (map[string]*reso
 	delay := retryInitialDelay
 	var waited time.Duration
 	transient := 0
+	throttled := 0
 	for {
 		if err := p.checkDeadline(); err != nil {
 			return nil, nil, err
@@ -502,14 +507,16 @@ func (p *Provider) resolve(ctx context.Context, keys []string) (map[string]*reso
 				_ = resp.Body.Close()
 				return objects, denied, perr
 			case status == http.StatusTooManyRequests:
-				wait = httputil.ParseRetryAfter(resp.Header, time.Now())
-				if wait <= 0 {
-					wait = delay
-				}
+				retryAfter := httputil.ParseRetryAfter(resp.Header, time.Now())
 				drain(resp)
 				if waited >= rateLimitMaxTotalWait {
 					return nil, nil, sessionErr("resolve still rate limited after %s", waited.Round(time.Second))
 				}
+				var throttleErr error
+				if wait, throttleErr = p.throttleWait(retryAfter, throttled); throttleErr != nil {
+					return nil, nil, throttleErr
+				}
+				throttled++
 			case isRetryableStatus(status):
 				drain(resp)
 				transient++

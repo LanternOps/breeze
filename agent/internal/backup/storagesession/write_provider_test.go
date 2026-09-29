@@ -362,14 +362,13 @@ func TestWriteProviderResume(t *testing.T) {
 	})
 }
 
-func TestWriteProviderWaitsOutPreviousWriterOnResolve(t *testing.T) {
+func TestWriteProviderUploadDoesNotWaitForAnEarlierWriter(t *testing.T) {
 	waits := noSleep(t)
 	b := newFakeWriteBackend(t)
-	first := true
+	busy := true
 	b.set(func(b *fakeWriteBackend) {
 		b.controlHook = func(op string, body map[string]any, w http.ResponseWriter) bool {
-			if op == "objects:resolve" && first {
-				first = false
+			if op == "objects:resolve" && busy {
 				w.Header().Set("Retry-After", "42")
 				writeJSON(w, 409, map[string]string{"code": "previous_writer_active"})
 				return true
@@ -378,11 +377,37 @@ func TestWriteProviderWaitsOutPreviousWriterOnResolve(t *testing.T) {
 		}
 	})
 	p := newTestWriteProvider(t, b, Options{})
-	if _, err := p.UploadWithDigest(context.Background(), writeTempData(t, []byte("x")), objKey("files/a")); err != nil {
-		t.Fatalf("upload after waiting: %v", err)
+	src := writeTempData(t, []byte("x"))
+	// The upload answers at once, so its caller can wait outside the file's
+	// own deadline.
+	if _, err := p.UploadWithDigest(context.Background(), src, objKey("files/a")); !errors.Is(err, providers.ErrPreviousWriterActive) {
+		t.Fatalf("upload during an earlier writer's fence = %v", err)
+	}
+	if len(*waits) != 0 {
+		t.Fatalf("the upload itself waited: %v", *waits)
+	}
+	calls := 0
+	b.set(func(b *fakeWriteBackend) {
+		b.controlHook = func(op string, body map[string]any, w http.ResponseWriter) bool {
+			if op == "objects:resolve" {
+				calls++
+				if calls == 1 {
+					w.Header().Set("Retry-After", "42")
+					writeJSON(w, 409, map[string]string{"code": "previous_writer_active"})
+					return true
+				}
+			}
+			return false
+		}
+	})
+	if err := p.AwaitWriteAccess(context.Background()); err != nil {
+		t.Fatalf("AwaitWriteAccess: %v", err)
 	}
 	if len(*waits) != 1 || (*waits)[0] != 42*time.Second {
 		t.Fatalf("waits = %v", *waits)
+	}
+	if _, err := p.UploadWithDigest(context.Background(), src, objKey("files/a")); err != nil {
+		t.Fatalf("upload after the fence cleared: %v", err)
 	}
 }
 

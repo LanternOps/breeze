@@ -213,6 +213,11 @@ func executeBrokeredWrite(req backupipc.BackupCommandRequest, conn *ipc.Conn, co
 		// storage, which a brokered backup never uses.
 		return runBackupRunCommand(ctx, req, runMgr, nil, conn), true
 	case "mssql_backup", "hyperv_backup":
+		// An earlier writer of this snapshot (a redelivered job) is waited
+		// out once, before the export; the uploads themselves do not wait.
+		if err := provider.AwaitWriteAccess(ctx); err != nil {
+			return fail(fmt.Sprintf("storage session: the snapshot cannot be written yet: %v", err)), true
+		}
 		brokered := backup.NewBackupManager(backup.BackupConfig{
 			Provider:   provider,
 			AgentID:    helperAgentID,

@@ -21,9 +21,10 @@ var errJournalUnusable = errors.New("checkpoint journal could not be bound to th
 //     always names the issued id;
 //   - a journal naming another id, written for the same dispatched base, is
 //     offered to the control plane (ResumeSnapshot). Only the control plane
-//     decides whether this run may continue it: ResumeWrite continues it
-//     (entries from another job are then reused only after the stored
-//     objects are checked — see ContinueRun), ResumeReadOnlyCompletion lets
+//     decides whether this run may continue it: ResumeWrite continues it and
+//     ResumeTakeover continues an earlier job's snapshot (its entries are
+//     then reused only after the stored objects are checked, and its control
+//     objects rebuilt — see ContinueRun), ResumeReadOnlyCompletion lets
 //     the run only report its published manifest (readOnly), and a refusal
 //     starts afresh under the issued id;
 //   - a journal written for another dispatched base is never offered.
@@ -46,10 +47,11 @@ func (m *BackupManager) bindBrokeredJournal(ctx context.Context, journal *snapsh
 				log.Info("interrupted snapshot is already published; reporting it", "snapshotId", journal.snapshotID)
 				return true, nil
 			case resumeErr == nil:
-				if err := journal.ContinueRun(jobID, dispatched); err != nil {
+				takeover := mode == providers.ResumeTakeover
+				if err := journal.ContinueRun(jobID, dispatched, takeover); err != nil {
 					log.Warn("failed to bind checkpoint journal to this run", "error", err.Error())
 				}
-				if previous.JobID != jobID {
+				if takeover || previous.JobID != jobID {
 					log.Info("continuing an interrupted snapshot of an earlier job, as the control plane allowed",
 						"snapshotId", journal.snapshotID)
 				}
