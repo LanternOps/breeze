@@ -346,20 +346,39 @@ export async function tombstoneRetiredReservations(snapshotIds: string[]): Promi
 }
 
 /**
- * True while a brokered write of this snapshot id may still change its bytes:
+ * How often the cleanup job (jobs/backupWriteSessionJanitor.ts) runs. It
+ * publishes a sealing reservation on its first run after sealed_until, so a
+ * reservation with nothing else in flight is expected to be published within
+ * this long after sealed_until.
+ */
+export const RESERVATION_CLEANUP_EVERY_MS = 5 * 60 * 1000;
+
+export type SnapshotWriteState = {
+  /** A brokered write may still change the snapshot's bytes. */
+  inFlight: boolean;
+  /**
+   * The reservation's sealed_until while it is sealing, else null. Past it,
+   * the next cleanup run publishes the reservation unless a recorded upload
+   * or a delete is still in flight.
+   */
+  sealedUntil: Date | null;
+};
+
+/**
+ * Whether a brokered write of this snapshot id may still change its bytes:
  * the reservation is sealing (an issued upload URL may still be usable), or a
  * multipart completion or a delete through one of its sessions is in flight.
  * Readers of the snapshot's bytes — restores, attestation verification — wait
- * until it is false. Runs in the caller's DB context.
+ * until it is not. Runs in the caller's DB context.
  */
-export async function isSnapshotWriteInFlight(snapshotId: string): Promise<boolean> {
+export async function readSnapshotWriteState(snapshotId: string): Promise<SnapshotWriteState> {
   const [reservation] = await db
-    .select({ state: backupSnapshotIdReservations.state })
+    .select({ state: backupSnapshotIdReservations.state, sealedUntil: backupSnapshotIdReservations.sealedUntil })
     .from(backupSnapshotIdReservations)
     .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
     .limit(1);
-  if (!reservation) return false;
-  if (reservation.state === 'sealing') return true;
+  if (!reservation) return { inFlight: false, sealedUntil: null };
+  if (reservation.state === 'sealing') return { inFlight: true, sealedUntil: reservation.sealedUntil ?? null };
   const [deleting] = await db
     .select({ id: backupStorageSessions.id })
     .from(backupStorageSessions)
@@ -368,7 +387,7 @@ export async function isSnapshotWriteInFlight(snapshotId: string): Promise<boole
       isNotNull(backupStorageSessions.deletingSince),
     ))
     .limit(1);
-  if (deleting) return true;
+  if (deleting) return { inFlight: true, sealedUntil: null };
   const [completing] = await db
     .select({ id: backupStorageSessionUploads.id })
     .from(backupStorageSessionUploads)
@@ -377,5 +396,10 @@ export async function isSnapshotWriteInFlight(snapshotId: string): Promise<boole
       eq(backupStorageSessionUploads.state, 'completing'),
     ))
     .limit(1);
-  return !!completing;
+  return { inFlight: !!completing, sealedUntil: null };
+}
+
+/** True while a brokered write of this snapshot id may still change its bytes (readSnapshotWriteState). */
+export async function isSnapshotWriteInFlight(snapshotId: string): Promise<boolean> {
+  return (await readSnapshotWriteState(snapshotId)).inFlight;
 }
