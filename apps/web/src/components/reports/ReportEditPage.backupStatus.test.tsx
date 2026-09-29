@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  // W03: the series child branch pulls in the org store (registers an org-id provider).
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

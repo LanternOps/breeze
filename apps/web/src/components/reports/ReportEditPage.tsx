@@ -5,6 +5,7 @@ import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { SeriesChildView } from './series/SeriesChildLockBanner';
 import { PostureBackupRequiredField } from './PostureReportOptionsForm';
 import {
   DEFAULT_HARDWARE_LIFECYCLE_OPTIONS,
@@ -195,6 +196,33 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
             {t('reports.reportEditPage.backToReports')}
           </a>
         </div>
+      </div>
+    );
+  }
+
+  // A multi-org series child (W02 `seriesId`): shared fields are locked; only
+  // the org's recipient overrides and (for the MSP) Detach are offered.
+  if (report.seriesId) {
+    return (
+      <div className="space-y-6">
+        <Breadcrumbs items={[
+          { label: t('reports.reportEditPage.reportsBreadcrumb'), href: '/reports' },
+          { label: report.name || t('reports.reportEditPage.title') }
+        ]} />
+        <div className="flex items-center gap-4">
+          <a
+            href="/reports"
+            className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={t('reports.reportEditPage.backToReports')}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </a>
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportEditPage.title')}</h1>
+            <p className="text-muted-foreground">{report.name}</p>
+          </div>
+        </div>
+        <SeriesChildView report={report} onChanged={fetchReport} />
       </div>
     );
   }
