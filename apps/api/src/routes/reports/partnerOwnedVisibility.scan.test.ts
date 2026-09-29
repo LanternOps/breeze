@@ -266,7 +266,11 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/reportSeries/reconcile.ts', new Map([
     ['listSeriesChildren', pinned(1, `children of ONE series id, read by the reconciler / gate / series store in the caller's context; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
     ['updateSeriesChild', pinned(1, `updates one child by id AND org_id AND series_id that listSeriesChildren just returned; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
-    ['findSeriesNeedingReconcile', pinned(1, `system-context repair-sweep drift scan; returns series ids only and shows nothing to a caller; ${SERIES_CHILD_PIN}`, AUD_SYSTEM)],
+    ['findSeriesNeedingReconcile', pinned(2, `system-context repair-sweep drift scan (active children + live detached standalones, which were children and keep their org); returns series ids only and shows nothing to a caller; ${SERIES_CHILD_PIN}`, AUD_SYSTEM)],
+    ['evaluate', pinned(1, `worker gate (system context) re-reads the ONE child the job named, by id AND org_id, and admits it only while series_id still names the series; ${SERIES_CHILD_PIN}`, AUD_SERIES)],
+  ])],
+  ['src/services/reportSeries/targets.ts', new Map([
+    ['listDetachedOrgIds', pinned(1, `org ids of the live detached standalones of ONE series (detached_from_series_id = <series>), read only to un-target those orgs and never shown to a caller; a detached standalone was a child, so it keeps its org (reports_detached_from_series_chk + ${SERIES_CHILD_PIN})`, AUD_SERIES)],
   ])],
   ['src/services/reportSeries/store.ts', new Map([
     ['buildSeriesDetail', pinned(1, `latest run per active child id returned by listSeriesChildren for a series its callers (listSeries / getSeriesDetail) already loaded under requireSeriesPartner + eq(partner_id, token partner); ${SERIES_CHILD_PIN}`, AUD_SERIES)],
