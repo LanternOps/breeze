@@ -15,6 +15,8 @@ import {
   listFleetTimeStatus,
   FleetTimeForbidden,
 } from './fleet';
+import { exportCurrentTimeCsv, exportHistoryTimeCsv } from './exports';
+import { deviceTimeDaily } from '../../db/schema';
 const org = '11111111-1111-4111-8111-111111111111',
   site = '22222222-2222-4222-8222-222222222222';
 const device = '33333333-3333-4333-8333-333333333333',
@@ -254,4 +256,48 @@ it('returns an empty report with no visible devices', async () => {
     domains: [],
   });
   expect(m.view).not.toHaveBeenCalled();
+});
+it('exports hydrate each candidate exactly once across CSV pages', async () => {
+  const ids = Array.from(
+    { length: 250 },
+    (_, i) => `55555555-5555-4555-8555-${String(i).padStart(12, '0')}`,
+  );
+  const candidates = ids.map((id) => ({ ...header(id), hostname: id }));
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    domain: null,
+  }));
+  m.select.mockImplementation(() => {
+    let table: unknown, offset = 0, limit = Infinity;
+    const chain: any = {
+      then: (resolve: (value: unknown) => unknown) =>
+        Promise.resolve(
+          table === deviceTimeDaily
+            ? []
+            : candidates.slice(offset, offset + limit),
+        ).then(resolve),
+    };
+    for (const key of ['innerJoin', 'leftJoin', 'where', 'orderBy', 'groupBy'])
+      chain[key] = vi.fn(() => chain);
+    chain.from = vi.fn((value: unknown) => ((table = value), chain));
+    chain.limit = vi.fn((value: number) => ((limit = value), chain));
+    chain.offset = vi.fn((value: number) => ((offset = value), chain));
+    return chain;
+  });
+  let current = '';
+  for await (const chunk of exportCurrentTimeCsv({ page: 3, limit: 1 }, auth()))
+    current += chunk;
+  expect(m.view).toHaveBeenCalledTimes(ids.length);
+  expect(new Set(m.view.mock.calls.map(([id]) => id)).size).toBe(ids.length);
+  for (const id of ids) expect(current).toContain(`"${id}"`);
+  m.view.mockClear();
+  let history = '';
+  for await (const chunk of exportHistoryTimeCsv(
+    {},
+    { from: '2026-09-28', to: '2026-09-28' },
+    auth(),
+  ))
+    history += chunk;
+  expect(m.view).toHaveBeenCalledTimes(ids.length);
+  expect(history.trim().split('\r\n')).toHaveLength(ids.length + 2);
 });

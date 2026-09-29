@@ -7,12 +7,30 @@ import { csvRow } from '../spreadsheetExport';
 import { deviceScopeCondition, siteScopeCondition } from '../aiToolsSiteScope';
 import {
   fleetTimeFiltersSchema,
-  listFleetTimeStatus,
+  iterateFleetTimeRows,
   type FleetTimeFilters,
+  type FleetTimeRow,
 } from './fleet';
 export const TIME_EVIDENCE_HEADER =
   'Observed synchronization reported by the Breeze agent; days without a report are listed as gaps.';
 const DAY_MS = 86_400_000;
+const EXPORT_CHUNK = 100;
+// One O(N) pass over the fleet stream, grouped so each chunk is one CSV write
+// (and, for history, one device_time_daily query).
+async function* fleetChunks(
+  filters: FleetTimeFilters,
+  auth: AuthContext,
+): AsyncGenerator<FleetTimeRow[]> {
+  let chunk: FleetTimeRow[] = [];
+  for await (const row of iterateFleetTimeRows(filters, auth)) {
+    chunk.push(row);
+    if (chunk.length >= EXPORT_CHUNK) {
+      yield chunk;
+      chunk = [];
+    }
+  }
+  if (chunk.length) yield chunk;
+}
 const daySchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -59,13 +77,8 @@ export async function* exportCurrentTimeCsv(
   auth: AuthContext,
 ): AsyncGenerator<string> {
   yield `${TIME_EVIDENCE_HEADER}\r\n${csvRow(['device_id', 'hostname', 'org_id', 'organization', 'site', 'state', 'health', 'stale', 'received_at', 'collected_at', 'finding_codes', 'domain_dns', 'domain_role', 'source', 'source_kind', 'sync_type', 'last_successful_sync_at', 'expected_timezone', 'timezone_windows_id'])}\r\n`;
-  for (let page = 1; ; page++) {
-    const result = await listFleetTimeStatus(
-      { ...filters, page, limit: 100 },
-      auth,
-    );
-    if (!result.data.length) break;
-    yield result.data
+  for await (const rows of fleetChunks(filters, auth)) {
+    yield rows
       .map((r) => {
         const v = r.view;
         return csvRow([
@@ -91,7 +104,6 @@ export async function* exportCurrentTimeCsv(
         ]);
       })
       .join('\r\n') + '\r\n';
-    if (page * result.limit >= result.total) break;
   }
 }
 export async function* exportHistoryTimeCsv(
@@ -102,12 +114,7 @@ export async function* exportHistoryTimeCsv(
   const q = historyTimeQuerySchema.parse({ ...filters, ...range }),
     days = evidenceDays(q.from, q.to);
   yield `${TIME_EVIDENCE_HEADER}\r\n${csvRow(['device_id', 'hostname', 'org_id', 'organization', 'site', 'day', 'evidence_state', 'worst_health', 'finding_codes', 'source', 'source_kind', 'sync_type', 'last_successful_sync_at', 'snapshot_count', 'expected_timezone', 'timezone_windows_id'])}\r\n`;
-  for (let page = 1; ; page++) {
-    const result = await listFleetTimeStatus(
-      { ...filters, page, limit: 100 },
-      auth,
-    );
-    if (!result.data.length) break;
+  for await (const rows of fleetChunks(filters, auth)) {
     const daily = await db
       .select({ row: deviceTimeDaily })
       .from(deviceTimeDaily)
@@ -119,7 +126,7 @@ export async function* exportHistoryTimeCsv(
           deviceScopeCondition(auth, devices.id),
           inArray(
             deviceTimeDaily.deviceId,
-            result.data.map((r) => r.deviceId),
+            rows.map((r) => r.deviceId),
           ),
           gte(deviceTimeDaily.day, q.from),
           lte(deviceTimeDaily.day, q.to),
@@ -129,7 +136,7 @@ export async function* exportHistoryTimeCsv(
         daily.map(({ row }) => [`${row.deviceId}:${row.day}`, row]),
       ),
       lines: string[] = [];
-    for (const device of result.data)
+    for (const device of rows)
       for (const day of days) {
         const row = byKey.get(`${device.deviceId}:${day}`);
         lines.push(
@@ -154,6 +161,5 @@ export async function* exportHistoryTimeCsv(
         );
       }
     yield lines.join('\r\n') + '\r\n';
-    if (page * result.limit >= result.total) break;
   }
 }

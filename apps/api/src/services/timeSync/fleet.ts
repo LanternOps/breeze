@@ -95,27 +95,18 @@ async function hydrate(
   }
   return result;
 }
-export async function listFleetTimeStatus(
-  filters: FleetTimeFilters,
-  auth: AuthContext,
-): Promise<FleetTimeResult> {
-  const q = fleetTimeFiltersSchema.parse(filters),
-    // Site + device axes named at the entry point (idempotent with fleetScope)
-    // so the aiToolsDeviceScope/SiteScope contracts can verify this delegate.
-    where = and(
-      fleetScope(q, auth),
-      siteScopeCondition(auth, devices.siteId),
-      deviceScopeCondition(auth, devices.id),
-    );
-  const data: FleetTimeRow[] = [];
-  let total = 0;
-  const start = (q.page - 1) * q.limit;
+type ParsedFleetFilters = ReturnType<typeof fleetTimeFiltersSchema.parse>;
+// Every statically eligible candidate is hydrated through the same uncached,
+// policy-aware view used for device display; finding/health filters are applied
+// only after that. One pass is O(visible candidates), sequential on the ambient
+// request connection. Any later batching must reuse the same resolver; never
+// restore a SQL prefilter on policy findings. Callers that need every row (the
+// CSV exports) consume this stream once rather than re-walking it per page.
+async function* hydratedFleetRows(
+  q: ParsedFleetFilters,
+  where: SQL | undefined,
+): AsyncGenerator<FleetTimeRow> {
   const batchSize = 200;
-  // Every statically eligible candidate is hydrated through the same uncached,
-  // policy-aware view used for device display; finding/health filters, totals
-  // and page selection are applied only after that. O(visible candidates),
-  // sequential on the ambient request connection. Any later batching must reuse
-  // the same resolver; never restore a SQL prefilter on policy findings.
   for (let offset = 0; ; offset += batchSize) {
     const candidates = await fleetRowsQuery()
       .where(where)
@@ -135,10 +126,47 @@ export async function listFleetTimeStatus(
         !row.view.findings.some((finding) => finding.code === q.finding)
       )
         continue;
-      if (total >= start && data.length < q.limit) data.push(row);
-      total += 1;
+      yield row;
     }
     if (candidates.length < batchSize) break;
+  }
+}
+/**
+ * Every visible row that passes the health/finding filters, in report order,
+ * ignoring page/limit. Throws FleetTimeForbidden synchronously (at call time).
+ */
+export function iterateFleetTimeRows(
+  filters: FleetTimeFilters,
+  auth: AuthContext,
+): AsyncGenerator<FleetTimeRow> {
+  const q = fleetTimeFiltersSchema.parse(filters);
+  return hydratedFleetRows(
+    q,
+    and(
+      fleetScope(q, auth),
+      siteScopeCondition(auth, devices.siteId),
+      deviceScopeCondition(auth, devices.id),
+    ),
+  );
+}
+export async function listFleetTimeStatus(
+  filters: FleetTimeFilters,
+  auth: AuthContext,
+): Promise<FleetTimeResult> {
+  const q = fleetTimeFiltersSchema.parse(filters),
+    // Site + device axes named at the entry point (idempotent with fleetScope)
+    // so the aiToolsDeviceScope/SiteScope contracts can verify this delegate.
+    where = and(
+      fleetScope(q, auth),
+      siteScopeCondition(auth, devices.siteId),
+      deviceScopeCondition(auth, devices.id),
+    );
+  const data: FleetTimeRow[] = [];
+  let total = 0;
+  const start = (q.page - 1) * q.limit;
+  for await (const row of hydratedFleetRows(q, where)) {
+    if (total >= start && data.length < q.limit) data.push(row);
+    total += 1;
   }
   const domains: FleetTimeDomain[] = [];
   const keys = [
