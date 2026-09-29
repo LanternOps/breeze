@@ -1203,6 +1203,27 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
   });
 
+  it('never promotes when decideIntentApproval returns refused — the approve did not take effect', async () => {
+    const removedOnApprove = new Set<string>();
+    routeGraduationAndBatch([agentCard('ap-a')], graduationDto([graduationRow('manage_patches:install')]), {
+      removedOnApprove,
+    });
+    intentApprovalsMock.decide.mockImplementation(async (id: string) => {
+      removedOnApprove.add(id);
+      return 'refused';
+    });
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    // The request was decided (denied), so the card leaves the list …
+    await waitFor(() => expect(screen.queryByTestId('approval-row-ap-a')).not.toBeInTheDocument());
+    // … but nothing was approved, so there is nothing to always allow.
+    expect(promoteCalls()).toHaveLength(0);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
   it('hides the button and stays silent when the graduation fetch fails, without blocking Approve', async () => {
     fetchMock.mockImplementation((async (url: string) => {
       const raw = String(url);
@@ -1433,6 +1454,25 @@ describe('ApprovalsInbox — organization identity, live expiry, paging, and cop
         }),
       ),
     );
+  });
+
+  // The server can refuse an approve (the linked elevation's target could not
+  // be verified) and deny the request instead. decideIntentApproval has
+  // already shown that as an error with the reason; the inbox must not
+  // follow it with "Approved …".
+  it('never reports a refused approve as approved, and refreshes the list', async () => {
+    routeFull({ page1: [{ ...pendingApproval, orgName: 'Acme Dental' }] });
+    intentApprovalsMock.decide.mockResolvedValue('refused');
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+    const listFetchesBefore = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    await waitFor(() => expect(intentApprovalsMock.decide).toHaveBeenCalled());
+    // The decision is final (the request is denied), so the list reloads.
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(listFetchesBefore));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
   it('renders "Expires in under a minute" instead of a misleading unit below 60s', async () => {

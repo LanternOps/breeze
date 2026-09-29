@@ -1269,6 +1269,8 @@ export async function decideApprovalRequest(
         updated: typeof approvalRequests.$inferSelect;
         wonIntent: boolean;
         enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null;
+        /** Set with enforcementStatus 'refused': why the approve did not take effect. */
+        refusalReason: string | null;
       };
 
   let writeResult: DecideWriteResult;
@@ -1343,6 +1345,7 @@ export async function decideApprovalRequest(
           const updated = casRows[0]!;
 
           let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null = null;
+          let refusalReason: string | null = null;
           if (updated.elevationRequestId) {
             const now = new Date();
             const expiresAt = status === 'approved'
@@ -1424,6 +1427,7 @@ export async function decideApprovalRequest(
                 : actuation.desiredState === 'active'
                   ? 'pending_dispatch'
                   : 'cleanup_pending';
+              refusalReason = actuation.refusalReason ?? null;
 
               await tx
                 .update(approvalRequests)
@@ -1571,7 +1575,7 @@ export async function decideApprovalRequest(
             }
           }
 
-          return { lostRace: false, updated, wonIntent, enforcementStatus };
+          return { lostRace: false, updated, wonIntent, enforcementStatus, refusalReason };
         }),
       ),
     );
@@ -1584,7 +1588,7 @@ export async function decideApprovalRequest(
     return { httpStatus: 409, body: { error: 'Already decided', finalStatus: 'expired' } };
   }
 
-  const { updated, wonIntent, enforcementStatus } = writeResult;
+  const { updated, wonIntent, enforcementStatus, refusalReason } = writeResult;
 
   // Action intents (spec §4 / §3.4): post-commit audit/metrics projection for
   // the intent fan-in that already committed (or rolled back) as part of the
@@ -1696,6 +1700,9 @@ export async function decideApprovalRequest(
         decidedTargetRef?.orgId ?? null,
       ),
       ...(enforcementStatus ? { enforcementStatus } : {}),
+      // The approve was refused (the linked elevation is now denied): the
+      // approver's client shows this instead of reporting an approval.
+      ...(refusalReason ? { reason: refusalReason } : {}),
       // #5601: present only when a genuine ceremony just minted one. The
       // client caches it and presents it on the next approve in this window
       // instead of prompting for another passkey scan.

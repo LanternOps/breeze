@@ -371,6 +371,76 @@ describe('decideIntentApproval server rejections', () => {
 });
 
 /**
+ * An approve can come back HTTP 200 and still not have taken effect: the
+ * server refused the linked elevation (its target could not be verified) and
+ * denied it. The response says so with `enforcementStatus: 'refused'`.
+ */
+describe('decideIntentApproval — an approve the server refused', () => {
+  const REFUSAL = 'Target identity could not be verified on the device; re-request elevation.';
+
+  beforeEach(() => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+  });
+
+  it('returns refused and shows the reason as an error, never an "approved" toast', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          approval: { id: 'ap-1', status: 'approved' },
+          enforcementStatus: 'refused',
+          reason: REFUSAL,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve');
+
+    expect(outcome).toBe('refused');
+    expect(showToast).toHaveBeenCalledTimes(1);
+    const toasted = showToast.mock.calls[0][0] as { type: string; message: string; detail?: string };
+    expect(toasted.type).toBe('error');
+    expect(toasted.message).toMatch(/refused/i);
+    expect(toasted.message).not.toMatch(/^action approved$/i);
+    expect(toasted.detail).toBe(REFUSAL);
+  });
+
+  it('still reports the refusal as an error when the server gave no reason', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({ approval: { id: 'ap-1', status: 'approved' }, enforcementStatus: 'refused' }),
+        { status: 200 },
+      ),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve');
+
+    expect(outcome).toBe('refused');
+    expect(showToast).toHaveBeenCalledTimes(1);
+    const toasted = showToast.mock.calls[0][0] as { type: string; message: string; detail?: string };
+    expect(toasted.type).toBe('error');
+    expect(toasted.message).toMatch(/refused/i);
+    expect(toasted.detail).toBeUndefined();
+  });
+
+  it('an approve that took effect is still reported as approved', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({ approval: { id: 'ap-1', status: 'approved' }, enforcementStatus: 'pending_dispatch' }),
+        { status: 200 },
+      ),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve');
+
+    expect(outcome).toBe('decided');
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Action approved' });
+  });
+});
+
+/**
  * The batch client runs the REAL runAction throughout: every case here turns on
  * how a specific status/token is classified, and a stubbed runAction would
  * assert the stub rather than the classification.

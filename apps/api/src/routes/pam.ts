@@ -753,6 +753,12 @@ pamRoutes.post(
       );
     }
 
+    // An approve can be refused inside the transaction (createPamDecisionIntent:
+    // the target's identity could not be verified), which leaves the request
+    // denied. The approver still asked to approve, so the action stays
+    // `approve`, but the audit result, the published event and the response
+    // all report the refusal. Nothing reports it as an approval.
+    const refusalReason = result.actuation.refusalReason;
     writeAuditEvent(c, {
       orgId: result.row.orgId,
       actorType: 'user',
@@ -760,7 +766,10 @@ pamRoutes.post(
       action: approve ? 'pam.elevation_request.approve' : 'pam.elevation_request.deny',
       resourceType: 'elevation_request',
       resourceId: result.row.id,
-      details: { reason: body.reason, duration_minutes: approve ? durationMinutes : undefined },
+      result: refusalReason ? 'denied' : 'success',
+      details: refusalReason
+        ? { reason: body.reason, enforcement_status: 'refused', refusal_reason: refusalReason }
+        : { reason: body.reason, duration_minutes: approve ? durationMinutes : undefined },
     });
 
     // #1254: a uac_intercept elevation may also have been fanned out to the
@@ -792,7 +801,7 @@ pamRoutes.post(
     }
 
     await safePublish(
-      approve ? 'elevation.approved' : 'elevation.denied',
+      approve && !refusalReason ? 'elevation.approved' : 'elevation.denied',
       result.row.orgId,
       {
         elevationRequestId: result.row.id,
@@ -800,6 +809,7 @@ pamRoutes.post(
         flowType: result.row.flowType,
         status: result.newStatus,
         decidedByUserId: auth.user.id,
+        ...(refusalReason ? { enforcementStatus: 'refused', reason: refusalReason } : {}),
       },
     );
 
@@ -810,12 +820,12 @@ pamRoutes.post(
       success: true,
       id: result.row.id,
       status: result.newStatus,
-      enforcementStatus: result.actuation.refusalReason
+      enforcementStatus: refusalReason
         ? 'refused'
         : result.actuation.desiredState === 'active'
           ? 'pending_dispatch'
           : 'cleanup_pending',
-      ...(result.actuation.refusalReason ? { reason: result.actuation.refusalReason } : {}),
+      ...(refusalReason ? { reason: refusalReason } : {}),
     });
   },
 );
