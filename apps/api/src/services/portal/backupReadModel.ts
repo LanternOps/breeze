@@ -219,6 +219,8 @@ function mergeDeviceBackup(firstParty: FirstPartyState | undefined, provider: Ba
   const headline = firstPartyHasEvidence ? firstParty : provider;
   return {
     hasEvidence: firstPartyHasEvidence || provider !== undefined,
+    /** Which product the headline status comes from. */
+    source: !firstPartyHasEvidence && provider !== undefined ? ('external' as const) : ('breeze' as const),
     status: headline?.status ?? ('no_backups' as const),
     health: headline?.health ?? ('unknown' as const),
     lastSuccessAt: maxIso(firstParty?.lastSuccessAt, provider?.lastSuccessAt),
@@ -490,7 +492,7 @@ export async function backupDevicesPage(
       readinessScore: row.readinessScore,
       estimatedRtoMinutes: row.estimatedRtoMinutes,
       estimatedRpoMinutes: row.estimatedRpoMinutes,
-      source: 'breeze',
+      source: merged.source,
       providerLabel: merged.providerLabel,
       status: merged.status,
       health: merged.health,

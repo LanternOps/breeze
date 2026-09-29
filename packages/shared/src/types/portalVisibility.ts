@@ -179,9 +179,12 @@ export interface BackupDeviceRow {
   readinessScore: number | null;
   estimatedRtoMinutes: number | null;
   estimatedRpoMinutes: number | null;
-  /** 'breeze' = a managed Breeze device (a third-party provider may ALSO back
-   *  it up — see `providerLabel`); 'external' = a third-party backup row with
-   *  no linked Breeze device (`id` is then `provider:<row id>`). (#6012) */
+  /** Which product `status`/`health` come from. 'breeze' = first-party backup
+   *  (or no backup at all); a third party may ALSO back the device up — see
+   *  `providerLabel`. 'external' = only a third party backs this row up: a
+   *  managed device (`id` = device id) or a third-party row with no managed
+   *  device (`id` = `provider:<row id>`). Verification, restore-test, breach
+   *  and readiness fields are first-party facts either way. (#6012) */
   source: 'breeze' | 'external';
   /** The third-party product label to SHOW, already resolved server-side per
    *  the connection's portal-name toggle (spec D5): the generic "Managed cloud

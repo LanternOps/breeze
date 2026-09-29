@@ -569,7 +569,8 @@ describe('backupDevicesPage', () => {
 
     const page = await backupDevicesPage(ORG_ID, args());
     expect(page.data[0]).toMatchObject({
-      configured: true, source: 'breeze', status: 'failed', health: 'critical',
+      // A managed device, but its backup — and so its status — is the third party's.
+      id: 'd-1', configured: true, source: 'external', status: 'failed', health: 'critical',
       providerLabel: 'Managed cloud backup', lastRestorePointAt: '2026-08-30T00:00:00.000Z',
     });
   });
