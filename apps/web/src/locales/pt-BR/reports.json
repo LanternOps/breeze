@@ -397,7 +397,7 @@
         "fetchReports": "Falha ao buscar relatórios",
         "generateReport": "Falha ao gerar relatório",
         "generic": "Ocorreu um erro",
-        "noCompletedRun": "Ainda não há narrativa concluída para abrir"
+        "noCompletedRun": "Ainda não há execução concluída para abrir"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Carregando relatórios...",
       "never": "Nunca",
+      "notGeneratedYet": "Ainda não gerado",
       "success": {
         "generated": "Relatório \"{{name}}\" gerado."
       },

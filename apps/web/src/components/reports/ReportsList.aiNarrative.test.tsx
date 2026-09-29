@@ -165,7 +165,7 @@ describe('ReportsList — system-managed AI narrative rows', () => {
     expect(fetchWithAuth).not.toHaveBeenCalledWith('/reports/rep-ai/generate', expect.anything());
   });
 
-  it('surfaces a message when no completed narrative run exists yet', async () => {
+  it('surfaces a report-neutral message when no completed run exists yet', async () => {
     mountWith([narrativeReport], (url) =>
       url === LATEST_RUN_URL
         ? Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) })
@@ -176,7 +176,7 @@ describe('ReportsList — system-managed AI narrative rows', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Open latest' }));
 
     expect(
-      await screen.findByText('No completed narrative to open yet'),
+      await screen.findByText('No completed run to open yet'),
     ).toBeInTheDocument();
     expect(exportReport).not.toHaveBeenCalled();
   });

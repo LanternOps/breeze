@@ -406,6 +406,7 @@
       },
       "loading": "Berichte werden geladen...",
       "never": "Niemals",
+      "notGeneratedYet": "Noch nicht erstellt",
       "success": {
         "generated": "Bericht „{{name}}“ erstellt."
       },

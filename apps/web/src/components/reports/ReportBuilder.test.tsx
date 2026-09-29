@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -122,6 +123,23 @@ describe('ReportBuilder live preview', () => {
 
     await screen.findByText('api-atlas-01');
     expect(screen.queryByText('atlas-01')).toBeNull();
+  });
+
+  // Pre-release sweep: Last seen printed "2026-09-29T18:28:51.233Z".
+  it('formats timestamp cells with the app date formatter, not raw ISO', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: {
+          rows: [{ hostname: 'api-atlas-01', osType: 'windows', osVersion: '11', status: 'online', lastSeenAt: '2026-02-09T16:22:00.000Z' }]
+        }
+      })
+    );
+
+    render(<ReportBuilder mode="builder" />);
+
+    await screen.findByText('api-atlas-01');
+    expect(screen.queryByText('2026-02-09T16:22:00.000Z')).toBeNull();
+    expect(screen.getByText(formatDateTime('2026-02-09T16:22:00.000Z'))).toBeInTheDocument();
   });
 
   it('groups live API rows when group-by is selected', async () => {

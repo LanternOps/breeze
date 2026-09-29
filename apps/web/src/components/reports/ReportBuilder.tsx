@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatNumber } from '@/lib/i18n/format';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -784,6 +785,8 @@ const formatLabel = (value: string) =>
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/^./, char => char.toUpperCase());
 
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+
 let filterIdCounter = 0;
 const buildFilterId = (prefix: string = 'filter') => {
   filterIdCounter += 1;
@@ -1466,6 +1469,9 @@ export default function ReportBuilder({
   const formatCellValue = (value: unknown) => {
     if (value === null || value === undefined || value === '') return '-';
     if (typeof value === 'number') return formatNumber(value);
+    // An ISO timestamp (Last seen, …) reads in the app's date format. Only a
+    // full date-time: a bare date would shift a day in a zone west of UTC.
+    if (typeof value === 'string' && ISO_DATE_TIME.test(value)) return formatDateTime(value);
     return String(value);
   };
 

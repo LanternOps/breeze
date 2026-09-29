@@ -397,7 +397,7 @@
         "fetchReports": "No se pudieron recuperar los informes",
         "generateReport": "No se pudo generar el informe",
         "generic": "Se produjo un error",
-        "noCompletedRun": "Todavía no hay una narrativa completada para abrir"
+        "noCompletedRun": "Todavía no hay una ejecución completada para abrir"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Cargando informes...",
       "never": "Nunca",
+      "notGeneratedYet": "Aún no generado",
       "success": {
         "generated": "Informe \"{{name}}\" generado."
       },

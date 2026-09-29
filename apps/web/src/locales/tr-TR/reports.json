@@ -397,7 +397,7 @@
         "fetchReports": "Raporlar getirilemedi",
         "generateReport": "Rapor oluşturulamadı",
         "generic": "Bir hata oluştu",
-        "noCompletedRun": "Açılacak tamamlanmış anlatı henüz yok"
+        "noCompletedRun": "Açılacak tamamlanmış çalıştırma henüz yok"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Raporlar yükleniyor...",
       "never": "Hiçbir zaman",
+      "notGeneratedYet": "Henüz oluşturulmadı",
       "success": {
         "generated": "\"{{name}}\" raporu oluşturuldu."
       },

@@ -397,7 +397,7 @@
         "fetchReports": "Impossible de récupérer des rapports",
         "generateReport": "Impossible de générer un rapport",
         "generic": "Une erreur s’est produite",
-        "noCompletedRun": "Aucun récit terminé à ouvrir pour l’instant"
+        "noCompletedRun": "Aucune exécution terminée à ouvrir pour l’instant"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "notGeneratedYet": "Pas encore généré",
       "success": {
         "generated": "Rapport « {{name}} » généré."
       },

@@ -397,7 +397,7 @@
         "fetchReports": "Failed to fetch reports",
         "generateReport": "Failed to generate report",
         "generic": "An error occurred",
-        "noCompletedRun": "No completed narrative to open yet"
+        "noCompletedRun": "No completed run to open yet"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Loading reports...",
       "never": "Never",
+      "notGeneratedYet": "Not generated yet",
       "success": {
         "generated": "Report \"{{name}}\" generated."
       },
