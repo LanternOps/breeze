@@ -3,13 +3,16 @@ import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { devices } from '../../db/schema';
 import {
   createPartner,
   createOrganization,
+  createSite,
 } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
 import { replayMigration } from '../../__tests__/integration/replayMigration';
 import { pgErrorCode } from '../../utils/pgErrors';
+import { resolveDeviceTimeSyncSettings } from './settings';
 
 async function fixture() {
   const p = (await createPartner())!;
@@ -48,7 +51,14 @@ async function fixture() {
     INSERT INTO config_policy_time_sync_settings(feature_link_id)
     VALUES (${String(link!.id)})`),
   );
-  return { own, foreign, owner, linkId: String(link!.id) };
+  return {
+    own,
+    foreign,
+    owner,
+    linkId: String(link!.id),
+    policyId: String(policy!.id),
+    orgId: a.id,
+  };
 }
 
 it('allows own-partner SELECT without granting org writes', async () => {
@@ -200,4 +210,33 @@ it('is forced, has five policies, and replays without erasing settings', async (
     SELECT id FROM config_policy_time_sync_settings WHERE feature_link_id=${f.linkId}`),
     ),
   ).toHaveLength(1);
+});
+it('resolves a partner assignment through an org agent context without escalation', async () => {
+  const f = await fixture();
+  const site = (await createSite({ orgId: f.orgId }))!;
+  const [device] = await getTestDb()
+    .insert(devices)
+    .values({
+      orgId: f.orgId,
+      siteId: site.id,
+      agentId: randomUUID(),
+      hostname: 'time-fixture',
+      osType: 'windows',
+      osVersion: '1',
+      architecture: 'x64',
+      agentVersion: '1.0.0',
+    })
+    .returning();
+  await getTestDb().execute(sql`
+    INSERT INTO config_policy_assignments(config_policy_id, level, target_id)
+    VALUES (${f.policyId}, 'partner', ${f.own.currentPartnerId})`);
+  const own = await withDbAccessContext(f.own, () =>
+    resolveDeviceTimeSyncSettings(device!.id),
+  );
+  expect(own.policy?.policyId).toBe(f.policyId);
+  await expect(
+    withDbAccessContext(f.foreign, () =>
+      resolveDeviceTimeSyncSettings(device!.id),
+    ),
+  ).rejects.toThrow('Time sync device not visible');
 });
