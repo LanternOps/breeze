@@ -17,6 +17,7 @@ vi.mock('../siteScope', async (importOriginal) => {
 import { siteScopeFingerprint } from '../siteScope';
 import { ReportSeriesError } from './errors';
 import {
+  SeriesAuthorityUnverifiableError,
   assertSeriesOwnerEligible,
   captureChildExecutionScope,
   isSeriesOwnerEligible,
@@ -125,5 +126,36 @@ describe('captureChildExecutionScope', () => {
   it('a denied live authority is no_authority, never a fallback', async () => {
     live.org.mockResolvedValue({ ok: false, reason: 'organization_inaccessible' });
     await expect(captureChildExecutionScope(OWNER_ID, ORG_ID, tx)).resolves.toBe('no_authority');
+  });
+});
+
+// Review I-1: a transient resolver failure must never read as a definitive denial.
+describe('unverifiable authority is an error, not a denial', () => {
+  const unverifiable = { ok: false, reason: 'unverifiable_scope' };
+
+  it('isSeriesOwnerEligible throws instead of returning false', async () => {
+    live.partner.mockResolvedValue(unverifiable);
+    await expect(isSeriesOwnerEligible(OWNER_ID, PARTNER_ID, txReturningUser({ partnerId: PARTNER_ID })))
+      .rejects.toBeInstanceOf(SeriesAuthorityUnverifiableError);
+  });
+
+  it('assertSeriesOwnerEligible lets it propagate (not a ReportSeriesError)', async () => {
+    live.partner.mockResolvedValue(unverifiable);
+    const err = await assertSeriesOwnerEligible(OWNER_ID, PARTNER_ID, txReturningUser({ partnerId: PARTNER_ID })).catch((e) => e);
+    expect(err).toBeInstanceOf(SeriesAuthorityUnverifiableError);
+    expect(err).not.toBeInstanceOf(ReportSeriesError);
+  });
+
+  it('captureChildExecutionScope throws instead of returning no_authority', async () => {
+    live.org.mockResolvedValue(unverifiable);
+    await expect(captureChildExecutionScope(OWNER_ID, ORG_ID, txReturningUser(null)))
+      .rejects.toBeInstanceOf(SeriesAuthorityUnverifiableError);
+  });
+
+  it('a definitive denial still returns false / no_authority', async () => {
+    live.partner.mockResolvedValue({ ok: false, reason: 'membership_removed' });
+    live.org.mockResolvedValue({ ok: false, reason: 'membership_removed' });
+    expect(await isSeriesOwnerEligible(OWNER_ID, PARTNER_ID, txReturningUser({ partnerId: PARTNER_ID }))).toBe(false);
+    expect(await captureChildExecutionScope(OWNER_ID, ORG_ID, txReturningUser(null))).toBe('no_authority');
   });
 });

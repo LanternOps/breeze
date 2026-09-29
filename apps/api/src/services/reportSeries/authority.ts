@@ -23,6 +23,18 @@ import type { SeriesTx } from './types';
 /** INDEX name for the execution-scope columns a child row stores. */
 export type ExecutionScopeColumns = PersistedSiteScopeColumns;
 
+/**
+ * The live resolver could not verify authority (a transient DB/lookup failure,
+ * reported as 'unverifiable_scope'). Deliberately NOT a ReportSeriesError: it
+ * is not a denial. Callers must abort and retry rather than block children.
+ */
+export class SeriesAuthorityUnverifiableError extends Error {
+  constructor() {
+    super('report series owner authority could not be verified');
+    this.name = 'SeriesAuthorityUnverifiableError';
+  }
+}
+
 function ineligible(reason: string): ReportSeriesError {
   return new ReportSeriesError('series_owner_ineligible', 400, { reason });
 }
@@ -43,7 +55,10 @@ export async function assertSeriesOwnerEligible(
   if (!user || user.partnerId !== partnerId) throw ineligible('owner_not_partner_user');
 
   const live = await resolveLivePartnerReportAuthority(userId, partnerId, 'export');
-  if (!live.ok) throw ineligible(live.reason);
+  if (!live.ok) {
+    if (live.reason === 'unverifiable_scope') throw new SeriesAuthorityUnverifiableError();
+    throw ineligible(live.reason);
+  }
 }
 
 export async function isSeriesOwnerEligible(
@@ -68,6 +83,7 @@ export async function captureChildExecutionScope(
   _tx: SeriesTx,
 ): Promise<ExecutionScopeColumns | 'no_authority'> {
   const live = await resolveLiveReportAuthority(ownerUserId, orgId, 'export');
+  if (!live.ok && live.reason === 'unverifiable_scope') throw new SeriesAuthorityUnverifiableError();
   if (!live.ok || live.authority.scope.kind !== 'unrestricted') return 'no_authority';
   return persistedSiteScopeValues(live.authority);
 }

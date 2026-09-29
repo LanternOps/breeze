@@ -13,7 +13,7 @@
  * unarchived in place if the org comes back.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { reports, reportSeries } from '../../db/schema';
 import { captureException } from '../sentry';
 import {
@@ -105,6 +105,13 @@ async function updateSeriesChild(
     .where(and(eq(reports.id, child.id), eq(reports.orgId, child.orgId), eq(reports.seriesId, seriesId)));
 }
 
+/**
+ * A transient authority failure (SeriesAuthorityUnverifiableError) propagates
+ * and aborts the whole series reconcile: the caller's transaction rolls back
+ * and existing child scopes are untouched. Only a definitive denial blanks a
+ * child's scope, and such a blocked child heals only on a series write or
+ * transfer-owner (neither the sweep nor the gate re-captures it).
+ */
 export async function reconcileSeries(seriesId: string, tx: SeriesTx): Promise<ReconcileResult> {
   const result = emptyReconcileResult();
   const [series] = await tx
@@ -245,9 +252,22 @@ export async function findSeriesNeedingReconcile(limit: number, tx: SeriesTx = d
 
 /**
  * The repair sweep (spec §3.3 trigger 2), run on every check-schedules tick
- * BEFORE the due scan. Bounded, per-series error isolation (each series is its
- * own savepoint), logged. Picks up new orgs in 'all' mode and repairs anything
- * a crash left behind.
+ * BEFORE the due scan. Bounded, per-series error isolation, logged. Picks up
+ * new orgs in 'all' mode and repairs anything a crash left behind.
+ *
+ * Each series is reconciled in its OWN top-level committed system transaction:
+ * its FOR UPDATE lock is released as soon as that series is done, its children
+ * are committed before the due scan can enqueue them, and one series' failure
+ * (including a transient SeriesAuthorityUnverifiableError, which leaves that
+ * series' children untouched) rolls back only that series.
+ *
+ * MUST be called outside any ambient DB context (the schedule worker calls it
+ * before runWithSystemDbAccess(processCheckSchedules)). If it is called inside
+ * one it still works through runOutsideDbContext, at the cost of one extra
+ * pooled connection for the duration of the sweep.
+ *
+ * Blocked children (definitive authority denial) are NOT healed here: they
+ * heal only on a series write or transfer-owner.
  */
 export async function reconcileAllSeries(options: {
   limit?: number;
@@ -255,15 +275,21 @@ export async function reconcileAllSeries(options: {
 } = {}): Promise<void> {
   const limit = options.limit ?? SERIES_SWEEP_LIMIT;
   const reconcileOne = options.reconcileOne
-    ?? ((seriesId: string) => db.transaction((tx) => reconcileSeries(seriesId, tx)));
-  await withSystemDbAccessContext(async () => {
-    const ids = await findSeriesNeedingReconcile(limit + 1);
+    ?? ((seriesId: string) => reconcileSeries(seriesId, db));
+  await runOutsideDbContext(async () => {
+    const ids = await withSystemDbAccessContext(
+      () => findSeriesNeedingReconcile(limit + 1),
+      'reportSeries.repairSweep.scan',
+    );
     if (ids.length > limit) {
       console.warn('[reportSeries] repair sweep backlog exceeds one tick; the remainder rolls to the next tick', { limit });
     }
     for (const seriesId of ids.slice(0, limit)) {
       try {
-        const result = await reconcileOne(seriesId);
+        const result = await withSystemDbAccessContext(
+          () => reconcileOne(seriesId),
+          'reportSeries.repairSweep',
+        );
         console.log('[reportSeries] repair sweep reconciled series', {
           seriesId,
           created: result.created,
@@ -277,15 +303,25 @@ export async function reconcileAllSeries(options: {
         captureException(err);
       }
     }
-  }, 'reportSeries.repairSweep');
+  });
 }
 
 /**
  * Worker gate (spec §3.3). Called by processRunScheduledReport for a row with
- * series_id set, BEFORE any authority resolution or run row. Closes the "job
- * queued before the org was excluded / the series was disabled / the owner
- * was demoted" races. A stale revision is reconciled first so the run uses the
- * current definition; the caller must re-read the row after 'run'.
+ * series_id set, BEFORE any authority resolution or run row, under a system
+ * DB context. Closes the "job queued before the org was excluded / the series
+ * was disabled / the owner was demoted" races.
+ *
+ * The decision is read WITHOUT a row lock: the worker holds one ambient system
+ * transaction for the whole job, so a FOR UPDATE here would serialize every
+ * child job of a series through report generation. Only a stale child
+ * revision (0 included) reconciles, in its own committed transaction (which
+ * takes and releases the lock); the decision is then re-read. The caller must
+ * re-read the report row after 'run'.
+ *
+ * A transient SeriesAuthorityUnverifiableError propagates (the job throws and
+ * BullMQ retries). A definitively blocked child is not healed here; it heals
+ * only on a series write or transfer-owner.
  */
 export async function seriesChildGate(report: {
   id: string;
@@ -295,26 +331,33 @@ export async function seriesChildGate(report: {
   archivedAt: Date | null;
 }): Promise<SeriesGateDecision> {
   if (report.archivedAt !== null) return 'skip_archived';
-  return db.transaction(async (tx): Promise<SeriesGateDecision> => {
-    const [series] = await tx
+
+  const evaluate = async (allowReconcile: boolean): Promise<SeriesGateDecision> => {
+    const [series] = await db
       .select()
       .from(reportSeries)
       .where(eq(reportSeries.id, report.seriesId))
-      .limit(1)
-      .for('update');
+      .limit(1);
     if (!series) return 'skip_untargeted';
     if (!series.enabled) return 'skip_disabled';
-    const targets = await resolveSeriesTargetOrgIds(series, tx);
+    const targets = await resolveSeriesTargetOrgIds(series, db);
     if (!targets.includes(report.orgId)) return 'skip_untargeted';
-    if (series.ownerUserId === null || !(await isSeriesOwnerEligible(series.ownerUserId, series.partnerId, tx))) {
+    if (series.ownerUserId === null || !(await isSeriesOwnerEligible(series.ownerUserId, series.partnerId, db))) {
       return 'blocked_no_authority';
     }
-    if (report.seriesRevision !== series.revision) await reconcileSeries(series.id, tx);
-    const child = (await listSeriesChildren(series.id, tx)).find((row) => row.id === report.id);
+    if (allowReconcile && report.seriesRevision !== series.revision) {
+      await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => reconcileSeries(series.id, db),
+        'reportSeries.gateReconcile',
+      ));
+      return evaluate(false);
+    }
+    const child = (await listSeriesChildren(series.id, db)).find((row) => row.id === report.id);
     if (!child || child.archivedAt !== null) return 'skip_archived';
     if (child.executionScopeUserId === null || child.executionScopeUserId !== series.ownerUserId) {
       return 'blocked_no_authority';
     }
     return 'run';
-  });
+  };
+  return evaluate(true);
 }

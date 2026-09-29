@@ -5,10 +5,28 @@
  * read partner_users + role_permissions on their own system connection.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Passthrough wrapper over the real live resolvers: lets a test make named
+// owners "unverifiable" (a transient resolver failure) without touching the DB.
+const unverifiable = vi.hoisted(() => ({ owners: new Set<string>() }));
+vi.mock('../../services/siteScope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/siteScope')>();
+  return {
+    ...actual,
+    resolveLivePartnerReportAuthority: (userId: string, ...rest: [string, never]) =>
+      unverifiable.owners.has(userId)
+        ? Promise.resolve({ ok: false, reason: 'unverifiable_scope' })
+        : actual.resolveLivePartnerReportAuthority(userId, ...rest),
+    resolveLiveReportAuthority: (userId: string, ...rest: [string, never]) =>
+      unverifiable.owners.has(userId)
+        ? Promise.resolve({ ok: false, reason: 'unverifiable_scope' })
+        : actual.resolveLiveReportAuthority(userId, ...rest),
+  };
+});
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { reports, reportSeries } from '../../db/schema';
 import {
   assignUserToPartner,
@@ -18,6 +36,7 @@ import {
   createUser,
   grantRolePermissions,
 } from './db-utils';
+import { SeriesAuthorityUnverifiableError } from '../../services/reportSeries/authority';
 import {
   reconcileAllSeries,
   reconcileSeries,
@@ -229,5 +248,73 @@ describe('seriesChildGate', () => {
     const child = (await activeChildFor(s.series.id, s.orgA))!;
     await system(() => db.update(reports).set({ archivedAt: new Date() }).where(eq(reports.id, child.id)));
     expect(await gateFor(s, s.orgA)).toBe('skip_archived');
+  });
+});
+
+describe('transient authority failure (review I-1)', () => {
+  it('an unverifiable owner aborts the reconcile and leaves captured child scopes intact', async () => {
+    const s = await seedSeries();
+    await reconcile(s.series.id);
+    await system(() => db.update(reportSeries).set({ name: 'Renamed', revision: 2 }).where(eq(reportSeries.id, s.series.id)));
+    unverifiable.owners.add(s.owner);
+    try {
+      await expect(reconcile(s.series.id)).rejects.toBeInstanceOf(SeriesAuthorityUnverifiableError);
+    } finally {
+      unverifiable.owners.delete(s.owner);
+    }
+    for (const row of await children(s.series.id)) {
+      expect(row.executionScopeUserId).toBe(s.owner);
+      expect(row.executionScopeKind).toBe('unrestricted');
+      expect(row.name).toBe('Monthly summary');
+      expect(row.seriesRevision).toBe(1);
+    }
+  });
+
+  it('the gate propagates it (the job retries) instead of deciding blocked', async () => {
+    const s = await seedSeries();
+    await reconcile(s.series.id);
+    const child = (await activeChildFor(s.series.id, s.orgA))!;
+    unverifiable.owners.add(s.owner);
+    try {
+      await expect(system(() => seriesChildGate({
+        id: child.id, orgId: s.orgA, seriesId: s.series.id, seriesRevision: child.seriesRevision, archivedAt: null,
+      }))).rejects.toBeInstanceOf(SeriesAuthorityUnverifiableError);
+    } finally {
+      unverifiable.owners.delete(s.owner);
+    }
+  });
+});
+
+describe('lock scope (review I-2)', () => {
+  it('the sweep commits each series independently, even inside an outer context that later fails', async () => {
+    const good = await seedSeries();
+    const bad = await seedSeries();
+    unverifiable.owners.add(bad.owner);
+    try {
+      await expect(system(async () => {
+        await reconcileAllSeries();
+        throw new Error('outer rollback');
+      })).rejects.toThrow('outer rollback');
+    } finally {
+      unverifiable.owners.delete(bad.owner);
+    }
+    expect((await children(good.series.id)).length).toBe(2);
+    expect(await children(bad.series.id)).toHaveLength(0);
+  });
+
+  it('a non-stale gate takes no row lock on the series', async () => {
+    const s = await seedSeries();
+    await reconcile(s.series.id);
+    const child = (await activeChildFor(s.series.id, s.orgA))!;
+    const decision = await system(() => db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM report_series WHERE id = ${s.series.id} FOR UPDATE`);
+      return Promise.race([
+        runOutsideDbContext(() => system(() => seriesChildGate({
+          id: child.id, orgId: s.orgA, seriesId: s.series.id, seriesRevision: child.seriesRevision, archivedAt: null,
+        }))),
+        new Promise<string>((resolve) => setTimeout(() => resolve('blocked_on_lock'), 3000)),
+      ]);
+    }));
+    expect(decision).toBe('run');
   });
 });

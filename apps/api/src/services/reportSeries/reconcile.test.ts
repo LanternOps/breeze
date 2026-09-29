@@ -7,6 +7,7 @@ const dbMock = vi.hoisted(() => ({
 vi.mock('../../db', () => ({
   db: dbMock,
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
 const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
 vi.mock('../sentry', () => sentry);
