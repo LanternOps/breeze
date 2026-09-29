@@ -18,6 +18,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { deviceScopeCondition, siteScopeCondition } from '../aiToolsSiteScope';
 import { getDeviceTimeStatusView, type DeviceTimeStatusView } from './view';
 import { resolveExpectedTimezone } from './expectedTimezone';
+import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 export const fleetTimeFiltersSchema = z
   .object({
     health: z.enum(TIME_SYNC_HEALTH).optional(),
@@ -116,6 +117,7 @@ export function fleetScope(
     deviceScopeCondition(auth, devices.id),
     eq(devices.osType, 'windows'),
     eq(devices.isEphemeral, false),
+    notParkedDeviceCondition(),
     filters.orgId ? eq(devices.orgId, filters.orgId) : undefined,
     filters.deviceId ? eq(devices.id, filters.deviceId) : undefined,
     displayFilters && filters.siteId

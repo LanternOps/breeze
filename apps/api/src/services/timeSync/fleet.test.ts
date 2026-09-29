@@ -93,6 +93,9 @@ it('intersects organization, site, device and explicit filters', () => {
   expect(query.params.filter((p) => p === site)).toHaveLength(2);
   expect(query.params.filter((p) => p === device)).toHaveLength(2);
   expect(query.sql).toContain('"devices"."org_id"');
+  // Devices parked in the unassigned-pool holding org never reach the fleet
+  // report or list_time_sync_issues (parkedFanout contract).
+  expect(query.sql).toContain("parked_org.type = 'unassigned_pool'");
   expect(
     new PgDialect().sqlToQuery(fleetScope({}, auth({ allowedSiteIds: [] }))!)
       .sql,
