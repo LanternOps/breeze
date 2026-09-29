@@ -1370,6 +1370,36 @@
         "recipientsNeedExportAndMfa": "Enviar relatórios a destinatários exige a permissão de exportação e o login com autenticação multifator.",
         "seriesAuthorityUnverifiable": "Não foi possível confirmar o acesso do proprietário agora. Tente novamente em instantes."
       }
+    },
+    "seriesCombine": {
+      "banner": "Algumas organizações têm relatórios quase idênticos que podem ser combinados em um relatório multiorganização. Grupos encontrados: {{groups}}",
+      "review": "Revisar",
+      "title": "Combinar em um relatório multiorganização",
+      "groupLabel": "Grupo",
+      "groupSummary": "{{type}} · {{schedule}} · organizações: {{orgs}}",
+      "nameLabel": "Nome do relatório multiorganização",
+      "targetLegend": "Organizações abrangidas",
+      "targetSelected": "Somente estas organizações (nada novo é enviado)",
+      "targetAll": "Todas as organizações, inclusive as adicionadas depois",
+      "targetAllWarning": "Organizações sem uma cópia hoje passarão a receber este relatório, apenas com a cópia interna até você adicionar destinatários do cliente.",
+      "adopt": "Mantido e convertido",
+      "archive": "Duplicado, será arquivado",
+      "deliverableLinked": "Usado como evidência de uma entrega de serviço",
+      "lastRun": "Última execução {{date}}",
+      "neverRun": "Nunca executado",
+      "contacts": "Destinatários do cliente: {{list}}",
+      "noContacts": "Nenhum destinatário do cliente",
+      "ccShared": "Cópia interna em todas as cópias: {{list}}",
+      "ccNone": "Sem cópia interna",
+      "ccConflictHeading": "Estes endereços em cópia aparecem só em alguns destes relatórios. Escolha o que acontece com cada um:",
+      "ccInclude": "Copiar em todas",
+      "ccDrop": "Deixar de copiar",
+      "ccUnresolved": "Escolha o que acontece com cada endereço em cópia antes de combinar.",
+      "ruleNote": "Cada cliente mantém exatamente os destinatários que tem hoje. Você pode adicionar uma regra de destinatários depois, no relatório multiorganização.",
+      "confirm": "Combinar",
+      "success": "Combinado em “{{name}}”",
+      "failed": "Não foi possível combinar estes relatórios.",
+      "groupChanged": "Estes relatórios mudaram desde que você abriu esta janela. A lista foi atualizada."
     }
   }
 }

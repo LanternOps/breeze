@@ -1370,6 +1370,36 @@
         "recipientsNeedExportAndMfa": "Enviar informes a destinatarios requiere el permiso de exportación y el inicio de sesión con autenticación multifactor.",
         "seriesAuthorityUnverifiable": "No se pudo confirmar el acceso del propietario en este momento. Intente de nuevo en un momento."
       }
+    },
+    "seriesCombine": {
+      "banner": "Algunas organizaciones tienen informes casi idénticos que se pueden combinar en un informe multiorganización. Grupos encontrados: {{groups}}",
+      "review": "Revisar",
+      "title": "Combinar en un informe multiorganización",
+      "groupLabel": "Grupo",
+      "groupSummary": "{{type}} · {{schedule}} · organizaciones: {{orgs}}",
+      "nameLabel": "Nombre del informe multiorganización",
+      "targetLegend": "Organizaciones incluidas",
+      "targetSelected": "Solo estas organizaciones (no se envía nada nuevo)",
+      "targetAll": "Todas las organizaciones, incluidas las que se agreguen después",
+      "targetAllWarning": "Las organizaciones que hoy no tienen una copia empezarán a recibir este informe, solo con la copia interna hasta que agregues destinatarios del cliente.",
+      "adopt": "Se conserva y se convierte",
+      "archive": "Duplicado, se archivará",
+      "deliverableLinked": "Se usa como evidencia de una entrega de servicio",
+      "lastRun": "Última ejecución {{date}}",
+      "neverRun": "Nunca se ejecutó",
+      "contacts": "Destinatarios del cliente: {{list}}",
+      "noContacts": "Sin destinatarios del cliente",
+      "ccShared": "Copia interna en cada copia: {{list}}",
+      "ccNone": "Sin copia interna",
+      "ccConflictHeading": "Estas direcciones en copia solo están en algunos de estos informes. Elige qué pasa con cada una:",
+      "ccInclude": "Copiar en todas",
+      "ccDrop": "Dejar de copiar",
+      "ccUnresolved": "Elige qué pasa con cada dirección en copia antes de combinar.",
+      "ruleNote": "Cada cliente conserva exactamente los destinatarios que tiene hoy. Puedes agregar una regla de destinatarios más adelante en el informe multiorganización.",
+      "confirm": "Combinar",
+      "success": "Combinado en “{{name}}”",
+      "failed": "No se pudieron combinar estos informes.",
+      "groupChanged": "Estos informes cambiaron desde que abriste esta ventana. La lista se actualizó."
     }
   }
 }

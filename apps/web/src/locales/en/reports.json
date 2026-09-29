@@ -1370,6 +1370,36 @@
         "recipientsNeedExportAndMfa": "Sending reports to recipients needs the export permission and multi-factor sign-in.",
         "seriesAuthorityUnverifiable": "Couldn't confirm the owner's access right now. Try again in a moment."
       }
+    },
+    "seriesCombine": {
+      "banner": "Some organizations have near-identical reports that could be combined into one multi-org report. Groups found: {{groups}}",
+      "review": "Review",
+      "title": "Combine into one multi-org report",
+      "groupLabel": "Group",
+      "groupSummary": "{{type}} · {{schedule}} · organizations: {{orgs}}",
+      "nameLabel": "Multi-org report name",
+      "targetLegend": "Organizations covered",
+      "targetSelected": "Only these organizations (nothing new is sent)",
+      "targetAll": "All organizations, including ones added later",
+      "targetAllWarning": "Organizations without a copy today start receiving this report, with only the internal CC until you add customer recipients.",
+      "adopt": "Kept and converted",
+      "archive": "Duplicate, will be archived",
+      "deliverableLinked": "Used as service deliverable evidence",
+      "lastRun": "Last run {{date}}",
+      "neverRun": "Never run",
+      "contacts": "Customer recipients: {{list}}",
+      "noContacts": "No customer recipients",
+      "ccShared": "Internal CC on every copy: {{list}}",
+      "ccNone": "No internal CC",
+      "ccConflictHeading": "These CC addresses are only on some of these reports. Choose what happens to each:",
+      "ccInclude": "CC every copy",
+      "ccDrop": "Stop CC-ing",
+      "ccUnresolved": "Choose what happens to every CC address before combining.",
+      "ruleNote": "Every customer keeps exactly the recipients they have today. You can add a recipient rule later on the multi-org report.",
+      "confirm": "Combine",
+      "success": "Combined into “{{name}}”",
+      "failed": "Could not combine these reports.",
+      "groupChanged": "These reports changed since you opened this dialog. The list has been refreshed."
     }
   }
 }

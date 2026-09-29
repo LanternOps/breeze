@@ -1370,6 +1370,36 @@
         "recipientsNeedExportAndMfa": "L’envoi de rapports à des destinataires exige l’autorisation d’exportation et l’authentification multifacteur.",
         "seriesAuthorityUnverifiable": "Impossible de confirmer l’accès du propriétaire pour le moment. Réessayez dans un instant."
       }
+    },
+    "seriesCombine": {
+      "banner": "Certaines organisations ont des rapports quasi identiques qui peuvent être regroupés en un rapport multi-organisation. Groupes trouvés : {{groups}}",
+      "review": "Examiner",
+      "title": "Regrouper en un rapport multi-organisation",
+      "groupLabel": "Groupe",
+      "groupSummary": "{{type}} · {{schedule}} · organisations : {{orgs}}",
+      "nameLabel": "Nom du rapport multi-organisation",
+      "targetLegend": "Organisations couvertes",
+      "targetSelected": "Uniquement ces organisations (aucun nouvel envoi)",
+      "targetAll": "Toutes les organisations, y compris celles ajoutées plus tard",
+      "targetAllWarning": "Les organisations sans copie aujourd'hui commenceront à recevoir ce rapport, uniquement en copie interne tant que vous n'aurez pas ajouté de destinataires clients.",
+      "adopt": "Conservé et converti",
+      "archive": "Doublon, sera archivé",
+      "deliverableLinked": "Utilisé comme preuve d'une prestation de service",
+      "lastRun": "Dernière exécution {{date}}",
+      "neverRun": "Jamais exécuté",
+      "contacts": "Destinataires clients : {{list}}",
+      "noContacts": "Aucun destinataire client",
+      "ccShared": "Copie interne sur chaque exemplaire : {{list}}",
+      "ccNone": "Aucune copie interne",
+      "ccConflictHeading": "Ces adresses en copie ne figurent que sur certains de ces rapports. Choisissez le sort de chacune :",
+      "ccInclude": "En copie sur chaque exemplaire",
+      "ccDrop": "Retirer de la copie",
+      "ccUnresolved": "Choisissez le sort de chaque adresse en copie avant de regrouper.",
+      "ruleNote": "Chaque client conserve exactement ses destinataires actuels. Vous pourrez ajouter une règle de destinataires plus tard dans le rapport multi-organisation.",
+      "confirm": "Regrouper",
+      "success": "Regroupé dans « {{name}} »",
+      "failed": "Impossible de regrouper ces rapports.",
+      "groupChanged": "Ces rapports ont changé depuis l'ouverture de cette fenêtre. La liste a été actualisée."
     }
   }
 }

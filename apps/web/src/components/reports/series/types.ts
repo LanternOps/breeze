@@ -107,3 +107,48 @@ export interface OrgContact {
 }
 
 export interface PartnerUserOption { id: string; name: string; email: string }
+
+// ── Series W04: Combine (mirrors apps/api/src/services/reportSeries/combinePlan.ts) ──
+export type CombineTargetMode = 'selected' | 'all';
+
+export interface CombineCandidateRow {
+  reportId: string;
+  name: string;
+  lastGeneratedAt: string | null;
+  action: 'adopt' | 'archive';
+  deliverableLinked: boolean;
+  contactRecipients: { contactId: string; name: string | null; email: string | null }[];
+  emailRecipients: string[];
+}
+
+export interface CombineCandidateOrg {
+  orgId: string;
+  orgName: string;
+  rows: CombineCandidateRow[];
+}
+
+export interface CombineCandidateGroup {
+  groupKey: string;
+  type: string;
+  format: 'csv' | 'pdf' | 'excel';
+  schedule: 'daily' | 'weekly' | 'monthly';
+  suggestedName: string;
+  orgs: CombineCandidateOrg[];
+  sharedCc: string[];
+  conflictingCc: { email: string; reportIds: string[] }[];
+}
+
+export interface CombineRequest {
+  groupKey: string;
+  reportIds: string[];
+  name: string;
+  targetMode: CombineTargetMode;
+  ccResolution: { include: string[]; drop: string[] };
+}
+
+export interface CombineCcConflictBody {
+  error: 'combine_cc_conflict';
+  shared: string[];
+  unresolved: { email: string; reportIds: string[] }[];
+  unexpected: string[];
+}
