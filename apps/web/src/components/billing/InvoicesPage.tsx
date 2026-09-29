@@ -472,7 +472,7 @@ export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
 
   // ---- outstanding summary (open balance + overdue count) -----------------
   const summary = useMemo(() => {
-    const open = invoices.filter((i) => i.status !== 'void' && num(i.balance) > 0);
+    const open = invoices.filter((i) => i.status !== 'void' && i.status !== 'draft' && num(i.balance) > 0);
     const outstanding = open.reduce((sum, i) => sum + num(i.balance), 0);
     const overdue = invoices.filter((i) => i.status === 'overdue').length;
     const draftCount = invoices.filter((i) => i.status === 'draft').length;
