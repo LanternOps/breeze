@@ -425,6 +425,9 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
       ANTHROPIC_BASE_URL: 'https://openrouter.ai/api/v1',
       HTTPS_PROXY: PROXY_URL,
       NO_PROXY: '',
+      // #7444: the guards survive the tool-search env merge at the spawn site.
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
     }));
     // The wire model id from the revision's map, not the platform-logical id.
     expect(capturedQueryArgs[0]!.options.model).toBe('anthropic/claude-sonnet-4-6');
