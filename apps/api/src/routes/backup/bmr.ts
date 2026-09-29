@@ -1875,6 +1875,7 @@ bmrPublicRoutes.post(
         return c.json({
           restoreJobId: existingRestoreJob?.id ?? null,
           status: existingRestoreJob?.status ?? 'completed',
+          tokenConsumed: true,
         });
       }
 
@@ -1911,7 +1912,39 @@ bmrPublicRoutes.post(
             ? 'partial'
             : 'failed';
 
+      // #5408: the token is consumed by the first completion that actually
+      // restored the machine (`completed` or `partial`), not by a failed
+      // attempt. The recovery binary reports every run here, including one
+      // that died mid-download on a network drop; consuming the token on that
+      // report meant the operator's retry answered "Token is used" and they
+      // had to mint a new token from the console they were trying to recover.
+      // A failed attempt is still recorded (restore job + audit event) and
+      // leaves the token authenticated, so a retry within the token's TTL
+      // re-authenticates with it. The single-use guarantee is unchanged: once
+      // a completion consumes the token, authenticate/download/complete all
+      // refuse it, and the token's expires_at stays the outer bound.
+      const consumesToken = restoreStatus !== 'failed';
       const completionTime = new Date();
+      const attemptTargetConfig = {
+        ...asRecord(row.targetConfig),
+        result: {
+          status: result.status,
+          filesRestored: result.filesRestored ?? null,
+          bytesRestored: result.bytesRestored ?? null,
+          stateApplied: result.stateApplied ?? null,
+          driversInjected: result.driversInjected ?? null,
+          validated: result.validated ?? null,
+          warnings: result.warnings ?? [],
+          error: result.error ?? null,
+          // D14: per-file failure count for a partially-successful
+          // recovery. Optional and left null (not 0) when an older agent
+          // build doesn't report it.
+          failedFiles: result.failedFiles ?? null,
+          // Outcome code (e.g. system_state_requires_rebuild); null for
+          // a helper that does not report one.
+          code: result.code ?? null,
+        },
+      };
       const persistedRestoreJob = await db.transaction(async (tx) => {
         const [restoreJob] = await tx
           .insert(restoreJobs)
@@ -1921,26 +1954,7 @@ bmrPublicRoutes.post(
             deviceId: row.deviceId,
             restoreType: 'bare_metal',
             status: restoreStatus,
-            targetConfig: {
-              ...asRecord(row.targetConfig),
-              result: {
-                status: result.status,
-                filesRestored: result.filesRestored ?? null,
-                bytesRestored: result.bytesRestored ?? null,
-                stateApplied: result.stateApplied ?? null,
-                driversInjected: result.driversInjected ?? null,
-                validated: result.validated ?? null,
-                warnings: result.warnings ?? [],
-                error: result.error ?? null,
-                // D14: per-file failure count for a partially-successful
-                // recovery. Optional and left null (not 0) when an older agent
-                // build doesn't report it.
-                failedFiles: result.failedFiles ?? null,
-                // Outcome code (e.g. system_state_requires_rebuild); null for
-                // a helper that does not report one.
-                code: result.code ?? null,
-              },
-            },
+            targetConfig: attemptTargetConfig,
             recoveryTokenId: row.id,
             restoredSize: result.bytesRestored ?? null,
             restoredFiles: result.filesRestored ?? null,
@@ -1955,7 +1969,7 @@ bmrPublicRoutes.post(
             status: restoreJobs.status,
           });
 
-        const persisted =
+        let persisted =
           restoreJob ??
           (
             await tx
@@ -1968,7 +1982,33 @@ bmrPublicRoutes.post(
               .limit(1)
           )[0];
 
-        if (persisted) {
+        // restore_jobs is unique per recovery token, so a retry after a
+        // failed attempt lands on that attempt's row: overwrite it with this
+        // attempt's outcome. Only a `failed` row is overwritten (guarded in
+        // the UPDATE itself, so a concurrent completion that already moved it
+        // on wins); any other pre-existing row for the token — e.g. the
+        // pending job a VM rebuild pre-creates — is returned untouched, as
+        // before.
+        if (!restoreJob && persisted?.status === 'failed') {
+          const [overwritten] = await tx
+            .update(restoreJobs)
+            .set({
+              status: restoreStatus,
+              targetConfig: attemptTargetConfig,
+              restoredSize: result.bytesRestored ?? null,
+              restoredFiles: result.filesRestored ?? null,
+              completedAt: completionTime,
+              updatedAt: completionTime,
+            })
+            .where(and(eq(restoreJobs.id, persisted.id), eq(restoreJobs.status, 'failed')))
+            .returning({
+              id: restoreJobs.id,
+              status: restoreJobs.status,
+            });
+          if (overwritten) persisted = overwritten;
+        }
+
+        if (persisted && consumesToken) {
           await tx
             .update(recoveryTokens)
             .set({
@@ -1987,6 +2027,7 @@ bmrPublicRoutes.post(
         return persisted ?? null;
       });
 
+      const tokenConsumed = consumesToken && persistedRestoreJob !== null;
       writeAuditEvent(c, {
         orgId: row.orgId,
         action: 'bmr.recovery.complete',
@@ -1996,13 +2037,17 @@ bmrPublicRoutes.post(
           snapshotId: row.snapshotId,
           restoreJobId: persistedRestoreJob?.id ?? null,
           status: result.status,
+          tokenConsumed,
+          ...(result.error ? { error: result.error.slice(0, 500) } : {}),
         },
-        result: 'success',
+        result: restoreStatus === 'failed' ? 'failure' : 'success',
+        ...(restoreStatus === 'failed' ? { errorMessage: 'Recovery attempt failed; token remains usable for a retry' } : {}),
       });
 
       return c.json({
         restoreJobId: persistedRestoreJob?.id ?? null,
         status: persistedRestoreJob?.status ?? restoreStatus,
+        tokenConsumed,
       });
     });
   }
