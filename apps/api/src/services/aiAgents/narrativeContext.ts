@@ -89,7 +89,10 @@ import {
   AI_ALERT_VERDICT_CLASSIFICATIONS,
   AI_SWEEP_KINDS,
   AI_SWEEP_SEVERITIES,
+  deriveBackupHealth,
   type AgentRunVerdict,
+  type BackupHealth,
+  type ExternalBackupStatus,
   type AiAlertVerdictClassification,
   type AiSweepKind,
   type AiSweepSeverity,
@@ -98,6 +101,7 @@ import {
 import { actionIntentStatusEnum } from '../../db/schema/actionIntents';
 import type { AiAgentFixWatchState } from '../../db/schema/aiAgentFixWatches';
 import { OUTSTANDING_DEVICE_PATCH_STATUSES } from '../../db/schema/patches';
+import { isConnectionStale } from '../backupHealthRows';
 import { captureException } from '../sentry';
 import { getSecurityPostureTrend } from '../securityPosture';
 // Value import, and deliberately so: `runnerPrompt.ts` has NO runtime imports
@@ -244,6 +248,27 @@ export interface NarrativeContext {
     successRatePct: number | null;
     devicesFailed: number;
   };
+  /**
+   * Third-party backup (Cove et al.) — CURRENT per-device health, never job
+   * counts. `backups` above is the week's first-party job OUTCOMES; a vendor
+   * reports observed device state, not jobs, and the two shapes are kept apart
+   * so a "critical" device can never be read as a "failed" job (#6012).
+   */
+  backupProviders: {
+    available: boolean;
+    /** Third-party rows for this org (devices and mailbox accounts). 0 = none. */
+    devices: number;
+    devicesByHealth: Record<BackupHealth, number>;
+    /** Up to `NARRATIVE_TOP_N`, by name. */
+    criticalDevices: Array<{ name: string }>;
+    criticalDevicesTruncated: boolean;
+    /** Third-party DEVICES not matched to a managed device (mailbox accounts
+     *  are never linked and are not counted). */
+    unlinkedDevices: number;
+    /** Minutes since the OLDEST relevant connection sync — worst-case
+     *  staleness. `null` when there is nothing to have synced. */
+    lastSyncAgeMinutes: number | null;
+  };
   fleet: {
     available: boolean;
     total: number;
@@ -334,6 +359,15 @@ export interface RawBackupInputs {
   devicesFailed: number;
 }
 
+export interface RawBackupProviderInputs {
+  devices: number;
+  devicesByHealth: Record<BackupHealth, number>;
+  /** Up to `NARRATIVE_TOP_N + 1`, by name. */
+  criticalDevices: Array<{ name: string }>;
+  unlinkedDevices: number;
+  lastSyncAgeMinutes: number | null;
+}
+
 export interface RawFleetInputs {
   total: number;
   online: number;
@@ -353,6 +387,7 @@ export interface RawNarrativeInputs {
   tickets: RawTicketInputs | null;
   patching: RawPatchingInputs | null;
   backups: RawBackupInputs | null;
+  backupProviders: RawBackupProviderInputs | null;
   fleet: RawFleetInputs | null;
 }
 
@@ -546,6 +581,19 @@ export function assembleNarrativeContext(
     devicesFailed: raw.backups?.devicesFailed ?? 0,
   };
 
+  if (!raw.backupProviders) missing('backupProviders');
+  const criticalDevicesAll = (raw.backupProviders?.criticalDevices ?? [])
+    .map((device) => ({ name: sanitizeName(device.name) }));
+  const backupProviders: NarrativeContext['backupProviders'] = {
+    available: raw.backupProviders !== null,
+    devices: raw.backupProviders?.devices ?? 0,
+    devicesByHealth: raw.backupProviders?.devicesByHealth ?? { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+    criticalDevices: criticalDevicesAll.slice(0, NARRATIVE_TOP_N),
+    criticalDevicesTruncated: criticalDevicesAll.length > NARRATIVE_TOP_N,
+    unlinkedDevices: raw.backupProviders?.unlinkedDevices ?? 0,
+    lastSyncAgeMinutes: raw.backupProviders?.lastSyncAgeMinutes ?? null,
+  };
+
   if (!raw.fleet) missing('fleet');
   const fleet: NarrativeContext['fleet'] = {
     available: raw.fleet !== null,
@@ -560,7 +608,7 @@ export function assembleNarrativeContext(
   };
 
   const ctx: NarrativeContext = {
-    org, period: raw.period, alerts, sweeps, fixes, tickets, patching, backups, fleet,
+    org, period: raw.period, alerts, sweeps, fixes, tickets, patching, backups, backupProviders, fleet,
     unavailable, truncated: false,
   };
 
@@ -568,10 +616,15 @@ export function assembleNarrativeContext(
   // exactly one WHOLE entry — never a partial entry and never a sliced name,
   // because the model must be able to trust every entry it CAN see. Order is
   // deliberate: a ticket-category breakdown is the least load-bearing list in
-  // the report, the noisiest alert rules are the story.
+  // the report, the noisiest alert rules are the story. The third-party
+  // critical-device names go first of all: their COUNT stays in
+  // `devicesByHealth`, so dropping names loses detail, never the fact.
   const limit = opts.limitBytes ?? NARRATIVE_CONTEXT_HARD_LIMIT_BYTES;
   while (Buffer.byteLength(JSON.stringify(ctx), 'utf8') > limit) {
-    if (ctx.tickets.byCategory.length > 0) {
+    if (ctx.backupProviders.criticalDevices.length > 0) {
+      ctx.backupProviders.criticalDevices = ctx.backupProviders.criticalDevices.slice(0, -1);
+      ctx.backupProviders.criticalDevicesTruncated = true;
+    } else if (ctx.tickets.byCategory.length > 0) {
       ctx.tickets.byCategory = ctx.tickets.byCategory.slice(0, -1);
       ctx.tickets.byCategoryTruncated = true;
     } else if (ctx.alerts.topRules.length > 0) {
@@ -1105,6 +1158,84 @@ async function loadBackups(orgId: string, window: Window): Promise<RawBackupInpu
 }
 
 /**
+ * Third-party backup providers: CURRENT per-device health, deliberately not
+ * windowed — the vendor ledger is observed state, not events, so "this week"
+ * has no meaning for it (like `loadFleet`'s current counts).
+ *
+ * Health is the SAME derivation the unified read model and the /backup
+ * overview use (`deriveBackupHealth`, withdrawn to `unknown` when the
+ * connection is inactive or its sync is stale — `isConnectionStale`), so a
+ * device is never healthy here and critical there. The loader runs in a
+ * SYSTEM context (see the header), so the partner-axis connection row is
+ * readable; the join is still pinned to the device row's own partner.
+ *
+ * One statement: the oldest sync is folded from the joined rows rather than
+ * re-queried.
+ */
+async function loadBackupProviders(orgId: string): Promise<RawBackupProviderInputs> {
+  const rows = await query<{
+    status: string; last_success_at: Date | string | null; errors_count: number | string | null;
+    name: string | null; breeze_device_id: string | null; account_type: string | null;
+    connection_is_active: boolean | null; connection_last_sync_at: Date | string | null;
+    connection_sync_interval_minutes: number | string | null;
+  }>(sql`
+    SELECT bpd.status, bpd.last_success_at, bpd.errors_count,
+           bpd.vendor_device_name AS name,
+           bpd.breeze_device_id, bpd.account_type,
+           bpc.is_active AS connection_is_active,
+           bpc.last_sync_at AS connection_last_sync_at,
+           bpc.sync_interval_minutes AS connection_sync_interval_minutes
+    FROM backup_provider_devices bpd
+    LEFT JOIN backup_provider_connections bpc ON bpc.id = bpd.connection_id AND bpc.partner_id = bpd.partner_id
+    WHERE bpd.org_id = ${orgId}
+    ORDER BY bpd.vendor_device_name, bpd.id
+  `);
+
+  const now = new Date();
+  const devicesByHealth: Record<BackupHealth, number> = { healthy: 0, warning: 0, critical: 0, unknown: 0 };
+  const criticalDevices: Array<{ name: string }> = [];
+  let unlinkedDevices = 0;
+  let oldestSyncMs: number | null = null;
+  for (const row of rows) {
+    const stale = isConnectionStale(
+      {
+        // NULL here is a missing connection row, not an RLS-invisible one (this
+        // runs in system context) — treat it as inactive.
+        isActive: row.connection_is_active ?? false,
+        lastSyncAt: row.connection_last_sync_at,
+        syncIntervalMinutes: numberOrNull(row.connection_sync_interval_minutes),
+      },
+      now,
+    );
+    const health: BackupHealth = stale
+      ? 'unknown'
+      : deriveBackupHealth({
+        status: row.status as ExternalBackupStatus,
+        lastSuccessAt: row.last_success_at,
+        errorsCount: count(row.errors_count),
+        now,
+      }).health;
+    devicesByHealth[health] += 1;
+    if (health === 'critical' && criticalDevices.length < TOP_N_FETCH_LIMIT) {
+      criticalDevices.push({ name: row.name ?? '' });
+    }
+    if (!row.breeze_device_id && row.account_type !== 'm365') unlinkedDevices += 1;
+    const synced = row.connection_last_sync_at == null ? NaN : new Date(row.connection_last_sync_at).getTime();
+    if (Number.isFinite(synced)) oldestSyncMs = oldestSyncMs === null ? synced : Math.min(oldestSyncMs, synced);
+  }
+
+  return {
+    devices: rows.length,
+    devicesByHealth,
+    criticalDevices,
+    unlinkedDevices,
+    lastSyncAgeMinutes: oldestSyncMs === null
+      ? null
+      : Math.max(0, Math.round((now.getTime() - oldestSyncMs) / 60_000)),
+  };
+}
+
+/**
  * Fleet: current state plus the two things that ARE derivable over the week
  * (enrolments and mean 7-day uptime). No online/offline delta exists — see
  * `STRUCTURALLY_UNAVAILABLE`.
@@ -1205,6 +1336,7 @@ export async function loadNarrativeContext(orgId: string): Promise<NarrativeCont
   const tickets = await settled(orgId, 'tickets', () => loadTickets(scope, window));
   const patching = await settled(orgId, 'patching', () => loadPatching(orgId, window));
   const backups = await settled(orgId, 'backups', () => loadBackups(orgId, window));
+  const backupProviders = await settled(orgId, 'backupProviders', () => loadBackupProviders(orgId));
   const fleet = await settled(orgId, 'fleet', () => loadFleet(orgId, window));
 
   return assembleNarrativeContext({
@@ -1218,6 +1350,6 @@ export async function loadNarrativeContext(orgId: string): Promise<NarrativeCont
         siteCount: header.siteCount,
       }
       : null,
-    alerts, sweeps, fixes, tickets, patching, backups, fleet,
+    alerts, sweeps, fixes, tickets, patching, backups, backupProviders, fleet,
   });
 }

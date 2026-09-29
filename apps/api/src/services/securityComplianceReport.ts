@@ -37,6 +37,7 @@ import {
   type SecurityProductEvidence
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
+import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { classifyDeviceProtection } from './portal/protection';
 
 const pct = (num: number, denom: number): number =>
@@ -282,6 +283,9 @@ export async function generateSecurityCompliancePostureReport(
   }
 
   const vulnByDevice = await loadOpenVulnerabilityCounts(deviceIds);
+  // Device-scoped like the Huntress/SentinelOne evidence above, so it is
+  // included for a site-restricted caller too — limited to their devices.
+  const backupProviders = await loadBackupProviderEvidence(orgId, deviceIds);
 
   const includeOrgWideEvidence = authority.scope.kind === 'unrestricted';
   const orgWideEvidence = includeOrgWideEvidence
@@ -558,6 +562,7 @@ export async function generateSecurityCompliancePostureReport(
   if (dns) productEvidence.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
   if (backup) productEvidence.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
   if (c2c) productEvidence.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
+  productEvidence.push(...backupProviders.evidence);
   if (m365) productEvidence.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
   if (google) productEvidence.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
   const securityProducts = buildSecurityProductInventory(productEvidence);
@@ -589,7 +594,9 @@ export async function generateSecurityCompliancePostureReport(
           // Proves an identity provider is CONNECTED, not that MFA is enforced.
           // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
           identityProviderConnected: Boolean(m365 || google),
-          backupConfigured: Boolean(backup || c2c),
+          // A third party counts once it has at least one fresh successful
+          // backup on an in-scope device (#6012).
+          backupConfigured: Boolean(backup || c2c || backupProviders.coveredDeviceCount > 0),
           backupEncrypted: backup ? Boolean(backup.encryption) : null,
           dnsFilteringActive: dnsActive,
           dnsFilteringSyncStatus: dnsSyncStatus,

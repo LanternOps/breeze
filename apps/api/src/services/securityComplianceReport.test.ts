@@ -6,6 +6,13 @@ const vulnerabilityMocks = vi.hoisted(() => ({
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
 vi.mock('./securityComplianceReportVulnerabilities', () => vulnerabilityMocks);
+// Third-party backup evidence (#6012) has its own module + suite
+// (securityComplianceReportBackupProviders.test.ts); here it is a seam, so the
+// positional db.select sequence below is unchanged by it.
+const backupProviderMocks = vi.hoisted(() => ({
+  loadBackupProviderEvidence: vi.fn(),
+}));
+vi.mock('./securityComplianceReportBackupProviders', () => backupProviderMocks);
 // The partner approval-security policy is read through loadPartnerPolicy (a
 // system-context partner-axis read), not the positional db.select sequence.
 vi.mock('./authenticatorPolicy', async (importOriginal) => ({
@@ -113,6 +120,7 @@ function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}, opts: {
 describe('generateSecurityCompliancePostureReport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    backupProviderMocks.loadBackupProviderEvidence.mockResolvedValue({ evidence: [], coveredDeviceCount: 0 });
     vulnerabilityMocks.loadOpenVulnerabilityCounts.mockResolvedValue(
       new Map([
         ['dev-1', { high: 2, critical: 1 }],
@@ -158,6 +166,9 @@ describe('generateSecurityCompliancePostureReport', () => {
     const summary = result.summary as any;
 
     expect(select).toHaveBeenCalledTimes(sequences.length);
+    // Third-party backup evidence is device-scoped: only the caller's
+    // in-site devices are ever looked up (#6012).
+    expect(backupProviderMocks.loadBackupProviderEvidence).toHaveBeenCalledWith(ORG, ['dev-a']);
     expect(summary.controls).not.toHaveProperty('identityProviderConnected');
     expect(summary.controls).not.toHaveProperty('backupConfigured');
     expect(summary.controls).not.toHaveProperty('dnsFilteringActive');
@@ -330,6 +341,43 @@ describe('generateSecurityCompliancePostureReport', () => {
       expect.objectContaining({ category: 'backup' }),
     );
     expect(summary.postureScore).toBe(82);
+  });
+
+  it('lists a third-party backup provider as a backup product (#6012)', async () => {
+    backupProviderMocks.loadBackupProviderEvidence.mockResolvedValue({
+      evidence: [
+        { product: 'Managed cloud backup', category: 'backup', active: true, lastSyncStatus: null, deviceIds: ['dev-1'] },
+        { product: 'Managed cloud backup', category: 'backup', active: false, lastSyncStatus: null, deviceIds: ['dev-2'] },
+      ],
+      coveredDeviceCount: 1,
+    });
+    mockGeneratorQueries();
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.securityProducts).toContainEqual({
+      product: 'Managed cloud backup', category: 'backup', active: true, lastSyncStatus: null,
+      deviceCoverage: 2, activeDeviceCoverage: 1,
+    });
+    expect(backupProviderMocks.loadBackupProviderEvidence).toHaveBeenCalledWith(ORG, ['dev-1', 'dev-2', 'dev-3']);
+  });
+
+  it('counts backup as configured from third-party coverage alone', async () => {
+    backupProviderMocks.loadBackupProviderEvidence.mockResolvedValue({
+      evidence: [{ product: 'Managed cloud backup', category: 'backup', active: true, lastSyncStatus: null, deviceIds: ['dev-1'] }],
+      coveredDeviceCount: 1,
+    });
+    mockGeneratorQueries({ 8: [], 9: [] }); // no first-party config, no SaaS backup
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.controls.backupConfigured).toBe(true);
+  });
+
+  it('does not count backup as configured from a third party with no fresh backup', async () => {
+    backupProviderMocks.loadBackupProviderEvidence.mockResolvedValue({
+      evidence: [{ product: 'Managed cloud backup', category: 'backup', active: false, lastSyncStatus: null, deviceIds: ['dev-1'] }],
+      coveredDeviceCount: 0,
+    });
+    mockGeneratorQueries({ 8: [], 9: [] });
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.controls.backupConfigured).toBe(false);
   });
 
   it('summarizes privileged access from PAM tables', async () => {

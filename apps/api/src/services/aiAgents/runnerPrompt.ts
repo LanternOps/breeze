@@ -1011,6 +1011,40 @@ export function buildNarrativeTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push(narrativeLine('backup success rate (%)', backups?.successRatePct ?? null, backupsMeasured));
   lines.push(narrativeLine('devices with a failed backup', backups?.devicesFailed ?? null, backupsMeasured));
 
+  // Third-party backup (Cove et al., #6012): CURRENT device health observed
+  // from the vendor, never job counts — kept visibly separate from the job
+  // lines above so a "critical" device is not read as a "failed" job.
+  const providers = c?.backupProviders;
+  const providersMeasured = Boolean(providers?.available);
+  lines.push('third-party backup (current device health, not job counts):');
+  if (providersMeasured && providers!.devices === 0) {
+    lines.push('third-party backup devices: 0 (none reporting for this organization)');
+  } else {
+    lines.push(narrativeLine('third-party backup devices', providers?.devices ?? null, providersMeasured));
+    lines.push(...narrativeHistogram(
+      'third-party backup devices',
+      providers?.devicesByHealth ?? { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+      providersMeasured,
+    ));
+    if (providersMeasured && providers!.criticalDevices.length > 0) {
+      lines.push('critical third-party backup devices:');
+      for (const device of providers!.criticalDevices) lines.push(sanitizeSweepText(device.name));
+      if (providers!.criticalDevicesTruncated) {
+        lines.push('(more critical third-party backup devices were left out to keep this bounded)');
+      }
+    }
+    lines.push(narrativeLine(
+      'third-party backup devices not matched to a managed device',
+      providers?.unlinkedDevices ?? null,
+      providersMeasured,
+    ));
+    lines.push(narrativeLine(
+      'minutes since the oldest third-party backup sync',
+      providers?.lastSyncAgeMinutes ?? null,
+      providersMeasured,
+    ));
+  }
+
   const fleet = c?.fleet;
   const fleetMeasured = Boolean(fleet?.available);
   lines.push('');
