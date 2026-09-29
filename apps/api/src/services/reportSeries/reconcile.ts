@@ -317,7 +317,9 @@ export async function reconcileAllSeries(options: {
  * Worker gate (spec §3.3). Called by processRunScheduledReport for a row with
  * series_id set, BEFORE any authority resolution or run row, under a system
  * DB context. Closes the "job queued before the org was excluded / the series
- * was disabled / the owner was demoted" races.
+ * was disabled / the owner was demoted" races. The series row AND the child's
+ * series_revision are re-read here; the job's copy of the row is used only
+ * for its id and org.
  *
  * The decision is read WITHOUT a row lock: the worker holds one ambient system
  * transaction for the whole job, so a FOR UPDATE here would serialize every
@@ -359,12 +361,23 @@ export async function seriesChildGate(report: {
     if (series.ownerUserId === null || !(await isSeriesOwnerEligible(series.ownerUserId, series.partnerId, db))) {
       return 'blocked_no_authority';
     }
-    if (allowReconcile && report.seriesRevision !== series.revision) {
+    // The CURRENT child row, not the job's copy: a series edit that committed
+    // (and reconciled this child) after the job loaded the row is not stale.
+    const [child] = await db
+      .select({
+        seriesId: reports.seriesId,
+        seriesRevision: reports.seriesRevision,
+        archivedAt: reports.archivedAt,
+        executionScopeUserId: reports.executionScopeUserId,
+      })
+      .from(reports)
+      .where(and(eq(reports.id, report.id), eq(reports.orgId, report.orgId)))
+      .limit(1);
+    if (!child || child.seriesId !== series.id || child.archivedAt !== null) return 'skip_archived';
+    if (allowReconcile && child.seriesRevision !== series.revision) {
       await db.transaction((tx) => reconcileSeries(series.id, tx));
       return evaluate(false);
     }
-    const child = (await listSeriesChildren(series.id, db)).find((row) => row.id === report.id);
-    if (!child || child.archivedAt !== null) return 'skip_archived';
     if (child.executionScopeUserId === null || child.executionScopeUserId !== series.ownerUserId) {
       return 'blocked_no_authority';
     }

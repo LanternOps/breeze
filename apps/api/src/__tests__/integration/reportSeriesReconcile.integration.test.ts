@@ -318,6 +318,29 @@ describe('lock scope (review I-2)', () => {
     expect(decision).toBe('run');
   });
 
+  // Final review minor #3: the job loaded the row BEFORE a series edit that
+  // has since committed (and reconciled the child). The gate re-reads the
+  // child's revision and must not take the series lock for a needless reconcile.
+  it('a child the job loaded stale but that is current in the database runs without the series lock', async () => {
+    const s = await seedSeries();
+    await reconcile(s.series.id);
+    const loaded = (await activeChildFor(s.series.id, s.orgA))!;
+    await system(() => db.update(reportSeries).set({ name: 'Renamed', revision: 2 }).where(eq(reportSeries.id, s.series.id)));
+    await reconcile(s.series.id);
+    expect((await activeChildFor(s.series.id, s.orgA))?.seriesRevision).toBe(2);
+    const decision = await system(() => db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM report_series WHERE id = ${s.series.id} FOR UPDATE`);
+      return Promise.race([
+        runOutsideDbContext(() => system(() => seriesChildGate({
+          id: loaded.id, orgId: s.orgA, seriesId: s.series.id, seriesRevision: loaded.seriesRevision, archivedAt: null,
+        }))),
+        new Promise<string>((resolve) => setTimeout(() => resolve('blocked_on_lock'), 3000)),
+      ]);
+    }));
+    expect(loaded.seriesRevision).toBe(1);
+    expect(decision).toBe('run');
+  });
+
   it('a stale gate inside a transaction that already locked the child row reconciles on the same connection', async () => {
     const s = await seedSeries();
     await reconcile(s.series.id);
