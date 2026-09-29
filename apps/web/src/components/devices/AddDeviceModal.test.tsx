@@ -394,6 +394,55 @@ describe('AddDeviceModal', () => {
     });
   });
 
+  // #7422: the 2s "copied" reset must not outlive the component — it fired
+  // after jsdom teardown ("window is not defined") and set state post-unmount.
+  it('clears the copy-link reset timer on unmount (#7422)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') {
+        return makeJsonResponse({ id: 'key-456' }, true, 201);
+      }
+      if (url.includes('/installer-link')) {
+        return makeJsonResponse({
+          url: 'https://api.example.com/public-download/windows?h=dlh_abc',
+          expiresAt: null,
+          maxUsage: 1,
+          platform: 'windows',
+          childKeyId: 'child-1',
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    const resetTimers = new Set<unknown>();
+    const realSetTimeout = globalThis.setTimeout;
+    const setSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const id = realSetTimeout(fn as () => void, ms, ...args);
+      if (ms === 2000) resetTimers.add(id);
+      return id;
+    }) as typeof setTimeout);
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+    try {
+      const { unmount } = render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+      fireEvent.click(screen.getByText('Generate Link'));
+      fireEvent.click(await screen.findByText('Copy'));
+      await waitFor(() => expect(resetTimers.size).toBe(1));
+
+      unmount();
+
+      const cleared = clearSpy.mock.calls.map((c) => c[0]);
+      for (const id of resetTimers) expect(cleared).toContain(id);
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
+  });
+
   it('shows error when download fails', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);

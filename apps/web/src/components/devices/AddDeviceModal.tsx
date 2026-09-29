@@ -328,6 +328,18 @@ export default function AddDeviceModal({
   // real maxUsage disagrees with the UI — the exact defect #1108 fixes.
   const cliFetchInFlight = useRef(false);
 
+  // #7422: "copied" reset timers — cleared on reschedule and unmount so they
+  // never set state after the component (or jsdom) is gone.
+  const linkCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tokenCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (linkCopiedTimer.current) clearTimeout(linkCopiedTimer.current);
+      if (tokenCopiedTimer.current) clearTimeout(tokenCopiedTimer.current);
+    },
+    [],
+  );
+
   // Mint a CLI onboarding token for `count` machines (#1108) on `siteId`
   // (#7035). Only ever called from an explicit operator click (Generate /
   // Generate new token / Retry), so it self-guards against concurrent runs
@@ -741,7 +753,8 @@ export default function AddDeviceModal({
     try {
       await navigator.clipboard.writeText(generatedLink);
       setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
+      if (linkCopiedTimer.current) clearTimeout(linkCopiedTimer.current);
+      linkCopiedTimer.current = setTimeout(() => setLinkCopied(false), 2000);
       showToast({
         type: "success",
         message: t("addDeviceModal.linkCopiedToClipboard"),
@@ -760,7 +773,8 @@ export default function AddDeviceModal({
     try {
       await navigator.clipboard.writeText(onboardingToken);
       setTokenCopied(true);
-      setTimeout(() => setTokenCopied(false), 2000);
+      if (tokenCopiedTimer.current) clearTimeout(tokenCopiedTimer.current);
+      tokenCopiedTimer.current = setTimeout(() => setTokenCopied(false), 2000);
     } catch {
       showToast({
         type: "error",
