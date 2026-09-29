@@ -480,6 +480,8 @@ coreRoutes.get(
     }
     // W02: an archived series child is history, not a template.
     conditions.push(isNull(reports.archivedAt));
+    // W03: a series child is one org's copy of a multi-org report, not a template.
+    conditions.push(isNull(reports.seriesId));
     const whereCondition = and(...conditions);
 
     const countResult = await db

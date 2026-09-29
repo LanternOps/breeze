@@ -5,7 +5,7 @@ const OWNER = '11111111-1111-4111-8111-111111111111';
 const child = (userId: string | null) => ({ id: 'r', orgId: 'o', seriesRevision: 1, archivedAt: null, executionScopeUserId: userId });
 const base = {
   orgStatus: 'active', orgDeletedAt: null, targeted: true, ownerEligible: true,
-  ownerUserId: OWNER, child: child(OWNER), customerCount: 2, ccCount: 1,
+  ownerUserId: OWNER, child: child(OWNER), customerCount: 2, ccCount: 1, detached: false,
 };
 
 describe('seriesWriteAllowed', () => {
@@ -36,6 +36,10 @@ describe('seriesOrgState', () => {
     [{ ...base, orgStatus: 'suspended' }, 'ineligible'],
     [{ ...base, orgDeletedAt: new Date() }, 'ineligible'],
     [{ ...base, targeted: false }, 'excluded'],
+    // W03 final review: an org holding a live standalone detached from this
+    // series is never targeted; say so rather than 'excluded' (Include would be a no-op).
+    [{ ...base, targeted: false, detached: true }, 'detached'],
+    [{ ...base, orgStatus: 'suspended', detached: true }, 'ineligible'],
     [{ ...base, ownerEligible: false }, 'blocked_no_authority'],
     [{ ...base, child: child(null) }, 'blocked_no_authority'],
     [{ ...base, child: child('someone-else') }, 'blocked_no_authority'],

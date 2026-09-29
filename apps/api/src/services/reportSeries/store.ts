@@ -26,6 +26,7 @@ import { listSeriesChildren, reconcileSeries, type SeriesChildRow } from './reco
 import { materializeDetachedRecipients, resolveSeriesRecipientsForOrgs } from './recipients';
 import {
   eligiblePartnerOrgs,
+  listDetachedOrgIds,
   listSeriesTargetRows,
   resolveSeriesTargetOrgIds,
   resolveTargetsForSeries,
@@ -101,8 +102,11 @@ export function seriesOrgState(input: {
   child: SeriesChildRow | undefined;
   customerCount: number;
   ccCount: number;
+  /** A live standalone detached from this series exists in the org. */
+  detached?: boolean;
 }): SeriesOrgState {
   if (!isUsableOrgStatus(input.orgStatus) || input.orgDeletedAt !== null) return 'ineligible';
+  if (input.detached) return 'detached';
   if (!input.targeted) return 'excluded';
   if (
     !input.ownerEligible
@@ -363,6 +367,7 @@ async function buildSeriesDetail(series: ReportSeriesRow): Promise<SeriesDetail>
 
   const ownerEligible = series.ownerUserId !== null
     && await isSeriesOwnerEligible(series.ownerUserId, partnerId, db);
+  const detachedOrgIds = await listDetachedOrgIds(seriesId, db);
   const recipients = await resolveSeriesRecipientsForOrgs({
     orgIds: [...targeted],
     rule: parseSeriesRecipientRule(series.recipientRule),
@@ -386,6 +391,7 @@ async function buildSeriesDetail(series: ReportSeriesRow): Promise<SeriesDetail>
         child,
         customerCount: resolved?.customer.length ?? 0,
         ccCount: resolved?.cc.length ?? 0,
+        detached: detachedOrgIds.has(org.id),
       }),
       childReportId: child?.id ?? null,
       lastRun: run
