@@ -558,13 +558,22 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </dl>
             {/* Balance-due focal number */}
             <div className="mt-3 flex min-w-0 items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.summary.balanceDue')}</span>
-              <span
-                className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
-                data-testid="invoice-detail-balance"
-              >
-                {formatMoney(invoice.balance, currency)}
-              </span>
+              {invoice.status === 'void' ? (
+                // A void invoice owes nothing — show the state, not a stale balance.
+                <span className="text-2xl font-semibold uppercase tracking-wide text-muted-foreground" data-testid="invoice-detail-void-state">
+                  {invoiceStatusLabel}
+                </span>
+              ) : (
+                <>
+                  <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.summary.balanceDue')}</span>
+                  <span
+                    className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 ? '' : 'text-muted-foreground'}`}
+                    data-testid="invoice-detail-balance"
+                  >
+                    {formatMoney(invoice.balance, currency)}
+                  </span>
+                </>
+              )}
             </div>
             {/* Deposit strip — mirrors the customer portal so the operator sees the
                 same deposit-first framing the customer's Pay button uses. */}
