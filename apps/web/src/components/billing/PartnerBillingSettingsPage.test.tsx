@@ -58,6 +58,19 @@ describe('PartnerBillingSettingsPage', () => {
     expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual(order.slice(1));
   });
 
+  it('the active tab\'s aria-controls resolves to a tabpanel labelled by that tab', async () => {
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    const tab = await screen.findByTestId('billing-settings-tab-defaults');
+    const controls = tab.getAttribute('aria-controls');
+    expect(controls).toBeTruthy();
+    const panel = document.getElementById(controls!);
+    expect(panel).not.toBeNull();
+    expect(panel).toHaveAttribute('role', 'tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', tab.id);
+    expect(panel).toContainElement(screen.getByTestId('partner-billing-currency'));
+  });
+
   it('mounts Rates and its work types manager when selected, with row saves only', async () => {
     fetchMock.mockImplementation(async (url: string) => json(url === '/billing-profiles' ? { profiles: [] } : url.includes('work-types') ? { workTypes: [] } : { currencyCode: 'USD' }));
     renderPage();

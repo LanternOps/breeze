@@ -7,7 +7,7 @@ import { pctFromFraction } from './invoiceTypes';
 import { isHttpUrl, parseCompanyContact, parseCompanyAddress, isCompanyAddressBlank } from '@breeze/shared';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { useHashTab } from '../../lib/useHashState';
-import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
+import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '../shared/OverflowTabs';
 import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
 import BillingConnectionsTab from './BillingConnectionsTab';
@@ -195,6 +195,15 @@ export default function PartnerBillingSettingsPage() {
         />
       </div>
 
+      {/* Exactly one tab block renders at a time, so a single wrapper always
+          matches the active tab button's aria-controls (axe: aria-valid-attr-value). */}
+      <div
+        role="tabpanel"
+        id={overflowPanelId(activeTab, 'billing-settings-tab-')}
+        aria-labelledby={overflowTabId(activeTab, 'billing-settings-tab-')}
+        tabIndex={-1}
+        className="space-y-6"
+      >
       {activeTab === 'defaults' && (
         <BillingDefaultsTab
           currencyCode={currencyCode} setCurrencyCode={setCurrencyCode}
@@ -224,6 +233,7 @@ export default function PartnerBillingSettingsPage() {
       )}
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
+      </div>
 
       {activeTab !== 'rates' && activeTab !== 'connections' && <div className="flex justify-end">
         <button
