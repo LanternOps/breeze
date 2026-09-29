@@ -147,3 +147,85 @@ describe('OrgRemoteAccessSettings — never reports unsaved changes (#3432)', ()
     expect(screen.queryByPlaceholderText('e.g. 10.0.0.0/8')).not.toBeInTheDocument();
   });
 });
+
+// Pre-release sweep (v0.118.2 → main) review: the tunnel allowlist routes take
+// their org from `?orgId=` (routes/tunnels.ts resolveOrgId). These calls named
+// none, so fetchWithAuth injected the HEADER SWITCHER's org: on
+// /settings/organizations/<B>#remote-access with the switcher on A, the rule
+// list came back empty and add/edit/delete 404'd.
+describe('OrgRemoteAccessSettings — pinned to the org it is given', () => {
+  const RULE = {
+    id: 'rule-1',
+    siteId: 'site-1',
+    pattern: '10.0.0.0/24:443',
+    description: 'web',
+    source: 'manual' as const,
+    enabled: true,
+  };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/tunnels?status=active') return Promise.resolve(makeJsonResponse({ tunnels: [] }));
+      if (url.startsWith('/tunnels/allowlist?')) return Promise.resolve(makeJsonResponse({ rules: [RULE] }));
+      return Promise.resolve(makeJsonResponse({}));
+    });
+  });
+
+  it('sends every allowlist read and write with orgIdOverride set to the page org', async () => {
+    render(<OrgRemoteAccessSettings orgId="org-page" sites={[SITE]} />);
+
+    fireEvent.click(await screen.findByText('HQ'));
+    await screen.findByText('10.0.0.0/24:443');
+
+    // Add, toggle, delete.
+    fireEvent.click(screen.getByText('Add Rule'));
+    fireEvent.change(screen.getByPlaceholderText('192.168.1.0/24:5900-5910'), {
+      target: { value: '192.168.1.0/24:5900-5910' },
+    });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u, i]) => u === '/tunnels/allowlist' && i?.method === 'POST')).toBe(true),
+    );
+    fireEvent.click(await screen.findByTitle('Disable'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u, i]) => u === '/tunnels/allowlist/rule-1' && i?.method === 'PUT')).toBe(true),
+    );
+    fireEvent.click(await screen.findByTitle('Delete'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u, i]) => u === '/tunnels/allowlist/rule-1' && i?.method === 'DELETE')).toBe(true),
+    );
+
+    const allowlistCalls = fetchMock.mock.calls.filter(([u]) => String(u).startsWith('/tunnels/allowlist'));
+    // GET on expand + after each write, POST, PUT, DELETE.
+    expect(allowlistCalls.length).toBeGreaterThanOrEqual(4);
+    for (const [url, init] of allowlistCalls) {
+      expect({ url, orgIdOverride: (init as { orgIdOverride?: unknown } | undefined)?.orgIdOverride })
+        .toEqual({ url, orgIdOverride: 'org-page' });
+    }
+  });
+
+  it('pins the site list, active tunnels and tunnel close to the page org as well', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/orgs/sites')) return Promise.resolve(makeJsonResponse({ sites: [SITE] }));
+      if (url === '/tunnels?status=active') return Promise.resolve(makeJsonResponse({ tunnels: [PROXY_TUNNEL] }));
+      if (url.startsWith('/tunnels/allowlist?')) return Promise.resolve(makeJsonResponse({ rules: [] }));
+      return Promise.resolve(makeJsonResponse({}));
+    });
+
+    render(<OrgRemoteAccessSettings orgId="org-page" />);
+
+    fireEvent.click(await screen.findByText('HQ'));
+    await screen.findByTestId('remote-access-tunnel-link-tun-proxy-1');
+    fireEvent.click(screen.getByTitle('Close tunnel'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u, i]) => u === '/tunnels/tun-proxy-1' && i?.method === 'DELETE')).toBe(true),
+    );
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(4);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect({ url, orgIdOverride: (init as { orgIdOverride?: unknown } | undefined)?.orgIdOverride })
+        .toEqual({ url, orgIdOverride: 'org-page' });
+    }
+  });
+});
