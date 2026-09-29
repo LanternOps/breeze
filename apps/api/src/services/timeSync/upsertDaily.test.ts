@@ -44,6 +44,13 @@ it('unions codes, retains worst health and max sync, and replaces latest accepte
       worstHealth: 'critical',
       snapshotCount: 5,
       lastSuccessfulSyncAt: new Date('2026-09-28T12:00:00Z'),
+      // Stale "latest" values: R12 says the newest accepted snapshot replaces
+      // them, so a first-of-day-wins regression must fail here.
+      source: 'old.example.com',
+      sourceKind: 'domain_hierarchy',
+      syncType: 'NT5DS',
+      expectedTimezone: 'UTC',
+      timezoneWindowsId: 'Pacific Standard Time',
     },
   ];
   await upsertDaily({
@@ -82,6 +89,42 @@ it('unions codes, retains worst health and max sync, and replaces latest accepte
       expectedTimezone: 'America/Denver',
       timezoneWindowsId: 'UTC',
     }),
+  );
+});
+it.each([
+  [
+    'replaces an older retained sync with a newer reported one',
+    '2026-09-28T11:00:00Z',
+    '2026-09-28T11:59:00Z',
+    '2026-09-28T11:59:00Z',
+  ],
+  [
+    'retains the previous sync when the snapshot reports none',
+    '2026-09-28T11:00:00Z',
+    null,
+    '2026-09-28T11:00:00Z',
+  ],
+] as const)('%s', async (_name, prior, reported, expected) => {
+  m.rows = [
+    {
+      findingCodes: [],
+      worstHealth: 'healthy',
+      snapshotCount: 1,
+      lastSuccessfulSyncAt: new Date(prior),
+    },
+  ];
+  const snapshot = timeSnapshot();
+  snapshot.status.lastSuccessfulSyncAt = reported;
+  await upsertDaily({
+    deviceId: 'device',
+    orgId: 'org',
+    snapshot,
+    result: { health: 'healthy', findings: [], eventMarks: {} },
+    expectedTimezone: null,
+    receivedAt: new Date('2026-09-28T12:01:00Z'),
+  });
+  expect(m.insert).toHaveBeenCalledWith(
+    expect.objectContaining({ lastSuccessfulSyncAt: new Date(expected) }),
   );
 });
 it.each([

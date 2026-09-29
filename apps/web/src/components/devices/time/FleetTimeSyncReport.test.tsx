@@ -181,6 +181,69 @@ it('downloads complete authenticated CSV and reports HTTP failures without a dow
   await screen.findByTestId('time-export-error');
   expect(m.download).not.toHaveBeenCalled();
 });
+it('exports daily history for the active filters and requested range only', async () => {
+  m.currentOrgId = org;
+  render(<FleetTimeSyncReport />);
+  await screen.findByTestId('time-row-Member');
+  fireEvent.change(screen.getByTestId('time-filter-health'), {
+    target: { value: 'warning' },
+  });
+  await waitFor(() =>
+    expect(
+      m.fetch.mock.calls.some(([url]) =>
+        String(url).includes('health=warning'),
+      ),
+    ).toBe(true),
+  );
+  fireEvent.change(screen.getByTestId('time-from'), {
+    target: { value: '2026-09-01' },
+  });
+  fireEvent.change(screen.getByTestId('time-to'), {
+    target: { value: '2026-09-28' },
+  });
+  m.fetch.mockClear();
+  fireEvent.click(screen.getByTestId('time-export-history'));
+  await waitFor(() =>
+    expect(m.download).toHaveBeenCalledWith(
+      expect.any(Blob),
+      'time-status-history.csv',
+    ),
+  );
+  expect(m.fetch).toHaveBeenCalledTimes(1);
+  const [path, rawQuery] = String(m.fetch.mock.calls[0]![0]).split('?');
+  expect(path).toBe('/time-status/history/export');
+  const params = new URLSearchParams(rawQuery);
+  expect(params.get('from')).toBe('2026-09-01');
+  expect(params.get('to')).toBe('2026-09-28');
+  expect(params.get('health')).toBe('warning');
+  expect(params.get('orgId')).toBe(org);
+  expect(params.has('page')).toBe(false);
+  expect(params.has('limit')).toBe(false);
+});
+it.each([
+  ['from after to', '2026-09-28', '2026-09-27'],
+  ['over 400 days', '2025-08-01', '2026-09-28'],
+])(
+  'disables the history export for an invalid range (%s)',
+  async (_name, from, to) => {
+    render(<FleetTimeSyncReport />);
+    await screen.findByTestId('time-row-Member');
+    fireEvent.change(screen.getByTestId('time-from'), {
+      target: { value: from },
+    });
+    fireEvent.change(screen.getByTestId('time-to'), {
+      target: { value: to },
+    });
+    const button = screen.getByTestId(
+      'time-export-history',
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    m.fetch.mockClear();
+    fireEvent.click(button);
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(m.download).not.toHaveBeenCalled();
+  },
+);
 it('reports 401 and network failures without a successful download', async () => {
   render(<FleetTimeSyncReport />);
   await screen.findByTestId('time-row-Member');

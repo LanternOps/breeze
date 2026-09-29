@@ -200,18 +200,30 @@ it('exports only authorized devices and explicit missing days', async () => {
   const yesterday = new Date(Date.parse(`${f.today}T00:00:00Z`) - 86_400_000)
     .toISOString()
     .slice(0, 10);
-  await withDbAccessContext(f.context, async () => {
+  const exportCsv = async (auth: AuthContext) => {
     let csv = '';
+    // No display filter: authorization alone must keep foreign devices out.
     for await (const chunk of exportHistoryTimeCsv(
-      { deviceId: f.member.id },
+      {},
       { from: yesterday, to: f.today },
-      f.auth,
+      auth,
     ))
       csv += chunk;
+    return csv;
+  };
+  await withDbAccessContext(f.context, async () => {
+    const csv = await exportCsv(f.auth);
     expect(csv).toContain(f.member.id);
+    expect(csv).toContain(f.pdc.id);
     expect(csv).not.toContain(f.other.id);
-    expect(csv).not.toContain(f.pdc.id);
     expect(csv).toContain(`"${yesterday}","gap"`);
     expect(csv).toContain(`"${f.today}","observed"`);
+    const pinned = await exportCsv({
+      ...f.auth,
+      allowedDeviceIds: [f.member.id],
+    });
+    expect(pinned).toContain(f.member.id);
+    expect(pinned).not.toContain(f.pdc.id);
+    expect(pinned).not.toContain(f.other.id);
   });
 });
