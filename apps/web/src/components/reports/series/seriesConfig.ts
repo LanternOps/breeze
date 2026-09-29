@@ -48,7 +48,9 @@ export function availableCoversModes(type: string | undefined, partnerWide: bool
 }
 
 /** Builder filter fields that name an org's own entities (ReportBuilder fieldDefinitionsByType). */
-export const ORG_SPECIFIC_CONDITION_FIELDS: ReadonlySet<string> = new Set(['site']);
+// Mirrors the server's ORG_SPECIFIC_CONDITION_FIELDS (services/reportSeries/validation.ts):
+// a series refuses any condition naming one org's site or device.
+export const ORG_SPECIFIC_CONDITION_FIELDS: ReadonlySet<string> = new Set(['site', 'siteId', 'device', 'deviceId', 'group', 'groupId']);
 
 // Top-level keys that name sites/devices/groups/orgs (reportConfigSchemas.ts:
 // `sites` on the posture-family schemas, the refused business selectors).
