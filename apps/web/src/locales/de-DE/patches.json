@@ -86,6 +86,7 @@
     },
     "filters": {
       "allDevices": "Alle Geräte ({{count}})",
+      "statusFilterLabel": "Compliance-Status filtern",
       "pendingPatches": "Ausstehende Patches ({{count}})",
       "critical": "Kritisch ({{count}})",
       "pendingReboot": "Ausstehender Neustart ({{count}})",

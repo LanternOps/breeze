@@ -776,6 +776,7 @@
     "remove": "Entfernen",
     "removed": "Entfernt",
     "searchThreats": "Bedrohungen suchen...",
+    "selectAllThreats": "Alle Bedrohungen auswählen",
     "selectThreat": "Wählen Sie Bedrohung {{name}}",
     "selectedCount": "{{count}} ausgewählt",
     "severity": "Schweregrad",

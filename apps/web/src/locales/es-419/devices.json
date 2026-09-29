@@ -1031,6 +1031,7 @@
     "noDeviceGroupsYetCreateOne": "Aún no hay grupos de dispositivos. Cree uno para comenzar a organizar dispositivos.",
     "createYourFirstGroup": "Cree su primer grupo",
     "selectAllGroups": "Seleccionar todos los grupos",
+    "selectGroup": "Seleccionar grupo {{name}}",
     "dynamic": "Dinámica",
     "static": "Estático",
     "device": "dispositivo",

@@ -776,6 +776,7 @@
     "remove": "Remove",
     "removed": "Removed",
     "searchThreats": "Search threats...",
+    "selectAllThreats": "Select all threats",
     "selectThreat": "Select threat {{name}}",
     "selectedCount": "{{count}} selected",
     "severity": "Severity",

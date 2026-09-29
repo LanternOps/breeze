@@ -86,6 +86,7 @@
     },
     "filters": {
       "allDevices": "Tüm Cihazlar ({{count}})",
+      "statusFilterLabel": "Uyumluluk durumuna göre filtrele",
       "pendingPatches": "Bekleyen Yamalar ({{count}})",
       "critical": "Kritik ({{count}})",
       "pendingReboot": "Yeniden Başlatma Bekleniyor ({{count}})",

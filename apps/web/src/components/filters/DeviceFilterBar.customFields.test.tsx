@@ -56,3 +56,10 @@ describe('DeviceFilterBar — custom fields (#6594)', () => {
     });
   });
 });
+
+describe('DeviceFilterBar — saved filter select accessible name', () => {
+  it('names the saved-filter select', async () => {
+    render(<DeviceFilterBar value={null} onChange={vi.fn()} showSavedFilters />);
+    expect(await screen.findByRole('combobox', { name: 'Saved Filters' })).toBeInTheDocument();
+  });
+});
