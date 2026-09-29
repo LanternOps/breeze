@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BREEZE_MCP_TOOL_NAMES, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { getHelperAllowedMcpToolNames, getHelperAllowedTools } from '../../helperToolFilter';
-import { fullRunToolExposure, resolveRunProfileLimits, resolveRunToolExposure } from '../../aiAgents/runLoop';
+import { declaredFullRunToolExposure, resolveRunProfileLimits, resolveRunToolExposure } from '../../aiAgents/runLoop';
 import { ANALYSIS_TOOL_ALLOWLIST } from '../../aiAgents/analysisProfile';
 import { OUTCOME_MCP_TOOL_NAMES } from '../../aiAgents/outcomeTools';
 import { SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
@@ -16,10 +16,9 @@ describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
     for (const s of Object.values(CAPTURE_SURFACES).filter((x) => x.id !== 'chat')) expect(s.toolSearch, s.id).toBe(false);
   });
 
-  it('agent-full registers and allows the full-profile exposure of a read-only agent (empty allowlist)', () => {
-    const exposure = fullRunToolExposure([]);
-    const declared = new Set(listChatSurfaceToolNames());
-    expect([...CAPTURE_SURFACES['agent-full'].onlyTools!].sort()).toEqual(exposure.filter((n) => declared.has(n)).sort());
+  it('agent-full registers and allows the declared full-profile exposure of a read-only agent (empty allowlist, #7427)', () => {
+    const exposure = declaredFullRunToolExposure([]);
+    expect([...CAPTURE_SURFACES['agent-full'].onlyTools!].sort()).toEqual([...exposure].sort());
     expect(CAPTURE_SURFACES['agent-full'].allowedTools).toEqual(exposure.map((n) => `mcp__breeze__${n}`));
     expect(CAPTURE_SURFACES['agent-full'].includePartialMessages).toBe(false);
   });
@@ -42,7 +41,7 @@ describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
     const remediation = CAPTURE_SURFACES['agent-full-remediation'];
     expect(remediation.turnBudget).toBe(AI_AGENT_LIMIT_DEFAULTS.maxTurnsPerRun);
     expect(remediation.outcomeTools).toEqual([]);
-    for (const name of fullRunToolExposure([])) expect(remediation.allowedTools).toContain(`mcp__breeze__${name}`);
+    for (const name of declaredFullRunToolExposure([])) expect(remediation.allowedTools).toContain(`mcp__breeze__${name}`);
     expect(remediation.onlyTools!.has('disk_cleanup')).toBe(true);
     const analysis = CAPTURE_SURFACES['agent-analysis'];
     expect(analysis.turnBudget).toBe(AI_AGENT_LIMIT_DEFAULTS.analysisMaxTurnsPerRun);

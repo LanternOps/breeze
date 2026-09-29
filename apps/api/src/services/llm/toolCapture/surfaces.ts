@@ -1,6 +1,6 @@
 import { BREEZE_MCP_TOOL_NAMES, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { getHelperAllowedMcpToolNames, getHelperAllowedTools, type HelperPermissionLevel } from '../../helperToolFilter';
-import { fullRunToolExposure, resolveRunProfileLimits, resolveRunToolExposure } from '../../aiAgents/runLoop';
+import { resolveRunProfileLimits, resolveRunToolExposure } from '../../aiAgents/runLoop';
 import { outcomeToolsForRun, type OutcomeToolName } from '../../aiAgents/outcomeTools';
 import { SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentRunProfile } from '@breeze/shared';
@@ -53,13 +53,11 @@ function helperSurface(level: HelperPermissionLevel): CaptureSurface {
 }
 
 /**
- * `full` profile exposure for a read-only agent (empty allowlist), as
- * runLoop.driveSdkLoop passes it. The exposure also names registry tools the
- * SDK server never declares; production registers only the declared ones
- * (createBreezeMcpServer skips unknown onlyTools names outside tests), so the
- * harness registers exposure ∩ declared and allows the full exposure.
+ * `full` profile exposure for a read-only agent (empty allowlist), exactly as
+ * runLoop.driveSdkLoop passes it: since #7427 both `allowedTools` and
+ * `onlyTools` are the declared floor (`declaredFullRunToolExposure`).
  */
-const AGENT_FULL_EXPOSURE = fullRunToolExposure([]);
+const AGENT_FULL_EXPOSURE = resolveRunToolExposure({ profile: 'full' }, []);
 const DECLARED = new Set(listChatSurfaceToolNames());
 
 /**
@@ -77,8 +75,9 @@ export const REPRESENTATIVE_REMEDIATION_ALLOWLIST: readonly string[] = [
 /**
  * An agent-profile surface derived from runLoop's own exports: the exposure
  * (`resolveRunToolExposure`), the turn cap (`resolveRunProfileLimits` on the
- * default limits) and the outcome tools (`outcomeToolsForRun`). Registration
- * is exposure ∩ declared, same as `agent-full` (see #7427). `toolSearch`
+ * default limits) and the outcome tools (`outcomeToolsForRun`). The `full`
+ * floor is already declared-only (#7427); registration is still filtered to
+ * declared names so an env-gated profile tool cannot throw in the harness. `toolSearch`
  * mirrors runLoop's opt-in; the eval's `--surface-search on` arm measures a
  * hypothetical opt-in without changing it.
  */
@@ -124,16 +123,16 @@ export const CAPTURE_SURFACES: Readonly<Record<CaptureSurfaceId, CaptureSurface>
   'helper-extended': helperSurface('extended'),
   'agent-full': {
     id: 'agent-full',
-    allowedTools: AGENT_FULL_EXPOSURE.map((name) => `mcp__breeze__${name}`),
-    onlyTools: new Set(AGENT_FULL_EXPOSURE.filter((name) => DECLARED.has(name))),
+    allowedTools: [...new Set(AGENT_FULL_EXPOSURE.exposedNames)],
+    onlyTools: AGENT_FULL_EXPOSURE.onlyTools,
     toolSearch: false,
     server: 'breeze', mcpServerName: 'breeze',
-    includePartialMessages: false, source: 'services/aiAgents/runLoop.ts:1979-2001 (fullRunToolExposure → exposureList/onlyTools)',
+    includePartialMessages: false, source: 'services/aiAgents/runLoop.ts:1667,1714 (declaredFullRunToolExposure via resolveRunToolExposure → exposedNames/onlyTools)',
   },
   'agent-full-remediation': agentSurface('agent-full-remediation', 'full', REPRESENTATIVE_REMEDIATION_ALLOWLIST,
-    'services/aiAgents/runLoop.ts:1701 (resolveRunToolExposure/resolveRunProfileLimits, full + REPRESENTATIVE_REMEDIATION_ALLOWLIST)'),
+    'services/aiAgents/runLoop.ts:1680,1714 (resolveRunProfileLimits/resolveRunToolExposure, full + REPRESENTATIVE_REMEDIATION_ALLOWLIST)'),
   'agent-analysis': agentSurface('agent-analysis', 'analysis', [],
-    'services/aiAgents/runLoop.ts:1701 (resolveRunToolExposure/resolveRunProfileLimits); aiAgents/analysisProfile.ts:26'),
+    'services/aiAgents/runLoop.ts:1680,1714 (resolveRunProfileLimits/resolveRunToolExposure); aiAgents/analysisProfile.ts:26'),
   'script-builder': {
     id: 'script-builder', allowedTools: SCRIPT_BUILDER_MCP_TOOL_NAMES, toolSearch: false, server: 'script_builder', mcpServerName: 'script_builder',
     includePartialMessages: true, source: 'routes/scriptAi.ts:268-287; services/scriptBuilderTools.ts:63,396',
