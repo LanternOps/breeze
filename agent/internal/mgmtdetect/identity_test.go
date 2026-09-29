@@ -6,7 +6,7 @@ import (
 )
 
 func TestCollectIdentityStatusPublicWrapper(t *testing.T) {
-	var collect func() IdentityStatus = CollectIdentityStatus
+	collect := CollectIdentityStatus
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		return
 	}

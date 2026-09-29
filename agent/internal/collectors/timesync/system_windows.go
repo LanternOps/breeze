@@ -44,7 +44,7 @@ func (*windowsSystem) ReadString(ctx context.Context, path, name string) (string
 	if err != nil {
 		return "", err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 	value, _, err := key.GetStringValue(name)
 	return value, err
 }
@@ -56,7 +56,7 @@ func (*windowsSystem) ReadDWORD(ctx context.Context, path, name string) (uint32,
 	if err != nil {
 		return 0, err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 	value, typ, err := key.GetIntegerValue(name)
 	if err != nil {
 		return 0, err
@@ -77,7 +77,7 @@ func (*windowsSystem) ValueNames(ctx context.Context, path string) ([]string, er
 	if err != nil {
 		return nil, err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 	return key.ReadValueNames(-1)
 }
 
@@ -107,7 +107,7 @@ func (*windowsSystem) W32TimeService(ctx context.Context) (ServiceInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	service, err := m.OpenService("W32Time")
 	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return ServiceInfo{"not_installed", "unknown"}, nil
@@ -115,7 +115,7 @@ func (*windowsSystem) W32TimeService(ctx context.Context) (ServiceInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	defer service.Close()
+	defer func() { _ = service.Close() }()
 	state, err := service.Query()
 	if err != nil {
 		return info, err
@@ -138,7 +138,7 @@ func (*windowsSystem) W32TimeService(ctx context.Context) (ServiceInfo, error) {
 		key, e := registry.OpenKey(registry.LOCAL_MACHINE, serviceKey+`\TriggerInfo`, registry.ENUMERATE_SUB_KEYS)
 		if e == nil {
 			names, readErr := key.ReadSubKeyNames(-1)
-			key.Close()
+			_ = key.Close()
 			if readErr != nil {
 				return info, readErr
 			}
@@ -231,7 +231,7 @@ func (*windowsSystem) PrimaryDomain(ctx context.Context) (RoleInfo, error) {
 	if p == nil {
 		return RoleInfo{}, errUnavailable
 	}
-	defer dsRoleFreeProc.Call(uintptr(unsafe.Pointer(p)))
+	defer func() { _, _, _ = dsRoleFreeProc.Call(uintptr(unsafe.Pointer(p))) }()
 	return RoleInfo{p.MachineRole, wide(p.DomainNameDNS), wide(p.DomainForestName)}, nil
 }
 func (*windowsSystem) PDC(ctx context.Context, domain string) (string, error) {
@@ -255,7 +255,7 @@ func (*windowsSystem) PDC(ctx context.Context, domain string) (string, error) {
 	if p == nil {
 		return "", errUnavailable
 	}
-	defer windows.NetApiBufferFree((*byte)(unsafe.Pointer(p)))
+	defer func() { _ = windows.NetApiBufferFree((*byte)(unsafe.Pointer(p))) }()
 	return wide(p.DomainControllerName), nil
 }
 func (*windowsSystem) ComputerDNSName(ctx context.Context) (string, error) {
