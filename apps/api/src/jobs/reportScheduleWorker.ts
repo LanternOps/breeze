@@ -527,6 +527,14 @@ export async function resolveRunRecipientSets(args: {
 
 type ScheduledReportRow = typeof reports.$inferSelect;
 
+/** Consume the occurrence: stamp `lastGeneratedAt` so findDueReports stops selecting it. */
+async function stampOccurrence(reportId: string): Promise<void> {
+  await db
+    .update(reports)
+    .set({ lastGeneratedAt: new Date(), updatedAt: new Date() })
+    .where(eq(reports.id, reportId));
+}
+
 /**
  * Multi-org report series W02 — a skipped child leaves a failed run row
  * naming the gate decision (spec §3.3 "records the skip"), with the all-NULL
@@ -557,6 +565,7 @@ async function recordSeriesSkip(
  */
 async function loadGatedSeriesChild(
   report: ScheduledReportRow & { seriesId: string; orgId: string },
+  opts: { occurrenceClaimed?: boolean } = {},
 ): Promise<ScheduledReportRow | null> {
   const decision = await seriesChildGate({
     id: report.id,
@@ -566,6 +575,11 @@ async function loadGatedSeriesChild(
     archivedAt: report.archivedAt,
   });
   if (decision !== 'run') {
+    // A skip CONSUMES the occurrence (same stamp as the normal path, unless
+    // the inline path already claimed it). Without it the child stays due
+    // and, once BullMQ trims the deduped job, writes a fresh skip row every
+    // tick. Stamped only on a decision — a gate throw propagates unstamped.
+    if (!opts.occurrenceClaimed) await stampOccurrence(report.id);
     await recordSeriesSkip(report.id, decision);
     return null;
   }
@@ -688,7 +702,10 @@ export async function processRunScheduledReport(
   // authority resolution or run row. Closes the "queued before the org was
   // excluded" race (spec §3.3).
   if (report.seriesId && report.orgId) {
-    const gated = await loadGatedSeriesChild({ ...report, seriesId: report.seriesId, orgId: report.orgId });
+    const gated = await loadGatedSeriesChild(
+      { ...report, seriesId: report.seriesId, orgId: report.orgId },
+      { occurrenceClaimed: opts.occurrenceClaimed },
+    );
     if (!gated) return;
     report = gated;
   }
@@ -963,12 +980,7 @@ export async function processRunScheduledReport(
   // Skipped when the caller already claimed the occurrence atomically (the
   // inline CAS path in processCheckSchedules) — that claim IS this stamp, and
   // re-stamping here would just be a redundant (harmless but pointless) write.
-  if (!opts.occurrenceClaimed) {
-    await db
-      .update(reports)
-      .set({ lastGeneratedAt: new Date(), updatedAt: new Date() })
-      .where(eq(reports.id, report.id));
-  }
+  if (!opts.occurrenceClaimed) await stampOccurrence(report.id);
 
   try {
     // #3198 W02: the generator's scope comes from the owner axis and the

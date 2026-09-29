@@ -12,6 +12,7 @@ const q = vi.hoisted(() => ({
   selects: [] as unknown[][],
   wheres: [] as unknown[],
   inserts: [] as Array<Record<string, unknown>>,
+  updates: [] as Array<Record<string, unknown>>,
   order: [] as string[],
   ambient: 0,
   ambientAtSweep: null as number | null,
@@ -50,7 +51,7 @@ vi.mock('../db', () => {
           };
         },
       })),
-      update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve([]) }) })),
+      update: vi.fn(() => ({ set: (v: Record<string, unknown>) => { q.updates.push(v); q.order.push('update'); return { where: () => Promise.resolve([]) }; } })),
     },
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => {
       q.ambient += 1;
@@ -77,6 +78,7 @@ vi.mock('../services/reportSeries/recipients', async (importOriginal) => ({
 import { SeriesAuthorityUnverifiableError } from '../services/reportSeries/authority';
 import {
   initializeReportScheduleWorker,
+  isReportOccurrenceDue,
   processCheckSchedules,
   processRunScheduledReport,
   resolveRunRecipientSets,
@@ -104,6 +106,7 @@ beforeEach(() => {
   q.selects = [];
   q.wheres = [];
   q.inserts = [];
+  q.updates = [];
   q.order = [];
   q.ambient = 0;
   q.ambientAtSweep = null;
@@ -131,7 +134,23 @@ describe('processRunScheduledReport — series gate', () => {
     expect(q.inserts).toEqual([expect.objectContaining({
       reportId: REPORT_ID, status: 'failed', errorMessage: reason, requestedByKind: null,
     })]);
-    expect(q.order).toEqual(['select']);
+    // Fix round 1: the occurrence is consumed (stamped) BEFORE the skip row.
+    expect(q.updates).toEqual([expect.objectContaining({ lastGeneratedAt: expect.any(Date) })]);
+    expect(q.order).toEqual(['select', 'update']);
+  });
+
+  it('a skip on the inline path (occurrence already claimed) does not stamp again', async () => {
+    series.gate.mockResolvedValue('blocked_no_authority');
+    q.selects = [[child()]];
+    await processRunScheduledReport(job, { finalAttempt: true, occurrenceClaimed: true });
+    expect(q.updates).toEqual([]);
+    expect(q.inserts).toHaveLength(1);
+  });
+
+  it('a stamped occurrence is no longer due, so no second skip row is written for it', () => {
+    const key = 202610010900;
+    expect(isReportOccurrenceDue(null, key, 'UTC')).toBe(true);
+    expect(isReportOccurrenceDue(new Date('2026-10-01T15:00:00Z'), key, 'UTC')).toBe(false);
   });
 
   it("on 'run' the worker re-reads the row and runs the CURRENT definition", async () => {
@@ -150,6 +169,7 @@ describe('processRunScheduledReport — series gate', () => {
     await expect(processRunScheduledReport(job, { finalAttempt: false }))
       .rejects.toBeInstanceOf(SeriesAuthorityUnverifiableError);
     expect(q.inserts).toEqual([]);
+    expect(q.updates).toEqual([]);
     expect(q.order).toEqual(['select']);
   });
 
