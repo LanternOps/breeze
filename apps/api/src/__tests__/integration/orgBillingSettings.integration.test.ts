@@ -60,7 +60,7 @@ describe('updateOrgBillingSettings billingContact merge (real DB)', () => {
     // projection of THAT contact. The orphaned blob keys (a phone no contact
     // carries, a quickbooksId nothing reads) do not survive: the column no
     // longer describes anyone the contacts list can show.
-    expect(await readContact(org.id)).toEqual({ email: 'new@x.example', name: 'AP Dept', phone: null });
+    expect(await readContact(org.id)).toEqual({ contactId: row!.id, email: 'new@x.example', name: 'AP Dept', phone: null });
   });
 
   runDb('merges onto a NULL billingContact (fresh org, first contact saved)', async () => {
@@ -68,7 +68,8 @@ describe('updateOrgBillingSettings billingContact merge (real DB)', () => {
     await withDbAccessContext(ctxFor(org.id, partner.id), () =>
       updateOrgBillingSettings(org.id, { billingContactEmail: 'first@x.example', billingContactName: 'AP' }, actorFor(org.id, partner.id)));
 
-    expect(await readContact(org.id)).toEqual({ email: 'first@x.example', name: 'AP', phone: null });
+    const created = await readContactRow(org.id);
+    expect(await readContact(org.id)).toEqual({ contactId: created!.id, email: 'first@x.example', name: 'AP', phone: null });
     // First save on a fresh org creates the contact row rather than updating
     // one — the org's primary contact too, since it has none yet.
     expect(await readContactRow(org.id)).toMatchObject({

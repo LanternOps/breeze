@@ -30,6 +30,7 @@ import { sites } from '../../db/schema/orgs';
 import { pgErrorCode } from '../../utils/pgErrors';
 import {
   BILLING_ROLE,
+  currentBillingContactId,
   lockOrganizationForProjection,
   projectBillingContact,
   replaceSiteContact,
@@ -638,6 +639,14 @@ export async function updateContact(
 
   // Demote the incumbent whenever this row is claiming a primary slot it does
   // not already hold — a scope move counts, even with is_primary unchanged.
+  // A column written before it carried `contactId` finds its contact by email,
+  // so an email change on the current recipient would otherwise hand the role
+  // to another billing contact. Ask who the recipient is while the stored
+  // email still matches, and keep it through the re-projection below.
+  const recipientBefore = patch.email !== undefined && holdsOrgBillingRole(current)
+    ? await currentBillingContactId(exec, orgId)
+    : null;
+
   let demotedBillingContact = false;
   if (nextIsPrimary && !(current.isPrimary && current.siteId === nextSiteId)) {
     ({ demotedBillingContact } = await demoteScopePrimary(exec, orgId, nextSiteId, contactId));
@@ -697,7 +706,7 @@ export async function updateContact(
   // Before OR after: gaining the role, losing it, moving on or off the org
   // level, or a field edit while holding it all change what invoices use.
   if (holdsOrgBillingRole(current) || holdsOrgBillingRole(updated) || demotedBillingContact) {
-    await projectBillingContact(exec, orgId);
+    await projectBillingContact(exec, orgId, { keepContactId: recipientBefore === contactId ? contactId : null });
   }
 
   return updated;

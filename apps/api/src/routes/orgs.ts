@@ -2588,19 +2588,17 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       stripOrgLifecycleInternalSettings(resolvedSecrets.settings)
     );
   }
-  // The blob write stays in THIS update rather than going through a compat
-  // writer first: the #2879 override path below re-asserts partner-ownership
-  // and suspended-status in the UPDATE's own WHERE, and the compat writers
-  // target a bare eq(id, orgId), which would let a billing contact land on an
-  // org that stopped qualifying between check and write. (The re-projection
-  // below is safe: it runs only after this guarded UPDATE matched, in the same
-  // transaction, with the row lock held.)
-  // The BILLING contact (the org-level contact holding the `billing` role —
-  // never the primary contact) is then written by syncBillingContactRow once
-  // the guarded update has succeeded and holds the org row lock, and the column
-  // is re-projected from that contact — exactly the "caller already wrote the
-  // blob" case that entry point exists for.
-  if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
+  // `billingContact` is deliberately NOT in this UPDATE. It is written by
+  // syncBillingContactRow in runUpdate below, only after this guarded UPDATE
+  // (the #2879 override path re-asserts partner-ownership and suspended-status
+  // in its own WHERE) has matched and so holds the org row lock. The sync edits
+  // the BILLING contact — the org-level contact holding the `billing` role,
+  // never the primary — and re-projects the column from it. Writing the
+  // request's value here first would also break that contact's selection:
+  // with several billing contacts, the "current recipient" tiebreak reads this
+  // column, and would compare against the new address instead of the old one.
+  // `updates` always carries `updatedAt`, so a billingContact-only PATCH still
+  // runs (and locks) the guarded UPDATE.
   if (data.contractStart !== undefined) {
     updates.contractStart = data.contractStart ? new Date(data.contractStart) : null;
   }

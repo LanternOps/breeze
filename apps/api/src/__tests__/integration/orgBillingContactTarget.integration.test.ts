@@ -132,7 +132,7 @@ describe('Billing contact setting targets the billing-role contact (real DB, thr
       name: 'Accounts Payable', email: 'ap@customer.example', roles: ['billing'], isPrimary: false,
     });
     // Invoices and quotes resolve their recipient from this column.
-    expect(await readBlob(orgId)).toMatchObject({ email: 'ap@customer.example', name: 'Accounts Payable' });
+    expect(await readBlob(orgId)).toMatchObject({ contactId: billId, email: 'ap@customer.example', name: 'Accounts Payable' });
     const body = await res.json() as { data: { billingContact: { email: string } } };
     expect(body.data.billingContact.email).toBe('ap@customer.example');
   });
@@ -219,6 +219,61 @@ describe('Billing contact setting targets the billing-role contact (real DB, thr
       name: 'Accounts Payable', email: 'ap@customer.example', roles: ['billing'],
     });
     expect(await readBlob(orgId)).toMatchObject({ email: 'ap@customer.example' });
+  });
+
+  runDb('with several billing contacts, the org PATCH edits the one invoices currently go to', async () => {
+    // Bill is older, but invoices go to Carol. The route must pick its target
+    // BEFORE the request's value lands in organizations.billing_contact, or
+    // the "current recipient" tiebreak compares against the new address and
+    // falls through to the oldest contact — Bill.
+    const { orgId, request } = await seed();
+    const billId = await insertContact({
+      orgId, name: 'Bill Payer', email: 'bill@customer.example', phone: '555-0100',
+      roles: ['billing'], createdAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    const carolId = await insertContact({
+      orgId, name: 'Carol AP', email: 'carol@customer.example',
+      roles: ['billing'], createdAt: new Date('2026-02-01T00:00:00Z'),
+    });
+    await getTestDb().update(organizations)
+      .set({ billingContact: { name: 'Carol AP', email: 'carol@customer.example', phone: null } })
+      .where(eq(organizations.id, orgId));
+    const billBefore = await readContact(billId);
+
+    const res = await request('PATCH', `/orgs/organizations/${orgId}`, {
+      billingContact: { name: 'Accounts Payable', email: 'ap@customer.example' },
+    });
+    expect(res.status).toBe(200);
+
+    expect(await readContact(billId)).toEqual(billBefore);
+    expect(await readContact(carolId)).toMatchObject({ name: 'Accounts Payable', email: 'ap@customer.example' });
+    expect(await readBlob(orgId)).toMatchObject({ email: 'ap@customer.example' });
+    const body = await res.json() as { billingContact: { email: string } };
+    expect(body.billingContact.email).toBe('ap@customer.example');
+  });
+
+  runDb('editing the current recipient\'s own email keeps it the billing contact', async () => {
+    // Identity, not email, is what keeps Carol the recipient: matched on the
+    // old address, her own email change would hand invoices to the older Bill.
+    const { orgId, request } = await seed();
+    await insertContact({
+      orgId, name: 'Bill Payer', email: 'bill@customer.example',
+      roles: ['billing'], createdAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    const carolId = await insertContact({
+      orgId, name: 'Carol AP', email: 'carol@customer.example',
+      roles: ['billing'], createdAt: new Date('2026-02-01T00:00:00Z'),
+    });
+    // Make Carol the recipient through the product path (billing-settings edits
+    // the current recipient; the incumbent here is resolved by legacy email).
+    await getTestDb().update(organizations)
+      .set({ billingContact: { name: 'Carol AP', email: 'carol@customer.example', phone: null } })
+      .where(eq(organizations.id, orgId));
+    expect((await request('PATCH', `/orgs/${orgId}/billing-settings`, { billingContactName: 'Carol A. P.' })).status).toBe(200);
+    expect(await readBlob(orgId)).toMatchObject({ contactId: carolId, name: 'Carol A. P.' });
+
+    expect((await request('PATCH', `/orgs/contacts/${carolId}`, { email: 'carol.new@customer.example' })).status).toBe(200);
+    expect(await readBlob(orgId)).toMatchObject({ contactId: carolId, email: 'carol.new@customer.example' });
   });
 
   runDb('making a non-billing contact primary does not re-point the invoice recipient', async () => {

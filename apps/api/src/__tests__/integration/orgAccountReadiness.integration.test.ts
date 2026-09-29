@@ -128,7 +128,7 @@ async function seedOrgPolicy(orgId: string, name: string, status: 'active' | 'in
 }
 
 /** An active org-owned policy assigned at SITE level only (a fresh site of the org). */
-async function seedSitePolicy(orgId: string, name: string): Promise<void> {
+async function seedSitePolicy(orgId: string, name: string): Promise<string> {
   const site = await createSite({ orgId, name: `${name} site` });
   await withSystemDbAccessContext(async () => {
     const [policy] = await db
@@ -137,6 +137,7 @@ async function seedSitePolicy(orgId: string, name: string): Promise<void> {
       .returning({ id: configurationPolicies.id });
     await db.insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level: 'site', targetId: site.id });
   });
+  return site.id;
 }
 
 const ZERO_TICKETS = { open: 0, awaitingCustomer: 0, slaBreached: 0 };
@@ -283,7 +284,13 @@ describe('GET /orgs/account-readiness', () => {
     await seedOrgPolicy(orgB, `Board inactive ${suffix}`, 'inactive');
     // Org C: an ACTIVE policy assigned only at SITE level. "Assigned" counts
     // org- and partner-level assignments alone, so C must stay unassigned.
-    await seedSitePolicy(orgC, `Board site-only ${suffix}`);
+    const orgCSite = await seedSitePolicy(orgC, `Board site-only ${suffix}`);
+    // A SITE-level contact with the billing role is not the org's billing
+    // contact: organizations.billing_contact (the invoice recipient) only ever
+    // projects an org-level one, so readiness must still flag org C.
+    await withSystemDbAccessContext(() => db.insert(contacts).values({
+      orgId: orgC, siteId: orgCSite, name: `Site AP ${suffix}`, email: `site-ap-${suffix}@example.com`, roles: ['billing'],
+    }));
 
     const res = await client.get(readinessPath([orgA, orgB, orgC]));
     expect(res.status, await res.clone().text()).toBe(200);

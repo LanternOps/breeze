@@ -384,10 +384,11 @@ describe('updateContact', () => {
 
   it('re-projects billing_contact when the billing contact is edited', async () => {
     const patched = { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100' };
-    // getContact, the org pre-lock, the target re-read UNDER that lock, then
-    // the billing re-projection's read.
+    // getContact, the org pre-lock, the target re-read UNDER that lock, the
+    // pre-write "who is the recipient" read (an email change), then the
+    // billing re-projection's read.
     const { exec, calls } = makeExec([
-      [PRIMARY_ROW], [], [PRIMARY_ROW], [patched],
+      [PRIMARY_ROW], [], [PRIMARY_ROW], [{ id: CONTACT }], [patched],
     ]);
     const updated = await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
 
@@ -395,6 +396,28 @@ describe('updateContact', () => {
     expect(orgBlobWrites(calls)).toEqual([
       { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100' },
     ]);
+  });
+
+  it('keeps the current recipient through a change to its own email', async () => {
+    // A column written before it carried contactId finds its contact by email;
+    // after this write that email no longer matches, so the contact that WAS the
+    // recipient is carried into the re-projection explicitly.
+    const { exec, calls } = makeExec([
+      [PRIMARY_ROW], [], [PRIMARY_ROW], [{ id: CONTACT }], [{ name: 'Jane Ops', email: 'ap@acme.example', phone: null }],
+    ]);
+    await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
+    const incumbent = compile(billingProjectionRead(calls)!.orderBy![1]);
+    expect(incumbent.sql).toContain('"contacts"."id" = $1 OR');
+    expect(incumbent.params[0]).toBe(CONTACT);
+  });
+
+  it('does not carry a billing contact that was NOT the recipient', async () => {
+    const { exec, calls } = makeExec([
+      [PRIMARY_ROW], [], [PRIMARY_ROW], [{ id: OTHER_CONTACT }], [{ name: 'Carol', email: 'carol@acme.example', phone: null }],
+    ]);
+    await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
+    const incumbent = compile(billingProjectionRead(calls)!.orderBy![1]);
+    expect(incumbent.sql).not.toContain('"contacts"."id" = $1 OR');
   });
 
   it('leaves billing_contact alone when the PRIMARY contact (not a billing contact) is edited', async () => {
@@ -432,6 +455,7 @@ describe('updateContact', () => {
     // commit an email change to THE billing contact without re-projecting it.
     const { exec, calls } = makeExec([
       [PLAIN_ORG_ROW], [], [{ isPrimary: false, siteId: null, roles: ['billing'] }],
+      [{ id: OTHER_CONTACT }], // pre-write recipient read
       [{ name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100' }],
     ]);
     await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);

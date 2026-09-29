@@ -142,18 +142,23 @@ describe('the billing path targets the billing-role contact, never the primary',
     expect(lookup.sql).not.toContain('"is_primary"');
   });
 
-  it('prefers the primary billing contact, then the current recipient, then the oldest', async () => {
+  it('prefers the primary billing contact, then the current recipient (by id, then legacy email), then the oldest', async () => {
     const f = makeExec([LOCK, [BILL_ROW], [BILL_ROW]]);
     await mergeBillingContact(f.exec, ORG, { email: 'ap@acme.com' });
 
-    const order = f.contactSelects()[0]!.orderBy!.map((o) => compile(o).sql);
-    expect(order).toHaveLength(4);
-    expect(order[0]).toBe('"contacts"."is_primary" desc');
-    // The incumbent: matches the email invoices currently go to.
-    expect(order[1]).toContain('"organizations"."billing_contact" ->> \'email\'');
-    expect(order[1]).toMatch(/ desc$/);
-    expect(order[2]).toBe('"contacts"."created_at" asc');
-    expect(order[3]).toBe('"contacts"."id" asc');
+    const order = f.contactSelects()[0]!.orderBy!.map((o) => compile(o));
+    expect(order).toHaveLength(5);
+    expect(order[0]!.sql).toBe('"contacts"."is_primary" desc');
+    // The incumbent BY IDENTITY: editing the current recipient's own email must
+    // not hand the role to someone else, so an email match alone cannot be it.
+    expect(order[1]!.sql).toContain('"contacts"."id"::text = (SELECT "organizations"."billing_contact" ->> $');
+    expect(order[1]!.params).toContain('contactId');
+    expect(order[1]!.sql).toMatch(/ desc$/);
+    // Only for a column written before it carried a contactId.
+    expect(order[2]!.sql).toContain('lower("contacts"."email")');
+    expect(order[2]!.params).toContain('email');
+    expect(order[3]!.sql).toBe('"contacts"."created_at" asc');
+    expect(order[4]!.sql).toBe('"contacts"."id" asc');
   });
 
   it('edits the billing contact it found, and only that row', async () => {
@@ -167,6 +172,11 @@ describe('the billing path targets the billing-role contact, never the primary',
     expect(compile(write.where).params).toEqual([BILL, ORG]);
     expect(f.contactInserts()).toHaveLength(0);
     expect(f.deletes()).toHaveLength(0);
+    // The edited contact stays THE billing contact even though its email just
+    // changed (a pre-contactId column would otherwise match nobody by email).
+    const projectionOrder = compile(f.contactSelects().at(-1)!.orderBy![1]);
+    expect(projectionOrder.sql).toContain('"contacts"."id" = $1 OR');
+    expect(projectionOrder.params[0]).toBe(BILL);
   });
 
   it('creates a non-primary billing contact when nobody holds the role and a primary exists', async () => {
@@ -255,13 +265,15 @@ describe('syncBillingContactRow (org create / PATCH whole-blob replace)', () => 
 
 describe('projectBillingContact', () => {
   let f: ReturnType<typeof makeExec>;
-  beforeEach(() => { f = makeExec([[{ name: 'Bill Payer', email: 'bill@acme.com', phone: null }]]); });
+  beforeEach(() => { f = makeExec([[{ id: BILL, name: 'Bill Payer', email: 'bill@acme.com', phone: null }]]); });
 
   it('is one-way: reads contacts, writes only organizations.billing_contact', async () => {
     const blob = await projectBillingContact(f.exec, ORG);
-    expect(blob).toEqual({ name: 'Bill Payer', email: 'bill@acme.com', phone: null });
+    // The id is stored so the contact stays THE billing contact across its own edits.
+    const expected = { contactId: BILL, name: 'Bill Payer', email: 'bill@acme.com', phone: null };
+    expect(blob).toStrictEqual(expected);
     expect(f.log.map((s) => [s.verb, s.table])).toEqual([['select', contacts], ['update', organizations]]);
-    expect(f.blobWrites()).toEqual([{ name: 'Bill Payer', email: 'bill@acme.com', phone: null }]);
+    expect(f.blobWrites()).toStrictEqual([expected]);
     expect(compile(f.log[1]!.where).params).toEqual([ORG]);
   });
 

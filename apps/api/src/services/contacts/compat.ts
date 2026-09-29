@@ -191,17 +191,49 @@ function billingContactWhere(orgId: string): SQL {
 /**
  * Which billing-role contact is THE billing contact when several hold the role:
  *   1. the org's primary contact, if it holds the role;
- *   2. the contact invoices already go to (its email matches the current
- *      projection) — so granting the role to a second, older contact, or an
- *      org merge bringing one in, never silently re-points invoices;
- *   3. the oldest, then `id`, so the order is total.
+ *   2. the contact invoices already go to — identified by the `contactId` the
+ *      projection stores, so editing that contact's own email does not hand
+ *      the recipient to someone else, and granting the role to a second,
+ *      older contact (or an org merge bringing one in) never silently
+ *      re-points invoices;
+ *   3. for a column written before `contactId` existed, the contact whose
+ *      email matches it;
+ *   4. the oldest, then `id`, so the order is total.
  *
  * Shared by the projection and by the billing entry points, so the contact the
- * Billing setting edits is always the one invoices are sent to.
+ * Billing setting edits is always the one invoices are sent to. Both read the
+ * column, so a caller must not write a request's value into it first.
+ *
+ * `keepContactId` names a contact the caller KNOWS was the recipient before its
+ * write (read with `currentBillingContactId` beforehand). It ranks with the
+ * incumbent, for the one case the stored column cannot answer: a column that
+ * predates `contactId` identifies its contact by email, and this write just
+ * changed that contact's email.
  */
-function billingContactOrder(orgId: string): SQL[] {
-  const incumbent = sql`COALESCE(lower(${contacts.email}) = lower((SELECT ${organizations.billingContact} ->> 'email' FROM ${organizations} WHERE ${organizations.id} = ${orgId})), false)`;
-  return [desc(contacts.isPrimary), desc(incumbent), asc(contacts.createdAt), asc(contacts.id)];
+function billingContactOrder(orgId: string, keepContactId?: string | null): SQL[] {
+  const current = (key: string) =>
+    sql`(SELECT ${organizations.billingContact} ->> ${key} FROM ${organizations} WHERE ${organizations.id} = ${orgId})`;
+  const storedIncumbent = sql`COALESCE(${contacts.id}::text = ${current('contactId')}, false)`;
+  const incumbent = keepContactId
+    ? sql`(${contacts.id} = ${keepContactId} OR ${storedIncumbent})`
+    : storedIncumbent;
+  const legacyIncumbent = sql`COALESCE(lower(${contacts.email}) = lower(${current('email')}), false)`;
+  return [desc(contacts.isPrimary), desc(incumbent), desc(legacyIncumbent), asc(contacts.createdAt), asc(contacts.id)];
+}
+
+/**
+ * The id of the org's billing contact as things stand — read BEFORE a write
+ * that may change that contact's email, and handed back to
+ * `projectBillingContact` as `keepContactId`.
+ */
+export async function currentBillingContactId(exec: ContactExecutor, orgId: string): Promise<string | null> {
+  const [row] = await exec
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(billingContactWhere(orgId))
+    .orderBy(...billingContactOrder(orgId))
+    .limit(1);
+  return (row as { id: string } | undefined)?.id ?? null;
 }
 
 /**
@@ -218,6 +250,18 @@ export async function lockOrganizationForProjection(exec: ContactExecutor, orgId
 }
 
 /**
+ * What `organizations.billing_contact` holds: the billing contact's modelled
+ * fields plus its id, which is what keeps it the billing contact across its own
+ * edits (see `billingContactOrder`). Readers use `email`/`name` only.
+ */
+export interface BillingContactProjection {
+  contactId: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+/**
  * Re-derive `organizations.billing_contact` from the org's billing contact, or
  * write null when no org-level contact holds the `billing` role.
  *
@@ -226,19 +270,23 @@ export async function lockOrganizationForProjection(exec: ContactExecutor, orgId
  * Returns the blob it wrote. The caller must already hold the organization
  * row lock (`lockOrganizationForProjection`, or an UPDATE of that row).
  */
-export async function projectBillingContact(exec: ContactExecutor, orgId: string): Promise<ContactBlob | null> {
+export async function projectBillingContact(
+  exec: ContactExecutor,
+  orgId: string,
+  options: { keepContactId?: string | null } = {},
+): Promise<BillingContactProjection | null> {
   const [billing] = await exec
-    .select({ name: contacts.name, email: contacts.email, phone: contacts.phone })
+    .select({ id: contacts.id, name: contacts.name, email: contacts.email, phone: contacts.phone })
     .from(contacts)
     .where(billingContactWhere(orgId))
-    .orderBy(...billingContactOrder(orgId))
+    .orderBy(...billingContactOrder(orgId, options.keepContactId))
     .limit(1);
 
   // A mobile-only contact has nothing the three-key blob can model. Write null
-  // rather than `{name:null,email:null,phone:null}` so the column keeps meaning
-  // "no contact" instead of "an empty one".
-  const blob: ContactBlob | null = billing && (billing.name !== null || billing.email !== null || billing.phone !== null)
-    ? { name: billing.name, email: billing.email, phone: billing.phone }
+  // rather than an all-null object so the column keeps meaning "no contact"
+  // instead of "an empty one".
+  const blob: BillingContactProjection | null = billing && (billing.name !== null || billing.email !== null || billing.phone !== null)
+    ? { contactId: billing.id, name: billing.name, email: billing.email, phone: billing.phone }
     : null;
 
   await exec
@@ -269,7 +317,7 @@ export async function projectBillingContact(exec: ContactExecutor, orgId: string
 async function applyToBillingContact(
   exec: ContactExecutor,
   params: { orgId: string; patch: ContactBlob; replace: boolean; actorId?: string | null },
-): Promise<void> {
+): Promise<string | null> {
   const { orgId, patch, replace, actorId } = params;
 
   const [existing] = await exec
@@ -297,7 +345,7 @@ async function applyToBillingContact(
         .set({ roles: sql`array_remove(${contacts.roles}, ${BILLING_ROLE})`, updatedAt: new Date() })
         .where(and(eq(contacts.id, existing.id), eq(contacts.orgId, orgId)));
     }
-    return;
+    return null;
   }
 
   if (existing) {
@@ -308,7 +356,9 @@ async function applyToBillingContact(
     await recordDestinationChangeWithExecutor(exec, {
       orgId, contactId: existing.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
     });
-    return;
+    // `existing` was chosen by the same order the projection uses, so it IS the
+    // current recipient — keep it one even though its email just changed.
+    return existing.id;
   }
 
   const [primary] = await exec
@@ -328,6 +378,7 @@ async function applyToBillingContact(
   await recordDestinationChangeWithExecutor(exec, {
     orgId, contactId: created!.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
   });
+  return created!.id;
 }
 
 /**
@@ -344,21 +395,23 @@ export async function mergeBillingContact(
   orgId: string,
   patch: ContactBlob,
   actorId?: string | null,
-): Promise<ContactBlob | null | undefined> {
+): Promise<BillingContactProjection | null | undefined> {
   if (patch.name === undefined && patch.email === undefined && patch.phone === undefined) return undefined;
 
   await lockOrganizationForProjection(exec, orgId);
-  await applyToBillingContact(exec, { orgId, patch, replace: false, actorId });
-  return projectBillingContact(exec, orgId);
+  const keepContactId = await applyToBillingContact(exec, { orgId, patch, replace: false, actorId });
+  return projectBillingContact(exec, orgId, { keepContactId });
 }
 
 /**
- * Whole-blob replace of the org's billing contact, for callers that already
- * wrote `organizations.billing_contact` as part of a larger statement — the
- * org create/import INSERT, and the org PATCH route's guarded UPDATE (#2879),
- * which must keep its own WHERE. Either statement already holds the org row
- * lock. The column is then re-projected from the contact, and the projected
- * blob is returned so the caller can answer with what was actually stored.
+ * Whole-blob replace of the org's billing contact, for callers that have
+ * already locked the org row with a statement of their own — the org
+ * create/import INSERT, and the org PATCH route's guarded UPDATE (#2879),
+ * which must keep its own WHERE. The column is then re-projected from the
+ * contact, and the projected blob is returned so the caller can answer with
+ * what was actually stored. A caller must not write the request's value into
+ * `organizations.billing_contact` before calling this on an org that may
+ * already have billing contacts: the target is chosen by reading the column.
  *
  * Callers pass whatever the (unvalidated, `z.any()`) request body carried;
  * `readContactBlob` is what makes a non-object value safe here.
@@ -368,9 +421,9 @@ export async function syncBillingContactRow(
   orgId: string,
   blob: unknown,
   actorId?: string | null,
-): Promise<ContactBlob | null> {
-  await applyToBillingContact(exec, { orgId, patch: readContactBlob(blob), replace: true, actorId });
-  return projectBillingContact(exec, orgId);
+): Promise<BillingContactProjection | null> {
+  const keepContactId = await applyToBillingContact(exec, { orgId, patch: readContactBlob(blob), replace: true, actorId });
+  return projectBillingContact(exec, orgId, { keepContactId });
 }
 
 /**

@@ -587,6 +587,7 @@ describe('commitContactImport', () => {
       then: [
         [storedContact({ roles: ['billing'] })],
         ...lockedReread({ roles: ['billing'] }),
+        [{ id: EXISTING }],   // pre-write recipient read (the row carries an email)
         [merged],
       ],
     });
