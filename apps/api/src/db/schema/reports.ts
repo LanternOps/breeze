@@ -176,6 +176,12 @@ export const reports = pgTable('reports', {
   // report_series.revision starts at 1, so 0 is always stale.
   seriesRevision: integer('series_revision'),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
+  // Set on a STANDALONE report detached from that series (series_id NULL,
+  // reports_detached_from_series_chk). While it is live, its org is not
+  // targeted by that series (services/reportSeries/targets.ts), so a later
+  // targets change cannot mint a second child next to it.
+  detachedFromSeriesId: uuid('detached_from_series_id')
+    .references(() => reportSeries.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -198,6 +204,9 @@ export const reports = pgTable('reports', {
   seriesIdx: index('reports_series_id_idx')
     .on(table.seriesId)
     .where(sql`${table.seriesId} IS NOT NULL`),
+  detachedFromSeriesIdx: index('reports_detached_from_series_id_idx')
+    .on(table.detachedFromSeriesId)
+    .where(sql`${table.detachedFromSeriesId} IS NOT NULL`),
 }));
 
 /**

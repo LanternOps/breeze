@@ -25,10 +25,10 @@ import { ReportSeriesError, seriesNotFound } from './errors';
 import { listSeriesChildren, reconcileSeries, type SeriesChildRow } from './reconcile';
 import { materializeDetachedRecipients, resolveSeriesRecipientsForOrgs } from './recipients';
 import {
-  applyTargetMode,
   eligiblePartnerOrgs,
   listSeriesTargetRows,
   resolveSeriesTargetOrgIds,
+  resolveTargetsForSeries,
 } from './targets';
 import {
   parseSeriesRecipientRule,
@@ -242,7 +242,9 @@ export async function replaceSeriesTargets(
   const current = await lockOwnSeries(seriesId, partnerId, tx);
   const before = new Set(await resolveSeriesTargetOrgIds(current, tx));
   const eligible = await eligiblePartnerOrgs(partnerId, tx);
-  const after = applyTargetMode(eligible.map((org) => org.id), input.targetMode, new Set(input.orgIds));
+  const after = await resolveTargetsForSeries(
+    seriesId, eligible.map((org) => org.id), input.targetMode, new Set(input.orgIds), tx,
+  );
   const addsOrgs = after.some((orgId) => !before.has(orgId));
   if (addsOrgs && deliversAnything(parseSeriesRecipientRule(current.recipientRule), current.internalCc)) {
     requireDeliveryGate(options.mayAddDelivery);
@@ -411,7 +413,9 @@ export async function previewSeriesRecipients(
 ): Promise<SeriesRecipientPreview> {
   const partnerId = requireSeriesPartner(auth);
   const eligible = await eligiblePartnerOrgs(partnerId, db);
-  const targetIds = applyTargetMode(eligible.map((org) => org.id), input.targetMode, new Set(input.orgIds));
+  const targetIds = await resolveTargetsForSeries(
+    input.seriesId, eligible.map((org) => org.id), input.targetMode, new Set(input.orgIds), db,
+  );
   const childReportIdByOrg = new Map<string, string>();
   if (input.seriesId) {
     for (const child of await listSeriesChildren(input.seriesId, db)) {
@@ -475,7 +479,9 @@ export async function detachSeriesChild(
   }
   const [row] = await tx
     .update(reports)
-    .set({ seriesId: null, seriesRevision: null, updatedAt: new Date() })
+    // detached_from_series_id remembers the detach (targets.ts), in the SAME
+    // statement that clears series_id (reports_detached_from_series_chk).
+    .set({ seriesId: null, seriesRevision: null, detachedFromSeriesId: args.seriesId, updatedAt: new Date() })
     .where(and(
       eq(reports.id, args.reportId),
       eq(reports.orgId, args.orgId),

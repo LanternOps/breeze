@@ -205,7 +205,8 @@ export async function reconcileSeries(seriesId: string, tx: SeriesTx): Promise<R
 }
 
 /**
- * Series with STRUCTURAL drift: a targeted eligible org without an active
+ * Series with STRUCTURAL drift (the target set as targets.ts defines it,
+ * detached standalones included): a targeted eligible org without an active
  * child, an active child at a stale revision (0 included), or an active child
  * of an org that is no longer targeted. Blocked children are deliberately not
  * drift (plan Contract concern 13). Random order so a persistently failing
@@ -225,6 +226,11 @@ export async function findSeriesNeedingReconcile(limit: number, tx: SeriesTx = d
            OR (s.target_mode = 'selected' AND EXISTS (
               SELECT 1 FROM report_series_org_targets x WHERE x.series_id = s.id AND x.org_id = o.id))
          )
+         -- targets.ts: a live detached standalone un-targets its org.
+         AND NOT EXISTS (
+           SELECT 1 FROM reports d
+            WHERE d.detached_from_series_id = s.id AND d.org_id = o.id
+              AND d.series_id IS NULL AND d.archived_at IS NULL)
     ),
     active_children AS (
       SELECT r.series_id, r.org_id, r.series_revision

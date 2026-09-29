@@ -8,6 +8,12 @@
 -- partial unique index is the "one active child per (org, series)" backstop
 -- behind the reconciler's per-series FOR UPDATE lock.
 --
+-- reports.detached_from_series_id: set on a STANDALONE report (series_id
+-- NULL) that was detached from that series. While it is live (not archived)
+-- its org is not targeted by that series, so a later targets change cannot
+-- mint a second child next to it; deleting or archiving it re-enables
+-- targeting. ON DELETE SET NULL: a deleted series leaves nothing to remember.
+--
 -- report_schedule_recipients.mode: 'add' (every existing row, so today's
 -- delivery is unchanged) or 'remove' (a per-org exclusion of a rule match on
 -- a series child). The unique key stays (report_id, contact_id).
@@ -18,6 +24,7 @@
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS series_id uuid;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS series_revision integer;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS detached_from_series_id uuid;
 
 DO $$ BEGIN
   IF NOT EXISTS (
@@ -26,6 +33,18 @@ DO $$ BEGIN
   ) THEN
     ALTER TABLE reports ADD CONSTRAINT reports_series_id_report_series_id_fk
       FOREIGN KEY (series_id) REFERENCES report_series(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'reports_detached_from_series_id_report_series_id_fk' AND conrelid = 'reports'::regclass
+  ) THEN
+    ALTER TABLE reports ADD CONSTRAINT reports_detached_from_series_id_report_series_id_fk
+      FOREIGN KEY (detached_from_series_id) REFERENCES report_series(id) ON DELETE SET NULL;
+  END IF;
+  -- A row is either a child (series_id) or a detached standalone, never both.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reports_detached_from_series_chk') THEN
+    ALTER TABLE reports ADD CONSTRAINT reports_detached_from_series_chk
+      CHECK (detached_from_series_id IS NULL OR series_id IS NULL);
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reports_series_child_shape_chk') THEN
     ALTER TABLE reports ADD CONSTRAINT reports_series_child_shape_chk CHECK (
@@ -47,6 +66,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS reports_series_active_child_uniq
 CREATE INDEX IF NOT EXISTS reports_series_id_idx
   ON reports (series_id)
   WHERE series_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS reports_detached_from_series_id_idx
+  ON reports (detached_from_series_id)
+  WHERE detached_from_series_id IS NOT NULL;
 
 ALTER TABLE report_schedule_recipients ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'add';
 DO $$ BEGIN

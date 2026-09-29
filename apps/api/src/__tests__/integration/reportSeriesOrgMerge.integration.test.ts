@@ -13,6 +13,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { CUSTOM_EXECUTORS } from '../../services/orgMergeCustomExecutors';
 import { buildRepoint, buildRepointDedupe } from '../../services/orgMergeExecutors';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
+import { reconcileSeries, seriesChildGate } from '../../services/reportSeries/reconcile';
 
 class Rollback extends Error {}
 
@@ -135,6 +136,60 @@ describe('org merge — multi-org report series children', () => {
         const rows = (await db.execute(sql`
           SELECT org_id, archived_at FROM reports WHERE id = ${childL}::uuid`)) as unknown as Array<{ org_id: string; archived_at: Date | null }>;
         expect(rows).toEqual([{ org_id: S, archived_at: null }]);
+        throw new Rollback('done');
+      });
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
+  }, 120_000);
+
+  // Final review #1: a detached standalone survives the merge (repointed into
+  // the survivor, still remembering its series), which un-targets the survivor
+  // for that series. The survivor's own child is therefore skipped by the
+  // worker gate at once and archived by the next reconcile, so the customer
+  // keeps exactly one copy: the standalone they chose to detach.
+  it('a loser detached standalone repoints to the survivor and wins over the survivor child', async () => {
+    const P = randomUUID();
+    const L = randomUUID();
+    const S = randomUUID();
+    const series = randomUUID();
+    const standaloneL = randomUUID();
+    const childS = randomUUID();
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`INSERT INTO partners (id, name, slug) VALUES (${P}::uuid, 'Series merge 3', ${`series-merge3-${P.slice(0, 8)}`})`);
+        await db.execute(sql`
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`sm3-l-${L.slice(0, 8)}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`sm3-s-${S.slice(0, 8)}`}, 'active', 'USD')`);
+        await db.execute(sql`
+          INSERT INTO report_series (id, partner_id, name, type, schedule, target_mode)
+          VALUES (${series}::uuid, ${P}::uuid, 'Monthly', 'executive_summary', 'monthly', 'selected')`);
+        await db.execute(sql`
+          INSERT INTO report_series_org_targets (series_id, org_id) VALUES (${series}::uuid, ${S}::uuid)`);
+        await db.execute(sql`
+          INSERT INTO reports (id, org_id, name, type, schedule, series_id, series_revision, detached_from_series_id) VALUES
+            (${standaloneL}::uuid, ${L}::uuid, 'Monthly', 'executive_summary', 'monthly', NULL, NULL, ${series}::uuid),
+            (${childS}::uuid, ${S}::uuid, 'Monthly', 'executive_summary', 'monthly', ${series}::uuid, 1, NULL)`);
+
+        await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+        const out = await CUSTOM_EXECUTORS.reports!(L, S);
+        expect(out.moved).toBe(1);
+        await db.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
+        const moved = (await db.execute(sql`
+          SELECT org_id, series_id, detached_from_series_id, archived_at FROM reports WHERE id = ${standaloneL}::uuid`)) as unknown as Array<Record<string, unknown>>;
+        expect(moved).toEqual([{ org_id: S, series_id: null, detached_from_series_id: series, archived_at: null }]);
+
+        // Right after the merge the survivor child is no longer targeted: a queued job for it is skipped.
+        expect(await seriesChildGate({ id: childS, orgId: S, seriesId: series, seriesRevision: 1, archivedAt: null }))
+          .toBe('skip_untargeted');
+        const result = await reconcileSeries(series, db);
+        expect(result).toMatchObject({ created: 0, archived: 1 });
+        const active = (await db.execute(sql`
+          SELECT id FROM reports
+           WHERE org_id = ${S}::uuid AND archived_at IS NULL
+             AND (series_id = ${series}::uuid OR detached_from_series_id = ${series}::uuid)`)) as unknown as Array<{ id: string }>;
+        expect(active).toEqual([{ id: standaloneL }]);
         throw new Rollback('done');
       });
     } catch (err) {

@@ -8,13 +8,13 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { reports, reportSeries, reportSeriesOrgTargets } from '../../db/schema';
 import {
   assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
 } from './db-utils';
-import { reconcileAllSeries } from '../../services/reportSeries/reconcile';
+import { findSeriesNeedingReconcile, reconcileAllSeries } from '../../services/reportSeries/reconcile';
 import { parseSeriesRecipientRule } from '../../services/reportSeries/types';
 import { ReportSeriesError } from '../../services/reportSeries/errors';
 import {
@@ -279,5 +279,78 @@ describe('series store (partner request context)', () => {
     expect(await codeOf(s.inPartner((tx) => detachSeriesChild(
       tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth,
     )))).toBe('report_not_series_child');
+  });
+
+});
+
+// Final review #1: detach is REMEMBERED on the standalone
+// (reports.detached_from_series_id), so a later targets change cannot mint a
+// second child next to it; deleting or archiving the standalone re-enables
+// targeting.
+describe('detach is remembered across later target changes', () => {
+  async function activeReportsOf(orgId: string) {
+    return system(() => db.select().from(reports).where(and(eq(reports.orgId, orgId), isNull(reports.archivedAt))));
+  }
+
+  it("selected: detach X, flip to 'all' -> X keeps only the standalone; deleting it re-targets X", async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(
+      input(s.owner, { targetMode: 'selected', orgIds: [s.orgA, s.orgB] }), s.auth, tx, { mayAddDelivery: true },
+    ));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    const detached = await s.inPartner((tx) => detachSeriesChild(
+      tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth,
+    ));
+    expect(detached.row.detachedFromSeriesId).toBe(series.id);
+
+    // The target_mode reset trigger drops every target row, so X is back in the 'all' set by rows alone.
+    const flipped = await s.inPartner((tx) => replaceSeriesTargets(
+      series.id, { targetMode: 'all', orgIds: [] }, s.auth, tx, { mayAddDelivery: true },
+    ));
+    expect(flipped.reconcile.created).toBe(0);
+    await reconcileAllSeries();
+    expect((await activeReportsOf(s.orgA)).map((r) => r.id)).toEqual([child.id]);
+    // The drift query agrees with the reconciler, so the sweep does not loop on it.
+    expect(await system(() => findSeriesNeedingReconcile(10_000))).not.toContain(series.id);
+
+    await system(() => db.delete(reports).where(eq(reports.id, child.id)));
+    await reconcileAllSeries();
+    const again = await activeReportsOf(s.orgA);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.seriesId).toBe(series.id);
+    expect(again[0]?.id).not.toBe(child.id);
+  });
+
+  it("'all': a same-mode replace that drops X's exclusion does not mint a second child; archiving the standalone re-targets X", async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    await s.inPartner((tx) => detachSeriesChild(tx, { seriesId: series.id, orgId: s.orgA, reportId: child.id }, s.auth));
+
+    const replaced = await s.inPartner((tx) => replaceSeriesTargets(
+      series.id, { targetMode: 'all', orgIds: [] }, s.auth, tx, { mayAddDelivery: true },
+    ));
+    expect(replaced.reconcile.created).toBe(0);
+    await reconcileAllSeries();
+    expect((await activeReportsOf(s.orgA)).map((r) => r.id)).toEqual([child.id]);
+    const detail = await withDbAccessContext(s.ctx, () => getSeriesDetail(series.id, s.auth));
+    expect(detail.orgs.find((o) => o.orgId === s.orgA)?.state).toBe('excluded');
+
+    await system(() => db.update(reports).set({ archivedAt: new Date() }).where(eq(reports.id, child.id)));
+    await reconcileAllSeries();
+    const again = await activeReportsOf(s.orgA);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.seriesId).toBe(series.id);
+  });
+
+  it('a row cannot be both a child and a detached standalone (reports_detached_from_series_chk)', async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    const err = await system(() => db.execute(sql`
+      UPDATE reports SET detached_from_series_id = ${series.id} WHERE id = ${child.id}`)).then(() => null, (e: unknown) => e);
+    const pg = err as { code?: string; constraint_name?: string; cause?: { code?: string; constraint_name?: string } } | null;
+    expect(pg?.cause?.code ?? pg?.code).toBe('23514');
+    expect(pg?.cause?.constraint_name ?? pg?.constraint_name).toBe('reports_detached_from_series_chk');
   });
 });
