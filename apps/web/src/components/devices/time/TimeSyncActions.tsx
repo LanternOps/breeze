@@ -158,7 +158,7 @@ export default function TimeSyncActions({
           onClick={() => void queue('time_resync')}
           className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
         >
-          {t(bulk ? 'timeSync.actions.bulkResync' : 'timeSync.actions.resync')}
+          {bulk ? t('timeSync.actions.bulkResync') : t('timeSync.actions.resync')}
         </button>
         <button
           type="button"
@@ -167,11 +167,9 @@ export default function TimeSyncActions({
           onClick={() => void queue('time_set_timezone')}
           className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
         >
-          {t(
-            bulk
-              ? 'timeSync.actions.bulkSetTimezone'
-              : 'timeSync.actions.setTimezone',
-          )}
+          {bulk
+            ? t('timeSync.actions.bulkSetTimezone')
+            : t('timeSync.actions.setTimezone')}
         </button>
         {!bulk && (
           <button
