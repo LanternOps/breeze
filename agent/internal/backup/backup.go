@@ -600,14 +600,34 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			}
 		}()
 	}
+	// readOnlyCompletion: a brokered writer resumed a journaled snapshot the
+	// control plane has already published — this run may only report it.
+	readOnlyCompletion := false
 	if journal != nil {
 		dispatched := ""
 		if m.config.BaseSnapshotID != nil {
 			dispatched = *m.config.BaseSnapshotID
 		}
-		if err := journal.BindRun(m.config.JobID, dispatched); err != nil {
+		if issuer, brokered := snapshotIDIssuerOf(m.config.Provider); brokered {
+			readOnly, bindErr := m.bindBrokeredJournal(runCtx, journal, issuer, dispatched)
+			switch {
+			case errors.Is(bindErr, errJournalUnusable):
+				log.Warn("checkpoint journal unusable for this brokered run, proceeding without resume support", "error", bindErr.Error())
+				journal.Abandon()
+				journal = nil
+			case bindErr != nil:
+				job.Status = jobStatusFailed
+				job.CompletedAt = time.Now().UTC()
+				job.Error = bindErr
+				return job, job.Error
+			default:
+				readOnlyCompletion = readOnly
+			}
+		} else if err := journal.BindRun(m.config.JobID, dispatched); err != nil {
 			log.Warn("failed to bind checkpoint journal to this run", "error", err.Error())
 		}
+	}
+	if journal != nil {
 		resumedJournal = journal.resumed
 		if resumedJournal {
 			// Temporary upload files an interrupted attempt left under this
@@ -658,7 +678,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// first. See fetchPublishedManifest's three-state contract: only a
 	// CONFIRMED-absent result falls through to a normal run; any other
 	// error fails the job closed right here.
-	if journal != nil && resumedJournal {
+	if journal != nil && resumedJournal && !journal.ContinuedFromOtherJob() {
 		resumePrefix := path.Join(snapshotRootDir, journal.snapshotID)
 		existing, existingDigest, fetchErr := fetchPublishedManifestWithDigest(runCtx, m.config.Provider, resumePrefix)
 		if fetchErr != nil {
@@ -699,6 +719,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// existing == nil, fetchErr == nil: confirmed absent — proceed to
 		// VSS/scan/upload normally, reusing this SAME journal (no second
 		// open) all the way down to createSnapshotWithProgress's call site.
+	}
+	if readOnlyCompletion {
+		// The control plane holds this snapshot as published, but its
+		// manifest was not found; nothing may be written to it.
+		job.Status = jobStatusFailed
+		job.CompletedAt = time.Now().UTC()
+		job.Error = errors.New("the interrupted snapshot this backup continued is already published, but its manifest could not be read")
+		return job, job.Error
 	}
 	if journal != nil {
 		// Best effort, like every journal write.
@@ -1089,7 +1117,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// A publish failure here is a hard job failure, not `completed`
 			// — there is no ordinary-files fallback for this snapshot.
 			snapshot := &Snapshot{
-				ID:        newSnapshotID(),
+				ID:        runSnapshotID(uploadProvider),
 				Timestamp: time.Now().UTC(),
 				// Files must be a non-nil empty slice, not the zero value: the
 				// field has no `omitempty` (a genuine empty-files manifest

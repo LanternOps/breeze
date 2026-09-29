@@ -48,6 +48,8 @@ coverage/
 # Go
 agent/breeze-agent
 agent/breeze-backup
+agent/cmd/breeze-backup/breeze-backup
+agent/cmd/breeze-backup/breeze-backup.exe
 agent/breeze-watchdog
 agent/bin/
 viewer/bin/

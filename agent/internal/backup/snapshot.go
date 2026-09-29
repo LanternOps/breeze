@@ -54,6 +54,19 @@ func checksumMatches(path, want string) bool {
 	return err == nil && got == want
 }
 
+// storedEntryMatches reports whether a journaled entry's object, stored under
+// this snapshot's own prefix, still holds exactly the recorded bytes. Only a
+// literal entry (never a reference into another snapshot) with a recorded
+// digest can match, and only through a provider that can read the stored
+// object back.
+func storedEntryMatches(ctx context.Context, digester providers.StoredObjectDigester, canVerify bool, entry SnapshotFile, snapshotID string) bool {
+	if !canVerify || entry.Checksum == "" || isReferenceEntry(entry, snapshotID) {
+		return false
+	}
+	stored, err := digester.StoredObjectDigest(ctx, entry.BackupPath)
+	return err == nil && stored.SHA256 == entry.Checksum && stored.Size == entry.Size
+}
+
 const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
@@ -174,6 +187,37 @@ func (g *leaseGate) UploadWithDigest(ctx context.Context, localPath, remotePath 
 		return du.UploadWithDigest(ctx, localPath, remotePath)
 	}
 	return providers.UploadDigest{}, fmt.Errorf("%w: %T", providers.ErrDigestUnavailable, g.BackupProvider)
+}
+
+// unwrapProvider returns the provider a leaseGate wraps, or provider itself.
+func unwrapProvider(provider providers.BackupProvider) providers.BackupProvider {
+	if g, ok := provider.(*leaseGate); ok {
+		return g.BackupProvider
+	}
+	return provider
+}
+
+// snapshotIDIssuerOf returns the brokered writer behind provider, if any: a
+// run writing through one uses the snapshot id the control plane issued.
+func snapshotIDIssuerOf(provider providers.BackupProvider) (providers.SnapshotIDIssuer, bool) {
+	issuer, ok := unwrapProvider(provider).(providers.SnapshotIDIssuer)
+	return issuer, ok
+}
+
+// storedObjectDigesterOf returns the provider behind provider that can read
+// a stored object's digest back, if any.
+func storedObjectDigesterOf(provider providers.BackupProvider) (providers.StoredObjectDigester, bool) {
+	d, ok := unwrapProvider(provider).(providers.StoredObjectDigester)
+	return d, ok
+}
+
+// runSnapshotID is the id a new snapshot written through provider takes: the
+// issued one for a brokered writer, otherwise a freshly minted one.
+func runSnapshotID(provider providers.BackupProvider) string {
+	if issuer, ok := snapshotIDIssuerOf(provider); ok {
+		return issuer.SnapshotID()
+	}
+	return newSnapshotID()
 }
 
 // Snapshot represents a point-in-time backup.
@@ -721,8 +765,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return nil, errors.New("no files provided for snapshot")
 	}
 
-	snapshotID := newSnapshotID()
+	snapshotID := runSnapshotID(provider)
 	if journal != nil {
+		if issuer, brokered := snapshotIDIssuerOf(provider); brokered && journal.snapshotID != issuer.SnapshotID() {
+			// RunBackupContext binds the journal to the issued (or resumed)
+			// id before anything is written; a mismatch here would write
+			// objects the control plane never authorized.
+			return nil, fmt.Errorf("checkpoint journal names snapshot %s but the storage session writes %s", journal.snapshotID, issuer.SnapshotID())
+		}
 		snapshotID = journal.snapshotID
 	}
 	snapshot := &Snapshot{
@@ -773,7 +823,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// Kept here too so direct callers of this function (this package's own
 	// unit tests) still exercise and prove the behavior without going
 	// through RunBackupContext.
-	if journal != nil && journal.resumed {
+	if journal != nil && journal.resumed && !journal.ContinuedFromOtherJob() {
 		existing, fetchErr := fetchPublishedManifest(ctx, provider, prefix)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", prefix, fetchErr)
@@ -935,6 +985,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	if journal != nil {
 		var resumedBytes int64
 		tainted := journal.foldCollidingKeys()
+		// A snapshot continued from another job also needs the stored
+		// object to still hold the recorded bytes (see ContinueRun).
+		verifyStored := journal.VerifyStoredEntries()
+		digester, canVerifyStored := storedObjectDigesterOf(provider)
 		for _, file := range files {
 			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
 				// Size and modification time can match a file whose content
@@ -957,6 +1011,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 					// keys one object answers to; re-upload rather than
 					// resume a possibly-overwritten object.
 					log.Warn("not resuming journaled file whose object key collides with a case twin; re-uploading",
+						"path", file.sourcePath,
+						"backupPath", entry.BackupPath,
+						"snapshotId", snapshot.ID,
+					)
+					continue
+				}
+				if verifyStored && !storedEntryMatches(ctx, digester, canVerifyStored, entry, snapshot.ID) {
+					log.Info("journaled object from an earlier job does not match its record; uploading it again",
 						"path", file.sourcePath,
 						"backupPath", entry.BackupPath,
 						"snapshotId", snapshot.ID,

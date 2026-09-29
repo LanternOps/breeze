@@ -36,19 +36,26 @@ func uploadWithDigest(ctx context.Context, provider providers.BackupProvider, st
 	if err := ctx.Err(); err != nil {
 		return providers.UploadDigest{}, errBackupStopped
 	}
-	if du, ok := provider.(providers.DigestUploader); ok {
+	_, brokered := snapshotIDIssuerOf(provider)
+	du, ok := provider.(providers.DigestUploader)
+	if ok {
 		d, err := du.UploadWithDigest(ctx, localPath, remotePath)
 		if err == nil {
 			return d, nil
 		}
-		if !errors.Is(err, providers.ErrDigestUnavailable) {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return providers.UploadDigest{}, errBackupStopped
-			}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return providers.UploadDigest{}, errBackupStopped
+		}
+		if !errors.Is(err, providers.ErrDigestUnavailable) || brokered {
 			return providers.UploadDigest{}, err
 		}
 		log.Debug("provider cannot report an upload digest, uploading a staged copy",
 			"remotePath", remotePath)
+	}
+	if brokered {
+		// A brokered writer always reports the digest of what it sent; a
+		// second, staged upload through it would only hide a fault.
+		return providers.UploadDigest{}, fmt.Errorf("%w: the storage session writer reported no digest for %s", providers.ErrDigestUnavailable, remotePath)
 	}
 	return uploadStagedCopy(ctx, provider, stagingDir, localPath, remotePath)
 }

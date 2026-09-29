@@ -1,17 +1,26 @@
-// Package storagesession implements brokered, read-only access to backup
-// storage for restore-shaped commands. Instead of receiving reusable storage
-// credentials, the helper receives a short-lived storage session from the
-// control plane and exchanges exact object keys for short-lived object URLs.
+// Package storagesession implements brokered access to backup storage.
+// Instead of receiving reusable storage credentials, the helper receives a
+// short-lived storage session from the control plane and exchanges exact
+// object keys for short-lived object URLs:
+//   - read sessions (restore-shaped commands) resolve GET URLs only;
+//   - write sessions (backup_run, mssql_backup, hyperv_backup) are bound to
+//     ONE server-issued snapshot id and resolve PUT / UploadPart URLs for
+//     keys under snapshots/<that id>/ only; multipart create/complete/abort,
+//     list and delete run on the control plane.
 //
 // Wire contract (version 1):
 //
 //	command payload: "storageSession": {version, sessionId, token, baseUrl,
 //	                  expiresAt, deadline, capabilities, maxBatch}
+//	                  write sessions add {scope: "snapshot_write", snapshotId,
+//	                  partSizeBytes, conditionalWrites}
 //	resolve: POST {baseUrl}/api/v1/agents/{agentId}/storage-sessions/{sessionId}/objects:resolve
 //	renew:   POST {baseUrl}/api/v1/agents/{agentId}/storage-sessions/{sessionId}/renew
+//	write:   POST …/snapshot:resume, …/multipart:create, …/multipart:complete,
+//	         …/multipart:abort, …/objects:list, …/objects:delete
 //
-// Both calls carry the agent's own bearer credential in Authorization and the
-// session token in the X-Breeze-Storage-Session header — never in a URL.
+// Every call carries the agent's own bearer credential in Authorization and
+// the session token in the X-Breeze-Storage-Session header — never in a URL.
 package storagesession
 
 import (
@@ -23,6 +32,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
 )
 
 const (
@@ -35,8 +46,11 @@ const (
 	// WriteProtocolVersion is the brokered storage-write protocol this build
 	// implements (1 = backups are written through storage sessions instead
 	// of the configured storage credentials; 0 = not implemented). Reported
-	// the same way as ProtocolVersion.
-	WriteProtocolVersion = 0
+	// the same way as ProtocolVersion. Version 1 covers the write provider,
+	// the server-issued snapshot id, resume and continuation of a journaled
+	// snapshot, and the helper wiring for backup_run, mssql_backup and
+	// hyperv_backup — raise it only with all of them in the build.
+	WriteProtocolVersion = 1
 
 	// SessionHeader carries the session token on control-plane calls.
 	SessionHeader = "X-Breeze-Storage-Session"
@@ -47,6 +61,26 @@ const (
 	// CapabilityRenew enables lease renewal; without it the lease simply
 	// runs to its expiry.
 	CapabilityRenew = "renew"
+	// Write-session capabilities; every one of them is required, since a
+	// backup uses all of them.
+	CapabilityPut       = "put"
+	CapabilityMultipart = "multipart"
+	CapabilityList      = "list"
+	CapabilityDelete    = "delete"
+	CapabilityResume    = "resume"
+
+	// ScopeSnapshotWrite is the scope of a write session. A read session
+	// carries no scope.
+	ScopeSnapshotWrite = "snapshot_write"
+
+	// CommandClassRead / CommandClassWrite name the kind of command a
+	// session is delivered with (see ValidateFor).
+	CommandClassRead  = "read"
+	CommandClassWrite = "write"
+
+	// Bounds of a write session's multipart part size (S3 limits).
+	minPartSizeBytes = 5 << 20
+	maxPartSizeBytes = 5 << 30
 
 	// maxBatchLimit bounds the server-advertised batch size.
 	maxBatchLimit = 1000
@@ -78,6 +112,12 @@ type Descriptor struct {
 	Capabilities []string `json:"capabilities"`
 	MaxBatch     int      `json:"maxBatch"`
 
+	// Write sessions only.
+	Scope             string `json:"scope,omitempty"`
+	SnapshotID        string `json:"snapshotId,omitempty"`
+	PartSizeBytes     int64  `json:"partSizeBytes,omitempty"`
+	ConditionalWrites bool   `json:"conditionalWrites,omitempty"`
+
 	baseURL   *url.URL
 	expiresAt time.Time
 	deadline  time.Time
@@ -86,8 +126,8 @@ type Descriptor struct {
 // String never includes the token. Value receivers, so a pointer, a nil
 // pointer and a copied value all format safely.
 func (d Descriptor) String() string {
-	return fmt.Sprintf("storageSession(version=%d sessionId=%s baseUrl=%s expiresAt=%s deadline=%s)",
-		d.Version, d.SessionID, d.BaseURL, d.ExpiresAt, d.Deadline)
+	return fmt.Sprintf("storageSession(version=%d scope=%s sessionId=%s snapshotId=%s baseUrl=%s expiresAt=%s deadline=%s)",
+		d.Version, d.scopeName(), d.SessionID, d.SnapshotID, d.BaseURL, d.ExpiresAt, d.Deadline)
 }
 
 // GoString never includes the token.
@@ -108,8 +148,8 @@ func isPresent(raw json.RawMessage) bool {
 	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 }
 
-// ParsePayload extracts and validates the storageSession of a restore-shaped
-// command payload. It returns (nil, nil) when the payload carries no session,
+// ParsePayload extracts and validates the storageSession of a command
+// payload (read or write scope; the caller checks which with ValidateFor). It returns (nil, nil) when the payload carries no session,
 // so the caller keeps its legacy behaviour. When a session IS present every
 // problem is an error — the caller must fail the command and must not fall
 // back to any other storage source:
@@ -143,7 +183,7 @@ func ParsePayload(payload json.RawMessage, now time.Time) (*Descriptor, error) {
 	if isPresent(envelope.Provider) {
 		var provider string
 		if err := json.Unmarshal(envelope.Provider, &provider); err != nil || (provider != "" && provider != "s3") {
-			return nil, sessionErr("brokered reads support only the s3 provider, payload names provider %s", strings.TrimSpace(string(envelope.Provider)))
+			return nil, sessionErr("storage sessions support only the s3 provider, payload names provider %s", strings.TrimSpace(string(envelope.Provider)))
 		}
 	}
 
@@ -200,10 +240,69 @@ func (d *Descriptor) validate(now time.Time) error {
 	if d.MaxBatch < 1 || d.MaxBatch > maxBatchLimit {
 		return sessionErr("maxBatch %d is outside 1..%d", d.MaxBatch, maxBatchLimit)
 	}
+	switch d.Scope {
+	case "":
+		if d.SnapshotID != "" {
+			return sessionErr("a read session must not name a snapshotId")
+		}
+	case ScopeSnapshotWrite:
+		if !validSnapshotID(d.SnapshotID) {
+			return sessionErr("write session snapshotId is missing or malformed")
+		}
+		for _, c := range []string{CapabilityPut, CapabilityMultipart, CapabilityList, CapabilityDelete, CapabilityResume} {
+			if !hasCapability(d.Capabilities, c) {
+				return sessionErr("write session does not offer the %s capability", c)
+			}
+		}
+		if d.PartSizeBytes < minPartSizeBytes || d.PartSizeBytes > maxPartSizeBytes {
+			return sessionErr("write session partSizeBytes %d is outside %d..%d", d.PartSizeBytes, int64(minPartSizeBytes), int64(maxPartSizeBytes))
+		}
+	default:
+		return sessionErr("unsupported storage session scope %q", d.Scope)
+	}
 	d.baseURL = base
 	d.expiresAt = expiresAt
 	d.deadline = deadline
 	return nil
+}
+
+// ValidateFor checks that the session's scope fits the command it was
+// delivered with: a read command needs a read session, a backup (write)
+// command a write session. Anything else fails closed.
+func (d *Descriptor) ValidateFor(commandClass string) error {
+	if d == nil {
+		return sessionErr("descriptor is missing")
+	}
+	switch commandClass {
+	case CommandClassRead:
+		if d.Scope != "" {
+			return sessionErr("a %s session cannot serve a read command", d.scopeName())
+		}
+	case CommandClassWrite:
+		if d.Scope != ScopeSnapshotWrite {
+			return sessionErr("a %s session cannot serve a backup write command", d.scopeName())
+		}
+	default:
+		return sessionErr("unknown command class %q", commandClass)
+	}
+	return nil
+}
+
+func (d Descriptor) scopeName() string {
+	if d.Scope == "" {
+		return "snapshot_read"
+	}
+	return d.Scope
+}
+
+// validSnapshotID reports whether id is a single well-formed snapshot-id
+// segment of the shared object-key contract (bmr.ParseObjectKey).
+func validSnapshotID(id string) bool {
+	if id == "" {
+		return false
+	}
+	parsed, ok := bmr.ParseObjectKey("snapshots/" + id + "/manifest.json")
+	return ok && parsed.SnapshotID == id
 }
 
 func hasCapability(caps []string, want string) bool {

@@ -70,6 +70,11 @@ type journalHeader struct {
 	// about to publish, under SnapshotID: each is recorded before its upload
 	// starts, with the digest of the bytes being uploaded.
 	PublishedObjects []PublishedObject `json:"publishedObjects,omitempty"`
+	// VerifyStoredEntries is set once a later job continued this snapshot
+	// (a brokered write the control plane let it take over, see
+	// ContinueRun). From then on an entry is reused only when the stored
+	// object still holds the recorded bytes, not only the source.
+	VerifyStoredEntries bool `json:"verifyStoredEntries,omitempty"`
 }
 
 // journalFormatVersion is the journal format this build writes: entries carry
@@ -127,6 +132,11 @@ type snapshotJournal struct {
 	// discardedOtherRun names what differed ("job", "dispatched base" or
 	// "destination") when a journal written for another run was discarded.
 	discardedOtherRun string
+
+	// continuedFromOtherJob is set when this run continued a snapshot an
+	// earlier job was writing (see ContinueRun): that job's published
+	// control objects are rebuilt, never adopted.
+	continuedFromOtherJob bool
 
 	// createdAt is the journal's original creation time (from its header,
 	// preserved verbatim across a resume — NOT reset on resume). Age()
@@ -337,13 +347,23 @@ func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
 // any existing content — callers have already decided the old content
 // isn't usable) with a fresh snapshot ID and writes its header line.
 func createFreshJournal(path, identity string) (*snapshotJournal, bool, error) {
+	return createFreshJournalWithID(path, identity, "")
+}
+
+// createFreshJournalWithID is createFreshJournal naming the snapshot the
+// journal checkpoints; "" mints a fresh id (a brokered write passes the id
+// the control plane issued).
+func createFreshJournalWithID(path, identity, snapshotID string) (*snapshotJournal, bool, error) {
+	if snapshotID == "" {
+		snapshotID = newSnapshotID()
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to create backup journal: %w", err)
 	}
 
 	header := journalHeader{
-		SnapshotID:    newSnapshotID(),
+		SnapshotID:    snapshotID,
 		CreatedAt:     time.Now().UTC(),
 		Identity:      identity,
 		FormatVersion: journalFormatVersion,
@@ -400,7 +420,10 @@ func (j *snapshotJournal) DiscardedOtherRun() string {
 // place, so every entry a run inherits was produced under the same job and
 // base decision as the snapshot it completes. (A journal for a different
 // destination is already discarded when it is opened.) Call it right after
-// opening, before the journal's state is used.
+// opening, before the journal's state is used. Only a brokered write can
+// carry an unfinished snapshot across jobs, and only when the control plane
+// allows it (bindBrokeredJournal, ContinueRun); every other destination
+// restarts from zero on a new job.
 func (j *snapshotJournal) BindRun(jobID, dispatchedBaseSnapshotID string) error {
 	if j == nil {
 		return nil
@@ -432,11 +455,17 @@ func (j *snapshotJournal) BindRun(jobID, dispatchedBaseSnapshotID string) error 
 // snapshot id, no entries) at the same path. The discarded snapshot's partial
 // prefix is left to the server's manifest-less-prefix cleanup.
 func (j *snapshotJournal) restartFresh() error {
+	return j.restartFreshWithID("")
+}
+
+// restartFreshWithID is restartFresh under a given snapshot id ("" mints
+// one).
+func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 	if j.file != nil {
 		_ = j.file.Close()
 		j.file = nil
 	}
-	fresh, _, err := createFreshJournal(j.path, j.identity)
+	fresh, _, err := createFreshJournalWithID(j.path, j.identity, snapshotID)
 	if err != nil {
 		return err
 	}
@@ -448,7 +477,39 @@ func (j *snapshotJournal) restartFresh() error {
 	j.entries = nil
 	j.resumedBytesTotal = 0
 	j.resumed = false
+	j.continuedFromOtherJob = false
 	return nil
+}
+
+// ContinueRun binds a resumed journal to this run's job WITHOUT discarding
+// its entries: the control plane let this job take over the unpublished
+// snapshot an earlier job of the same dispatched base was writing (a
+// brokered write). The earlier job's entries are then reused only after the
+// stored objects are checked (VerifyStoredEntries), and its control objects
+// are rebuilt rather than adopted.
+func (j *snapshotJournal) ContinueRun(jobID, dispatchedBaseSnapshotID string) error {
+	if j == nil {
+		return nil
+	}
+	if j.header.JobID != jobID {
+		j.continuedFromOtherJob = true
+		j.header.VerifyStoredEntries = true
+	}
+	j.header.JobID = jobID
+	j.header.DispatchedBaseSnapshotID = dispatchedBaseSnapshotID
+	return j.rewriteHeader()
+}
+
+// VerifyStoredEntries reports whether a resumed entry must also match the
+// stored object before it is reused (see ContinueRun).
+func (j *snapshotJournal) VerifyStoredEntries() bool {
+	return j != nil && j.header.VerifyStoredEntries
+}
+
+// ContinuedFromOtherJob reports whether this run took over a snapshot an
+// earlier job was writing (see ContinueRun).
+func (j *snapshotJournal) ContinuedFromOtherJob() bool {
+	return j != nil && j.continuedFromOtherJob
 }
 
 // StartAttempt starts this run's attempt at the journal's snapshot: it drops
@@ -530,6 +591,7 @@ func applyHeaderUpdate(header *journalHeader, update journalHeader) {
 	header.BaseDecided = update.BaseDecided
 	header.ParentSnapshotID = update.ParentSnapshotID
 	header.PublishedObjects = update.PublishedObjects
+	header.VerifyStoredEntries = update.VerifyStoredEntries
 }
 
 // StaleSnapshotID returns the snapshot ID of a stale journal that Open

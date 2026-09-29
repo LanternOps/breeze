@@ -88,7 +88,7 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	if statErr != nil {
 		return fail("failed to stat MSSQL backup file: " + statErr.Error())
 	}
-	snapshotID := newMssqlSnapshotID(p.Instance, p.Database)
+	snapshotID := backupSnapshotID(provider, func() string { return newMssqlSnapshotID(p.Instance, p.Database) })
 	remotePath := path.Join("snapshots", snapshotID, "files", filepath.Base(result.BackupFile))
 
 	// The manifest records the digest of the bytes the upload stored.
@@ -279,7 +279,7 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 	}
 	warnings := append(preflightWarnings, result.Warnings...)
 
-	snapshotID := newHypervSnapshotID(p.VMName)
+	snapshotID := backupSnapshotID(provider, func() string { return newHypervSnapshotID(p.VMName) })
 	prefix := path.Join("snapshots", snapshotID)
 
 	var fileCount int
