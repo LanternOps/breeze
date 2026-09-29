@@ -104,7 +104,8 @@
     "deliverableTemplates": "Teslimat Şablonları",
     "securityScans": "IOC Taramaları",
     "system": "Sistem",
-    "monitorConversion": "İzleyici Dönüşümü"
+    "monitorConversion": "İzleyici Dönüşümü",
+    "timeSync": "Saat eşitleme"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

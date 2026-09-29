@@ -170,7 +170,8 @@
     "agreementTemplateNew": "Novo modelo de acordo",
     "signedAgreements": "Acordos assinados",
     "settingsTicketing": "Configurações de tickets",
-    "securityScans": "Varreduras de IOC"
+    "securityScans": "Varreduras de IOC",
+    "devicesTime": "Sincronização de horário"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

@@ -373,6 +373,7 @@ export const navSections: NavSection[] = [
       // Fleet migration/decommission posture report (#3244) — backed by
       // GET /devices/management-posture/summary, which enforces devices:read.
       { name: 'Fleet Posture', labelKey: 'nav.fleetPosture', href: '/devices/posture', icon: Radar, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Time Sync', labelKey: 'nav.timeSync', href: '/devices/time', icon: Radar, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
       { name: 'Event Logs', labelKey: 'nav.eventLogs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
     ],

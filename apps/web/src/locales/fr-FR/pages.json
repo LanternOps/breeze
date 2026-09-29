@@ -170,7 +170,8 @@
     "agreementTemplateNew": "Nouveau modèle de convention",
     "signedAgreements": "Conventions signées",
     "settingsTicketing": "Paramètres de tickets",
-    "securityScans": "Analyses IOC"
+    "securityScans": "Analyses IOC",
+    "devicesTime": "Synchronisation de l’heure"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

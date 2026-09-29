@@ -104,7 +104,8 @@
     "deliverableTemplates": "Plantillas de entregables",
     "securityScans": "Escaneos de IOC",
     "system": "Sistema",
-    "monitorConversion": "Conversión de monitores"
+    "monitorConversion": "Conversión de monitores",
+    "timeSync": "Sincronización de hora"
   },
   "documentTitles": {
     "dashboard": "Panel",

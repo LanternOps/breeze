@@ -104,7 +104,8 @@
     "deliverableTemplates": "Modelli di consegna",
     "securityScans": "Scansioni IOC",
     "system": "Sistema",
-    "monitorConversion": "Conversione monitor"
+    "monitorConversion": "Conversione monitor",
+    "timeSync": "Sincronizzazione dell’ora"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
