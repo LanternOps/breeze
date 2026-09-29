@@ -25,7 +25,7 @@ import { resolveLlmConfig } from '../llmConfigResolver';
 import { startCaptureProxy, type CaptureProxy } from '../toolCapture/captureProxy';
 import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
-import { CAPTURE_TENANT_SET_IDS, captureTenantDescriptors, type CaptureTenantSetId } from '../toolCapture/tenantFixtures';
+import { CAPTURE_TENANT_SET_IDS, MAX_CAPTURE_TENANT_TOOLS, captureTenantDescriptors, type CaptureTenantSetId } from '../toolCapture/tenantFixtures';
 
 class UsageError extends Error {}
 
@@ -68,11 +68,12 @@ function parseArgs(args: string[]) {
   }
   const tenantCountRaw = values.get('--tenant-count');
   const tenantCount = tenantCountRaw === undefined ? undefined : Number(tenantCountRaw);
-  if (tenantCount !== undefined && (!/^\d+$/.test(tenantCountRaw!) || tenantSet === 'none')) {
-    throw new UsageError('--tenant-count must be a non-negative integer and needs --tenant-tools a or b');
+  if (tenantCount !== undefined
+    && (!/^\d+$/.test(tenantCountRaw!) || tenantCount > MAX_CAPTURE_TENANT_TOOLS || tenantSet === 'none')) {
+    throw new UsageError(`--tenant-count must be an integer from 0 to ${MAX_CAPTURE_TENANT_TOOLS} and needs --tenant-tools a or b`);
   }
   if (tenantSet !== 'none' && surface !== 'chat') {
-    throw new UsageError('--tenant-tools needs --surface chat: no other surface resolves tenant tools');
+    throw new UsageError('--tenant-tools needs --surface chat (not all): no other surface resolves tenant tools');
   }
   return { values, surface, toolSearch, turns: Number(turns), proxy, baseUrl, tenantSet: tenantSet as CaptureTenantSetId, tenantCount };
 }

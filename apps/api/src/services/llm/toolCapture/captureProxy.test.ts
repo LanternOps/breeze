@@ -32,6 +32,11 @@ beforeAll(async () => {
         res.end(encoded);
         return;
       }
+      if (req.url === '/zstd') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'zstd' });
+        res.end(Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00]));
+        return;
+      }
       if (req.url === '/invalid') {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end('not json');
@@ -148,6 +153,13 @@ describe('startCaptureProxy', () => {
       label: encoding,
       usage: { inputTokens: 900, cacheCreationInputTokens: 41000, cacheReadInputTokens: 0, outputTokens: 42 },
     });
+  });
+
+  it('records usage null, never a guess, for an encoding it cannot decode', async () => {
+    proxy.setLabel('zstd');
+    const res = await fetch(`${proxy.url}/zstd`, { method: 'POST', body: JSON.stringify({ model: 'm' }) });
+    await res.arrayBuffer().catch(() => undefined);
+    expect(proxy.records().at(-1)).toMatchObject({ label: 'zstd', status: 200, usage: null });
   });
 
   it('fingerprints tools, system and the first message so cache-prefix identity is comparable across sessions', async () => {

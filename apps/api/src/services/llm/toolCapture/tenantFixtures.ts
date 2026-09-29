@@ -16,6 +16,9 @@ import type { TenantToolDescriptor } from '../../toolSources/resolver';
 export const CAPTURE_TENANT_SET_IDS = ['none', 'a', 'b'] as const;
 export type CaptureTenantSetId = (typeof CAPTURE_TENANT_SET_IDS)[number];
 
+/** Well above any real tenant catalog; stops a typo from allocating millions of tools. */
+export const MAX_CAPTURE_TENANT_TOOLS = 1000;
+
 interface TenantSetSpec {
   sourceName: string;
   prefix: string;
@@ -98,6 +101,9 @@ function descriptor(spec: TenantSetSpec, name: string, description: string): Ten
 export function captureTenantDescriptors(set: CaptureTenantSetId, count?: number): TenantToolDescriptor[] {
   if (count !== undefined && (!Number.isInteger(count) || count < 0)) {
     throw new Error(`tenant tool count must be a non-negative integer, got ${count}`);
+  }
+  if (count !== undefined && count > MAX_CAPTURE_TENANT_TOOLS) {
+    throw new Error(`tenant tool count must be at most ${MAX_CAPTURE_TENANT_TOOLS}, got ${count}`);
   }
   if (set === 'none') {
     if (count) throw new Error('the none tenant set has no tools; drop the count');

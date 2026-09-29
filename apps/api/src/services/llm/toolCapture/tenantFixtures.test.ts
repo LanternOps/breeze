@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureTenantDescriptors, CAPTURE_TENANT_SET_IDS } from './tenantFixtures';
+import { captureTenantDescriptors, CAPTURE_TENANT_SET_IDS, MAX_CAPTURE_TENANT_TOOLS } from './tenantFixtures';
 
 describe('captureTenantDescriptors', () => {
   it('returns no tenant tools for the none set', () => {
@@ -39,6 +39,12 @@ describe('captureTenantDescriptors', () => {
     expect(() => captureTenantDescriptors('a', -1)).toThrow();
     expect(() => captureTenantDescriptors('a', 1.5)).toThrow();
     expect(() => captureTenantDescriptors('none', 3)).toThrow();
+  });
+
+  it('caps the count so a typo cannot allocate an absurd catalog', () => {
+    expect(captureTenantDescriptors('b', MAX_CAPTURE_TENANT_TOOLS)).toHaveLength(MAX_CAPTURE_TENANT_TOOLS);
+    expect(() => captureTenantDescriptors('b', MAX_CAPTURE_TENANT_TOOLS + 1)).toThrow(/at most/);
+    expect(() => captureTenantDescriptors('b', 1e20)).toThrow(/at most/);
   });
 
   it('exposes exactly the three set ids the CLI accepts', () => {

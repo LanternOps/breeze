@@ -19,6 +19,8 @@ export interface CapturedRequest {
    * the API builds its cache prefix. Two sessions whose digests match on a
    * field share that part of the prompt cache; a changed digest is where the
    * cached prefix ends. Hashes only, so no request content is retained.
+   * Assumes an uncompressed JSON request body, which is what the CLI sends
+   * today; a compressed one would record null digests.
    */
   prefixDigest: { tools: string | null; system: string | null; firstMessage: string | null };
   /** JSON length of `messages[0]` (Claude Code puts the deferred-tool list there). */
