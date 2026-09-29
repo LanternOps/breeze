@@ -1771,6 +1771,39 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(pamLifecycleMocks.createPamDecisionIntent).toHaveBeenCalledOnce();
   });
 
+  it('an approve refused for an unverifiable target reports refused with the reason', async () => {
+    const refusal = 'Target identity could not be verified on the device; re-request elevation.';
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    mockElevationTx([{ id: 'elev-1', orgId: 'org-9', deviceId: 'dev-1', revision: 1 }]);
+    pamLifecycleMocks.createPamDecisionIntent.mockResolvedValueOnce({
+      actuationId: '',
+      elevationRequestId: 'elev-1',
+      requestRevision: 1,
+      generation: 0,
+      desiredState: 'cleanup',
+      refusalReason: refusal,
+    });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enforcementStatus).toBe('refused');
+    // The client has nothing else to show the approver why their approve did
+    // not take effect.
+    expect(body.reason).toBe(refusal);
+  });
+
+  it('a normal elevation approve carries no refusal reason', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enforcementStatus).toBe('pending_dispatch');
+    expect(body).not.toHaveProperty('reason');
+  });
+
   it('flags a grace-allowed under-assured approve in the elevation audit details', async () => {
     mockDecideWithElevation({ status: 'pending', riskTier: 'high', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);

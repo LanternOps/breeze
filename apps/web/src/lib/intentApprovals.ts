@@ -9,7 +9,22 @@ import { i18n } from './i18n';
 import { ActionError, runAction } from './runAction';
 import { showToast } from '../components/shared/Toast';
 
-export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver' | 'fresh_factor_required';
+/** `refused`: the server accepted the approve but refused to apply it (the
+ *  linked elevation's target could not be verified), so the request is now
+ *  denied. Already shown to the user as an error with the server's reason. */
+export type IntentDecisionOutcome =
+  | 'decided'
+  | 'needs_device'
+  | 'not_sole_approver'
+  | 'fresh_factor_required'
+  | 'refused';
+
+type DecideResponse = { stepUpGrantId?: unknown; enforcementStatus?: unknown; reason?: unknown } | null;
+
+/** A 200 approve whose effect the server refused (see IntentDecisionOutcome). */
+function isRefusedDecision(data: DecideResponse): boolean {
+  return data?.enforcementStatus === 'refused';
+}
 
 /** One row's outcome inside a batch decide. `httpStatus < 300` means that row
  *  was actually decided; anything else is a per-row failure (409 lost race,
@@ -275,7 +290,9 @@ export function __resetStepUpGrantCacheForTests(): void {
  * 'not_sole_approver' when the server answers that token: the org gained
  * another eligible approver, so self-approval is off the table for good and the
  * caller should settle the card terminally rather than re-offer a button.
- * Throws
+ * Returns 'refused' when the approve came back 200 but the server refused to
+ * apply it (`enforcementStatus: 'refused'`): the request is denied, and the
+ * refusal and its reason have already been toasted as an error. Throws
  * CeremonyError on a cancelled/failed ceremony (nothing was POSTed) and
  * ActionError on server rejection (runAction has already toasted the latter).
  *
@@ -423,7 +440,7 @@ export async function decideIntentApproval(
   }
 
   try {
-    const data = await runAction<{ stepUpGrantId?: unknown } | null>({
+    const data = await runAction<DecideResponse>({
       // Kept inline rather than hoisted: the no-silent-mutations guard walks
       // parents for an enclosing runAction call, so a hoisted thunk reads as an
       // unwrapped mutation even when passed straight in. `settledResponse` is
@@ -448,11 +465,24 @@ export async function decideIntentApproval(
       friendly: freshFactor
         ? (token: string) => token === 'step_up_required' ? i18n.t('ai:aiApprovalDialog.freshFactorRequired') : decideErrorCopy(token)
         : decideErrorCopy,
-      successMessage:
-        decision === 'approve'
-          ? i18n.t('ai:aiApprovalDialog.approvedToast')
-          : i18n.t('ai:aiApprovalDialog.deniedToast'),
+      // No success toast for a refused approve: it is reported as an error
+      // below, never as "approved".
+      successMessage: (result) =>
+        isRefusedDecision(result)
+          ? ''
+          : decision === 'approve'
+            ? i18n.t('ai:aiApprovalDialog.approvedToast')
+            : i18n.t('ai:aiApprovalDialog.deniedToast'),
     });
+    if (isRefusedDecision(data)) {
+      const reason = typeof data?.reason === 'string' && data.reason.trim() ? data.reason.trim() : undefined;
+      showToast({
+        type: 'error',
+        message: i18n.t('ai:aiApprovalDialog.refusedToast'),
+        ...(reason ? { detail: reason } : {}),
+      });
+      return 'refused';
+    }
     // #5601: a genuine ceremony on a SUPERVISED decide (an enforcing partner
     // forced one via the retry above) may have minted a reusable grant. Cache
     // it so the NEXT card of this conversation skips the scan. A supervised

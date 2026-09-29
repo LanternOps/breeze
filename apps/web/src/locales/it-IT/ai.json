@@ -41,6 +41,7 @@
     "deniedToast": "Azione rifiutata",
     "deniedToast_one": "{{count}} azione rifiutata",
     "deniedToast_other": "{{count}} azioni rifiutate",
+    "refusedToast": "Approvazione respinta. La richiesta è stata rifiutata.",
     "runContextLabel": "Contesto di esecuzione:",
     "runContextChosenByAssistant": "scelto dall'assistente",
     "runContextScriptDefault": "il valore predefinito salvato dello script",

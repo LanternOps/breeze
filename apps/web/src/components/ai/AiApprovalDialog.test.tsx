@@ -316,6 +316,31 @@ describe('intent-backed self-approve (sole operator)', () => {
     expect(onIntentDecided).not.toHaveBeenCalled();
   });
 
+  it('refused → terminal state with the refused copy, never "approved"', async () => {
+    // The server accepted the approve but refused to apply it and denied the
+    // request. decideIntentApproval has already toasted the reason; the card
+    // must settle terminally and must not read as approved.
+    decideIntentApproval.mockResolvedValue('refused');
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/approval refused/i);
+    // The decided-approve state renders "Action approved"; a refusal never does.
+    expect(screen.queryByText(/action approved/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
+    // Decided (denied), so the parent may clear it — same as a 409/410.
+    expect(onIntentDecided).toHaveBeenCalledOnce();
+  });
+
   it('deny → decideIntentApproval(deny) → onIntentDecided', async () => {
     decideIntentApproval.mockResolvedValue('decided');
     const onIntentDecided = vi.fn();
