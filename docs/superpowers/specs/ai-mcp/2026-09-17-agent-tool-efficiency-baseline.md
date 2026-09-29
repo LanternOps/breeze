@@ -310,7 +310,7 @@ The loss is concentrated in g59, g60 and g62. The model first calls an always-lo
 **Not measured:**
 - BYO/catalog endpoints (no credentials here; policy keeps them on the full list);
 - Haiku;
-- second-turn cache behaviour across differing tenant tool sets;
+- second-turn cache behaviour across differing tenant tool sets (measured since, see §9.2);
 - a Helper resume after a level downgrade with an out-of-level `tool_use` in history. The probe could not make the model call `execute_command` (it declined); a resume under a narrower tool set did run cleanly.
 
 **Success measures:**
@@ -318,3 +318,76 @@ The loss is concentrated in g59, g60 and g62. The model first calls an always-lo
 - turn-2 cache-read share: unchanged, high;
 - golden eval: **−1.5 cases, target +10 points not met**.
 
+
+## 9. Tenant tools, gateways and the endpoint capability (#7429)
+
+**Date measured:** 2026-09-28 · **Base:** `main` @ `c1618d2717` (A-W04 merged) · **SDK/CLI:** `@anthropic-ai/claude-agent-sdk` 0.3.282 (CLI 2.1.282) · **Model:** `claude-sonnet-4-6` · **Surface:** chat, deny mode. Everything here ran on a laptop against the first-party API, directly or through a local gateway. No partner catalog endpoint or BYO credential was used.
+
+### 9.1 Harness changes
+
+- `ai:tool-capture --tenant-tools none|a|b [--tenant-count N]` registers synthetic BYO MCP tools on the chat surface. They go through the production `buildTenantSdkTools` bridge and are appended to `allowedTools` as `streamingSessionManager` does. Set `a` is 12 Hudu-shaped tools and set `b` is 12 IT Glue-shaped tools, with no names in common (`toolCapture/tenantFixtures.ts`). Handlers are still denied in `onPreToolUse`, so nothing dispatches.
+- The capture proxy now reads usage from gzip, deflate and br responses. The API gzips its responses to the CLI, so every earlier real capture recorded `usage: null` per request. The per-turn numbers in §2–§8 came from the SDK stream and are unaffected.
+- The proxy records `prefixDigest` (hashes of `tools`, `system` and `messages[0]`, ignoring `cache_control`) and `firstMessageBytes`. Two sessions that share a digest share that part of the cache prefix. Only hashes are kept, never content.
+- **Correction to §8.** Capture children now run with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. `buildClaudeSdkChildEnv` forwards `HOME`, and `settingSources: []` does not turn off auto-memory, so the CLI was prepending the operator's own `~/.claude/projects/<repo>/memory/MEMORY.md` to every captured first message. On this machine that block was 25.6k characters. A body dump of the same chat request showed 23,941 context tokens with the block and 14,263 without it. Production containers should have no such file (not checked on a deployed container; follow-up #7444), so §8's absolute token numbers include roughly 9.5k tokens of harness-only context. Inferred from those paired dumps and §9.2, not from a re-run eval: §8's "first call" figure of 23,811 is about 14.3k in production, and the search-off figure of 82,707 is about 73.5k (§9.2 C4). That puts the first-turn reduction at about −80%, not −71%. The §8 accuracy numbers were measured with the memory block in context. Whether it changed any tool choice is **not checked**.
+- Found while dumping bodies: the CLI adds a `<system-reminder><total_tokens>…</total_tokens></system-reminder>` block to the first message on some sessions and not others (114 bytes). It has nothing to do with Breeze or tenant tools. When it toggles, the next session's first message is different, so that message-level cache entry misses (S6 and C3 below).
+
+### 9.2 Turn-1 and turn-2 cache with tenant tools
+
+`ai:tool-capture --surface chat --proxy --base-url <local dump proxy> --turns 2 --tool-search on|off --tenant-tools …`, run back to back in the order listed. S1 started cold: nothing had run for more than 5 minutes. Tokens are for the first tool-bearing request of each turn, from the proxy's per-request usage. "write" is `cache_creation_input_tokens` and "read" is `cache_read_input_tokens`.
+
+| run | search | tenant set | tools on wire | tools / system / msg[0] digest | turn-1 write | turn-1 read | turn-2 read share |
+|---|---|---|---|---|---|---|---|
+| S1 | on | none | 17 (1 deferred) | `8777c7` / `f493d9` / `695945` | 14,261 | 0 | 98.7% |
+| S2 | on | a (12) | 17 (1 deferred) | `8777c7` / `f493d9` / `6ac40c` | 3,083 | 11,338 | 98.5% |
+| S3 | on | b (12) | 17 (1 deferred) | `8777c7` / `f493d9` / `8ecac9` | 3,095 | 11,338 | 99.0% |
+| S4 | on | a (12), repeat of S2 | 17 (1 deferred) | `8777c7` / `f493d9` / `6ac40c` | 0 | 14,421 | 98.7% |
+| S5 | on | a (48) | 17 (1 deferred) | `8777c7` / `f493d9` / `0c3df9` | 3,623 | 11,338 | 98.7% |
+| S6 | on | b (12), repeat of S3 | 17 (1 deferred) | `8777c7` / `f493d9` / `185088` | 3,068 | 11,338 | 98.7% |
+| C1 | off | a (12) | 205 | `c79620` / `f493d9` / `033ca6` | 75,070 | 0 | 99.7% |
+| C2 | off | b (12) | 205 | `72b237` / `f493d9` / `033ca6` | 75,068 | 0 | 99.7% |
+| C3 | off | a (12), repeat of C1 | 205 | `c79620` / `f493d9` / `12c645` | 686 | 74,357 | 99.7% |
+| C4 | off | none | 193 | `aeebdf` / `f493d9` / `033ca6` | 73,450 | 0 | 99.7% |
+
+S6 and C3 repeated an earlier tenant set, but their first message differs from S3 and C1 because the CLI's `total_tokens` block toggled (§9.1). That, not the tenant set, is why S6 wrote 3,068 tokens.
+
+**What this shows (verified on these runs):**
+- **With search on, tenant tool definitions never reach the wire until they are searched.** `tools[]` holds `ToolSearch`, the 15 `alwaysLoad` tools and one `DeferredToolPlaceholder`, and its digest is identical for none, a:12, b:12 and a:48. The CLI lists deferred tool **names** in a `<system-reminder>` inside the first user message. That list is the only place a tenant set appears: +412 bytes for set a, +469 for set b, +1,672 for a:48.
+- **Cross-session:** the tools-plus-system prefix (11,338 tokens) was read from cache in every session, whatever its tenant set. A new tenant set costs only the first message, about 3.1k tokens written, or 3.6k at 48 tools. A session whose first message matches a recent one reads everything (S4).
+- **With search off, a different tenant set rewrites the whole prefix.** Tenant tools are appended to `tools[]`, which comes first in the cache order, so C2 wrote 75,068 tokens after C1. Search on reduces the per-session cost of tenant-set churn from about 75k written tokens to about 3k.
+- **Turn 2 is unaffected by tenant tools:** 98.5–99.0% read with search on, 99.7% with search off. The search-on share is a little lower only because the prefix is 5× smaller, so the same ~180-token per-turn delta is a bigger fraction.
+- **A searched tenant tool does not break the cache.** T1 used set a with the prompt "Pull up the Hudu asset record for the file server FS01." The model called `ToolSearch`, which returned `tool_reference`s for `hudu__get_asset` and `hudu__search_assets`. The CLI inserted both into `tools[]` with `defer_loading: true`, which changed the tools digest (`22a5d2`). The same request still read 14,426 cached tokens and wrote 430, and turn 2 read 98.7%. The API does not count deferred tools as part of the cached tools prefix. The model's next call was `mcp__breeze__hudu__search_assets`, which was denied as intended.
+
+### 9.3 Gateway compatibility (local only)
+
+All chains below ran with `--proxy --tool-search on` and the backup prompt "Which backup jobs failed in the last 24 hours?", which needs the deferred `query_backups`. Where a second capture proxy sat between the gateway and the API, it recorded what the gateway actually forwarded.
+
+| path | status | `defer_loading` forwarded | `tool_reference` forwarded | `anthropic-beta` | search worked | cache |
+|---|---|---|---|---|---|---|
+| capture proxy only (byte pass-through) | 200 | yes | yes | forwarded unchanged | yes, `query_backups` loaded | turn-1 read 11,338 on the first call |
+| LiteLLM 1.103.0 (`ghcr.io/berriai/litellm:main-stable`, `sha256:bd089afd…`), unified `/v1/messages`, `model: anthropic/*` | 200 | **yes**: `DeferredToolPlaceholder` and `query_backups` still `defer_loading: true` upstream | **yes**: 1 block upstream | rewritten: `advanced-tool-use-2025-11-20` kept, `claude-code-20250219` and a few others dropped | yes | turn-2 read 98.9% |
+| LiteLLM 1.103.0, `/anthropic` pass-through route | 200 | not observed upstream (the route goes straight to the API) | CLI side: 1 | not observed | yes | turn-1 fully read |
+| scratch proxy that strips `advanced-tool-use-*` from `anthropic-beta` | 200 | yes | yes | stripped | yes | unchanged |
+| scratch proxy that deletes `defer_loading` from every tool | 200 | **no** | yes | forwarded | the model still reached the tool, but the placeholder and every discovered tool became ordinary tools | turn-1 wrote 29,432 and read 0 (prefix changed) |
+
+So an Anthropic-native gateway like LiteLLM's Anthropic route forwards everything tool search needs. At this date the first-party API also accepts tool search without the beta header. The two stripping probes did not produce a hard error. A gateway that drops `defer_loading` loses the savings and the cache without anyone noticing, instead of breaking chat.
+
+**Not verified (needs credentials or backends not available here):**
+- Any real partner catalog endpoint.
+- OpenRouter.
+- LiteLLM or other gateways translating to a non-Anthropic backend (OpenAI-compatible, vLLM). `tool_reference` has no equivalent there, so this is expected to fail, but it was not observed.
+- Bedrock and Vertex (different tool-search wire support).
+- A proxy that rejects unknown content-block types outright.
+- Whether a small-context proxy still needs a `list_tool_domains`/`load_tool_domain` loader. The measured sizes that bear on it: 14.3k first-call context with search, 73.5k without.
+- `provider-fidelity-smoke.ts` could not be pointed at the local LiteLLM, because the catalog accepts only `https://` base URLs.
+
+### 9.4 Per-endpoint capability vs `AI_TOOL_SEARCH` (recommendation, needs Todd's decision)
+
+**Recommendation: make tool search a verified per-(catalog revision, model) capability, recorded by the existing provider-fidelity verification. Keep `AI_TOOL_SEARCH` only as the global kill switch (`off`) and as the opt-in for a self-host `ANTHROPIC_BASE_URL` that has no catalog entry.**
+
+Why:
+1. **Support depends on the endpoint's wire path, not on the install.** The same LiteLLM passes tool search through its Anthropic route and cannot express `tool_reference` on a translated backend. One install can list both kinds of endpoint, and a single env var can only be right for one of them.
+2. **Leaving it off on a capable endpoint is expensive.** First-call context is 73.5k vs 14.3k tokens (§9.2 C4 vs S1), and tenant-set churn rewrites about 75k tokens per session vs about 3k.
+3. **Turning it on for a degrading endpoint fails silently.** The stripping probes stayed at 200. A self-declared "supports tool search" flag could be wrong without anyone noticing, so the capability should come from a probe that checks the savings actually happen: `defer_loading` survives and a `tool_reference` loads a deferred tool.
+4. **The mechanism already exists.** `llm_provider_verifications` records an MFA-gated, harness-versioned result per `(revision_id, model_id)`, and a new revision (new base URL) needs a new verification. A `toolSearch` stage in `providerFidelityHarness` fits there: with `tools: ['ToolSearch']` and one deferred tool, the stage passes when the model loads that tool via `tool_reference` and the response is 200. `resolveToolSearchPolicy` would take `endpointToolSearchVerified` from the session's catalog endpoint and apply it after the surface, kill-switch and turn-budget rules and the first-party rule. The default stays off.
+
+The decision needed: where the verification result lives. It could go in the existing `detail` jsonb (no migration, but the policy reads jsonb) or in a new boolean column on `llm_provider_verifications` (one migration, cleaner query). A `FIDELITY_HARNESS_VERSION` bump would make existing verifications stale, so it needs a re-verify plan for listed entries. Nothing is implemented in this change.

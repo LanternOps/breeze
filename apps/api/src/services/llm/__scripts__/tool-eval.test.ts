@@ -26,7 +26,7 @@ vi.mock('../toolCapture/surfaces', () => ({
 }));
 
 const capture = () => ({
-  surface: 'chat' as const, registeredToolCount: 1, registeredToolNames: [], allowedToolCount: 1,
+  surface: 'chat' as const, registeredToolCount: 1, registeredToolNames: [], allowedToolCount: 1, tenantToolNames: [],
   observation: {
     toolUses: [{ name: 'mcp__breeze__query_devices', input: {} }],
     apiCalls: [

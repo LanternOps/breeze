@@ -37,6 +37,8 @@ import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, t
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
 import { resolveToolSearchPolicy, type ToolSearchOverride, type ToolSearchPolicy } from '../../aiToolSearchPolicy';
+import { buildTenantSdkTools, tenantMcpToolNames } from '../../toolSources/sdkBridge';
+import type { TenantToolDescriptor } from '../../toolSources/resolver';
 import type { CaptureSurface, CaptureSurfaceId } from './surfaces';
 
 export interface RunSurfaceOptions {
@@ -49,6 +51,13 @@ export interface RunSurfaceOptions {
   timeoutMs?: number;
   /** Stands in for the `AI_TOOL_SEARCH` operator override; default auto. */
   toolSearchOverride?: ToolSearchOverride;
+  /**
+   * Tenant (BYO MCP) tools, registered through the production
+   * `buildTenantSdkTools` bridge and appended to `allowedTools` exactly as
+   * `streamingSessionManager` does for a chat session. Chat only: no other
+   * surface resolves tenant tools in production. See `tenantFixtures.ts`.
+   */
+  tenantTools?: readonly TenantToolDescriptor[];
 }
 
 export interface SurfaceCaptureResult {
@@ -59,6 +68,8 @@ export interface SurfaceCaptureResult {
    *  to cross-reference registeredToolCount against the live registry. */
   registeredToolNames: string[];
   allowedToolCount: number;
+  /** Qualified names of the tenant tools registered for this capture, in registration order. */
+  tenantToolNames: string[];
   observation: StreamObservation;
 }
 
@@ -69,6 +80,20 @@ const denyAuth = () => { throw new Error('tool-capture: handlers never execute (
 // Exported for runSurface.test.ts — the handler-level denial contract is
 // what the query()-mocked test can exercise without the real SDK dispatch.
 export const denyPreToolUse: PreToolUseCallback = async () => ({ allowed: false, error: DENY_MESSAGE });
+
+/**
+ * Env forced onto every capture child. `buildClaudeSdkChildEnv` forwards HOME,
+ * so on a developer machine the CLI would read the operator's own
+ * `~/.claude/projects/<repo>/memory/MEMORY.md` and prepend it to every first
+ * user message (`settingSources: []` does not cover auto-memory). That is not
+ * production context: it inflated each captured request by ~9.7k tokens,
+ * varied run to run as the memory changed, and sent private notes to whatever
+ * `--base-url` was under test (#7429).
+ */
+export const CAPTURE_CHILD_ENV_ISOLATION = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } as const;
+
+/** Org the tenant bridge would dispatch under; never reached, handlers are denied first. */
+const CAPTURE_TENANT_ORG_ID = 'capture-org';
 
 /**
  * A fresh production chat session's turn budget (`ai_sessions.max_turns`
@@ -112,8 +137,16 @@ export function getCaptureSystemPrompt(surface: CaptureSurface): string {
 
 export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<SurfaceCaptureResult> {
   const { surface } = opts;
+  const tenantTools = [...(opts.tenantTools ?? [])];
+  if (tenantTools.length > 0 && surface.id !== 'chat') {
+    throw new Error(`tool-capture: tenant tools are only resolved on the chat surface, not ${surface.id}`);
+  }
+  // Same bridge as streamingSessionManager's default factory. The getAuth thunk
+  // is denyAuth: denyPreToolUse refuses first, so a tenant handler never runs.
+  const tenantSdkTools = buildTenantSdkTools(tenantTools, denyAuth, () => CAPTURE_TENANT_ORG_ID);
+  const tenantToolNames = tenantSdkTools.map((t) => t.name);
   const mcpServer = surface.server === 'breeze'
-    ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, [], surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
+    ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, tenantSdkTools, surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
     : createScriptBuilderMcpServer(denyAuth, denyPreToolUse);
   // Derived from the tools the server actually registers (buildBreezeSdkTools),
   // not TOOL_TIERS — TOOL_TIERS is a system-prompt promotion index, and the
@@ -122,8 +155,10 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   const registeredToolNames = surface.server === 'breeze'
     ? [...new Set(buildBreezeSdkTools(denyAuth, denyPreToolUse)
         .map((t) => t.name)
-        .filter((name) => !surface.onlyTools || surface.onlyTools.has(name)))].sort()
+        .filter((name) => !surface.onlyTools || surface.onlyTools.has(name))
+        .concat(tenantToolNames))].sort()
     : [...SCRIPT_BUILDER_MCP_TOOL_NAMES].sort();
+  const allowedTools = [...surface.allowedTools, ...tenantMcpToolNames(tenantTools)];
   const registeredToolCount = registeredToolNames.length;
   const toolSearch = captureToolSearchPolicy(surface, opts.env, opts.toolSearchOverride);
   const observer = createStreamObserver();
@@ -139,10 +174,10 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         model: opts.model,
         maxTurns: opts.maxTurns ?? 2,
         tools: toolSearch.tools,
-        allowedTools: [...surface.allowedTools],
+        allowedTools,
         mcpServers: { [surface.mcpServerName]: mcpServer },
         includePartialMessages: surface.includePartialMessages,
-        env: { ...opts.env, ...toolSearch.env },
+        env: { ...opts.env, ...CAPTURE_CHILD_ENV_ISOLATION, ...toolSearch.env },
         resume: opts.resume,
         persistSession: true,
         settingSources: [],
@@ -162,5 +197,5 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   } finally {
     clearTimeout(timer);
   }
-  return { surface: surface.id, registeredToolCount, registeredToolNames, allowedToolCount: surface.allowedTools.length, observation };
+  return { surface: surface.id, registeredToolCount, registeredToolNames, allowedToolCount: allowedTools.length, tenantToolNames, observation };
 }
