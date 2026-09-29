@@ -15,5 +15,10 @@
   "PATH_NOT_FOUND": "Caminho não encontrado",
   "PATH_CONFLICT": "O caminho já existe",
   "AGENT_COMMAND_REJECTED": "O dispositivo recusou o comando",
+  "SCHEME_NOT_ALLOWED": "Este link de acesso remoto não é permitido pela política",
+  "INVALID_CUSTOM_FIELD_VALUE": "Um dos valores de campo personalizado é inválido",
+  "RACE_LOST": "Outra solicitação já tratou isso primeiro",
+  "RE_ENROLLMENT_REQUIRED": "Este dispositivo precisa ser reinscrito",
+  "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "A atualização de inventário de software está ocupada agora — tente novamente em instantes",
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento"
 }

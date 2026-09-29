@@ -19,6 +19,7 @@ import {
 } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import { ERROR_CODES } from '@breeze/shared';
 import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
@@ -646,7 +647,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     });
     return c.json({
       error: 'Agent credential role mismatch',
-      code: 're_enrollment_required',
+      code: ERROR_CODES.RE_ENROLLMENT_REQUIRED,
       expected: agent.role,
       declared: data.role,
     }, 401);

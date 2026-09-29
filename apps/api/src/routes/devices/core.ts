@@ -69,6 +69,7 @@ import {
 import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProviders';
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings } from '@breeze/shared';
+import { ERROR_CODES } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import {
   disconnectAgent,
@@ -1692,7 +1693,7 @@ coreRoutes.post(
         c,
       );
       return c.json(
-        { error: 'Remote-access launcher rejected by scheme policy', code: 'scheme_not_allowed' },
+        { error: 'Remote-access launcher rejected by scheme policy', code: ERROR_CODES.SCHEME_NOT_ALLOWED },
         422,
       );
     }
@@ -1820,7 +1821,7 @@ coreRoutes.patch(
         return c.json(
           {
             error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
-            code: 'invalid-custom-field-value',
+            code: ERROR_CODES.INVALID_CUSTOM_FIELD_VALUE,
             fields: validation.rejected,
           },
           400,

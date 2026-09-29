@@ -15,5 +15,10 @@
   "PATH_NOT_FOUND": "Path not found",
   "PATH_CONFLICT": "The path already exists",
   "AGENT_COMMAND_REJECTED": "The device rejected the command",
+  "SCHEME_NOT_ALLOWED": "This remote-access link isn't allowed by policy",
+  "INVALID_CUSTOM_FIELD_VALUE": "One of the custom field values is invalid",
+  "RACE_LOST": "Someone else already handled this request",
+  "RE_ENROLLMENT_REQUIRED": "This device needs to be re-enrolled",
+  "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "Software inventory update is busy right now — try again shortly",
   "tool_source_unavailable": "La source de cet outil n'est pas disponible pour le moment"
 }

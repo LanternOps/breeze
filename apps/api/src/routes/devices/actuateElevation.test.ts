@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 
 const {
   authMiddlewareMock,
@@ -475,7 +476,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
       });
       expect(res.status).toBe(409);
       const body = await res.json();
-      expect(body.code).toBe('race_lost');
+      expect(body.code).toBe(ERROR_CODES.RACE_LOST);
 
       // No command was queued
       expect(commandValues).not.toHaveBeenCalled();
