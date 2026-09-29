@@ -183,6 +183,9 @@ vi.mock('../aiAgentSdkTools', () => ({
   // Object.keys(TOOL_TIERS); this suite never exercises a full-profile run,
   // but the module-level computation still runs, so this must exist.
   TOOL_TIERS: { query_devices: 1 },
+  // A full-profile run intersects its exposure with the declared set (#7427);
+  // mirrors TOOL_TIERS above.
+  listChatSurfaceToolNames: () => ['query_devices'],
   POST_TOOL_USE_TIMEOUT_MS: 10_000,
 }));
 
