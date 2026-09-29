@@ -2287,7 +2287,8 @@
     "loading": "Faturalandırma ayarları yükleniyor…",
     "saveButton": "Faturalandırma ayarlarını kaydet",
     "saveError": "Faturalandırma ayarları kaydedilemedi.",
-    "saveSuccess": "Faturalandırma ayarları kaydedildi"
+    "saveSuccess": "Faturalandırma ayarları kaydedildi",
+    "readOnlyNotice": "Faturalandırma ayarlarına yalnızca görüntüleme erişiminiz var. Değiştirmek için bir yöneticiden yardım isteyin."
   },
   "shared": {
     "documentWorkspace": {

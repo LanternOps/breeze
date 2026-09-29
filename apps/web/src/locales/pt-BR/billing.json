@@ -2287,7 +2287,8 @@
     "loading": "Carregando configurações de cobrança…",
     "saveButton": "Salvar configurações de cobrança",
     "saveError": "Falha ao salvar as configurações de cobrança.",
-    "saveSuccess": "Configurações de cobrança salvas"
+    "saveSuccess": "Configurações de cobrança salvas",
+    "readOnlyNotice": "Você tem acesso somente leitura às configurações de faturamento. Peça a um administrador para alterá-las."
   },
   "shared": {
     "documentWorkspace": {

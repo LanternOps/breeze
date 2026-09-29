@@ -2287,7 +2287,8 @@
     "loading": "Abrechnungseinstellungen werden geladen…",
     "saveButton": "Abrechnungseinstellungen speichern",
     "saveError": "Die Abrechnungseinstellungen konnten nicht gespeichert werden.",
-    "saveSuccess": "Abrechnungseinstellungen gespeichert"
+    "saveSuccess": "Abrechnungseinstellungen gespeichert",
+    "readOnlyNotice": "Sie haben nur Lesezugriff auf die Rechnungseinstellungen. Bitten Sie eine Administratorin oder einen Administrator, sie zu ändern."
   },
   "shared": {
     "documentWorkspace": {

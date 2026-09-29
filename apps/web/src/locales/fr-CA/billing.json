@@ -2287,7 +2287,8 @@
     "loading": "Chargement des paramètres de facturation…",
     "saveButton": "Enregistrer les paramètres de facturation",
     "saveError": "Impossible d’enregistrer les paramètres de facturation.",
-    "saveSuccess": "Paramètres de facturation enregistrés"
+    "saveSuccess": "Paramètres de facturation enregistrés",
+    "readOnlyNotice": "Vous avez un accès en lecture seule aux paramètres de facturation. Demandez à un administrateur de les modifier."
   },
   "shared": {
     "documentWorkspace": {

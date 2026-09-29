@@ -6,6 +6,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { pctFromFraction } from './invoiceTypes';
 import { isHttpUrl, parseCompanyContact, parseCompanyAddress, isCompanyAddressBlank } from '@breeze/shared';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
+import { usePermissions } from '../../lib/permissions';
 import { useHashTab } from '../../lib/useHashState';
 import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '../shared/OverflowTabs';
 import AccessDenied from '../shared/AccessDenied';
@@ -40,6 +41,9 @@ export default function PartnerBillingSettingsPage() {
   const [loadError, setLoadError] = useState(false);
   const [denied, setDenied] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Same grant the PATCH /partner/billing-settings route requires (invoices:write).
+  const { can } = usePermissions();
+  const canWrite = can('invoices', 'write');
   const [activeTab, setActiveTab] = useHashTab<BillingTab>(BILLING_TABS, 'defaults');
 
   const [currencyCode, setCurrencyCode] = useState('USD');
@@ -119,7 +123,7 @@ export default function PartnerBillingSettingsPage() {
   const websiteInvalid = websiteTrimmed !== '' && !isHttpUrl(websiteTrimmed);
 
   const save = useCallback(async () => {
-    if (saving || websiteInvalid) return;
+    if (saving || websiteInvalid || !canWrite) return;
     setSaving(true);
     try {
       const pct = taxPercent.trim();
@@ -161,7 +165,7 @@ export default function PartnerBillingSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, notifyOnBehalfAcceptance, deviceAppendix,
+  }, [saving, websiteInvalid, canWrite, currencyCode, taxPercent, prefix, termsDays, autoEmailInvoice, notifyOnBehalfAcceptance, deviceAppendix,
       footer, documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
@@ -210,15 +214,23 @@ export default function PartnerBillingSettingsPage() {
         tabIndex={-1}
         className="space-y-6"
       >
+      {!canWrite && (activeTab === 'defaults' || activeTab === 'documents') && (
+        <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" data-testid="partner-billing-readonly">
+          {t('partnerBillingSettings.readOnlyNotice')}
+        </p>
+      )}
       {activeTab === 'defaults' && (
+        <fieldset disabled={!canWrite} className="min-w-0 border-0 p-0 m-0">
         <BillingDefaultsTab
           currencyCode={currencyCode} setCurrencyCode={setCurrencyCode}
           taxPercent={taxPercent} setTaxPercent={setTaxPercent}
           prefix={prefix} setPrefix={setPrefix}
           termsDays={termsDays} setTermsDays={setTermsDays}
         />
+        </fieldset>
       )}
       {activeTab === 'documents' && (
+        <fieldset disabled={!canWrite} className="min-w-0 border-0 p-0 m-0">
         <BillingDocumentsTab
           autoEmailInvoice={autoEmailInvoice} setAutoEmailInvoice={setAutoEmailInvoice}
           notifyOnBehalfAcceptance={notifyOnBehalfAcceptance} setNotifyOnBehalfAcceptance={setNotifyOnBehalfAcceptance}
@@ -236,12 +248,13 @@ export default function PartnerBillingSettingsPage() {
           inheritedCompanyName={inheritedCompanyName}
           inheritedPhone={inheritedPhone} inheritedWebsite={inheritedWebsite} inheritedAddress={inheritedAddress}
         />
+        </fieldset>
       )}
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
       </div>
 
-      {activeTab !== 'rates' && activeTab !== 'connections' && <div className="flex justify-end">
+      {canWrite && activeTab !== 'rates' && activeTab !== 'connections' && <div className="flex justify-end">
         <button
           type="button" onClick={() => void save()} disabled={saving || websiteInvalid}
           data-testid="partner-billing-save"

@@ -9,6 +9,9 @@ import { fetchWithAuth } from '../../stores/auth';
 import { partnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// Grants for the billing-write gate (invoices:write, same as the PATCH route).
+let canWrite = true;
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canWrite }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -43,6 +46,7 @@ async function gotoDocumentsTab() {
 describe('PartnerBillingSettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    canWrite = true;
     window.location.hash = '';
   });
 
@@ -76,6 +80,25 @@ describe('PartnerBillingSettingsPage', () => {
     renderPage();
     expect(await screen.findByTestId('partner-billing-denied')).toBeInTheDocument();
     expect(screen.queryByTestId('partner-billing-load-error')).not.toBeInTheDocument();
+  });
+
+  it('is read-only without invoices:write: inputs disabled, no Save, notice shown', async () => {
+    canWrite = false;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    const currency = await screen.findByTestId('partner-billing-currency');
+    expect(currency).toBeDisabled();
+    expect(screen.getByTestId('partner-billing-prefix')).toBeDisabled();
+    expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-readonly')).toBeInTheDocument();
+  });
+
+  it('keeps the form editable with a Save button when invoices:write is held', async () => {
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-currency')).toBeEnabled();
+    expect(screen.getByTestId('partner-billing-save')).toBeEnabled();
+    expect(screen.queryByTestId('partner-billing-readonly')).not.toBeInTheDocument();
   });
 
   it('mounts Rates and its work types manager when selected, with row saves only', async () => {
