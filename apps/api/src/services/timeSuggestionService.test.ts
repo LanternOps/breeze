@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
@@ -56,10 +56,21 @@ const sessionRow = (over: Record<string, unknown> = {}) => ({
   attributed_org_id: null, attributed_org_name: null, attribution_label: null, ...over,
 });
 
+// The fixtures use fixed dates in late August 2026 and the service refuses
+// dates more than 31 days back, so pin the clock (Date only, so promises and
+// timers still run normally) instead of letting the suite expire.
+const FIXTURE_NOW = new Date('2026-09-01T12:00:00Z');
+
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(FIXTURE_NOW);
   execCalls.length = 0; execResults.length = 0; settingsMock.mockReset();
   inserted.length = 0; deletedWhere.length = 0;
   createEntryMock.mockReset(); orgLinkMock.mockReset(); readEntryMock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('loadSignals — compiled SQL carries the isolation predicates (F1)', () => {
