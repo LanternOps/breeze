@@ -67,7 +67,7 @@ const ORG = '22222222-2222-4222-8222-222222222222';
 const OTHER_ORG = '33333333-3333-4333-8333-333333333333';
 const USER = '44444444-4444-4444-8444-444444444444';
 const OTHER_USER = '55555555-5555-4555-8555-555555555555';
-const device = { id: 'd1', orgId: ORG, status: 'online' };
+const device = { id: 'd1', orgId: ORG, status: 'online', orgType: 'customer' };
 
 type Row = Parameters<typeof partitionClaimable>[2][number];
 const row = (over: Partial<Row> = {}): Row => ({
@@ -148,6 +148,32 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     ]);
     expect(r.cancelled).toEqual([{ id: 'c1', reason: 'device_lifecycle' }]);
     expect(r.claimable.map((x) => x.id)).toEqual(['c2']);
+  });
+
+  it('a device parked in a holding org has every non-removal row cancelled', async () => {
+    const r = await partitionClaimable(tx(), { ...device, orgType: 'unassigned_pool' }, [
+      row(),
+      row({ id: 'c2', type: 'self_uninstall' }),
+      row({ id: 'c3', type: 'script', createdBy: USER }),
+      row({ id: 'c4', type: 'desktop_stream_stop' }),
+    ]);
+    expect(r.cancelled).toEqual([
+      { id: 'c1', reason: 'device_pending_assignment' },
+      { id: 'c3', reason: 'device_pending_assignment' },
+      { id: 'c4', reason: 'device_pending_assignment' },
+    ]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['c2']);
+    // Refused before the trust, requester and revalidation checks run.
+    expect(assertAllowedMock).not.toHaveBeenCalled();
+    expect(requesterActiveMock).not.toHaveBeenCalled();
+  });
+
+  it('a device in an ordinary org is not affected by the holding-org rule', async () => {
+    for (const orgType of ['customer', 'internal', 'quick_support']) {
+      const r = await partitionClaimable(tx(), { ...device, orgType }, [row()]);
+      expect(r.claimable).toHaveLength(1);
+      expect(r.cancelled).toEqual([]);
+    }
   });
 
   it('an offline or maintenance device is NOT a lifecycle cancellation', async () => {

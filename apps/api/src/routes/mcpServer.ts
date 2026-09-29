@@ -34,7 +34,7 @@ import { tenantToolPermissionRequirement, checkTenantToolRateLimit } from '../se
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
-import { eq, ne, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext, PrincipalKind } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
@@ -68,6 +68,8 @@ import type { BootstrapTool } from '../modules/mcpInvites/types';
 import { BootstrapError } from '../modules/mcpInvites/types';
 import { canonicalPrincipalRef, parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 
+import { notHiddenOrgType } from '../services/unassignedPool/visibility';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const mcpServerRoutes = new Hono();
 
 function parseCsvSet(raw: string | undefined): Set<string> {
@@ -2607,7 +2609,7 @@ async function handleResourcesRead(
       // Ephemeral Quick Support devices live in the partner's hidden
       // 'quick_support' org, which deliberately stays inside accessibleOrgIds —
       // orgCond() will not filter them, so exclude them explicitly.
-      const deviceSiteConditions: SQL[] = [eq(devices.isEphemeral, false)];
+      const deviceSiteConditions: SQL[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
       deviceSiteConditions.push(
         ...(siteAllowedDeviceIds === null
           ? []
@@ -2750,14 +2752,15 @@ function jsonRpcError(id: string | number | null, code: number, message: string,
  * Inlined here after activationRoutes.ts was deleted in Phase 4 — the only
  * remaining caller is this file.
  */
-async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
+export async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
   try {
     const [row] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      // The hidden 'quick_support' org can be the partner's oldest org — it must
-      // never become the default org for audit scoping or authTool dispatch.
-      .where(and(eq(organizations.partnerId, partnerId), ne(organizations.type, 'quick_support')))
+      // The hidden Quick Support and holding orgs can be the partner's oldest
+      // org — neither may become the default org for audit scoping or authTool
+      // dispatch.
+      .where(and(eq(organizations.partnerId, partnerId), notHiddenOrgType()))
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     return row?.id ?? null;

@@ -24,6 +24,16 @@ const {
   inFlightMock: vi.fn(),
 }));
 
+// Devices parked in a holding org, by id. The helper's query is proven against
+// Postgres in parkedCommandDelivery.integration.test.ts.
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
+}));
+
 vi.mock('../db', () => ({
   db: { select: (...a: unknown[]) => selectMock(...(a as [])) },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -83,6 +93,7 @@ function selectReturning(row: unknown) {
 describe('dispatchDeviceCommand (#5128 W1)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    parkedDeviceIds.clear();
     vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn) => fn());
     assertAllowedMock.mockResolvedValue(undefined);
     refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
@@ -549,5 +560,26 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+  it('refuses a parked device before trust or persistence', async () => {
+    parkedDeviceIds.add(DEVICE);
+    selectReturning(deviceRow('online'));
+
+    const result = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+
+    expect(result).toMatchObject({ ok: false, code: 'device_pending_assignment' });
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(assertAllowedMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('still queues lifecycle removal for a parked device', async () => {
+    parkedDeviceIds.add(DEVICE);
+    selectReturning(deviceRow('offline'));
+
+    const result = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'self_uninstall' });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(queueCommandMock).toHaveBeenCalledWith(DEVICE, 'self_uninstall', expect.anything(), undefined, expect.anything());
   });
 });

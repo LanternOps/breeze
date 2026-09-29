@@ -459,6 +459,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerApi/provisioning.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/relationships.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerLoginBranding.ts': { gap: '#6802' },
+  'preAssignment.ts': { exempt: 'human_only_tenant_restructure', note: 'Parked-device assignment and holding-area incident actions (enrollment switch, expire by deploy key) -- full-partner-admin surface that decides which customer org a pre-assignment device joins; no AI tool in v1.' },
   'partnerSendingDomains.ts': { gap: '#6803' },
   'partnerServicePrincipals.ts': { exempt: 'identity' },
   'partnerTrust.ts': { exempt: 'breeze_account', note: 'Trust review request to Breeze -- the partner-Breeze relationship itself.' },

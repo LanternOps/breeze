@@ -420,7 +420,7 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
   const expectedTransitionId = offlineTransitionId(data.orgId, data.deviceId, observedLastSeenAt);
   if (data.transitionId !== expectedTransitionId) throw new Error('Invalid transitionId');
 
-  const effectIds = await runWithSystemDbAccess(async () => {
+  const outcome = await runWithSystemDbAccess(async () => {
     const [device] = await db.update(devices).set({ status: 'offline' }).where(and(
       eq(devices.id, data.deviceId), eq(devices.orgId, data.orgId),
       inArray(devices.status, ['online', 'updating']),
@@ -428,14 +428,19 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
       // SQL-side writes (e.g. now()) can leave microseconds in last_seen_at.
       sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
     )).returning();
-    if (!device) return [];
-    return persistOfflineTransition(device, data.transitionId, observedLastSeenAt);
+    if (!device) return { transitioned: false, effectIds: [] as string[] };
+    // The status write IS the transition. A device parked in a holding org
+    // persists no effects (no event, no alert plan), so the effect list can be
+    // empty for a real transition.
+    return {
+      transitioned: true,
+      effectIds: await persistOfflineTransition(device, data.transitionId, observedLastSeenAt),
+    };
   });
-  if (!effectIds.length) return { transitioned: false, alertCreated: false };
   // The database has already admitted the work durably. Failed immediate fan-out
   // is retried by the independent periodic recovery scan, even after a restart.
-  await enqueueOfflineEffects(effectIds);
-  return { transitioned: true, alertCreated: false };
+  await enqueueOfflineEffects(outcome.effectIds);
+  return { transitioned: outcome.transitioned, alertCreated: false };
 
 }
 
@@ -492,13 +497,13 @@ export async function transitionDeviceOffline(
   // offline_transition_effects INSERT all share this one system-scoped
   // transaction — see the doc comment above for why a bare ambient (org-scoped)
   // context would deny the insert under RLS.
-  const effectIds = await runSystemDbAccessOutsideAmbientContext(async () => {
+  const outcome = await runSystemDbAccessOutsideAmbientContext(async () => {
     const [current] = await db
       .select()
       .from(devices)
       .where(and(eq(devices.agentId, agentId), inArray(devices.status, fromStatuses)))
       .limit(1);
-    if (!current) return [];
+    if (!current) return { transitioned: false, effectIds: [] as string[] };
 
     const observedLastSeenAt = canonicalTimestamp(current.lastSeenAt?.toISOString() || '', 'observedLastSeenAt');
     const transitionId = offlineTransitionId(current.orgId, current.id, observedLastSeenAt);
@@ -510,17 +515,22 @@ export async function transitionDeviceOffline(
       // must be against the exact heartbeat observation just read.
       sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
     )).returning();
-    if (!device) return [];
+    if (!device) return { transitioned: false, effectIds: [] as string[] };
 
-    return persistOfflineTransition(device, transitionId, observedLastSeenAt);
+    // Same as processMarkOffline: the status write is the transition, even
+    // when (for a parked device) no effect is persisted.
+    return {
+      transitioned: true,
+      effectIds: await persistOfflineTransition(device, transitionId, observedLastSeenAt),
+    };
   });
-  if (!effectIds.length) return { transitioned: false };
+  if (!outcome.transitioned) return { transitioned: false };
 
   // The database has already admitted the work durably (same as
   // processMarkOffline) — fan-out happens outside the DB context since
   // getOfflineQueue()/addBulk talks to Redis, not Postgres, and a failed
   // immediate enqueue is retried by the independent periodic recovery scan.
-  await enqueueOfflineEffects(effectIds);
+  await enqueueOfflineEffects(outcome.effectIds);
   return { transitioned: true };
 }
 

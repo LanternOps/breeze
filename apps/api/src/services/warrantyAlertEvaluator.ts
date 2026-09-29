@@ -11,10 +11,11 @@ import {
   devices,
   alerts,
 } from '../db/schema';
-import { eq, and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { eq, and, getTableColumns, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { buildResolveAlertCas, createSourcedAlert } from './alertService';
 import { publishEvent } from './eventBus';
 import { resolveEffectiveWarrantyInlineSettings } from './warrantyPolicyResolution';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 interface WarrantyAlertSettings {
   enabled: boolean;
@@ -94,12 +95,14 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
 
   // Load device info
   const [device] = await db
-    .select()
+    .select({ ...getTableColumns(devices), parked: sql<boolean>`NOT (${notParkedDeviceCondition()})` })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
 
   if (!device) return null;
+  // No alert for a device parked in its partner's holding org.
+  if (device.parked === true) return null;
 
   // Quick Support exclusion: ephemeral devices live in the hidden per-partner
   // 'quick_support' org and are a stranger's personal machine borrowed for one

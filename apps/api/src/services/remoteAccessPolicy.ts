@@ -13,6 +13,8 @@ import { resolveEffectiveConfig } from './configurationPolicy';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
+import { db } from '../db';
+import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_CODE } from './unassignedPool/deliveryEligibility';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +45,11 @@ export interface RemoteAccessSettings {
 export interface PolicyCheckResult {
   allowed: boolean;
   reason?: string;
+  /**
+   * Machine-readable refusal; set only for a device parked in a holding org.
+   * The same code the command-delivery refusal carries; routes pass it through.
+   */
+  code?: typeof PARKED_DEVICE_COMMAND_REFUSAL_CODE;
   policyName?: string;
   policyId?: string;
 }
@@ -53,6 +60,9 @@ export type RemoteCapability = 'webrtcDesktop' | 'vncRelay' | 'remoteTools' | 'p
 // clipboard direction (Finding #7) — live in policyBaselineDefaults.ts
 // (single source of truth, #1725).
 const DEFAULTS: RemoteAccessSettings = getRemoteAccessBaseline();
+
+const PARKED_DEVICE_REMOTE_REFUSAL =
+  'This device is waiting to be assigned to an organization; remote access is unavailable until then';
 
 const CAPABILITY_LABELS: Record<RemoteCapability, string> = {
   webrtcDesktop: 'Remote desktop',
@@ -252,6 +262,17 @@ export async function checkRemoteAccess(
   let policyId: string | null = null;
 
   try {
+    // A device parked in its partner's holding org gets no remote capability,
+    // whatever the policy (none assigned means everything enabled). Asked on
+    // every call, never cached: a parked device can be assigned out of the
+    // holding org, and the answer must follow it immediately.
+    if (await isParkedDevice(db, deviceId)) {
+      return {
+        allowed: false,
+        code: PARKED_DEVICE_COMMAND_REFUSAL_CODE,
+        reason: PARKED_DEVICE_REMOTE_REFUSAL,
+      };
+    }
     const resolved = await resolveRemoteAccessForDevice(deviceId, options);
     settings = resolved.settings;
     policyName = resolved.policyName;

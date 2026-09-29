@@ -353,6 +353,15 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // device_pool_assignment_events: the
+  // holding-area ledger. Partner-axis (Shape 3), no org_id column — from/to org
+  // ids are historical snapshots, not tenancy keys — so no cascade / export /
+  // merge registration. GRANT includes DELETE for cascadeDeletePartner's
+  // dynamic partner_id sweep; UPDATE is blocked by trigger. A RESTRICTIVE
+  // system-only policy (2026-11-08-170300) narrows every command to system
+  // scope on top of the partner-axis policy asserted here.
+  // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
+  ['device_pool_assignment_events', 'partner_id'],
   // Backup Provider Integration (#6008 W01): the MSP registers one external
   // backup vendor connection (Cove) and maps its discovered customers to
   // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command

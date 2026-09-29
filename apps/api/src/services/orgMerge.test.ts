@@ -147,6 +147,12 @@ describe('validateMergePair', () => {
   it('rejects quick_support survivor', () =>
     expect(validateMergePair(org({ id: 'l' }), org({ id: 's', type: 'quick_support' }))).toMatch(/quick.support/i));
 
+  it('rejects an unassigned_pool loser', () =>
+    expect(validateMergePair(org({ id: 'l', type: 'unassigned_pool' }), org({ id: 's' }))).toMatch(/holding area/i));
+
+  it('rejects an unassigned_pool survivor', () =>
+    expect(validateMergePair(org({ id: 'l' }), org({ id: 's', type: 'unassigned_pool' }))).toMatch(/holding area/i));
+
   it('rejects archived/merging loser', () => {
     for (const status of ['archived', 'merging', 'purging', 'churned', 'offboarding']) {
       expect(validateMergePair(org({ id: 'l', status }), org({ id: 's' })), status).not.toBeNull();

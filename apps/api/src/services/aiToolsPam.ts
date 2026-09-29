@@ -21,6 +21,7 @@ import {
 } from './aiToolsSiteScope';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { isAiAgentPrincipal } from '../middleware/auth';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // Input schemas for these tools live in the canonical `toolInputSchemas`
 // registry in ./aiToolSchemas (validated centrally by executeTool).
@@ -107,7 +108,8 @@ function toIso(value: unknown): string | null {
 }
 
 async function loadDeviceWithAccess(deviceId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  // Never a device parked in a holding org, whatever the caller's scope.
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const oc = orgWhere(auth, devices.orgId);
   if (oc) conditions.push(oc);
 

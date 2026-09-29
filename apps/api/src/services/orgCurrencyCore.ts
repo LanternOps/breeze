@@ -88,14 +88,16 @@ export async function readOrgStampingDefaults(
  */
 export async function readOrgStampingDefaultsMany(
   tx: DbExecutor, orgIds: string[]
-): Promise<Map<string, { currencyCode: string }>> {
+): Promise<Map<string, { currencyCode: string; type: string }>> {
   const ordered = [...new Set(orgIds)].sort();
-  const out = new Map<string, { currencyCode: string }>();
+  const out = new Map<string, { currencyCode: string; type: string }>();
   for (const orgId of ordered) {
     // Sequential on purpose: a Promise.all would let postgres.js interleave the
     // two lock requests and lose the ascending order this helper exists to give.
     const [org] = await tx
-      .select({ currencyCode: organizations.currencyCode })
+      // `type` rides the same locked read so a mover can apply the one-way
+      // holding-area rule without a second organizations statement.
+      .select({ currencyCode: organizations.currencyCode, type: organizations.type })
       .from(organizations)
       .where(eq(organizations.id, orgId))
       .limit(1)

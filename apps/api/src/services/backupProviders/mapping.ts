@@ -11,6 +11,8 @@ import { captureException } from '../sentry';
 import { resolveProviderAlertsForCustomer } from './alertsResolve';
 import type { ProviderSyncTx } from './persist';
 
+import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
+import { notHiddenOrgType } from '../unassignedPool/visibility';
 export interface RemapCustomerActor {
   userId: string | null;
   partnerId: string;
@@ -73,7 +75,7 @@ export async function remapCustomer(
   // which poisons it, so the friendly 422 would become a 500 at COMMIT.
   if (orgId !== null) {
     const [org] = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, type: organizations.type })
       .from(organizations)
       .where(eq(organizations.id, orgId))
       .limit(1);
@@ -81,6 +83,12 @@ export async function remapCustomer(
       throw new RemapCustomerError(
         'ORG_NOT_IN_PARTNER',
         'The target organization does not belong to this partner',
+      );
+    }
+    if (isUnassignedPoolOrgType(org.type)) {
+      throw new RemapCustomerError(
+        'ORG_NOT_IN_PARTNER',
+        'The unassigned-device holding area cannot be a mapping target',
       );
     }
   }
@@ -335,6 +343,8 @@ export async function autoMapCustomers(
       isNull(organizations.deletedAt),
       isNull(organizations.archivedAt),
       sql`${organizations.status} NOT IN ('archived','purging','merging')`,
+      // Quick Support and the holding org are never a customer to map onto.
+      notHiddenOrgType(),
     ));
 
   const decisions = resolveCustomerAutoMappings(customers, orgs);

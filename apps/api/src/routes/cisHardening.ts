@@ -21,6 +21,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { resolveOrgId } from './networkShared';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const cisHardeningRoutes = new Hono();
 
 const osTypeSchema = z.enum(['windows', 'macos', 'linux']);
@@ -162,7 +163,7 @@ async function resolveAuthorizedCisScanDeviceIds(
   } else {
     // Mirror selectCisScanTargetDevices: server-resolved fan-out must never
     // include Quick Support machines or devices that have been decommissioned.
-    conditions.push(eq(devices.isEphemeral, false), ne(devices.status, 'decommissioned'));
+    conditions.push(eq(devices.isEphemeral, false), notParkedDeviceCondition(), ne(devices.status, 'decommissioned'));
   }
 
   const rows = await db

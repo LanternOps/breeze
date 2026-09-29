@@ -58,7 +58,7 @@ export function recentsStorageKey(userId: string): string {
 // pages (those are tracked as recent DEVICES, with the device's own name).
 const EXCLUDED_PREFIXES = ['/login', '/logout', '/auth/', '/register', '/reset-password', '/verify'];
 const DEVICE_DETAIL = /^\/devices\/[^/]+$/;
-const DEVICE_STATIC_SUBPAGES = new Set(['/devices/groups', '/devices/compare', '/devices/posture']);
+const DEVICE_STATIC_SUBPAGES = new Set(['/devices/groups', '/devices/compare', '/devices/posture', '/devices/unassigned']);
 
 export function isRecordablePagePath(path: string): boolean {
   if (EXCLUDED_PREFIXES.some((p) => path === p.replace(/\/$/, '') || path.startsWith(p))) return false;

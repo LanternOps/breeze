@@ -14,6 +14,8 @@ import {
   slaEventsQuerySchema,
 } from './schemas';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const slaRoutes = new Hono();
 
 const idParamSchema = z.object({ id: z.string().guid() });
@@ -38,6 +40,8 @@ slaRoutes.post(
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const payload = c.req.valid('json');
     const now = new Date();

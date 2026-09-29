@@ -21,6 +21,7 @@ import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore, type AiRestoreAuthorization } from './aiToolsRestoreAuthorization';
 import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
 import type { HypervOptions } from './bareMetalRebuildSchemas';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -212,7 +213,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
       const snapshot = snapshotResult.snapshot;
 
-      const deviceConditions: SQL[] = [eq(devices.id, targetDeviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, targetDeviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [targetDevice] = await db
@@ -347,7 +348,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
       const snapshot = snapshotResult.snapshot;
 
-      const deviceConditions: SQL[] = [eq(devices.id, targetDeviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, targetDeviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [targetDevice] = await db

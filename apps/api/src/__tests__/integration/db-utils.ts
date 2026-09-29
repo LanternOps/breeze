@@ -205,7 +205,7 @@ export interface CreateOrganizationOptions {
   partnerId: string;
   name?: string;
   slug?: string;
-  type?: 'customer' | 'internal';
+  type?: 'customer' | 'internal' | 'quick_support' | 'unassigned_pool';
   status?: 'active' | 'suspended' | 'trial' | 'churned';
   /** Set to a Date to soft-delete the org (drives the deletedAt branch in tenantStatus.ts). */
   deletedAt?: Date | null;

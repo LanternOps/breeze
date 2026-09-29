@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, asc, count, eq, ne, sum } from 'drizzle-orm';
+import { and, asc, count, eq, sum } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   clientAiOrgPolicies,
@@ -16,6 +16,7 @@ import { CLIENT_AI_ENTRA_CLIENT_ID } from '../../config/env';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { ENTRA_TENANT_GUID_REGEX } from './schemas';
 
+import { notHiddenOrgType } from '../../services/unassignedPool/visibility';
 /**
  * AI for Office — onboarding/status endpoints for the dashboard OrgsTab
  * (spec §9.1). Mounted onto clientAiAdminRoutes (admin.ts), so the Plan-1
@@ -87,7 +88,7 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
   const orgs = await db
     .select({ id: organizations.id, name: organizations.name })
     .from(organizations)
-    .where(and(auth.orgCondition?.(organizations.id), ne(organizations.type, 'quick_support')))
+    .where(and(auth.orgCondition?.(organizations.id), notHiddenOrgType()))
     .orderBy(asc(organizations.name));
 
   const mappings = await db

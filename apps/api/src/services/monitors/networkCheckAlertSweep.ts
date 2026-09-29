@@ -5,6 +5,8 @@ import { evaluateNetworkCheckAlertsForDevice } from '../alertService';
 import { detachMonitorFromDevice } from './episodeService';
 import { resolveNetworkCheckAlertDeviceForMonitor } from './networkCheckAlertDevice';
 import { captureException } from '../sentry';
+import { notHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
+import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 
 /**
  * #6353 — the device-independent `network_check` alert sweep.
@@ -69,6 +71,7 @@ export async function selectNetworkCheckOrgIds(): Promise<string[]> {
       or(...membership),
       eq(organizations.status, 'active'),
       ne(organizations.type, 'quick_support'),
+      notHoldingOrgCondition(),
     ));
 
   return orgs.map((o) => o.id);
@@ -117,7 +120,7 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
   // A miss is a deny, and an org that stopped qualifying between enqueue and
   // run (deactivated, or a quick-support org) is skipped like the per-device
   // sweep skips it.
-  if (!org || org.status !== 'active' || org.type === 'quick_support') return result;
+  if (!org || org.status !== 'active' || org.type === 'quick_support' || isUnassignedPoolOrgType(org.type)) return result;
 
   // Own checks OR the partner's partner-wide checks — never `eq(orgId)` alone,
   // which silently matches nothing for an `org_id NULL` definition.

@@ -8,6 +8,7 @@ import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { buildDeviceScope } from './scope';
 import { z } from 'zod';
 
+import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 export const statsRoutes = new Hono();
 
 statsRoutes.use('*', authMiddleware);
@@ -60,7 +61,7 @@ statsRoutes.get(
     // which stays in accessibleOrgIds for RLS — exclude them from tech-facing counts.
     const conditions: SQL[] = [
       sql`${devices.status} != 'decommissioned'`,
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
     ];
     if (scoped.scope) {
       conditions.push(scoped.scope);

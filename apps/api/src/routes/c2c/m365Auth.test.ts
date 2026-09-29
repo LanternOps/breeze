@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The holding-org refusal reads the org; the positional db mocks below do not model it.
+vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 import { m365AuthRoutes, m365CallbackRoute } from './m365Auth';

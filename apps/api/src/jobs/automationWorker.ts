@@ -53,6 +53,8 @@ import { admitSubjectResponse, drainSubjectResponseOutbox } from '../services/su
 import { getUserPermissions, canAccessSite } from '../services/permissions';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from '../services/executionTargetGating';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -866,6 +868,8 @@ async function resolveDeviceIdsForAssignment(
     const conditions = [
       eq(organizations.partnerId, assignmentTargetId),
       eq(devices.isEphemeral, false),
+      // Never a device parked in the partner's holding org.
+      notHoldingOrgCondition(),
     ];
     if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
     const partnerDevices = await db
@@ -1407,6 +1411,11 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   // against payload.deviceId — i.e. run the MSP's automation library on a
   // stranger's home PC. Drop the whole event.
   if (eventOrg?.type === 'quick_support') {
+    return;
+  }
+  // Same for an event raised for a device parked in its partner's holding
+  // org: nothing partner-wide runs against a device that is not managed yet.
+  if (isUnassignedPoolOrgType(eventOrg?.type)) {
     return;
   }
 

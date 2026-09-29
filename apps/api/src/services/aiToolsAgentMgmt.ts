@@ -16,6 +16,7 @@ import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArch
 import { getBinaryEdition } from './binaryEdition';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand } from './aiDispatch';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -27,7 +28,9 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  // Local copy of aiTools.verifyDeviceAccess (cleanup debt, not a second
+  // source of truth); the central deviceArgs gate has already run it.
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -148,7 +151,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         // Ephemeral Quick Support agents are always on a transient version and
         // sit in an org the tech can read, so they would inflate this rollout
         // rollup forever — exclude them.
-        const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget), eq(devices.isEphemeral, false)];
+        const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
         // Exact-device axis (#6086): the candidate set is otherwise org-wide, so

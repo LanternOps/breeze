@@ -15,6 +15,7 @@ import {
   warningsForRefusedExecutionGroups,
   type RefusedExecutionGroup,
 } from '../services/executionTargetGating';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 
 /**
  * One config-policy assignment as this module needs it: the assignment's own
@@ -57,7 +58,7 @@ export function buildPartnerAssignmentCondition(
     );
   }
   if (conditions.length === 0) return undefined;
-  return and(or(...conditions), eq(devices.isEphemeral, false));
+  return and(or(...conditions), eq(devices.isEphemeral, false), notHoldingOrgCondition());
 }
 
 /**
@@ -118,7 +119,8 @@ async function resolveRingAssignedDeviceIds(
   // The ring-partner clamp (see doc comment) — every branch below joins
   // organizations and applies it, so a target that has since been reparented to
   // another partner resolves to nothing regardless of the caller's scope.
-  const underRingPartner = eq(organizations.partnerId, ringPartnerId);
+  // Also never a device parked in the partner's holding org.
+  const underRingPartner = and(eq(organizations.partnerId, ringPartnerId), notHoldingOrgCondition())!;
 
   // Device-level targets are an operator-chosen machine, so they are NOT
   // filtered on isEphemeral — matching the scheduler, which leaves its by-id

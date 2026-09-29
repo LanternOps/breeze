@@ -10,6 +10,7 @@ import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 // #1105 (duration variant): withSystemDbAccessContext holds a DB transaction
@@ -82,7 +83,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
     db
       .select({ orgId: devices.orgId })
       .from(devices)
-      .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
+      .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false AND ${notParkedDeviceCondition()}`)
       .groupBy(devices.orgId)
   );
 

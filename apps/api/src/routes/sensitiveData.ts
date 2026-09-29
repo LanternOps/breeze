@@ -35,6 +35,7 @@ import {
   recordSensitiveDataScanQueued
 } from './metrics';
 
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 export const sensitiveDataRoutes = new Hono();
 const requireSensitiveDataRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireSensitiveDataWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
@@ -124,7 +125,7 @@ async function scheduledTargetsFitAuthority(
   if (owner.orgId !== null) {
     conditions.push(eq(devices.orgId, owner.orgId));
   } else {
-    conditions.push(eq(organizations.partnerId, owner.partnerId), ne(organizations.type, 'quick_support'));
+    conditions.push(eq(organizations.partnerId, owner.partnerId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition());
   }
   if (authority.executionAuthoritySiteIds !== null) {
     conditions.push(inArray(devices.siteId, authority.executionAuthoritySiteIds));

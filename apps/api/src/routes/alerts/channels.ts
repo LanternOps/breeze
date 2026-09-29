@@ -50,6 +50,8 @@ import {
 import { PERMISSIONS } from '../../services/permissions';
 import { webhookOriginChangeWouldRetainAuthorization } from '../../services/credentialOriginBinding';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const channelsRoutes = new Hono();
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
@@ -212,6 +214,8 @@ channelsRoutes.post(
       if (!auth.canAccessOrg(orgId)) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
+      // canAccessOrg is true for system scope: the holding org is never a target.
+      if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
       owner = { orgId, partnerId: null };
     }
 

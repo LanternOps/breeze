@@ -39,6 +39,8 @@ import {
   type M365CustomerGraphActionsOutcome,
 } from '../services/m365ControlPlane/metrics';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 const PROFILE_ID = 'customer-graph-actions' as const;
 const PROFILE_DISPLAY_NAME = 'Customer Graph Actions';
 const profileManifest = M365_PERMISSION_PROFILES[PROFILE_ID];
@@ -240,6 +242,8 @@ m365CustomerGraphActionsRoutes.post(
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(resolved.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     if (!isM365CustomerGraphActionsOnboardingEnabledForOrg(resolved.orgId)) {
       return c.json({ error: 'Customer Graph Actions onboarding is not enabled' }, 404);
     }

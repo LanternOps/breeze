@@ -37,7 +37,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import {
@@ -92,6 +92,8 @@ import type {
   RemoteRef,
 } from './types';
 
+import { HIDDEN_ORG_TYPES, notHiddenOrgType } from '../unassignedPool/visibility';
+import { UNASSIGNED_POOL_ORG_TYPE } from '../unassignedPool/orgType';
 export type MappingEntityType = 'org' | 'catalog_item';
 export type MappingDecision = 'confirmed' | 'create_new' | 'unlinked';
 
@@ -441,7 +443,7 @@ function findExactMatch<T extends { id: string }>(
  * `organizations` (e.g. routes/portal.compat.test.ts, which imports this
  * module transitively via accountingInvoicePush) would throw on load.
  */
-const notQuickSupportOrg = () => ne(organizations.type, 'quick_support');
+const notQuickSupportOrg = () => notHiddenOrgType();
 
 /**
  * Ids of the partner's hidden `quick_support` orgs (in practice exactly one).
@@ -468,7 +470,7 @@ async function loadQuickSupportOrgIds(partnerId: string): Promise<Set<string>> {
     .from(organizations)
     .where(and(
       eq(organizations.partnerId, partnerId),
-      eq(organizations.type, 'quick_support'),
+      inArray(organizations.type, [...HIDDEN_ORG_TYPES]),
       isNull(organizations.deletedAt),
     ));
   return new Set(rows.map((r) => r.id));
@@ -806,7 +808,9 @@ async function loadOwnedOrg(
     .where(and(
       eq(organizations.id, orgId),
       eq(organizations.partnerId, partnerId),
-      opts.allowQuickSupport ? undefined : notQuickSupportOrg(),
+      // Even the `unlinked` escape hatch never reaches the holding org: it can
+      // never have been offered, so it can hold no mapping row to clear.
+      opts.allowQuickSupport ? ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE) : notQuickSupportOrg(),
       isNull(organizations.deletedAt),
     ));
   const org = rows[0] as OrgRow | undefined;

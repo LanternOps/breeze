@@ -47,6 +47,7 @@
     "timesheets": "Hojas de tiempo",
     "productCatalog": "Catálogo de productos",
     "deviceGroups": "Grupos de dispositivos",
+    "unassignedDevices": "Dispositivos sin asignar",
     "configPolicies": "Políticas de configuración",
     "integrations": "Integraciones",
     "cloudBackup": "Copia de seguridad en la nube",

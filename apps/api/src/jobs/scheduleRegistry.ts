@@ -144,6 +144,10 @@ export const JOB_SCHEDULES = {
   // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and
   // `audit-drift-evaluator` already fires hourly at :17.
   'removed-device-purge': '13 8 * * *',
+  // Pre-assignment holding area — daily hard purge of parked devices that
+  // expired more than 30 days ago (the general purge above skips orgs without
+  // a lifecycle policy). Hour 9 in the daily (≡3 mod 5) lane: :23 was free.
+  'parked-device-purge': '23 9 * * *',
   // #5329 (M365 tenant sync, spec §3.7) — daily prune of stale M365 snapshot
   // rows (30 days past stale_since) and of Secure Score control_scores past
   // 90 days, both via partial indexes so the sweep never rescans pruned
@@ -197,6 +201,11 @@ export const JOB_SCHEDULES = {
   // Execution plane W01 (spec §6.1) — hourly expiry sweep of ai_run_artifacts,
   // blob then row. :2 is the last free minute in the ≡2 (mod 5) lane.
   'ai-artifact-expiry-sweeper': '2 * * * *',
+  // Pre-assignment holding area — hourly expiry of devices parked past the
+  // 14-day window. Every minute of the ≡2 (mod 5) lane is already taken in at
+  // least one hour, so this takes :21, free in every hour and outside the
+  // ≡0 (mod 5) minutes the fine-grained ticks land on.
+  'parked-device-expiry': '21 * * * *',
   // Helper screenshot cleanup — sweeps ai_screenshots rows (and their files)
   // past their 24h retention. 4x/day is plenty against a 24h TTL; minute 27
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in

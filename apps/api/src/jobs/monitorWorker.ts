@@ -29,6 +29,7 @@ import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretR
 import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
 import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 import { resolveNetworkCheckAlertDevice } from '../services/monitors/networkCheckAlertDevice';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -665,7 +666,7 @@ export async function selectDueMonitorJobs(
         // a stranger's own machine mid support session, not fleet the
         // partner authored partner-wide network monitors against. Same
         // exclusion as monitorScriptWorker.ts's partner-wide fan-out.
-        .where(and(inArray(organizations.partnerId, partnerIds), excludeQuickSupportOrgs()))
+        .where(and(inArray(organizations.partnerId, partnerIds), excludeQuickSupportOrgs(), notHoldingOrgCondition()))
     );
     for (const row of rows) {
       if (!row.partnerId) continue;

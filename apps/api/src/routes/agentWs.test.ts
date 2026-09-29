@@ -58,6 +58,7 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     partnerId: 'organizations.partnerId',
+    type: 'organizations.type',
   },
   devices: {
     id: 'devices.id',
@@ -395,6 +396,7 @@ import {
   handleAgentCredentialRevocation,
   publishAgentCredentialRevocation,
   registerConnection,
+  isAgentDeviceStillAuthorized,
   processOrphanedCommandResult,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
@@ -403,6 +405,7 @@ import {
 } from './agentWs';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applyCommandProgress, COMMAND_PROGRESS_CAPABILITY } from '../services/commandProgress';
+import { dispatchCommandToAgent } from '../services/agentCommandRelay';
 import {
   applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
@@ -610,6 +613,28 @@ describe('partner-trust WebSocket fast path', () => {
       payload: {},
     })).toBe(true);
     expect(fakeWs.send).toHaveBeenCalledOnce();
+  });
+
+  it('refuses every non-removal command for a connection registered as parked', () => {
+    const fakeWs = wsMock();
+    registerConnection('parked-agent-1', fakeWs, { partnerId: 'p1', trustState: 'trusted', parked: true });
+
+    expect(sendCommandToAgent('parked-agent-1', { id: 'c1', type: 'script', payload: {} })).toBe(false);
+    expect(sendCommandToAgent('parked-agent-1', { id: 'c2', type: 'desktop_stream_stop', payload: {} })).toBe(false);
+    expect(fakeWs.send).not.toHaveBeenCalled();
+
+    expect(sendCommandToAgent('parked-agent-1', { id: 'c3', type: 'self_uninstall', payload: {} })).toBe(true);
+    expect(fakeWs.send).toHaveBeenCalledOnce();
+  });
+
+  it('the cross-process dispatch facade reports a parked connection as not delivered', async () => {
+    const fakeWs = wsMock();
+    registerConnection('parked-agent-2', fakeWs, { partnerId: 'p1', trustState: 'trusted', parked: true });
+
+    await expect(
+      dispatchCommandToAgent('parked-agent-2', { id: 'c1', type: 'snmp_poll', payload: {} }),
+    ).resolves.toEqual({ status: 'offline' });
+    expect(fakeWs.send).not.toHaveBeenCalled();
   });
 
   it('a partner-trust:changed message updates every cached connection for that partner', async () => {
@@ -846,6 +871,7 @@ describe('validateAgentToken — tenant-status gate', () => {
         partnerId: 'partner-1',
         role: 'agent',
         credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+        parked: false,
       },
     });
     expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
@@ -870,6 +896,68 @@ describe('validateAgentToken — tenant-status gate', () => {
     const result = await validateAgentToken('agent-1', TOKEN);
 
     expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  // Pre-assignment — a device parked in its partner's
+  // holding org gets credential rotation and nothing else, and a WS socket is a
+  // fully-capable control channel. The upgrade is refused at authentication,
+  // with the same opaque refusal as a draining tenant.
+  it('refuses the upgrade for a device parked in a holding org', async () => {
+    queueDeviceSelect({ ...deviceRow, organizationType: 'unassigned_pool' });
+    const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes('agent_ws_refused_pending_assignment'))).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it('accepts a device in a regular org (positive control for the holding-org refusal)', async () => {
+    queueDeviceSelect({ ...deviceRow, organizationType: 'customer' });
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('never runs the upgrade handler for a parked device', async () => {
+    queueDeviceSelect({ ...deviceRow, organizationType: 'unassigned_pool' });
+    const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const upgradeHandler = vi.fn(async () => new Response('ws', { status: 101 }));
+    const handlerFactory = vi.fn();
+    const app = createAgentWsRoutes(((factory: unknown) => {
+      handlerFactory(factory);
+      return upgradeHandler;
+    }) as any);
+
+    const res = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
+
+    expect(res.status).toBe(401);
+    expect(upgradeHandler).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  function queueRecheckSelect(orgType: string) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([{ ...deviceRow, orgType }]),
+        })),
+      })),
+    } as any);
+  }
+
+  it('the periodic re-check refuses a device whose org is a holding org', async () => {
+    queueRecheckSelect('unassigned_pool');
+
+    await expect(isAgentDeviceStillAuthorized('agent-1', deviceRow.agentTokenHash)).resolves.toBe(false);
+  });
+
+  it('the periodic re-check keeps a device in a regular org (positive control)', async () => {
+    queueRecheckSelect('customer');
+
+    await expect(isAgentDeviceStillAuthorized('agent-1', deviceRow.agentTokenHash)).resolves.toBe(true);
   });
 });
 
@@ -967,6 +1055,7 @@ describe('validateAgentToken — certificate/device binding (Wave 5 Task 6)', ()
         partnerId: 'partner-1',
         role: 'agent',
         credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+        parked: false,
       },
     });
   });

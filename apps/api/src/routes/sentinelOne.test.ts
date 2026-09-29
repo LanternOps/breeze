@@ -769,6 +769,30 @@ describe('sentinel one routes', () => {
       expect(body.error).toContain('does not belong to this partner');
     });
 
+    it('refuses to map an S1 site onto a holding org even when org reach would allow it', async () => {
+      // This route already refuses system scope without a partner; the org
+      // type check is what refuses the holding org if reach ever included it.
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      authState.canAccessOrg = () => true;
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: INTEGRATION_ID, partnerId: PARTNER_ID }]) }) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: ORG_ID, partnerId: PARTNER_ID, type: 'unassigned_pool' }]) }) }),
+      } as any);
+
+      const res = await app.request('/s1/organizations/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ integrationId: INTEGRATION_ID, s1SiteId: S1_SITE_ID, orgId: ORG_ID }),
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('ORG_PROTECTED');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('returns 404 when discovered site not found (non-existent s1SiteId)', async () => {
       authState.scope = 'partner';
       authState.partnerId = PARTNER_ID;

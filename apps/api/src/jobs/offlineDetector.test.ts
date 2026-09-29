@@ -150,6 +150,25 @@ describe('transitionDeviceOffline (#6503 — WS close/error handlers)', () => {
     expect(persistOfflineTransition).toHaveBeenCalledWith(device, expectedTransitionId, observedLastSeenAt);
   });
 
+  it('counts the status write as a transition for a parked device even though no effect is persisted', async () => {
+    const deviceId = '00000000-0000-4000-8000-000000000003';
+    const orgId = '10000000-0000-4000-8000-000000000003';
+    const device = {
+      id: deviceId, orgId, status: 'online', lastSeenAt: new Date('2026-09-16T10:00:00.000Z'),
+      hostname: 'parked-1', siteId: null, isEphemeral: false,
+    };
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: vi.fn(async () => [device]) }) }),
+    } as never);
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [device]) })) }),
+    } as never);
+    // A parked device's transition persists no event and no alert plan.
+    vi.mocked(persistOfflineTransition).mockResolvedValueOnce([]);
+
+    await expect(transitionDeviceOffline('agent-parked', ['online'])).resolves.toEqual({ transitioned: true });
+  });
+
   it('does not transition or persist anything when the device is not in an allowed source status', async () => {
     const selectLimit = vi.fn(async () => []);
     vi.mocked(db.select).mockReturnValue({

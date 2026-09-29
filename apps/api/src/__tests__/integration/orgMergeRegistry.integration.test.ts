@@ -363,6 +363,16 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // `RETURN NEW` unconditionally — it neither RAISEs nor reverts the repoint.
   'devices.breeze_cancel_cis_remediation_before_device_org_move':
     'merge fence short-circuits during org merge; otherwise only cancels remediation rows and always RETURN NEW, never blocking or reverting the org_id write',
+  // One-way holding-area membership (2026-11-08-170100-unassigned-pool-org-
+  // guards.sql). RAISEs P0001 only when the DESTINATION
+  // org is type 'unassigned_pool'. validateMergePair refuses a holding org as
+  // loser AND as survivor, so a merge never repoints a device into one. Like
+  // custom_field_definitions_no_shadow this is a REACHABILITY argument, pinned
+  // by unassignedPoolGuards.integration.test.ts (merge validation refuses a
+  // holding org read from the database). If that refusal is ever weakened,
+  // this moves to BLOCKING.
+  'devices.devices_unassigned_pool_move_guard':
+    'raises only when the destination org is a holding org; validateMergePair refuses holding orgs on both sides, so a merge repoint never reaches it',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',

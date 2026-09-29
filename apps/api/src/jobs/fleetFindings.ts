@@ -7,6 +7,7 @@ import { produceLogCorrelationFindings, produceMetricAnomalyPatterns, produceRel
 import { reconcileOrgFindings, type ReconcileResult } from '../services/fleetFindings/reconcile';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const FLEET_FINDINGS_QUEUE = 'fleet-findings';
 const SCAN_ORGS_JOB_ID = 'fleet-findings-scan';
@@ -73,7 +74,7 @@ async function findFleetFindingsOrgRows(): Promise<Array<{ orgId: string }>> {
   return db
     .select({ orgId: devices.orgId })
     .from(devices)
-    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
+    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false AND ${notParkedDeviceCondition()}`)
     .groupBy(devices.orgId);
 }
 

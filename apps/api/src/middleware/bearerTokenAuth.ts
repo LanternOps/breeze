@@ -2,7 +2,8 @@ import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import * as Sentry from '@sentry/node';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
-import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
 import {
   OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
   OAUTH_ISSUER,
@@ -302,6 +303,8 @@ export async function resolvePartnerAccessibleOrgIds(
             eq(organizations.partnerId, partnerId),
             orgFilter,
             inArray(organizations.status, ['active', 'trial']),
+            // Holding org is never human-reachable.
+            ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
             isNull(organizations.deletedAt),
           ),
         );
@@ -316,6 +319,8 @@ export async function resolvePartnerAccessibleOrgIds(
         and(
           eq(organizations.partnerId, partnerId),
           inArray(organizations.status, ['active', 'trial']),
+          // Holding org is never human-reachable.
+          ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
           isNull(organizations.deletedAt),
         ),
       );

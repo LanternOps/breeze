@@ -187,3 +187,4 @@ export * from './hardwareAlertRetirementOutbox';
 export * from './backupSnapshotIdReservations';
 export * from './backupStorageSessions';
 export * from './backupSnapshotAttestations';
+export * from './devicePoolAssignmentEvents';

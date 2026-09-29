@@ -78,6 +78,12 @@ export interface ExtensionAgentContext {
   orgId: string;
   siteId: string | null;
   role: string;
+  /**
+   * True for a device parked in its partner's holding org (not yet assigned
+   * to an organization). The host refuses such devices on extension agent
+   * routes; extensions refuse them again.
+   */
+  isPreAssignment?: boolean;
 }
 
 /**

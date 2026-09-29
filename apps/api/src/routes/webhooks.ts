@@ -22,6 +22,8 @@ import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { bumpApprovalGeneration } from '../services/approvalGeneration';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const webhookRoutes = new Hono();
 
 type ApiWebhookStatus = 'active' | 'paused' | 'failed';
@@ -410,6 +412,8 @@ webhookRoutes.post(
     } else if (!orgId) {
       return c.json({ error: 'orgId is required' }, 400);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const urlErrors = await validateWebhookUrlSafetyWithDns(data.url);
     if (urlErrors.length > 0) {

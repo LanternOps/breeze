@@ -56,6 +56,8 @@ import {
   checkDeviceTenantState,
   checkDeviceTokenSuspension,
 } from '../middleware/deviceCredentialLifecycle';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
+import { isParkedDeliverableCommandType } from '../services/unassignedPool/deliveryEligibility';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
@@ -250,6 +252,13 @@ interface ActiveAgentConnection {
   trustState: PartnerTrustState;
   credentialTokenHash?: string;
   credentialRevoked: boolean;
+  /**
+   * The device's org was a holding org when this socket was admitted. The
+   * upgrade refuses such a device, so this is false for every real socket; it
+   * is carried so the send primitive refuses non-removal commands on its own
+   * should that admission ever change.
+   */
+  parked: boolean;
 }
 
 // Store active WebSocket connections and their connect-time trust snapshot by agentId.
@@ -964,6 +973,8 @@ type AgentDbContext = {
    */
   partnerId: string;
   role?: AgentCredentialRole;
+  /** The device's org is a holding org (see ActiveAgentConnection.parked). */
+  parked?: boolean;
 };
 
 type AgentTokenValidation =
@@ -1009,6 +1020,8 @@ export async function isAgentDeviceStillAuthorized(
             pendingTokenHash: devices.pendingTokenHash,
             pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
             pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
+            // The device's org type, for the holding-org refusal below.
+            orgType: sql<string | null>`(SELECT o.type FROM organizations o WHERE o.id = ${devices.orgId})`,
           })
           .from(devices)
           .where(eq(devices.agentId, agentId))
@@ -1023,6 +1036,10 @@ export async function isAgentDeviceStillAuthorized(
     // Shared predicates — middleware/deviceCredentialLifecycle.ts.
     if (checkDeviceStatus(row)) return false;
     if (checkDeviceTokenSuspension(row)) return false;
+    // A device parked in a holding org never holds a socket: the upgrade
+    // refuses it, and this re-check closes any socket that finds its device
+    // there, whatever admitted it.
+    if (isUnassignedPoolOrgType(row.orgType)) return false;
     if (authenticatedTokenHash !== undefined) {
       const match = matchRoleScopedAgentTokenHash({
         ...row,
@@ -1101,6 +1118,8 @@ export async function validateAgentToken(
         // an FK, so a device with no org row is not authenticable anyway, and a
         // LEFT join would silently degrade it to the pre-W02 blind behaviour.
         partnerId: organizations.partnerId,
+        // Pre-assignment: a device parked in a holding org is refused below.
+        organizationType: organizations.type,
       })
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -1166,6 +1185,17 @@ export async function validateAgentToken(
     return { ok: false, reason: 'unauthorized' };
   }
 
+  // Pre-assignment: a device parked in its partner's
+  // holding org gets credential rotation and lifecycle removal over REST, and
+  // nothing else. A socket is a fully-capable control channel (the same reason
+  // a draining tenant is refused above), so the upgrade is refused here — one
+  // closed door instead of gating every push primitive on an open socket. The
+  // agent keeps its REST heartbeat, which carries everything it may receive.
+  if (isUnassignedPoolOrgType(device.organizationType)) {
+    console.warn('[agentWs] agent_ws_refused_pending_assignment', { agentId, deviceId: device.id });
+    return { ok: false, reason: 'unauthorized' };
+  }
+
   // Security remediation Wave 5, Task 6 — shared certificate/device binding
   // decision. Runs after every other auth/lifecycle/tenant check and BEFORE
   // the WS upgrade is accepted. In the default `off` mode this never touches
@@ -1187,6 +1217,7 @@ export async function validateAgentToken(
       partnerId: device.partnerId,
       role: match.role,
       credentialTokenHash: tokenHash,
+      parked: isUnassignedPoolOrgType(device.organizationType),
     },
   };
 }
@@ -2735,6 +2766,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         trustState,
         credentialTokenHash: agentDb.credentialTokenHash,
         credentialRevoked: false,
+        parked: agentDb.parked === true,
       });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
@@ -4331,7 +4363,7 @@ export function __resetCrossTenantDropsForTest() {
 export function registerConnection(
   agentId: string,
   ws: { send(data: string): void },
-  trust: { partnerId: string; trustState: PartnerTrustState } = {
+  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean } = {
     partnerId: 'test-partner',
     trustState: 'trusted',
   },
@@ -4341,8 +4373,10 @@ export function registerConnection(
   }
   activeConnections.set(agentId, {
     ws: ws as never,
-    ...trust,
+    partnerId: trust.partnerId,
+    trustState: trust.trustState,
     credentialRevoked: false,
+    parked: trust.parked === true,
   });
   installAgentSocketEpoch(agentId);
 }
@@ -4443,6 +4477,12 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
   assertSocketLocalDispatchAllowed('sendCommandToAgent');
   const conn = activeConnections.get(agentId);
   if (!conn) {
+    return false;
+  }
+
+  // A device parked in a holding org receives lifecycle removal only. Checked
+  // before trust: no trust state makes other work deliverable to it.
+  if (conn.parked && !isParkedDeliverableCommandType(command.type)) {
     return false;
   }
 

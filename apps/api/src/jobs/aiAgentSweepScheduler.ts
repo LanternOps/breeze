@@ -113,6 +113,7 @@ import {
   type ScheduleOverrideSummary,
 } from '../services/aiAgents/scheduleService';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 
 export const AI_AGENT_SWEEP_QUEUE = 'ai-agent-sweep';
 
@@ -498,6 +499,8 @@ async function loadPartnerOrgIds(partnerId: string): Promise<{ orgIds: string[];
     .where(and(
       eq(organizations.partnerId, partnerId),
       ne(organizations.type, 'quick_support'),
+      // Nor the holding org: no sweep (or model spend) on devices not yet assigned.
+      notHoldingOrgCondition(),
       isNull(organizations.deletedAt),
       inArray(organizations.status, [...SWEEPABLE_ORG_STATUSES]),
     ))

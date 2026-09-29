@@ -34,6 +34,7 @@ import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
 import { inArray } from 'drizzle-orm';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -335,7 +336,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         const deviceId = input.deviceId as string;
 
         // Verify device access
-        const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+        const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
         const dc = orgWhere(auth, devices.orgId);
         if (dc) deviceConditions.push(dc);
         const [device] = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
@@ -471,7 +472,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!deviceId) return JSON.stringify({ error: 'deviceId is required' });
 
       // Verify device access
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db.select({ id: devices.id, hostname: devices.hostname, siteId: devices.siteId })
@@ -542,7 +543,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!deviceId || !configId) return JSON.stringify({ error: 'deviceId and configId are required' });
 
       // Verify device access
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db.select({ id: devices.id, orgId: devices.orgId, status: devices.status, siteId: devices.siteId }).from(devices)
@@ -653,7 +654,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!snapshotId || !deviceId) return JSON.stringify({ error: 'snapshotId and deviceId are required' });
 
       // Verify device access
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db.select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId }).from(devices)
@@ -713,7 +714,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const [targetDevice] = await db
         .select({ id: devices.id, status: devices.status })
         .from(devices)
-        .where(and(eq(devices.id, deviceId), ...(deviceOrgCond ? [deviceOrgCond] : [])))
+        .where(and(eq(devices.id, deviceId), notParkedDeviceCondition(), ...(deviceOrgCond ? [deviceOrgCond] : [])))
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       if (targetDevice.status !== 'online') {

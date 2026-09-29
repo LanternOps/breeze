@@ -17,6 +17,7 @@ import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 
@@ -192,6 +193,9 @@ export async function selectCisScanTargetDevices(
   const deviceConditions = [
     ownerCondition,
     eq(devices.isEphemeral, false),
+    // Never a device parked in the partner's holding org: it would only be
+    // refused at command delivery, once per device per run.
+    notParkedDeviceCondition(),
     eq(devices.osType, baseline.osType),
     ne(devices.status, 'decommissioned'),
   ];

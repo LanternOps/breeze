@@ -18,6 +18,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 
+import { isHiddenOrgType } from '../services/unassignedPool/visibility';
 export const roleRoutes = new Hono();
 
 roleRoutes.use('*', authMiddleware);
@@ -131,7 +132,7 @@ async function resolvePartnerFocusedOrgId(
     .from(organizations)
     .where(eq(organizations.id, targetOrgId))
     .limit(1);
-  if (!org || org.type === 'quick_support') {
+  if (!org || isHiddenOrgType(org.type)) {
     return null;
   }
   return targetOrgId;

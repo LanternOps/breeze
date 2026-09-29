@@ -116,7 +116,10 @@ async function currentSessionCapabilityDenial(
   const capability = session.type === 'desktop' ? 'webrtcDesktop' : 'remoteTools';
   const policy = await checkRemoteAccess(device.id, capability);
   if (!policy.allowed) {
-    return c.json({ error: policy.reason ?? 'Remote access is disabled by policy' }, 403);
+    return c.json({
+      error: policy.reason ?? 'Remote access is disabled by policy',
+      ...(policy.code ? { code: policy.code } : {}),
+    }, 403);
   }
   return null;
 }
@@ -250,7 +253,8 @@ sessionRoutes.post(
       if (!policyCheck.allowed) {
         return c.json({
           error: policyCheck.reason,
-          code: 'REMOTE_ACCESS_POLICY_DENIED',
+          // A parked device carries its own code (DEVICE_PENDING_ASSIGNMENT).
+          code: policyCheck.code ?? 'REMOTE_ACCESS_POLICY_DENIED',
           capability,
           policyName: policyCheck.policyName,
         }, 403);
@@ -991,7 +995,8 @@ sessionRoutes.post(
       if (!policyCheck.allowed) {
         return c.json({
           error: policyCheck.reason,
-          code: 'REMOTE_ACCESS_POLICY_DENIED',
+          // A parked device carries its own code (DEVICE_PENDING_ASSIGNMENT).
+          code: policyCheck.code ?? 'REMOTE_ACCESS_POLICY_DENIED',
           capability,
           policyName: policyCheck.policyName,
         }, 403);

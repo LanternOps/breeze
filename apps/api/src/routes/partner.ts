@@ -7,6 +7,8 @@ import { authMiddleware, requirePermission, requireScope } from '../middleware/a
 import { PERMISSIONS } from '../services/permissions';
 import { summarizeActiveContractMrrByOrg } from '../services/contractService';
 
+import { notHiddenOrgType } from '../services/unassignedPool/visibility';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const partnerRoutes = new Hono();
 
 /**
@@ -116,7 +118,7 @@ partnerRoutes.get(
   // reachable via accessibleOrgIds by design — keep it out of the partner rollup.
   const orgConditions = [
     isNull(organizations.deletedAt),
-    ne(organizations.type, 'quick_support'),
+    notHiddenOrgType(),
   ];
   if (orgIds) {
     orgConditions.push(inArray(organizations.id, orgIds));
@@ -153,7 +155,7 @@ partnerRoutes.get(
     // made this card disagree with the org record it links to.
     .where(and(
       inArray(devices.orgId, orgIdList),
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ));
 

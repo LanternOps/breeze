@@ -18,6 +18,7 @@ import {
 } from '../services/siteScope';
 import { attachWorkerObservability } from './workerObservability';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -113,7 +114,7 @@ export async function generateComplianceSummary(
   const complianceConditions = [
     eq(devicePatches.orgId, orgId),
     eq(devices.orgId, orgId),
-    eq(devices.isEphemeral, false),
+    eq(devices.isEphemeral, false), notParkedDeviceCondition(),
   ];
   if (scope.kind === 'restricted') {
     complianceConditions.push(inArray(devices.siteId, scope.siteIds));

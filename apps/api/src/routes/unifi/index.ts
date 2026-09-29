@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { db, runOutsideDbContext } from '../../db';
@@ -14,6 +14,8 @@ import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import { revokeUnifiCollectorDrift, revokeUnifiMappingDrift, snapshotUnifiCollectors, snapshotUnifiMappings } from '../../services/topology/unifiAuthority';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const unifiRoutes = new Hono();
 
 type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'canAccessOrg'>;
@@ -231,10 +233,28 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   // entry hits the 403, so the client sees a failure on a partially-applied batch.
   const resolved: Array<{ m: (typeof mappings)[number]; orgId: string; siteId: string }> = [];
   for (const m of mappings) {
-    const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, m.siteId)).limit(1);
+    const [site] = await db
+      .select({
+        id: sites.id,
+        orgId: sites.orgId,
+        partnerId: sql<string | null>`(SELECT o.partner_id FROM organizations o WHERE o.id = ${sites.orgId})`,
+      })
+      .from(sites)
+      .where(eq(sites.id, m.siteId))
+      .limit(1);
     if (!site) return c.json({ success: false, message: `Unknown Breeze site: ${m.siteId}` }, 400);
     if (!auth.canAccessOrg(site.orgId)) {
       return c.json({ success: false, message: 'Access to target organization denied' }, 403);
+    }
+    // The site must belong to the connection's own partner. canAccessOrg is
+    // true for system scope, so without this a platform admin acting for one
+    // partner could map another partner's site.
+    if (site.partnerId !== conn.partnerId) {
+      return c.json({ success: false, message: 'Target site does not belong to this partner' }, 403);
+    }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(site.orgId)) {
+      return c.json({ success: false, message: PROTECTED_ORG_ERROR.error, code: PROTECTED_ORG_ERROR.code }, 409);
     }
     resolved.push({ m, orgId: site.orgId, siteId: site.id });
   }

@@ -67,6 +67,7 @@ import { registerRetentionPrometheusMetrics } from '../services/retentionMetrics
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
 import { envFloat } from '../utils/envFloat';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
@@ -1341,7 +1342,7 @@ async function readFleetGauges(nowMs: number): Promise<void> {
       .where(
         and(
           gte(devices.lastSeenAt, activeSince),
-          eq(devices.isEphemeral, false),
+          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
           sql`${devices.status} != 'decommissioned'`
         )
       );
@@ -1491,7 +1492,7 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     // they never inflate the fleet counts or skew the uptime denominator.
     const deviceStatusCondition = and(
       sql`${devices.status} != 'decommissioned'`,
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
       orgCondition,
       siteCondition
     );

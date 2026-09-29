@@ -32,6 +32,8 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     partnerId: 'organizations.partnerId',
+    // Pre-assignment admission reads the org type from the same join.
+    type: 'organizations.type',
   },
   // Security remediation Wave 5, Task 6 — services/agentCertificateBinding.ts
   // (imported transitively via agentAuthMiddleware) reads this table.
@@ -1135,6 +1137,152 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect((c.get('agent') as { tenantDraining?: boolean }).tenantDraining).toBe(false);
+  });
+});
+
+// Pre-assignment — a device whose org is its
+// partner's holding org is admitted to a positive allowlist only. Mirrors the
+// drain describes above; the gate is applied after the drain gate, so the two
+// compose by intersection.
+describe('agentAuthMiddleware - pre-assignment (holding org) admission', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  const parked = (overrides: Record<string, unknown> = {}) =>
+    makeDevice({ status: 'online', organizationType: 'unassigned_pool', ...overrides });
+
+  const allowedPaths = [
+    '/api/v1/agents/agent-1/heartbeat',
+    '/api/v1/agents/agent-1/rotate-token',
+    '/api/v1/agents/agent-1/rotate-token/confirm',
+    '/api/v1/agents/agent-1/commands',
+    '/api/v1/agents/agent-1/commands/cmd-1/result',
+    '/api/v1/agents/agent-1/uninstall-intent',
+  ];
+
+  for (const path of allowedPaths) {
+    it(`admits ${path} for a parked device, narrowed to self_uninstall claims`, async () => {
+      buildSelectMock([parked()]);
+
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await agentAuthMiddleware(c, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      const agent = c.get('agent') as { isPreAssignment?: boolean; claimTypeAllowlist?: readonly string[] };
+      expect(agent.isPreAssignment).toBe(true);
+      expect(agent.claimTypeAllowlist).toEqual(['self_uninstall']);
+      expect(agent.claimTypeAllowlist).toBe(DRAIN_CLAIM_TYPE_ALLOWLIST);
+    });
+  }
+
+  const blockedPaths = [
+    '/api/v1/agents/agent-1/logs',
+    '/api/v1/agents/agent-1/config',
+    '/api/v1/agents/agent-1/hardware',
+    '/api/v1/agents/agent-1/software',
+    '/api/v1/agents/agent-1/monitoring-results',
+    '/api/v1/agents/agent-1/security/recovery-keys',
+    '/api/v1/agents/agent-1/elevation-requests',
+    '/api/v1/agents/agent-1/unifi-collectors',
+    '/api/v1/agents/agent-1/eventlogs',
+    '/api/v1/agents/agent-1/reliability',
+    '/api/v1/agents/agent-1/pam/reconciliation-bindings',
+    '/api/v1/agents/agent-1/commands/cmd-1',
+    '/api/v1/agents/agent-1/commands/cmd-1/pam-observations',
+    '/api/v1/agents/agent-1/winget-bootstrap/file/heartbeat',
+    '/api/v1/ext/acme/agent/agent-1/heartbeat',
+    '/api/v1/ext/acme/agent/agent-1/anything',
+    '/api/v1/workspace/agent/agent-1/crawl-config',
+  ];
+
+  for (const path of blockedPaths) {
+    it(`refuses ${path} for a parked device with 403 device_pending_assignment`, async () => {
+      buildSelectMock([parked()]);
+
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn();
+
+      const result = await agentAuthMiddleware(c, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect((result as any).status).toBe(403);
+      expect((result as any).body).toEqual({ error: 'device_pending_assignment' });
+    });
+  }
+
+  it('composes with the device drain by intersection: rotate-token refused, heartbeat admitted', async () => {
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+
+    buildSelectMock([parked({ status: 'decommissioned' })]);
+    const mint = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const mintNext = vi.fn();
+    const refused = await agentAuthMiddleware(mint, mintNext);
+    expect(mintNext).not.toHaveBeenCalled();
+    expect((refused as any).status).toBe(403);
+
+    buildSelectMock([parked({ status: 'decommissioned' })]);
+    const beat = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const beatNext = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(beat, beatNext);
+    expect(beatNext).toHaveBeenCalledTimes(1);
+    expect((beat.get('agent') as { isPreAssignment?: boolean }).isPreAssignment).toBe(true);
+  });
+
+  it('composes with the tenant drain by intersection: logs (drain-allowed) is still refused', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    buildSelectMock([parked()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/logs' });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    expect((result as any).body).toEqual({ error: 'device_pending_assignment' });
+  });
+
+  it('opens the request-long context without the partner-wide read axis for a parked device', async () => {
+    buildSelectMock([parked()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+    const ctx = vi.mocked(withDbAccessContext).mock.calls[0]![0] as { currentPartnerId?: string | null; orgId: string };
+    expect(ctx.orgId).toBe('org-1');
+    expect(ctx.currentPartnerId).toBeNull();
+  });
+
+  it('leaves a device in a regular org unchanged: not pre-assignment, unrestricted claims, full surface', async () => {
+    buildSelectMock([makeDevice({ status: 'online', organizationType: 'customer' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/hardware' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    const agent = c.get('agent') as { isPreAssignment?: boolean; claimTypeAllowlist?: readonly string[] };
+    expect(agent.isPreAssignment).toBe(false);
+    expect(agent.claimTypeAllowlist).toBeUndefined();
+    const ctx = vi.mocked(withDbAccessContext).mock.calls[0]![0] as { currentPartnerId?: string | null };
+    expect(ctx.currentPartnerId).toBe('partner-1');
   });
 });
 

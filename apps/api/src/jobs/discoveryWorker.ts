@@ -54,6 +54,7 @@ import { reconcileTopology } from './reconcileTopology';
 import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
 import { markTopologyIdentityDirty } from '../services/topology/identityDirty';
 import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -275,7 +276,9 @@ async function validateRequestedAgentForDiscovery(
       status: devices.status
     })
     .from(devices)
-    .where(eq(devices.agentId, requestedAgentId))
+    // A device parked in its partner's holding org never runs a scan (the
+    // command would carry SNMP credentials): it resolves as not found.
+    .where(and(eq(devices.agentId, requestedAgentId), notParkedDeviceCondition()))
     .limit(1);
 
   if (!agentDevice) {
@@ -625,6 +628,7 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
         and(
           eq(devices.orgId, data.orgId),
           eq(devices.isEphemeral, false),
+          notParkedDeviceCondition(),
           eq(devices.siteId, data.siteId),
           eq(devices.status, 'online')
         )

@@ -729,6 +729,21 @@ describe('live WebSocket authority', () => {
     expect(mocks.checkRemoteAccess).toHaveBeenCalledWith(DEVICE_ID, 'remoteTools', { bypassCache: true });
   });
 
+  it('ends a live session once its device is parked in a holding org (the canonical check answers)', async () => {
+    for (const kind of ['terminal', 'desktop'] as const) {
+      installAuthorizationRows({ kind });
+      mocks.checkRemoteAccess.mockResolvedValueOnce({
+        allowed: false, code: 'DEVICE_PENDING_ASSIGNMENT', reason: 'waiting to be assigned',
+      } as { allowed: boolean });
+      await expect(revalidateRemoteWsAuthority(consumed(kind))).resolves.toEqual({
+        ok: false, status: 403, reason: 'policy_denied',
+      });
+      expect(mocks.checkRemoteAccess).toHaveBeenLastCalledWith(
+        DEVICE_ID, kind === 'terminal' ? 'remoteTools' : 'webrtcDesktop', { bypassCache: true },
+      );
+    }
+  });
+
   it('fails closed within the configured bound when DB resolution never settles', async () => {
     vi.useFakeTimers();
     mocks.withSystemDbAccessContext.mockImplementationOnce(async () => new Promise(() => undefined));

@@ -11,6 +11,7 @@ import {
 } from '../../db/schema/configurationPolicies';
 import { configPolicyMonitors } from '../../db/schema/monitorDefinitions';
 import { buildRoleOsFilterConditions } from '../featureConfigResolver';
+import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 
 /**
  * Monitor resolution for one device (#5287 W02).
@@ -233,7 +234,8 @@ export async function resolveMonitorsForDevice(
   // device — the hidden quick_support org is a stranger's own machine mid
   // support session, not fleet the partner authored partner-wide policies
   // against. Same exclusion as monitorScriptWorker.ts's partner-wide fan-out.
-  if (org?.partnerId && !isQuickSupportOrgType(org.type)) {
+  // Same for a device parked in its partner's holding org: not managed yet.
+  if (org?.partnerId && !isQuickSupportOrgType(org.type) && !isUnassignedPoolOrgType(org.type)) {
     targetConditions.push(
       and(
         eq(configPolicyAssignments.level, 'partner'),

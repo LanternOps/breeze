@@ -47,6 +47,7 @@
     "timesheets": "Fogli ore",
     "productCatalog": "Catalogo prodotti",
     "deviceGroups": "Gruppi di dispositivi",
+    "unassignedDevices": "Dispositivi non assegnati",
     "configPolicies": "Criteri di configurazione",
     "integrations": "Integrazioni",
     "cloudBackup": "Backup sul cloud",

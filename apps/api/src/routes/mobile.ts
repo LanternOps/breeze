@@ -45,6 +45,10 @@ import {
   assertDeviceExecuteAllowed,
   TrustDeniedError,
 } from '../services/partnerTrust.commands';
+import {
+  assertCommandDeliverable,
+  ParkedDeviceCommandRefusedError,
+} from '../services/unassignedPool/deliveryEligibility';
 import { trustDenyBody } from '../services/partnerTrust';
 // Shared with the web device routes rather than re-declared locally. This file
 // used to carry a byte-identical private copy, which is precisely why the #2968
@@ -54,6 +58,7 @@ import { getDeviceWithOrgCheck } from './devices/helpers';
 import { alertSiteScopeByDeviceIds, alertTopologySiteGate } from './alerts/helpers';
 import { topologySessionAccessCondition } from '../services/topology/aiSessionAccess';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireMobileAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
@@ -433,7 +438,7 @@ async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions
   // org, which deliberately stays inside accessibleOrgIds — exclude them here so
   // they never enter a site-allowed device set. (Applies to every mobile
   // enumeration below; by-id lookups are left alone.)
-  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
   return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
 }
 
@@ -1355,7 +1360,7 @@ mobileRoutes.get(
       return c.json({ error: orgCheck.error.message }, orgCheck.error.status as 400 | 403 | 404);
     }
 
-    const conditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false)];
+    const conditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
     if (orgCheck.orgIds !== null) {
       if (orgCheck.orgIds.length === 0) {
         return c.json({ data: [], pagination: { page, limit, total: 0, nextCursor: null } });
@@ -1647,6 +1652,8 @@ async function runNonScriptQuickAction(
 
   let cmdResult;
   try {
+    // A device parked in a holding org receives lifecycle removal only.
+    await assertCommandDeliverable(db, { deviceId: device.id, commandType: action });
     await assertDeviceExecuteAllowed(device.id, action, auth.user.id);
     cmdResult = await db
       .insert(deviceCommands)
@@ -1659,6 +1666,9 @@ async function runNonScriptQuickAction(
       })
       .returning();
   } catch (e) {
+    if (e instanceof ParkedDeviceCommandRefusedError) {
+      return c.json({ error: e.message, code: e.code }, 409);
+    }
     if (e instanceof TrustDeniedError) {
       return c.json(
         trustDenyBody({
@@ -1712,7 +1722,7 @@ mobileRoutes.get(
       return c.json({ error: orgCheck.error.message }, orgCheck.error.status as 400 | 403 | 404);
     }
 
-    const deviceConditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false)];
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
     if (orgCheck.orgIds !== null) {
       if (orgCheck.orgIds.length === 0) {
         return c.json({
@@ -1885,7 +1895,7 @@ mobileRoutes.get(
 
     const deviceWhere = and(
       orgCheck.orgIds === null ? sql`true` : inArray(devices.orgId, orgCheck.orgIds),
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
       perms?.allowedSiteIds ? inArray(devices.siteId, perms.allowedSiteIds) : sql`true`,
       or(
         ilike(devices.hostname, term),

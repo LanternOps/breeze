@@ -2633,6 +2633,133 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
       },
     },
+    '/pre-assignment/devices': {
+      get: {
+        operationId: 'listParkedDevices',
+        tags: ['Devices'],
+        summary: 'List devices waiting for assignment',
+        description: 'Devices enrolled with a partner deploy key and parked in the partner\'s hidden holding area until assigned to a customer organization. Identity fields are reported by the device and are not verified. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [{ name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' }],
+        responses: {
+          '200': { description: 'Parked devices, the list of device-reported fields, and a verification notice' },
+          '400': { description: 'System scope without partnerId' },
+          '403': { description: 'Missing permission, non-interactive principal, non-assured session, or not a full partner admin' },
+        },
+      },
+    },
+    '/pre-assignment/devices/{id}/assign': {
+      post: {
+        operationId: 'assignParkedDevice',
+        tags: ['Devices'],
+        summary: 'Assign a parked device to an organization and site',
+        description: 'Moves one parked device into a customer organization and site in one transaction; the device starts counting toward licensed capacity here. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only. While two-factor authentication is enabled, needs a single-use step-up grant for operation `parked_device_assign` bound to { deviceId, orgId, siteId }.',
+        parameters: [
+          { $ref: '#/components/parameters/idParam' },
+          { name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['orgId', 'siteId', 'possessionConfirmed'],
+                properties: {
+                  orgId: { type: 'string', format: 'uuid' },
+                  siteId: { type: 'string', format: 'uuid' },
+                  stepUpGrant: { type: 'string', format: 'uuid' },
+                  possessionConfirmed: { type: 'boolean', enum: [true], description: 'The operator confirmed out of band that this machine belongs to this customer' },
+                  acceptIdentityCollision: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Device assigned' },
+          '400': { description: 'Invalid destination organization or site' },
+          '403': { description: 'Gate refusal, or `STEP_UP_REQUIRED`' },
+          '404': { description: 'Parked device not found' },
+          '409': { description: 'Refused: `DEVICE_NOT_PARKED`, `DEVICE_NOT_ASSIGNABLE`, `DEVICE_PARKING_EXPIRED`, `DEVICE_IDENTITY_COLLISION`, `PARTNER_DEVICE_LIMIT_REACHED`, a move-engine refusal, or `ASSIGNMENT_BUSY` (a lost lock race; nothing was written; retry after the `Retry-After` seconds)' },
+        },
+      },
+    },
+    '/pre-assignment/devices/assign-bulk': {
+      post: {
+        operationId: 'assignParkedDevicesBulk',
+        tags: ['Devices'],
+        summary: 'Assign up to 50 parked devices',
+        description: 'Each device is assigned in its own transaction; results are per item, in request order. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only. While two-factor authentication is enabled, one step-up grant for operation `parked_device_assign_bulk` covers exactly this batch.',
+        parameters: [{ name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['items', 'possessionConfirmed'],
+                properties: {
+                  items: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: 50,
+                    items: {
+                      type: 'object',
+                      required: ['deviceId', 'orgId', 'siteId'],
+                      properties: {
+                        deviceId: { type: 'string', format: 'uuid' },
+                        orgId: { type: 'string', format: 'uuid' },
+                        siteId: { type: 'string', format: 'uuid' },
+                      },
+                    },
+                  },
+                  stepUpGrant: { type: 'string', format: 'uuid' },
+                  possessionConfirmed: { type: 'boolean', enum: [true] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Per-item results ({ deviceId, ok, code? })' },
+          '403': { description: 'Gate refusal, or `STEP_UP_REQUIRED`' },
+        },
+      },
+    },
+    '/pre-assignment/switch': {
+      post: {
+        operationId: 'setPreAssignmentSwitch',
+        tags: ['Devices'],
+        summary: 'Turn deploy-key enrollment on or off for a partner',
+        description: 'Sets the partner\'s deploy-key enrollment switch (default off). Enrollment into the holding area also requires the platform switch PRE_ASSIGNMENT_ENROLLMENT_ENABLED. Turning it ON needs, while two-factor authentication is enabled, a single-use step-up grant for operation `pre_assignment_enable` bound to { partnerId, enabled: true }; turning it OFF needs none. Audited. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [{ name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['enabled'], properties: { enabled: { type: 'boolean' }, stepUpGrant: { type: 'string', format: 'uuid', description: 'Required to turn it on while two-factor authentication is enabled' } } } } },
+        },
+        responses: {
+          '200': { description: '{ enabled, previous }' },
+          '403': { description: 'Gate refusal, or `STEP_UP_REQUIRED` when turning it on' },
+          '404': { description: 'Partner not found' },
+        },
+      },
+    },
+    '/pre-assignment/deploy-keys/{deployKeyId}/expire-devices': {
+      post: {
+        operationId: 'expireDevicesParkedByDeployKey',
+        tags: ['Devices'],
+        summary: 'Expire every device a deploy key parked',
+        description: 'Removes (decommissions, and queues the agent uninstall for) every device the holding-area ledger records as enrolled with this deploy key that is still parked. Devices already assigned are left alone. Audited. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [
+          { name: 'deployKeyId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' },
+        ],
+        responses: {
+          '200': { description: '{ matched, expired, skipped, failed }' },
+          '403': { description: 'Gate refusal' },
+        },
+      },
+    },
     '/devices/{id}/metrics': {
       get: {
         operationId: 'getDeviceMetrics',

@@ -38,6 +38,7 @@ import { platformAdminMiddleware } from '../middleware/platformAdmin';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { enqueueVulnSourceSync, enqueueVulnCorrelation } from '../jobs/vulnerabilityJobs';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const vulnerabilityRoutes = new Hono();
 
 const requireVulnerabilityRead = requirePermission(
@@ -475,7 +476,7 @@ async function listVulnerabilities(filters: {
     const allowedDeviceRows = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(and(inArray(devices.siteId, filters.allowedSiteIds), eq(devices.isEphemeral, false)));
+      .where(and(inArray(devices.siteId, filters.allowedSiteIds), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
     const allowedDeviceIds = allowedDeviceRows.map((r) => r.id);
     if (allowedDeviceIds.length === 0) {
       return [];

@@ -52,6 +52,10 @@ const TARGET_GLOBS = [
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
+  // Parked-device assignment: single and bulk assign mutations go through
+  // runAction from birth.
+  'src/components/devices/AssignParkedDeviceDialog.tsx',
+  'src/components/devices/UnassignedDevicesPage.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
@@ -851,7 +855,9 @@ describe('no silent mutations in targeted set', () => {
     // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 197 → 198.
     // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 198 → 199.
     // AI Suggested Fixes W1 adds remediation/RemediationSuggestionsPanel.tsx: 199 → 200.
-    expect(absoluteFiles.length).toBe(200);
+    // 200 -> 202: devices/AssignParkedDeviceDialog.tsx and
+    // devices/UnassignedDevicesPage.tsx (parked-device assignment).
+    expect(absoluteFiles.length).toBe(202);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

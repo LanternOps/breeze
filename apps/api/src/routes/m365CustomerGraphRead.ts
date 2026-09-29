@@ -42,6 +42,8 @@ import { ON_DEMAND_SYNC_DOMAINS, requestOnDemandSync } from '../services/m365Syn
 import { consumeOnDemandSyncSlot, releaseOnDemandSyncSlot } from '../services/m365Sync/onDemandLimiter';
 import { loadSyncSummary, type M365SyncSummary } from '../services/m365Sync/summary';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 const PROFILE_ID = 'customer-graph-read' as const;
 const PROFILE_DISPLAY_NAME = 'Customer Graph Read';
 const profileManifest = M365_PERMISSION_PROFILES[PROFILE_ID];
@@ -257,6 +259,8 @@ m365CustomerGraphReadRoutes.post(
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(resolved.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     if (!isM365CustomerGraphReadOnboardingEnabledForOrg(resolved.orgId)) {
       return c.json({ error: 'Customer Graph Read onboarding is not enabled' }, 404);
     }

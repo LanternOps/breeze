@@ -70,6 +70,7 @@ import {
   type ProviderLegRow,
 } from './backupHealthRows';
 
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 export interface BackupHealthScope {
   orgIds: string[];
   /** The caller's site ceiling. `undefined` = unrestricted; `[]` = sees nothing. */
@@ -217,7 +218,7 @@ function buildBreezeLeg(
     inArray(devices.orgId, scope.orgIds),
     // Quick Support devices live in the hidden per-partner org and are not part
     // of anyone's backup posture.
-    eq(devices.isEphemeral, false),
+    eq(devices.isEphemeral, false), notParkedDeviceCondition(),
     // `devices` carries no deleted_at — offboarding retires a device via
     // status='decommissioned' (see aiToolsTicketing.ts:849-853).
     ne(devices.status, 'decommissioned'),

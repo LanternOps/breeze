@@ -1,5 +1,6 @@
 const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
 vi.mock('./billingProfileService', () => ({ ensureDefaultProfile }));
+import { notHoldingOrgCondition, notInHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -227,6 +228,7 @@ describe('list_organizations', () => {
       and(
         isNull(organizations.deletedAt),
         ne(organizations.type, 'quick_support'),
+        notHoldingOrgCondition(),
         inArray(organizations.id, [ORG_1, ORG_2])
       )
     );
@@ -241,6 +243,7 @@ describe('list_organizations', () => {
       and(
         isNull(organizations.deletedAt),
         ne(organizations.type, 'quick_support'),
+        notHoldingOrgCondition(),
         ilike(organizations.name, '%acme%'),
         inArray(organizations.id, [ORG_1, ORG_2])
       )
@@ -260,6 +263,7 @@ describe('list_organizations', () => {
       and(
         isNull(organizations.deletedAt),
         ne(organizations.type, 'quick_support'),
+        notHoldingOrgCondition(),
         eq(organizations.id, ORG_1)
       )
     );

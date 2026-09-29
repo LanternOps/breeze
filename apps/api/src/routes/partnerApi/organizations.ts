@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { and, asc, eq, gt, inArray, lte, ne, or, param, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, or, param, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { organizations, sites } from '../../db/schema';
@@ -35,6 +35,7 @@ import {
 } from './schemas';
 import { acquirePartnerExportReadLocks } from './consistency';
 
+import { notHiddenOrgType, notInHiddenOrgCondition } from '../../services/unassignedPool/visibility';
 const CURSOR_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const UUID_SCHEMA = z.string().uuid();
 const querySchema = z.object({
@@ -274,7 +275,7 @@ partnerOrganizationRoutes.get('/organizations', requirePartnerApiScope('organiza
       inArray(organizations.id, orgIds),
       // Belt-and-braces: partnerApiAuth already keeps the hidden 'quick_support'
       // org out of accessibleOrgIds, but it must never reach a public export.
-      ne(organizations.type, 'quick_support'),
+      notHiddenOrgType(),
       ...paginationConditions({ id: organizations.id, orgId: organizations.id, createdAt: organizations.createdAt, updatedAt: organizations.partnerExportUpdatedAt }, parsed.traversal),
     )).orderBy(...paginationOrder({ id: organizations.id, orgId: organizations.id, updatedAt: organizations.partnerExportUpdatedAt }, parsed.traversal))
       .limit(getPartnerExportFetchLimit(parsed.limit));
@@ -313,7 +314,7 @@ partnerOrganizationRoutes.get('/sites', requirePartnerApiScope('sites:read'), as
       // Same belt-and-braces as /organizations above; expressed as NOT EXISTS
       // because sites carry no org type. Kept as raw SQL so it does not consume
       // one of the positionally-mocked db.select() calls in the unit tests.
-      sql`NOT EXISTS (SELECT 1 FROM ${organizations} WHERE ${organizations.id} = ${sites.orgId} AND ${organizations.type} = 'quick_support')`,
+      notInHiddenOrgCondition(sites.orgId),
       ...paginationConditions({ id: sites.id, orgId: sites.orgId, createdAt: sites.createdAt, updatedAt: sites.partnerExportUpdatedAt }, parsed.traversal),
     )).orderBy(...paginationOrder({ id: sites.id, orgId: sites.orgId, updatedAt: sites.partnerExportUpdatedAt }, parsed.traversal))
       .limit(getPartnerExportFetchLimit(parsed.limit));

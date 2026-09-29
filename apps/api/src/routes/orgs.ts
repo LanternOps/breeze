@@ -100,7 +100,11 @@ import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
 import { TOPOLOGY_FLAG_KEYS } from '../services/topology/flags';
 import { toolRateLimitMultiplierSchema } from '../services/aiToolRateLimits';
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 
+import { notHiddenOrgType, notInHiddenOrgCondition } from '../services/unassignedPool/visibility';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
  * `security.allowedMethods` and drop the alias key so it is never persisted.
@@ -459,7 +463,7 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
 
   // The per-partner 'quick_support' org stays inside accessibleOrgIds so RLS
   // lets a tech reach their own support session — it must never be enumerated.
-  const conditions = [isNull(organizations.deletedAt), ne(organizations.type, 'quick_support')];
+  const conditions = [isNull(organizations.deletedAt), notHiddenOrgType()];
 
   if (auth.scope === 'organization' && auth.orgId) {
     conditions.push(eq(organizations.id, auth.orgId));
@@ -1652,7 +1656,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // The hidden 'quick_support' org is inside accessibleOrgIds by design (RLS),
   // so it has to be excluded from the paginated list — one shared `conditions`
   // covers both the count and the row query below.
-  const notQuickSupport = ne(organizations.type, 'quick_support');
+  const notQuickSupport = notHiddenOrgType();
   let conditions;
   // A partner whose only orgs are archived reaches zero accessible ids. That
   // used to short-circuit the whole handler, which would have made
@@ -1917,7 +1921,7 @@ async function countPartnerOrganizations(partnerId: string): Promise<number> {
     .where(and(
       eq(organizations.partnerId, partnerId),
       isNull(organizations.deletedAt),
-      ne(organizations.type, 'quick_support'),
+      notHiddenOrgType(),
     ));
   return tally?.value ?? 0;
 }
@@ -2402,6 +2406,11 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     }
   }
 
+  // The unassigned-device holding org is managed by Breeze.
+  if (await isHoldingOrg(id)) {
+    return c.json(PROTECTED_ORG_ERROR, 409);
+  }
+
   if (data.settings !== undefined) {
     await lockMfaPolicySettings({ kind: 'organization', id });
   }
@@ -2776,6 +2785,11 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  // The unassigned-device holding org is managed by Breeze.
+  if (await isHoldingOrg(id)) {
+    return c.json(PROTECTED_ORG_ERROR, 409);
+  }
+
   const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
   // Hard delete keeps the immediate-sever semantics; if a drain was in
@@ -2875,10 +2889,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // picker. Written as raw SQL rather than `notInArray(sites.orgId, db.select(…))`
   // deliberately: the builder form issues a second `db.select()` chain, which
   // the route tests' queue-based db mock would consume as if it were a real query.
-  const notQuickSupportSite = sql`NOT EXISTS (
-    SELECT 1 FROM ${organizations} qs_org
-    WHERE qs_org.id = ${sites.orgId} AND qs_org.type = 'quick_support'
-  )`;
+  const notQuickSupportSite = notInHiddenOrgCondition(sites.orgId);
   const whereCondition = allowedSiteIds
     ? and(baseCondition, notQuickSupportSite, inArray(sites.id, allowedSiteIds))
     : and(baseCondition, notQuickSupportSite);
@@ -2916,7 +2927,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
       // them here made the Sites table disagree with the tab beside it.
       .where(and(
         inArray(devices.siteId, siteIds),
-        eq(devices.isEphemeral, false),
+        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
         ne(devices.status, 'decommissioned'),
       ))
       .groupBy(devices.siteId);
@@ -2990,6 +3001,11 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
   const allowed = await ensureOrgAccess(data.orgId, auth);
   if (!allowed) {
     return c.json({ error: 'Access to this organization denied' }, 403);
+  }
+
+  // The unassigned-device holding org is managed by Breeze.
+  if (await isHoldingOrg(data.orgId)) {
+    return c.json(PROTECTED_ORG_ERROR, 409);
   }
 
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
@@ -3078,6 +3094,11 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
+  // The unassigned-device holding org is managed by Breeze.
+  if (await isHoldingOrg(site.orgId)) {
+    return c.json(PROTECTED_ORG_ERROR, 409);
+  }
+
   const permissions = c.get('permissions') as UserPermissions | undefined;
   if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
     return c.json({ error: 'Access to this site denied' }, 403);
@@ -3144,6 +3165,11 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
     return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  // The unassigned-device holding org is managed by Breeze.
+  if (await isHoldingOrg(site.orgId)) {
+    return c.json(PROTECTED_ORG_ERROR, 409);
   }
 
   const permissions = c.get('permissions') as UserPermissions | undefined;

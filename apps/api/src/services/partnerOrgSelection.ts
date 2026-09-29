@@ -20,9 +20,10 @@
  * Fails CLOSED: `org_access='none'` and an unresolved membership both reach
  * "no orgs", never "all orgs".
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partnerUsers } from '../db/schema';
+import { organizations, partnerUsers } from '../db/schema';
+import { UNASSIGNED_POOL_ORG_TYPE } from './unassignedPool/orgType';
 
 export interface PartnerOrgSelectionAuth {
   scope: 'system' | 'partner' | 'organization';
@@ -55,7 +56,14 @@ export async function readPartnerSelectedOrgIds(
 /**
  * What a partner-scope caller may reach among orgs that are invisible to RLS.
  *
- * - `all`       — every org of the caller's own partner.
+ * - `all`       — every org of the caller's own partner EXCEPT the partner's
+ *                 holding org (`unassigned_pool`), which is never reachable
+ *                 through a generic org surface. `resolvePartnerOrgReach`
+ *                 cannot express that exclusion in its return value, so a
+ *                 caller that consumes `allOfPartner` directly must refuse
+ *                 holding orgs itself (org merge: `validateMergePair`; org
+ *                 archive: `beginOrgArchive`). `partnerMemberMayReachOrg`
+ *                 applies it for you.
  * - `selected`  — only the ids in the caller's selection.
  * - `none`      — nothing (this is the fail-closed default for an unresolved
  *                 membership too).
@@ -78,16 +86,34 @@ export async function resolvePartnerOrgReach(
 
 /**
  * True when a PARTNER-scope caller retains rights to this specific org even
- * though it is outside `accessibleOrgIds`. Callers must have already confirmed
- * the org belongs to `auth.partnerId` — this answers only the per-member
- * selection half of the boundary.
+ * though it is outside `accessibleOrgIds`: the member's selection admits it,
+ * AND the org belongs to the caller's own partner, AND it is not the partner's
+ * holding org (the holding org is never
+ * human-reachable, and an `org_access='all'` member would otherwise reach it
+ * here). The org lookup runs under a fresh system context because the target
+ * is, by construction, invisible to the caller's RLS context. Fails closed: a
+ * missing, foreign or holding org is "not reachable".
  */
 export async function partnerMemberMayReachOrg(
   auth: PartnerOrgSelectionAuth,
   orgId: string,
 ): Promise<boolean> {
   const reach = await resolvePartnerOrgReach(auth);
-  if (reach.kind === 'allOfPartner') return true;
-  if (reach.kind === 'selection') return reach.orgIds.includes(orgId);
-  return false;
+  if (reach.kind === 'none') return false;
+  if (reach.kind === 'selection' && !reach.orgIds.includes(orgId)) return false;
+  const partnerId = auth.partnerId!;
+  const [org] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(
+          eq(organizations.id, orgId),
+          eq(organizations.partnerId, partnerId),
+          ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
+        ))
+        .limit(1),
+    ),
+  );
+  return Boolean(org);
 }

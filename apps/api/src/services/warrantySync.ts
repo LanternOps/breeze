@@ -4,6 +4,7 @@ import { eq, and, lt, isNull, or, sql } from 'drizzle-orm';
 import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
 import type { WarrantyLookupResult } from './warrantyProviders';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 export type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
 
@@ -70,7 +71,12 @@ export async function syncWarrantyForDevice(
 
   // Get device org
   const [device] = await db
-    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral, isVirtual: devices.isVirtual })
+    .select({
+      orgId: devices.orgId,
+      isEphemeral: devices.isEphemeral,
+      isVirtual: devices.isVirtual,
+      parked: sql<boolean>`NOT (${notParkedDeviceCondition()})`,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -86,6 +92,8 @@ export async function syncWarrantyForDevice(
   // getDevicesNeedingWarrantySync excludes them too; this is the entry-point
   // guard for any other caller.
   if (device.isEphemeral) return;
+  // Nor for a device parked in its partner's holding org (not managed yet).
+  if (device.parked === true) return;
 
   // Virtual-machine exclusion: a VMware/Hyper-V guest reports a synthetic
   // serial and a vendor-ish manufacturer string, so it passes the serial +
@@ -494,6 +502,7 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<Warrant
       and(
         // Quick Support exclusion — see syncWarrantyForDevice above.
         eq(devices.isEphemeral, false),
+        notParkedDeviceCondition(),
         // Virtual-machine exclusion — see syncWarrantyForDevice above.
         eq(devices.isVirtual, false),
         // Has hardware with serial number

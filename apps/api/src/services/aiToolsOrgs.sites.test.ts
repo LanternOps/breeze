@@ -5,6 +5,7 @@ vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnaps
 vi.mock('./tenantLifecycle', () => ({}));
 vi.mock('./tenantOffboarding', () => ({}));
 
+import { notInHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 import { and, eq, ilike, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, sites } from '../db/schema';
@@ -72,7 +73,7 @@ describe('site reads', () => {
   });
   it('scopes partner list and count identically and hides quick-support sites', async () => {
     expect(await run('list_sites')).toEqual({ sites: [{ ...row, deviceCount: 3 }], total: 1, limit: 25, offset: 0 });
-    const condition = and(inArray(sites.orgId, [ORG]), notQuickSupport, undefined);
+    const condition = and(inArray(sites.orgId, [ORG]), notQuickSupport, notInHoldingOrgCondition(sites.orgId), undefined);
     expect(page.where).toHaveBeenCalledWith(condition);
     expect(total.where).toHaveBeenCalledWith(condition);
     expect(counts.where).toHaveBeenCalledWith(and(inArray(devices.siteId, [SITE]), eq(devices.isEphemeral, false), ne(devices.status, 'decommissioned'), undefined));
@@ -80,14 +81,14 @@ describe('site reads', () => {
   });
   it('narrows sites, escapes search, and clamps pagination', async () => {
     await run('list_sites', { orgId: ORG, search: 'a%b_', limit: 999, offset: 4 }, { allowedSiteIds: [SITE] });
-    expect(page.where).toHaveBeenCalledWith(and(eq(sites.orgId, ORG), notQuickSupport, inArray(sites.id, [SITE]), ilike(sites.name, '%a\\%b\\_%')));
+    expect(page.where).toHaveBeenCalledWith(and(eq(sites.orgId, ORG), notQuickSupport, notInHoldingOrgCondition(sites.orgId), inArray(sites.id, [SITE]), ilike(sites.name, '%a\\%b\\_%')));
     expect(page.limit).toHaveBeenCalledWith(100); expect(page.offset).toHaveBeenCalledWith(4);
   });
   it('pins organization scope and allows system-wide reads', async () => {
     await run('list_sites', {}, { scope: 'organization', orgId: ORG });
-    expect(page.where).toHaveBeenLastCalledWith(and(eq(sites.orgId, ORG), notQuickSupport, undefined));
+    expect(page.where).toHaveBeenLastCalledWith(and(eq(sites.orgId, ORG), notQuickSupport, notInHoldingOrgCondition(sites.orgId), undefined));
     await run('list_sites', {}, { scope: 'system' });
-    expect(page.where).toHaveBeenLastCalledWith(and(notQuickSupport, undefined));
+    expect(page.where).toHaveBeenLastCalledWith(and(notQuickSupport, notInHoldingOrgCondition(sites.orgId), undefined));
   });
   it('narrows device counts to exact-device scope', async () => {
     await run('list_sites', {}, { allowedDeviceIds: [OTHER] });

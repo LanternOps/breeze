@@ -43,7 +43,7 @@ export const ARCHIVE_PRIOR_STATUS_KEY = 'archivePriorStatus';
 const RESTORABLE_PRIOR_STATUSES = ['active', 'trial', 'suspended'] as const;
 
 /** `organizations.type` values archive refuses outright. */
-const NON_ARCHIVABLE_ORG_TYPES = ['quick_support'] as const;
+const NON_ARCHIVABLE_ORG_TYPES = ['quick_support', 'unassigned_pool'] as const;
 
 /**
  * Schema evidence for archive reversibility:
@@ -206,6 +206,9 @@ export async function beginOrgArchive(
       // every read endpoint while the purge sweeper — which filters only on
       // status + purge_at — would still erase it and every support-session
       // record under it. `orgMerge` already refuses the same type outright.
+      // The unassigned-device holding org is refused for the same reason, and
+      // because its one-way membership invariant forbids any lifecycle change
+      // outside the dedicated pre-assignment surfaces.
       if (NON_ARCHIVABLE_ORG_TYPES.includes(organization.type as typeof NON_ARCHIVABLE_ORG_TYPES[number])) {
         throw new OrgArchiveStateError(
           `Organization ${input.orgId} is a '${organization.type}' organization and cannot be archived`,

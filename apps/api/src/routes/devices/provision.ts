@@ -30,6 +30,8 @@ import {
   type PartnerDeviceCapacityResult,
 } from '../../services/partnerDeviceCapacity';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const provisionRoutes = new Hono();
 
 provisionRoutes.use('*', authMiddleware);
@@ -78,6 +80,8 @@ provisionRoutes.post(
     if (!auth.canAccessOrg(data.orgId)) {
       return c.json({ error: 'Caller does not have access to target organization' }, 403);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(data.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     // ----------- validate the target site belongs to the target org -----------
     const [targetSite] = await db

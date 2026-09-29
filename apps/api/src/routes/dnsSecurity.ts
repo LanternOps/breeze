@@ -25,6 +25,8 @@ import { encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { checkSsrfSafe, type SsrfMode } from '../services/ssrfGuard';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 // Per-provider URL guard mode.
 //
 // - umbrella / cloudflare / dnsfilter accept apiEndpoint mostly as a no-op
@@ -371,6 +373,8 @@ dnsSecurityRoutes.post(
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const [integration] = await db
       .insert(dnsFilterIntegrations)

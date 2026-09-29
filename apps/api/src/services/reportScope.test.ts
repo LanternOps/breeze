@@ -148,7 +148,7 @@ describe('reportScopeFromAuthority', () => {
 });
 
 describe('resolvePartnerReportOrgIds', () => {
-  it('filters to active/trial, non-deleted, non-quick_support orgs of exactly this partner', async () => {
+  it('filters to active/trial, non-deleted, non-hidden (Quick Support, holding) orgs of exactly this partner', async () => {
     queueOrgRows([{ id: ORG_A }]);
     await resolvePartnerReportOrgIds(PARTNER);
     expect(capturedWhere).toBeDefined();
@@ -156,8 +156,8 @@ describe('resolvePartnerReportOrgIds', () => {
     expect(compiled.sql).toContain('"organizations"."partner_id" = $1');
     expect(compiled.sql).toMatch(/"organizations"\."status" in \(\$\d+, \$\d+\)/);
     expect(compiled.sql).toContain('"organizations"."deleted_at" is null');
-    expect(compiled.sql).toMatch(/"organizations"\."type" <> \$\d+/);
-    expect(compiled.params).toEqual(expect.arrayContaining([PARTNER, 'active', 'trial', 'quick_support']));
+    expect(compiled.sql).toMatch(/"organizations"\."type" not in \(\$\d+, \$\d+\)/);
+    expect(compiled.params).toEqual(expect.arrayContaining([PARTNER, 'active', 'trial', 'quick_support', 'unassigned_pool']));
     expect(compiled.params).not.toContain('suspended');
     expect(compiled.params).not.toContain('archived');
   });

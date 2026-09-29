@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
+// Holding-org delivery eligibility (a live device/org read) is out of this
+// suite's scope; scriptDispatch.test.ts covers the refusal and
+// parkedCommandDelivery.integration.test.ts the query.
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+}));
 vi.mock('../db', () => ({
   db: {
     insert: () => ({ values: () => ({ returning: async () => [{ id: 'e1' }] }) }),

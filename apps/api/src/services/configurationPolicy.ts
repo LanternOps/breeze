@@ -150,6 +150,7 @@ export const vulnerabilityInlineSettingsSchema = z
 // here so existing importers that read them from configurationPolicy still work.
 import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, type ConfigFeatureType, isExecutionGatedFeatureType } from './configFeatureTypes';
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 export { CONFIG_FEATURE_TYPES };
 export type { ConfigFeatureType };
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
@@ -2355,11 +2356,16 @@ async function resolveEffectiveConfigWithExecutor(
   if (!device) return null;
 
   // 2. Load org for partnerId
-  const [org] = await executor
-    .select({ partnerId: organizations.partnerId })
+  const [orgRow] = await executor
+    .select({ partnerId: organizations.partnerId, type: organizations.type })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
+  // A device parked in its partner's holding org resolves no partner-level or
+  // partner-wide configuration: it is not managed until it is assigned.
+  const org = orgRow && isUnassignedPoolOrgType(orgRow.type)
+    ? { partnerId: null as string | null }
+    : orgRow;
 
   // 3. Load device group memberships
   const groupRows = await executor

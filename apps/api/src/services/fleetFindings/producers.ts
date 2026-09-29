@@ -6,6 +6,7 @@ import { metricAnomalyEpisodes } from '../../db/schema/metricAnomalyEpisodes';
 import { deviceReliability } from '../../db/schema/reliability';
 import { metricFamilyLabel } from '../metricAnomalyEpisodeKeys';
 import type { CandidateFinding, CandidateMember } from './types';
+import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 
 // Anomaly scores are sigma-like; >=4 matches the detectors' own hard-threshold
 // tier for "critical" (see spec §5 / task-4 brief judgment calls).
@@ -34,6 +35,7 @@ async function loadEligibleDeviceIds(orgId: string): Promise<Set<string>> {
     .where(and(
       eq(devices.orgId, orgId),
       eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ));
   return new Set(rows.map((r) => r.id));
@@ -82,6 +84,7 @@ export async function produceMetricAnomalyPatterns(orgId: string): Promise<Candi
       eq(metricAnomalyEpisodes.orgId, orgId),
       eq(metricAnomalyEpisodes.status, 'open'),
       eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ));
 
@@ -260,6 +263,7 @@ export async function produceReliabilityOffenders(orgId: string): Promise<Candid
       eq(deviceReliability.orgId, orgId),
       lt(deviceReliability.reliabilityScore, RELIABILITY_WARN_THRESHOLD),
       eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ));
 

@@ -25,7 +25,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
-vi.mock('../db/schema', () => ({ organizations: { id: 'id', partnerId: 'partnerId', deletedAt: 'deletedAt' } }));
+vi.mock('../db/schema', () => ({ organizations: { id: 'id', partnerId: 'partnerId', type: 'type', deletedAt: 'deletedAt' } }));
 vi.mock('../services/partnerOrgSelection', () => ({ partnerMemberMayReachOrg: mocks.partnerMemberMayReachOrg }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: mocks.writeRouteAudit }));
 vi.mock('../services/billingProfileService', () => ({
@@ -130,6 +130,17 @@ describe('organization billing profile assignment', () => {
     mocks.auth.current.canAccessOrg = () => false;
     expect((await request('GET')).status).toBe(200);
     expect(mocks.partnerMemberMayReachOrg).toHaveBeenCalledWith(mocks.auth.current, orgId);
+  });
+  it.each(['GET', 'PUT', 'DELETE'])('%s refuses the partner holding org even when reach is granted', async (method) => {
+    mocks.auth.current.canAccessOrg = () => false;
+    mocks.partnerMemberMayReachOrg.mockResolvedValue(true);
+    mocks.selectOrg.mockResolvedValue([{ id: orgId, partnerId, type: 'unassigned_pool' }]);
+    const res = await request(method, method === 'PUT' ? { billingProfileId: profileId } : undefined);
+    expect(res.status).toBe(404);
+    expect(mocks.getOrgAssignment).not.toHaveBeenCalled();
+    expect(mocks.assignProfileToOrg).not.toHaveBeenCalled();
+    expect(mocks.clearOrgAssignment).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
   it('rejects a cross-partner or missing organization', async () => {
     mocks.selectOrg.mockResolvedValue([]);

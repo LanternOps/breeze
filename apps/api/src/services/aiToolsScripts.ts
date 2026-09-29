@@ -48,6 +48,7 @@ import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { shrinkToJsonBudget } from './aiToolOutput';
 import { sha256Content } from './scriptVersions';
 import { isDeniedRegistryTarget } from '../routes/systemTools/sensitiveTargets';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
 // get_script_execution envelope once stdout/stderr are counted at their
@@ -105,7 +106,7 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);

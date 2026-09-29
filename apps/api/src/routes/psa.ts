@@ -47,6 +47,8 @@ import {
 } from '../services/psa/credentials';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const psaRoutes = new Hono();
 
 type PsaProvider = PsaProviderId;
@@ -558,6 +560,8 @@ psaRoutes.post(
       if (!orgId) {
         return c.json({ error: 'orgId is required for an organization-owned connection' }, 400);
       }
+      // canAccessOrg is true for system scope: the holding org is never a target.
+      if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
       owner = { orgId, partnerId: null };
     }
 
