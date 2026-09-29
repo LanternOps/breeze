@@ -437,7 +437,8 @@
         "completed": "Terminée le",
         "report": "Rapport",
         "started": "Démarré",
-        "status": "Statut"
+        "status": "Statut",
+        "organization": "Organisation"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -457,7 +458,8 @@
         "lastGenerated": "Dernier généré",
         "name": "Nom",
         "schedule": "Calendrier",
-        "type": "Type"
+        "type": "Type",
+        "covers": "Couvre"
       },
       "tabs": {
         "recentRuns": "Séries récentes",
@@ -467,7 +469,20 @@
       "title": "Rapports",
       "tryAgain": "Réessayer",
       "unknownReport": "Rapport inconnu",
-      "partnerWideIncomplete": "Certains rapports couvrant toutes les organisations n'ont pas pu être chargés ; cette liste est donc peut-être incomplète. Passez à Toutes les organisations pour voir tous les rapports."
+      "partnerWideIncomplete": "Certains rapports couvrant toutes les organisations n'ont pas pu être chargés ; cette liste est donc peut-être incomplète. Passez à Toutes les organisations pour voir tous les rapports.",
+      "covers": {
+        "combined": "Toutes les organisations · Combiné",
+        "unknownOrg": "Organisation inconnue",
+        "seriesAll": "Toutes les orgs · {{count}} · Un par organisation",
+        "seriesSelected_one": "{{count}} org · Un par organisation",
+        "seriesSelected_other": "{{count}} orgs · Un par organisation"
+      },
+      "delivery": {
+        "noRecipients": "Aucun destinataire",
+        "noRecipientsHint": "La dernière exécution planifiée n’avait aucun destinataire. Ajoutez des destinataires pour livrer ce rapport.",
+        "partial": "Partiellement livré",
+        "failed": "E-mail non envoyé"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -1142,6 +1157,14 @@
       "singleOrganizationHint": "L'organisation sélectionnée dans le sélecteur d'organisation.",
       "singleOrganizationDisabledHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer un rapport à l'échelle d'une organisation.",
       "needsOrganizationHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer ce rapport. Les rapports couvrant toutes les organisations nécessitent l'accès à toutes les organisations."
+    },
+    "orgPicker": {
+      "label": "Organisation",
+      "placeholder": "Choisir une organisation",
+      "hint": "Vous consultez toutes les organisations. Choisissez l’organisation visée par ce rapport.",
+      "required": "Choisissez une organisation avant d’enregistrer ce rapport.",
+      "chooseFirst": "Choisissez une organisation ci-dessus avant d’utiliser un modèle.",
+      "previewNeedsOrg": "Choisissez une organisation pour afficher un aperçu en direct."
     }
   }
 }

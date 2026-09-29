@@ -437,7 +437,8 @@
         "completed": "Terminado",
         "report": "Informe",
         "started": "Iniciado",
-        "status": "Estado"
+        "status": "Estado",
+        "organization": "Organización"
       },
       "schedules": {
         "daily": "A diario",
@@ -457,7 +458,8 @@
         "lastGenerated": "Última generación",
         "name": "Nombre",
         "schedule": "Cronograma",
-        "type": "Tipo"
+        "type": "Tipo",
+        "covers": "Cubre"
       },
       "tabs": {
         "recentRuns": "Ejecuciones recientes",
@@ -467,7 +469,20 @@
       "title": "Informes",
       "tryAgain": "Intentar otra vez",
       "unknownReport": "Informe desconocido",
-      "partnerWideIncomplete": "No se pudieron cargar algunos informes que abarcan todas las organizaciones, por lo que esta lista puede estar incompleta. Cambia a Todas las organizaciones para ver todos los informes."
+      "partnerWideIncomplete": "No se pudieron cargar algunos informes que abarcan todas las organizaciones, por lo que esta lista puede estar incompleta. Cambia a Todas las organizaciones para ver todos los informes.",
+      "covers": {
+        "combined": "Todas las organizaciones · Combinado",
+        "unknownOrg": "Organización desconocida",
+        "seriesAll": "Todas las orgs · {{count}} · Uno por organización",
+        "seriesSelected_one": "{{count}} org · Uno por organización",
+        "seriesSelected_other": "{{count}} orgs · Uno por organización"
+      },
+      "delivery": {
+        "noRecipients": "Sin destinatarios",
+        "noRecipientsHint": "La última ejecución programada no tenía a quién enviar. Agrega destinatarios para entregar este informe.",
+        "partial": "Entregado parcialmente",
+        "failed": "Correo no enviado"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -1142,6 +1157,14 @@
       "singleOrganizationHint": "La organización seleccionada en el selector de organizaciones.",
       "singleOrganizationDisabledHint": "Selecciona una organización en el selector de organizaciones para crear un informe con ámbito de organización.",
       "needsOrganizationHint": "Selecciona una organización en el selector de organizaciones para crear este informe. Los informes de todas las organizaciones requieren acceso a todas las organizaciones."
+    },
+    "orgPicker": {
+      "label": "Organización",
+      "placeholder": "Elige una organización",
+      "hint": "Estás viendo todas las organizaciones. Elige la organización para la que es este informe.",
+      "required": "Elige una organización antes de guardar este informe.",
+      "chooseFirst": "Elige una organización arriba antes de usar una plantilla.",
+      "previewNeedsOrg": "Elige una organización para ver una vista previa en vivo."
     }
   }
 }

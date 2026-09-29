@@ -60,10 +60,11 @@ describe('ReportsList ownership (#3198 W03)', () => {
 
     const partnerRow = await screen.findByTestId('report-row-rep-p');
     const orgRow = screen.getByTestId('report-row-rep-o');
-    const badge = within(partnerRow).getByTestId('report-scope-badge-rep-p');
-    expect(within(badge).getByTestId('scope-badge')).toBeInTheDocument();
-    expect(within(orgRow).queryByTestId('report-scope-badge-rep-o')).toBeNull();
-    expect(within(orgRow).queryByTestId('scope-badge')).toBeNull();
+    // Multi-org series W01: the Covers cell replaces the lone ScopeBadge.
+    const covers = within(partnerRow).getByTestId('report-covers-rep-p');
+    expect(covers).toHaveAttribute('data-covers-kind', 'combined');
+    expect(covers).toHaveTextContent('All organizations · Combined');
+    expect(within(orgRow).getByTestId('report-covers-rep-o')).toHaveAttribute('data-covers-kind', 'org');
   });
 
   it('keeps the ambient org injection on the list request (no skipOrgIdInjection)', async () => {
@@ -107,7 +108,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     render(<ReportsList />);
 
     const partnerRow = await screen.findByTestId('report-row-rep-p');
-    expect(within(partnerRow).getByTestId('report-scope-badge-rep-p')).toBeInTheDocument();
+    expect(within(partnerRow).getByTestId('report-covers-rep-p')).toHaveAttribute('data-covers-kind', 'combined');
     // Deduped: the focused org's row renders once; another org's row never leaks in.
     expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
     expect(screen.queryByTestId('report-row-rep-x')).toBeNull();
