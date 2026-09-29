@@ -166,7 +166,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
     {graph && <>
-      <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: graph.counts.visibleNodes, edges: graph.counts.visibleRelationships })}</span><span>{t('omitted', { nodes: graph.counts.omittedNodes, edges: graph.counts.omittedRelationships })}</span></div>
+      <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span><span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span></div>
       <p data-testid="topology-health-internet" className="text-sm">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</p>
       <div className="flex flex-wrap items-center gap-2">
         <button data-testid="topology-fit" className="rounded border px-3 py-2 text-sm" onClick={() => fitRef.current?.()}>{t('fit')}</button>

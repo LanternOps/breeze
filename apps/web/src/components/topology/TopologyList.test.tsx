@@ -71,6 +71,18 @@ it('labels a physical edge truthfully and lists hidden connections with a restor
   expect(onRestore).toHaveBeenCalledWith(item);
 });
 
+it('names a hidden connection by its two endpoints, not an id prefix', () => {
+  const graph = topologyGraphFixture();
+  const other = { ...graph.nodes[0], id: 'other-node', label: 'Desk 12' };
+  graph.nodes.push(other);
+  const item = { id: 'exclusion-1', relationshipId: 'fc7a07c8-0000-4000-8000-000000000000', view: 'physical' as const, reason: 'Lab bench cable', active: true as const,
+    createdAt: '2026-09-26T10:00:00.000Z', createdBy: null, revokedAt: null, revokedBy: null,
+    relationship: { id: 'fc7a07c8-0000-4000-8000-000000000000', kind: 'physical_link', sourceNodeId: NODE, targetNodeId: other.id, sourceInterfaceId: null, targetInterfaceId: null, evidenceClass: 'observed', lifecycle: 'active' } };
+  render(<TopologyList graph={graph} onSelect={vi.fn()} hidden={{ items: [item], canEdit: false, onRestore: vi.fn() }} />);
+  const row = screen.getByTestId('topology-hidden-exclusion-1');
+  expect(row).toHaveTextContent(`${graph.nodes[0].label} ↔ Desk 12`);
+  expect(row).not.toHaveTextContent('fc7a07c8');
+});
 it('shows hidden connections to a read-only user without a restore action', () => {
   const item = { id: 'exclusion-1', relationshipId: 'hidden-edge', view: 'physical' as const, reason: 'Lab bench cable', active: true as const,
     createdAt: '2026-09-26T10:00:00.000Z', createdBy: null, revokedAt: null, revokedBy: null,

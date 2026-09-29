@@ -14,6 +14,11 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
     : 'kind' in edge && RELATIONSHIP_KINDS.has(edge.kind) ? t(/* i18n-dynamic */ `physicalView.meaning.${edge.kind}`) : edge.meaning;
   const nodes = [...graph.nodes, ...graph.presentation.nodes].filter((node) => node.label.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const labels = new Map([...graph.nodes, ...graph.presentation.nodes].map((node) => [node.id, node.label]));
+  // Name a hidden connection by its two endpoints; fall back to the id prefix only when an endpoint is not in this graph.
+  const hiddenConnectionLabel = (item: HiddenConnection) => {
+    const from = labels.get(item.relationship.sourceNodeId), to = labels.get(item.relationship.targetNodeId);
+    return from && to ? `${from} ↔ ${to}` : t('exclusions.unknownConnection', { id: item.relationshipId.slice(0, 8) });
+  };
   return <div className="max-h-[34rem] overflow-auto" data-testid="topology-list">
     <table className="w-full text-left text-sm">
       <caption className="sr-only">{t('devicesAndNetworks')}</caption>
@@ -31,7 +36,7 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
       <thead className="bg-muted"><tr><th className="p-3">{t('relationship')}</th><th className="p-3">{t('exclusions.hiddenReason')}</th><th className="p-3"><span className="sr-only">{t('exclusions.restore')}</span></th></tr></thead>
       <tbody>{hidden.error && <tr><td colSpan={3} role="alert" className="p-3">{hidden.error}</td></tr>}
         {hidden.items.map((item) => <tr key={item.id} data-testid={`topology-hidden-${item.id}`} className="border-t">
-          <td className="p-3"><button className="text-left text-primary underline underline-offset-4 focus-visible:outline" onClick={() => onSelect({ kind: 'edge', id: item.relationshipId })}>{t('exclusions.unknownConnection', { id: item.relationshipId.slice(0, 8) })}</button></td>
+          <td className="p-3"><button className="text-left text-primary underline underline-offset-4 focus-visible:outline" onClick={() => onSelect({ kind: 'edge', id: item.relationshipId })}>{hiddenConnectionLabel(item)}</button></td>
           <td className="break-words p-3">{item.reason}</td>
           <td className="p-3">{hidden.canEdit && <button data-testid={`topology-restore-${item.id}`} className="rounded border px-3 py-1" onClick={() => hidden.onRestore(item)}>{t('exclusions.restore')}</button>}</td>
         </tr>)}</tbody>
