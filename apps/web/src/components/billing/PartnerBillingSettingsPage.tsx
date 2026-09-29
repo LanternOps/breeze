@@ -8,6 +8,7 @@ import { isHttpUrl, parseCompanyContact, parseCompanyAddress, isCompanyAddressBl
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { useHashTab } from '../../lib/useHashState';
 import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '../shared/OverflowTabs';
+import AccessDenied from '../shared/AccessDenied';
 import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
 import BillingConnectionsTab from './BillingConnectionsTab';
@@ -37,6 +38,7 @@ export default function PartnerBillingSettingsPage() {
   const { t } = useTranslation('billing');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [denied, setDenied] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useHashTab<BillingTab>(BILLING_TABS, 'defaults');
 
@@ -70,9 +72,11 @@ export default function PartnerBillingSettingsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(false);
+    setDenied(false);
     try {
       const res = await fetchWithAuth('/orgs/partners/me');
       if (res.status === 401) return UNAUTHORIZED();
+      if (res.status === 403) { setDenied(true); return; }
       if (!res.ok) throw new Error('load failed');
       const p = (await res.json()) as PartnerBilling;
       setCurrencyCode(p.currencyCode ?? 'USD');
@@ -161,6 +165,8 @@ export default function PartnerBillingSettingsPage() {
       footer, documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
+  // A 403 is a permission state, not a transient failure — no Retry.
+  if (denied) return <AccessDenied testId="partner-billing-denied" />;
   if (loadError) {
     return (
       <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="partner-billing-load-error">

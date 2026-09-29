@@ -71,6 +71,13 @@ describe('PartnerBillingSettingsPage', () => {
     expect(panel).toContainElement(screen.getByTestId('partner-billing-currency'));
   });
 
+  it('renders AccessDenied (no Retry) when GET /orgs/partners/me is 403', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'forbidden' }, false, 403));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-denied')).toBeInTheDocument();
+    expect(screen.queryByTestId('partner-billing-load-error')).not.toBeInTheDocument();
+  });
+
   it('mounts Rates and its work types manager when selected, with row saves only', async () => {
     fetchMock.mockImplementation(async (url: string) => json(url === '/billing-profiles' ? { profiles: [] } : url.includes('work-types') ? { workTypes: [] } : { currencyCode: 'USD' }));
     renderPage();

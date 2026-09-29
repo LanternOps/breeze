@@ -6,6 +6,7 @@ import { sourceBadgeLabelKey } from './timeEntrySource';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import AccessDenied from '../shared/AccessDenied';
 import { formatMinutes } from '../../lib/timeFormat';
 import { formatMoney } from '../billing/shared/format';
 import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
@@ -182,6 +183,7 @@ export default function TimesheetPage() {
   // Monotonic id of the newest in-flight timesheet request (see loadSheet).
   const fetchSeq = useRef(0);
   const [loadError, setLoadError] = useState(false);
+  const [denied, setDenied] = useState(false);
   const friendly = useCallback((code: string): string | undefined => {
     const key = FRIENDLY[code];
     return key ? t(/* i18n-dynamic */ `longTail.time.TimesheetPage.${key}`) : undefined;
@@ -210,6 +212,7 @@ export default function TimesheetPage() {
     const seq = ++fetchSeq.current;
     setLoading(true);
     setLoadError(false);
+    setDenied(false);
     try {
       const params = new URLSearchParams({ weekStart: loadWeek });
       if (loadTech) params.set('userId', loadTech);
@@ -224,6 +227,8 @@ export default function TimesheetPage() {
           // The effect will re-run with tech=null
           return;
         }
+        // Own-sheet 403 is a permission state, not a transient failure.
+        if (res.status === 403) { setDenied(true); return; }
         setLoadError(true);
         return;
       }
@@ -470,6 +475,7 @@ export default function TimesheetPage() {
           {t('common:states.loading')}
         </div>
       )}
+      {!loading && !sheet && denied && <AccessDenied testId="timesheet-denied" />}
       {!loading && !sheet && loadError && (
         <div data-testid="timesheet-error" className="py-8 text-center text-sm text-destructive">
           {t('longTail.time.TimesheetPage.errors.loadTimesheetFailed')}
