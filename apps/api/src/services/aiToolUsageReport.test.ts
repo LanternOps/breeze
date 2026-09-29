@@ -7,6 +7,7 @@ vi.mock('../db', () => ({ db: { execute: executeMock } }));
 vi.mock('./aiTools', () => ({ getAllRegisteredToolNames: () => ['query_devices', 'manage_alerts', 'never_used_tool'] }));
 
 import { buildToolUsageReport, toolUsageReportSqlText } from './aiToolUsageReport';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -29,6 +30,20 @@ describe('buildToolUsageReport', () => {
     expect(r.coldTools).toEqual(['never_used_tool']);
     expect(r.registeredToolCount).toBe(3);
   });
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads last_used_at text as UTC on a %s host',
+    async (zone) => {
+      // offsetless `timestamp` text from a raw query; read as UTC
+      executeMock.mockResolvedValueOnce([
+        { surface: 'chat', tool_name: 'query_devices', executions: '1', completed: '1', failed: '0', rejected: '0', distinct_sessions: '1', last_used_at: '2026-09-16 10:00:00.250' },
+      ]);
+      await withHostTimeZone(zone, async () => {
+        const r = await buildToolUsageReport(90);
+        expect(r.rows[0]!.lastUsedAt).toBe('2026-09-16T10:00:00.250Z');
+      });
+    },
+  );
 
   it('reads the size signals from the persisted _chat envelope, including the captured-result nesting', () => {
     const text = toolUsageReportSqlText(90);

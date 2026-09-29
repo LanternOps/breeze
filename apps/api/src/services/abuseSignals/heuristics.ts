@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 import { scoreToSeverity, youngWeight, type SignalConfig } from './config';
 import type { ComputedSignal } from './types';
 
@@ -308,7 +309,7 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
   return rows.map((r) => ({
     partnerId: String(r.id),
     partnerName: String(r.name),
-    partnerCreatedAt: new Date(String(r.created_at)),
+    partnerCreatedAt: dateFromSqlValue(String(r.created_at)),
     deviceCount: Number(r.device_count),
     consumerHostnameCount: Number(r.consumer_count),
     enrolled24h: Number(r.enrolled_24h),

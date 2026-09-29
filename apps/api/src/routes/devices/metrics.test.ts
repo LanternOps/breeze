@@ -62,6 +62,7 @@ vi.mock('../../services/permissions', () => ({
 
 import { db } from '../../db';
 import { metricsRoutes } from './metrics';
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 
 function createChain(result: unknown = []) {
   const chain: Record<string, any> = {};
@@ -209,6 +210,47 @@ describe('device metrics route', () => {
     expect(body.data[0].diskReadBytes).toBe(1000);
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
   });
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads one-minute raw bucket text as UTC on a %s host',
+    async (zone) => {
+      await withHostTimeZone(zone, async () => {
+        mockSelectOnce([DEVICE]);
+        mockSelectOnce([SITE]);
+        mockSelectOnce([rawMetricBucket({ bucket: '2026-06-18 12:00:00' })]);
+
+        const res = await app.request(
+          `/devices/${DEVICE_ID}/metrics?interval=1m&startDate=2026-06-18T00:00:00.000Z&endDate=2026-06-19T00:00:00.000Z`,
+          { method: 'GET', headers: { Authorization: 'Bearer t' } }
+        );
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data[0].timestamp).toBe('2026-06-18T12:00:00.000Z');
+      });
+    }
+  );
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'buckets raw fallback text as UTC on a %s host',
+    async (zone) => {
+      await withHostTimeZone(zone, async () => {
+        mockSelectOnce([DEVICE]);
+        mockSelectOnce([SITE]);
+        mockSelectOnce([]);
+        mockSelectOnce([rawMetricBucket({ bucket: '2026-06-18 12:00:00' })]);
+
+        const res = await app.request(
+          `/devices/${DEVICE_ID}/metrics?range=7d&endDate=2026-06-19T00:00:00.000Z`,
+          { method: 'GET', headers: { Authorization: 'Bearer t' } }
+        );
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data[0].timestamp).toBe('2026-06-18T12:00:00.000Z');
+      });
+    }
+  );
 
   it('does not query metrics when site scope denies the device', async () => {
     allowedSiteIds = ['55555555-5555-4555-8555-555555555555'];

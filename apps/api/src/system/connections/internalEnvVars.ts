@@ -466,6 +466,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW: 'rate limit knob',
   TURN_CREDENTIAL_MINT_WINDOW_SECONDS: 'rate limit knob',
   TURN_CREDENTIAL_TTL_SECONDS: 'timing knob',
+  TZ: 'process time zone; switched per test by testUtils/hostTimeZone.ts',
   // UNINSTALL_*
   UNINSTALL_INTENT_DECOMMISSION_HOURS: 'timing knob',
   UNINSTALL_INTENT_REAP_CHUNK_SIZE: 'worker throughput knob',

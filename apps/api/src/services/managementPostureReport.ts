@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { dateFromSqlValue } from './portal/sqlTimestamp';
 import { devices } from '../db/schema';
 import {
   MANAGEMENT_POSTURE_CATEGORIES,
@@ -316,7 +317,7 @@ export async function getPostureDevices(opts: QueryOpts & {
       displayName: r.display_name == null ? null : String(r.display_name),
       status: String(r.status),
       osType: String(r.os_type),
-      lastSeenAt: r.last_seen_at == null ? null : new Date(r.last_seen_at as string | Date).toISOString(),
+      lastSeenAt: r.last_seen_at == null ? null : dateFromSqlValue(r.last_seen_at as string | Date).toISOString(),
       collectedAt: r.collected_at == null ? null : String(r.collected_at),
       detectionStatus: String(r.detection_status),
       detectionVersion: r.detection_version == null ? null : String(r.detection_version),

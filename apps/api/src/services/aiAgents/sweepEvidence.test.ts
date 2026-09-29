@@ -28,6 +28,7 @@ vi.mock('../../db', () => ({
   },
 }));
 
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 import {
   assembleSweepEvidence,
   loadSweepEvidence,
@@ -378,6 +379,17 @@ describe('loadSweepEvidence', () => {
       status: 'offline',
     });
   });
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads offsetless last_seen_at text as UTC on a %s host',
+    async (zone) => {
+      await withHostTimeZone(zone, async () => {
+        results = [[{ device_id: 'dev-1', hostname: 'h1', last_seen_at: '2026-08-01 10:00:00.123', agent_version: '0.108.0', os_type: 'windows', status: 'offline', total_count: 1 }]];
+        const evidence = await loadSweepEvidence('org-1', ['stale_agents']);
+        expect(evidence.kinds.stale_agents?.rows[0]!.fields.lastSeenAt).toBe('2026-08-01T10:00:00.123Z');
+      });
+    },
+  );
 
   it('emits lastSeenAt: null for a never-seen device rather than dropping the field', async () => {
     results = [[{ device_id: 'dev-1', hostname: 'h1', last_seen_at: null, agent_version: '0.108.0', os_type: 'linux', status: 'offline', total_count: 1 }]];

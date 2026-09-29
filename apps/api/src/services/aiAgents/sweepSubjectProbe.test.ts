@@ -39,6 +39,7 @@ import {
   SWEEP_PROBE_FRESHNESS_MS,
 } from './sweepSubjectProbe';
 import { loadSweepEvidence } from './sweepEvidence';
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 
 // --- compiled-SQL helpers (same shape as sweepEvidence.test.ts) ------------
 function sqlText(node: unknown): string {
@@ -117,6 +118,25 @@ describe('probeSweepSubject — service_down', () => {
     // read would add a column without adding discriminating power.
     results = [row('stopped', SWEEP_PROBE_FRESHNESS_MS * 10)];
     await expect(probeSweepSubject('service_down', ORG, DEV, SERVICE)).resolves.toBe('unknown');
+  });
+
+  // `service_process_check_results.timestamp` is `timestamp without time zone`;
+  // a raw query returns it as offsetless text that must be read as UTC.
+  const offsetlessText = (ageMs: number) =>
+    new Date(Date.now() - ageMs).toISOString().slice(0, 23).replace('T', ' ');
+
+  it('reads an offsetless timestamp text as UTC on a host east of UTC (fresh row stays fresh)', async () => {
+    await withHostTimeZone('Asia/Tokyo', async () => {
+      results = [[{ status: 'stopped', timestamp: offsetlessText(10 * 60_000) }]];
+      await expect(probeSweepSubject('service_down', ORG, DEV, SERVICE)).resolves.toBe('present');
+    });
+  });
+
+  it('reads an offsetless timestamp text as UTC on a host west of UTC (stale row stays stale)', async () => {
+    await withHostTimeZone('America/Denver', async () => {
+      results = [[{ status: 'running', timestamp: offsetlessText(5 * 60 * 60_000) }]];
+      await expect(probeSweepSubject('service_down', ORG, DEV, SERVICE)).resolves.toBe('unknown');
+    });
   });
 
   it('a row with no timestamp at all -> unknown', async () => {

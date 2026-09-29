@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   severityRankToLabel,
   resolveFindingLinkOut,
   buildIncidentFeedQueries,
+  buildIncidentFeed,
 } from './incidents.helpers';
 import type { AuthContext } from '../middleware/auth';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 // Minimal org-scoped auth for the DB-less build guard. buildIncidentFeedQueries
 // only reads auth.scope / auth.orgId via resolveOrgFilter, so the rest is unused.
@@ -139,4 +141,47 @@ describe('buildIncidentFeedQueries (DB-less build guard)', () => {
     });
     expect(built).toBeNull();
   });
+});
+
+describe('buildIncidentFeed detectedAt parsing', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads offsetless detectedAt text as UTC on a %s host',
+    async (zone) => {
+      const feedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null } as const;
+      const built = buildIncidentFeedQueries(orgAuth, feedParams)!;
+      // Stand in for the driver: the union feed hands back detectedAt as raw
+      // offsetless text (the leg columns are timestamp WITHOUT time zone).
+      const proto = Object.getPrototypeOf(built.rowsQuery);
+      vi.spyOn(proto, '_prepare').mockImplementation(function (this: { toSQL(): { sql: string } }) {
+        const isCount = this.toSQL().sql.includes('count(*)');
+        return {
+          execute: async () =>
+            isCount
+              ? [{ count: 1 }]
+              : [
+                  {
+                    kind: 'tracked',
+                    source: 'breeze',
+                    sourceId: 'inc-1',
+                    title: 't',
+                    rank: 1,
+                    edrStatus: null,
+                    status: 'new',
+                    deviceId: null,
+                    detectedAt: '2026-08-25 18:34:15.123',
+                    trackedIncidentId: null,
+                    details: null,
+                  },
+                ],
+        };
+      });
+
+      await withHostTimeZone(zone, async () => {
+        const feed = await buildIncidentFeed(orgAuth, feedParams);
+        expect(feed.rows[0]!.detectedAt).toBe('2026-08-25T18:34:15.123Z');
+      });
+    }
+  );
 });
