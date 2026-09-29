@@ -9,6 +9,7 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
+import { Hono } from 'hono';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
@@ -25,7 +26,9 @@ import {
   serviceDeliverableOccurrences,
   serviceDeliverables,
 } from '../../db/schema';
-import { buildDbAccessContext } from '../../middleware/auth';
+import { authMiddleware, buildDbAccessContext } from '../../middleware/auth';
+import { reportRoutes } from '../../routes/reports';
+import { createAccessToken } from '../../services/jwt';
 import { combineIntoSeries, findCombineCandidates, type CombineInput } from '../../services/reportSeries/combine';
 import { siteScopeFingerprint } from '../../services/siteScope';
 import {
@@ -370,6 +373,65 @@ describe('Combine service on real Postgres (series W04)', () => {
     const input = await inputFor(f);
     await expect(asAdmin(f, (tx) => combineIntoSeries(input, { ...adminAuth(f), partnerOrgAccess: 'selected' }, tx)))
       .rejects.toThrow(/org access/i);
+    expect(await seriesOf(f.partner.id)).toEqual([]);
+  });
+});
+
+function buildApp(): Hono {
+  const app = new Hono();
+  app.use('*', authMiddleware);
+  app.route('/reports', reportRoutes);
+  return app;
+}
+
+async function tokenFor(user: { id: string; email: string }, roleId: string, partnerId: string) {
+  return createAccessToken({
+    sub: user.id, email: user.email, roleId, orgId: null, partnerId, scope: 'partner',
+    mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+  });
+}
+
+describe('Combine routes on real Postgres (series W04)', () => {
+  runDb('GET combine-candidates resolves before /:id and lists the group; POST combines it', async () => {
+    const f = await seedFixture();
+    const s = await seedGroup(f);
+    const app = buildApp();
+    const auth = { Authorization: `Bearer ${await tokenFor(f.admin, f.roleId, f.partner.id)}` };
+
+    const listed = await app.request('/reports/series/combine-candidates', { headers: auth });
+    expect(listed.status).toBe(200);
+    const { data } = await listed.json() as { data: { groupKey: string; orgs: { rows: { reportId: string }[] }[] }[] };
+    expect(data).toHaveLength(1);
+
+    const res = await app.request('/reports/series/combine', {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        groupKey: data[0]!.groupKey,
+        reportIds: data[0]!.orgs.flatMap((o) => o.rows.map((r) => r.reportId)),
+        name: 'Weekly critical alerts',
+        ccResolution: { include: [], drop: ['extra@msp.test'] },
+      }),
+    });
+    expect(res.status).toBe(201);
+    const created = await res.json() as { seriesId: string };
+    expect((await reportRow(s.rA1)).seriesId).toBe(created.seriesId);
+
+    const after = await app.request('/reports/series/combine-candidates', { headers: auth });
+    expect((await after.json() as { data: unknown[] }).data).toEqual([]);
+  });
+
+  runDb("a 'selected' partner user gets 403 on both routes", async () => {
+    const f = await seedFixture();
+    await seedGroup(f);
+    const app = buildApp();
+    const auth = { Authorization: `Bearer ${await tokenFor(f.selected, f.roleId, f.partner.id)}` };
+    expect((await app.request('/reports/series/combine-candidates', { headers: auth })).status).toBe(403);
+    const res = await app.request('/reports/series/combine', {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groupKey: 'a'.repeat(64), reportIds: [randomUUID(), randomUUID()], name: 'x' }),
+    });
+    expect(res.status).toBe(403);
     expect(await seriesOf(f.partner.id)).toEqual([]);
   });
 });

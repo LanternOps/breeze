@@ -34,6 +34,7 @@ import { assertSeriesConfigOrgAgnostic, assertSeriesTypeSupported } from '../../
 import { callerMaySetEmailRecipients } from './recipientGate';
 import { parseStoredReportConfig } from './schemas';
 import { seriesErrorResponse } from './seriesErrors';
+import { seriesCombineRoutes } from './seriesCombine';
 import {
   createSeriesSchema,
   previewSeriesRecipientsSchema,
@@ -46,6 +47,10 @@ import {
 export const reportSeriesRoutes = new Hono();
 
 reportSeriesRoutes.use('*', authMiddleware);
+
+// Series W04: literal /combine-candidates and /combine segments must be
+// registered before `/:id`, which would otherwise swallow them.
+reportSeriesRoutes.route('/', seriesCombineRoutes);
 
 const read = requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action);
 const write = requirePermission(PERMISSIONS.REPORTS_WRITE.resource, PERMISSIONS.REPORTS_WRITE.action);
