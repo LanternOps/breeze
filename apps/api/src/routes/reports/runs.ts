@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { reports, reportRuns } from '../../db/schema';
+import { organizations, reports, reportRuns } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
@@ -424,7 +424,9 @@ runsRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get runs with report info
+    // Get runs with report info. Multi-org series W01 (spec §3.6): the owning
+    // org (LEFT join — a partner-owned definition has none) and the run's
+    // delivery summary.
     const runsList = await db
       .select({
         id: reportRuns.id,
@@ -437,10 +439,15 @@ runsRoutes.get(
         rowCount: reportRuns.rowCount,
         createdAt: reportRuns.createdAt,
         reportName: reports.name,
-        reportType: reports.type
+        reportType: reports.type,
+        orgId: reports.orgId,
+        orgName: organizations.name,
+        deliveryStatus: reportRuns.deliveryStatus,
+        recipientCount: reportRuns.recipientCount
       })
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .leftJoin(organizations, eq(organizations.id, reports.orgId))
       .where(whereCondition)
       .orderBy(desc(reportRuns.createdAt), desc(reportRuns.id))
       .limit(limit)

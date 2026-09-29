@@ -163,3 +163,98 @@ describe('scheduled delivery summary (multi-org series W01)', () => {
     expect(pgCode(caught)).toBe('23514');
   });
 });
+
+type ListedDefinition = { id: string; orgId: string | null; orgName: string | null; lastDeliveryStatus: string | null };
+type ListedRun = {
+  id: string;
+  reportId: string;
+  orgId: string | null;
+  orgName: string | null;
+  deliveryStatus: string | null;
+  recipientCount: number | null;
+};
+
+describe('org visibility on the report lists (multi-org series W01)', () => {
+  runDb('a partner admin lists every org\'s definitions and runs with the owning org name and delivery summary', async () => {
+    const f = await seedFixture();
+    const app = buildApp();
+    const a = await createOrgDefinition(app, f.adminToken, f.orgA.id, 'Acme nightly');
+    const b = await createOrgDefinition(app, f.adminToken, f.orgB.id, 'Bravo nightly');
+    await runSchedule(a.id);
+    // A manual run of B's scheduled definition: not_scheduled, and it never
+    // becomes B's "latest scheduled delivery".
+    expect((await call(app, f.adminToken, 'POST', `/reports/${b.id}/generate`)).status).toBe(200);
+
+    const list = await call(app, f.adminToken, 'GET', '/reports?limit=100');
+    expect(list.status).toBe(200);
+    const rows = ((await list.json()) as { data: ListedDefinition[] }).data;
+    expect(rows.find((r) => r.id === a.id)).toMatchObject({
+      orgId: f.orgA.id,
+      orgName: f.orgA.name,
+      lastDeliveryStatus: 'no_recipients',
+    });
+    expect(rows.find((r) => r.id === b.id)).toMatchObject({
+      orgId: f.orgB.id,
+      orgName: f.orgB.name,
+      lastDeliveryStatus: null,
+    });
+
+    const runsRes = await call(app, f.adminToken, 'GET', '/reports/runs?limit=100');
+    expect(runsRes.status).toBe(200);
+    const runs = ((await runsRes.json()) as { data: ListedRun[] }).data;
+    expect(runs.find((r) => r.reportId === a.id)).toMatchObject({
+      orgId: f.orgA.id,
+      orgName: f.orgA.name,
+      deliveryStatus: 'no_recipients',
+      recipientCount: 0,
+    });
+    expect(runs.find((r) => r.reportId === b.id)).toMatchObject({
+      orgId: f.orgB.id,
+      orgName: f.orgB.name,
+      deliveryStatus: 'not_scheduled',
+      recipientCount: null,
+    });
+  });
+
+  runDb('an org token lists only its own org\'s definitions and runs, named, never the sibling org', async () => {
+    const f = await seedFixture();
+    const app = buildApp();
+    const a = await createOrgDefinition(app, f.adminToken, f.orgA.id, 'Acme nightly');
+    const b = await createOrgDefinition(app, f.adminToken, f.orgB.id, 'Bravo nightly');
+    await runSchedule(a.id);
+    await runSchedule(b.id);
+
+    const list = await call(app, f.orgToken, 'GET', '/reports?limit=100');
+    expect(list.status).toBe(200);
+    const rows = ((await list.json()) as { data: ListedDefinition[] }).data;
+    expect(rows.map((r) => r.id)).toContain(a.id);
+    expect(rows.map((r) => r.id)).not.toContain(b.id);
+    expect(rows.every((r) => r.orgId === f.orgA.id && r.orgName === f.orgA.name)).toBe(true);
+
+    const runsRes = await call(app, f.orgToken, 'GET', '/reports/runs?limit=100');
+    expect(runsRes.status).toBe(200);
+    const runs = ((await runsRes.json()) as { data: ListedRun[] }).data;
+    expect(runs.map((r) => r.reportId)).toContain(a.id);
+    expect(runs.map((r) => r.reportId)).not.toContain(b.id);
+    expect(JSON.stringify(runs)).not.toContain(f.orgB.name);
+  });
+
+  runDb('a partner-owned definition lists with orgName null (the Combined kind)', async () => {
+    const f = await seedFixture();
+    const app = buildApp();
+    const created = await call(app, f.adminToken, 'POST', '/reports', {
+      ownerScope: 'partner',
+      name: 'All-clients AR',
+      type: 'ar_aging',
+      schedule: 'monthly',
+      format: 'csv',
+    });
+    expect(created.status).toBe(201);
+    const partnerOwned = (await created.json()) as { id: string };
+
+    const list = await call(app, f.adminToken, 'GET', '/reports?ownerScope=partner&limit=100');
+    expect(list.status).toBe(200);
+    const row = ((await list.json()) as { data: ListedDefinition[] }).data.find((r) => r.id === partnerOwned.id);
+    expect(row).toMatchObject({ orgId: null, orgName: null, lastDeliveryStatus: null });
+  });
+});

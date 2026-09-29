@@ -73,7 +73,7 @@ vi.mock('../../db', () => {
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve([row]).then(resolve, reject),
     };
-    for (const method of ['from', 'innerJoin', 'where', 'orderBy', 'offset', 'limit', 'for']) {
+    for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'offset', 'limit', 'for']) {
       chain[method] = vi.fn(() => chain);
     }
     return chain;
