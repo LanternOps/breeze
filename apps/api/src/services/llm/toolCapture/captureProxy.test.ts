@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startCaptureProxy, type CaptureProxy } from './captureProxy';
 
@@ -23,6 +24,12 @@ beforeAll(async () => {
       if (req.url?.startsWith('/json')) {
         res.writeHead(201, { 'content-type': 'application/json', 'x-upstream': 'forwarded' });
         res.end(JSON.stringify({ usage: { input_tokens: 12, cache_read_input_tokens: 5, output_tokens: 3 } }));
+        return;
+      }
+      if (req.url === '/gzip' || req.url === '/br') {
+        const encoded = req.url === '/gzip' ? gzipSync(SSE) : brotliCompressSync(SSE);
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': req.url.slice(1) });
+        res.end(encoded);
         return;
       }
       if (req.url === '/invalid') {
@@ -129,5 +136,69 @@ describe('startCaptureProxy', () => {
     } finally {
       await deadProxy.close();
     }
+  });
+
+  it.each(['gzip', 'br'])('reads usage from a %s-encoded response (the real API compresses) while forwarding the bytes untouched', async (encoding) => {
+    proxy.setLabel(encoding);
+    const res = await fetch(`${proxy.url}/${encoding}`, { method: 'POST', body: JSON.stringify({ model: 'm' }) });
+    expect(res.status).toBe(200);
+    // fetch transparently decodes, so the client saw the original stream.
+    expect(await res.text()).toBe(SSE);
+    expect(proxy.records().at(-1)).toMatchObject({
+      label: encoding,
+      usage: { inputTokens: 900, cacheCreationInputTokens: 41000, cacheReadInputTokens: 0, outputTokens: 42 },
+    });
+  });
+
+  it('fingerprints tools, system and the first message so cache-prefix identity is comparable across sessions', async () => {
+    const send = async (firstText: string, tools: unknown[]) => {
+      const res = await fetch(`${proxy.url}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'm', system: [{ type: 'text', text: 'sys' }], tools,
+          messages: [{ role: 'user', content: [{ type: 'text', text: firstText }] }, { role: 'assistant', content: 'x' }],
+        }),
+      });
+      await res.text();
+      return proxy.records().at(-1)!;
+    };
+    const one = await send('deferred: hudu__get_asset', [{ name: 'a' }]);
+    const two = await send('deferred: itglue__get_document', [{ name: 'a' }]);
+    const three = await send('deferred: hudu__get_asset', [{ name: 'a' }, { name: 'b', defer_loading: true }]);
+
+    expect(one.prefixDigest.tools).toMatch(/^[0-9a-f]{16}$/);
+    expect(two.prefixDigest.tools).toBe(one.prefixDigest.tools);
+    expect(two.prefixDigest.system).toBe(one.prefixDigest.system);
+    expect(two.prefixDigest.firstMessage).not.toBe(one.prefixDigest.firstMessage);
+    expect(three.prefixDigest.tools).not.toBe(one.prefixDigest.tools);
+    expect(three.prefixDigest.firstMessage).toBe(one.prefixDigest.firstMessage);
+    expect(one.firstMessageBytes).toBe(JSON.stringify({ role: 'user', content: [{ type: 'text', text: 'deferred: hudu__get_asset' }] }).length);
+    expect(JSON.stringify(proxy.records())).not.toContain('hudu__get_asset');
+  });
+
+  it('ignores cache_control markers, which the CLI moves to the newest block every request', async () => {
+    const send = async (firstMessage: unknown, system: unknown) => {
+      const res = await fetch(`${proxy.url}/v1/messages`, {
+        method: 'POST', body: JSON.stringify({ model: 'm', system, tools: [{ name: 'a' }], messages: [firstMessage] }),
+      });
+      await res.text();
+      return proxy.records().at(-1)!.prefixDigest;
+    };
+    const marked = await send(
+      { role: 'user', content: [{ type: 'text', text: 'q', cache_control: { type: 'ephemeral' } }] },
+      [{ type: 'text', text: 's', cache_control: { type: 'ephemeral' } }],
+    );
+    const unmarked = await send({ role: 'user', content: [{ type: 'text', text: 'q' }] }, [{ type: 'text', text: 's' }]);
+    const changed = await send({ role: 'user', content: [{ type: 'text', text: 'q2' }] }, [{ type: 'text', text: 's' }]);
+    expect(unmarked).toEqual(marked);
+    expect(changed.firstMessage).not.toBe(marked.firstMessage);
+  });
+
+  it('leaves the fingerprint null for a request with no tools, system or messages', async () => {
+    const res = await fetch(`${proxy.url}/v1/messages`, { method: 'POST', body: JSON.stringify({ model: 'm' }) });
+    await res.text();
+    expect(proxy.records().at(-1)).toMatchObject({
+      prefixDigest: { tools: null, system: null, firstMessage: null }, firstMessageBytes: 0,
+    });
   });
 });

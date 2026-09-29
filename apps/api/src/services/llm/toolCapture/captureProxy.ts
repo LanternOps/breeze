@@ -1,5 +1,7 @@
 import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { createHash } from 'node:crypto';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 
 export interface CapturedRequest {
   label: string;
@@ -11,6 +13,16 @@ export interface CapturedRequest {
   systemBytes: number;
   tools: Array<{ name: string; deferLoading: boolean }>;
   toolReferenceCount: number;
+  /**
+   * sha256 (first 16 hex, `cache_control` markers ignored) of `tools`,
+   * `system` and `messages[0]`, in the order
+   * the API builds its cache prefix. Two sessions whose digests match on a
+   * field share that part of the prompt cache; a changed digest is where the
+   * cached prefix ends. Hashes only, so no request content is retained.
+   */
+  prefixDigest: { tools: string | null; system: string | null; firstMessage: string | null };
+  /** JSON length of `messages[0]` (Claude Code puts the deferred-tool list there). */
+  firstMessageBytes: number;
   status: number;
   ttfbMs: number;
   usage: {
@@ -42,6 +54,42 @@ function countToolReferences(value: unknown): number {
   const record = object(value);
   return (record.type === 'tool_reference' ? 1 : 0)
     + Object.values(record).reduce<number>((count, item) => count + countToolReferences(item), 0);
+}
+
+/** A breakpoint marker is not prompt content, and the CLI moves it every request. */
+function withoutCacheControl(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutCacheControl);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => key !== 'cache_control')
+    .map(([key, item]) => [key, withoutCacheControl(item)]));
+}
+
+function digest(value: unknown): string | null {
+  if (value === undefined) return null;
+  return createHash('sha256').update(JSON.stringify(withoutCacheControl(value))).digest('hex').slice(0, 16);
+}
+
+/**
+ * The response bytes as text for usage parsing only (the client always gets the
+ * original bytes). The API gzip-encodes its responses to the CLI, so without
+ * this every real capture recorded `usage: null`. An encoding we can't decode
+ * yields null, never invented usage.
+ */
+function decodeBody(body: Buffer, encoding: string | undefined): string | null {
+  try {
+    switch ((encoding ?? '').trim().toLowerCase()) {
+      case '':
+      case 'identity': return body.toString('utf8');
+      case 'gzip':
+      case 'x-gzip': return gunzipSync(body).toString('utf8');
+      case 'deflate': return inflateSync(body).toString('utf8');
+      case 'br': return brotliDecompressSync(body).toString('utf8');
+      default: return null;
+    }
+  } catch {
+    return null;
+  }
 }
 
 function captureUsage(text: string, isSse: boolean): CapturedRequest['usage'] {
@@ -106,6 +154,13 @@ export async function startCaptureProxy(upstream: string): Promise<CaptureProxy>
             ? [{ name: tool.name, deferLoading: tool.defer_loading === true }] : [];
         }) : [],
         toolReferenceCount: countToolReferences(body.messages),
+        prefixDigest: {
+          tools: digest(body.tools),
+          system: digest(body.system),
+          firstMessage: Array.isArray(body.messages) ? digest(body.messages[0]) : null,
+        },
+        firstMessageBytes: Array.isArray(body.messages) && body.messages[0] !== undefined
+          ? JSON.stringify(body.messages[0]).length : 0,
         status: 0,
         ttfbMs: 0,
         usage: null,
@@ -127,8 +182,9 @@ export async function startCaptureProxy(upstream: string): Promise<CaptureProxy>
         res.on('drain', () => up.resume());
         up.on('error', () => res.destroy());
         up.on('end', () => {
-          record.usage = captureUsage(Buffer.concat(responseChunks).toString('utf8'),
-            up.headers['content-type']?.includes('text/event-stream') ?? false);
+          const text = decodeBody(Buffer.concat(responseChunks), up.headers['content-encoding']);
+          record.usage = text === null ? null
+            : captureUsage(text, up.headers['content-type']?.includes('text/event-stream') ?? false);
           records.push(record);
           res.end();
         });

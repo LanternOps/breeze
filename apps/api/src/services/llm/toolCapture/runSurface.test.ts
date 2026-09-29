@@ -5,8 +5,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
   return { ...actual, query: queryMock };
 });
+const executeTenantToolDetailedMock = vi.hoisted(() => vi.fn());
+vi.mock('../../toolSources/execute', () => ({ executeTenantTool: vi.fn(), executeTenantToolDetailed: executeTenantToolDetailedMock }));
 
-import { captureToolSearchPolicy, denyPreToolUse, getCaptureSystemPrompt, runSurfaceCapture } from './runSurface';
+import { CAPTURE_CHILD_ENV_ISOLATION, captureToolSearchPolicy, denyPreToolUse, getCaptureSystemPrompt, runSurfaceCapture } from './runSurface';
+import { captureTenantDescriptors } from './tenantFixtures';
 import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
@@ -157,7 +160,7 @@ describe('runSurfaceCapture', () => {
       options: expect.objectContaining({
         // Empty env = first-party host: chat searches, exactly as production.
         tools: ['ToolSearch'],
-        env: { ENABLE_TOOL_SEARCH: 'true' },
+        env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', ENABLE_TOOL_SEARCH: 'true' },
         allowedTools: [...CAPTURE_SURFACES.chat.allowedTools],
         mcpServers: { [CAPTURE_SURFACES.chat.mcpServerName]: expect.anything() },
         includePartialMessages: CAPTURE_SURFACES.chat.includePartialMessages,
@@ -202,5 +205,68 @@ describe('runSurfaceCapture', () => {
 
     expect(result.registeredToolCount).toBe(2);
     expect(result.registeredToolNames).toEqual(['get_device_details', 'query_devices']);
+  });
+
+  it('isolates the CLI child from the host ~/.claude auto-memory, which is not production context', async () => {
+    // HOME is forwarded to the child (buildClaudeSdkChildEnv), so without this
+    // the CLI prepends the operator's MEMORY.md to every captured first message
+    // (measured: +9.7k tokens per request on a dev machine, #7429).
+    expect(CAPTURE_CHILD_ENV_ISOLATION).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' });
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture({ ...baseOpts, env: { HOME: '/home/someone', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' } });
+    const env = queryMock.mock.lastCall![0].options.env;
+    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(env.HOME).toBe('/home/someone');
+  });
+
+  describe('tenant (BYO MCP) tools', () => {
+    function registeredTools(): Record<string, { handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }> }> {
+      const server = queryMock.mock.lastCall![0].options.mcpServers.breeze;
+      return (server.instance as unknown as { _registeredTools: ReturnType<typeof registeredTools> })._registeredTools;
+    }
+
+    it('registers them on the chat server through buildTenantSdkTools, allows them, and reports them', async () => {
+      const tenantTools = captureTenantDescriptors('a', 3);
+      queryMock.mockReturnValueOnce(messages([]));
+
+      const result = await runSurfaceCapture({ ...baseOpts, tenantTools });
+
+      const names = tenantTools.map((d) => d.qualifiedName);
+      const registered = registeredTools();
+      for (const name of names) expect(registered[name], name).toBeDefined();
+      const options = queryMock.mock.lastCall![0].options;
+      expect(options.allowedTools).toEqual([...CAPTURE_SURFACES.chat.allowedTools, ...names.map((n) => `mcp__breeze__${n}`)]);
+      expect(result.tenantToolNames).toEqual(names);
+      expect(result.registeredToolNames).toEqual(expect.arrayContaining(names));
+      expect(result.registeredToolCount).toBe(
+        new Set(buildBreezeSdkTools(() => { throw new Error('unused'); }).map((t) => t.name)).size + names.length,
+      );
+    });
+
+    it('denies a tenant tool call before the tenant handler dispatches anything', async () => {
+      const [descriptor] = captureTenantDescriptors('b', 1);
+      queryMock.mockReturnValueOnce(messages([]));
+      await runSurfaceCapture({ ...baseOpts, tenantTools: [descriptor!] });
+
+      const out = await registeredTools()[descriptor!.qualifiedName]!.handler({ id: 'x' }, {});
+
+      expect(out.isError).toBe(true);
+      expect(out.content[0]!.text).toContain('tool-capture harness: execution disabled');
+      expect(executeTenantToolDetailedMock).not.toHaveBeenCalled();
+    });
+
+    it('reports no tenant tools when none are passed', async () => {
+      queryMock.mockReturnValueOnce(messages([]));
+      const result = await runSurfaceCapture(baseOpts);
+      expect(result.tenantToolNames).toEqual([]);
+    });
+
+    it.each(['helper-standard', 'agent-full', 'script-builder'] as const)(
+      'refuses tenant tools on %s, which never resolves them in production', async (id) => {
+        await expect(runSurfaceCapture({
+          ...baseOpts, surface: CAPTURE_SURFACES[id], tenantTools: captureTenantDescriptors('a', 1),
+        })).rejects.toThrow(/only.*chat/);
+      },
+    );
   });
 });
