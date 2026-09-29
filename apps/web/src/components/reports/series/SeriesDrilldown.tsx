@@ -6,6 +6,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { DeliveryStatusChip } from '../DeliveryStatusChip';
 import { detachSeriesChild, generateSeriesChild, replaceSeriesTargets } from './seriesApi';
+import { SeriesPauseButton, SeriesPausedBadge } from './SeriesPauseButton';
 import { canExcludeOrg, targetsAfterExclude, targetsAfterInclude } from './listModel';
 import type { SeriesDetail, SeriesOrgStatus } from './types';
 
@@ -55,6 +56,10 @@ export function SeriesDrilldown({ detail, onChanged, timezone }: { detail: Serie
 
   return (
     <div data-testid={`series-drilldown-${seriesId}`} className="overflow-x-auto">
+      <div className="mb-2 flex items-center justify-end gap-2">
+        {detail.series.enabled === false && <SeriesPausedBadge testId={`series-drilldown-paused-${seriesId}`} />}
+        <SeriesPauseButton detail={detail} onChanged={onChanged} testId={`series-drilldown-pause-${seriesId}`} />
+      </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

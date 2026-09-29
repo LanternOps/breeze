@@ -5,6 +5,7 @@ const api = vi.hoisted(() => ({
   replaceSeriesTargets: vi.fn(() => Promise.resolve({})),
   detachSeriesChild: vi.fn(() => Promise.resolve()),
   generateSeriesChild: vi.fn(() => Promise.resolve()),
+  updateSeries: vi.fn(() => Promise.resolve({})),
 }));
 vi.mock('./seriesApi', () => api);
 
@@ -93,5 +94,16 @@ describe('SeriesDrilldown', () => {
     fireEvent.click(screen.getByTestId('series-org-run-o-a'));
     await waitFor(() => expect(api.generateSeriesChild).toHaveBeenCalled());
     expect(onChanged).not.toHaveBeenCalled();
+  });
+  it('pauses the series from the drill-down header, and shows Paused when disabled', async () => {
+    const onChanged = vi.fn();
+    const { rerender } = render(<SeriesDrilldown detail={ALL} onChanged={onChanged} timezone="UTC" />);
+    expect(screen.queryByTestId('series-drilldown-paused-s-1')).toBeNull();
+    fireEvent.click(screen.getByTestId('series-drilldown-pause-s-1'));
+    await waitFor(() => expect(api.updateSeries).toHaveBeenCalledWith('s-1', { enabled: false }, expect.anything()));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    rerender(<SeriesDrilldown detail={{ ...ALL, series: { ...ALL.series, enabled: false } }} onChanged={onChanged} timezone="UTC" />);
+    expect(screen.getByTestId('series-drilldown-paused-s-1')).toHaveTextContent('Paused');
+    expect(screen.getByTestId('series-drilldown-pause-s-1')).toHaveTextContent('Resume');
   });
 });
