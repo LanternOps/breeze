@@ -18,7 +18,15 @@ const state = vi.hoisted(() => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: () => Promise<void>) => { c.set('auth', state.auth); await next(); },
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requirePermission: () => async (c: any, next: () => Promise<void>) => { c.set('permissions', state.permissions); await next(); },
+  // Enforces the (resource, action) each route asks for against state.permissions,
+  // so a wrong or dropped permission changes the outcome.
+  requirePermission: (resource: string, action: string) => async (c: any, next: () => Promise<void>) => {
+    const granted = (state.permissions as { permissions: { resource: string; action: string }[] }).permissions;
+    const ok = granted.some((p) => (p.resource === '*' || p.resource === resource) && (p.action === '*' || p.action === action));
+    if (!ok) return c.json({ error: 'Permission denied' }, 403);
+    c.set('permissions', state.permissions);
+    await next();
+  },
   hasSatisfiedMfa: () => state.mfaSatisfied,
 }));
 vi.mock('../../db', () => ({ db: { transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn('tx')) } }));
@@ -86,20 +94,113 @@ beforeEach(() => {
   store.loadOwnSeries.mockResolvedValue(seriesRow);
 });
 
-describe('series write gate (partner scope + org_access=all)', () => {
+const SERIES_BODY = { name: 'x', type: 'executive_summary', schedule: 'monthly' };
+const ROUTES: { name: string; method: string; path: string; body?: unknown; perm: [string, string] }[] = [
+  { name: 'GET /', method: 'GET', path: '/reports/series', perm: ['reports', 'read'] },
+  { name: 'POST /recipients/preview', method: 'POST', path: '/reports/series/recipients/preview', perm: ['reports', 'read'],
+    body: { targetMode: 'all', orgIds: [], recipientRule: { primaryContact: true, roles: [] } } },
+  { name: 'POST /', method: 'POST', path: '/reports/series', perm: ['reports', 'write'], body: SERIES_BODY },
+  { name: 'GET /:id', method: 'GET', path: `/reports/series/${SERIES_ID}`, perm: ['reports', 'read'] },
+  { name: 'GET /:id/recipients/preview', method: 'GET', path: `/reports/series/${SERIES_ID}/recipients/preview`, perm: ['reports', 'read'] },
+  { name: 'PATCH /:id', method: 'PATCH', path: `/reports/series/${SERIES_ID}`, perm: ['reports', 'write'], body: { name: 'y' } },
+  { name: 'PUT /:id/targets', method: 'PUT', path: `/reports/series/${SERIES_ID}/targets`, perm: ['reports', 'write'], body: { targetMode: 'all', orgIds: [] } },
+  { name: 'POST /:id/transfer-owner', method: 'POST', path: `/reports/series/${SERIES_ID}/transfer-owner`, perm: ['reports', 'write'],
+    body: { ownerUserId: '66666666-6666-4666-8666-666666666666' } },
+  { name: 'DELETE /:id', method: 'DELETE', path: `/reports/series/${SERIES_ID}`, perm: ['reports', 'delete'] },
+];
+const call = (r: (typeof ROUTES)[number]) => app().request(r.path, {
+  method: r.method, headers: JSON_HEADERS, ...(r.body !== undefined ? { body: JSON.stringify(r.body) } : {}),
+});
+const allStores = () => Object.values(store);
+
+describe.each(ROUTES)('$name gates', (r) => {
+  beforeEach(() => {
+    store.previewSeriesRecipients.mockResolvedValue({});
+    store.previewSavedSeriesRecipients.mockResolvedValue({});
+  });
+
+  it(`needs exactly ${r.perm.join(':')}: granted alone it passes, any other reports permission alone is 403 and never reaches the store`, async () => {
+    state.permissions = { permissions: [{ resource: r.perm[0], action: r.perm[1] }] };
+    expect((await call(r)).status).toBeLessThan(400);
+    vi.clearAllMocks();
+    for (const action of ['read', 'write', 'delete', 'export'].filter((a) => a !== r.perm[1])) {
+      state.permissions = { permissions: [{ resource: 'reports', action }] };
+      expect((await call(r)).status).toBe(403);
+    }
+    expect(allStores().every((fn) => fn.mock.calls.length === 0)).toBe(true);
+  });
+
   it.each([['organization token', orgAuth()], ["'selected' partner user", partnerAuth('selected')]])(
-    'refuses a %s with 403 series_write_denied and never reaches the store',
+    'refuses a %s with 403 series_write_denied before the store',
     async (_label, auth) => {
       state.auth = auth;
-      const list = await app().request('/reports/series');
-      expect(list.status).toBe(403);
-      expect(await list.json()).toMatchObject({ error: 'series_write_denied' });
-      const create = await post('/reports/series', createBody());
-      expect(create.status).toBe(403);
-      expect(store.listSeries).not.toHaveBeenCalled();
-      expect(store.createSeries).not.toHaveBeenCalled();
+      const res = await call(r);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'series_write_denied' });
+      expect(allStores().every((fn) => fn.mock.calls.length === 0)).toBe(true);
     },
   );
+});
+
+describe('mayAddDelivery on PATCH and PUT targets', () => {
+  const patchCall = () => app().request(`/reports/series/${SERIES_ID}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ name: 'y' }) });
+  const putCall = () => app().request(`/reports/series/${SERIES_ID}/targets`, {
+    method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ targetMode: 'all', orgIds: [] }),
+  });
+  const lastOptions = (fn: typeof store.updateSeries) => fn.mock.calls.at(-1)![4] ?? fn.mock.calls.at(-1)![3];
+
+  it.each([
+    ['PATCH', patchCall, store.updateSeries],
+    ['PUT targets', putCall, store.replaceSeriesTargets],
+  ])('%s: true only with reports:export AND MFA', async (_n, fire, fn) => {
+    await fire();
+    expect(lastOptions(fn)).toEqual({ mayAddDelivery: true });
+    state.mfaSatisfied = false;
+    await fire();
+    expect(lastOptions(fn)).toEqual({ mayAddDelivery: false });
+    state.mfaSatisfied = true;
+    state.permissions = { permissions: [{ resource: 'reports', action: 'write' }] };
+    await fire();
+    expect(lastOptions(fn)).toEqual({ mayAddDelivery: false });
+  });
+});
+
+describe('inaccessible target orgs never reach the store', () => {
+  it('PUT /:id/targets', async () => {
+    const res = await app().request(`/reports/series/${SERIES_ID}/targets`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ targetMode: 'selected', orgIds: [FOREIGN_ORG_ID] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'series_target_org_inaccessible', orgIds: [FOREIGN_ORG_ID] });
+    expect(store.replaceSeriesTargets).not.toHaveBeenCalled();
+  });
+
+  it('POST /recipients/preview', async () => {
+    const res = await post('/reports/series/recipients/preview', JSON.stringify({
+      targetMode: 'selected', orgIds: [FOREIGN_ORG_ID], recipientRule: { primaryContact: true, roles: [] },
+    }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'series_target_org_inaccessible', orgIds: [FOREIGN_ORG_ID] });
+    expect(store.previewSeriesRecipients).not.toHaveBeenCalled();
+  });
+});
+
+describe('audit entries', () => {
+  it('update, targets.replace and delete audit with orgId null and the partner id', async () => {
+    await app().request(`/reports/series/${SERIES_ID}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ name: 'y' }) });
+    await app().request(`/reports/series/${SERIES_ID}/targets`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ targetMode: 'selected', orgIds: [ORG_ID] }),
+    });
+    await app().request(`/reports/series/${SERIES_ID}`, { method: 'DELETE' });
+    const audits = vi.mocked(writeRouteAudit).mock.calls.map(([, e]) => e as Record<string, any>);
+    const by = (a: string) => audits.find((e) => e.action === a)!;
+    expect(by('report_series.update')).toMatchObject({ orgId: null, resourceType: 'report_series', resourceId: SERIES_ID,
+      details: { partnerId: PARTNER_ID, changedFields: ['name'], reconcile } });
+    expect(by('report_series.targets.replace')).toMatchObject({ orgId: null, resourceId: SERIES_ID,
+      details: { partnerId: PARTNER_ID, targetMode: 'selected', orgCount: 1, reconcile } });
+    expect(by('report_series.delete')).toMatchObject({ orgId: null, resourceId: SERIES_ID,
+      details: { partnerId: PARTNER_ID, archivedChildren: 3 } });
+  });
 });
 
 describe('POST /reports/series', () => {
