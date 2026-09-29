@@ -114,6 +114,11 @@ async function processScanDuePolicies(): Promise<{ queued: number }> {
  * transaction that throws — including a failed commit — propagates before
  * anything is enqueued. The worker calls these with no ambient context, so
  * this transaction is the outermost one and really commits when it returns.
+ *
+ * The config-compliance scan also publishes its policy.* events from
+ * `afterCommit`. The policy-alert-bridge reads the committed compliance row on
+ * its own connection, so an event published inside the transaction made the
+ * first failing check raise nothing.
  */
 async function commitThenEnqueue<R extends object>(
   evaluate: () => Promise<R & { afterCommit?: () => Promise<void> }>,
@@ -198,6 +203,9 @@ async function processConfigPolicyComplianceScan(): Promise<{
     throw error;
   }
 }
+
+/** Test-only: the `scan-config-policy-compliance` job body, driven against real Postgres. */
+export const __processConfigPolicyComplianceScan = processConfigPolicyComplianceScan;
 
 export function createPolicyEvaluationWorker(): Worker<PolicyEvaluationJobData> {
   return new Worker<PolicyEvaluationJobData>(
