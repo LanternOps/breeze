@@ -133,7 +133,14 @@ it('bounds and deduplicates event display data while persisting marks', async ()
   expect(first.recentEvents[0]).not.toHaveProperty('properties');
   expect(first.eventMarks['134']).toBe(NOW.toISOString());
   s.sequence = 2;
-  s.events = [event(134, NOW.toISOString(), 0)];
+  // R5: every snapshot re-sends the newest events, so an overlapping resend
+  // (recordIds 0-4, same timestamps) must merge by recordId, not append.
+  s.events = Array.from({ length: 5 }, (_, i) =>
+    event(134, new Date(+NOW - i * 1000).toISOString(), i),
+  );
   await send();
-  expect((await f.row()).recentEvents).toHaveLength(20);
+  const ids = (await f.row()).recentEvents.map((e) => e.recordId);
+  expect(ids).toHaveLength(20);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(ids).toEqual(Array.from({ length: 20 }, (_, i) => i));
 });
