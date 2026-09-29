@@ -62,7 +62,7 @@ function deps(opts: {
     [`snapshots/${SID}/layout.json`]: layout,
   };
   const finish = vi.fn(async ({ status }: { status: 'verified' | 'mismatch' }) => status as 'verified' | 'mismatch' | null);
-  const defer = vi.fn(async (_args: { attestationId: string; reason: string; retryAt?: Date }) => ({ attemptCount: 1, parked: false }));
+  const defer = vi.fn(async (_args: { attestationId: string; reason: string; retryAt?: Date }): Promise<{ attemptCount: number; parked: boolean } | null> => ({ attemptCount: 1, parked: false }));
   const fetchObject = vi.fn(async ({ key, maxBytes }: { key: string; maxBytes: number }) => {
     if (opts.fetchError) throw opts.fetchError;
     const bytes = objects[key];
@@ -175,6 +175,15 @@ describe('verifySnapshotAttestation', () => {
     expect(defer).toHaveBeenCalledTimes(1);
     expect(defer.mock.calls[0]![0]).toEqual({ attestationId: 'att-1', reason: 'snapshot_sealing' });
     expect(defer.mock.calls[0]![0]).not.toHaveProperty('retryAt');
+  });
+
+  it('reports a deferral that found the row already decided as skipped, without counting it', async () => {
+    // A second verification of the same snapshot decided it between this
+    // one's read and its deferral.
+    const { d, defer } = deps({ writeInFlight: true, sealedUntil: new Date('2026-09-29T01:21:07.000Z') });
+    defer.mockResolvedValueOnce(null);
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'skipped', reason: 'already_decided' });
+    expect(recordBackupAttestationMock).not.toHaveBeenCalled();
   });
 
   it('counts a retry that has used up its attempts as parked', async () => {

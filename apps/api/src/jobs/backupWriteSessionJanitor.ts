@@ -42,7 +42,6 @@ import {
 } from '../db/schema';
 import { recordBackupWriteJanitor } from '../services/backupMetrics';
 import { resolveBackupWriteCommandDestination } from '../services/backupProviderConfig';
-import { RESERVATION_CLEANUP_EVERY_MS } from '../services/backupSnapshotIdReservations';
 import { abortMultipartUpload, listMultipartUploads } from '../services/backupStoragePresign';
 import {
   STORAGE_DELETE_SETTLE_MS,
@@ -56,7 +55,10 @@ import { attachWorkerObservability } from './workerObservability';
 const QUEUE_NAME = 'backup-write-session-janitor';
 const JOB_NAME = 'backup-write-session-janitor';
 const REPEAT_JOB_ID = 'backup-write-session-janitor-repeat';
-const RUN_EVERY_MS = RESERVATION_CLEANUP_EVERY_MS;
+// A literal, so the schedule registry contract can read it statically; kept
+// equal to RESERVATION_CLEANUP_EVERY_MS (services/backupSnapshotIdReservations.ts),
+// which attestation verification uses to predict publication (unit-tested).
+const RUN_EVERY_MS = 5 * 60 * 1000;
 const BATCH = 200;
 const OPEN_UPLOAD_STATES = ['creating', 'open', 'completing'];
 
@@ -359,6 +361,8 @@ export async function initializeBackupWriteSessionJanitor(): Promise<void> {
   });
   console.log('[BackupWriteSessionJanitor] Worker initialized');
 }
+
+export const __testOnly = { defaultDeps, RUN_EVERY_MS };
 
 export async function shutdownBackupWriteSessionJanitor(): Promise<void> {
   await worker?.close();

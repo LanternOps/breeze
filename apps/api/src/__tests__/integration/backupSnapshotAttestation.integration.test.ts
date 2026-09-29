@@ -515,8 +515,10 @@ describe('job reuse and verification retries', () => {
     const snap = await snapshotRow(f);
 
     // The sweep runs on its tick; the attempt it queues defers a moment later
-    // (next_attempt_at = the database's now() + 15 minutes).
-    const tick = new Date();
+    // (next_attempt_at = the database's now() + 15 minutes). The tick is read
+    // from the database clock so host/container clock skew cannot decide it.
+    const [clock] = (await db.execute(sql`SELECT now() AS now`)) as unknown as Array<{ now: Date | string }>;
+    const tick = new Date(clock!.now);
     expect(await verifySnapshotAttestation(snap!.id, storage({}, new Error('connect ETIMEDOUT'))))
       .toEqual({ outcome: 'retry', reason: 'fetch_failed:manifest' });
     const [row] = await attestationRows(snap!.id);

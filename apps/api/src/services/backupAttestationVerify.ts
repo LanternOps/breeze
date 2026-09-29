@@ -165,9 +165,12 @@ export async function verifySnapshotAttestation(
     return error ? { outcome: written, reason: error } : { outcome: written };
   };
   const retry = async (reason: string, retryAt: Date | null = null): Promise<AttestationVerifyResult> => {
-    recordBackupAttestation('verify_unavailable');
     const scheduled = await deps.defer({ attestationId: attestation.id, reason, ...(retryAt ? { retryAt } : {}) });
-    if (scheduled?.parked) {
+    // No longer pending: another verification of the snapshot decided it
+    // after this one read it.
+    if (!scheduled) return { outcome: 'skipped', reason: 'already_decided' };
+    recordBackupAttestation('verify_unavailable');
+    if (scheduled.parked) {
       recordBackupAttestation('verify_parked');
       console.warn(
         `[BackupAttestationVerify] Snapshot ${snapshotDbId} stays pending after ${scheduled.attemptCount} attempts ` +
