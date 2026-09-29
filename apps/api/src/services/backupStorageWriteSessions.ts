@@ -275,8 +275,10 @@ type EncryptionSpec = { algorithm: 'AES256' } | { algorithm: 'aws:kms'; kmsKeyId
 
 /**
  * Server-side encryption as reported to the helper by multipart:create
- * (`appliedEncryption`): what STORAGE confirmed in its answer (`algorithm`,
- * and `kmsKeyId` when it named a key — AWS names the key ARN), what the
+ * (`appliedEncryption`): what STORAGE confirmed for the new upload — in its
+ * create answer, or, when that was silent, in its answer to a zero-byte probe
+ * part of the same upload (see createMultipartUpload) — (`algorithm`, and
+ * `kmsKeyId` when it named a key — AWS names the key ARN), what the
  * server requested (`requested`, null when none), and whether the two match
  * (`matches`). Null only when nothing was requested and storage confirmed
  * nothing. A request that storage did not confirm is reported explicitly as
@@ -298,15 +300,16 @@ function requestedSpec(sse: WriteSse): EncryptionSpec | null {
 
 /**
  * Whether the key storage confirmed is the key requested. A key ARN must be
- * the same ARN; a bare key id must be the id the confirmed ARN ends with; an
- * alias (`alias/…` or an alias ARN) cannot be resolved here, so the
- * algorithm alone decides; a confirmation that names no key is accepted.
+ * the same ARN; a bare key id must be the id the confirmed ARN ends with, or
+ * the exact name in MinIO's form (`arn:aws:kms:<name>`); an alias (`alias/…`
+ * or an alias ARN) cannot be resolved here, so the algorithm alone decides; a
+ * confirmation that names no key is accepted.
  */
 function kmsKeyMatches(requested: string, confirmed: string | null): boolean {
   if (!confirmed) return true;
   if (requested.startsWith('alias/') || /^arn:[^:]+:kms:[^:]*:[^:]*:alias\//.test(requested)) return true;
   if (requested.startsWith('arn:')) return requested === confirmed;
-  return confirmed === requested || confirmed.endsWith(`:key/${requested}`);
+  return confirmed === requested || confirmed.endsWith(`:key/${requested}`) || confirmed === `arn:aws:kms:${requested}`;
 }
 
 /** The encryption a multipart upload was created with, as storage confirmed it (see AppliedEncryption). */
