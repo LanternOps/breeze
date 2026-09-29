@@ -118,7 +118,7 @@
     "filesOk": "Dossiers OK",
     "filesFailed": "Échec des fichiers",
     "lowReadinessDevices": "Dispositifs de faible préparation",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Les appareils obtiennent un score inférieur au seuil de préparation de 85 points.",
+    "lowReadinessDevicesDescription": "Appareils dont le score est inférieur au seuil de préparation de {{threshold}} points.",
     "allDevicesMeetTheReadinessThreshold": "Tous les appareils atteignent le seuil de préparation.",
     "score": "Partition",
     "estRto": "RTO estimé",

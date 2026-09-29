@@ -118,7 +118,7 @@
     "filesOk": "Archivos OK",
     "filesFailed": "Archivos fallidos",
     "lowReadinessDevices": "Dispositivos de baja preparación",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Dispositivos con una puntuación inferior al umbral de preparación de 85 puntos.",
+    "lowReadinessDevicesDescription": "Dispositivos con una puntuación inferior al umbral de preparación de {{threshold}} puntos.",
     "allDevicesMeetTheReadinessThreshold": "Todos los dispositivos alcanzan el umbral de preparación.",
     "score": "Puntaje",
     "estRto": "RTO est.",

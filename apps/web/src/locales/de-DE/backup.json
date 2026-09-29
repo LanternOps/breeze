@@ -118,7 +118,7 @@
     "filesOk": "Dateien OK",
     "filesFailed": "Dateien fehlgeschlagen",
     "lowReadinessDevices": "Geräte mit geringer Bereitschaft",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Geräte, die unter dem 85-Punkte-Bereitschaftsschwellenwert liegen.",
+    "lowReadinessDevicesDescription": "Geräte, die unter dem {{threshold}}-Punkte-Bereitschaftsschwellenwert liegen.",
     "allDevicesMeetTheReadinessThreshold": "Alle Geräte erfüllen den Bereitschaftsschwellenwert.",
     "score": "Punktzahl",
     "estRto": "Schätzung: RTO",

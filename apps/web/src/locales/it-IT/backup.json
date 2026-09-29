@@ -118,7 +118,7 @@
     "filesOk": "File OK",
     "filesFailed": "File non riusciti",
     "lowReadinessDevices": "Dispositivi con prontezza bassa",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Dispositivi con punteggio inferiore alla soglia di prontezza di 85 punti.",
+    "lowReadinessDevicesDescription": "Dispositivi con punteggio inferiore alla soglia di prontezza di {{threshold}} punti.",
     "allDevicesMeetTheReadinessThreshold": "Tutti i dispositivi soddisfano la soglia di prontezza.",
     "score": "Punteggio",
     "estRto": "RTO stim.",

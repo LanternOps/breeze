@@ -118,7 +118,7 @@
     "filesOk": "Files OK",
     "filesFailed": "Files Failed",
     "lowReadinessDevices": "Low Readiness Devices",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Devices scoring below the 85-point readiness threshold.",
+    "lowReadinessDevicesDescription": "Devices scoring below the {{threshold}}-point readiness threshold.",
     "allDevicesMeetTheReadinessThreshold": "All devices meet the readiness threshold.",
     "score": "Score",
     "estRto": "Est. RTO",

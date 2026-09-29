@@ -118,7 +118,7 @@
     "filesOk": "Dosyalar TAMAM",
     "filesFailed": "Dosyalar Başarısız Oldu",
     "lowReadinessDevices": "Düşük Hazırlıklı Cihazlar",
-    "devicesScoringBelowThe85PointReadinessThreshold": "85 puanlık hazırlık eşiğinin altında puan alan cihazlar.",
+    "lowReadinessDevicesDescription": "{{threshold}} puanlık hazırlık eşiğinin altında puan alan cihazlar.",
     "allDevicesMeetTheReadinessThreshold": "Tüm cihazlar hazırlık eşiğini karşılıyor.",
     "score": "Puan",
     "estRto": "Tah. RTO",

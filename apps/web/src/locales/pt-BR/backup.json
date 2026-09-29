@@ -118,7 +118,7 @@
     "filesOk": "Arquivos OK",
     "filesFailed": "Arquivos com falha",
     "lowReadinessDevices": "Dispositivos com baixa prontidão",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Dispositivos com pontuação abaixo do limite de prontidão de 85 pontos.",
+    "lowReadinessDevicesDescription": "Dispositivos com pontuação abaixo do limite de prontidão de {{threshold}} pontos.",
     "allDevicesMeetTheReadinessThreshold": "Todos os dispositivos atendem ao limite de prontidão.",
     "score": "Pontuação",
     "estRto": "Est. RTO",
