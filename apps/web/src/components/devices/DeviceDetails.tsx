@@ -72,6 +72,7 @@ import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
+import { usePageItemName } from "../layout/usePageItemName";
 import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs, type OverflowTab } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
@@ -343,6 +344,7 @@ export default function DeviceDetails({
   onAction,
 }: DeviceDetailsProps) {
   const { t } = useTranslation("devices");
+  usePageItemName(device.displayName || device.hostname);
   // Enabled `device.detail.tabs` contributions, deterministically ordered.
   // Never throws — a registry failure or zero enabled contributions simply
   // appends no extension tabs (see useExtensionSlotDescriptors).
