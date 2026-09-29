@@ -3,6 +3,7 @@ import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from './configFeat
 import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
 import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
 import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
+import { TIME_SYNC_DEFAULTS } from '@breeze/shared';
 
 describe('policyBaselineDefaults', () => {
   it('has exactly one entry per ConfigFeatureType', () => {
@@ -41,6 +42,21 @@ describe('policyBaselineDefaults', () => {
 
   it('getPamBaseline returns UAC off', () => {
     expect(getPamBaseline()).toEqual({ uacInterceptionEnabled: false });
+  });
+
+  it('shows disabled time management as the baseline without sharing mutable defaults', () => {
+    const first = getPolicyBaselineDefaults().find(
+      (x) => x.featureType === 'time_sync',
+    )!;
+    expect(first).toMatchObject({
+      applied: false,
+      inlineSettings: TIME_SYNC_DEFAULTS,
+    });
+    (first.inlineSettings!.ntpServers as string[]).push('pool.ntp.org');
+    expect(
+      getPolicyBaselineDefaults().find((x) => x.featureType === 'time_sync')!
+        .inlineSettings,
+    ).toEqual(TIME_SYNC_DEFAULTS);
   });
 });
 

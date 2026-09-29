@@ -12,6 +12,7 @@ import {
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
+  timeSyncInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -334,6 +335,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'time_sync' && data.inlineSettings) {
+      const parsed = timeSyncInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid time sync settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     // addFeatureLink returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
@@ -562,6 +574,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             zodValidationErrorBody('Invalid hardware monitoring settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'time_sync') {
+        const parsed = timeSyncInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid time sync settings', parsed.error),
             400
           );
         }

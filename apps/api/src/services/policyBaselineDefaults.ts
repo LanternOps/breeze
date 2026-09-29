@@ -14,7 +14,7 @@
 // service into pamSettings/helpers test suites (#1725 PR review).
 import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
 import type { RemoteAccessSettings } from './remoteAccessPolicy';
-import { HARDWARE_MONITORING_DEFAULTS } from '@breeze/shared';
+import { HARDWARE_MONITORING_DEFAULTS, TIME_SYNC_DEFAULTS } from '@breeze/shared';
 
 export interface BaselineEntry {
   featureType: ConfigFeatureType;
@@ -60,7 +60,10 @@ export function getPamBaseline(): { uacInterceptionEnabled: boolean } {
 // label + behavior + applied/inlineSettings for every feature type. Order
 // follows CONFIG_FEATURE_TYPES. "Not enforced" entries describe the real-world
 // effect of having no policy.
-const NOT_ENFORCED: Record<Exclude<ConfigFeatureType, 'remote_access' | 'pam' | 'hardware_monitoring'>, { label: string; behavior: string }> = {
+const NOT_ENFORCED: Record<
+  Exclude<ConfigFeatureType, 'remote_access' | 'pam' | 'hardware_monitoring' | 'time_sync'>,
+  { label: string; behavior: string }
+> = {
   patch:             { label: 'Patches',            behavior: 'Not enforced — no patch deployments are created from policy.' },
   backup:            { label: 'Backup',             behavior: 'Not enforced — no backups are scheduled.' },
   security:          { label: 'Security',           behavior: 'Not enforced — no security posture is applied.' },
@@ -106,6 +109,21 @@ export function getPolicyBaselineDefaults(): BaselineEntry[] {
         applied: true,
         inlineSettings: { ...HARDWARE_MONITORING_DEFAULTS },
         behavior: 'Hardware collection is ON by default: RAID every 10 minutes and disk health every 60 minutes.',
+      };
+    }
+    if (ft === 'time_sync') {
+      // applied:false describes enforcement only — observation is always on.
+      return {
+        featureType: ft,
+        label: 'Time Sync',
+        applied: false,
+        inlineSettings: {
+          ...TIME_SYNC_DEFAULTS,
+          ntpServers: [],
+          timezone: { ...TIME_SYNC_DEFAULTS.timezone },
+        },
+        behavior:
+          'NTP enforcement and timezone auto-fix are OFF by default; expected timezone follows the site.',
       };
     }
     const meta = NOT_ENFORCED[ft];
