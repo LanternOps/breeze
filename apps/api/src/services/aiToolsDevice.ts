@@ -30,6 +30,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
+import { getDeviceTimeStatusView } from './timeSync/view';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
 import { projectPublicDevice } from '../routes/devices/helpers';
 import {
@@ -369,6 +370,32 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       }
       return JSON.stringify(result);
     }
+  });
+
+  registerTool({
+    tier: 1,
+    domain: 'devices',
+    deviceArgs: ['deviceId'],
+    searchHint:
+      'Windows time synchronization, timezone, NTP source and time findings',
+    definition: {
+      name: 'get_device_time_status',
+      description:
+        'Get current Windows time synchronization, expected timezone provenance, findings and recent time events.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'The device UUID' },
+        },
+        required: ['deviceId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const deviceId = input.deviceId as string;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+      return JSON.stringify(await getDeviceTimeStatusView(deviceId));
+    },
   });
 
   // ============================================

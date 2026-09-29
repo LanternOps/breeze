@@ -50,13 +50,13 @@ describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
     expect([...analysis.onlyTools!].sort()).toEqual([...ANALYSIS_TOOL_ALLOWLIST].sort());
   });
 
-  it('helper levels register only their own tools (A-W04 onlyTools; basic = 9 tools)', () => {
+  it('helper levels register only their own tools (A-W04 onlyTools; basic = 10 tools)', () => {
     for (const level of ['basic', 'standard', 'extended'] as const) {
       const s = CAPTURE_SURFACES[`helper-${level}`];
       expect(s.allowedTools).toEqual(getHelperAllowedMcpToolNames(level));
       expect([...s.onlyTools!].sort()).toEqual(getHelperAllowedTools(level).sort());
     }
-    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(9);
+    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(10);
   });
 
   it('script builder uses its own server', () => {
