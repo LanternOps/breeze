@@ -191,7 +191,8 @@
     "backup_continuity": "Continuità dei backup",
     "script": "Verifica script",
     "network_check": "Verifica di rete",
-    "hardware_health": "Stato hardware"
+    "hardware_health": "Stato hardware",
+    "time_sync": "Sincronizzazione dell’ora"
   },
   "fields": {
     "operator": "Confronto",
@@ -586,6 +587,25 @@
         "minHealthOptions": {
           "warning": "Avviso",
           "critical": "Critico"
+        }
+      },
+      "time_sync": {
+        "findings": "Problemi",
+        "consecutiveSnapshots": "Istantanee consecutive",
+        "findingOptions": {
+          "pdc_no_external_source": "Il PDC radice della foresta non ha un’origine esterna",
+          "source_local_clock": "Utilizzo dell’orologio locale",
+          "dc_vm_host_sync": "Il controller di dominio si sincronizza con l’host della VM",
+          "ntp_server_unresolvable": "Il nome del server NTP non è valido o non viene risolto",
+          "ntp_peer_unreachable": "Il peer NTP non è raggiungibile",
+          "domain_source_unavailable": "Origine dell’ora del dominio non disponibile",
+          "member_not_on_hierarchy": "La gerarchia del dominio non è utilizzata",
+          "sync_disabled": "La sincronizzazione dell’ora è disabilitata",
+          "sync_stale": "Nessuna sincronizzazione recente riuscita",
+          "correction_refused": "La correzione dell’ora è stata rifiutata",
+          "timezone_mismatch": "Il fuso orario è diverso da quello previsto",
+          "policy_not_applied": "Il criterio relativo all’ora non è stato applicato",
+          "policy_conflict_gpo": "Criteri di gruppo controlla le impostazioni dell’ora"
         }
       }
     }

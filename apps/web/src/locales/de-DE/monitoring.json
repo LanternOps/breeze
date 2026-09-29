@@ -191,7 +191,8 @@
     "backup_continuity": "Backup-Kontinuität",
     "script": "Skriptprüfung",
     "network_check": "Netzwerkprüfung",
-    "hardware_health": "Hardwarezustand"
+    "hardware_health": "Hardwarezustand",
+    "time_sync": "Zeitsynchronisierung"
   },
   "fields": {
     "operator": "Vergleich",
@@ -586,6 +587,25 @@
         "minHealthOptions": {
           "warning": "Warnung",
           "critical": "Kritisch"
+        }
+      },
+      "time_sync": {
+        "findings": "Befunde",
+        "consecutiveSnapshots": "Aufeinanderfolgende Momentaufnahmen",
+        "findingOptions": {
+          "pdc_no_external_source": "Der PDC der Gesamtstruktur-Stammdomäne hat keine externe Quelle",
+          "source_local_clock": "Lokale Uhr wird verwendet",
+          "dc_vm_host_sync": "Domänencontroller synchronisiert mit dem VM-Host",
+          "ntp_server_unresolvable": "NTP-Servername ist ungültig oder nicht auflösbar",
+          "ntp_peer_unreachable": "NTP-Gegenstelle ist nicht erreichbar",
+          "domain_source_unavailable": "Domänenzeitquelle nicht verfügbar",
+          "member_not_on_hierarchy": "Domänenhierarchie wird nicht verwendet",
+          "sync_disabled": "Zeitsynchronisierung ist deaktiviert",
+          "sync_stale": "Keine aktuelle erfolgreiche Synchronisierung",
+          "correction_refused": "Zeitkorrektur wurde abgelehnt",
+          "timezone_mismatch": "Zeitzone weicht von der erwarteten Zeitzone ab",
+          "policy_not_applied": "Zeitrichtlinie wurde nicht angewendet",
+          "policy_conflict_gpo": "Gruppenrichtlinie steuert die Zeiteinstellungen"
         }
       }
     }
