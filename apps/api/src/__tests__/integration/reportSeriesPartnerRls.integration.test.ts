@@ -22,6 +22,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { createOrganization, createPartner } from './db-utils';
+import { cascadeDeletePartner } from '../../services/tenantCascade';
 
 function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   return {
@@ -316,5 +317,20 @@ describe('reports series columns', () => {
       expect(row.archived).toBe(true);
     }
     expect(await rows(null, sql`SELECT id FROM report_runs WHERE id = ${runId}`)).toHaveLength(1);
+  });
+});
+
+describe('erasure', () => {
+  it('cascadeDeletePartner erases a partner holding a series, a target and a child', async () => {
+    const t = await seedTenancy();
+    const series = await insertSeries(t.partnerA);
+    await rows(null, sql`INSERT INTO report_series_org_targets (series_id, org_id) VALUES (${series}, ${t.orgA1})`);
+    const child = await insertChild(t.orgA2, series);
+
+    await expect(cascadeDeletePartner(t.partnerA, randomUUID())).resolves.toBeDefined();
+
+    expect(await rows(null, sql`SELECT id FROM report_series WHERE id = ${series}`)).toHaveLength(0);
+    expect(await rows(null, sql`SELECT id FROM report_series_org_targets WHERE series_id = ${series}`)).toHaveLength(0);
+    expect(await rows(null, sql`SELECT id FROM reports WHERE id = ${child}`)).toHaveLength(0);
   });
 });
