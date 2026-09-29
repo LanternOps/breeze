@@ -136,7 +136,6 @@ export async function ingestTimeStatusSnapshot(
       .limit(1);
     const expected = resolveExpectedTimezone({ site: site ?? null });
     const resolved = resolveTimeFindings(args.snapshot, {
-      now: args.receivedAt,
       expectedTimezone: expected,
       previousEventMarks: previous?.eventMarks ?? {},
     });

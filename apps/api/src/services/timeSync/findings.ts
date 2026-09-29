@@ -18,8 +18,16 @@ export interface TimeSyncFinding {
   severity: TimeSyncFindingSeverity;
   detail: Record<string, string | number | null>;
 }
+/**
+ * Inputs beyond the snapshot. There is deliberately no `now`: every age the
+ * resolver measures (event activity window, mark pruning, sync_stale) is taken
+ * against `snapshot.collectedAt`, because event `occurredAt`, carried-forward
+ * marks and `lastSuccessfulSyncAt` are all stamped by the device's own clock.
+ * Comparing them with server time would hide or pin findings on exactly the
+ * devices this feature exists for — those with a wrong clock. Server time
+ * (`receivedAt`) is used only for freshness (`isTimeStatusStale`).
+ */
 export interface TimeFindingsContext {
-  now: Date;
   expectedTimezone: ExpectedTimezone | null;
   previousEventMarks: EventMarks;
   enforcementSettings?: {
@@ -27,6 +35,13 @@ export interface TimeFindingsContext {
     timezoneAutoFix: boolean;
   } | null;
 }
+/**
+ * A mark stamped later than this after the snapshot's own `collectedAt` cannot
+ * have come from the device's current clock: the clock was stepped back since
+ * (which is what a correction does). Such marks belong to the old clock domain
+ * and are dropped. The slack absorbs events logged during collection.
+ */
+export const TIME_SYNC_CLOCK_STEP_TOLERANCE_MS = 5 * 60_000;
 export interface TimeFindingsResult {
   health: TimeSyncHealth;
   findings: TimeSyncFinding[];
@@ -48,6 +63,7 @@ export function resolveTimeFindings(
 ): TimeFindingsResult {
   const { config, status, domain, timezone, events } = snapshot;
   const marks: EventMarks = { ...ctx.previousEventMarks };
+  const ref = Date.parse(snapshot.collectedAt);
   const time = (value: string | null | undefined) =>
     value ? Date.parse(value) : -Infinity;
   for (const event of events) {
@@ -56,7 +72,12 @@ export function resolveTimeFindings(
       marks[key] = event.occurredAt;
   }
   for (const [key, mark] of Object.entries(marks)) {
-    if (!Number.isFinite(time(mark)) || +ctx.now - time(mark) > 7 * 86_400_000)
+    const t = time(mark);
+    if (
+      !Number.isFinite(t) ||
+      ref - t > 7 * 86_400_000 ||
+      t - ref > TIME_SYNC_CLOCK_STEP_TOLERANCE_MS
+    )
       delete marks[key];
   }
   const success = Math.max(
@@ -65,7 +86,7 @@ export function resolveTimeFindings(
     time(status.lastSuccessfulSyncAt),
   );
   const active = (id: number) =>
-    +ctx.now - time(marks[String(id)]) <= TIME_SYNC_EVENT_ACTIVE_WINDOW_MS &&
+    ref - time(marks[String(id)]) <= TIME_SYNC_EVENT_ACTIVE_WINDOW_MS &&
     time(marks[String(id)]) > success;
   const property = (ids: number[]) =>
     events
@@ -136,7 +157,7 @@ export function resolveTimeFindings(
   if (
     !disabled &&
     ((status.lastSuccessfulSyncAt !== null &&
-      +ctx.now - time(status.lastSuccessfulSyncAt) > threshold) ||
+      ref - time(status.lastSuccessfulSyncAt) > threshold) ||
       active(36))
   )
     add('sync_stale', {

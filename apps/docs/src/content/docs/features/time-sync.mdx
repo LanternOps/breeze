@@ -13,7 +13,7 @@ A report includes the Windows Time service state and startup mode, synchronizati
 
 Domain information identifies workgroup, Entra-only, member, domain-controller and PDC roles. Timezone information includes the current Windows timezone, bias, automatic timezone state and the expected timezone with its source. Unknown values remain Unknown; they are not guessed from translated command output.
 
-Recent Time-Service events are display evidence. Breeze evaluates event IDs and structured values, not the translated message. A failure stays active for up to 24 hours unless a later successful synchronization clears it. A later recurrence becomes active again.
+Recent Time-Service events are display evidence. Breeze evaluates event IDs and structured values, not the translated message. A failure stays active for up to 24 hours unless a later successful synchronization clears it. A later recurrence becomes active again. These ages, and the `sync_stale` age, are measured on the device's own clock against the time the snapshot was collected, not on server time, so a device whose clock is far behind or ahead still shows its failures. If the device's clock is stepped back after an event (for example, when a clock that was ahead is corrected), events stamped more than 5 minutes after the collection time come from the old clock, so Breeze drops them instead of keeping the finding active into the future.
 
 ## Freshness and health
 

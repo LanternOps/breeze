@@ -8,7 +8,6 @@ import { resolveTimeFindings, type TimeFindingsContext } from './findings';
 import { resolveExpectedTimezone } from './expectedTimezone';
 import { NOW, snapshot, event } from './testFixtures';
 const base: TimeFindingsContext = {
-  now: NOW,
   expectedTimezone: null,
   previousEventMarks: {},
 };
@@ -97,13 +96,12 @@ it('reactivates a failure after success using the latest mark, independent of ev
     event(134, '2026-09-28T10:00:00Z'),
     event(37, '2026-09-28T10:05:00Z'),
   ];
-  const cleared = resolveTimeFindings(s, {
-    ...base,
-    now: new Date('2026-09-28T10:10:00Z'),
-  });
+  s.collectedAt = '2026-09-28T10:10:00Z';
+  const cleared = resolveTimeFindings(s, base);
   expect(cleared.findings.map((f) => f.code)).not.toContain(
     'ntp_server_unresolvable',
   );
+  s.collectedAt = NOW.toISOString();
   s.events = [event(134, '2026-09-28T10:40:00Z', 200)];
   const active = resolveTimeFindings(s, {
     ...base,
@@ -138,9 +136,9 @@ it('keeps maximum marks, expires at seven days, and clears at equal success', ()
   expect(r.eventMarks['12']).toBeUndefined();
   expect(r.eventMarks['52']).toBeDefined();
   expect(r.findings.map((f) => f.code)).toContain('ntp_server_unresolvable');
-  expect(codes(s, { ...base, now: new Date(+NOW + 1) })).not.toContain(
-    'ntp_server_unresolvable',
-  );
+  s.collectedAt = new Date(+NOW + 1).toISOString();
+  expect(codes(s)).not.toContain('ntp_server_unresolvable');
+  s.collectedAt = NOW.toISOString();
   s.events.push(event(35, '2026-09-27T10:40:00Z'));
   expect(codes(s)).not.toContain('ntp_server_unresolvable');
 });
@@ -352,4 +350,71 @@ it('orders codes once and derives worst health', () => {
       ),
     ),
   );
+});
+// Device/server clock skew: every age is measured on the device's own clock
+// (snapshot.collectedAt), because occurredAt, event marks and
+// lastSuccessfulSyncAt are all stamped by that clock. Server time (receivedAt)
+// is only used for freshness, never here.
+const DAY = 86_400_000;
+const at = (ms: number) => new Date(ms).toISOString();
+it('raises correction_refused on a device whose clock runs 2 days behind', () => {
+  const s = snapshot();
+  const device = +NOW - 2 * DAY;
+  s.collectedAt = at(device);
+  s.status.lastSuccessfulSyncAt = at(device - 3_600_000);
+  s.events = [event(52, at(device - 60_000))];
+  const r = resolveTimeFindings(s, base);
+  expect(r.findings.map((f) => f.code)).toEqual(['correction_refused']);
+  expect(r.health).toBe('warning');
+});
+it('keeps event marks of a device whose clock runs more than 7 days behind', () => {
+  const s = snapshot();
+  const device = +NOW - 8 * DAY;
+  s.collectedAt = at(device);
+  s.status.lastSuccessfulSyncAt = at(device - 3_600_000);
+  s.events = [event(52, at(device - 60_000))];
+  const r = resolveTimeFindings(s, base);
+  expect(r.eventMarks['52']).toBe(at(device - 60_000));
+  expect(r.findings.map((f) => f.code)).toContain('correction_refused');
+});
+it('clears a failure logged while the clock was ahead once the clock is fixed and a later success arrives', () => {
+  const ahead = snapshot();
+  const device = +NOW + 2 * DAY;
+  ahead.collectedAt = at(device);
+  ahead.status.lastSuccessfulSyncAt = at(device - 3_600_000);
+  ahead.events = [event(52, at(device - 60_000))];
+  const first = resolveTimeFindings(ahead, base);
+  expect(first.findings.map((f) => f.code)).toContain('correction_refused');
+  const fixed = snapshot();
+  fixed.status.lastSuccessfulSyncAt = at(+NOW - 300_000);
+  fixed.events = [event(35, at(+NOW - 300_000), 300)];
+  const second = resolveTimeFindings(fixed, {
+    ...base,
+    previousEventMarks: first.eventMarks,
+  });
+  expect(second.findings.map((f) => f.code)).not.toContain(
+    'correction_refused',
+  );
+  expect(second.eventMarks['52']).toBeUndefined();
+  expect(second.health).toBe('healthy');
+});
+it('tolerates event stamps up to 5 minutes after collectedAt, drops later ones as a clock step back', () => {
+  const s = snapshot();
+  s.events = [event(52, at(+NOW + 300_000))];
+  expect(codes(s)).toContain('correction_refused');
+  s.events = [event(52, at(+NOW + 300_001))];
+  const r = resolveTimeFindings(s, base);
+  expect(r.findings.map((f) => f.code)).not.toContain('correction_refused');
+  expect(r.eventMarks['52']).toBeUndefined();
+});
+it('measures sync_stale on the device clock in both skew directions', () => {
+  const s = snapshot();
+  // Behind by 2 days, synced 1 h ago on its own clock: not stale.
+  s.collectedAt = at(+NOW - 2 * DAY);
+  s.status.lastSuccessfulSyncAt = at(+NOW - 2 * DAY - 3_600_000);
+  expect(codes(s)).not.toContain('sync_stale');
+  // Ahead by 2 days, last sync 30 h ago on its own clock: stale.
+  s.collectedAt = at(+NOW + 2 * DAY);
+  s.status.lastSuccessfulSyncAt = at(+NOW + 2 * DAY - 30 * 3_600_000);
+  expect(codes(s)).toContain('sync_stale');
 });

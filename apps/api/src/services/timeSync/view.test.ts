@@ -33,7 +33,6 @@ function row() {
     undefined,
     null,
     resolveTimeFindings(s, {
-      now: NOW,
       expectedTimezone: null,
       previousEventMarks: {},
     }),
