@@ -45,4 +45,27 @@ describe('ComplianceTab', () => {
     const call = saveMock.mock.calls[0] as unknown as [unknown, { featurePolicyId: string | null }];
     expect(call[1].featurePolicyId).toBeNull();
   });
+
+  // A rule set is identified by (feature link, name) across saves — the
+  // evaluator's state and the compliance alert key on it — so two rule sets
+  // with one name are refused. The API answers 400; the tab says so first.
+  it('refuses to save two rule sets with the same name and says which name', async () => {
+    const rule = { type: 'disk_space_minimum', minGb: 5 };
+    const existingLink = {
+      id: 'link-1',
+      featureType: 'compliance',
+      inlineSettings: {
+        items: [
+          { name: 'Baseline', rules: [rule], enforcementLevel: 'warn', checkIntervalMinutes: 60 },
+          { name: 'Baseline', rules: [rule], enforcementLevel: 'warn', checkIntervalMinutes: 60 },
+        ],
+      },
+    } as unknown as FeatureTabProps['existingLink'];
+    render(<ComplianceTab {...baseProps} existingLink={existingLink} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    expect(await screen.findByText(/More than one rule set is named "Baseline"/)).toBeTruthy();
+    expect(saveMock).not.toHaveBeenCalled();
+  });
 });

@@ -596,6 +596,7 @@
         "enforcementLevel": "Durchsetzungsebene",
         "checkIntervalMinutes": "Prüfintervall (Minuten)",
         "untitledRuleSet": "Unbenannter Regelsatz",
+        "duplicateRuleSetName": "Mehr als ein Regelsatz heißt „{{name}}“. Geben Sie jedem Regelsatz einen eigenen Namen.",
         "s": "s",
         "script": "Skript",
         "scriptId": "scriptId",

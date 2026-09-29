@@ -596,6 +596,7 @@
         "enforcementLevel": "Nível de aplicação",
         "checkIntervalMinutes": "Intervalo de verificação (minutos)",
         "untitledRuleSet": "Conjunto de regras sem título",
+        "duplicateRuleSetName": "Mais de um conjunto de regras se chama \"{{name}}\". Dê a cada conjunto de regras um nome próprio.",
         "s": "s",
         "script": "script",
         "scriptId": "scriptId",

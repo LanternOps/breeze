@@ -21,6 +21,7 @@ import SoftwareCatalogPicker, {
 } from "./SoftwareCatalogPicker";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { duplicateComplianceItemNames } from "@breeze/shared/validators/complianceInlineSettings";
 type RuleType =
   | "required_software"
   | "prohibited_software"
@@ -272,6 +273,25 @@ export default function ComplianceTab({
   const [items, setItems] = useState<ComplianceItem[]>(() =>
     loadItems(effectiveLink),
   );
+  // A rule set is identified by (policy link, name) across saves: the
+  // evaluator's state and the compliance alert key on it, so the API refuses
+  // two rule sets with one name. Say so before the request, and drop the
+  // message as soon as the names are distinct again.
+  const duplicateNames = duplicateComplianceItemNames(items);
+  const [showNameError, setShowNameError] = useState(false);
+  const nameError =
+    showNameError && duplicateNames.length > 0
+      ? i18n.t(
+          "policies:configurationPolicies.featureTabs.complianceTab.duplicateRuleSetName",
+          {
+            name:
+              duplicateNames[0] ||
+              i18n.t(
+                "policies:configurationPolicies.featureTabs.complianceTab.untitledRuleSet",
+              ),
+          },
+        )
+      : undefined;
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [scriptPickerRule, setScriptPickerRule] = useState<{
@@ -436,6 +456,10 @@ export default function ComplianceTab({
   };
   const handleSave = async () => {
     clearError();
+    if (duplicateNames.length > 0) {
+      setShowNameError(true);
+      return;
+    }
     const result = await save(existingLink?.id ?? null, {
       featureType: "compliance",
       featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
@@ -450,6 +474,10 @@ export default function ComplianceTab({
   };
   const handleOverride = async () => {
     clearError();
+    if (duplicateNames.length > 0) {
+      setShowNameError(true);
+      return;
+    }
     const result = await save(null, {
       featureType: "compliance",
       featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
@@ -470,7 +498,7 @@ export default function ComplianceTab({
       icon={<ClipboardCheck className="h-5 w-5" />}
       isConfigured={!!existingLink || isInherited}
       saving={saving}
-      error={error}
+      error={nameError ?? error}
       onSave={handleSave}
       onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
       isInherited={isInherited}

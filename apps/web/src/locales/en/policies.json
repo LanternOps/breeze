@@ -596,6 +596,7 @@
         "enforcementLevel": "Enforcement Level",
         "checkIntervalMinutes": "Check Interval (minutes)",
         "untitledRuleSet": "Untitled Rule Set",
+        "duplicateRuleSetName": "More than one rule set is named \"{{name}}\". Give each rule set its own name.",
         "s": "s",
         "script": "script",
         "scriptId": "scriptId",

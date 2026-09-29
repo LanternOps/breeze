@@ -596,6 +596,7 @@
         "enforcementLevel": "Yaptırım Düzeyi",
         "checkIntervalMinutes": "Kontrol Aralığı (dakika)",
         "untitledRuleSet": "Başlıksız Kural Seti",
+        "duplicateRuleSetName": "Birden fazla kural seti \"{{name}}\" olarak adlandırılmış. Her kural setine ayrı bir ad verin.",
         "s": "s",
         "script": "komut dosyası",
         "scriptId": "komut dosyası kimliği",
