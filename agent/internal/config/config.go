@@ -806,30 +806,44 @@ func resolveCredentialsForSave(cfg *Config, cfgPath string, source credentialSou
 	}, nil
 }
 
+// ResolveSavePath returns the agent.yaml path SaveTo and SaveEnrollment write
+// for cfgFile: cfgFile itself, or the default agent.yaml in ConfigDir when the
+// --config flag was left empty. Use it wherever a message names the config
+// file, so an empty flag never prints as an empty path (#7394).
+func ResolveSavePath(cfgFile string) string {
+	if cfgFile != "" {
+		return cfgFile
+	}
+	return filepath.Join(configDir(), "agent.yaml")
+}
+
+// PrepareSaveDir creates and secures the directory SaveEnrollment will write
+// cfgFile's agent.yaml into, exactly as the save itself does first, without
+// writing any file. Enrollment calls it before the enroll request so that a
+// directory the agent cannot secure fails the enrollment before the server
+// creates a device, instead of after (#7394).
+func PrepareSaveDir(cfgFile string) error {
+	return prepareSaveDir(ResolveSavePath(cfgFile))
+}
+
+func prepareSaveDir(cfgPath string) error {
+	dir := filepath.Dir(cfgPath)
+	if dir == "." {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return enforceConfigDirPermissions(dir)
+}
+
 // saveToLocked is SaveTo's body; callers must hold persistMu. Paired with
 // loadLocked so a read-modify-write of the config file is atomic against every
 // other viper user.
 func saveToLocked(cfg *Config, cfgFile string, source credentialSource) error {
-	var cfgPath string
-	if cfgFile != "" {
-		cfgPath = cfgFile
-		dir := filepath.Dir(cfgPath)
-		if dir != "." {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return err
-			}
-			if err := enforceConfigDirPermissions(dir); err != nil {
-				return err
-			}
-		}
-	} else {
-		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0755); err != nil {
-			return err
-		}
-		if err := enforceConfigDirPermissions(configDir()); err != nil {
-			return err
-		}
+	cfgPath := ResolveSavePath(cfgFile)
+	if err := prepareSaveDir(cfgPath); err != nil {
+		return err
 	}
 
 	// Resolved BEFORE anything is written, so an unreadable secrets file aborts

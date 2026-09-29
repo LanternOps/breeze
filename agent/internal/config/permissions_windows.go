@@ -31,6 +31,9 @@ const (
 	// would otherwise keep it — and its implicit WRITE_DAC, which survives
 	// any DACL this applies — forever. BUILTIN\Users keeps its intentional
 	// read+traverse ACE so the Breeze Helper can still read agent.yaml.
+	// A caller that may not assign SYSTEM as owner (an elevated
+	// administrator running `breeze-agent enroll`) gets BUILTIN\Administrators
+	// instead; see applyWindowsDACL (#7394).
 	windowsConfigDirSDDL  = `O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FRFX;;;BU)`
 	windowsConfigFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)`
 	windowsSecretFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)`
@@ -671,16 +674,36 @@ func programDataDirACLDrifted(path string) (bool, error) {
 	return false, nil
 }
 
-// applyWindowsDACL applies the DACL (and, when the SDDL carries an explicit
-// owner/group — e.g. windowsProgramDataDirSDDL's "O:SYG:SY" prefix — the
-// owner and group too) from sddl to path. Re-applying only the DACL, as this
-// used to do unconditionally, leaves a pre-existing directory's owner
-// unchanged: WRITE_DAC is implicit for the owner, so a user who pre-created
-// the directory before this ran would keep silent control over its
-// permissions even after a "hardened" DACL was written. SDDLs with no O:/G:
-// segment (windowsConfigDirSDDL, windowsConfigFileSDDL,
-// windowsSecretFileSDDL) are unaffected — their Owner()/Group() both come
-// back nil and only the DACL bit is set, exactly as before.
+// Seams for applyWindowsDACL's owner assignment, so the fallback can be tested
+// without a token that actually lacks the right to assign SYSTEM.
+var (
+	setNamedSecurityInfoFn   = windows.SetNamedSecurityInfo
+	enableRestorePrivilegeFn = enableRestorePrivilege
+)
+
+// applyWindowsDACL applies sddl's PROTECTED DACL to path, and, when sddl
+// carries an owner (windowsConfigDirSDDL and windowsProgramDataDirSDDL, both
+// "O:SYG:SY"), the owner and group too. Re-applying only the DACL leaves a
+// pre-existing directory's owner unchanged: WRITE_DAC is implicit for the
+// owner, so a user who pre-created the directory before this ran would keep
+// control over its permissions under any DACL written here (#7199). SDDLs
+// with no O:/G: segment (windowsConfigFileSDDL, windowsSecretFileSDDL) set
+// the DACL only.
+//
+// Owner assignment (#7394). The agent service runs as LocalSystem, which may
+// always name itself owner. An elevated local administrator, the documented
+// manual `breeze-agent enroll` path, may not: Windows refuses SYSTEM as owner
+// with ERROR_INVALID_OWNER unless SeRestorePrivilege is enabled, and it is
+// disabled by default. So a refused owner is retried with that privilege
+// enabled, and if it is still refused (or the privilege cannot be enabled)
+// the owner and group become BUILTIN\Administrators, the same owner
+// windowsConfigDirCreateSDDL creates the directory with. The protected DACL
+// is written in the same call either way. Administrators is an owner
+// trustedMainAgentOwner accepts; what #7199 evicts is a non-administrator
+// owner, and that is still replaced. For the config dir, the service's next
+// config write (running as SYSTEM) sets SYSTEM again; logs/data keep the
+// Administrators owner, which their drift check accepts. Any other failure is
+// returned unchanged.
 func applyWindowsDACL(path, sddl string) error {
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
@@ -700,16 +723,64 @@ func applyWindowsDACL(path, sddl string) error {
 		group = g
 		info |= windows.GROUP_SECURITY_INFORMATION
 	}
-	if err := windows.SetNamedSecurityInfo(
-		path,
-		windows.SE_FILE_OBJECT,
-		info,
-		owner,
-		group,
-		dacl,
-		nil,
-	); err != nil {
+
+	set := func(o sddlOwner) error {
+		return setNamedSecurityInfoFn(path, windows.SE_FILE_OBJECT, info, o.owner, o.group, dacl, nil)
+	}
+	if owner == nil {
+		if err := set(sddlOwner{group: group}); err != nil {
+			return fmt.Errorf("set DACL on %s: %w", path, err)
+		}
+		return nil
+	}
+
+	primary := sddlOwner{owner: owner, group: group}
+	fallback, err := administratorsOwnerFor(primary)
+	if err != nil {
 		return fmt.Errorf("set DACL on %s: %w", path, err)
 	}
+	res, err := assignOwnerWithFallback(primary, fallback, set,
+		func(err error) bool { return errors.Is(err, windows.ERROR_INVALID_OWNER) },
+		enableRestorePrivilegeFn)
+	if err != nil {
+		return fmt.Errorf("set DACL on %s: %w", path, err)
+	}
+	if res.how == ownerAssignedFallback {
+		privilege := "enabled"
+		if res.privilegeErr != nil {
+			privilege = res.privilegeErr.Error()
+		}
+		log.Warn("this process may not assign the preferred owner; set BUILTIN\\Administrators as owner with the protected DACL instead",
+			"path", path,
+			"preferredOwner", owner.String(),
+			"refusal", res.primaryErr.Error(),
+			"seRestorePrivilege", privilege)
+	}
 	return nil
+}
+
+// sddlOwner is the owner/group pair applyWindowsDACL writes. The SIDs are
+// compared by pointer: administratorsOwnerFor returns primary itself when
+// primary is already owned by Administrators, which is how
+// assignOwnerWithFallback learns there is nothing left to fall back to.
+type sddlOwner struct {
+	owner, group *windows.SID
+}
+
+// administratorsOwnerFor returns primary with owner (and group, when primary
+// sets one) replaced by BUILTIN\Administrators, or primary itself when its
+// owner already is Administrators.
+func administratorsOwnerFor(primary sddlOwner) (sddlOwner, error) {
+	if primary.owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+		return primary, nil
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return sddlOwner{}, fmt.Errorf("create Administrators SID: %w", err)
+	}
+	fallback := sddlOwner{owner: admins}
+	if primary.group != nil {
+		fallback.group = admins
+	}
+	return fallback, nil
 }
