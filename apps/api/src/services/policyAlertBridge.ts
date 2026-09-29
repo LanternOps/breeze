@@ -80,7 +80,7 @@ async function ensureTemplate(orgId: string): Promise<string> {
       // (handlePolicyCompliant) or through the compliance-alert reconcile when
       // the policy stops applying (complianceAlertReconcile.ts). Rows created
       // before this change are corrected by
-      // 2026-11-10-130000-policy-compliance-alert-template-no-auto-resolve.sql.
+      // 2026-11-10-130100-policy-compliance-alert-template-no-auto-resolve.sql.
       autoResolve: false,
       isBuiltIn: true,
       cooldownMinutes: 30,

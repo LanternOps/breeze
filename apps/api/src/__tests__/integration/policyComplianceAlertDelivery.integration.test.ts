@@ -47,7 +47,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const APP_NAME = 'Fabrikam Agent';
 const OPEN_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
 const TEMPLATE_NAME = 'Policy Compliance Violation';
-const MIGRATION = '2026-11-10-130000-policy-compliance-alert-template-no-auto-resolve.sql';
+const MIGRATION = '2026-11-10-130100-policy-compliance-alert-template-no-auto-resolve.sql';
 
 beforeAll(() => {
   _resetEventSubscriberRegistryForTests();
