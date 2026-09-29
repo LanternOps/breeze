@@ -1722,7 +1722,7 @@ export default function ReportBuilder({
     }
 
     return (
-      <div className="overflow-hidden rounded-md border">
+      <div className="overflow-x-auto rounded-md border">
         <table className={cn('w-full text-left text-sm', compact && 'text-xs')}>
           <thead className="bg-muted/40">
             <tr>
@@ -2541,7 +2541,7 @@ export default function ReportBuilder({
                           checked={selectedContactIds.has(contact.id)}
                           onChange={() => void toggleContact(contact.id)}
                         />
-                        <span>
+                        <span className="min-w-0 break-all">
                           {contact.name || contact.email}
                           {contact.name && (
                             <span className="block text-xs text-muted-foreground">
@@ -2585,7 +2585,7 @@ export default function ReportBuilder({
                     </div>
                   )}
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex flex-col gap-2 sm:flex-row lg:flex-col xl:flex-row">
                   <input
                     type="email"
                     value={emailInput}
@@ -2658,7 +2658,7 @@ export default function ReportBuilder({
           options form doesn't populate, so it renders stale/generic content
           (sweep F1 — the #B1 fix above hid the input sections but not this). */}
       {!businessType && (
-      <div data-testid="report-builder-live-preview" className="space-y-6 lg:sticky lg:top-6 self-start">
+      <div data-testid="report-builder-live-preview" className="min-w-0 space-y-6 lg:sticky lg:top-6 self-start">
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between">
             <div>
