@@ -67,7 +67,6 @@ export function SeriesRecipientsSection({
     }, PREVIEW_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // Keyed on the joined ids/roles: the arrays are rebuilt every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targets.targetMode, orgIdsKey, recipientRule.primaryContact, rolesKey, ccKey, noTargets]);
 
   const setRule = (rule: SeriesRecipientRule) => onChange({ ...value, recipientRule: rule });
