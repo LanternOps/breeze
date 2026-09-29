@@ -250,6 +250,7 @@ import {
   resolveScheduledDeliveryContext,
 } from './reportScheduleWorker';
 import { persistedSiteScopeValues } from '../services/siteScope';
+import { getEmailService } from '../services/email';
 
 const REPORT_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
@@ -300,6 +301,9 @@ beforeEach(() => {
   selectMock.mockReturnValue(selectChain([]));
   insertMock.mockReset();
   updateMock.mockReset();
+  // Multi-org series W01: a completed scheduled run makes one more update (its
+  // delivery summary); unqueued updates get a harmless chain.
+  updateMock.mockReturnValue(updateChain());
   generateReportMock.mockReset();
   reportExecutionPreflightMock.mockReset();
   resolveLiveReportTypePermissionsMock.mockReset();
@@ -722,10 +726,11 @@ describe('processCheckSchedules inline fallback (occurrence CAS + role gate)', (
 
     expect(claim.where).toHaveBeenCalledTimes(1);
     expect(generateReportMock).toHaveBeenCalledTimes(1);
-    // Only ONE update happened inside processRunScheduledReport (the reportRuns
-    // completion) — the claim's own update already stamped lastGeneratedAt, so
-    // processRunScheduledReport must not have stamped it again.
-    expect(updateMock).toHaveBeenCalledTimes(2);
+    // Two updates happened inside processRunScheduledReport (the reportRuns
+    // completion, then its W01 delivery summary) — the claim's own update
+    // already stamped lastGeneratedAt, so processRunScheduledReport must not
+    // have stamped it again (that would make four).
+    expect(updateMock).toHaveBeenCalledTimes(3);
   });
 
   it("'all' role threads a NON-NULL observed lastGeneratedAt into the claim (not a hardcoded null)", async () => {
@@ -952,13 +957,17 @@ describe('processRunScheduledReport', () => {
       { occurrenceClaimed: true },
     );
 
-    // Exactly one update — the reportRuns completion. If the stamp update also
-    // fired, updateMock would have been called twice, same as the unclaimed
+    // Two updates — the run completion, then its delivery summary (W01). If
+    // the stamp update also fired there would be three, like the unclaimed
     // test above.
-    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).toHaveBeenCalledTimes(2);
     expect(runCompleteUpdate.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'completed' }),
     );
+    expect(updateMock.mock.results[1]!.value.set).toHaveBeenCalledWith({
+      deliveryStatus: 'no_recipients',
+      recipientCount: 0,
+    });
   });
 
   it('rejects an out-of-authority saved config before running insert, baseline, generation, update, or delivery', async () => {
@@ -1501,6 +1510,166 @@ describe('processRunScheduledReport', () => {
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[] };
     expect(mail.attachments).toHaveLength(0);
+  });
+
+  describe('delivery summary on the run (multi-org report series W01)', () => {
+    /** stamp lastGeneratedAt, complete the run, then the delivery summary. */
+    function queueRunUpdates() {
+      const updates = [updateChain(), updateChain(), updateChain()];
+      updateMock
+        .mockReturnValueOnce(updates[0])
+        .mockReturnValueOnce(updates[1])
+        .mockReturnValueOnce(updates[2]);
+      return updates;
+    }
+
+    function startRun(config: Record<string, unknown>, contacts: unknown[] = []) {
+      selectMock.mockReturnValueOnce(selectChain([{ ...report, config }]));
+      selectMock.mockReturnValueOnce(selectChain(contacts)); // scheduled contact recipients
+      insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+      generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'pc-1' }], rowCount: 1 });
+    }
+
+    const run = () =>
+      processRunScheduledReport({
+        type: 'run-scheduled-report',
+        reportId: REPORT_ID,
+        occurrenceKey: 202607010900,
+      });
+
+    it('records no_recipients, and sends nothing, when the schedule resolves nobody', async () => {
+      startRun({ schedule: { time: '09:00' } });
+      const updates = queueRunUpdates();
+
+      await run();
+
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+      expect(updates[2]!.set).toHaveBeenCalledWith({
+        deliveryStatus: 'no_recipients',
+        recipientCount: 0,
+      });
+    });
+
+    it('records no_recipients (not partial) when every configured address was unusable', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      startRun({ schedule: { time: '09:00' } }, [{ contactId: 'contact-1', email: null }]);
+      const updates = queueRunUpdates();
+
+      try {
+        await run();
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(updates[2]!.set).toHaveBeenCalledWith({
+        deliveryStatus: 'no_recipients',
+        recipientCount: 0,
+      });
+    });
+
+    it('records sent and counts contacts and typed addresses alike (a non-series report has no CC)', async () => {
+      startRun(
+        { schedule: { time: '09:00' }, emailRecipients: ['typed@customer.test'] },
+        [
+          { contactId: 'contact-1', email: 'a@customer.test' },
+          { contactId: 'contact-2', email: 'b@customer.test' },
+        ],
+      );
+      const updates = queueRunUpdates();
+
+      await run();
+
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      expect((sendEmailMock.mock.calls[0]![0] as { to: string[] }).to).toEqual([
+        'a@customer.test',
+        'b@customer.test',
+        'typed@customer.test',
+      ]);
+      expect(updates[2]!.set).toHaveBeenCalledWith({ deliveryStatus: 'sent', recipientCount: 3 });
+    });
+
+    it('records sent with recipient_count = N for a legacy report that emails only typed addresses', async () => {
+      startRun({
+        schedule: { time: '09:00' },
+        emailRecipients: ['ops@acme.test', 'owner@acme.test', 'billing@acme.test'],
+      });
+      const updates = queueRunUpdates();
+
+      await run();
+
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      // Coordinator ruling (2026-09-28): typed addresses are the non-series
+      // report's customers — never 0 just because no contact row exists.
+      expect(updates[2]!.set).toHaveBeenCalledWith({ deliveryStatus: 'sent', recipientCount: 3 });
+    });
+
+    it('records partial when a configured address was dropped but the email left', async () => {
+      startRun({ schedule: { time: '09:00' }, emailRecipients: ['ops@example.com', 'not-an-email'] });
+      const updates = queueRunUpdates();
+
+      await run();
+
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      expect(updates[2]!.set).toHaveBeenCalledWith({ deliveryStatus: 'partial', recipientCount: 1 });
+    });
+
+    it('records failed when the transport throws, and still completes the run', async () => {
+      startRun({ schedule: { time: '09:00' }, emailRecipients: ['ops@example.com'] });
+      const updates = queueRunUpdates();
+      sendEmailMock.mockRejectedValueOnce(new Error('smtp down'));
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        await run();
+      } finally {
+        consoleError.mockRestore();
+      }
+
+      expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+      expect(updates[2]!.set).toHaveBeenCalledWith({ deliveryStatus: 'failed', recipientCount: 1 });
+    });
+
+    it('records failed when no email service is configured (nothing left the platform)', async () => {
+      startRun({ schedule: { time: '09:00' }, emailRecipients: ['ops@example.com'] });
+      const updates = queueRunUpdates();
+      vi.mocked(getEmailService).mockReturnValueOnce(null as never);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      try {
+        await run();
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(updates[2]!.set).toHaveBeenCalledWith({ deliveryStatus: 'failed', recipientCount: 1 });
+    });
+
+    it('keeps the run completed and does not throw when the summary write fails', async () => {
+      startRun({ schedule: { time: '09:00' }, emailRecipients: ['ops@example.com'] });
+      const updates = queueRunUpdates();
+      const blip = new Error('db blip');
+      updates[2]!.where = vi.fn(async () => {
+        throw blip;
+      });
+      captureExceptionMock.mockClear();
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        // A throw here would mark a DELIVERED run failed and let BullMQ retry
+        // the occurrence — re-sending the email.
+        await expect(run()).resolves.toBeUndefined();
+      } finally {
+        consoleError.mockRestore();
+      }
+
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      expect(updateMock).toHaveBeenCalledTimes(3);
+      expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+      expect(captureExceptionMock).toHaveBeenCalledWith(blip);
+    });
   });
 });
 

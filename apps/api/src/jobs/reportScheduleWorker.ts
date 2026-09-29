@@ -53,7 +53,13 @@ import {
 } from '../services/reportGenerationService';
 import { reportScopeFromAuthority } from '../services/reportScope';
 import { reportTypeDef } from '../services/reportRegistry';
-import { emailReportFailure, emailReportRun } from '../services/reportDelivery';
+import {
+  emailReportFailure,
+  emailReportRun,
+  scheduledDeliveryStatus,
+  type ReportDeliveryStatus,
+  type ScheduledSendOutcome,
+} from '../services/reportDelivery';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import {
   lastOccurrenceKey,
@@ -514,6 +520,24 @@ export async function resolveScheduledDeliveryContext(owner: ReportOwner): Promi
   return { timeZone, branding, partnerId: orgRow?.partnerId ?? null };
 }
 
+/**
+ * Writes a scheduled run's delivery summary (multi-org report series W01,
+ * spec §3.2). Never throws: by the time it runs the report is stored and the
+ * email may already be out — a throw would reach the job's catch, mark a
+ * delivered run failed, and let BullMQ retry (re-send) the occurrence.
+ */
+async function recordRunDelivery(
+  runId: string,
+  summary: { deliveryStatus: ReportDeliveryStatus; recipientCount: number },
+): Promise<void> {
+  try {
+    await db.update(reportRuns).set(summary).where(eq(reportRuns.id, runId));
+  } catch (err) {
+    console.error('[ReportScheduleWorker] Could not record the delivery summary', { runId, err });
+    captureException(err);
+  }
+}
+
 export async function processRunScheduledReport(
   data: RunScheduledReportJobData,
   opts: { finalAttempt?: boolean; occurrenceClaimed?: boolean } = {},
@@ -848,12 +872,13 @@ export async function processRunScheduledReport(
       })
       .where(eq(reportRuns.id, run.id));
 
-    const recipients = await resolveScheduledReportRecipients({
+    const recipientSets = await resolveScheduledReportRecipientSets({
       reportId: report.id,
       orgId: owner.orgId ?? null,
       config,
     });
-    if (recipients.length > 0) {
+    let send: ScheduledSendOutcome = 'not_attempted';
+    if (recipientSets.recipients.length > 0) {
       try {
         // Timezone + branding are only needed to build the email — deferred
         // here (rather than fetched unconditionally for every run) so a
@@ -862,11 +887,11 @@ export async function processRunScheduledReport(
         // occurrence, and by this point the run row is already stored).
         const delivery = await resolveScheduledDeliveryContext(owner);
 
-        await emailReportRun({
+        const handedOff = await emailReportRun({
           reportName: report.name,
           reportType: report.type,
           format: report.format,
-          recipients,
+          recipients: recipientSets.recipients,
           rows,
           summary: result.summary,
           previous: result.previous,
@@ -875,13 +900,26 @@ export async function processRunScheduledReport(
           branding: delivery.branding,
           partnerId: delivery.partnerId,
         });
+        send = handedOff ? 'sent' : 'failed';
       } catch (err) {
         // Delivery failure must not fail the (already stored) run — but the
         // recipients silently got nothing, so it goes to error tracking.
         console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
         captureException(err);
+        send = 'failed';
       }
     }
+    // Multi-org series W01 (spec §1): a run that reached nobody used to be a
+    // silent skip. Record what the email did on the run itself, after the
+    // send, so the status is the send's real outcome.
+    await recordRunDelivery(run.id, {
+      deliveryStatus: scheduledDeliveryStatus({
+        deliverable: recipientSets.recipients.length,
+        dropped: recipientSets.dropped,
+        send,
+      }),
+      recipientCount: recipientSets.customer.length,
+    });
   } catch (err) {
     // #3198: a definition whose owner axis its type cannot run under is a
     // deterministic refusal, not a transient failure. It records the stable
