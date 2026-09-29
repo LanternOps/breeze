@@ -15,6 +15,7 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+vi.mock('./time/DeviceTimeSection', () => ({ default: () => null }));
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 

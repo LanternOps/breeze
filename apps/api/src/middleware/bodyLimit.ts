@@ -34,6 +34,7 @@ export type BodyLimitRule =
   | 'contract-template'
   | 'agent-ingest'
   | 'agent-hardware-health'
+  | 'agent-time-status'
   | 'agent-topology-adjacency'
   | 'agent-unifi-telemetry'
   | 'ticket-attachment'
@@ -198,7 +199,18 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
   // broader agent-ingest branch below so it gets its own distinct rule label
   // and its own (smaller) size, not the 5MB agent-ingest allowance.
   if (path.match(/^\/api\/v1\/agents\/[^/]+\/hardware-health$/)) {
-    return { rule: 'agent-hardware-health', maxSize: 2 * 1024 * 1024, error: 'Request body too large' };
+    return {
+      rule: 'agent-hardware-health',
+      maxSize: 2 * 1024 * 1024,
+      error: 'Request body too large',
+    };
+  }
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/time-status$/)) {
+    return {
+      rule: 'agent-time-status',
+      maxSize: 512 * 1024,
+      error: 'Request body too large',
+    };
   }
   // Discovery adjacency (M2 #5998 D14): one per-target AdjacencyV2 report of at
   // most 4 MiB (ADJACENCY_V2_MAX_BYTES, which the route's schema re-checks) plus

@@ -171,6 +171,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
   }),
 
+  get_device_time_status: z.object({ deviceId: uuid }),
   get_device_hardware_health: z.object({
     deviceId: uuid,
     includeEvents: z.boolean().optional(),

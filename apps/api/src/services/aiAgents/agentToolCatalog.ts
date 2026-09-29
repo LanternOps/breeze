@@ -308,6 +308,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_devices: 'automations_reports',
   get_device_details: 'automations_reports',
   get_device_hardware_health: 'automations_reports',
+  get_device_time_status: 'automations_reports',
   get_device_context: 'automations_reports',
   set_device_context: 'automations_reports',
   resolve_device_context: 'automations_reports',

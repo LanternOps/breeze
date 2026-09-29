@@ -1,4 +1,166 @@
 {
+  "timeSync": {
+    "title": "Time",
+    "loading": "Loading time status…",
+    "error": "Could not load time status.",
+    "retry": "Retry",
+    "unknown": "Unknown",
+    "yes": "Yes",
+    "no": "No",
+    "site": "Site",
+    "policy": "Policy",
+    "states": {
+      "not_reported": "No time data yet — this needs an agent update that includes time sync",
+      "unsupported_os": "Not supported on this OS yet"
+    },
+    "health": {
+      "healthy": "Healthy",
+      "warning": "Warning",
+      "critical": "Critical",
+      "unknown": "Unknown"
+    },
+    "severity": {
+      "critical": "Critical",
+      "warning": "Warning",
+      "info": "Information"
+    },
+    "received": "Received {{at}}",
+    "collected": "Collected {{at}}",
+    "stale": "Stale — the latest time report was received more than 90 minutes ago.",
+    "expected": "Expected: {{windows}} ({{iana}}), from {{source}}: {{name}}",
+    "expectedPolicy": "Expected: {{windows}} ({{iana}}), from policy {{name}} — overrides the site timezone",
+    "managedBadge": "Managed by Group Policy",
+    "unset": {
+      "site_utc_default": "No expected timezone (site uses the UTC default)",
+      "no_site": "No expected timezone (no site is assigned)",
+      "unmapped": "No expected timezone (the site timezone has no Windows mapping)"
+    },
+    "noFindings": "No time findings in this report.",
+    "events": "Recent time events ({{count}})",
+    "noEvents": "No recent time events.",
+    "eventHeading": "Event {{id}} · Level {{level}}",
+    "noMessage": "No event message.",
+    "fields": {
+      "source": "Time source",
+      "sourceKind": "Source kind",
+      "lastSync": "Last successful sync",
+      "method": "Collection method",
+      "lastError": "Last sync error",
+      "stratum": "Stratum",
+      "poll": "Effective poll interval (seconds)",
+      "syncType": "Synchronization type",
+      "ntpServer": "NTP server configuration",
+      "hosts": "Parsed NTP hosts",
+      "specialPoll": "Special poll interval (seconds)",
+      "serviceState": "Windows Time service",
+      "serviceStartType": "Service startup",
+      "policyManaged": "Managed by Group Policy",
+      "policyManagedValues": "Group Policy values",
+      "hostProvider": "VM host time provider enabled",
+      "joinType": "Join type",
+      "role": "Domain role",
+      "domain": "Domain",
+      "forest": "Forest",
+      "pdc": "PDC",
+      "windowsId": "Current Windows timezone",
+      "bias": "Bias (minutes)",
+      "autoUpdate": "Automatic timezone"
+    },
+    "values": {
+      "NT5DS": "Domain hierarchy (NT5DS)",
+      "NTP": "NTP peers",
+      "NoSync": "No synchronization",
+      "AllSync": "All sources",
+      "ntp_peer": "NTP peer",
+      "domain_peer": "Domain peer",
+      "local_clock": "Local clock",
+      "free_running": "Free-running clock",
+      "vm_host": "VM host",
+      "unknown": "Unknown",
+      "provider_api": "Windows provider API",
+      "w32tm_tokens": "Windows time status tokens",
+      "events": "Time-Service events",
+      "unavailable": "Unavailable",
+      "none": "Not joined",
+      "workplace": "Workplace registered",
+      "azure_ad": "Microsoft Entra joined",
+      "on_prem_ad": "Active Directory joined",
+      "hybrid_azure_ad": "Hybrid Entra joined",
+      "workgroup": "Workgroup",
+      "entra_only": "Entra only",
+      "member": "Domain member",
+      "dc": "Domain controller",
+      "pdc_emulator": "PDC emulator",
+      "forest_root_pdc_emulator": "Forest root PDC emulator",
+      "running": "Running",
+      "stopped": "Stopped",
+      "start_pending": "Starting",
+      "stop_pending": "Stopping",
+      "paused": "Paused",
+      "not_installed": "Not installed",
+      "auto": "Automatic",
+      "delayed_auto": "Automatic (delayed)",
+      "manual": "Manual",
+      "trigger_manual": "Manual (trigger start)",
+      "disabled": "Disabled",
+      "on": "On",
+      "off": "Off"
+    },
+    "findings": {
+      "pdc_no_external_source": {
+        "label": "Forest root PDC has no external source",
+        "hint": "Set NTP servers on {device} — it is the forest root PDC and every domain member follows it."
+      },
+      "source_local_clock": {
+        "label": "Using the local clock",
+        "hint": "Syncing from its own clock. Configure an NTP source (or, if domain-joined, check its DC)."
+      },
+      "dc_vm_host_sync": {
+        "label": "DC is syncing with the VM host",
+        "hint": "Disable the VM host time provider on this DC."
+      },
+      "ntp_server_unresolvable": {
+        "label": "NTP server name is invalid or unresolved",
+        "hint": "NTP server {host} does not resolve or is not a valid name — fix it or DNS."
+      },
+      "ntp_peer_unreachable": {
+        "label": "NTP peer is unreachable",
+        "hint": "No response from {source} — check UDP 123 outbound."
+      },
+      "domain_source_unavailable": {
+        "label": "Domain time source unavailable",
+        "hint": "Cannot find a domain time source — check DC reachability."
+      },
+      "member_not_on_hierarchy": {
+        "label": "Not using the domain hierarchy",
+        "hint": "Domain-joined but not using the domain hierarchy."
+      },
+      "sync_disabled": {
+        "label": "Time synchronization is disabled",
+        "hint": "Windows Time is disabled."
+      },
+      "sync_stale": {
+        "label": "No recent successful synchronization",
+        "hint": "No successful sync since {lastSuccessfulSyncAt}."
+      },
+      "correction_refused": {
+        "label": "Time correction was refused",
+        "hint": "The clock is too far off for Windows to correct itself; resync or fix manually."
+      },
+      "timezone_mismatch": {
+        "label": "Timezone differs from expected",
+        "hint": "Timezone is {actual}, expected {expected} (from {site or policy})."
+      },
+      "policy_not_applied": {
+        "label": "Time policy was not applied",
+        "hint": "Time policy could not be applied: {error}."
+      },
+      "policy_conflict_gpo": {
+        "label": "Group Policy controls time settings",
+        "hint": "W32Time is managed by Group Policy; Breeze is not changing it."
+      }
+    }
+  },
   "aiActivity": {
     "title": "AI activity",
     "count": "{{count}} actions dispatched in the last {{days}} days",
