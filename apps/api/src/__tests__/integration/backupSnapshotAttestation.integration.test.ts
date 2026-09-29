@@ -506,6 +506,28 @@ describe('job reuse and verification retries', () => {
     expect((await snapshotRow({ ...f, jobId: jobB!.id }))!.integrityStatus).toBe('attestation_failed');
   });
 
+  runDb('a retry deferred by the attempt a sweep triggered is swept at the next tick, not one period later', async () => {
+    const { findStalePendingAttestations } = await vi.importActual<typeof import('../../jobs/backupSnapshotAttestationWorker')>(
+      '../../jobs/backupSnapshotAttestationWorker',
+    );
+    const f = await seed();
+    await agentResult(f, { statement: statementFor(f, manifestBytes(f.snapshotId)) });
+    const snap = await snapshotRow(f);
+
+    // The sweep runs on its tick; the attempt it queues defers a moment later
+    // (next_attempt_at = the database's now() + 15 minutes).
+    const tick = new Date();
+    expect(await verifySnapshotAttestation(snap!.id, storage({}, new Error('connect ETIMEDOUT'))))
+      .toEqual({ outcome: 'retry', reason: 'fetch_failed:manifest' });
+    const [row] = await attestationRows(snap!.id);
+    expect(row!.nextAttemptAt!.getTime()).toBeGreaterThan(tick.getTime() + 15 * 60_000);
+
+    const nextTick = new Date(tick.getTime() + 15 * 60_000);
+    expect(await findStalePendingAttestations(nextTick)).toContain(snap!.id);
+    // A lookahead, not a second period: well before the retry it is not due.
+    expect(await findStalePendingAttestations(new Date(tick.getTime() + 10 * 60_000))).not.toContain(snap!.id);
+  });
+
   runDb('storage failures stay pending, back off, and are swept earliest-due first until parked', async () => {
     const { findStalePendingAttestations } = await vi.importActual<typeof import('../../jobs/backupSnapshotAttestationWorker')>(
       '../../jobs/backupSnapshotAttestationWorker',

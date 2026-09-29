@@ -1,15 +1,17 @@
 // BullMQ worker that runs verifySnapshotAttestation
 // (services/backupAttestationVerify.ts) out of band. Enqueued when an agent
-// result records a server-fetched attestation (services/backupAttestation.ts);
-// a periodic sweep re-enqueues rows still `pending` once they are due: a row
-// never attempted is due STALE_PENDING_AFTER_MS after creation (a lost
-// enqueue); a row whose storage could not be read is due at its
-// next_attempt_at, which the verifier backs off exponentially. Rows that
-// used up MAX_VERIFY_ATTEMPTS stay pending but are not swept again. jobId is snapshot-scoped so
-// concurrent enqueues collapse into one job. Pattern mirrors
-// jobs/backupSnapshotFileIndexWorker.ts.
+// result records a server-fetched attestation (services/backupAttestation.ts),
+// and again when the cleanup job publishes a brokered snapshot that was still
+// sealing (jobs/backupWriteSessionJanitor.ts); a periodic sweep re-enqueues
+// rows still `pending` once they are due: a row never attempted is due
+// STALE_PENDING_AFTER_MS after creation (a lost enqueue); a deferred row is
+// due at its next_attempt_at (the expected publication of a sealing snapshot,
+// or an exponential backoff after a storage failure). Rows that used up
+// MAX_VERIFY_ATTEMPTS stay pending but are not swept again. jobId is
+// snapshot-scoped so concurrent enqueues collapse into one job. Pattern
+// mirrors jobs/backupSnapshotFileIndexWorker.ts.
 import { Job, Queue, Worker } from 'bullmq';
-import { and, asc, eq, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { getBullMQConnection } from '../services/redis';
@@ -27,6 +29,15 @@ const VERIFY_JOB_OPTIONS = {
 };
 const SWEEP_EVERY_MS = 15 * 60_000;
 export const STALE_PENDING_AFTER_MS = 30 * 60_000;
+/**
+ * A sweep also takes rows due within this long after it runs. A retry is
+ * scheduled from the moment its attempt deferred — shortly after the sweep
+ * tick that queued it — so a backoff of whole sweep periods lands just after
+ * a later tick; without the lookahead it would miss that sweep and wait one
+ * more period. Also absorbs clock skew between the API and the database,
+ * which writes next_attempt_at.
+ */
+export const SWEEP_DUE_LOOKAHEAD_MS = 60_000;
 const SWEEP_BATCH = 500;
 
 type AttestationJobData =
@@ -48,9 +59,24 @@ export function attestationJobId(snapshotDbId: string): string {
   return `attest-${snapshotDbId}`;
 }
 
+/**
+ * The verification queued when a snapshot's reservation is published. Its own
+ * id: a verification already running under attestationJobId may have read the
+ * snapshot while it was still sealing, and reusing that job would lose the
+ * publication. Two verifications of one snapshot may then overlap; the
+ * verifier decides a row only through a row-locked compare-and-set on
+ * `pending`, so the first decision stands and the other is skipped.
+ */
+export function publishedAttestationJobId(snapshotDbId: string): string {
+  return `attest-published-${snapshotDbId}`;
+}
+
 export async function enqueueSnapshotAttestationVerification(snapshotDbId: string): Promise<string> {
+  return enqueueVerification(snapshotDbId, attestationJobId(snapshotDbId));
+}
+
+async function enqueueVerification(snapshotDbId: string, jobId: string): Promise<string> {
   const q = getQueue();
-  const jobId = attestationJobId(snapshotDbId);
   // Reuse a genuinely in-flight job; a completed/failed record under the same
   // id would otherwise swallow the add, so remove it and add again.
   const existing = await q.getJob(jobId);
@@ -65,13 +91,20 @@ export async function enqueueSnapshotAttestationVerification(snapshotDbId: strin
   return job.id!;
 }
 
+/** The latest next_attempt_at a sweep running at `now` treats as due. */
+export function sweepDueBy(now: Date): Date {
+  return new Date(now.getTime() + SWEEP_DUE_LOOKAHEAD_MS);
+}
+
 /**
  * Snapshot ids of server-fetched attestations due for another verification
  * attempt, earliest due first: never attempted and older than `olderThanMs`,
- * or past their scheduled retry. Parked rows are excluded.
+ * or at their scheduled retry (within SWEEP_DUE_LOOKAHEAD_MS). Parked rows
+ * are excluded.
  */
 export async function findStalePendingAttestations(now: Date, olderThanMs = STALE_PENDING_AFTER_MS): Promise<string[]> {
   const cutoff = new Date(now.getTime() - olderThanMs);
+  const dueBy = sweepDueBy(now);
   const dueAt = sql`coalesce(${backupSnapshotAttestations.nextAttemptAt}, ${backupSnapshotAttestations.createdAt})`;
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
@@ -85,7 +118,7 @@ export async function findStalePendingAttestations(now: Date, olderThanMs = STAL
             lt(backupSnapshotAttestations.attemptCount, MAX_VERIFY_ATTEMPTS),
             or(
               and(isNull(backupSnapshotAttestations.nextAttemptAt), lt(backupSnapshotAttestations.createdAt, cutoff)),
-              lte(backupSnapshotAttestations.nextAttemptAt, now),
+              lte(backupSnapshotAttestations.nextAttemptAt, dueBy),
             ),
           ),
         )
@@ -105,6 +138,51 @@ export async function requeueStalePendingAttestations(now = new Date()): Promise
       enqueued += 1;
     } catch (err) {
       console.error(`[BackupSnapshotAttestationWorker] Failed to re-enqueue verification for snapshot ${id}:`, err);
+    }
+  }
+  return enqueued;
+}
+
+/**
+ * Of the given snapshots, those whose attestation is server-fetched, still
+ * pending and not parked (system scope).
+ */
+export async function findPendingServerFetchedAttestations(snapshotDbIds: string[]): Promise<string[]> {
+  if (snapshotDbIds.length === 0) return [];
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ snapshotDbId: backupSnapshotAttestations.snapshotDbId })
+        .from(backupSnapshotAttestations)
+        .where(
+          and(
+            inArray(backupSnapshotAttestations.snapshotDbId, snapshotDbIds),
+            eq(backupSnapshotAttestations.status, 'pending'),
+            eq(backupSnapshotAttestations.verificationMode, 'server_fetched'),
+            lt(backupSnapshotAttestations.attemptCount, MAX_VERIFY_ATTEMPTS),
+          ),
+        ),
+    ),
+  );
+  return rows.map((r) => r.snapshotDbId);
+}
+
+/**
+ * Called by the cleanup job right after it published these snapshots' id
+ * reservations: queues verification for each one with a pending
+ * server-fetched attestation, instead of leaving it to the next sweep. Best
+ * effort — a failed enqueue is logged, and the sweep still retries the row
+ * when due. Returns how many were queued.
+ */
+export async function enqueueVerificationForPublishedSnapshots(snapshotDbIds: string[]): Promise<number> {
+  const pending = await findPendingServerFetchedAttestations(snapshotDbIds);
+  let enqueued = 0;
+  for (const id of pending) {
+    try {
+      await enqueueVerification(id, publishedAttestationJobId(id));
+      enqueued += 1;
+    } catch (err) {
+      console.error(`[BackupSnapshotAttestationWorker] Failed to enqueue verification for published snapshot ${id}:`, err);
     }
   }
   return enqueued;

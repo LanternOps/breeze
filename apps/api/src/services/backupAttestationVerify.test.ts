@@ -13,6 +13,7 @@ vi.mock('./backupMetrics', () => ({ recordBackupAttestation: recordBackupAttesta
 
 import { BackupObjectTooLargeError } from './backupSnapshotStorage';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
+import { RESERVATION_CLEANUP_EVERY_MS } from './backupSnapshotIdReservations';
 import {
   verifySnapshotAttestation,
   type AttestationUnderVerification,
@@ -53,13 +54,15 @@ function deps(opts: {
   provider?: { type: string; config: Record<string, unknown> } | null;
   objects?: Record<string, Uint8Array>;
   fetchError?: Error;
+  writeInFlight?: boolean;
+  sealedUntil?: Date | null;
 } = {}) {
   const objects: Record<string, Uint8Array> = opts.objects ?? {
     [`snapshots/${SID}/manifest.json`]: manifest,
     [`snapshots/${SID}/layout.json`]: layout,
   };
   const finish = vi.fn(async ({ status }: { status: 'verified' | 'mismatch' }) => status as 'verified' | 'mismatch' | null);
-  const defer = vi.fn(async () => ({ attemptCount: 1, parked: false }));
+  const defer = vi.fn(async (_args: { attestationId: string; reason: string; retryAt?: Date }) => ({ attemptCount: 1, parked: false }));
   const fetchObject = vi.fn(async ({ key, maxBytes }: { key: string; maxBytes: number }) => {
     if (opts.fetchError) throw opts.fetchError;
     const bytes = objects[key];
@@ -74,6 +77,8 @@ function deps(opts: {
         deviceId: 'device-1', jobId: 'job-1', snapshotId: SID, storageIdentity: IDENTITY, keyLayout: 'legacy_flat', ...opts.snapshot,
       },
       provider: opts.provider === undefined ? { type: 's3', config: S3_CONFIG } : opts.provider,
+      writeInFlight: opts.writeInFlight,
+      sealedUntil: opts.sealedUntil,
     })),
     fetchObject,
     finish,
@@ -146,6 +151,30 @@ describe('verifySnapshotAttestation', () => {
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'object_missing:layout' });
     expect(finish).not.toHaveBeenCalled();
     expect(defer).toHaveBeenCalledWith({ attestationId: 'att-1', reason: 'object_missing:layout' });
+  });
+
+  it('defers a sealing snapshot to when its reservation is published, not to the storage-failure backoff', async () => {
+    const sealedUntil = new Date('2026-09-29T01:21:07.000Z');
+    const { d, finish, fetchObject, defer } = deps({ writeInFlight: true, sealedUntil });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });
+    expect(fetchObject).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    // The cleanup job publishes on its first run after sealed_until.
+    expect(RESERVATION_CLEANUP_EVERY_MS).toBe(5 * 60_000);
+    expect(defer).toHaveBeenCalledWith({
+      attestationId: 'att-1',
+      reason: 'snapshot_sealing',
+      retryAt: new Date(sealedUntil.getTime() + RESERVATION_CLEANUP_EVERY_MS),
+    });
+  });
+
+  it('backs off as usual when a write is in flight without a sealing bound', async () => {
+    const { d, fetchObject, defer } = deps({ writeInFlight: true, sealedUntil: null });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });
+    expect(fetchObject).not.toHaveBeenCalled();
+    expect(defer).toHaveBeenCalledTimes(1);
+    expect(defer.mock.calls[0]![0]).toEqual({ attestationId: 'att-1', reason: 'snapshot_sealing' });
+    expect(defer.mock.calls[0]![0]).not.toHaveProperty('retryAt');
   });
 
   it('counts a retry that has used up its attempts as parked', async () => {

@@ -13,7 +13,9 @@
  *     through the session. This also catches an upload whose creation
  *     succeeded in storage but was never recorded.
  *  3. A sealing reservation whose sealed_until has passed, with no recorded
- *     upload still open, is published.
+ *     upload still open, is published, and its snapshot is handed straight
+ *     to attestation verification (jobs/backupSnapshotAttestationWorker.ts)
+ *     rather than waiting for that worker's next sweep.
  *  4. A reserved id whose job has ended, whose issued URLs have all expired
  *     (plus the transfer margin), and with no recorded upload or delete still
  *     in flight, is abandoned
@@ -40,6 +42,7 @@ import {
 } from '../db/schema';
 import { recordBackupWriteJanitor } from '../services/backupMetrics';
 import { resolveBackupWriteCommandDestination } from '../services/backupProviderConfig';
+import { RESERVATION_CLEANUP_EVERY_MS } from '../services/backupSnapshotIdReservations';
 import { abortMultipartUpload, listMultipartUploads } from '../services/backupStoragePresign';
 import {
   STORAGE_DELETE_SETTLE_MS,
@@ -53,7 +56,7 @@ import { attachWorkerObservability } from './workerObservability';
 const QUEUE_NAME = 'backup-write-session-janitor';
 const JOB_NAME = 'backup-write-session-janitor';
 const REPEAT_JOB_ID = 'backup-write-session-janitor-repeat';
-const RUN_EVERY_MS = 5 * 60 * 1000;
+const RUN_EVERY_MS = RESERVATION_CLEANUP_EVERY_MS;
 const BATCH = 200;
 const OPEN_UPLOAD_STATES = ['creating', 'open', 'completing'];
 
@@ -62,13 +65,25 @@ export type JanitorStorage = {
   listMultipart(cfg: Record<string, unknown>, prefix: string): Promise<Array<{ key: string; uploadId: string }>>;
 };
 
-export type JanitorDeps = { now(): Date; storage: JanitorStorage };
+export type JanitorDeps = {
+  now(): Date;
+  storage: JanitorStorage;
+  /**
+   * Receives the backup_snapshots ids whose reservations this run published
+   * (rule 3), after the publication has committed. Absent = nobody is told.
+   */
+  onPublished?(snapshotDbIds: string[]): Promise<unknown>;
+};
 
 const defaultDeps: JanitorDeps = {
   now: () => new Date(),
   storage: {
     abortMultipart: (cfg, key, uploadId) => abortMultipartUpload(cfg, key, uploadId),
     listMultipart: (cfg, prefix) => listMultipartUploads(cfg, prefix),
+  },
+  onPublished: async (snapshotDbIds) => {
+    const { enqueueVerificationForPublishedSnapshots } = await import('./backupSnapshotAttestationWorker');
+    return enqueueVerificationForPublishedSnapshots(snapshotDbIds);
   },
 };
 
@@ -182,7 +197,7 @@ async function abandonEndedReservations(deps: JanitorDeps, summary: JanitorSumma
   if (n > 0) recordBackupWriteJanitor('abandon', 'ok', n);
 }
 
-/** Rule 3. */
+/** Rule 3; the published snapshots are then handed to deps.onPublished. */
 async function publishSealed(deps: JanitorDeps, summary: JanitorSummary): Promise<void> {
   const now = deps.now();
   const rows = await withSystemDbAccessContext(() =>
@@ -200,12 +215,26 @@ async function publishSealed(deps: JanitorDeps, summary: JanitorSummary): Promis
                SELECT 1 FROM backup_storage_sessions s
                 WHERE s.reservation_snapshot_id = r.snapshot_id
                   AND s.deleting_since IS NOT NULL)
-      RETURNING r.snapshot_id
+      RETURNING r.snapshot_id, r.published_snapshot_db_id
     `),
   );
-  const n = (rows as unknown as unknown[]).length;
+  const published = rows as unknown as Array<{ snapshot_id: string; published_snapshot_db_id: string | null }>;
+  const n = published.length;
   summary.published += n;
   if (n > 0) recordBackupWriteJanitor('publish', 'ok', n);
+
+  const snapshotDbIds = published.flatMap((r) => (r.published_snapshot_db_id ? [r.published_snapshot_db_id] : []));
+  if (snapshotDbIds.length === 0 || !deps.onPublished) return;
+  try {
+    await deps.onPublished(snapshotDbIds);
+  } catch (err) {
+    // The publication stands; a verification that could not be queued now is
+    // retried by the attestation worker's sweep when due.
+    console.warn('[BackupWriteSessionJanitor] could not hand published snapshots to attestation verification', {
+      count: snapshotDbIds.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**

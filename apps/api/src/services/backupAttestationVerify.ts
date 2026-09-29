@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
+import { RESERVATION_CLEANUP_EVERY_MS, readSnapshotWriteState } from './backupSnapshotIdReservations';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
@@ -37,9 +37,13 @@ export const ATTESTED_SIDECAR_MAX_BYTES = 16 * 1024 * 1024;
 
 /**
  * Retries after storage could not be read: the next attempt waits
- * RETRY_BASE_MS * 2^attempts, capped at RETRY_MAX_DELAY_MS. After
- * MAX_VERIFY_ATTEMPTS the row is parked — still `pending` (a storage failure
- * never decides it), but no longer retried by the sweep.
+ * RETRY_BASE_MS * 2^attempts, capped at RETRY_MAX_DELAY_MS. A snapshot whose
+ * reservation is still sealing has a known end instead: its next attempt is
+ * due when the cleanup job is expected to have published it (sealingRetryAt),
+ * and the cleanup job queues the verification itself when it publishes
+ * (jobs/backupWriteSessionJanitor.ts). After MAX_VERIFY_ATTEMPTS the row is
+ * parked — still `pending` (a storage failure never decides it), but no
+ * longer retried by the sweep.
  */
 export const MAX_VERIFY_ATTEMPTS = 20;
 const RETRY_BASE_MS = 15 * 60_000;
@@ -81,6 +85,8 @@ export type AttestationVerifyDeps = {
      * row is retried later, never decided. Absent = false.
      */
     writeInFlight?: boolean;
+    /** While the reservation is sealing: its sealed_until. Absent = unknown. */
+    sealedUntil?: Date | null;
   } | null>;
   fetchObject: (args: { provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
   /**
@@ -90,11 +96,25 @@ export type AttestationVerifyDeps = {
    * written, or null when the row was no longer pending.
    */
   finish: (args: { attestationId: string; snapshotDbId: string; status: 'verified' | 'mismatch'; verifyError: string | null }) => Promise<'verified' | 'mismatch' | null>;
-  /** Schedules another attempt for a still-pending row after a storage failure. */
-  defer: (args: { attestationId: string; reason: string }) => Promise<{ attemptCount: number; parked: boolean } | null>;
+  /**
+   * Schedules another attempt for a still-pending row: at `retryAt` when it
+   * is given and still ahead (bounded by the maximum backoff), otherwise
+   * after the exponential backoff. Every deferral counts as an attempt.
+   */
+  defer: (args: { attestationId: string; reason: string; retryAt?: Date }) => Promise<{ attemptCount: number; parked: boolean } | null>;
 };
 
 export type AttestationVerifyResult = { outcome: AttestationVerifyOutcome; reason?: string };
+
+/**
+ * When to retry a snapshot whose reservation is sealing: once the cleanup job
+ * has had a run after sealed_until, i.e. when it is expected to have
+ * published the reservation. Null without a known bound.
+ */
+export function sealingRetryAt(sealedUntil: Date | null | undefined): Date | null {
+  if (!sealedUntil || Number.isNaN(sealedUntil.getTime())) return null;
+  return new Date(sealedUntil.getTime() + RESERVATION_CLEANUP_EVERY_MS);
+}
 
 function maxBytesFor(role: AttestationObjectRole): number {
   return role === 'manifest' ? MANIFEST_FETCH_MAX_BYTES : ATTESTED_SIDECAR_MAX_BYTES;
@@ -144,9 +164,9 @@ export async function verifySnapshotAttestation(
     const error = written === status ? verifyError : 'binding_changed';
     return error ? { outcome: written, reason: error } : { outcome: written };
   };
-  const retry = async (reason: string): Promise<AttestationVerifyResult> => {
+  const retry = async (reason: string, retryAt: Date | null = null): Promise<AttestationVerifyResult> => {
     recordBackupAttestation('verify_unavailable');
-    const scheduled = await deps.defer({ attestationId: attestation.id, reason });
+    const scheduled = await deps.defer({ attestationId: attestation.id, reason, ...(retryAt ? { retryAt } : {}) });
     if (scheduled?.parked) {
       recordBackupAttestation('verify_parked');
       console.warn(
@@ -168,7 +188,7 @@ export async function verifySnapshotAttestation(
   }
 
   // Bytes that may still change are never read, let alone decided on.
-  if (loaded.writeInFlight) return retry('snapshot_sealing');
+  if (loaded.writeInFlight) return retry('snapshot_sealing', sealingRetryAt(loaded.sealedUntil));
 
   // The destination must still resolve to the attested storage identity; an
   // edited or missing configuration cannot be read on the snapshot's behalf.
@@ -268,9 +288,10 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
           provider = { type: resolved.config.provider, config: asRecord(resolved.config.providerConfig) };
         }
       }
-      const writeInFlight = snapshot ? await isSnapshotWriteInFlight(snapshot.snapshotId) : false;
+      const write = snapshot ? await readSnapshotWriteState(snapshot.snapshotId) : null;
       return {
-        writeInFlight,
+        writeInFlight: write?.inFlight ?? false,
+        sealedUntil: write?.sealedUntil ?? null,
         attestation: {
           id: row.id,
           snapshotDbId: row.snapshotDbId,
@@ -339,16 +360,25 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
         .where(eq(backupSnapshots.id, snapshotDbId));
       return written;
     }),
-  defer: ({ attestationId, reason }) =>
+  defer: ({ attestationId, reason, retryAt }) =>
     systemContext(async () => {
+      const backoff = sql`now() + least(
+        ${RETRY_BASE_MS}::bigint * power(2, least(${backupSnapshotAttestations.attemptCount}, 30))::bigint,
+        ${RETRY_MAX_DELAY_MS}::bigint
+      ) * interval '1 millisecond'`;
+      // A known retry time that has already passed (a sealing reservation
+      // held back by a completion or delete in flight) falls back to the
+      // backoff, so a stuck row still backs off and is eventually parked.
+      const nextAttemptAt = retryAt
+        ? sql`CASE WHEN ${retryAt.toISOString()}::timestamptz > now()
+            THEN least(${retryAt.toISOString()}::timestamptz, now() + ${RETRY_MAX_DELAY_MS}::bigint * interval '1 millisecond')
+            ELSE ${backoff} END`
+        : backoff;
       const [row] = await db
         .update(backupSnapshotAttestations)
         .set({
           attemptCount: sql`${backupSnapshotAttestations.attemptCount} + 1`,
-          nextAttemptAt: sql`now() + least(
-            ${RETRY_BASE_MS}::bigint * power(2, least(${backupSnapshotAttestations.attemptCount}, 30))::bigint,
-            ${RETRY_MAX_DELAY_MS}::bigint
-          ) * interval '1 millisecond'`,
+          nextAttemptAt,
           verifyError: reason,
         })
         .where(and(eq(backupSnapshotAttestations.id, attestationId), eq(backupSnapshotAttestations.status, 'pending')))
