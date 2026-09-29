@@ -22,7 +22,8 @@ const TrustedExecutableDirRoot = "/Library"
 
 // LegacyExecutableDir is the pre-migration install location shared by both
 // Linux and macOS. On macOS, a privileged process still running from here
-// has an upgrade migration copy it into TrustedExecutableDir; see
-// MigrateExecutableToTrustedDir. On Linux this remains the install location
-// — it is not relocated.
+// is copied into TrustedExecutableDir only when this location fails
+// VerifyTrustedExecutablePathChain — relocating a bare binary costs its
+// path-keyed Full Disk Access grant (#7211); see internal/macrelocate. On
+// Linux this remains the install location — it is not relocated.
 const LegacyExecutableDir = "/usr/local/bin"

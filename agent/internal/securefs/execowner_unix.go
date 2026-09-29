@@ -36,8 +36,52 @@ func VerifyTrustedExecutableOwner(path string) error {
 	return nil
 }
 
+// LstatFunc is os.Lstat's shape, injectable so the ownership decision can be
+// tested against root-owned fixtures without running as root.
+type LstatFunc func(path string) (os.FileInfo, error)
+
+// VerifyTrustedExecutablePathChain is VerifyTrustedExecutableOwner extended
+// to every ancestor directory up to "/": each must be a real directory (not
+// a symlink), owned by root, and not writable by group or other. A writable
+// ancestor is as good as a writable parent — whoever can write it can
+// rename the whole subtree away and put their own in its place.
+//
+// It is the single predicate the macOS relocation decision uses (#7211): a
+// privileged daemon running from a location that passes stays where it is,
+// because moving a bare binary invalidates its path-keyed TCC grants (Full
+// Disk Access in particular). Only a location that fails is worth that cost.
+func VerifyTrustedExecutablePathChain(path string) error {
+	return VerifyTrustedExecutablePathChainFS(path, os.Lstat)
+}
+
+// VerifyTrustedExecutablePathChainFS is VerifyTrustedExecutablePathChain
+// with an injectable Lstat. Any component that cannot be stat'd (missing,
+// permission denied) fails the check: an unverifiable location is treated
+// as unsafe.
+func VerifyTrustedExecutablePathChainFS(path string, lstat LstatFunc) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("executable %s: path must be absolute", path)
+	}
+	if err := verifyTrustedRootOwnedPathFS(path, false, lstat); err != nil {
+		return fmt.Errorf("executable %s: %w", path, err)
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		if err := verifyTrustedRootOwnedPathFS(dir, true, lstat); err != nil {
+			return fmt.Errorf("directory %s: %w", dir, err)
+		}
+		if dir == "/" {
+			return nil
+		}
+	}
+}
+
 func verifyTrustedRootOwnedPath(path string, mustBeDir bool) error {
-	info, err := os.Lstat(path)
+	return verifyTrustedRootOwnedPathFS(path, mustBeDir, os.Lstat)
+}
+
+func verifyTrustedRootOwnedPathFS(path string, mustBeDir bool, lstat LstatFunc) error {
+	info, err := lstat(path)
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
 	}

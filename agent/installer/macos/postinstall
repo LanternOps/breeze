@@ -4,13 +4,49 @@
 
 set -e
 
-BINARY="/usr/local/bin/breeze-agent"
+# Install-location rules shared with the running agent (#7211).
+# shellcheck source=install-location.sh
+. "$(dirname "$0")/install-location.sh"
+
+# The payload stages the root-daemon binaries here, never in /usr/local/bin:
+# on the hosts where /usr/local/bin is unsafe, a non-root identity could
+# otherwise swap them before this script copies them into place.
+STAGING_DIR="/Library/Breeze/pkg-staging"
 DESKTOP_HELPER_BINARY="/usr/local/bin/breeze-desktop-helper"
 CONFIG_DIR="/Library/Application Support/Breeze"
 LOG_DIR="/Library/Logs/Breeze"
 DAEMON_PLIST="/Library/LaunchDaemons/com.breeze.agent.plist"
+WATCHDOG_PLIST="/Library/LaunchDaemons/com.breeze.watchdog.plist"
 DESKTOP_USER_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
 DESKTOP_LOGINWINDOW_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
+
+# Pick the install directory BEFORE placing anything: choose_bin_dir keys
+# off whether an agent already lives in the trusted directory.
+BIN_DIR="$(choose_bin_dir)"
+echo "Installing Breeze daemon binaries to $BIN_DIR"
+if [ "$BIN_DIR" = "$TRUSTED_BIN_DIR" ]; then
+    ensure_trusted_bin_dir
+fi
+BINARY="$BIN_DIR/breeze-agent"
+WATCHDOG_BINARY="$BIN_DIR/breeze-watchdog"
+
+install_binary "$STAGING_DIR/breeze-agent" "$BINARY"
+install_binary "$STAGING_DIR/breeze-backup" "$BIN_DIR/breeze-backup"
+if [ -f "$STAGING_DIR/breeze-watchdog" ]; then
+    install_binary "$STAGING_DIR/breeze-watchdog" "$WATCHDOG_BINARY"
+fi
+rm -rf "$STAGING_DIR"
+
+# The shipped daemon plists name /usr/local/bin. Repoint them when the
+# binaries went to the trusted directory. Copies an earlier release left in
+# /usr/local/bin are removed by the agent and watchdog themselves on their
+# next start, once they see their plist no longer names that path.
+# The desktop-helper LaunchAgents are deliberately NOT repointed: the helper
+# is never relocated, and stays at /usr/local/bin/breeze-desktop-helper.
+if [ "$BIN_DIR" != "$LEGACY_BIN_DIR" ]; then
+    point_plist_at "$DAEMON_PLIST" "$LEGACY_BIN_DIR" "$BIN_DIR" breeze-agent
+    point_plist_at "$WATCHDOG_PLIST" "$LEGACY_BIN_DIR" "$BIN_DIR" breeze-watchdog
+fi
 
 ensure_breeze_group() {
     if dscl . -read /Groups/breeze &>/dev/null; then
@@ -39,26 +75,17 @@ mkdir -p "$LOG_DIR"
 chmod 0755 "$LOG_DIR"
 
 # Remove quarantine attribute (binary is notarized but raw
-# Mach-O binaries cannot have the ticket stapled)
-xattr -d com.apple.quarantine "$BINARY" 2>/dev/null || true
+# Mach-O binaries cannot have the ticket stapled). The daemon binaries were
+# already cleared by install_binary.
 xattr -d com.apple.quarantine "$DESKTOP_HELPER_BINARY" 2>/dev/null || true
 
 # Set permissions
-chmod 0755 "$BINARY"
 chmod 0755 "$DESKTOP_HELPER_BINARY"
 chmod 0644 "$DAEMON_PLIST"
 chmod 0644 "$DESKTOP_USER_PLIST"
 chmod 0644 "$DESKTOP_LOGINWINDOW_PLIST"
 
-# Watchdog
-WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
-if [ -f "$WATCHDOG_BINARY" ]; then
-    xattr -d com.apple.quarantine "$WATCHDOG_BINARY" 2>/dev/null || true
-    chmod 0755 "$WATCHDOG_BINARY"
-fi
-
 # Bootstrap watchdog daemon
-WATCHDOG_PLIST="/Library/LaunchDaemons/com.breeze.watchdog.plist"
 if [ -f "$WATCHDOG_PLIST" ]; then
     launchctl bootout system/com.breeze.watchdog 2>/dev/null || true
     launchctl bootstrap system "$WATCHDOG_PLIST" 2>/dev/null || \

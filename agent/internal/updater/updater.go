@@ -1070,9 +1070,11 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 			key, value := SafeDownloadErrorFields(installErr)
 			log.Warn("pkg install failed, falling back to binary replacement", key, value)
 		} else {
-			// The .pkg already contains /usr/local/bin/breeze-backup — a
-			// staged Backup pair must be discarded, not swapped, or we'd
-			// stomp the binary the installer just placed. Only the raw-binary
+			// The .pkg already installs breeze-backup next to the agent
+			// (/usr/local/bin or /Library/Breeze/bin, whichever the install
+			// uses — installer/macos/install-location.sh) — a staged Backup
+			// pair must be discarded, not swapped, or we'd stomp the binary
+			// the installer just placed. Only the raw-binary
 			// fallback below (pkg unavailable or failed) needs the explicit
 			// swap.
 			if opts.Backup != nil {
