@@ -84,6 +84,49 @@ describe('buildPostureBackupMetric', () => {
   );
 });
 
+describe('buildPostureBackupMetric with a product inventory (#6012)', () => {
+  const products = [
+    { product: 'Backup (s3)', category: 'backup' as const, active: true },
+    { product: 'Managed cloud backup', category: 'backup' as const, active: true },
+    { product: 'Defender', category: 'antivirus' as const, active: true },
+  ];
+
+  it('names every backup product instead of a bare Yes', () => {
+    expect(buildPostureBackupMetric({ backupRequired: true, backupConfigured: true }, products)).toEqual({
+      label: 'Backup',
+      value: 'Backup (s3), Managed cloud backup',
+      status: 'good',
+    });
+  });
+
+  it('reads warn when only some backup products are working, bad when none are', () => {
+    expect(buildPostureBackupMetric(
+      { backupRequired: true, backupConfigured: true },
+      [products[0]!, { ...products[1]!, active: false }],
+    ).status).toBe('warn');
+    expect(buildPostureBackupMetric(
+      { backupRequired: true, backupConfigured: false },
+      [{ ...products[1]!, active: false }],
+    ).status).toBe('bad');
+  });
+
+  it('stays neutral when backup is not required', () => {
+    expect(buildPostureBackupMetric({ backupRequired: false, backupConfigured: true }, products)).toEqual({
+      label: 'Backup', value: 'Backup (s3), Managed cloud backup', status: 'neutral',
+    });
+  });
+
+  it('falls back to the legacy metric when no backup product is listed', () => {
+    expect(buildPostureBackupMetric({ backupConfigured: true }, [products[2]!])).toEqual({
+      label: 'Backup', value: 'Yes', status: 'good',
+    });
+  });
+
+  it('falls back to the legacy metric when org-wide backup evidence was withheld (site-restricted report)', () => {
+    expect(buildPostureBackupMetric({}, [products[1]!])).toEqual({ label: 'Backup', value: 'No', status: 'na' });
+  });
+});
+
 describe('buildReportPdf in Node (no DOM)', () => {
   it('renders the posture cover + device table', () => {
     const doc = buildReportPdf(postureRows, { ...opts, reportType: 'security_compliance_posture', summary: postureSummary });
@@ -132,6 +175,19 @@ describe('buildReportPdf in Node (no DOM)', () => {
     });
     const text = pdfCommandText(doc);
     expect(text).toContain('200 devices, 1 with real-time protection on');
+  });
+
+  it('words a backup product\'s active subset as successful backups, not real-time protection (#6012)', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      securityProducts: [
+        { product: 'Managed cloud backup', category: 'backup', active: true, deviceCoverage: 10, activeDeviceCoverage: 6 },
+      ],
+    };
+    const doc = buildReportPdf(postureRows, { ...opts, reportType: 'security_compliance_posture', summary });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('10 devices, 6 with a successful backup in the period');
+    expect(text).not.toContain('with real-time protection on');
   });
 
   it('omits the RTP subset note when every installed device is active', () => {

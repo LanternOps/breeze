@@ -633,8 +633,31 @@ function pctStatus(v: number | null | undefined, good = 90, warn = 60): MetricSt
   return 'bad';
 }
 
-export function buildPostureBackupMetric(controls: PostureControls) {
+/**
+ * The cover's Backup metric. Given the product inventory, it names every
+ * backup product (first-party config, SaaS backup, third-party providers such
+ * as Cove — #6012) and grades by how many are working; without one it keeps
+ * the legacy Yes/No. A site-restricted report withholds org-wide backup
+ * evidence (`backupConfigured` absent), and a partial product list must not
+ * stand in for it there, so that case stays legacy too.
+ */
+export function buildPostureBackupMetric(controls: PostureControls, products: PostureProduct[] = []) {
   const backupRequired = controls.backupRequired !== false;
+  const backupProducts = products.filter((product) => product.category === 'backup');
+  if (backupProducts.length > 0 && controls.backupConfigured !== undefined) {
+    const activeCount = backupProducts.filter((product) => product.active !== false).length;
+    return {
+      label: 'Backup',
+      value: backupProducts.map((product) => product.product).join(', '),
+      status: !backupRequired
+        ? 'neutral'
+        : activeCount === backupProducts.length
+          ? 'good'
+          : activeCount > 0
+            ? 'warn'
+            : 'bad',
+    } satisfies Metric;
+  }
   const backupValue = backupRequired
     ? `${yesNo(controls.backupConfigured)}${controls.backupConfigured && controls.backupEncrypted ? ' (encrypted)' : ''}`
     : controls.backupConfigured
@@ -723,7 +746,7 @@ function renderPostureCover(
         : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
     protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
   }
-  const backupMetric = buildPostureBackupMetric(c);
+  const backupMetric = buildPostureBackupMetric(c, summary.securityProducts ?? []);
   const accessMetrics: Metric[] = [
     { label: 'Host firewall', value: pctStr(c.firewallPct), status: pctStatus(c.firewallPct), target: '>=95%' },
     { label: 'Password complexity', value: pctStr(c.passwordComplexityPct), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
@@ -1648,12 +1671,18 @@ function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): 
     ? ` — ${product.deviceCoverage} device${product.deviceCoverage === 1 ? '' : 's'}`
     : '';
   // "Installed on N" reads as "protecting N". When only a subset of those devices
-  // are actually protecting (native AV with real-time protection on), spell that
-  // out so one RTP-on device can't imply full-fleet coverage (issue #2517).
+  // are actually protecting (native AV with real-time protection on; a backup
+  // product with a successful backup in the window), spell that out so one
+  // active device can't imply full-fleet coverage (issue #2517). The wording
+  // follows the category — "real-time protection" means nothing for a backup
+  // product (#6012).
   const activeCount = product.activeDeviceCoverage;
+  const activeNote = product.category === 'backup'
+    ? 'with a successful backup in the period'
+    : 'with real-time protection on';
   const rtpNote =
     product.deviceCoverage != null && activeCount != null && activeCount < product.deviceCoverage
-      ? `, ${activeCount} with real-time protection on`
+      ? `, ${activeCount} ${activeNote}`
       : '';
   // Sync status is only interesting when it's a problem; success is machine
   // noise on a client-facing page.
