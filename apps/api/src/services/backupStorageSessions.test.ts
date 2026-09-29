@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { AGENT_STORAGE_SESSION_RATE_LIMIT } from './agentStorageSessionRateLimit';
+import { STORAGE_SESSION_CALL_BURST } from './backupStorageSessionBudget';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -280,10 +282,16 @@ describe('brokered read delivery', () => {
       baseUrl: 'https://api.breeze.example',
       capabilities: ['resolve_batch', 'renew'],
       maxBatch: 100,
+      // The session's control-plane call budget, for the helper to pace to.
+      controlRate: { perMinute: 600, burst: 600 },
     });
     expect(Object.keys(session).sort()).toEqual(
-      ['baseUrl', 'capabilities', 'deadline', 'deadlineIn', 'expiresAt', 'expiresIn', 'maxBatch', 'sessionId', 'token', 'version'],
+      ['baseUrl', 'capabilities', 'controlRate', 'deadline', 'deadlineIn', 'expiresAt', 'expiresIn', 'maxBatch', 'sessionId', 'token', 'version'],
     );
+    expect(session.controlRate).toEqual({
+      perMinute: AGENT_STORAGE_SESSION_RATE_LIMIT,
+      burst: STORAGE_SESSION_CALL_BURST,
+    });
     expect(session.token).toMatch(/^[A-Za-z0-9_-]{43,}$/);
     expect(session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(typeof session.expiresIn).toBe('number');
@@ -677,6 +685,50 @@ describe('storage session object resolution', () => {
 });
 
 describe('storage session renewal', () => {
+  it('charges one call and no objects against the session budget', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    const deps = makeDeps(state);
+    const before = { ...state.sessions.get(row.id)! };
+    expect((await renewStorageSession(row, deps)).status).toBe(200);
+    const after = state.sessions.get(row.id)!;
+    expect(after.callCount).toBe(before.callCount + 1);
+    expect(after.resolvedObjectCount).toBe(before.resolvedObjectCount);
+  });
+
+  it('admits a renew every few seconds for the whole session', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    for (let i = 0; i < 300; i += 1) {
+      const deps = makeDeps(state, { now: () => new Date(NOW.getTime() + i * 5000) });
+      expect((await renewStorageSession(row, deps)).status).toBe(200);
+    }
+  });
+
+  it('answers a throttled renew 429 with the wait and leaves the lease alone', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    const stored = state.sessions.get(row.id)!;
+    stored.rateCallsAvailable = 0;
+    stored.rateRefilledAt = NOW;
+    const lease = stored.expiresAt;
+    const deps = makeDeps(state);
+    expect(await renewStorageSession(row, deps)).toEqual({ status: 429, retryAfterSeconds: 1 });
+    expect(state.sessions.get(row.id)!.expiresAt).toEqual(lease);
+    expect(deps.store.extendLease).not.toHaveBeenCalled();
+  });
+
+  it('ends a session whose call allowance is spent', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    const stored = state.sessions.get(row.id)!;
+    stored.callCount = stored.maxCalls;
+    const deps = makeDeps(state);
+    expect(await renewStorageSession(row, deps)).toMatchObject({ status: 410 });
+    expect(state.revoked).toContainEqual({ id: row.id, reason: 'budget_exhausted' });
+    expect(deps.store.extendLease).not.toHaveBeenCalled();
+  });
+
   it('extends the lease but never past the deadline', async () => {
     const state = makeState();
     const { row } = await mintSession(state);

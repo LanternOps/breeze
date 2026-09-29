@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { AGENT_STORAGE_SESSION_RATE_LIMIT } from './agentStorageSessionRateLimit';
+import { STORAGE_SESSION_CALL_BURST } from './backupStorageSessionBudget';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT } from './backupGcKnobs';
@@ -144,6 +146,11 @@ describe('buildWriteEnvelope', () => {
       partSizeBytes: 64 * 1024 * 1024,
       conditionalWrites: true,
       storageIdentity: 's3|https://storage.example|us-east-1|bucket-a',
+      controlRate: { perMinute: 600, burst: 600 },
+    });
+    expect(envelope.controlRate).toEqual({
+      perMinute: AGENT_STORAGE_SESSION_RATE_LIMIT,
+      burst: STORAGE_SESSION_CALL_BURST,
     });
     expect(STORAGE_WRITE_CAPABILITIES).toContain('resume');
     expect(STORAGE_WRITE_PART_SIZE_BYTES).toBe(64 * 1024 * 1024);
