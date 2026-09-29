@@ -570,3 +570,32 @@ func TestInstallSaysTheServiceIsStillStoppedWhenReconfigureFailsAfterAStop(t *te
 		t.Errorf("error does not warn that the service is still stopped: %v", err)
 	}
 }
+
+// `service start` on a service that is already up (a re-run of the install
+// one-liner, or the watchdog starting it first) is not a failure: the SCM's
+// "already running" answer still has to be confirmed as RUNNING (#7474).
+func TestStartAndWaitTreatsAlreadyRunningAsSuccess(t *testing.T) {
+	m := &fakeManager{existing: &fakeService{
+		startErr:    ErrAlreadyRunning,
+		beforeStart: []Status{{State: StateRunning}},
+	}}
+	if err := StartAndWait(m, "BreezeAgent", fastTimeouts()); err != nil {
+		t.Fatalf("StartAndWait on an already-running service = %v, want nil", err)
+	}
+}
+
+// "Already running" is only a claim about the moment of the request. A service
+// that is found stopped afterwards (it died in between) is still a failure.
+func TestStartAndWaitStillFailsWhenAnAlreadyRunningServiceIsFoundStopped(t *testing.T) {
+	m := &fakeManager{existing: &fakeService{
+		startErr:    ErrAlreadyRunning,
+		beforeStart: []Status{{State: StateStopped, Win32ExitCode: 1067}},
+	}}
+	err := StartAndWait(m, "BreezeAgent", fastTimeouts())
+	if err == nil {
+		t.Fatal("StartAndWait returned nil for a service found stopped after 'already running'")
+	}
+	if !strings.Contains(err.Error(), "1067") {
+		t.Errorf("error does not report the exit code: %v", err)
+	}
+}
