@@ -6,6 +6,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { getApprovalAssertion } from '../../stores/authenticator';
 import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { type ElevationRequest, FLOW_ICONS, FLOW_LABELS, requestTarget } from './types';
 import { DialogHeader, ErrorAlert, btnGhostClass, inputClass } from './ui';
@@ -50,6 +51,39 @@ function isFactorRejection(body: unknown): boolean {
 
 type ReauthMode = 'password' | 'totp';
 
+/**
+ * 200 body of POST /pam/elevation-requests/:id/respond (routes/pam.ts). The
+ * route answers `success: true` whenever it recorded a decision — including
+ * when that decision is NOT the one asked for: an approve whose target
+ * executable cannot be verified is refused (services/pamActuationLifecycle.ts)
+ * and recorded as `status: 'denied'`, `enforcementStatus: 'refused'`, with the
+ * reason. `success` alone therefore does not mean "approved".
+ */
+type RespondResult = {
+  success?: boolean;
+  id?: string;
+  /** Recorded request status: 'approved' | 'denied'. */
+  status?: string;
+  /** 'pending_dispatch' | 'cleanup_pending' | 'refused'. */
+  enforcementStatus?: string;
+  /** Present when `enforcementStatus` is 'refused'. */
+  reason?: string;
+};
+
+/**
+ * When a 200 respond body did not record the decision the approver asked for,
+ * returns the server's reason ('' when it gave none); otherwise null. A body
+ * that omits `status` (older API) keeps meaning success.
+ */
+function outcomeRefusal(decision: 'approve' | 'deny', data: unknown): string | null {
+  const body = (data && typeof data === 'object' ? data : {}) as RespondResult;
+  const refused =
+    body.enforcementStatus === 'refused' ||
+    (typeof body.status === 'string' && body.status !== (decision === 'approve' ? 'approved' : 'denied'));
+  if (!refused) return null;
+  return typeof body.reason === 'string' ? body.reason.trim() : '';
+}
+
 export default function PamRespondModal({
   request,
   onClose,
@@ -70,6 +104,12 @@ export default function PamRespondModal({
   // Set when the server refused the approve for want of an approver device,
   // so the error also offers the register-device action.
   const [needsApproverDevice, setNeedsApproverDevice] = useState(false);
+  // Set when the server recorded a decision other than the one asked for (a
+  // refused approve is recorded as denied). The request is no longer pending:
+  // submitting again could only 409, and dismissing must refresh the list so
+  // the row shows its real status.
+  const [settledOtherwise, setSettledOtherwise] = useState(false);
+  const dismiss = settledOtherwise ? onActioned : onClose;
   const reasonId = useId();
   const durationId = useId();
   const titleId = useId();
@@ -101,7 +141,7 @@ export default function PamRespondModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting || settledOtherwise) return;
     setSubmitting(true);
     setError(null);
     setNeedsApproverDevice(false);
@@ -166,7 +206,7 @@ export default function PamRespondModal({
     }
 
     try {
-      await runAction({
+      const result = await runAction<unknown>({
         request: () =>
           fetchWithAuth(`/pam/elevation-requests/${request.id}/respond`, {
             method: 'POST',
@@ -182,10 +222,14 @@ export default function PamRespondModal({
           defaultValue: 'Failed to {{decision}} request',
           decision,
         }),
-        successMessage:
-          decision === 'approve'
-            ? t('pamPamRespondModal.toasts.approved', { defaultValue: 'Elevation approved' })
-            : t('pamPamRespondModal.toasts.denied', { defaultValue: 'Elevation denied' }),
+        // No success toast for a 200 that recorded a different outcome — the
+        // error for it is raised below, once runAction has returned.
+        successMessage: (data) =>
+          outcomeRefusal(decision, data) !== null
+            ? ''
+            : decision === 'approve'
+              ? t('pamPamRespondModal.toasts.approved', { defaultValue: 'Elevation approved' })
+              : t('pamPamRespondModal.toasts.denied', { defaultValue: 'Elevation denied' }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
         // On approve a 401 is usually a rejected factor (wrong password/code,
         // missing re-auth, failed assertion), not an expired session: surface
@@ -214,6 +258,21 @@ export default function PamRespondModal({
           }
         },
       });
+      const refusal = outcomeRefusal(decision, result);
+      if (refusal !== null) {
+        const message = refusal
+          ? t('pamPamRespondModal.errors.notApprovedReason', {
+              defaultValue: 'Elevation not approved: {{reason}}',
+              reason: refusal,
+            })
+          : t('pamPamRespondModal.errors.notApproved', {
+              defaultValue: 'Elevation not approved. The request is no longer pending.',
+            });
+        setSettledOtherwise(true);
+        setError(message);
+        showToast({ message, type: 'error' });
+        return;
+      }
       onActioned();
     } catch (err) {
       if (err instanceof ActionError) {
@@ -253,7 +312,7 @@ export default function PamRespondModal({
   const FlowIcon = FLOW_ICONS[request.flowType];
 
   return (
-    <Dialog open onClose={onClose} title={modalTitle} labelledBy={titleId} maxWidth="lg">
+    <Dialog open onClose={dismiss} title={modalTitle} labelledBy={titleId} maxWidth="lg">
       <DialogHeader id={titleId} title={modalTitle} />
       <form onSubmit={handleSubmit} className="space-y-4 p-6">
         <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-4">
@@ -475,12 +534,19 @@ export default function PamRespondModal({
             <span />
           )}
           <div className="flex gap-2">
-            <button type="button" onClick={onClose} className={btnGhostClass}>
-              {t('common:actions.cancel', { defaultValue: 'Cancel' })}
+            <button
+              type="button"
+              onClick={dismiss}
+              data-testid="pam-respond-cancel"
+              className={btnGhostClass}
+            >
+              {settledOtherwise
+                ? t('common:actions.close', { defaultValue: 'Close' })
+                : t('common:actions.cancel', { defaultValue: 'Cancel' })}
             </button>
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || settledOtherwise}
               data-testid="pam-respond-submit"
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium text-white shadow-xs transition-colors disabled:pointer-events-none disabled:opacity-50 ${
                 decision === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'

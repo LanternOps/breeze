@@ -931,7 +931,9 @@
     "errors": {
       "windowsHello": "Die Windows Hello-Überprüfung ist fehlgeschlagen",
       "actionFailed": "{{decision}}-Anfrage fehlgeschlagen",
-      "network": "Netzwerkfehler"
+      "network": "Netzwerkfehler",
+      "notApproved": "Rechteerhöhung nicht genehmigt. Die Anfrage ist nicht mehr ausstehend.",
+      "notApprovedReason": "Rechteerhöhung nicht genehmigt: {{reason}}"
     },
     "toasts": {
       "approved": "Rechteerhöhung genehmigt",

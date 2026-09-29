@@ -931,7 +931,9 @@
     "errors": {
       "windowsHello": "Falló la verificación de Windows Hello",
       "actionFailed": "No se pudo realizar la solicitud {{decision}}",
-      "network": "error de red"
+      "network": "error de red",
+      "notApproved": "Elevación no aprobada. La solicitud ya no está pendiente.",
+      "notApprovedReason": "Elevación no aprobada: {{reason}}"
     },
     "toasts": {
       "approved": "Elevación aprobada",

@@ -931,7 +931,9 @@
     "errors": {
       "windowsHello": "Verifica Windows Hello fallita",
       "actionFailed": "Impossibile {{decision}} la richiesta",
-      "network": "Errore di rete"
+      "network": "Errore di rete",
+      "notApproved": "Elevazione non approvata. La richiesta non è più in sospeso.",
+      "notApprovedReason": "Elevazione non approvata: {{reason}}"
     },
     "toasts": {
       "approved": "Elevazione approvata",

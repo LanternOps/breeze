@@ -931,7 +931,9 @@
     "errors": {
       "windowsHello": "Windows Hello verification failed",
       "actionFailed": "Failed to {{decision}} request",
-      "network": "Network error"
+      "network": "Network error",
+      "notApproved": "Elevation not approved. The request is no longer pending.",
+      "notApprovedReason": "Elevation not approved: {{reason}}"
     },
     "toasts": {
       "approved": "Elevation approved",

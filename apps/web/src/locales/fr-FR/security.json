@@ -931,7 +931,9 @@
     "errors": {
       "windowsHello": "Échec de la vérification Windows Hello",
       "actionFailed": "Impossible de {{decision}} demande",
-      "network": "Erreur réseau"
+      "network": "Erreur réseau",
+      "notApproved": "Élévation non approuvée. La demande n'est plus en attente.",
+      "notApprovedReason": "Élévation non approuvée : {{reason}}"
     },
     "toasts": {
       "approved": "Élévation approuvée",

@@ -931,7 +931,9 @@
     "errors": {
       "windowsHello": "Windows Hello doğrulama başarısız oldu",
       "actionFailed": "{{decision}} isteği yerine getirilemedi",
-      "network": "Ağ hatası"
+      "network": "Ağ hatası",
+      "notApproved": "Yükseltme onaylanmadı. İstek artık beklemede değil.",
+      "notApprovedReason": "Yükseltme onaylanmadı: {{reason}}"
     },
     "toasts": {
       "approved": "Yükseklik onaylandı",
