@@ -317,4 +317,21 @@ describe('lock scope (review I-2)', () => {
     }));
     expect(decision).toBe('run');
   });
+
+  it('a stale gate inside a transaction that already locked the child row reconciles on the same connection', async () => {
+    const s = await seedSeries();
+    await reconcile(s.series.id);
+    const child = (await activeChildFor(s.series.id, s.orgA))!;
+    await system(() => db.update(reportSeries).set({ name: 'Renamed', revision: 2 }).where(eq(reportSeries.id, s.series.id)));
+    const decision = await system(() => db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+      // The worker's claim / lastGeneratedAt stamp: the outer job txn now holds the child row lock.
+      await tx.execute(sql`UPDATE reports SET updated_at = now() WHERE id = ${child.id}`);
+      return seriesChildGate({
+        id: child.id, orgId: s.orgA, seriesId: s.series.id, seriesRevision: child.seriesRevision, archivedAt: null,
+      });
+    }));
+    expect(decision).toBe('run');
+    expect((await activeChildFor(s.series.id, s.orgA))?.name).toBe('Renamed');
+  });
 });

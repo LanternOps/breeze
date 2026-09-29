@@ -266,7 +266,8 @@ export async function findSeriesNeedingReconcile(limit: number, tx: SeriesTx = d
  * one it still works through runOutsideDbContext, at the cost of one extra
  * pooled connection for the duration of the sweep.
  *
- * Blocked children (definitive authority denial) are NOT healed here: they
+ * The sweep runs outside any job transaction (that is why per-series top-level
+ * transactions are safe here, unlike the gate). Blocked children (definitive authority denial) are NOT healed here: they
  * heal only on a series write or transfer-owner.
  */
 export async function reconcileAllSeries(options: {
@@ -315,9 +316,16 @@ export async function reconcileAllSeries(options: {
  * The decision is read WITHOUT a row lock: the worker holds one ambient system
  * transaction for the whole job, so a FOR UPDATE here would serialize every
  * child job of a series through report generation. Only a stale child
- * revision (0 included) reconciles, in its own committed transaction (which
- * takes and releases the lock); the decision is then re-read. The caller must
- * re-read the report row after 'run'.
+ * revision (0 included) reconciles, INSIDE the caller's ambient transaction
+ * (a savepoint on the same connection), after which the decision is re-read;
+ * that rare path holds the series lock until the job ends.
+ *
+ * It MUST run within the job's transaction and never opens a second
+ * connection: the job may already hold a row lock on this child (claim /
+ * lastGeneratedAt stamp), and a reconcile on another connection would wait on
+ * it while the job waits on that reconcile, an undetectable deadlock. Running
+ * it before any write to the child row is therefore not required for
+ * correctness. The caller must re-read the report row after 'run'.
  *
  * A transient SeriesAuthorityUnverifiableError propagates (the job throws and
  * BullMQ retries). A definitively blocked child is not healed here; it heals
@@ -346,10 +354,7 @@ export async function seriesChildGate(report: {
       return 'blocked_no_authority';
     }
     if (allowReconcile && report.seriesRevision !== series.revision) {
-      await runOutsideDbContext(() => withSystemDbAccessContext(
-        () => reconcileSeries(series.id, db),
-        'reportSeries.gateReconcile',
-      ));
+      await db.transaction((tx) => reconcileSeries(series.id, tx));
       return evaluate(false);
     }
     const child = (await listSeriesChildren(series.id, db)).find((row) => row.id === report.id);
