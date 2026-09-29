@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { BackupOverviewDto } from '@breeze/shared';
+import type { BackupHealth, BackupOverviewDto } from '@breeze/shared';
 import { formatDateTime } from '@/lib/utils';
 import { PageHeader, StatusMark, type MarkTone } from './ui';
 
@@ -30,6 +30,26 @@ const FIGURE = 'text-figures font-display text-lg font-semibold text-foreground'
 const QUIET = 'text-sm text-muted-foreground';
 /** A date is a figure column (tabular) but never a serif moment. */
 const WHEN = 'text-figures text-sm text-foreground';
+
+/**
+ * One backup-health verdict, one face, wherever it appears (this summary and the
+ * per-device ledger below). Exported so the two never disagree on a tone.
+ */
+export const HEALTH_TONE: Record<BackupHealth, MarkTone> = {
+  healthy: 'success',
+  warning: 'warning',
+  critical: 'destructive',
+  unknown: 'neutral',
+};
+
+export const HEALTH_LABEL: Record<BackupHealth, string> = {
+  healthy: 'Healthy',
+  warning: 'Warning',
+  critical: 'Critical',
+  unknown: 'Unknown',
+};
+
+export const HEALTH_ORDER: BackupHealth[] = ['healthy', 'warning', 'critical', 'unknown'];
 
 /** A raw status wearing the reader's word: "in_progress" is a database value,
  *  not something a customer should have to translate. */
@@ -112,6 +132,7 @@ export function BackupOverview({
     overview.protected === null || overview.total === null
       ? null
       : `${overview.protected} of ${overview.total}`;
+  const healthBuckets = HEALTH_ORDER.filter((h) => (overview.byHealth?.[h] ?? 0) > 0);
   const restoreTestMark = overview.lastTestRestoreStatus
     ? testRestoreMark(overview.lastTestRestoreStatus)
     : null;
@@ -140,6 +161,20 @@ export function BackupOverview({
       >
         <LedgerRow testId="portal-backup-overview-protected" label="Protected devices">
           <Figure value={protectedDevices} />
+        </LedgerRow>
+
+        <LedgerRow testId="portal-backup-overview-health" label="Backup health">
+          {healthBuckets.length === 0 ? (
+            <span className={QUIET}>No devices assessed</span>
+          ) : (
+            <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+              {healthBuckets.map((h) => (
+                <StatusMark key={h} tone={HEALTH_TONE[h]}>
+                  {overview.byHealth[h]} {HEALTH_LABEL[h]}
+                </StatusMark>
+              ))}
+            </span>
+          )}
         </LedgerRow>
 
         <LedgerRow testId="portal-backup-overview-last-verification" label="Last verification">
@@ -183,6 +218,14 @@ export function BackupOverview({
           label="Restores slower than promised"
         >
           <Figure value={overview.openRtoBreaches} />
+        </LedgerRow>
+
+        <LedgerRow testId="portal-backup-overview-providers" label="Third-party backup">
+          {overview.externalProviders?.length ? (
+            <span className={WHEN}>{overview.externalProviders.join(', ')}</span>
+          ) : (
+            <span className={QUIET}>None connected</span>
+          )}
         </LedgerRow>
       </dl>
 
