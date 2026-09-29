@@ -1,10 +1,7 @@
-import { z } from 'zod';
 import { and, asc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import {
-  TIME_SYNC_DOMAIN_ROLES,
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_FINDING_SEVERITY,
-  TIME_SYNC_HEALTH,
 } from '@breeze/shared';
 import windowsZones from '../../../../../packages/shared/src/data/windowsZones.json';
 import { db } from '../../db';
@@ -19,20 +16,8 @@ import { deviceScopeCondition, siteScopeCondition } from '../aiToolsSiteScope';
 import { getDeviceTimeStatusView, type DeviceTimeStatusView } from './view';
 import { resolveExpectedTimezone } from './expectedTimezone';
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
-export const fleetTimeFiltersSchema = z
-  .object({
-    health: z.enum(TIME_SYNC_HEALTH).optional(),
-    finding: z.enum(TIME_SYNC_FINDING_CODES).optional(),
-    role: z.enum(TIME_SYNC_DOMAIN_ROLES).optional(),
-    orgId: z.string().uuid().optional(),
-    siteId: z.string().uuid().optional(),
-    deviceId: z.string().uuid().optional(),
-    domain: z.string().min(1).max(255).optional(),
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(100).default(50),
-  })
-  .strict();
-export type FleetTimeFilters = z.input<typeof fleetTimeFiltersSchema>;
+import { fleetTimeFiltersSchema, type FleetTimeFilters } from './fleetFilters';
+export { fleetTimeFiltersSchema, type FleetTimeFilters };
 export interface FleetTimeRow {
   deviceId: string;
   hostname: string;

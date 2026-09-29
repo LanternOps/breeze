@@ -5,7 +5,7 @@
  * Includes 2 custom apply tools (code + metadata) and 8 existing tools.
  */
 
-import { fleetTimeFiltersSchema } from './timeSync/fleet';
+import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
