@@ -31,8 +31,17 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
+vi.mock('../services/reportSeries/reconcile', () => ({
+  reconcileAllSeries: vi.fn(async () => undefined),
+  seriesChildGate: vi.fn(async () => 'run'),
+}));
+
 vi.mock('../db/schema', () => ({
+  reportSeries: { id: 'report_series.id', recipientRule: 'report_series.recipient_rule' },
   reports: {
+    seriesId: 'reports.series_id',
+    seriesRevision: 'reports.series_revision',
+    archivedAt: 'reports.archived_at',
     id: 'reports.id',
     orgId: 'reports.org_id',
     partnerId: 'reports.partner_id',
@@ -72,6 +81,7 @@ vi.mock('../db/schema', () => ({
     email: 'contacts.email',
   },
   reportScheduleRecipients: {
+    mode: 'report_schedule_recipients.mode',
     reportId: 'report_schedule_recipients.report_id',
     orgId: 'report_schedule_recipients.org_id',
     contactId: 'report_schedule_recipients.contact_id',

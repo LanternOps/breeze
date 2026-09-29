@@ -280,6 +280,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)', AUD_WORKER)],
     ['claimReportOccurrence', pinned(1, 'system DB context occurrence CAS by report id on a row findDueReports selected', AUD_WORKER)],
     ['processRunScheduledReport', pinned(4, 'system DB context, reads by id, re-asserts live partner authority per row before generating (#3198 W01 Task 6); run updates target the run it inserted', AUD_WORKER)],
+    ['loadGatedSeriesChild', pinned(1, 'system DB context re-read by id of the series child the job named, after seriesChildGate admitted it; series children are org-owned (reports_series_child_shape_chk) and processRunScheduledReport re-authorizes it exactly like any org-owned row', AUD_WORKER)],
     ['recordRunDelivery', pinned(1, 'system DB context; writes the delivery summary onto the run processRunScheduledReport just inserted, keyed on that run id (multi-org series W01)', AUD_WORKER)],
   ])],
   ['src/jobs/reportRunDeliveryReconciler.ts', new Map([
