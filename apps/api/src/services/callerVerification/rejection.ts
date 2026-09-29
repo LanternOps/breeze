@@ -27,6 +27,7 @@ import { lockContact, withSubjectLocks } from './locks';
 import { reachableContact } from './access';
 import { recordEffect } from './effects';
 import { revokeIntentsForSubject } from '../actionIntents/revokeIntentsForSubject';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 export async function handleRejection(verificationId: string): Promise<void> {
   assertInTransaction('handleRejection');
@@ -84,5 +85,6 @@ export async function fenceOverride(actor: CallerVerificationActor, orgId: strin
       .where(and(eq(v.orgId, orgId), eq(v.contactId, contactId), eq(v.status, 'rejected_by_user')));
     await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result,details)
       VALUES(${orgId}::uuid,'user',${actor.userId}::uuid,'caller_verification.fence_override','caller_verification',${contactId}::uuid,'success',${JSON.stringify({ reason: reason.trim() })}::jsonb)`);
+    markRequestAuditWritten();
   });
 }

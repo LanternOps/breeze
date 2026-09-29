@@ -21,6 +21,7 @@ import { DESKTOP_CONSENT_TIMEOUT_MS } from './consentTiming';
 import { RemoteSessionPromptPolicyError } from './consentGate';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
+import { markRequestAuditWritten } from '../../services/auditRequestTracking';
 
 // ============================================
 // TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
@@ -332,6 +333,7 @@ export async function logSessionAudit(
           ipAddress,
           result: 'success'
         });
+        markRequestAuditWritten();
       })
     );
   } catch (error) {

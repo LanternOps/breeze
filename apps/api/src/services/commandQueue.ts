@@ -74,6 +74,7 @@ import { CommandTypes, type CommandType } from './commandTypes';
 import type { AiOriginRef } from '@breeze/shared';
 import { aiOriginColumns } from './aiOriginColumns';
 import { createAuditLogAsync } from './auditService';
+import { markRequestAuditWritten } from './auditRequestTracking';
 
 export interface CommandPayload {
   [key: string]: unknown;
@@ -743,6 +744,9 @@ export async function queueCommand(
 
   if (command && AUDITED_COMMANDS.has(type)) {
     const commandId = command.id;
+    // Claimed up front, like createAuditLogAsync: the write below is
+    // fire-and-forget and may land after the request has returned.
+    markRequestAuditWritten();
     runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const [device] = await db
@@ -1440,6 +1444,8 @@ async function dispatchPreparedCommand(
     // Audit log for mutating commands (fire-and-forget).
     // Uses device info fetched in step 1 to avoid an RLS-gated query.
     if (AUDITED_COMMANDS.has(type)) {
+      // Claimed up front, like createAuditLogAsync (fire-and-forget write).
+      markRequestAuditWritten();
       withDbAccessContext(
         { scope: 'organization', orgId: device.orgId, accessibleOrgIds: [device.orgId] },
         () =>

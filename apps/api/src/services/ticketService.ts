@@ -19,6 +19,7 @@ import { ServiceManagementOffError, assertTicketCreationAllowed } from './servic
 import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
+import { markRequestAuditWritten } from './auditRequestTracking';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -339,6 +340,7 @@ export async function revalidateTicketAssignee(
     details: { from: ticket.assignedTo, to: null, reason: 'assignee_no_longer_eligible' },
     result: 'success',
   });
+  markRequestAuditWritten();
   return updated;
 }
 

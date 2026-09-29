@@ -194,6 +194,7 @@ const EXEMPT: Record<string, string> = {
   'jobs/topologyCollectionRetentionWorker.ts': 'retention, not target selection',
   'jobs/userRiskJobs.ts': 'scores users, not devices; the holding org has no users',
   'services/aiToolsTicketing.ts': 'identity match pinned to the ticket\'s own org',
+  'services/auditFallbackOrg.ts': 'request path: reads the org of the one device the request URL named, to file its audit row; not a selector',
   'services/auditOrgResolver.ts': 'resolves the org an audit row belongs to',
   'services/deviceOrgMove/moveDeviceOrgInTransaction.ts': 'request path: moves the one device its caller named, after that caller\'s own checks; not a selector',
   'services/monitors/networkCheckAlertDevice.ts': 'resolves a device inside the org chosen by networkCheckAlertSweep',

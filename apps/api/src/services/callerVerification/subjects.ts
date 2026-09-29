@@ -24,6 +24,7 @@ import type { BindingRow, EntraSubject, CallerVerificationActor } from './types'
 import { CallerVerificationRequiredError, CallerVerificationValidationError as Invalid } from './errors';
 import { reachableContact } from './access';
 import { withSubjectLocks } from './locks';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 const SYSTEM_ACTOR = '00000000-0000-0000-0000-000000000000';
 
@@ -68,6 +69,7 @@ async function audit(orgId: string, action: string, resourceId: string, userId: 
   await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result)
     VALUES(${orgId}::uuid,${userId ? 'user' : 'system'}::actor_type,${userId ?? SYSTEM_ACTOR}::uuid,
     ${action},'caller_verification',${resourceId}::uuid,'success')`);
+  markRequestAuditWritten();
 }
 
 async function claim(input: BindingClaim, source: 'directory_sync' | 'technician_attested', userId: string | null): Promise<BindingRow> {

@@ -10,6 +10,7 @@ import { requireTopologySiteAccess, type TopologyRequestContext } from './access
 import { drainTopologyOutbox } from './legacyImport';
 import { readLegacyImportCheckpoint } from './legacyImportState';
 import { loadTopologyFlags } from './flags';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 export class TopologyWriteError extends Error {
   constructor(public readonly code: string, public readonly status: 400 | 404 | 409 | 413 | 503, message: string,
@@ -109,4 +110,5 @@ export async function auditTopologyWrite(ctx: TopologyRequestContext, action: st
   await db.insert(auditLogs).values({ orgId: ctx.scope.orgId, actorType: 'user', actorId: ctx.auth.user.id, actorEmail: ctx.auth.user.email,
     action: `topology.${action}`, resourceType: action.startsWith('layout') ? 'topology_layout' : action.startsWith('relationship') ? 'topology_relationship' : action.startsWith('exclusion') ? 'topology_view_exclusion' : 'topology_node',
     resourceId, result: 'success', initiatedBy: 'manual', details: { siteId: ctx.scope.siteId, ...details } });
+  markRequestAuditWritten();
 }
