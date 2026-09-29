@@ -23,6 +23,7 @@ import {
   exportHistoryTimeCsv,
   historyTimeQuerySchema,
 } from '../services/timeSync/exports';
+import { captureException } from '../services/sentry';
 export const timeStatusRoutes = new Hono();
 timeStatusRoutes.use(
   '*',
@@ -34,26 +35,57 @@ timeStatusRoutes.use(
   ),
 );
 timeStatusRoutes.onError((error, c) => {
-  // Auth/scope/permission middleware throw HTTPException(401/403); rethrow so
-  // the global handler maps them instead of collapsing them into a 500.
-  if (error instanceof HTTPException) throw error;
   if (error instanceof FleetTimeForbidden)
     return c.json({ error: error.message }, 403);
-  console.error('[time-status] request failed', error);
-  return c.json({ error: 'Failed to read time synchronization data' }, 500);
+  // Everything else (HTTPException from auth/scope/permission middleware, DB
+  // failures, RLS denials, CONNECT_TIMEOUT) goes to the global app.onError: it
+  // maps HTTPException and is the only handler that diagnoses a pool timeout
+  // and reports to Sentry.
+  throw error;
 });
-function csvResponse(
+/**
+ * Streams a CSV export. The header and the first data page are read before the
+ * response is committed, inside the request's own DB context, so a failure at
+ * the start (bad range re-parse, RLS denial, DB outage) is a real 500 through
+ * onError instead of a 200 followed by a reset. Later pages run after the
+ * request transaction has ended, each in a fresh context carrying the caller's
+ * access; a failure there can no longer change the status, so it errors the
+ * stream (the client must not keep a truncated evidence file as complete) and
+ * is logged and reported here, because nothing downstream does either.
+ */
+async function csvResponse(
   c: Context,
   iterator: AsyncGenerator<string>,
   filename: string,
-): Response {
+): Promise<Response> {
   const context = getCurrentDbAccessContext();
   if (!context)
     throw new Error('Time export requires a database access context');
+  const primed: string[] = [];
+  let exhausted = false;
+  try {
+    while (!exhausted && primed.length < 2) {
+      const next = await iterator.next();
+      if (next.done) exhausted = true;
+      else primed.push(next.value);
+    }
+  } catch (error) {
+    await iterator.return(undefined);
+    throw error;
+  }
   const encoder = new TextEncoder();
   let cancelled = false;
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      const buffered = primed.shift();
+      if (buffered !== undefined) {
+        controller.enqueue(encoder.encode(buffered));
+        return;
+      }
+      if (exhausted) {
+        controller.close();
+        return;
+      }
       try {
         const next = await runOutsideDbContext(() =>
           withDbAccessContext(context, () => iterator.next()),
@@ -65,7 +97,14 @@ function csvResponse(
         }
         controller.enqueue(encoder.encode(next.value));
       } catch (error) {
-        if (!cancelled) controller.error(error);
+        if (!cancelled) {
+          console.error('[time-status] CSV export failed mid-stream', {
+            filename,
+            error,
+          });
+          captureException(error, c);
+          controller.error(error);
+        }
         await iterator.return(undefined);
       }
     },
@@ -89,7 +128,7 @@ timeStatusRoutes.get(
 timeStatusRoutes.get(
   '/export',
   zValidator('query', fleetTimeFiltersSchema),
-  (c) => {
+  async (c) => {
     const q = c.req.valid('query'),
       auth = c.get('auth');
     fleetScope(q, auth);
@@ -99,7 +138,7 @@ timeStatusRoutes.get(
 timeStatusRoutes.get(
   '/history/export',
   zValidator('query', historyTimeQuerySchema),
-  (c) => {
+  async (c) => {
     const { from, to, ...filters } = c.req.valid('query'),
       auth = c.get('auth');
     fleetScope(filters, auth);
