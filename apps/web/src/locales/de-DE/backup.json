@@ -705,6 +705,9 @@
     "rebuildErrorNotRestorable": "Dieser Snapshot kann nicht neu aufgebaut werden: Er ist nicht als Bare-Metal-wiederherstellbar markiert. Wählen Sie einen Snapshot des gesamten Computers, der als Bare-Metal-wiederherstellbar markiert ist, oder verwenden Sie die vollständige Wiederherstellung.",
     "rebuildErrorNotRestorableReasons": "Dieser Snapshot kann nicht neu aufgebaut werden: {{reasons}}.",
     "rebuildErrorHostUnsupported": "Der Rebuild-Host muss dasselbe Betriebssystem wie der Snapshot ausführen. Wählen Sie einen anderen Host.",
+    "rebuildErrorRecoveryInProgress": "Für dieses Gerät läuft bereits eine Bare-Metal-Wiederherstellung. Warten Sie, bis sie abgeschlossen ist, oder brechen Sie sie ab, und versuchen Sie es dann erneut.",
+    "rebuildErrorSnapshotNotFound": "Dieser Snapshot existiert nicht mehr. Laden Sie die Seite neu und wählen Sie einen anderen Snapshot.",
+    "rebuildErrorHostNotFound": "Der ausgewählte Rebuild-Host existiert nicht mehr. Wählen Sie einen anderen Host.",
     "enterAVmNameToContinue": "Geben Sie einen VM-Namen ein, um fortzufahren.",
     "enterAVmNameOnTheVmNameStep": "Geben Sie im Schritt „VM-Name“ einen VM-Namen ein, um die Wiederherstellung zu starten."
   },

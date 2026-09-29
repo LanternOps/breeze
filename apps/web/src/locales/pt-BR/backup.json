@@ -705,6 +705,9 @@
     "rebuildErrorNotRestorable": "Este snapshot não pode ser reconstruído: ele não está marcado como restaurável em bare metal. Escolha um snapshot da máquina inteira marcado como restaurável em bare metal ou use a restauração completa.",
     "rebuildErrorNotRestorableReasons": "Este snapshot não pode ser reconstruído: {{reasons}}.",
     "rebuildErrorHostUnsupported": "O host de reconstrução precisa executar o mesmo sistema operacional do snapshot. Escolha outro host.",
+    "rebuildErrorRecoveryInProgress": "Já existe uma recuperação bare metal em andamento para este dispositivo. Aguarde a conclusão ou cancele-a e tente novamente.",
+    "rebuildErrorSnapshotNotFound": "Este snapshot não existe mais. Atualize a página e escolha outro snapshot.",
+    "rebuildErrorHostNotFound": "O host de reconstrução selecionado não existe mais. Escolha outro host.",
     "enterAVmNameToContinue": "Insira um nome de VM para continuar.",
     "enterAVmNameOnTheVmNameStep": "Insira um nome de VM na etapa «Nome da VM» para iniciar a restauração."
   },

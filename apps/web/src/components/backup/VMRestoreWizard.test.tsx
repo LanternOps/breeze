@@ -565,6 +565,47 @@ describe('VMRestoreWizard — platform-matched rebuild host', () => {
     expect(body.rebuildHostDeviceId).toBe('windows-host-1');
   });
 
+  it.each([
+    {
+      name: 'uses the API reasons for a refusal without its own copy',
+      body: { error: 'snapshot_storage_identity_unknown', details: { reasons: ['The snapshot storage location could not be identified.'] } },
+      expected: 'The snapshot storage location could not be identified.',
+    },
+    {
+      name: 'explains a recovery already in progress',
+      body: { error: 'recovery_in_progress', details: { recoveryId: 'rec-9', status: 'running' } },
+      expected: /already in progress/i,
+    },
+    {
+      name: 'explains a snapshot that no longer exists',
+      body: { error: 'snapshot_not_found' },
+      expected: /snapshot no longer exists/i,
+    },
+    {
+      name: 'explains a rebuild host that no longer exists',
+      body: { error: 'rebuild_host_not_found' },
+      expected: /rebuild host no longer exists/i,
+    },
+  ])('rebuild refusal copy: $name', async ({ body, expected }) => {
+    mockWithSnapshots([windowsSnapshot]);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/restore/as-vm') return makeJsonResponse(body, false, 409);
+      return base(input, init);
+    });
+    await openRebuildFor(/Windows Server Snapshot/i);
+    fireEvent.click(await screen.findByRole('radio', { name: /hv-rebuild-01/i }));
+    fireEvent.change(screen.getByTestId('vm-restore-rebuild-output-path'), { target: { value: 'C:\\Rebuild\\srv-01.vhdx' } });
+    fireEvent.click(screen.getByRole('button', { name: /4\. Review/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Start Rebuild/i }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    const toast = showToastMock.mock.calls.find(([arg]) => arg.type === 'error')?.[0];
+    if (typeof expected === 'string') expect(toast?.message).toBe(expected);
+    else expect(toast?.message).toMatch(expected);
+    expect(toast?.message).not.toContain(body.error);
+  });
+
   it('clears the picked rebuild host when the snapshot platform changes', async () => {
     mockWithSnapshots([linuxSnapshot, windowsSnapshot]);
     await openRebuildFor(/Linux Server Snapshot/i);

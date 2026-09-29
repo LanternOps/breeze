@@ -145,24 +145,33 @@ const REBUILD_STEPS: readonly StepId[] = ['snapshot', 'mode', 'specs', 'review']
 /**
  * The restore routes answer some refusals with a bare machine token in
  * `error` (runAction would toast it verbatim). Map the rebuild-engine ones to
- * copy; for tokens that ship their own sentence in `message`
- * (hyperv_requires_windows_host, output_path_host_mismatch) use that.
+ * copy; for any other snake_case token, use the sentence the API ships with it
+ * (`message`, e.g. hyperv_requires_windows_host, or `details.reasons`, e.g.
+ * snapshot_storage_identity_unknown).
  */
 function friendlyRestoreError(t: TFunction, code: string, body: unknown): string | undefined {
   const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {};
-  if (code === 'snapshot_not_bare_metal_restorable') {
-    const details = record.details && typeof record.details === 'object' ? record.details as Record<string, unknown> : {};
-    const reasons = Array.isArray(details.reasons)
-      ? details.reasons.filter((r): r is string => typeof r === 'string' && r.trim() !== '')
-      : [];
-    return reasons.length > 0
-      ? t('vMRestoreWizard.rebuildErrorNotRestorableReasons', { reasons: reasons.join('; ') })
-      : t('vMRestoreWizard.rebuildErrorNotRestorable');
+  const details = record.details && typeof record.details === 'object' ? record.details as Record<string, unknown> : {};
+  const reasons = Array.isArray(details.reasons)
+    ? details.reasons.filter((r): r is string => typeof r === 'string' && r.trim() !== '').map((r) => r.trim())
+    : [];
+  switch (code) {
+    case 'snapshot_not_bare_metal_restorable':
+      return reasons.length > 0
+        ? t('vMRestoreWizard.rebuildErrorNotRestorableReasons', { reasons: reasons.join('; ') })
+        : t('vMRestoreWizard.rebuildErrorNotRestorable');
+    case 'rebuild_host_unsupported':
+      return t('vMRestoreWizard.rebuildErrorHostUnsupported');
+    case 'recovery_in_progress':
+      return t('vMRestoreWizard.rebuildErrorRecoveryInProgress');
+    case 'snapshot_not_found':
+      return t('vMRestoreWizard.rebuildErrorSnapshotNotFound');
+    case 'rebuild_host_not_found':
+      return t('vMRestoreWizard.rebuildErrorHostNotFound');
   }
-  if (code === 'rebuild_host_unsupported') return t('vMRestoreWizard.rebuildErrorHostUnsupported');
-  if (/^[a-z]+(?:_[a-z]+)+$/.test(code) && typeof record.message === 'string' && record.message.trim()) {
-    return record.message.trim();
-  }
+  if (!/^[a-z]+(?:_[a-z]+)+$/.test(code)) return undefined;
+  if (typeof record.message === 'string' && record.message.trim()) return record.message.trim();
+  if (reasons.length > 0) return reasons.join(' ');
   return undefined;
 }
 

@@ -705,6 +705,9 @@
     "rebuildErrorNotRestorable": "Cet instantané ne peut pas être reconstruit : il n’est pas marqué comme restaurable en bare metal. Choisissez un instantané de machine complète marqué comme restaurable en bare metal, ou utilisez la restauration complète.",
     "rebuildErrorNotRestorableReasons": "Cet instantané ne peut pas être reconstruit : {{reasons}}.",
     "rebuildErrorHostUnsupported": "L’hôte de reconstruction doit exécuter le même système d’exploitation que l’instantané. Choisissez un autre hôte.",
+    "rebuildErrorRecoveryInProgress": "Une récupération bare metal est déjà en cours pour cet appareil. Attendez qu’elle se termine ou annulez-la, puis réessayez.",
+    "rebuildErrorSnapshotNotFound": "Cet instantané n’existe plus. Actualisez la page et choisissez un autre instantané.",
+    "rebuildErrorHostNotFound": "L’hôte de reconstruction sélectionné n’existe plus. Choisissez un autre hôte.",
     "enterAVmNameToContinue": "Saisissez un nom de VM pour continuer.",
     "enterAVmNameOnTheVmNameStep": "Saisissez un nom de VM à l’étape « Nom de la VM » pour lancer la restauration."
   },

@@ -705,6 +705,9 @@
     "rebuildErrorNotRestorable": "This snapshot can't be rebuilt: it isn't marked as bare-metal restorable. Pick a whole-machine snapshot marked Bare-metal restorable, or use Full Restore.",
     "rebuildErrorNotRestorableReasons": "This snapshot can't be rebuilt: {{reasons}}.",
     "rebuildErrorHostUnsupported": "The rebuild host must run the same operating system as the snapshot. Pick another host.",
+    "rebuildErrorRecoveryInProgress": "A bare-metal recovery for this device is already in progress. Wait for it to finish or cancel it, then try again.",
+    "rebuildErrorSnapshotNotFound": "This snapshot no longer exists. Refresh the page and pick another snapshot.",
+    "rebuildErrorHostNotFound": "The selected rebuild host no longer exists. Pick another host.",
     "enterAVmNameToContinue": "Enter a VM name to continue.",
     "enterAVmNameOnTheVmNameStep": "Enter a VM name on the VM Name step to start the restore."
   },
