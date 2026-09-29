@@ -13,6 +13,7 @@ import {
   replaceSeriesTargets,
   seriesFriendlyError,
   setChildRecipientOverride,
+  transferSeriesOwner,
 } from './seriesApi';
 
 const json = (payload: unknown, status = 200) =>
@@ -65,6 +66,24 @@ describe('seriesApi', () => {
       type: 'error',
       message: "Quick Support and the unassigned-devices holding organization can't be covered by a multi-org report.",
     }));
+  });
+
+  // Pre-release sweep: the server says WHY an owner is refused
+  // (resolveLivePartnerReportAuthority reasons); the toast must say the same.
+  it.each([
+    ['permission_removed', "That user can't own a multi-org report: their role doesn't grant the Reports export permission (reports:export)."],
+    ['partner_access_not_all', "That user can't own a multi-org report: they need access to every organization."],
+    ['user_inactive', "That user's account isn't active, so they can't own a multi-org report."],
+    ['membership_removed', "That user is no longer a member of your partner, so they can't own a multi-org report."],
+    ['owner_not_partner_user', "That user doesn't belong to your partner, so they can't own a multi-org report."],
+    ['partner_inaccessible', "That user doesn't belong to your partner, so they can't own a multi-org report."],
+    ['tenant_inactive', "Your partner account isn't active, so a multi-org report can't get a new owner."],
+    ['some_future_reason', "That user can't own a multi-org report."],
+    [undefined, "That user can't own a multi-org report."],
+  ])('transfer-owner refusal with reason %s names that reason', async (reason, message) => {
+    fetchWithAuth.mockReturnValueOnce(json({ error: 'series_owner_ineligible', ...(reason ? { reason } : {}) }, 400));
+    await expect(transferSeriesOwner('s-1', 'u-2', { errorFallback: 'fail' })).rejects.toMatchObject({ status: 400 });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message }));
   });
 
   it('previews without a toast and throws on failure', async () => {

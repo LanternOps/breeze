@@ -46,11 +46,34 @@ const FRIENDLY_ERROR_KEYS: Readonly<Record<string, string>> = {
   series_authority_unverifiable: 'reports:reports.series.errors.seriesAuthorityUnverifiable',
 };
 
-export function seriesFriendlyError(code: string): string | undefined {
-  const key = FRIENDLY_ERROR_KEYS[code];
+/**
+ * `series_owner_ineligible` carries the live authority resolver's `reason`
+ * (services/reportSeries/authority.ts: owner_not_partner_user, or a
+ * resolveLivePartnerReportAuthority reason). Each gets copy naming THAT
+ * cause; an unknown or absent reason falls back to the reason-neutral line.
+ */
+const OWNER_INELIGIBLE_REASON_KEYS: Readonly<Record<string, string>> = {
+  permission_removed: 'reports:reports.series.errors.seriesOwnerIneligiblePermission',
+  partner_access_not_all: 'reports:reports.series.errors.seriesOwnerIneligibleOrgAccess',
+  user_inactive: 'reports:reports.series.errors.seriesOwnerIneligibleInactive',
+  membership_removed: 'reports:reports.series.errors.seriesOwnerIneligibleMembership',
+  owner_not_partner_user: 'reports:reports.series.errors.seriesOwnerIneligibleNotPartner',
+  partner_inaccessible: 'reports:reports.series.errors.seriesOwnerIneligibleNotPartner',
+  tenant_inactive: 'reports:reports.series.errors.seriesOwnerIneligibleTenantInactive',
+};
+
+function bodyReason(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const reason = (body as { reason?: unknown }).reason;
+  return typeof reason === 'string' ? reason : undefined;
+}
+
+export function seriesFriendlyError(code: string, body?: unknown): string | undefined {
+  const reason = code === 'series_owner_ineligible' ? bodyReason(body) : undefined;
+  const key = (reason && OWNER_INELIGIBLE_REASON_KEYS[reason]) || FRIENDLY_ERROR_KEYS[code];
   return key ? i18n.t(/* i18n-dynamic */ key) : undefined;
 }
-const friendly = (code: string) => seriesFriendlyError(code);
+const friendly = (code: string, _message: string, body?: unknown) => seriesFriendlyError(code, body);
 
 async function readJson(res: Response): Promise<unknown> {
   return res.json().catch(() => null);
@@ -90,7 +113,10 @@ export async function previewSeriesRecipients(
 }
 
 /** Partner users who could own a series (spec §3.4): active, org_access 'all'.
- *  The server re-checks site scope (400 series_owner_ineligible). */
+ *  The server also requires the membership's role to grant reports:export and
+ *  answers 400 series_owner_ineligible + `reason` otherwise. GET /users does
+ *  not expose that grant, so the list cannot pre-filter on it; the refusal
+ *  names the missing piece instead (OWNER_INELIGIBLE_REASON_KEYS). */
 export async function fetchSeriesOwnerCandidates(): Promise<PartnerUserOption[] | 'forbidden'> {
   const res = await fetchWithAuth('/users', { skipOrgIdInjection: true });
   if (res.status === 403) return 'forbidden';
