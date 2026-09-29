@@ -4,6 +4,8 @@ import type { PostureControls, PostureProduct, PostureSummary } from '../types/p
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 import type { HardwareLifecycleSummary } from '../types/hardwareLifecycleReport';
 import { renderHardwareLifecycleReport } from './hardwareLifecyclePdf';
+import type { BackupStatusReportData } from '../types/backupStatusReport';
+import { renderBackupStatusReport } from './backupStatusReport';
 import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
 import type { IdentityAccessSummary } from '../types/identityAccessReport';
 // Namespace import, not a named one: the arm below must be observable by a
@@ -159,7 +161,7 @@ export type BuildOpts = {
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary;
+    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | BackupStatusReportData;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -201,6 +203,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   ai_fleet_design: 'Fleet Design',
   identity_access_review: 'Identity & Access Review',
   hardware_lifecycle: 'Hardware Lifecycle',
+  backup_status: 'Backup Status',
   threat_detection_review: 'Threat Detection Review',
   endpoint_management_review: 'Endpoint Management Review',
   vulnerability_management: 'Vulnerability Management',
@@ -2045,6 +2048,26 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary as HardwareLifecycleSummary,
       { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null, contactEmail: opts.branding?.contactEmail ?? null, contactName: opts.branding?.contactName ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'backup_status'
+    && opts.summary
+    && Array.isArray((opts.summary as BackupStatusReportData).rows)
+  ) {
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderBackupStatusReport(
+      doc,
+      opts.summary as BackupStatusReportData,
+      { generatedAt: opts.generatedAt },
       {
         C,
         PAGE,

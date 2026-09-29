@@ -9,7 +9,8 @@
  * produces this with `satisfies`, the shared PDF renderer consumes it, and
  * every field must survive a JSON round-trip through `report_runs.result`.
  */
-import type { BackupHealthRow, BackupHealthSummary, BackupRecency, BackupStatusBucketId } from './backupHealth';
+import type { BackupHealthRow, BackupHealthSummary, BackupRecency } from './backupHealth';
+import type { BackupStatusBucketId } from '../utils/backupHealth';
 
 /**
  * The six buckets `bucketForBackupStatus` (W01, `./backupHealth`) sorts every
