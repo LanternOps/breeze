@@ -62,8 +62,28 @@ if [ -z "$arch" ] || [ -z "$breeze_backup" ] || [ -z "$version" ] || [ -z "$out"
   echo "usage: build.sh --arch amd64|arm64 --breeze-backup <path> --version <v> --out <dir>" >&2
   exit 1
 fi
+case "$arch" in
+  amd64|arm64) ;;
+  *) echo "--arch must be amd64 or arm64: $arch" >&2; exit 1 ;;
+esac
 if [ ! -s "$breeze_backup" ]; then
   echo "breeze-backup binary not found or empty: $breeze_backup" >&2
+  exit 1
+fi
+
+# The media must be built on a host whose dpkg architecture matches
+# --arch. live-build's bootstrap stage calls Check_crossarchitectures,
+# which on an amd64 host only accepts amd64/i386 targets unless
+# --bootstrap-qemu-arch/--bootstrap-qemu-static are configured. For an
+# arm64 target it therefore prints "skipping ... foreign architecture(s)",
+# exits 0 without bootstrapping, and the next stage dies with the
+# misleading "the following stage is required to be done first:
+# bootstrap" (issue #6731: every arm64 release build failed this way).
+# Fail up front with the real reason instead; build arm64 media on an
+# arm64 host (the release workflow uses a native arm64 runner).
+host_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+if [ -n "$host_arch" ] && [ "$host_arch" != "$arch" ]; then
+  echo "cannot build $arch recovery media on an $host_arch host: live-build skips its bootstrap stage for a foreign architecture. Build on a native $arch host." >&2
   exit 1
 fi
 
