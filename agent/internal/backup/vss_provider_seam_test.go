@@ -36,9 +36,16 @@ type fakeVSSProvider struct {
 	createCalls      int
 	releaseCalls     int
 	requestedVolumes []string
+
+	// onCreate, when set, runs at the start of CreateShadowCopy so a test can
+	// order the snapshot against other steps of the run.
+	onCreate func()
 }
 
 func (f *fakeVSSProvider) CreateShadowCopy(_ context.Context, volumes []string) (*vss.VSSSession, error) {
+	if f.onCreate != nil {
+		f.onCreate()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCalls++

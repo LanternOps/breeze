@@ -70,6 +70,13 @@ var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before m
 // would otherwise leave the system-state fail-loud/warning branches uncovered.
 var collectSystemState = systemstate.CollectSystemStateWithOptions
 
+// flushRegistryBeforeSnapshot runs immediately before the run's VSS shadow
+// copy is created: it writes the loaded registry hives' in-memory changes to
+// disk, so the snapshot (and the hives captured from it) includes registry
+// writes made just before the backup (#7367). Best effort; a seam so tests
+// can order it against snapshot creation.
+var flushRegistryBeforeSnapshot = systemstate.FlushRegistryHives
+
 // collectLayout is the seam over layout.Collect (disk layout for bare-metal
 // rebuilds, spec §5.2). Same rationale as collectSystemState above.
 var collectLayout = layout.Collect
@@ -643,6 +650,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
+		// Write in-memory registry changes to the hive files first, so the
+		// snapshot's hives (the system-state capture and the whole-machine
+		// walk both read them from it) include recent writes (#7367). Best
+		// effort: it logs and never stops the run.
+		flushRegistryBeforeSnapshot()
 		vssStart := time.Now()
 		vssCtx, cancel := context.WithTimeout(runCtx, 10*time.Minute)
 		session, vssErr := provider.CreateShadowCopy(vssCtx, extractVolumes(m.config.Paths))
