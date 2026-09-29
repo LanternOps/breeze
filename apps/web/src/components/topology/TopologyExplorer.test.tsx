@@ -55,6 +55,19 @@ it('measures newly expanded nodes when the site graph revision is unchanged', as
   await waitFor(() => expect(container.querySelector(`[data-node-id="${added.id}"]`)).toHaveTextContent('Expanded peer'));
 });
 
+it('does not restart the layout worker when a repeat measurement reports unchanged card sizes (#7285)', async () => {
+  const resized: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resized.push(callback); } observe() {} disconnect() {} });
+  const posted: unknown[] = [];
+  vi.stubGlobal('Worker', class { onmessage = null; onerror = null; postMessage(request: unknown) { posted.push(request); } terminate() {} });
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await waitFor(() => expect(posted).toHaveLength(1));
+  // A ResizeObserver callback with no real size change (it always fires once on observe).
+  resized.forEach((callback) => callback());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(posted).toHaveLength(1);
+});
+
 it('enables the physical view from the capability and offers the overview from an empty physical view', async () => {
   const settings = topologySettingsFixture(); settings.capabilities.physical = { available: true, reason: null };
   vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('view=physical')

@@ -10,6 +10,20 @@ const intersects = (a: LayoutPosition, ab: LayoutBox, b: LayoutPosition, bb: Lay
 
 const portId = (nodeId: string, port: string) => `${nodeId}:${port}`;
 
+/**
+ * Crossing-minimisation effort (ELK `thoroughness`, default 7) by graph size,
+ * counted as visible nodes + edges. Full effort for small graphs, where it is
+ * cheap and most visible. Less for large projections, which must lay out well
+ * inside the controller's 3 s budget on the reference host (§9: V1000 worker
+ * layout ≤ 3 s; #7285). The value is still pinned per size, so output stays
+ * deterministic.
+ */
+export function layeredThoroughness(elements: number): number {
+  if (elements <= 800) return 7; // V200 (550) and every smaller view
+  if (elements <= 2_000) return 3; // V500 (1,500)
+  return 1; // V1000 (3,000) up to the 5,000-element packing cap
+}
+
 export function toElkGraph(request: LayoutRequest): ElkNode {
   // Interface ports (M2): an edge with a known endpoint port attaches to an ELK
   // port on that node, so parallel cables between one pair stay distinct.
@@ -34,10 +48,20 @@ export function toElkGraph(request: LayoutRequest): ElkNode {
   }
   return {
     id: 'root', children: [...children, ...groups.values()],
+    // Cost notes (#7285): do not set `elk.layered.considerModelOrder.strategy`.
+    // Its "sort by input model" pass took ~70% of V500 layout time and made
+    // V1000 take ~40 s. It only biased the order within a layer towards our
+    // role/UUID sort, which carries no meaning on screen. Breadth-first cycle
+    // breaking starts from that role-sorted model order (Internet and gateways
+    // first, §7.2), so the graph gets far fewer layers. That means far fewer
+    // long-edge dummy nodes to route and uncross (V1000: 54 → 23 layers).
+    // Determinism comes from the pinned seed plus the sorted input above.
     layoutOptions: {
       'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.randomSeed': '7',
       'elk.spacing.nodeNode': '32', 'elk.layered.spacing.nodeNodeBetweenLayers': '96',
-      'elk.hierarchyHandling': 'INCLUDE_CHILDREN', 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      'elk.layered.cycleBreaking.strategy': 'BFS_NODE_ORDER',
+      'elk.layered.thoroughness': String(layeredThoroughness(request.nodes.length + request.edges.length)),
     },
     edges,
   };

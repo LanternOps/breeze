@@ -20,6 +20,11 @@ import TopologyConfiguration from './TopologyConfiguration';
 import MonitoringPolicyPanel from './MonitoringPolicyPanel';
 import RecentChangesPanel from './RecentChangesPanel';
 
+const sameBoxes = (a: LayoutBox[], b: LayoutBox[]) => a.length === b.length && a.every((box, index) => {
+  const other = b[index]!;
+  return box.id === other.id && box.role === other.role && box.width === other.width && box.height === other.height;
+});
+
 export default function TopologyExplorer({ siteId, focusNodeId, settings }: { siteId: string; focusNodeId?: string; settings: TopologySettings }) {
   const { t } = useTranslation('topology');
   const [navigation, setNavigation] = useHashState<TopologyNavigation>({ siteId, view: 'overview', search: '' }, (hash) => {
@@ -83,11 +88,15 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     let alive = true;
     const measure = () => {
       if (!alive || !measured.current) return;
-      setBoxes(nodes.map((node) => {
-        const element = [...measured.current!.children].find((child) => child.getAttribute('data-node-id') === node.id);
-        const rect = element?.getBoundingClientRect();
+      // One pass over the measurement cards, not a scan per node (O(n²) at V1000).
+      const elements = new Map([...measured.current.children].map((child) => [child.getAttribute('data-node-id'), child]));
+      const next = nodes.map((node) => {
+        const rect = elements.get(node.id)?.getBoundingClientRect();
         return { id: node.id, role: 'kind' in node ? node.kind : node.role, width: Math.min(360, Math.max(220, rect?.width || 220)), height: Math.min(240, Math.max(88, rect?.height || 88)) };
-      }));
+      });
+      // Unchanged sizes keep the same array. A new identity would re-run
+      // `arrange`, which terminates the in-flight worker and starts the layout over.
+      setBoxes((previous) => sameBoxes(previous, next) ? previous : next);
     };
     void (document.fonts?.ready ?? Promise.resolve()).then(measure);
     const observer = new ResizeObserver(measure); if (measured.current) observer.observe(measured.current);
