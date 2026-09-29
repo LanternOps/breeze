@@ -554,6 +554,22 @@
         "too_many_responses": "plus de dix réponses seraient nécessaires",
         "auto_resolve_conditions": "les conditions de résolution personnalisées ne peuvent pas être conservées",
         "target_unconvertible": "la cible de la réponse ne peut pas être convertie",
+        "already_managed": "déjà gérée par un moniteur",
+        "no_org": "la vérification n’appartient à aucune organisation",
+        "asset_missing": "l’actif découvert associé n’existe plus",
+        "condition_invalid": "les paramètres de la vérification ne forment pas une condition de moniteur valide",
+        "no_active_rules": "la vérification n’a aucune règle d’alerte active",
+        "multiple_network_rules": "la vérification a plus d’une règle d’alerte active",
+        "network_predicate_unsupported": "la condition d’alerte n’a pas d’équivalent dans les moniteurs",
+        "network_threshold_out_of_range": "le seuil d’échec est hors limites (100 échecs consécutifs au maximum)",
+        "site_binding_unrepresentable": "la vérification liée à un site n’est associée à aucun actif découvert",
+        "config_override_unrepresentable": "la cible ou le délai personnalisé ne peut pas être conservé",
+        "built_in": "règle système intégrée ; elle continue d’alerter d’elle-même",
+        "no_rules": "le modèle n’a aucune règle à convertir",
+        "target_or_owner": "la cible ou le propriétaire d’une règle diffère de son modèle",
+        "blocked": "la conversion est bloquée",
+        "disabled_response_automation": "l’automatisation de réponse est désactivée",
+        "alert_workflow_kept": "le flux d’alerte est conservé tel quel",
         "unknown": "conversion refusée ; vérifiez la source"
       }
     }

@@ -24,7 +24,7 @@ it('reviews both outcomes and converts only representable checks', async () => {
   fireEvent.click(screen.getByTestId('network-check-conversion-review'));
   expect(screen.getByText('Preserves history')).toBeInTheDocument();
   expect(screen.getByText('unconvertible:network_predicate_unsupported')).toBeInTheDocument();
-  expect(screen.getByText('conversion was refused; review the source')).toBeInTheDocument();
+  expect(screen.getByText('alert condition has no monitor equivalent')).toBeInTheDocument();
   fireEvent.click(screen.getByTestId('network-check-conversion-confirm'));
   await waitFor(() => expect(request).toHaveBeenCalledWith('/monitor-definitions/conversion/network-checks/convert', {
     method: 'POST', body: JSON.stringify({ orgId: 'org-1', previewHash: 'a'.repeat(64) }),

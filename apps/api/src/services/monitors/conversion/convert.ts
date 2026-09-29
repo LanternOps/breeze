@@ -125,7 +125,7 @@ async function buildPolicyPreviewInTx(policyId: string, auth: AuthContext, tx: D
  * branch defers the throw rather than making the call work under an ambient
  * context; no production worker takes it.
  */
-async function withCallerContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+export async function withCallerContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()) return fn();
   return withDbAccessContext(dbAccessContextFromAuth(auth), fn);
 }

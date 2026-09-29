@@ -554,6 +554,22 @@
         "too_many_responses": "servirebbero più di dieci risposte",
         "auto_resolve_conditions": "impossibile mantenere le condizioni di risoluzione personalizzate",
         "target_unconvertible": "impossibile convertire la destinazione della risposta",
+        "already_managed": "già gestita da un monitor",
+        "no_org": "la verifica non appartiene a nessuna organizzazione",
+        "asset_missing": "l’asset rilevato collegato non esiste più",
+        "condition_invalid": "le impostazioni della verifica non formano una condizione di monitor valida",
+        "no_active_rules": "la verifica non ha alcuna regola di avviso attiva",
+        "multiple_network_rules": "la verifica ha più di una regola di avviso attiva",
+        "network_predicate_unsupported": "la condizione di avviso non ha un equivalente nei monitor",
+        "network_threshold_out_of_range": "la soglia di errore è fuori intervallo (al massimo 100 errori consecutivi)",
+        "site_binding_unrepresentable": "la verifica legata a una sede non è collegata ad alcun asset rilevato",
+        "config_override_unrepresentable": "la destinazione o il timeout personalizzato non può essere mantenuto",
+        "built_in": "regola di sistema integrata; continua a generare avvisi da sola",
+        "no_rules": "il modello non ha regole da convertire",
+        "target_or_owner": "la destinazione o il proprietario di una regola differisce dal suo modello",
+        "blocked": "la conversione è bloccata",
+        "disabled_response_automation": "l’automazione della risposta è disattivata",
+        "alert_workflow_kept": "il flusso di avvisi resta invariato",
         "unknown": "conversione rifiutata; verifica l’origine"
       }
     }

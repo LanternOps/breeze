@@ -579,3 +579,12 @@ it('self-manages the three pre-assignment routes and nothing near them', () => {
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/pre-assignment/devices/abc-123/assign')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/move-org')).toBe(false);
 });
+
+it('self-manages the per-rule convert-to-monitor POST (its converter opens its own serializable transaction) and no sibling route', () => {
+  const rule = '11111111-1111-4111-8111-111111111111';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}/`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/monitor-definitions/convert-from-rule/${rule}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}/extra`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/monitor-definitions')).toBe(false);
+});

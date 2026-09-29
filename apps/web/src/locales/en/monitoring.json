@@ -554,6 +554,22 @@
         "too_many_responses": "more than ten responses would be required",
         "auto_resolve_conditions": "custom resolution conditions cannot be preserved",
         "target_unconvertible": "the response target cannot be converted",
+        "already_managed": "already managed by a monitor",
+        "no_org": "check does not belong to an organization",
+        "asset_missing": "the linked discovered asset no longer exists",
+        "condition_invalid": "check settings do not form a valid monitor condition",
+        "no_active_rules": "check has no active alert rule",
+        "multiple_network_rules": "check has more than one active alert rule",
+        "network_predicate_unsupported": "alert condition has no monitor equivalent",
+        "network_threshold_out_of_range": "failure threshold is out of range (at most 100 consecutive failures)",
+        "site_binding_unrepresentable": "site-bound check is not linked to a discovered asset",
+        "config_override_unrepresentable": "custom target or timeout override cannot be preserved",
+        "built_in": "built-in system rule; it keeps alerting on its own",
+        "no_rules": "template has no rules to convert",
+        "target_or_owner": "a rule's target or owner differs from its template",
+        "blocked": "conversion is blocked",
+        "disabled_response_automation": "response automation is disabled",
+        "alert_workflow_kept": "alert workflow kept as is",
         "unknown": "conversion was refused; review the source"
       }
     }
