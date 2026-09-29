@@ -266,6 +266,26 @@ describe('InvoiceDetail', () => {
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({ amount: 50, method: 'check' });
   });
 
+  it('blocks recording a payment larger than the balance before the confirm dialog', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-form')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '120.01' } });
+    expect(screen.getByTestId('invoice-payment-overpayment')).toHaveTextContent('$120.00');
+    expect(screen.getByTestId('invoice-payment-submit')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('invoice-payment-submit'));
+    expect(screen.queryByTestId('invoice-payment-confirm')).not.toBeInTheDocument();
+
+    // Exactly the balance is allowed.
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '120.00' } });
+    expect(screen.queryByTestId('invoice-payment-overpayment')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-payment-submit')).toBeEnabled();
+  });
+
   it.each([true, false])('warns about a QuickBooks reversal only when the record is untouched (%s)', async (providerRecordUntouched) => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {

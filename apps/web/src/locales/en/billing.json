@@ -1952,7 +1952,8 @@
       "inProvider": "In {{provider}}",
       "syncingToProvider": "Syncing…",
       "providerSyncFailed": "{{provider}} sync failed",
-      "reverseInProviderToo": "Reverse this in {{provider}} too"
+      "reverseInProviderToo": "Reverse this in {{provider}} too",
+      "overpayment": "Amount is more than the balance due ({{balance}})."
     },
     "requestPayment": {
       "invoiceSent": "Invoice sent",

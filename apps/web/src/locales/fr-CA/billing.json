@@ -1952,7 +1952,8 @@
       "inProvider": "Dans {{provider}}",
       "syncingToProvider": "Synchronisation…",
       "providerSyncFailed": "Échec de la synchronisation {{provider}}",
-      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}"
+      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}",
+      "overpayment": "Le montant dépasse le solde dû ({{balance}})."
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",

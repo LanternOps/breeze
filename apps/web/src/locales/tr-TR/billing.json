@@ -1952,7 +1952,8 @@
       "inProvider": "{{provider}} tarafında",
       "syncingToProvider": "Eşitleniyor…",
       "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",
-      "reverseInProviderToo": "Bu ödemeyi {{provider}} tarafında da iptal edin"
+      "reverseInProviderToo": "Bu ödemeyi {{provider}} tarafında da iptal edin",
+      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla."
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",
