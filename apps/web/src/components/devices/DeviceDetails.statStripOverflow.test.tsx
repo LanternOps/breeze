@@ -74,4 +74,21 @@ describe('DeviceDetails overview stat strip (#7153)', () => {
     expect(labelRow).not.toBeNull();
     expect(labelRow!.className).not.toMatch(/whitespace-nowrap/);
   });
+
+  // 1024px: the Activity rail sits beside the strip (lg:flex-row), so the
+  // strip is narrow. Both groups must stack and wrap below xl so labels and
+  // values never collide or clip.
+  it('stacks the Health/Activity groups below xl and lets each group wrap', () => {
+    render(<DeviceDetails device={device} />);
+    const healthBlock = screen.getByText('CPU').closest('div')!.parentElement!.parentElement!;
+    const strip = healthBlock.parentElement!;
+    expect(strip.className).toMatch(/xl:flex-row/);
+    expect(strip.className).not.toMatch(/(^|\s)sm:flex-row/);
+    expect(healthBlock).toHaveClass('flex-wrap');
+    const activityBlock = healthBlock.nextElementSibling!.nextElementSibling!;
+    expect(activityBlock).toHaveClass('flex-wrap');
+    // The divider is only meaningful when the groups sit side by side.
+    expect(healthBlock.nextElementSibling!.className).toMatch(/xl:block/);
+    expect(healthBlock.nextElementSibling!.className).not.toMatch(/sm:block/);
+  });
 });
