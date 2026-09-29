@@ -62,32 +62,16 @@ func readStatus(ctx context.Context, sys System, events []Event) Status {
 		}
 		return native
 	}
-	// Branch B: only proven numeric tokens, then event insertion strings.
+	// Branch B: only proven numeric tokens, then the newest event 35.
 	tokens := unknownStatus()
 	if raw, e := sys.W32tmStatus(ctx); e == nil {
 		tokens = parseW32tmTokens(string(raw))
 	}
-	best := unknownStatus()
-	for _, e := range events {
-		if e.EventID != 35 && e.EventID != 37 {
-			continue
-		}
-		if best.LastSuccessfulSyncAt != nil && !e.OccurredAt.After(*best.LastSuccessfulSyncAt) {
-			continue
-		}
-		src, kind := eventSource(e)
-		if src == "" {
-			continue
-		}
-		best = Status{Method: "events", Source: ptr(src), SourceKind: kind, LastSuccessfulSyncAt: ptr(e.OccurredAt.UTC())}
-	}
 	if tokens.Source != nil {
 		tokens.Method = "w32tm_tokens"
-		if best.Source != nil && strings.EqualFold(*best.Source, *tokens.Source) {
-			tokens.LastSuccessfulSyncAt = best.LastSuccessfulSyncAt
-		}
 		return tokens
 	}
+	best := eventStatus(events)
 	if tokens.Stratum != nil {
 		best.Stratum = tokens.Stratum
 	}
@@ -95,4 +79,39 @@ func readStatus(ctx context.Context, sys System, events []Event) Status {
 		best.PollIntervalSeconds = tokens.PollIntervalSeconds
 	}
 	return best
+}
+
+// eventStatus reads the source from the newest event 35 ("now synchronizing
+// with"), the only event that names the chosen source. Event 37 names a peer
+// that is receiving data: on a Hyper-V guest NtpClient keeps emitting 37 for
+// its peer while VMICTimeProvider is the active source (Task 1 spike), so a
+// 37 is never a source witness. If the newest 35 is not host(+flags) — for
+// example the VM IC provider's display name — the source is unknown; an
+// older 35 is not a fallback, because it no longer names the chosen source.
+//
+// LastSuccessfulSyncAt stays nil: 35/37 fire on service start and source
+// change, not on every sync (lab VM history clusters at reboots with gaps of
+// up to three weeks while in sync), so their time would raise a false
+// sync_stale. The events stay in the snapshot's event list, where the server
+// uses them as success signals (spec §5.3, §14 "last sync unknown").
+func eventStatus(events []Event) Status {
+	var newest *Event
+	for i := range events {
+		e := &events[i]
+		if e.EventID != 35 {
+			continue
+		}
+		if newest == nil || e.OccurredAt.After(newest.OccurredAt) ||
+			(e.OccurredAt.Equal(newest.OccurredAt) && e.RecordID > newest.RecordID) {
+			newest = e
+		}
+	}
+	if newest == nil {
+		return unknownStatus()
+	}
+	src, kind := eventSource(*newest)
+	if src == "" {
+		return unknownStatus()
+	}
+	return Status{Method: "events", Source: ptr(src), SourceKind: kind}
 }
