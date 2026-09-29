@@ -81,9 +81,13 @@ function privateBindAddress(value: string): boolean {
   const version = isIP(value);
   if (version === 4) {
     const [first, second = -1] = value.split('.').map(Number);
+    // RFC1918, plus RFC 6598 shared space (100.64.0.0/10): Azure Container Apps
+    // workload-profile replicas only get an address from its 100.100.0.0/17 overlay.
+    // Neither range is internet-routable.
     return first === 10
       || (first === 172 && second >= 16 && second <= 31)
-      || (first === 192 && second === 168);
+      || (first === 192 && second === 168)
+      || (first === 100 && second >= 64 && second <= 127);
   }
   if (version === 6) {
     const normalized = value.toLowerCase();
