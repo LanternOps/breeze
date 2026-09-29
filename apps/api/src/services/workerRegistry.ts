@@ -444,6 +444,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'timeSyncRetention',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/timeSyncRetention');
+      return {
+        init: m.initializeTimeSyncRetention,
+        shutdown: m.shutdownTimeSyncRetention,
+      };
+    },
+  },
+  {
     name: 'logCorrelationWorker',
     placement: 'global',
     load: async () => {
