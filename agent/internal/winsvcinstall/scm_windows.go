@@ -147,14 +147,15 @@ func (x *scmService) SetRecoveryActions() error {
 // RequestStart passes no arguments: the command line, including "run", lives in
 // the registration itself, and start-time arguments would not survive an SCM
 // restart of the service.
-func (x *scmService) RequestStart() error {
-	if err := x.s.Start(); err != nil {
-		if errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
-			return ErrAlreadyRunning
-		}
-		return err
+func (x *scmService) RequestStart() error { return startRequestError(x.s.Start()) }
+
+// startRequestError translates the SCM's "already running" answer into the
+// neutral ErrAlreadyRunning; every other error passes through unchanged.
+func startRequestError(err error) error {
+	if errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+		return ErrAlreadyRunning
 	}
-	return nil
+	return err
 }
 
 func (x *scmService) Close() error { return x.s.Close() }
