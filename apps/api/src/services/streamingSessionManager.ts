@@ -51,6 +51,7 @@ import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiA
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './llm/sdkChildEnvGuards';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -223,6 +224,10 @@ export function buildClaudeSdkChildEnv(
   const env: Record<string, string> = {
     CI: 'true',
     CLAUDE_AGENT_SDK_CLIENT_APP: source.CLAUDE_AGENT_SDK_CLIENT_APP ?? 'breeze-api/ai-agent',
+    // HOME is forwarded below; without these the CLI prepends the host's
+    // Claude Code auto-memory to every request (#7444). Shared by every return
+    // path because they all return this object.
+    ...SDK_CHILD_HOST_CONTEXT_GUARDS,
   };
 
   for (const key of SDK_CHILD_ENV_ALLOWLIST) {

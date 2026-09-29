@@ -413,6 +413,18 @@ describe('buildFidelityChildEnv', () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
   });
 
+  it('disables host auto-memory and CLAUDE.md loading so no host context reaches the endpoint (#7444)', () => {
+    const env = buildFidelityChildEnv(INPUT, {
+      ...source,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '0',
+    } as NodeJS.ProcessEnv);
+
+    expect(env.HOME).toBe('/home/breeze');
+    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+  });
+
   it('never forwards the parent process credentials or proxy configuration', () => {
     const env = buildFidelityChildEnv(INPUT, source);
 

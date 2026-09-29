@@ -197,6 +197,9 @@ describe('tool-search policy wiring (A-W04)', () => {
     await session.processorPromise;
     expect(optionsOfLastQuery().tools).toEqual(['ToolSearch']);
     expect(optionsOfLastQuery().env.ENABLE_TOOL_SEARCH).toBe('true');
+    // #7444: merging the tool-search env must not drop the host-context guards.
+    expect(optionsOfLastQuery().env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(optionsOfLastQuery().env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
   });
 
   it('keeps tools: [] and ENABLE_TOOL_SEARCH=false for a surface that did not opt in', async () => {
