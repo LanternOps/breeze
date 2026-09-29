@@ -757,7 +757,8 @@ pamRoutes.post(
     // the target's identity could not be verified), which leaves the request
     // denied. The approver still asked to approve, so the action stays
     // `approve`, but the audit result, the published event and the response
-    // all report the refusal. Nothing reports it as an approval.
+    // all report the refusal, and none of them reports it as an approval.
+    // Clients must read `enforcementStatus` to tell the approver.
     const refusalReason = result.actuation.refusalReason;
     writeAuditEvent(c, {
       orgId: result.row.orgId,
