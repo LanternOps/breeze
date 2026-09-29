@@ -164,6 +164,7 @@ it('finds a PDC beyond the filtered page', async () => {
 it('keeps equal DNS names in different organizations separate', async () => {
   const other = pdc;
   m.queue.push(
+    [{ total: 2 }],
     [header(device), { ...header(site), orgId: other }],
     [
       { orgId: org, domainDns: 'example.com', pdcExpected: true, pdcId: null },
@@ -187,6 +188,7 @@ it('keeps equal DNS names in different organizations separate', async () => {
 });
 it('reports an expected missing PDC without inventing a device', async () => {
   m.queue.push(
+    [{ total: 1 }],
     [header(device)],
     [{ orgId: org, domainDns: 'example.com', pdcExpected: true, pdcId: null }],
   );
@@ -247,7 +249,7 @@ it('re-reads changed policy findings on every fleet request', async () => {
   }
 });
 it('returns an empty report with no visible devices', async () => {
-  m.queue.push([]);
+  m.queue.push([{ total: 0 }], []);
   expect(await listFleetTimeStatus({}, auth({ allowedSiteIds: [] }))).toEqual({
     data: [],
     total: 0,
@@ -300,4 +302,40 @@ it('exports hydrate each candidate exactly once across CSV pages', async () => {
     history += chunk;
   expect(m.view).toHaveBeenCalledTimes(ids.length);
   expect(history.trim().split('\r\n')).toHaveLength(ids.length + 2);
+});
+it('hydrates only the requested page when no policy filter is set', async () => {
+  const ids = Array.from(
+    { length: 250 },
+    (_, i) => `66666666-6666-4666-8666-${String(i).padStart(12, '0')}`,
+  );
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    domain: null,
+  }));
+  m.select.mockImplementation(() => {
+    let counting = false,
+      offset = 0,
+      limit = Infinity;
+    const chain: any = {
+      then: (resolve: (value: unknown) => unknown) =>
+        Promise.resolve(
+          counting
+            ? [{ total: ids.length }]
+            : ids
+                .slice(offset, offset + limit)
+                .map((id) => ({ ...header(id), hostname: id })),
+        ).then(resolve),
+    };
+    for (const key of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'groupBy'])
+      chain[key] = vi.fn(() => chain);
+    chain.limit = vi.fn((value: number) => ((limit = value), chain));
+    chain.offset = vi.fn((value: number) => ((offset = value), chain));
+    const projection = m.select.mock.calls.at(-1)?.[0] ?? {};
+    counting = 'total' in projection;
+    return chain;
+  });
+  const result = await listFleetTimeStatus({ page: 3, limit: 10 }, auth());
+  expect(result.total).toBe(ids.length);
+  expect(result.data.map((row) => row.deviceId)).toEqual(ids.slice(20, 30));
+  expect(m.view).toHaveBeenCalledTimes(10);
 });

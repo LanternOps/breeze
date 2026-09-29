@@ -50,6 +50,13 @@ const projection = {
   siteName: sites.name,
 };
 const pdcRank = sql<number>`CASE WHEN ${t.domainRole}='forest_root_pdc_emulator' THEN 0 WHEN ${t.domainRole}='pdc_emulator' THEN 1 ELSE 2 END`;
+const fleetOrder = [
+  asc(devices.orgId),
+  asc(t.domainDns),
+  pdcRank,
+  asc(devices.hostname),
+  asc(devices.id),
+];
 // Policy-dependent findings and health are evaluated from the canonical device
 // view. SQL limits only authorization and policy-independent candidate selection.
 export function fleetScope(
@@ -110,13 +117,7 @@ async function* hydratedFleetRows(
   for (let offset = 0; ; offset += batchSize) {
     const candidates = await fleetRowsQuery()
       .where(where)
-      .orderBy(
-        asc(devices.orgId),
-        asc(t.domainDns),
-        pdcRank,
-        asc(devices.hostname),
-        asc(devices.id),
-      )
+      .orderBy(...fleetOrder)
       .limit(batchSize)
       .offset(offset);
     for (const row of await hydrate(candidates)) {
@@ -161,12 +162,34 @@ export async function listFleetTimeStatus(
       siteScopeCondition(auth, devices.siteId),
       deviceScopeCondition(auth, devices.id),
     );
-  const data: FleetTimeRow[] = [];
+  let data: FleetTimeRow[] = [];
   let total = 0;
   const start = (q.page - 1) * q.limit;
-  for await (const row of hydratedFleetRows(q, where)) {
-    if (total >= start && data.length < q.limit) data.push(row);
-    total += 1;
+  if (!q.health && !q.finding) {
+    // No policy-dependent filter: the static candidate set IS the result set,
+    // so the SQL count is exact and only the requested page is hydrated (still
+    // through the canonical policy-aware view). The full pass below is reserved
+    // for health/finding filters, where totals need every candidate resolved.
+    const [count] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
+      .leftJoin(sites, eq(sites.id, devices.siteId))
+      .leftJoin(t, eq(t.deviceId, devices.id))
+      .where(where);
+    total = count?.total ?? 0;
+    data = await hydrate(
+      await fleetRowsQuery()
+        .where(where)
+        .orderBy(...fleetOrder)
+        .limit(q.limit)
+        .offset(start),
+    );
+  } else {
+    for await (const row of hydratedFleetRows(q, where)) {
+      if (total >= start && data.length < q.limit) data.push(row);
+      total += 1;
+    }
   }
   const domains: FleetTimeDomain[] = [];
   const keys = [
