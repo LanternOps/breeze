@@ -272,6 +272,54 @@ describe('generateBackupStatusReport', () => {
     expect(Object.keys(result.rows![0] as object)).not.toContain('history28d');
   });
 
+  it('stops at exactly MAX_ROWS (20k) and flags truncated when the read model keeps returning full pages', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    let n = 0;
+    vi.mocked(listBackupHealthRows).mockImplementation(async () => ({
+      rows: Array.from({ length: 500 }, () => row({ key: `x-${n++}` })),
+      nextCursor: 'more',
+    }));
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority('unrestricted'));
+
+    expect(summaryOf(result).rows.length).toBe(20_000);
+    expect(summaryOf(result).truncated).toBe(true);
+  });
+
+  it('does not flag truncated when the final page ends the feed', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({ rows: [row()], nextCursor: null });
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority('unrestricted'));
+    expect(summaryOf(result).truncated).toBe(false);
+  });
+
+  it('forwards the same filters to summarizeBackupHealth as to the row list', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({ rows: [], nextCursor: null });
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+
+    await generateBackupStatusReport(
+      ORG_ID, { includeDevicesWithoutBackup: false, sources: ['provider'] }, authority('unrestricted'),
+    );
+
+    expect(summarizeBackupHealth).toHaveBeenCalledWith(
+      { orgIds: [ORG_ID] },
+      expect.objectContaining({ onlyWithBackup: true, sources: ['provider'] }),
+    );
+  });
+
+  it('an unrestricted authority narrowing to config.sites forwards exactly those sites', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({ rows: [], nextCursor: null });
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+
+    await generateBackupStatusReport(ORG_ID, { sites: [SITE_B] }, authority('unrestricted'));
+    expect(vi.mocked(listBackupHealthRows).mock.calls[0]![0]).toEqual({ orgIds: [ORG_ID], siteIds: [SITE_B] });
+  });
+
   it('caps pagination at MAX_ROWS instead of looping forever on a read model that never stops', async () => {
     queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
     vi.mocked(listBackupHealthRows).mockImplementation(async () => ({

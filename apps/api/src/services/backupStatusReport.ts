@@ -190,7 +190,13 @@ export async function generateBackupStatusReport(
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  const siteIds = cfg.sites.length > 0 ? cfg.sites : restrictedScope ? restrictedScope.siteIds : undefined;
+  // Defense in depth: the preflight already refuses a config.sites entry
+  // outside a restricted authority, but the ceiling is re-applied here so this
+  // report never depends on that check alone for its site boundary.
+  const requestedSites = restrictedScope
+    ? cfg.sites.filter((id) => restrictedScope.siteIds.includes(id))
+    : cfg.sites;
+  const siteIds = cfg.sites.length > 0 ? requestedSites : restrictedScope ? restrictedScope.siteIds : undefined;
   const scope = { orgIds: [orgId], ...(siteIds ? { siteIds } : {}) };
   const listOpts = {
     sources: cfg.sources,
