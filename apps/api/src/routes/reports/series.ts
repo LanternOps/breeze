@@ -14,6 +14,7 @@ import { authMiddleware, requirePermission, requireScope, type AuthContext } fro
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { missingReportTypePermission, REPORT_TYPE_PERMISSION_DENIED } from '../../services/reportTypePermissions';
 import { ReportSeriesError } from '../../services/reportSeries/errors';
 import {
   createSeries,
@@ -119,6 +120,10 @@ reportSeriesRoutes.post('/', requireScope('partner'), write, zValidator('json', 
     gate(auth);
     const body = c.req.valid('json');
     assertSeriesTypeSupported(body.type);
+    // Same check and body as core.ts create: the type's underlying read permissions.
+    if (missingReportTypePermission(body.type as ReportSeriesRow['type'], c.get('permissions') as UserPermissions | undefined)) {
+      return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
     const parsed = parseStoredReportConfig(body.type, body.config);
     if (!parsed.success) return c.json(configValidationBody(parsed.error), 400);
     assertSeriesConfigOrgAgnostic(parsed.data);
@@ -181,11 +186,16 @@ reportSeriesRoutes.patch(
       gate(auth);
       const { id } = c.req.valid('param');
       const patch = c.req.valid('json');
+      // The series type is immutable, so reading it before the write
+      // transaction cannot race.
+      const current = await loadOwnSeries(id, auth);
+      // Same check and body as core.ts edit: any edit needs the STORED type's
+      // underlying read permissions (a config edit can redirect delivery).
+      if (missingReportTypePermission(current.type, c.get('permissions') as UserPermissions | undefined)) {
+        return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+      }
       let config: Record<string, unknown> | undefined;
       if (patch.config !== undefined) {
-        // The series type is immutable, so reading it before the write
-        // transaction cannot race.
-        const current = await loadOwnSeries(id, auth);
         const parsed = parseStoredReportConfig(current.type, patch.config);
         if (!parsed.success) return c.json(configValidationBody(parsed.error), 400);
         assertSeriesConfigOrgAgnostic(parsed.data);

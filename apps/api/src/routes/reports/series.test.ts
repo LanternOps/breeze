@@ -31,6 +31,17 @@ vi.mock('../../middleware/auth', () => ({
 }));
 vi.mock('../../db', () => ({ db: { transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn('tx')) } }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+// Passthrough over the real check; a test can make a type need a permission
+// the caller lacks (no series-supported type lists one today).
+const typePermission = vi.hoisted(() => ({ missing: null as null | { resource: string; action: string } }));
+vi.mock('../../services/reportTypePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reportTypePermissions')>();
+  return {
+    ...actual,
+    missingReportTypePermission: vi.fn((...args: Parameters<typeof actual.missingReportTypePermission>) =>
+      typePermission.missing ?? actual.missingReportTypePermission(...args)),
+  };
+});
 
 const store = vi.hoisted(() => ({
   createSeries: vi.fn(),
@@ -81,6 +92,7 @@ const post = (path: string, body: string) => app().request(path, { method: 'POST
 
 beforeEach(() => {
   vi.clearAllMocks();
+  typePermission.missing = null;
   state.auth = partnerAuth();
   state.permissions = ALL;
   state.mfaSatisfied = true;
@@ -270,6 +282,33 @@ describe('POST /reports/series', () => {
     const res = await post('/reports/series', createBody());
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'series_owner_ineligible', reason: 'partner_access_not_all' });
+  });
+});
+
+// Final review minor #5: same check, same body as core.ts create/edit.
+describe("the type's underlying read permissions (missingReportTypePermission)", () => {
+  const patch = (body: Record<string, unknown>) =>
+    app().request(`/reports/series/${SERIES_ID}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) });
+
+  it('POST refuses 403 { error: Insufficient permissions } before the store', async () => {
+    typePermission.missing = { resource: 'tickets', action: 'read' };
+    const res = await post('/reports/series', createBody());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(store.createSeries).not.toHaveBeenCalled();
+  });
+
+  it("PATCH checks the STORED type on any edit, with the same body, before the store", async () => {
+    typePermission.missing = { resource: 'tickets', action: 'read' };
+    const res = await patch({ name: 'Renamed' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Insufficient permissions' });
+    expect(store.updateSeries).not.toHaveBeenCalled();
+  });
+
+  it('passes when the caller holds them', async () => {
+    expect((await post('/reports/series', createBody())).status).toBe(201);
+    expect((await patch({ name: 'Renamed' })).status).toBe(200);
   });
 });
 
