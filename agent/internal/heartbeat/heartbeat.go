@@ -454,6 +454,14 @@ type Heartbeat struct {
 	hwStopping         bool
 	hwDisabledQueued   bool
 	hwDisabledSnapshot *hwhealth.Snapshot
+	timeSyncCol        timeSyncCollector
+	lastTimeSyncUpdate time.Time
+	timeSyncContext    context.Context
+	timeSyncCancel     context.CancelFunc
+	timeSyncArmed      bool
+	timeSyncStarted    bool
+	timeSyncRunning    bool
+	timeSyncStopping   bool
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -1000,8 +1008,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		desktopTargets:                 make(map[string]string),
 		hwhealthCol:                    hwhealth.New(hwhealth.Options{DataDir: config.GetDataDir(), ExtraToolDirs: cfg.Hardware.ToolDirs}),
 		hwConfig:                       hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour},
+		timeSyncCol:                    newTimeSyncCollector(config.GetDataDir()),
 	}
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
+	h.timeSyncContext, h.timeSyncCancel = context.WithCancel(context.Background())
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1843,6 +1853,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 
 func (h *Heartbeat) Start() {
 	h.startHardwareHealth()
+	h.startTimeSync()
 	h.startPamReconciliationRetryLoop()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
@@ -2050,6 +2061,7 @@ func (h *Heartbeat) Start() {
 			patchInterval := time.Duration(patchIntervalHours) * time.Hour
 			shouldSendPatch := h.claimPatchScanLocked(now, patchInterval)
 			hwTiers := h.hardwareTiersLocked(now, false)
+			timeSyncDue := h.timeSyncDueLocked(now, false)
 			h.mu.Unlock()
 
 			// Check for recent boot every few minutes (not every heartbeat tick).
@@ -2136,6 +2148,9 @@ func (h *Heartbeat) Start() {
 			if hwTiers != nil {
 				h.dispatchHardwareHealth(hwTiers)
 			}
+			if timeSyncDue {
+				h.dispatchTimeSync()
+			}
 		case <-h.stopChan:
 			return
 		}
@@ -2152,6 +2167,7 @@ func (h *Heartbeat) StopAcceptingCommands() {
 // respecting the context deadline.
 func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
+	h.stopTimeSync()
 	log.Info("draining in-flight commands and inventory goroutines")
 	h.pool.Drain(ctx)
 	h.wg.Wait()
@@ -2173,6 +2189,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
 		h.stopHardwareHealth()
+		h.stopTimeSync()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2342,6 +2359,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	if endpoint == "hardware-health" && h.hwContext != nil {
 		parent = h.hwContext
 	}
+	if endpoint == "time-status" && h.timeSyncContext != nil {
+		parent = h.timeSyncContext
+	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
@@ -2353,6 +2373,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if endpoint == "time-status" {
+			if err := validateTimeSyncResponse(resp.Body); err != nil {
+				return err
+			}
+		}
 		log.Debug("inventory sent", "label", label)
 		return nil
 	} else {
@@ -2360,6 +2385,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "hardware-health" {
 		return &hardwareSubmissionError{status: resp.StatusCode}
+	}
+	if endpoint == "time-status" {
+		return &timeSyncSubmissionError{status: resp.StatusCode}
 	}
 	return fmt.Errorf("inventory send failed for %s: status %d", label, resp.StatusCode)
 }
