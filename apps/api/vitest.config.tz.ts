@@ -4,29 +4,27 @@ import path from 'path';
 // Targeted non-UTC pass over the auth/SSO/MFA-adjacent unit suites (#4046).
 //
 // GitHub-hosted runners default to UTC, and neither this repo's CI nor
-// vitest.config.ts ever pins a different zone. A test written to assert
-// timezone-correcting behavior (e.g. comparing an offsetless-timestamp-derived
-// value against a UTC epoch) is dormant by construction when the host offset
-// is exactly 0 — the assertion can collapse to `0 === 0` and stay green
-// forever while the underlying conversion is missing or wrong. That is
-// exactly how #4018's TZ bug (sso_sessions.created_at compared against
-// auth_time without correcting for local-time parsing) shipped past 25,000+
-// green tests and was only caught by a human review pass, then confirmed by
-// re-running under TZ=America/Denver.
+// vitest.config.ts ever pins a different zone. Code that depends on the host
+// zone (reading a Date's local fields, parsing an offsetless string with
+// `new Date(...)`, adjusting by `getTimezoneOffset()`) behaves identically to
+// zone-independent code when the host offset is exactly 0, so a UTC-only run
+// cannot tell the two apart.
 //
-// This config re-runs just the auth/SSO/MFA/passkey suites — where that bug
-// class lives — under a fixed non-UTC zone, so a future regression of the
-// same shape fails CI instead of passing vacuously. It intentionally does
-// NOT re-run the full suite a second time: that would double the cost of
-// every unrelated test for no coverage gain, since only timestamp/timezone
-// arithmetic is offset-sensitive.
+// This config re-runs the auth/SSO/MFA/passkey suites and the scheduler seams
+// below under a fixed non-UTC zone. It intentionally does NOT re-run the full
+// suite a second time: that would double the cost of every unrelated test for
+// no coverage gain, since only timestamp/timezone arithmetic is
+// offset-sensitive. Suites that must hold on BOTH sides of UTC pin a zone per
+// test with `testUtils/hostTimeZone.ts`, which works in any runner zone.
+//
+// Timestamps read through Drizzle need no host-zone handling: Drizzle decodes
+// offsetless `timestamp` columns as UTC. The real-Postgres proof, run west and
+// east of UTC, is
+// `src/__tests__/integration/offsetlessTimestampRead.integration.test.ts`.
 //
 // The TZ pin lives in the CI workflow step's `env:` block (runner-level, set
-// before the Node process starts), not here and not in a test file — Node/V8
-// cache the resolved timezone at first use of Date/Intl within a process, so
-// assigning `process.env.TZ` from inside a test file (or a `beforeEach`) has
-// no effect on already-initialized Date behavior in that worker. Run locally
-// via `TZ=America/Denver pnpm test:tz` (or any non-UTC zone) from apps/api.
+// before the Node process starts), not here. Run locally via
+// `TZ=America/Denver pnpm test:tz` (or any non-UTC zone) from apps/api.
 export default defineConfig({
   resolve: {
     alias: {
@@ -52,22 +50,21 @@ export default defineConfig({
     // existing suites pass explicit zone strings into every assertion. Re-running
     // them under a pinned zone is byte-identical to the UTC run, so it would
     // cost CI time for zero signal. `pamRuleEngine`'s `at` argument traces to
-    // `elevation_requests.requested_at`, which IS `withTimezone: true`, so it
-    // has no offsetless exposure either. What the audit DID find was two
-    // offsetless-`timestamp` reads feeding instant arithmetic — registered
-    // below. Re-audit if any of those files starts reading wall-clock parts off
-    // a Date with bare local getters (`getHours`/`getDay`) or consumes a
-    // `timestamp`-without-timezone column.
+    // `elevation_requests.requested_at`, which IS `withTimezone: true`. The
+    // report and discovery seams registered below read offsetless `timestamp`
+    // columns through Drizzle, which already yields the stored instant.
+    // Re-audit if any of those files starts reading wall-clock parts off a
+    // Date with bare local getters (`getHours`/`getDay`) or parses a raw
+    // `db.execute` timestamp string.
     include: [
       'src/routes/auth.test.ts',
       'src/routes/auth.passkeys.test.ts',
       'src/routes/authenticator.test.ts',
       'src/routes/auth/**/*.test.ts',
-      // #4041's two offsetless-timestamp-simulation suites — previously
-      // missing from this list despite the PR merging (stale MAINTENANCE
-      // note caught during #4059).
+      // SSO re-auth freshness (sso_sessions.created_at vs auth_time).
       'src/routes/sso.reauth.test.ts',
-      'src/testUtils/pgOffsetlessTimestamp.test.ts',
+      // Guards the per-test zone switch the suites below rely on.
+      'src/testUtils/hostTimeZone.test.ts',
       'src/services/sso.test.ts',
       'src/services/ssoDomainVerification.test.ts',
       'src/services/mfa.test.ts',
@@ -83,17 +80,13 @@ export default defineConfig({
       'src/services/apiKeyAuthorization.test.ts',
       'src/services/approverWebAuthn.test.ts',
       'src/services/authEmailQueue.test.ts',
-      // #4059 gap 1: the last hop before a request is authorized/rejected on
-      // password-change revocation, same offsetless-timestamp bug shape as
-      // #4018 (see tokenRevocation.ts's isTokenIssuedBeforePasswordChange).
+      // Password-change token check (users.password_changed_at vs iat).
       'src/services/tokenRevocation.test.ts',
-      // #4059 gap 2: the two offsetless-`timestamp` reads found by auditing
-      // the schedulers named in that issue. Both compare a driver-parsed Date
-      // against a true instant, so both are wrong by the API host's offset and
-      // both are dormant under UTC — see each file's header.
+      // Scheduler seams that compare an offsetless `timestamp` read with the
+      // current instant — see each file's header.
       'src/jobs/reportScheduleWorker.due.test.ts',
-      // Its findDueReports fixtures now build lastGeneratedAt through
-      // pgOffsetlessTimestamp, so they too are offset-sensitive.
+      // Its findDueReports fixtures resolve org/partner zones for
+      // lastGeneratedAt, so they run here too.
       'src/jobs/reportScheduleWorker.test.ts',
       'src/jobs/discoveryWorker.intervalDue.test.ts',
       // Canary asserting the pin itself is active — see its own file
