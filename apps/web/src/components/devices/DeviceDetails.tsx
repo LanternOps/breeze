@@ -414,6 +414,10 @@ export default function DeviceDetails({
   // closing a ticket) is reflected on the next navigation without a reload;
   // the previous counts are kept meanwhile so the row does not flicker.
   const [tabCounts, setTabCounts] = useState<DeviceTabCounts | null>(null);
+  // Bumped by a tab that mutates a counted signal in place (resolving an
+  // anomaly) so the badge refreshes without waiting for a tab switch.
+  const [tabCountsNonce, setTabCountsNonce] = useState(0);
+  const refreshTabCounts = useCallback(() => setTabCountsNonce((n) => n + 1), []);
   // Sweep E1: the API count is device-scoped and does not know whether
   // anomaly detection is on for the org — going through
   // isMlFeatureEnabledForOrg on the tab-counts route would open a second
@@ -439,7 +443,7 @@ export default function DeviceDetails({
     return () => {
       cancelled = true;
     };
-  }, [device.id, activeTab]);
+  }, [device.id, activeTab, tabCountsNonce]);
 
   // Curated layout: only `primary` tabs sit in the row; everything else is
   // grouped inside "More" under these section headers. A `promoteOnCount`
@@ -1006,6 +1010,7 @@ export default function DeviceDetails({
         <DeviceAnomaliesPanel
           deviceId={device.id}
           focusedAnomalyId={focusedAnomalyId}
+          onChanged={refreshTabCounts}
         />
       )}
 
@@ -1026,7 +1031,7 @@ export default function DeviceDetails({
       {activeTab === "performance" && (
         <div className="space-y-6">
           <DevicePerformanceGraphs deviceId={device.id} />
-          <DeviceAnomaliesPanel deviceId={device.id} compact />
+          <DeviceAnomaliesPanel deviceId={device.id} compact onChanged={refreshTabCounts} />
         </div>
       )}
 
