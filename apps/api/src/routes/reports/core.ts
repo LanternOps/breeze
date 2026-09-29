@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, or, sql, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, or, sql, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { organizations, reports, reportRuns } from '../../db/schema';
 import type { ReportDeliveryStatus } from '../../services/reportDelivery';
@@ -12,6 +12,10 @@ import {
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { ReportSeriesError } from '../../services/reportSeries/errors';
+import { finishDetach, seriesWriteAllowed } from '../../services/reportSeries/store';
+import { seriesManagedRefusal } from '../../services/reportSeries/types';
+import { seriesErrorResponse } from './seriesErrors';
 import { callerMaySetEmailRecipients, RECIPIENTS_NEED_EXPORT_AND_MFA } from './recipientGate';
 import {
   missingReportTypePermission,
@@ -499,7 +503,7 @@ coreRoutes.get(
     // Skip non-UUID sub-paths so they don't hit the `where id = $1` uuid cast.
     // 'templates' has its own handler above; listed here as defense-in-depth in
     // case route registration order ever changes.
-    if (['runs', 'data', 'generate', 'templates'].includes(reportId)) {
+    if (['runs', 'data', 'generate', 'templates', 'series'].includes(reportId)) {
       return c.notFound();
     }
 
@@ -773,6 +777,11 @@ coreRoutes.put(
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
       if (locked === AUDIENCE_DENIED) return TYPE_PERMISSION_DENIED;
       if (!locked) return null;
+      // Multi-org report series W02 (spec §3.3 "Child writers"): a child's
+      // shared fields belong to its series; only recipient overrides and
+      // Detach change a child outside the reconciler.
+      const managingSeriesId = locked.locked.seriesId;
+      if (managingSeriesId) return { seriesManaged: managingSeriesId };
       // #3198 W01: ownership is immutable. The report_schedule_recipients /
       // service_deliverables composite FKs are ON UPDATE NO ACTION, so flipping
       // the axis would 23503 anyway — refuse it as what it is.
@@ -846,6 +855,10 @@ coreRoutes.put(
     if (!mutation) {
       return c.json(REPORT_NOT_FOUND, 404);
     }
+    if ('seriesManaged' in mutation) {
+      // Only ever set from a truthy series id (see the locked-row check).
+      return c.json(seriesManagedRefusal(mutation.seriesManaged as string), 409);
+    }
     if ('invalidConfig' in mutation && mutation.invalidConfig) {
       return c.json(mutation.invalidConfig satisfies ValidationErrorBody, 400);
     }
@@ -886,6 +899,9 @@ coreRoutes.post(
       if (locked === PARTNER_WIDE_DENIED) return { kind: 'partner_wide_denied' as const };
       if (locked === AUDIENCE_DENIED) return { kind: 'type_permission_denied' as const };
       if (!locked) return { kind: 'not_found' as const };
+      if (locked.locked.seriesId) {
+        return { kind: 'series_managed' as const, seriesId: locked.locked.seriesId };
+      }
       // #3198 W02 (rulings P8, T11b). Reauthorize re-stamps the CALLER as the
       // execution user, so it needs the stored type's underlying read
       // permissions exactly as PUT does. After the row is authorized, so the
@@ -932,6 +948,9 @@ coreRoutes.post(
         : { kind: 'changed' as const };
     });
 
+    if (result.kind === 'series_managed') {
+      return c.json(seriesManagedRefusal(result.seriesId), 409);
+    }
     if (result.kind === 'system_managed') {
       // The reason this route in particular must refuse: the update below
       // stamps `persistedSiteScopeValues`, whose principal_kind is ALWAYS
@@ -965,6 +984,71 @@ coreRoutes.post(
   },
 );
 
+// POST /reports/:id/detach — Multi-org report series W02 (spec §3.6, D5).
+// Turns a series child into a standalone org report: clears series_id (no
+// series revision bump), un-targets the org so the reconciler never mints a
+// replacement, and keeps its current customers receiving it (finishDetach).
+coreRoutes.post(
+  '/:id/detach',
+  requireScope('partner'),
+  requirePermission(PERMISSIONS.REPORTS_WRITE.resource, PERMISSIONS.REPORTS_WRITE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const reportId = c.req.param('id')!;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    try {
+      if (!seriesWriteAllowed(auth)) {
+        throw new ReportSeriesError('series_write_denied', 403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+      const detached = await db.transaction(async (tx) => {
+        const locked = await loadLockedDefinition(tx, reportId, auth, 'write', permissions);
+        if (
+          locked === SYSTEM_MANAGED
+          || locked === PARTNER_WIDE_DENIED
+          || locked === AUDIENCE_DENIED
+          || !locked
+        ) {
+          return null;
+        }
+        const seriesId = locked.locked.seriesId;
+        const orgId = locked.locked.orgId;
+        if (!seriesId || !orgId || locked.locked.archivedAt !== null) {
+          throw new ReportSeriesError('report_not_series_child', 409);
+        }
+        const [row] = await tx
+          .update(reports)
+          .set({ seriesId: null, seriesRevision: null, updatedAt: new Date() })
+          .where(and(
+            eq(reports.id, reportId),
+            eq(reports.orgId, orgId),
+            eq(reports.seriesId, seriesId),
+            isNull(reports.archivedAt),
+          ))
+          .returning();
+        if (!row) return null;
+        const recipients = await finishDetach(tx, { seriesId, orgId, reportId }, auth);
+        return { row, seriesId, orgId, recipients };
+      });
+      if (!detached) return c.json(REPORT_NOT_FOUND, 404);
+      writeRouteAudit(c, {
+        orgId: detached.orgId,
+        action: 'report.detach',
+        resourceType: 'report',
+        resourceId: detached.row.id,
+        resourceName: detached.row.name,
+        details: {
+          seriesId: detached.seriesId,
+          recipientsMaterialized: detached.recipients.added,
+          removeOverridesDropped: detached.recipients.removedDropped,
+        },
+      });
+      return c.json(detached.row);
+    } catch (err) {
+      return seriesErrorResponse(c, err);
+    }
+  },
+);
+
 // DELETE /reports/:id - Delete report
 coreRoutes.delete(
   '/:id',
@@ -986,6 +1070,11 @@ coreRoutes.delete(
       if (locked === PARTNER_WIDE_DENIED) return PARTNER_WIDE_DENIED;
       if (locked === AUDIENCE_DENIED) return AUDIENCE_DENIED;
       if (!locked) return null;
+      // Exclude the org from the series (or detach it) instead: a deleted
+      // child would be re-created by the next reconcile.
+      if (locked.locked.seriesId) {
+        return { kind: 'series_managed' as const, seriesId: locked.locked.seriesId };
+      }
 
       if (await isPortalSelfServiceLocked(tx, locked.locked)) {
         return { kind: PORTAL_SELF_SERVICE };
@@ -1027,6 +1116,9 @@ coreRoutes.delete(
     }
     if (deleted === AUDIENCE_DENIED) {
       return c.json(REPORT_TYPE_PERMISSION_DENIED, 403);
+    }
+    if (deleted?.kind === 'series_managed') {
+      return c.json(seriesManagedRefusal(deleted.seriesId), 409);
     }
     if (deleted?.kind === PORTAL_SELF_SERVICE) {
       return c.json(PORTAL_SELF_SERVICE_REPORT, 409);

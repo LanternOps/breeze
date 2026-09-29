@@ -281,6 +281,8 @@ export const reportRecipientParamSchema = z.object({
 
 export const addReportRecipientSchema = z.object({
   contactId: z.string().guid(),
+  // Multi-org report series W02: 'remove' is valid only on a series child.
+  mode: z.enum(['add', 'remove']).optional(),
 });
 
 export const convertReportRecipientSchema = z.object({

@@ -14,6 +14,8 @@ import {
   requireScope,
 } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { seriesManagedRefusal } from '../../services/reportSeries/types';
+import { callerMaySetEmailRecipients, RECIPIENTS_NEED_EXPORT_AND_MFA } from './recipientGate';
 import { createContact } from '../../services/contacts/crud';
 import {
   contactCreateAuditEvent,
@@ -133,6 +135,7 @@ recipientsRoutes.get(
       contactId: contacts.id,
       name: contacts.name,
       email: contacts.email,
+      mode: reportScheduleRecipients.mode,
     }).from(reportScheduleRecipients)
       .innerJoin(
         contacts,
@@ -166,7 +169,22 @@ recipientsRoutes.post(
     const refusal = writeRefusal(report);
     if (refusal || !orgId) return c.json(refusal ?? PARTNER_OWNED_REPORT, 409);
 
-    const { contactId } = c.req.valid('json');
+    const { contactId, mode } = c.req.valid('json');
+    const seriesChild = typeof report.seriesId === 'string';
+    // 'remove' means "exclude this rule match" — without a series rule it
+    // would be silently ignored while the contact kept receiving the report.
+    if (mode === 'remove' && !seriesChild) {
+      return c.json({ error: 'recipient_mode_requires_series' }, 400);
+    }
+    // INDEX recipient delivery gate: an 'add' on a series child adds a delivery.
+    if (
+      seriesChild
+      && (mode ?? 'add') === 'add'
+      && !callerMaySetEmailRecipients(c.get('auth'), c.get('permissions') as UserPermissions | undefined)
+    ) {
+      return c.json(RECIPIENTS_NEED_EXPORT_AND_MFA, 403);
+    }
+
     const [contact] = await db.select({ id: contacts.id })
       .from(contacts)
       .where(and(
@@ -175,6 +193,20 @@ recipientsRoutes.post(
       ))
       .limit(1);
     if (!contact) return c.json({ error: 'Contact not found' }, 404);
+
+    if (seriesChild) {
+      const overrideMode = mode ?? 'add';
+      const [override] = await db.insert(reportScheduleRecipients).values({
+        reportId: report.id,
+        orgId,
+        contactId,
+        mode: overrideMode,
+      }).onConflictDoUpdate({
+        target: [reportScheduleRecipients.reportId, reportScheduleRecipients.contactId],
+        set: { mode: overrideMode },
+      }).returning();
+      return c.json({ data: override ?? null }, 201);
+    }
 
     const [recipient] = await db.insert(reportScheduleRecipients).values({
       reportId: report.id,
@@ -232,6 +264,9 @@ recipientsRoutes.post(
     if (!report) return c.json({ error: 'Report not found' }, 404);
     const refusal = writeRefusal(report);
     if (refusal || !orgId) return c.json(refusal ?? PARTNER_OWNED_REPORT, 409);
+    // Multi-org report series W02: convert rewrites config.emailRecipients,
+    // which on a child IS the series internal CC.
+    if (report.seriesId) return c.json(seriesManagedRefusal(report.seriesId), 409);
 
     const input = c.req.valid('json');
     const email = input.email.trim().toLowerCase();

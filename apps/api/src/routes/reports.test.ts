@@ -1428,7 +1428,10 @@ describe('report definition scope enforcement', () => {
       'executionScopeFingerprint',
       'executionScopeCapturedAt',
       'executionScopePrincipalKind',
-      'portalSelfService'
+      'portalSelfService',
+      // Multi-org report series W02: the write routes refuse a series child.
+      'seriesId',
+      'archivedAt'
     ]);
     expect(metadataProjection).not.toHaveProperty('config');
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(

@@ -21,6 +21,9 @@ const state = vi.hoisted(() => ({
   denyPermission: false,
   lockedReportConfig: {} as Record<string, unknown>,
   lockCalls: [] as string[],
+  permissionSet: { permissions: [{ resource: '*', action: '*' }] } as unknown,
+  gateMfa: true,
+  conflictUpdates: [] as unknown[],
 }));
 
 function selectChain(result: unknown[]) {
@@ -54,6 +57,10 @@ function database() {
       values: vi.fn((value) => {
         state.inserted.push({ table, value });
         return {
+          onConflictDoUpdate: vi.fn((config: unknown) => {
+            state.conflictUpdates.push(config);
+            return { returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])) };
+          }),
           onConflictDoNothing: vi.fn(() => ({
             returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])),
             then: (resolve: (value: unknown) => unknown) =>
@@ -108,6 +115,7 @@ vi.mock('../../db/schema', () => ({
     reportId: 'recipients.reportId',
     orgId: 'recipients.orgId',
     contactId: 'recipients.contactId',
+    mode: 'recipients.mode',
   },
   reports: {
     id: 'reports.id',
@@ -142,6 +150,7 @@ vi.mock('../../middleware/auth', () => ({
     async (c: any, next: () => Promise<void>) => {
       state.permissionCalls.push({ resource, action });
       if (state.denyPermission) return c.json({ error: 'Forbidden' }, 403);
+      c.set('permissions', state.permissionSet);
       await next();
     },
   requireScope: (...scopes: string[]) =>
@@ -149,6 +158,7 @@ vi.mock('../../middleware/auth', () => ({
       state.scopeCalls.push(scopes);
       await next();
     },
+  hasSatisfiedMfa: () => state.gateMfa,
   requireMfa: () => async (c: any, next: () => Promise<void>) => {
     state.mfaCalls += 1;
     if (c.req.header('x-test-mfa') !== 'satisfied') {
@@ -162,7 +172,9 @@ vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
     REPORTS_READ: { resource: 'reports', action: 'read' },
     REPORTS_WRITE: { resource: 'reports', action: 'write' },
+    REPORTS_EXPORT: { resource: 'reports', action: 'export' },
   },
+  hasPermission: (perms: any, resource: string, action: string) => (perms?.permissions ?? []).some((p: any) => (p.resource === resource || p.resource === '*') && (p.action === action || p.action === '*')),
 }));
 
 vi.mock('./helpers', () => ({
@@ -209,6 +221,9 @@ describe('report recipient routes', () => {
       emailRecipients: ['alex@example.test', 'keep@example.test'],
     };
     state.lockCalls.length = 0;
+    state.permissionSet = { permissions: [{ resource: '*', action: '*' }] };
+    state.gateMfa = true;
+    state.conflictUpdates.length = 0;
     const tx = database();
     rootDb.current = {
       ...database(),
@@ -640,4 +655,54 @@ describe('report recipient routes', () => {
       expect(state.inserted).toHaveLength(1);
     });
   });
+
+  describe('series child recipient overrides (W02)', () => {
+    const SERIES_ID = '77777777-7777-4777-8777-777777777777';
+    const child = () => ({ id: REPORT_ID, orgId: ORG_ID, seriesId: SERIES_ID, config: { emailRecipients: ['noc@msp.test'] } });
+
+    it("refuses mode 'remove' on an ordinary report (it would be ignored and still send)", async () => {
+      const res = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID, mode: 'remove' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'recipient_mode_requires_series' });
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it("stores a 'remove' override on a child, upserting the mode", async () => {
+      state.getReport.mockResolvedValue(child());
+      state.results.push([{ id: CONTACT_ID }]);
+      const res = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID, mode: 'remove' }),
+      });
+      expect(res.status).toBe(201);
+      expect(state.inserted[0]?.value).toMatchObject({ reportId: REPORT_ID, orgId: ORG_ID, contactId: CONTACT_ID, mode: 'remove' });
+      expect(state.conflictUpdates[0]).toMatchObject({ set: { mode: 'remove' } });
+    });
+
+    it("an 'add' override on a child is a new delivery: export + MFA required", async () => {
+      state.getReport.mockResolvedValue(child());
+      state.gateMfa = false;
+      const res = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it('convert on a child answers 409 series_managed (it rewrites the series internal CC)', async () => {
+      state.getReport.mockResolvedValue(child());
+      const res = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'new@acme.test' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
+      expect(state.updated).toHaveLength(0);
+    });
+  });
 });
+

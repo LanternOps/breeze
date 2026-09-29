@@ -186,6 +186,14 @@ vi.mock('../../services/siteScope', async (importOriginal) => {
   };
 });
 
+const seriesStore = vi.hoisted(() => ({
+  finishDetach: vi.fn(async () => ({ added: 1, removedDropped: 0 })),
+}));
+vi.mock('../../services/reportSeries/store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reportSeries/store')>();
+  return { ...actual, finishDetach: seriesStore.finishDetach };
+});
+
 import { coreRoutes } from './core';
 import { runsRoutes } from './runs';
 import { generateRoutes } from './generate';
@@ -1513,5 +1521,103 @@ describe('report definition recipients require export + MFA', () => {
 
     expect(res.status).toBe(200);
     expect(state.updates).toHaveLength(1);
+  });
+});
+
+/**
+ * Multi-org report series W02 (spec §3.3 "Child writers", §3.6 Detach). A
+ * child's shared fields belong to its series: PUT, reauthorize and DELETE
+ * answer 409 series_managed; Detach is the one way out.
+ */
+describe('multi-org report series children (W02)', () => {
+  const SERIES_ID = '77777777-7777-4777-8777-777777777777';
+  function childRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: REPORT_ID, orgId: ORG_ID, partnerId: null, name: 'Monthly summary', type: 'executive_summary',
+      config: {}, schedule: 'monthly', format: 'pdf', createdBy: USER_ID,
+      executionScopeVersion: 1, executionScopeKind: 'unrestricted', executionScopeSiteIds: null,
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'unrestricted', orgId: ORG_ID }),
+      executionScopeCapturedAt: CAPTURED_AT, executionScopePrincipalKind: 'user', portalSelfService: false,
+      seriesId: SERIES_ID, seriesRevision: 1, archivedAt: null, ...overrides,
+    };
+  }
+  const standalone = () => childRow({ seriesId: null, seriesRevision: null });
+
+  it('PUT on a child answers 409 series_managed and never updates', async () => {
+    state.rows = [childRow(), childRow()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ name: 'Renamed' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('reauthorize on a child answers 409 series_managed (its scope belongs to the series owner)', async () => {
+    state.rows = [childRow(), childRow()];
+    const res = await app().request(`/reports/${REPORT_ID}/reauthorize`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('DELETE on a child answers 409 series_managed and deletes nothing', async () => {
+    state.rows = [childRow(), childRow()];
+    const res = await app().request(`/reports/${REPORT_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(state.deletes).toHaveLength(0);
+  });
+
+  it('a standalone org report is still editable (byte-for-byte)', async () => {
+    state.rows = [standalone(), standalone()];
+    const res = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ name: 'Renamed' }),
+    });
+    expect(res.status).toBe(200);
+    expect(state.updates).toHaveLength(1);
+  });
+
+  it('GET /reports/series on the core router is a 404 without any query', async () => {
+    const res = await app().request('/reports/series');
+    expect(res.status).toBe(404);
+    expect(state.wheres).toHaveLength(0);
+  });
+
+  describe('POST /reports/:id/detach', () => {
+    // Review Focus 1 + 2: finishDetach un-targets the org and materializes recipients.
+    it('clears series_id + series_revision, hands off to finishDetach, and audits', async () => {
+      state.rows = [childRow(), childRow()];
+      const res = await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(state.updates).toHaveLength(1);
+      expect(state.updates[0]!.set).toMatchObject({ seriesId: null, seriesRevision: null });
+      expect(seriesStore.finishDetach).toHaveBeenCalledWith(
+        expect.anything(),
+        { seriesId: SERIES_ID, orgId: ORG_ID, reportId: REPORT_ID },
+        expect.objectContaining({ partnerId: PARTNER_ID }),
+      );
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_ID, action: 'report.detach', details: expect.objectContaining({ seriesId: SERIES_ID }),
+      }));
+    });
+
+    it("refuses a 'selected' partner user before any read", async () => {
+      state.auth = partnerAuth('selected');
+      const res = await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'series_write_denied' });
+      expect(state.wheres).toHaveLength(0);
+    });
+
+    it('refuses a standalone report and an archived child with 409 report_not_series_child', async () => {
+      state.rows = [standalone(), standalone()];
+      const first = await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' });
+      expect(first.status).toBe(409);
+      expect(await first.json()).toEqual({ error: 'report_not_series_child' });
+      state.rows = [childRow({ archivedAt: new Date() }), childRow({ archivedAt: new Date() })];
+      expect((await app().request(`/reports/${REPORT_ID}/detach`, { method: 'POST' })).status).toBe(409);
+      expect(state.updates).toHaveLength(0);
+      expect(seriesStore.finishDetach).not.toHaveBeenCalled();
+    });
   });
 });
