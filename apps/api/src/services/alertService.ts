@@ -39,6 +39,7 @@ import {
   type MonitorObservation,
 } from './monitors/episodeService';
 import { fireEscalationLatch } from './monitors/escalationLatch';
+import { isSubjectMonitorKind } from './monitors/subjectMonitorKinds';
 import { evaluateSubjectAlerts } from './alertSubjects';
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 
@@ -1188,12 +1189,7 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
 
   for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
     // Subject monitors still evaluate recovery during maintenance; new breaches remain suppressed.
-    if (
-      suppressAlerts &&
-      monitor?.kind !== 'hardware_health' &&
-      monitor?.kind !== 'time_sync'
-    )
-      continue;
+    if (suppressAlerts && !isSubjectMonitorKind(monitor?.kind)) continue;
     // #6353 — a network_check has ONE verdict per org, evaluated by the
     // device-independent sweep on the check's alert device. The per-device
     // sweep skips it (but still counts it as evaluated, or the detach scan
