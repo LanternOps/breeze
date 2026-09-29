@@ -80,9 +80,13 @@ fi
 # misleading "the following stage is required to be done first:
 # bootstrap" (issue #6731: every arm64 release build failed this way).
 # Fail up front with the real reason instead; build arm64 media on an
-# arm64 host (the release workflow uses a native arm64 runner).
+# arm64 host (the release workflow uses a native arm64 runner). If dpkg
+# cannot report the host architecture the guard is skipped with a warning
+# (live-build itself needs a dpkg host, so the build fails later anyway).
 host_arch="$(dpkg --print-architecture 2>/dev/null || true)"
-if [ -n "$host_arch" ] && [ "$host_arch" != "$arch" ]; then
+if [ -z "$host_arch" ]; then
+  echo "warning: could not determine host architecture via dpkg; skipping the host/target architecture check" >&2
+elif [ "$host_arch" != "$arch" ]; then
   echo "cannot build $arch recovery media on an $host_arch host: live-build skips its bootstrap stage for a foreign architecture. Build on a native $arch host." >&2
   exit 1
 fi
