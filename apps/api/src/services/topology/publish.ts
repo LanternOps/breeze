@@ -10,6 +10,7 @@ import { lockTopologyInventoryReferences } from './inventoryLocks';
 import { prepareCollectionPublication, publishCollectionInterfaces, publishCollectionEvidence } from './collectionPublication';
 import { applyMergedInterfaces, isPhysicalRelationship, markTopologyIdentityDirty, planMergedInterfaces } from './physicalPublication';
 import { topologyInterfaces } from '../../db/schema';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 type Owned = 'createdAt' | 'updatedAt' | 'revision';
 export type NodePublication = Omit<typeof topologyNodes.$inferInsert, Owned> & { id: string };
@@ -357,6 +358,7 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       for (const aliasId of cluster.aliasIds) {
         await tx.insert(auditLogs).values({ orgId: normalized.orgId, actorType: 'system', actorId: '00000000-0000-0000-0000-000000000000', action: 'topology.alias_merged', resourceType: 'topology_node', resourceId: cluster.canonicalId, result: 'success', initiatedBy: 'automation',
           details: { canonicalId: cluster.canonicalId, aliasId, labelOverride: cluster.labelOverride, notes: cluster.notes, siteId: normalized.siteId, evidence: 'accepted_link', inputRevision: staged.inputRevision, buildFence: staged.buildFence } });
+        markRequestAuditWritten();
       }
     }
     for (const layoutId of [...changedLayouts].sort()) await tx.update(topologyLayouts).set({ revision: sql`${topologyLayouts.revision} + 1`, updatedAt: now }).where(and(scopedWhere(topologyLayouts, normalized), eq(topologyLayouts.id, layoutId)));

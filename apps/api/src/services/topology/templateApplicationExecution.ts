@@ -22,6 +22,7 @@ import {
   INTENT_EVENT,
   type TemplateApplicationRecord,
 } from './templateApplicationTypes';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 function isPending(record: TemplateApplicationRecord) {
   return (
@@ -65,6 +66,7 @@ async function outcome(
       settingsRevision: result.settingsRevision,
     },
   });
+  markRequestAuditWritten();
 }
 async function recordConflict(row: ApplicationRow, code: string) {
   await runOutsideDbContext(() =>

@@ -53,6 +53,7 @@ import {
   PREVIEW_TTL_MS,
   type TemplateApplicationRecord,
 } from './templateApplicationTypes';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 export function capabilityUnavailable(capability: string): never {
   throw new TopologyOperationError(
@@ -354,9 +355,10 @@ export async function applyTopologyTemplatePreview(
               result: 'success',
               details: { siteId: row.siteId, previewId },
             });
+            markRequestAuditWritten();
             // A site refused at admission is never seen by the worker, so this
             // is the only place its conflict can reach the audit trail.
-            if (code)
+            if (code) {
               await db.insert(auditLogs).values({
                 actorType: 'user',
                 orgId: row.orgId,
@@ -368,6 +370,8 @@ export async function applyTopologyTemplatePreview(
                 result: 'failure',
                 details: { siteId: row.siteId, previewId, code },
               });
+              markRequestAuditWritten();
+            }
           }
         }),
       'topology template application admission',

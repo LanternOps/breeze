@@ -24,6 +24,7 @@ import { executeM365ReadAction } from '../m365ControlPlane/readActionService';
 import { importDirectoryContact } from '../contacts/import';
 import { withSubjectLocks } from './locks';
 import { CallerVerificationValidationError as Invalid } from './errors';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 export interface DirectoryUser { entraTenantId: string; entraOid: string; upn: string; displayName: string }
 export interface DirectorySearch { available: boolean; users: DirectoryUser[]; truncated: boolean }
@@ -106,6 +107,7 @@ export async function syncDirectory(
           .where(and(eq(b.id, row.id), eq(b.orgId, orgId), isNull(b.revokedAt)));
         await db.execute(sql`UPDATE caller_verifications SET status='revoked' WHERE org_id=${orgId}::uuid AND consumed_at IS NULL AND status IN ('pending','verified') AND (requester_binding_id=${row.id}::uuid OR target_binding_id=${row.id}::uuid)`);
         await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result) VALUES(${orgId}::uuid,'user',${auth.user.id}::uuid,'caller_verification.directory_missing','caller_verification',${row.id}::uuid,'success')`);
+        markRequestAuditWritten();
       }
     });
     return { imported: mappings.length, revoked: missing.length, complete: true };

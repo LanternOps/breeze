@@ -4,6 +4,7 @@ import { assertInTransaction, db } from '../../db';
 import { auditLogs, topologyNodeBindings, topologyNodes, topologySiteState } from '../../db/schema';
 import { normalizedTopologyScope } from './identity';
 import { lockTopologyInventoryReferences } from './inventoryLocks';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 type SourceNode = Pick<typeof topologyNodes.$inferSelect, 'id' | 'orgId' | 'siteId' | 'kind' | 'createdAt' | 'identityMaterial' | 'legacySourceType' | 'legacySourceId' | 'aliasTargetId' | 'lifecycle' | 'deletedAt'>;
 type SourceBinding = Pick<typeof topologyNodeBindings.$inferSelect, 'id' | 'orgId' | 'siteId' | 'nodeId' | 'deviceId' | 'discoveredAssetId' | 'manualNodeId'>;
@@ -131,6 +132,7 @@ export async function splitRevokedLegacyInventoryLinks(scope: TopologyScope, inp
   for (const cluster of plan.clusters) await db.insert(auditLogs).values({ orgId: scope.orgId, actorType: 'system', actorId: '00000000-0000-0000-0000-000000000000',
     action: 'topology.alias_split', resourceType: 'topology_node', resourceId: cluster.previousCanonicalId, result: 'success', initiatedBy: 'automation',
     details: { ...cluster, siteId: scope.siteId, reason: 'inventory_link_revoked', buildFence: buildFence.toString(), movedBindingIds: plan.bindingMoves.filter(move => move.fromNodeId === cluster.previousCanonicalId).map(move => move.id).sort() } });
+  markRequestAuditWritten();
   // Publisher may also change labels or tombstones in this same transaction.
   // The caller ensures one graph revision for the combined structural change.
   return { changed: true, buildFence, graphRevision: state.graphRevision };

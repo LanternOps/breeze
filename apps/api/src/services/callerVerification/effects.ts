@@ -16,6 +16,7 @@ import { sql } from 'drizzle-orm';
 import { db, assertInTransaction } from '../../db';
 import type { VerificationRow } from './types';
 import { addCallerVerificationSystemComment } from '../ticketService';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 const SYSTEM_ACTOR = '00000000-0000-0000-0000-000000000000';
 
@@ -28,6 +29,7 @@ export async function recordEffect(row: VerificationRow, event: string, actorUse
   await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result,details)
     VALUES(${row.orgId}::uuid,${actorUserId ? 'user' : 'system'}::actor_type,${actorUserId ?? SYSTEM_ACTOR}::uuid,
     ${`caller_verification.${event}`},'caller_verification',${row.id}::uuid,'success',${JSON.stringify(details)}::jsonb)`);
+  markRequestAuditWritten();
   if (row.ticketRef) {
     await addCallerVerificationSystemComment({ orgId: row.orgId, ticketId: row.ticketRef, verificationId: row.id, event });
   }

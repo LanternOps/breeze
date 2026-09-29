@@ -1,22 +1,10 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import type { AuditResult, RemediationTrigger } from '@breeze/shared';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
+import { markRequestAuditWritten, runWithAuditRequestTracking } from './auditRequestTracking';
 
-const requestAudit = new AsyncLocalStorage<{ written: boolean }>();
-
-/** Track semantic audit submissions, including service calls without a Hono context. */
-export async function runWithAuditRequestTracking(next: () => Promise<void>): Promise<boolean> {
-  const state = { written: false };
-  await requestAudit.run(state, next);
-  return state.written;
-}
-
-function markRequestAuditWritten(): void {
-  const state = requestAudit.getStore();
-  if (state) state.written = true;
-}
+export { runWithAuditRequestTracking, markRequestAuditWritten };
 
 export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
 
