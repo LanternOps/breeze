@@ -7,6 +7,11 @@ import { captureException } from '../services/sentry';
 import { buildPamActuationCommand } from './pamActuationCommandPayload';
 import { attachWorkerObservability } from './workerObservability';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../services/partnerTrust.commands';
+import {
+  isParkedDeliverableCommandType,
+  PARKED_DEVICE_CANCEL_REASON,
+} from '../services/unassignedPool/deliveryEligibility';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 
 const PAM_QUEUE_NAME = 'pam-actuation';
 
@@ -25,6 +30,7 @@ type PamDispatchRow = Record<string, unknown> & {
   desired_state: 'active' | 'cleanup';
   current_command_id: string | null;
   pam_lifetime_protocol_version: number | null;
+  device_org_type: string | null;
   target_executable_path: string;
   target_executable_hash: string | null;
   subject_username: string;
@@ -47,10 +53,11 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
              a.current_command_id, a.target_executable_path,
              a.target_executable_hash, a.subject_username, a.expires_at,
              r.org_id AS request_org_id, d.org_id AS device_org_id,
-             d.pam_lifetime_protocol_version
+             d.pam_lifetime_protocol_version, o.type AS device_org_type
       FROM pam_actuations a
       JOIN elevation_requests r ON r.id = a.elevation_request_id
       JOIN devices d ON d.id = a.device_id
+      JOIN organizations o ON o.id = d.org_id
       WHERE a.id = ${input.actuationId}
       FOR UPDATE OF a
     `))[0];
@@ -99,6 +106,20 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
       await tx.execute(sql`
         UPDATE pam_actuations SET observed_state = 'failed',
           failure_code = ${built.failureCode}, updated_at = now()
+        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+      `);
+      return 'blocked';
+    }
+
+    // A device parked in a holding org receives lifecycle removal only; the
+    // actuation fails terminally (no retry) and no command row is written.
+    if (
+      isUnassignedPoolOrgType(actuation.device_org_type)
+      && !isParkedDeliverableCommandType(built.commandType)
+    ) {
+      await tx.execute(sql`
+        UPDATE pam_actuations SET observed_state = 'failed',
+          failure_code = ${PARKED_DEVICE_CANCEL_REASON}, updated_at = now()
         WHERE id = ${actuation.id} AND generation = ${actuation.generation}
       `);
       return 'blocked';

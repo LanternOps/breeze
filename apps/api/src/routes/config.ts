@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, sweepActEnabled, toolSourcesEnabled } from '../config/env';
+import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, sweepActEnabled, toolSourcesEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
@@ -33,6 +33,11 @@ configRoutes.get('/', (c) => {
       // Caller verification (#6354): W04's UI reads this before showing any
       // verification surface. Exact-'true' contract via the real getter.
       callerVerification: isCallerVerificationEnabled(),
+      // Pre-assignment enrollment platform switch (default off): the web
+      // shows the Unassigned Devices surface only while it is on. The
+      // pre-assignment API routes stay reachable to full partner admins
+      // either way, so incident actions work with the flag off.
+      preAssignmentEnrollment: preAssignmentEnrollmentEnabled(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

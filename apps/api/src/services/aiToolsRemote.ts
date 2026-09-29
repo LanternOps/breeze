@@ -24,6 +24,8 @@ import { getToolTimeout } from './toolTimeouts';
 import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCreate';
 import { aiExecuteCommand } from './aiDispatch';
 import type { ToolExecutionContext } from './toolExecutionContext';
+import { checkScreenAccessConsentGate, type ScreenAccessSurface } from '../routes/remote/screenAccessConsentGate';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 /**
  * #6911: `create_remote_session` is user-owned on release
@@ -47,7 +49,7 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -61,6 +63,26 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
+}
+
+/**
+ * Screen capture and input control honour the device's remote access consent
+ * policy (see `checkScreenAccessConsentGate`). Returns the tool result to hand
+ * the model — `{ error, code }` — when the call must not dispatch, else null.
+ */
+async function screenAccessRefusal(
+  surface: ScreenAccessSurface,
+  device: typeof devices.$inferSelect,
+  auth: AuthContext,
+): Promise<string | null> {
+  const gate = await checkScreenAccessConsentGate({
+    deviceId: device.id,
+    orgId: device.orgId,
+    hostname: device.hostname,
+    surface,
+    actor: auth,
+  });
+  return gate.ok ? null : JSON.stringify(gate.body);
 }
 
 export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
@@ -79,7 +101,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'take_screenshot',
-      description: 'Capture a screenshot of the device screen. Returns the image for visual analysis. Use this when you need to see what is displayed on the device screen.',
+      description: 'Capture a screenshot of the device screen. Returns the image for visual analysis. Use this when you need to see what is displayed on the device screen. Refused on devices whose remote access policy requires user consent.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -94,6 +116,9 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
+
+      const refusal = await screenAccessRefusal('take_screenshot', access.device, auth);
+      if (refusal) return refusal;
 
       const result = await aiExecuteCommand(auth, 'take_screenshot', deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
@@ -137,7 +162,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_screen',
-      description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees.',
+      description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees. Refused on devices whose remote access policy requires user consent.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -153,6 +178,9 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
+
+      const refusal = await screenAccessRefusal('analyze_screen', access.device, auth);
+      if (refusal) return refusal;
 
       const result = await aiExecuteCommand(auth, 'analyze_screen', deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
@@ -203,7 +231,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'computer_control',
-      description: 'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action by default (configurable via captureAfter). Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
+      description: 'Control a device with mouse/keyboard input. Returns a screenshot after each action unless captureAfter is false. Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type. Refused on devices whose remote access policy requires user consent.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -231,6 +259,9 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
+
+      const refusal = await screenAccessRefusal('computer_control', access.device, auth);
+      if (refusal) return refusal;
 
       const result = await aiExecuteCommand(auth, 'computer_control', deviceId, 'computer_action', {
         action: input.action,

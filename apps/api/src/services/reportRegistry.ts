@@ -22,6 +22,7 @@ import {
 } from './reportErrors';
 import {
   arAgingConfigSchema,
+  backupStatusReportConfigSchema,
   endpointManagementConfigSchema,
   hardwareLifecycleConfigSchema,
   identityAccessConfigSchema,
@@ -242,6 +243,21 @@ const generators = {
       const orgAuthority = requestAuthority(authority, 'hardware_lifecycle');
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
       return generateHardwareLifecycleReport(orgId, config, orgAuthority);
+    },
+  },
+  // Backup Provider Integration W05 (#6013): on-demand snapshot over the W03
+  // unified backup health read model. Org-only, user execution, never
+  // portal-visible (absent from the portal-user allowlists in
+  // reportGenerationService.ts and from PORTAL_DEFINITIONS).
+  backup_status: {
+    type: 'backup_status', label: 'Backup status',
+    configSchema: backupStatusReportConfigSchema, supportedScopes: ORG_ONLY,
+    execution: 'user', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
+    generate: async (scope, config, authority) => {
+      const orgId = orgOf(scope);
+      const orgAuthority = requestAuthority(authority, 'backup_status');
+      const { generateBackupStatusReport } = await import('./backupStatusReport');
+      return generateBackupStatusReport(orgId, config, orgAuthority);
     },
   },
   // #5784 W02/W03/W04/W06 — managed evidence. `authority` is narrowed to the

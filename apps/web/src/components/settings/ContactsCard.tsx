@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '@/lib/runAction';
 import BulkContactImport from '../organizations/BulkContactImport';
+import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
 
 /**
  * First-class organization contacts (#3258 W04) — the whole `#contacts` tab of
@@ -18,31 +19,6 @@ import BulkContactImport from '../organizations/BulkContactImport';
  */
 
 const PAGE_SIZE = 25;
-
-/** Mirrors CONTACT_ROLES in apps/api/src/services/contacts/types.ts. */
-const CONTACT_ROLES = [
-  'billing', 'technical', 'escalation', 'admin', 'site', 'after_hours', 'portal',
-] as const;
-type ContactRole = (typeof CONTACT_ROLES)[number];
-
-/**
- * Role → label key. A record of full key strings rather than a template, so a
- * role token that is not camelCase (`after_hours`) needs no transformation at
- * the call site.
- */
-const ROLE_LABEL_KEYS: Record<ContactRole, string> = {
-  'billing': 'contactsCard.roles.billing',
-  'technical': 'contactsCard.roles.technical',
-  'escalation': 'contactsCard.roles.escalation',
-  'admin': 'contactsCard.roles.admin',
-  'site': 'contactsCard.roles.site',
-  'after_hours': 'contactsCard.roles.afterHours',
-  'portal': 'contactsCard.roles.portal',
-};
-
-function isKnownRole(role: string): role is ContactRole {
-  return (CONTACT_ROLES as readonly string[]).includes(role);
-}
 
 type Contact = {
   id: string;

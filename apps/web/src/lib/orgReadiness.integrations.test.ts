@@ -134,7 +134,7 @@ describe('connectorRepairs', () => {
       { system: 'sentinelone', state: 'disabled' },
     ])).toEqual([
       { system: 'quickbooks', state: 'reauth_required', href: '/integrations#quickbooks' },
-      { system: 'xero', state: 'disconnected', href: '/integrations#accounting' },
+      { system: 'xero', state: 'disconnected', href: '/integrations#xero' },
       { system: 'psa', state: 'disabled', provider: 'autotask', href: '/integrations/psa' },
       { system: 'pax8', state: 'error', href: '/integrations#pax8' },
       { system: 'sentinelone', state: 'disabled', href: '/integrations#sentinelone' },

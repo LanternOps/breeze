@@ -183,6 +183,22 @@ describe('system tools routes', () => {
     expect(body.meta.total).toBe(1);
   });
 
+  it('answers a device parked in a holding org with 403 DEVICE_PENDING_ASSIGNMENT and sends nothing', async () => {
+    mockDeviceSelect();
+    const { checkRemoteAccess } = await import('../services/remoteAccessPolicy');
+    vi.mocked(checkRemoteAccess).mockResolvedValueOnce({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/processes`);
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ code: 'DEVICE_PENDING_ASSIGNMENT' }));
+    expect(mockExecuteCommand).not.toHaveBeenCalled();
+  });
+
   it('denies system tool commands when site scope excludes the device', async () => {
     vi.mocked(getUserPermissions).mockResolvedValueOnce({
       permissions: [{ resource: '*', action: '*' }],

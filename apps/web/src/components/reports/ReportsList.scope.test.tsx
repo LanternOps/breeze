@@ -25,6 +25,10 @@ vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: or
 
 import ReportsList from './ReportsList';
 
+// W03: a partner-wide user on All organizations lists children-free rows
+// (`/reports?series=exclude`) alongside `/reports/series`.
+const isListUrl = (u: string) => u === '/reports' || u === '/reports?series=exclude';
+
 const base = {
   type: 'ar_aging',
   schedule: 'monthly',
@@ -40,7 +44,8 @@ const orgOwned = { ...base, id: 'rep-o', name: 'Acme AR', orgId: 'org-1', partne
 
 function mockList(rows: unknown[]) {
   fetchWithAuth.mockImplementation((url: string) => {
-    if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: rows }) });
+    if (url === '/reports/series') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+    if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: rows }) });
     if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
     return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
   });
@@ -60,17 +65,18 @@ describe('ReportsList ownership (#3198 W03)', () => {
 
     const partnerRow = await screen.findByTestId('report-row-rep-p');
     const orgRow = screen.getByTestId('report-row-rep-o');
-    const badge = within(partnerRow).getByTestId('report-scope-badge-rep-p');
-    expect(within(badge).getByTestId('scope-badge')).toBeInTheDocument();
-    expect(within(orgRow).queryByTestId('report-scope-badge-rep-o')).toBeNull();
-    expect(within(orgRow).queryByTestId('scope-badge')).toBeNull();
+    // Multi-org series W01: the Covers cell replaces the lone ScopeBadge.
+    const covers = within(partnerRow).getByTestId('report-covers-rep-p');
+    expect(covers).toHaveAttribute('data-covers-kind', 'combined');
+    expect(covers).toHaveTextContent('All organizations · Combined');
+    expect(within(orgRow).getByTestId('report-covers-rep-o')).toHaveAttribute('data-covers-kind', 'org');
   });
 
   it('keeps the ambient org injection on the list request (no skipOrgIdInjection)', async () => {
     mockList([orgOwned]);
     render(<ReportsList />);
     await screen.findByTestId('report-row-rep-o');
-    const listCall = fetchWithAuth.mock.calls.find(([url]) => url === '/reports');
+    const listCall = fetchWithAuth.mock.calls.find(([url]) => isListUrl(url));
     expect(listCall).toBeDefined();
     expect(listCall?.[1]).toBeUndefined();
   });
@@ -100,14 +106,14 @@ describe('ReportsList ownership (#3198 W03)', () => {
         // also carried org-owned rows must still merge only the partner row.
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned, orgOwned, otherOrgOwned], pagination: { page: 1, limit: 100, total: 3 } }) });
       }
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
     render(<ReportsList />);
 
     const partnerRow = await screen.findByTestId('report-row-rep-p');
-    expect(within(partnerRow).getByTestId('report-scope-badge-rep-p')).toBeInTheDocument();
+    expect(within(partnerRow).getByTestId('report-covers-rep-p')).toHaveAttribute('data-covers-kind', 'combined');
     // Deduped: the focused org's row renders once; another org's row never leaks in.
     expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
     expect(screen.queryByTestId('report-row-rep-x')).toBeNull();
@@ -125,7 +131,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) return Promise.reject(new Error('boom'));
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -139,7 +145,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     mockList([partnerOwned]);
     render(<ReportsList />);
     await screen.findByTestId('report-row-rep-p');
-    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
+    expect(fetchWithAuth.mock.calls.filter(([url]) => isListUrl(url))).toHaveLength(1);
   });
 
   it('does no partner-wide fetch for an organization-scope user or while the token is unresolved', async () => {
@@ -148,14 +154,14 @@ describe('ReportsList ownership (#3198 W03)', () => {
     mockList([orgOwned]);
     const { unmount } = render(<ReportsList />);
     await screen.findByTestId('report-row-rep-o');
-    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
+    expect(fetchWithAuth.mock.calls.filter(([url]) => isListUrl(url))).toHaveLength(1);
     unmount();
 
     fetchWithAuth.mockClear();
     claims.value = { status: 'unresolved' };
     render(<ReportsList />);
     await waitFor(() => expect(screen.getByTestId('report-row-rep-o')).toBeInTheDocument());
-    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
+    expect(fetchWithAuth.mock.calls.filter(([url]) => isListUrl(url))).toHaveLength(1);
   });
 
   it('pages the all-organizations listing so partner-owned rows past page 1 are merged', async () => {
@@ -170,7 +176,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
         const data = page === 1 ? fullPage : page === 2 ? [partnerOwned2] : [];
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 101 } }) });
       }
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -193,7 +199,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
         const data = Array.from({ length: 100 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${page}-${i}` }));
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 100000 } }) });
       }
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -218,7 +224,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
           : [{ ...partnerOwned, id: 'rep-p-last' }];
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data }) });
       }
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -239,7 +245,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
         const data = Array.from({ length: 100 }, (_, i) => ({ ...partnerOwned, id: `rep-p-${i}` }));
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 150 } }) });
       }
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -256,7 +262,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fetchWithAuth.mockImplementation((url: string, opts?: { skipOrgIdInjection?: boolean }) => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) return Promise.reject(new Error('boom'));
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -276,7 +282,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
           : [partnerOwned];
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data, pagination: { page, limit: 100, total: 101 } }) });
       }
-      if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
+      if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [orgOwned] }) });
       if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) });
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
     });
@@ -307,7 +313,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned], pagination: { page: 1, limit: 100, total: 1 } }) });
       }
-      if (url === '/reports') {
+      if (isListUrl(url)) {
         // The ambient org injection lives in fetchWithAuth; model it with the store.
         const rows = org.currentOrgId ? [orgOwned] : [partnerOwned, orgOwned, otherOrgOwned];
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: rows }) });
@@ -327,7 +333,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
     expect(screen.getAllByTestId('report-row-rep-p')).toHaveLength(1);
     expect(screen.getAllByTestId('report-row-rep-o')).toHaveLength(1);
     expect(screen.getAllByTestId(/^report-row-/)).toHaveLength(3);
-    expect(fetchWithAuth.mock.calls.filter(([url]) => url === '/reports')).toHaveLength(1);
+    expect(fetchWithAuth.mock.calls.filter(([url]) => isListUrl(url))).toHaveLength(1);
     const wide = fetchWithAuth.mock.calls.filter(([url, o]) => String(url).startsWith('/reports?') && (o as { skipOrgIdInjection?: boolean } | undefined)?.skipOrgIdInjection);
     expect(wide).toHaveLength(0);
   });
@@ -341,7 +347,7 @@ describe('ReportsList ownership (#3198 W03)', () => {
       if (url.startsWith('/reports?') && opts?.skipOrgIdInjection) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [partnerOwned], pagination: { page: 1, limit: 100, total: 1 } }) });
       }
-      if (url === '/reports') {
+      if (isListUrl(url)) {
         ownCalls += 1;
         const ok = { ok: true, json: () => Promise.resolve({ data: [orgOwned] }) };
         if (ownCalls === 1) return new Promise((resolve) => { releaseStale = () => resolve(ok); });

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { reports, reportRuns } from '../../db/schema';
+import { organizations, reports, reportRuns, reportSeries } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
@@ -194,7 +194,14 @@ runsRoutes.post(
       throw error;
     }
 
-    // Create a new report run
+    // Create a new report run. Multi-org series W01 (spec §3.2): this route
+    // never emails, so a manual run of a SCHEDULED definition is recorded as
+    // 'not_scheduled' — distinct from the schedule's own deliveries, which the
+    // list's latest-delivery warning reads. A one-time definition has no
+    // schedule to contrast with and stays NULL.
+    const deliveryStatus = report.schedule && report.schedule !== 'one_time'
+      ? ('not_scheduled' as const)
+      : null;
     const [run] = await db
       .insert(reportRuns)
       .values({
@@ -204,6 +211,7 @@ runsRoutes.post(
         requestedByKind: 'user',
         requestedByUserId: auth.user.id,
         requestedByPortalUserId: null,
+        deliveryStatus,
         ...persistedSiteScopeValues(executionAuthority),
       })
       .returning();
@@ -416,7 +424,9 @@ runsRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get runs with report info
+    // Get runs with report info. Multi-org series W01 (spec §3.6): the owning
+    // org (LEFT join — a partner-owned definition has none) and the run's
+    // delivery summary.
     const runsList = await db
       .select({
         id: reportRuns.id,
@@ -429,10 +439,18 @@ runsRoutes.get(
         rowCount: reportRuns.rowCount,
         createdAt: reportRuns.createdAt,
         reportName: reports.name,
-        reportType: reports.type
+        reportType: reports.type,
+        orgId: reports.orgId,
+        orgName: organizations.name,
+        seriesId: reports.seriesId,
+        seriesName: reportSeries.name,
+        deliveryStatus: reportRuns.deliveryStatus,
+        recipientCount: reportRuns.recipientCount
       })
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .leftJoin(organizations, eq(organizations.id, reports.orgId))
+      .leftJoin(reportSeries, eq(reportSeries.id, reports.seriesId))
       .where(whereCondition)
       .orderBy(desc(reportRuns.createdAt), desc(reportRuns.id))
       .limit(limit)

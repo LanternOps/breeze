@@ -129,7 +129,7 @@ describe('evaluateProviderAlerts', () => {
     providerRows = [row({ status: 'completed', lastSuccessAt: new Date(), errorsCount: 0, pendingCondition: 'raised:failed' })];
     openAlerts = [{ id: 'a1', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
     const out = await evaluateProviderAlerts(CONNECTION);
-    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync');
+    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
     expect(out.resolved).toBe(1);
     expect(publishEvent).toHaveBeenCalledWith(
       'backup.provider_device_recovered', ORG, expect.objectContaining({ condition: 'failed' }), 'backup-provider-sync',
@@ -147,14 +147,14 @@ describe('evaluateProviderAlerts', () => {
     providerRows = [row({ status: 'completed', lastSuccessAt: new Date(), errorsCount: 0, pendingCondition: 'raised:failed' })];
     openAlerts = [{ id: 'a1', status: 'suppressed', suppressedUntil: new Date(Date.now() + 3600_000), providerDeviceId: 'p1', condition: 'failed' }];
     await evaluateProviderAlerts(CONNECTION);
-    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync');
+    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
   });
 
   it('resolves the alerts of a row that has vanished from the connection', async () => {
     providerRows = [];
     openAlerts = [{ id: 'a1', status: 'active', suppressedUntil: null, providerDeviceId: 'p-gone', condition: 'failed' }];
     const out = await evaluateProviderAlerts(CONNECTION);
-    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync');
+    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
     expect(out.resolved).toBe(1);
   });
 
@@ -162,7 +162,7 @@ describe('evaluateProviderAlerts', () => {
     providerRows = [row({ breezeDeviceId: null, deviceDisplayName: null, deviceHostname: null, pendingCondition: 'raised:failed' })];
     openAlerts = [{ id: 'a1', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
     await evaluateProviderAlerts(CONNECTION);
-    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync');
+    expect(resolveAlert).toHaveBeenCalledWith('a1', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
     // The CONDITION did not clear — only the link did — so no recovery is announced.
     expect(publishEvent).not.toHaveBeenCalled();
   });

@@ -957,6 +957,24 @@
       "submitting": "Enviando…",
       "approveElevation": "Aprobar elevación",
       "denyRequest": "Denegar solicitud"
+    },
+    "reauth": {
+      "title": "Solicitud crítica: confirma que eres tú",
+      "why": "Aprobar una elevación de nivel crítico requiere una reautenticación reciente además de tu dispositivo de aprobador. Se verifica una sola vez y nunca se almacena.",
+      "unavailable": "Tu cuenta inicia sesión sin contraseña y no tiene una aplicación de autenticación, por lo que no puede reautenticarse para aprobaciones críticas. Las claves de acceso aún no se aceptan para este paso. Configura una aplicación de autenticación en Perfil → Seguridad, o pídele a un aprobador que tenga contraseña.",
+      "codeLabel": "Código de la aplicación de autenticación",
+      "passwordLabel": "Contraseña de la cuenta",
+      "codeHelp": "El código de 6 dígitos de la aplicación de autenticación con la que inicias sesión. Las claves de acceso y los códigos por SMS aún no se aceptan para este paso.",
+      "passwordHelp": "La contraseña que usas para iniciar sesión en Breeze.",
+      "useCode": "Usar un código de la aplicación de autenticación en su lugar",
+      "usePassword": "Usar mi contraseña en su lugar",
+      "errors": {
+        "codeRequired": "Ingresa el código de tu aplicación de autenticación para aprobar esta solicitud crítica.",
+        "passwordRequired": "Ingresa la contraseña de tu cuenta para aprobar esta solicitud crítica.",
+        "invalid": "Esa contraseña o código no fue aceptado. Verifícalo e inténtalo de nuevo.",
+        "required": "Esta es una solicitud crítica. Vuelve a ingresar tu contraseña (o el código de autenticación) y aprueba de nuevo.",
+        "assertionFailed": "La verificación de tu dispositivo de aprobador no fue aceptada. Inténtalo de nuevo."
+      }
     }
   },
   "pamPamRevokeModal": {

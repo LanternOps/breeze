@@ -70,6 +70,8 @@ import {
   type PamActuationRef,
 } from '../services/pamActuationLifecycle';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 /**
  * Thrown inside the respond transaction when an ai_tool_action elevation is
  * decided but its linked ai_tool_executions row is no longer pending (the
@@ -1175,6 +1177,8 @@ pamRoutes.post('/rules', requirePamManagePolicy, requireMfa(), zValidator('json'
   if (!resolvedOrg.orgId) {
     return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
   }
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(resolvedOrg.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
   // Site axis is app-layer-only for pam_rules (RLS Shape-1 org-only). A
   // site-restricted tech must not author org-wide (siteId null → '') or
@@ -1606,6 +1610,8 @@ pamRoutes.get('/config', requirePamRead, async (c) => {
   if (!resolvedOrg.orgId) {
     return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
   }
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(resolvedOrg.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
   const [cfg] = await db
     .select()
     .from(pamOrgConfig)
@@ -1638,6 +1644,8 @@ pamRoutes.put(
     if (!resolvedOrg.orgId) {
       return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(resolvedOrg.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     const [saved] = await db
       .insert(pamOrgConfig)
       .values({
@@ -1766,6 +1774,8 @@ pamRoutes.post(
     if (!resolvedOrg.orgId) {
       return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(resolvedOrg.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     const [created] = await db
       .insert(pamSignerGroups)
       .values({

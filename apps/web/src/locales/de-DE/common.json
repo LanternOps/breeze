@@ -47,6 +47,7 @@
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
     "deviceGroups": "Gerätegruppen",
+    "unassignedDevices": "Nicht zugewiesene Geräte",
     "configPolicies": "Konfigurationsrichtlinien",
     "integrations": "Integrationen",
     "cloudBackup": "Cloud-Backup",
@@ -749,7 +750,8 @@
         "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
         "keyboardShortcuts": "Tastenkürzel",
         "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
-      }
+      },
+      "numberHint": "{{mod}}1–9 zum Öffnen"
     },
     "notifications": {
       "title": "Benachrichtigungen",
@@ -815,7 +817,17 @@
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
       "close": "Dialog oder Menü schließen",
-      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen."
+      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
+      "create": "Erstellen",
+      "createHint": "Drücke c, lass los, dann die Taste.",
+      "paletteNumber": "Suchergebnis über seine Nummer öffnen",
+      "newItems": {
+        "ticket": "Neues Ticket",
+        "quote": "Neues Angebot",
+        "invoice": "Neue Rechnung",
+        "contract": "Neuer Vertrag",
+        "script": "Neues Skript"
+      }
     }
   },
   "migrationBanner": {
@@ -2437,7 +2449,36 @@
         "requesting": "Anfrage...",
         "requestApproval": "Bitte um Genehmigung",
         "waitingApprovalTitle": "Warten auf PAM-Genehmigung",
-        "approvalPending": "Genehmigung steht aus"
+        "approvalPending": "Genehmigung steht aus",
+        "proven": {
+          "badge": "Bewährte Lösung",
+          "trackAllClients": "Hat {{verified}} von {{attempts}} Mal bei Ihren Kunden funktioniert",
+          "trackThisClient": "Hat {{verified}} von {{attempts}} Mal bei diesem Kunden funktioniert"
+        },
+        "feedback": {
+          "worked": "Hat funktioniert",
+          "didNotWork": "Hat nicht funktioniert",
+          "recorded": "Rückmeldung gespeichert",
+          "failed": "Rückmeldung konnte nicht gespeichert werden"
+        },
+        "done": {
+          "button": "Erledigt",
+          "recorded": "Als erledigt markiert — Wiederherstellung wird beobachtet",
+          "failed": "Konnte nicht als erledigt markiert werden"
+        },
+        "outcome": {
+          "label": "Ergebnis: {{state}}",
+          "state": {
+            "pending": "läuft",
+            "awaitingRecovery": "Wiederherstellung wird beobachtet",
+            "holding": "behoben — Stabilität wird bestätigt",
+            "verified": "Behebung bestätigt",
+            "failed": "hat das Problem nicht behoben",
+            "recurred": "ist zurückgekehrt",
+            "inconclusive": "nicht eindeutig",
+            "cancelled": "abgebrochen"
+          }
+        }
       }
     },
     "support": {

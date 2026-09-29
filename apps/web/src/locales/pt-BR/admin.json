@@ -572,6 +572,7 @@
         "enabledMeaning": "Ativado significa configurado. O Breeze não contata o serviço para verificar se ele responde.",
         "footnote": "Mostra apenas o ambiente do contêiner da API. Os contêineres web, portal e worker não estão incluídos.",
         "meta": "Versão em execução {{version}} · {{mode}}",
+        "versionMismatch": "Esta imagem da API é {{running}}, mas BREEZE_VERSION é {{configured}}. Alterar BREEZE_VERSION não muda uma imagem fixada por digest, e os agentes recebem a versão de BREEZE_VERSION. Atualize com guided-setup.sh --upgrade ou volte BREEZE_VERSION para {{running}}.",
         "deployMode": {
           "hosted": "Hospedado",
           "self_host": "Auto-hospedado"
@@ -629,6 +630,10 @@
       "agent.command.result.submit": "Resultado de comando enviado",
       "agent.filesystem.threshold_scan.queued": "Verificação de arquivos enfileirada",
       "agent.enroll": "Agente registrado",
+      "api.fallback.post": "Enviado: {target}",
+      "api.fallback.put": "Atualizado: {target}",
+      "api.fallback.patch": "Atualizado: {target}",
+      "api.fallback.delete": "Excluído: {target}",
       "user.login": "Sessão iniciada",
       "user.logout": "Sessão encerrada",
       "session_initiated": "Sessão iniciada",
@@ -638,6 +643,7 @@
       "session_consent_blocked_unanswered": "Sessão remota bloqueada: solicitação de consentimento sem resposta",
       "session_consent_blocked_unavailable": "Sessão remota bloqueada: solicitação de consentimento indisponível",
       "session_consent_bypassed": "Sessão remota iniciada sem resposta à solicitação de consentimento",
+      "screen_access_consent_blocked": "Acesso à tela bloqueado: o dispositivo exige o consentimento do usuário",
       "device.wake_on_lan": "Wake-on-LAN enviado",
       "device.create": "Dispositivo adicionado",
       "device.update": "Dispositivo atualizado",

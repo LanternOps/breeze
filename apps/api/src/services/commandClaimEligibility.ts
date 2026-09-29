@@ -7,6 +7,9 @@ import {
 } from './commandCancelPropagation';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { captureException } from './sentry';
+import { DRAIN_CLAIM_TYPE_ALLOWLIST } from './drainClaimAllowlist';
+import { PARKED_DEVICE_CANCEL_REASON } from './unassignedPool/deliveryEligibility';
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -28,7 +31,13 @@ export type ClaimCancelReason =
   /** The row carries its own absolute expiry and it has passed. */
   | 'expired'
   /** A type that REQUIRES revalidation had none registered — fail closed. */
-  | 'authority_unavailable';
+  | 'authority_unavailable'
+  /**
+   * The device is parked in its partner's holding org, where only lifecycle
+   * removal is delivered. An org-type fact, deliberately not folded into
+   * `device_lifecycle` (that one is the device's own status).
+   */
+  | typeof PARKED_DEVICE_CANCEL_REASON;
 
 /** Why a claim candidate was withheld this heartbeat but left `pending`. */
 export type ClaimHoldReason =
@@ -46,6 +55,11 @@ export type ClaimEligibilityDevice = {
   id: string;
   orgId: string;
   status: string;
+  /**
+   * `organizations.type` of the device's org. Required, so a claim path cannot
+   * forget to read it: a holding-org device gets lifecycle removal only.
+   */
+  orgType: string;
 };
 
 export type ClaimCandidate = {
@@ -101,7 +115,7 @@ export const POWER_STATE_BARRIER_TYPES: ReadonlySet<string> = new Set(['reboot',
  * apply to it are the caller's `deliver_by` predicate and the power-state
  * barrier — neither of which can strand it.
  */
-const DRAIN_EXEMPT_TYPES: ReadonlySet<string> = new Set(['self_uninstall']);
+const DRAIN_EXEMPT_TYPES: ReadonlySet<string> = new Set(DRAIN_CLAIM_TYPE_ALLOWLIST);
 
 /** Device states in which ordinary queued work must never be delivered. */
 const NON_DELIVERABLE_LIFECYCLE: ReadonlySet<string> = new Set(['decommissioned', 'quarantined']);
@@ -298,6 +312,16 @@ export async function partitionClaimable(
     // Checked FIRST, ahead of every cancel: see DRAIN_EXEMPT_TYPES above.
     if (DRAIN_EXEMPT_TYPES.has(row.type)) {
       claimable.push(row);
+      continue;
+    }
+
+    // A device parked in a holding org is not being managed yet: only the
+    // drain-exempt removal above is delivered, and everything else is
+    // cancelled with its own reason — ahead of the org-drift, lifecycle,
+    // trust, requester and revalidation checks, none of which can make other
+    // work deliverable to it.
+    if (isUnassignedPoolOrgType(device.orgType)) {
+      cancelled.push({ id: row.id, reason: PARKED_DEVICE_CANCEL_REASON });
       continue;
     }
 

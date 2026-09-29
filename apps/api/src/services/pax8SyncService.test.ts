@@ -119,6 +119,16 @@ describe('pax8SyncService', () => {
     expect(snapshotUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1' }));
   });
 
+  it('refuses to map a Pax8 company onto a holding org', async () => {
+    selectRowsOnce([{ id: 'org-1', partnerId: 'partner-1', type: 'unassigned_pool' }]);
+    await expect(mapPax8Company({
+      integrationId: 'integration-1',
+      partnerId: 'partner-1',
+      pax8CompanyId: 'company-1',
+      orgId: 'org-1',
+    })).rejects.toThrow('cannot be a mapping target');
+  });
+
   it('clears snapshot orgs when a Pax8 company is ignored', async () => {
     updateReturningOnce([{ pax8CompanyId: 'company-1', orgId: null, ignored: true }]);
     const snapshotUpdate = updateNoReturnOnce();

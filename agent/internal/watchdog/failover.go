@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
@@ -116,6 +117,52 @@ type FailoverClient struct {
 	// ErrAuthBackoff. Replaceable via SetAuthMonitor so the backoff can
 	// outlive one failover window.
 	auth *authstate.Monitor
+
+	// resultResendDelay is the backoff before resubmission #attempt of a
+	// command result the server could not record (#7365). A test seam;
+	// defaults to failoverResultResendDelay.
+	resultResendDelay func(attempt int) time.Duration
+}
+
+// Command-result resubmission (#7365). Since #3530 the server answers a result
+// it received but could not record with HTTP 500
+// {"error":"result_processing_failed"} and parks the row as reopenable; a
+// resubmission is reprocessed, and one after a successful record is a 0-row
+// CAS no-op. Only that exact answer is resubmitted: any other 5xx in FAILOVER
+// means the server itself is unhealthy, and a 4xx will not change.
+//
+// Bounded tightly because the watchdog runs failover commands synchronously in
+// its main loop: worst case ~2+4+8s (±25%) of added stall on a path that only
+// fires when the server has already failed to persist a result.
+const (
+	failoverResultResendMaxAttempts = 3
+	failoverResultResendBaseDelay   = 2 * time.Second
+	failoverResultResendJitter      = 0.25
+	resultProcessingFailedError     = "result_processing_failed"
+)
+
+// failoverResultResendDelay is 2s, 4s, 8s … for attempt 1, 2, 3 …, ±25%.
+func failoverResultResendDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 3 {
+		attempt = 3
+	}
+	nominal := failoverResultResendBaseDelay << (attempt - 1)
+	return time.Duration(float64(nominal) * (1 + failoverResultResendJitter*(rand.Float64()*2-1)))
+}
+
+// isResultProcessingFailed reports whether a result submission's response is
+// the server's reopenable "could not record" answer.
+func isResultProcessingFailed(code int, body []byte) bool {
+	if code != http.StatusInternalServerError {
+		return false
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	return json.Unmarshal(body, &parsed) == nil && parsed.Error == resultProcessingFailedError
 }
 
 // NewFailoverClient creates a FailoverClient with a 30-second timeout. If
@@ -139,7 +186,8 @@ func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *F
 			Timeout:   90 * time.Second,
 			Transport: transport,
 		},
-		auth: NewFailoverAuthMonitor(),
+		auth:              NewFailoverAuthMonitor(),
+		resultResendDelay: failoverResultResendDelay,
 	}
 }
 
@@ -332,24 +380,47 @@ func (c *FailoverClient) SubmitCommandResult(commandID, status string, result an
 		return fmt.Errorf("failover: marshal command result: %w", err)
 	}
 
+	delay := c.resultResendDelay
+	if delay == nil {
+		delay = failoverResultResendDelay
+	}
+	for resends := 0; ; resends++ {
+		code, respBody, err := c.postCommandResult(commandID, data)
+		if err != nil {
+			return err
+		}
+		if code == http.StatusOK {
+			return nil
+		}
+		if !isResultProcessingFailed(code, respBody) {
+			return fmt.Errorf("failover: submit result returned %d: %s", code, string(respBody))
+		}
+		if resends >= failoverResultResendMaxAttempts {
+			return fmt.Errorf("failover: server could not record command result (%s) after %d resubmissions; giving up",
+				resultProcessingFailedError, resends)
+		}
+		time.Sleep(delay(resends + 1))
+	}
+}
+
+// postCommandResult sends one command-result POST and returns its status and
+// body. A transport error is returned as err.
+func (c *FailoverClient) postCommandResult(commandID string, data []byte) (int, []byte, error) {
 	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", c.BaseURL(), c.agentID, commandID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("failover: build result request: %w", err)
+		return 0, nil, fmt.Errorf("failover: build result request: %w", err)
 	}
 	c.setHeaders(req)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failover: result request: %w", err)
+		return 0, nil, fmt.Errorf("failover: result request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failover: submit result returned %d: %s", resp.StatusCode, string(respBody))
-	}
-	return nil
+	return resp.StatusCode, respBody, nil
 }
 
 // apiLogEntry mirrors the API's agent diagnostic-log ingest contract

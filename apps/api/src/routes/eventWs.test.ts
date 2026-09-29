@@ -874,7 +874,7 @@ describe('createEventWsTicketRoute', () => {
     ['permission epoch changed after mint', 'permission_epoch_mismatch'],
   ] as const)('authorizes a system-scope ticket for %s', async (scenario, reason) => {
     const { db } = await import('../db');
-    const { and, eq, inArray, isNull } = await import('drizzle-orm');
+    const { and, eq, inArray, isNull, ne } = await import('drizzle-orm');
     const { organizations } = await import('../db/schema');
     const { getRedis } = await import('../services/redis');
     const setex = vi.fn().mockResolvedValue('OK');
@@ -893,6 +893,7 @@ describe('createEventWsTicketRoute', () => {
         and(
           eq(organizations.partnerId, selectedPartnerId),
           inArray(organizations.status, ['active', 'trial']),
+          ne(organizations.type, 'unassigned_pool'),
           isNull(organizations.deletedAt),
         ),
       );
@@ -922,6 +923,7 @@ describe('createEventWsTicketRoute', () => {
         expect(orgQuery.from.mock.results[0].value.where).toHaveBeenCalledWith(and(
           eq(organizations.partnerId, selectedPartnerId),
           inArray(organizations.status, ['active', 'trial']),
+          ne(organizations.type, 'unassigned_pool'),
           isNull(organizations.deletedAt),
         ));
       }

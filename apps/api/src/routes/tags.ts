@@ -7,6 +7,7 @@ import { devices, manualAssets } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const tagRoutes = new Hono();
 const requireTagRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 
@@ -91,7 +92,7 @@ tagRoutes.get(
     // Quick Support devices sit in the hidden 'quick_support' org that stays
     // inside accessibleOrgIds for RLS, so nothing drops them for us — tag
     // facet counts must exclude them explicitly.
-    const conditions = [eq(devices.isEphemeral, false)] as ReturnType<typeof eq>[];
+    const conditions = [eq(devices.isEphemeral, false), notParkedDeviceCondition()] as ReturnType<typeof eq>[];
     if (orgIds) {
       conditions.push(inArray(devices.orgId, orgIds));
     }
@@ -167,7 +168,7 @@ tagRoutes.get(
     }
 
     // Ephemeral Quick Support devices are excluded from tag facets/listings.
-    const conditions = [eq(devices.isEphemeral, false)] as ReturnType<typeof eq>[];
+    const conditions = [eq(devices.isEphemeral, false), notParkedDeviceCondition()] as ReturnType<typeof eq>[];
     if (orgIds) {
       conditions.push(inArray(devices.orgId, orgIds));
     }

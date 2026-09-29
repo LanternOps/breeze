@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { AGENT_STORAGE_SESSION_RATE_LIMIT } from './agentStorageSessionRateLimit';
+import { STORAGE_SESSION_CALL_BURST } from './backupStorageSessionBudget';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -233,6 +235,15 @@ describe('brokered read delivery', () => {
       expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'index_unavailable']]);
     });
 
+    it('defers a read of a snapshot whose brokered write is still sealing', async () => {
+      const state = makeState();
+      const deps = makeDeps(state);
+      (deps.store as BrokeredReadStore).isSnapshotSealing = vi.fn(async (id: string) => id === SNAP);
+      await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.recordMint.mock.calls).toEqual([['snapshot_read', 'deferred', 'snapshot_sealing']]);
+      expect(state.sessions.size).toBe(0);
+    });
+
     it('counts a VM command delivered as queued', async () => {
       const state = makeState();
       state.device!.backupReadProtocolVersion = 0;
@@ -271,12 +282,23 @@ describe('brokered read delivery', () => {
       baseUrl: 'https://api.breeze.example',
       capabilities: ['resolve_batch', 'renew'],
       maxBatch: 100,
+      // The session's control-plane call budget, for the helper to pace to.
+      controlRate: { perMinute: 600, burst: 600 },
     });
     expect(Object.keys(session).sort()).toEqual(
-      ['baseUrl', 'capabilities', 'deadline', 'expiresAt', 'maxBatch', 'sessionId', 'token', 'version'],
+      ['baseUrl', 'capabilities', 'controlRate', 'deadline', 'deadlineIn', 'expiresAt', 'expiresIn', 'maxBatch', 'sessionId', 'token', 'version'],
     );
+    expect(session.controlRate).toEqual({
+      perMinute: AGENT_STORAGE_SESSION_RATE_LIMIT,
+      burst: STORAGE_SESSION_CALL_BURST,
+    });
     expect(session.token).toMatch(/^[A-Za-z0-9_-]{43,}$/);
     expect(session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(typeof session.expiresIn).toBe('number');
+    expect(session.expiresIn as number).toBeGreaterThanOrEqual(0);
+    expect(typeof session.deadlineIn).toBe('number');
+    expect(session.deadlineIn as number).toBeGreaterThanOrEqual(0);
+    expect(session.expiresIn as number).toBeLessThanOrEqual(session.deadlineIn as number);
     expect(Date.parse(session.expiresAt as string)).toBeLessThanOrEqual(Date.parse(session.deadline as string));
 
     const stored = [...state.sessions.values()];
@@ -584,6 +606,8 @@ describe('storage session object resolution', () => {
       expect(lower).not.toContain('x-breeze-storage-session');
       expect(Date.parse(o.expiresAt) - NOW.getTime()).toBeLessThanOrEqual(STORAGE_OBJECT_URL_TTL_SECONDS * 1000);
       expect(o.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+      // Remaining lifetime on the server clock, for a helper whose clock is skewed.
+      expect(o.expiresIn).toBe(deps.presignGet.mock.calls[0]![0].expiresInSeconds);
     }
     expect(deps.presignGet).toHaveBeenCalledTimes(3);
     for (const call of deps.presignGet.mock.calls) {
@@ -661,6 +685,50 @@ describe('storage session object resolution', () => {
 });
 
 describe('storage session renewal', () => {
+  it('charges one call and no objects against the session budget', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    const deps = makeDeps(state);
+    const before = { ...state.sessions.get(row.id)! };
+    expect((await renewStorageSession(row, deps)).status).toBe(200);
+    const after = state.sessions.get(row.id)!;
+    expect(after.callCount).toBe(before.callCount + 1);
+    expect(after.resolvedObjectCount).toBe(before.resolvedObjectCount);
+  });
+
+  it('admits a renew every few seconds for the whole session', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    for (let i = 0; i < 300; i += 1) {
+      const deps = makeDeps(state, { now: () => new Date(NOW.getTime() + i * 5000) });
+      expect((await renewStorageSession(row, deps)).status).toBe(200);
+    }
+  });
+
+  it('answers a throttled renew 429 with the wait and leaves the lease alone', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    const stored = state.sessions.get(row.id)!;
+    stored.rateCallsAvailable = 0;
+    stored.rateRefilledAt = NOW;
+    const lease = stored.expiresAt;
+    const deps = makeDeps(state);
+    expect(await renewStorageSession(row, deps)).toEqual({ status: 429, retryAfterSeconds: 1 });
+    expect(state.sessions.get(row.id)!.expiresAt).toEqual(lease);
+    expect(deps.store.extendLease).not.toHaveBeenCalled();
+  });
+
+  it('ends a session whose call allowance is spent', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    const stored = state.sessions.get(row.id)!;
+    stored.callCount = stored.maxCalls;
+    const deps = makeDeps(state);
+    expect(await renewStorageSession(row, deps)).toMatchObject({ status: 410 });
+    expect(state.revoked).toContainEqual({ id: row.id, reason: 'budget_exhausted' });
+    expect(deps.store.extendLease).not.toHaveBeenCalled();
+  });
+
   it('extends the lease but never past the deadline', async () => {
     const state = makeState();
     const { row } = await mintSession(state);
@@ -671,6 +739,8 @@ describe('storage session renewal', () => {
     if (result.status === 200) {
       expect(Date.parse(result.body.expiresAt)).toBeLessThanOrEqual(row.deadline.getTime());
       expect(Date.parse(result.body.expiresAt)).toBeGreaterThan(nearDeadline.getTime());
+      expect(result.body.expiresIn).toBeGreaterThan(0);
+      expect(result.body.expiresIn).toBe(Math.floor((Date.parse(result.body.expiresAt) - nearDeadline.getTime()) / 1000));
     }
   });
 
@@ -679,6 +749,16 @@ describe('storage session renewal', () => {
     const { row } = await mintSession(state);
     const deps = makeDeps(state, { now: () => new Date(row.deadline.getTime() + 1) });
     expect(await renewStorageSession(row, deps)).toMatchObject({ status: 410 });
+  });
+
+  it('never reports a negative expiresIn even at the instant of the deadline', async () => {
+    const state = makeState();
+    const { row } = await mintSession(state);
+    row.expiresAt = row.deadline;
+    const deps = makeDeps(state, { now: () => new Date(row.deadline.getTime() - 1) });
+    const result = await renewStorageSession(row, deps);
+    expect(result.status).toBe(200);
+    if (result.status === 200) expect(result.body.expiresIn).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -1023,7 +1103,9 @@ describe('helper wire compatibility', () => {
     if (result.status === 200) {
       expect(result.body.expiresAt).toMatch(RFC3339);
       expect(Date.parse(result.body.expiresAt)).toBeGreaterThan(NOW.getTime());
-      expect(Object.keys(result.body)).toEqual(['expiresAt']);
+      expect(typeof result.body.expiresIn).toBe('number');
+      expect(result.body.expiresIn).toBeGreaterThanOrEqual(0);
+      expect(Object.keys(result.body).sort()).toEqual(['expiresAt', 'expiresIn']);
     }
   });
 });

@@ -29,6 +29,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { publishEvent } from '../services/eventBus';
 
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 export const peripheralControlRoutes = new Hono();
 const MAX_ACTIVITY_WINDOW_DAYS = 90;
 
@@ -265,7 +266,8 @@ async function resolvePolicyTargetOrgIds(policy: { orgId: string | null; partner
     .from(organizations)
     // The hidden 'quick_support' org holds only ephemeral support devices — a
     // partner-wide USB/peripheral policy must not fan out into it.
-    .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support')));
+    // Nor into the partner's holding org: parked devices get no policy.
+    .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
   return rows.map((row) => row.id);
 }
 

@@ -3,6 +3,8 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { assertInTransaction, db, withSystemDbAccessContext } from '../db';
 import { devices, offlineTransitionEffects as effects, type OfflineEffect } from '../db/schema';
 import type { OfflineEffectPayload, OfflineObservation } from './offlineEffectsTypes';
+import { isParkedDevice } from './unassignedPool/deliveryEligibility';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 export const OFFLINE_EFFECT_LEASE_SECONDS = 60;
 export function offlineEffectId(transitionId: string, kind: string, ruleId = ''): string {
@@ -32,6 +34,11 @@ export async function persistOfflineTransition(
     osType: device.osType, osVersion: device.osVersion, observedLastSeenAt,
   };
   const source = { transitionId, orgId: device.orgId, deviceId: device.id };
+  // A device parked in its partner's holding org still goes offline (its
+  // status is real), but raises nothing: no device.offline event (automations,
+  // webhooks, notifications) and no alert plan (alerts, tickets). Asked on the
+  // caller's transaction through the definer-rights resolver.
+  if (await isParkedDevice(db, device.id)) return [];
   const ids = [await insertOfflineEffect(source, { type: 'offline-event', observation })];
   if (!device.isEphemeral) ids.push(await insertOfflineEffect(source, { type: 'alert-plan', observation }));
   return ids;
@@ -107,6 +114,7 @@ export async function lockCurrentOfflineObservation(observation: OfflineObservat
     // ms-precision observation vs. possibly µs last_seen_at — same as processMarkOffline (#6024).
     sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observation.observedLastSeenAt}`,
     eq(devices.isEphemeral, false),
+    notParkedDeviceCondition(),
   )).for('update');
   return device;
 }

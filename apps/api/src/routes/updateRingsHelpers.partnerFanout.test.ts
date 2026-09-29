@@ -74,8 +74,8 @@ describe('buildPartnerAssignmentCondition — partner-level ring fan-out (#3954)
       partnerAssignment(PARTNER_A),
       partnerAssignment(PARTNER_A),
     ]);
-    // One partner param + the is_ephemeral flag — the duplicate is dropped.
-    expect(params).toEqual([PARTNER_A, false]);
+    // One partner param + the is_ephemeral flag + the holding-org type — the duplicate is dropped.
+    expect(params).toEqual([PARTNER_A, false, 'unassigned_pool']);
   });
 
   it('clamps a legacy org-owned policy to its own org, mirroring the scheduler', () => {
@@ -92,5 +92,13 @@ describe('buildPartnerAssignmentCondition — partner-level ring fan-out (#3954)
   it('keeps a partner-wide policy unclamped (no devices.org_id predicate)', () => {
     const { sql } = render([partnerAssignment(PARTNER_A, null)]);
     expect(sql).not.toContain('"devices"."org_id"');
+  });
+});
+
+describe('buildPartnerAssignmentCondition — holding org', () => {
+  it('leaves devices parked in a holding org out of a partner-level ring assignment', () => {
+    const { sql, params } = render([partnerAssignment(PARTNER_A)]);
+    expect(sql).toContain('"organizations"."type" <> $3');
+    expect(params[2]).toBe('unassigned_pool');
   });
 });

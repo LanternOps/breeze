@@ -1736,6 +1736,95 @@ describe('PatchesPage', () => {
       await screen.findByText('Failed to fetch patches');
     });
   });
+
+  describe('Jobs tab (#2606)', () => {
+    it('switches to the Jobs tab, writes #jobs to the hash, and lists patch jobs', async () => {
+      orgState.currentOrgId = 'org-1';
+      window.history.replaceState({}, '', '/#compliance');
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+        if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+        if (url === '/patches/jobs?page=1&limit=25') {
+          return makeJsonResponse({
+            data: [{
+              id: 'job-1',
+              name: 'AI-initiated patch install',
+              status: 'scheduled',
+              scheduledAt: '2026-09-01T10:00:00.000Z',
+              startedAt: null,
+              completedAt: null,
+              devicesTotal: 2,
+              devicesCompleted: 0,
+              devicesFailed: 0,
+              createdByName: null,
+            }],
+            pagination: { page: 1, limit: 25, total: 1 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      fireEvent.click(await screen.findByRole('button', { name: /Jobs/i }));
+      await waitFor(() => expect(window.location.hash).toBe('#jobs'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/patches/jobs?page=1&limit=25'));
+      expect(await desktop().findByText('AI-initiated patch install')).toBeInTheDocument();
+    });
+
+    it('opens the job detail drawer when a job row is clicked', async () => {
+      orgState.currentOrgId = 'org-1';
+      window.history.replaceState({}, '', '/#jobs');
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+        if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+        if (url === '/patches/jobs?page=1&limit=25') {
+          return makeJsonResponse({
+            data: [{
+              id: 'job-1',
+              name: 'AI-initiated patch install',
+              status: 'completed',
+              scheduledAt: '2026-09-01T10:00:00.000Z',
+              startedAt: '2026-09-01T10:01:00.000Z',
+              completedAt: '2026-09-01T10:05:00.000Z',
+              devicesTotal: 1,
+              devicesCompleted: 1,
+              devicesFailed: 0,
+              createdByName: 'Ada Lovelace',
+            }],
+            pagination: { page: 1, limit: 25, total: 1 },
+          });
+        }
+        if (url === '/patches/jobs/job-1') {
+          return makeJsonResponse({
+            data: {
+              id: 'job-1',
+              name: 'AI-initiated patch install',
+              status: 'completed',
+              scheduledAt: '2026-09-01T10:00:00.000Z',
+              startedAt: '2026-09-01T10:01:00.000Z',
+              completedAt: '2026-09-01T10:05:00.000Z',
+              createdByName: 'Ada Lovelace',
+              results: [],
+            },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      fireEvent.click(await screen.findByTestId('patch-job-row-job-1'));
+
+      expect(await screen.findByTestId('patch-job-detail-drawer')).toBeInTheDocument();
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/patches/jobs/job-1'));
+    });
+  });
 });
 
 // #7215: write actions are now gated on the caller's permissions. These suites

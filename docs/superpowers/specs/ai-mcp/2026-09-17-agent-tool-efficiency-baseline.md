@@ -245,6 +245,24 @@ As a proxy for prompt growth that doesn't need a live model call: `Buffer.byteLe
 
 Production output-size report: `not run` — needs `docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql` on EU + US (Todd); the 20-tool list above is provisional until then, per D10/the plan's "The 20 tools" section. Per Q10, `manage_tickets`, `list_monitors`, and `get_incident_timeline` are MCP-only (absent from `TOOL_TIERS`), so `hotForShaping` (which ranks `chat`+`helper` rows only) cannot measure them even once the report runs on production — they were shaped anyway on the survey's likely-traffic ranking, and stay in the 20-tool table with that caveat.
 
+## Full-control W01 (#6755) delta
+
+**Date measured:** 2026-09-26 · **Branch:** `feature/6754-ai-full-control/wave-6755-public` against `origin/main` @ `5345f00202` · **Plan:** `2026-09-23-ai-full-control-w01-guard-and-reads.md`
+
+**`ANTHROPIC_API_KEY` was absent in this environment** — the real-API harness (`tool-capture.ts` against `query()`/the local proxy) could not run. Every turn-1-token cell below is `not measured: ANTHROPIC_API_KEY absent`; no token count was estimated. In its place, per the plan's offline-proxy fallback, this measures the wire-shaped bytes of the SDK tool declarations without calling the API: `Buffer.byteLength(JSON.stringify(name)) + Buffer.byteLength(JSON.stringify(description)) + Buffer.byteLength(JSON.stringify(z.toJSONSchema(z.object(inputSchema))))`, summed over `buildBreezeSdkTools(fakeAuth).map(attachRegistryMeta)` (`aiAgentSdkTools.ts`), on `origin/main` and on this branch. `fakeAuth` is the same throwing no-op `listChatSurfaceToolNames` uses; no DB or handler ever executes. Both runs used the same unset-env default (no `M365_ENABLED`/`GOOGLE_WORKSPACE_ENABLED`/`DELEGANT_BASE_URL`/`BREEZE_AI_SCRIPT_AUTHORING_ENABLED`), so the counts below are each environment's floor, consistent with §1's env-gating caveat — the delta between them is what this task records, not the absolute count.
+
+`chat`, `agent-full`, and `helper-standard` all register the same unfiltered `createBreezeMcpServer` output (`toolCapture/surfaces.ts`: none of the three sets `onlyTools`; only headless per-profile agent runs do), so all three surfaces share one registry-bytes number per ref — there is no per-surface split to report for this measurement.
+
+| Surface | Tools sent (main) | Tools sent (branch) | Δ tools | Registry bytes (main) | Registry bytes (branch) | Δ bytes | Turn-1 tokens (main/branch/Δ) |
+|---|---|---|---|---|---|---|---|
+| chat | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+| agent-full | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+| helper-standard | 136 | 168 | +32 | 119280 | 140468 | +21188 | not measured: ANTHROPIC_API_KEY absent |
+
+The +32 tool delta is this PR's wiring total: 28 newly tiered read-only tools plus the 4 script-library reads newly declared on the main server. The by-domain tool index (`renderToolIndexByDomain(listChatSurfaceToolNames())`) grows from 4943 to 5690 bytes. The registry counts are lower than the `TOOL_TIERS` counts because `TOOL_TIERS` also includes env-gated tool sets (M365, Google Workspace, script authoring) that are off by default and therefore absent from `buildBreezeSdkTools`'s output under this measurement's unset env — see §1's "Env-gating caveat" for the same floor-vs-ceiling distinction on the original A-W01 numbers.
+
+**W01 is recorded, not gated (spec D5); W02–W04 each carry +8k against the post-W01 main.**
+
 ### 7.4 The 7 production-hot tools A-W05 missed (#6745)
 
 **Date measured:** 2026-09-23 · **Branch:** `feat/6745-shape-hot-ai-tools`. The tool list is the §4 90-day hot list (ranked by `executions × delivered_bytes_p50`). "Prod p50/p95" are the higher of EU and US from that pull. "Measured default page" is each tool's `*.outputShape.test.ts` realistic fixture through `expectDefaultPageFits`: under 8000 chars and not compacted.
@@ -258,3 +276,194 @@ Production output-size report: `not run` — needs `docs/superpowers/specs/ai-mc
 | `get_fleet_health` | 2005 / 7859 | Offset paging through `aiToolPagination.ts` (`offset`/`cursor`/`hasMore`/`nextCursor`). `topIssues` is behind `includeTopIssues`, with `topIssueCount` always present. `summary` is now a SQL aggregate over the filtered set (it was computed over the page). A frozen device set is pushed into the SQL. | 25→15 | 100 | 7424 |
 | `analyze_boot_performance` | 4237 / 4299 | Startup-item `path` is behind `includePaths`; `manage_startup_items` resolves by `itemId`. Adds `startupItemsNotShown`. | n/a (top 10 items, ≤5 recent boots) | n/a | 3202 (30 boots, 80 items) |
 | `get_effective_configuration` | 2940 / 3222 | Per-feature `inlineSettings` is behind `includeSettings`; without it each feature carries `hasInlineSettings` instead. New `featureType` narrows the features and the inheritance chain. The redundant `featureType` key and null `inheritedFrom*` pair are dropped. Stays in `UNBOUNDED_LIST_READS`: the feature map is bounded by `CONFIG_FEATURE_TYPES`, not paged. | n/a | n/a | 7111 (all 20 feature types) · 1556 (one type with settings) |
+
+## 8. Load policy (A-W04, #6151)
+
+**Date measured:** 2026-09-28 · **Branch:** `feature/6147-agent-tool-efficiency/wave-6151` · **SDK:** `@anthropic-ai/claude-agent-sdk` 0.3.282 · **Model:** `claude-sonnet-4-6` · **Doc:** `plans/ai-mcp/2026-09-17-agent-tool-efficiency-a04-load-policy.md`
+
+**§2 revisited.** Tool search never activated because every Breeze `query()` passed `tools: []`, which removes the `ToolSearch` built-in (`Tool search disabled: ToolSearchTool is not available` in the CLI). A proxy capture with `tools: ['ToolSearch']` sent 6 tools (`ToolSearch`, the alwaysLoad set and a placeholder) instead of 192.
+
+**Golden eval, chat, final code, three runs per arm** (`pnpm --filter @breeze/api ai:tool-eval` vs `--tool-search off`):
+
+| arm | hits / 67 | mean context tokens, first call | mean context tokens through first real tool call | mean TTFT ms | cases that searched |
+|---|---|---|---|---|---|
+| off | 25, 24, 25 | 82,707 | 82,707 | 2,254 | 0 |
+| on (policy default, 15 alwaysLoad) | 23, 23, 23 | 23,811 | 31,107 / 31,113 / 30,376 | 1,864 | 25 |
+
+Earlier probes on the same day, used to pick the set:
+- search on with only the 4 `core` tools always-loaded: 22 and 23 hits, 17,630 tokens, 44–45 cases searched;
+- 4 core + 10 hot: 24 hits, 23,716 tokens, 31 searched.
+
+The loss is concentrated in g59, g60 and g62. The model first calls an always-loaded context tool (`list_organizations`, `query_devices`) to resolve the named org or device, then the domain tool.
+
+**Per-surface capture** (`ai:tool-capture --surface all --turns 2`, default policy):
+
+| surface | turn-1 cache_create | turn-1 cache_read | turn-2 cache_read | vs §2 appendix (turn 1 total) |
+|---|---|---|---|---|
+| chat | 12,631 | 35,138 (2 responses) | 23,963 | 111,813 → ~24k per response |
+| helper-basic | 14,245 | 0 | 14,245 | 111,906 → 14,245 |
+| helper-standard | 16,051 | 0 | 16,051 | 111,906 → 16,051 |
+| helper-extended | 18,804 | 0 | 18,804 | — → 18,804 |
+| agent-full (read-only exposure) | 64,714 | 64,557 | 129,645 | unchanged by this wave |
+| script-builder | 15,754 | 15,596 | 15,754 | unchanged |
+
+**Not measured:**
+- BYO/catalog endpoints (no credentials here; policy keeps them on the full list);
+- Haiku;
+- second-turn cache behaviour across differing tenant tool sets (measured since, see §9.2);
+- a Helper resume after a level downgrade with an out-of-level `tool_use` in history. The probe could not make the model call `execute_command` (it declined); a resume under a narrower tool set did run cleanly.
+
+**Success measures:**
+- chat first-turn input −71% (target −60%): **met**;
+- turn-2 cache-read share: unchanged, high;
+- golden eval: **−1.5 cases, target +10 points not met**.
+
+
+## 9. Tenant tools, gateways and the endpoint capability (#7429)
+
+**Date measured:** 2026-09-28 · **Base:** `main` @ `c1618d2717` (A-W04 merged) · **SDK/CLI:** `@anthropic-ai/claude-agent-sdk` 0.3.282 (CLI 2.1.282) · **Model:** `claude-sonnet-4-6` · **Surface:** chat, deny mode. Everything here ran on a laptop against the first-party API, directly or through a local gateway. No partner catalog endpoint or BYO credential was used.
+
+### 9.1 Harness changes
+
+- `ai:tool-capture --tenant-tools none|a|b [--tenant-count N]` registers synthetic BYO MCP tools on the chat surface. They go through the production `buildTenantSdkTools` bridge and are appended to `allowedTools` as `streamingSessionManager` does. Set `a` is 12 Hudu-shaped tools and set `b` is 12 IT Glue-shaped tools, with no names in common (`toolCapture/tenantFixtures.ts`). Handlers are still denied in `onPreToolUse`, so nothing dispatches.
+- The capture proxy now reads usage from gzip, deflate and br responses. The API gzips its responses to the CLI, so every earlier real capture recorded `usage: null` per request. The per-turn numbers in §2–§8 came from the SDK stream and are unaffected.
+- The proxy records `prefixDigest` (hashes of `tools`, `system` and `messages[0]`, ignoring `cache_control`) and `firstMessageBytes`. Two sessions that share a digest share that part of the cache prefix. Only hashes are kept, never content.
+- **Correction to §8.** Capture children now run with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. `buildClaudeSdkChildEnv` forwards `HOME`, and `settingSources: []` does not turn off auto-memory, so the CLI was prepending the operator's own `~/.claude/projects/<repo>/memory/MEMORY.md` to every captured first message. On this machine that block was 25.6k characters. A body dump of the same chat request showed 23,941 context tokens with the block and 14,263 without it. Production containers should have no such file (not checked on a deployed container; follow-up #7444), so §8's absolute token numbers include roughly 9.5k tokens of harness-only context. Inferred from those paired dumps and §9.2, not from a re-run eval: §8's "first call" figure of 23,811 is about 14.3k in production, and the search-off figure of 82,707 is about 73.5k (§9.2 C4). That puts the first-turn reduction at about −80%, not −71%. The §8 accuracy numbers were measured with the memory block in context. Whether it changed any tool choice is **not checked**.
+- Found while dumping bodies: the CLI adds a `<system-reminder><total_tokens>…</total_tokens></system-reminder>` block to the first message on some sessions and not others (114 bytes). It has nothing to do with Breeze or tenant tools. When it toggles, the next session's first message is different, so that message-level cache entry misses (S6 and C3 below).
+
+### 9.2 Turn-1 and turn-2 cache with tenant tools
+
+`ai:tool-capture --surface chat --proxy --base-url <local dump proxy> --turns 2 --tool-search on|off --tenant-tools …`, run back to back in the order listed. S1 started cold: nothing had run for more than 5 minutes. Tokens are for the first tool-bearing request of each turn, from the proxy's per-request usage. "write" is `cache_creation_input_tokens` and "read" is `cache_read_input_tokens`.
+
+| run | search | tenant set | tools on wire | tools / system / msg[0] digest | turn-1 write | turn-1 read | turn-2 read share |
+|---|---|---|---|---|---|---|---|
+| S1 | on | none | 17 (1 deferred) | `8777c7` / `f493d9` / `695945` | 14,261 | 0 | 98.7% |
+| S2 | on | a (12) | 17 (1 deferred) | `8777c7` / `f493d9` / `6ac40c` | 3,083 | 11,338 | 98.5% |
+| S3 | on | b (12) | 17 (1 deferred) | `8777c7` / `f493d9` / `8ecac9` | 3,095 | 11,338 | 99.0% |
+| S4 | on | a (12), repeat of S2 | 17 (1 deferred) | `8777c7` / `f493d9` / `6ac40c` | 0 | 14,421 | 98.7% |
+| S5 | on | a (48) | 17 (1 deferred) | `8777c7` / `f493d9` / `0c3df9` | 3,623 | 11,338 | 98.7% |
+| S6 | on | b (12), repeat of S3 | 17 (1 deferred) | `8777c7` / `f493d9` / `185088` | 3,068 | 11,338 | 98.7% |
+| C1 | off | a (12) | 205 | `c79620` / `f493d9` / `033ca6` | 75,070 | 0 | 99.7% |
+| C2 | off | b (12) | 205 | `72b237` / `f493d9` / `033ca6` | 75,068 | 0 | 99.7% |
+| C3 | off | a (12), repeat of C1 | 205 | `c79620` / `f493d9` / `12c645` | 686 | 74,357 | 99.7% |
+| C4 | off | none | 193 | `aeebdf` / `f493d9` / `033ca6` | 73,450 | 0 | 99.7% |
+
+S6 and C3 repeated an earlier tenant set, but their first message differs from S3 and C1 because the CLI's `total_tokens` block toggled (§9.1). That, not the tenant set, is why S6 wrote 3,068 tokens.
+
+**What this shows (verified on these runs):**
+- **With search on, tenant tool definitions never reach the wire until they are searched.** `tools[]` holds `ToolSearch`, the 15 `alwaysLoad` tools and one `DeferredToolPlaceholder`, and its digest is identical for none, a:12, b:12 and a:48. The CLI lists deferred tool **names** in a `<system-reminder>` inside the first user message. That list is the only place a tenant set appears: +412 bytes for set a, +469 for set b, +1,672 for a:48.
+- **Cross-session:** the tools-plus-system prefix (11,338 tokens) was read from cache in every session, whatever its tenant set. A new tenant set costs only the first message, about 3.1k tokens written, or 3.6k at 48 tools. A session whose first message matches a recent one reads everything (S4).
+- **With search off, a different tenant set rewrites the whole prefix.** Tenant tools are appended to `tools[]`, which comes first in the cache order, so C2 wrote 75,068 tokens after C1. Search on reduces the per-session cost of tenant-set churn from about 75k written tokens to about 3k.
+- **Turn 2 is unaffected by tenant tools:** 98.5–99.0% read with search on, 99.7% with search off. The search-on share is a little lower only because the prefix is 5× smaller, so the same ~180-token per-turn delta is a bigger fraction.
+- **A searched tenant tool does not break the cache.** T1 used set a with the prompt "Pull up the Hudu asset record for the file server FS01." The model called `ToolSearch`, which returned `tool_reference`s for `hudu__get_asset` and `hudu__search_assets`. The CLI inserted both into `tools[]` with `defer_loading: true`, which changed the tools digest (`22a5d2`). The same request still read 14,426 cached tokens and wrote 430, and turn 2 read 98.7%. The API does not count deferred tools as part of the cached tools prefix. The model's next call was `mcp__breeze__hudu__search_assets`, which was denied as intended.
+
+### 9.3 Gateway compatibility (local only)
+
+All chains below ran with `--proxy --tool-search on` and the backup prompt "Which backup jobs failed in the last 24 hours?", which needs the deferred `query_backups`. Where a second capture proxy sat between the gateway and the API, it recorded what the gateway actually forwarded.
+
+| path | status | `defer_loading` forwarded | `tool_reference` forwarded | `anthropic-beta` | search worked | cache |
+|---|---|---|---|---|---|---|
+| capture proxy only (byte pass-through) | 200 | yes | yes | forwarded unchanged | yes, `query_backups` loaded | turn-1 read 11,338 on the first call |
+| LiteLLM 1.103.0 (`ghcr.io/berriai/litellm:main-stable`, `sha256:bd089afd…`), unified `/v1/messages`, `model: anthropic/*` | 200 | **yes**: `DeferredToolPlaceholder` and `query_backups` still `defer_loading: true` upstream | **yes**: 1 block upstream | rewritten: `advanced-tool-use-2025-11-20` kept, `claude-code-20250219` and a few others dropped | yes | turn-2 read 98.9% |
+| LiteLLM 1.103.0, `/anthropic` pass-through route | 200 | not observed upstream (the route goes straight to the API) | CLI side: 1 | not observed | yes | turn-1 fully read |
+| scratch proxy that strips `advanced-tool-use-*` from `anthropic-beta` | 200 | yes | yes | stripped | yes | unchanged |
+| scratch proxy that deletes `defer_loading` from every tool | 200 | **no** | yes | forwarded | the model still reached the tool, but the placeholder and every discovered tool became ordinary tools | turn-1 wrote 29,432 and read 0 (prefix changed) |
+
+So an Anthropic-native gateway like LiteLLM's Anthropic route forwards everything tool search needs. At this date the first-party API also accepts tool search without the beta header. The two stripping probes did not produce a hard error. A gateway that drops `defer_loading` loses the savings and the cache without anyone noticing, instead of breaking chat.
+
+**Not verified (needs credentials or backends not available here):**
+- Any real partner catalog endpoint.
+- OpenRouter.
+- LiteLLM or other gateways translating to a non-Anthropic backend (OpenAI-compatible, vLLM). `tool_reference` has no equivalent there, so this is expected to fail, but it was not observed.
+- Bedrock and Vertex (different tool-search wire support).
+- A proxy that rejects unknown content-block types outright.
+- Whether a small-context proxy still needs a `list_tool_domains`/`load_tool_domain` loader. The measured sizes that bear on it: 14.3k first-call context with search, 73.5k without.
+- `provider-fidelity-smoke.ts` could not be pointed at the local LiteLLM, because the catalog accepts only `https://` base URLs.
+
+### 9.4 Per-endpoint capability vs `AI_TOOL_SEARCH` (recommendation, needs Todd's decision)
+
+**Recommendation: make tool search a verified per-(catalog revision, model) capability, recorded by the existing provider-fidelity verification. Keep `AI_TOOL_SEARCH` only as the global kill switch (`off`) and as the opt-in for a self-host `ANTHROPIC_BASE_URL` that has no catalog entry.**
+
+Why:
+1. **Support depends on the endpoint's wire path, not on the install.** The same LiteLLM passes tool search through its Anthropic route and cannot express `tool_reference` on a translated backend. One install can list both kinds of endpoint, and a single env var can only be right for one of them.
+2. **Leaving it off on a capable endpoint is expensive.** First-call context is 73.5k vs 14.3k tokens (§9.2 C4 vs S1), and tenant-set churn rewrites about 75k tokens per session vs about 3k.
+3. **Turning it on for a degrading endpoint fails silently.** The stripping probes stayed at 200. A self-declared "supports tool search" flag could be wrong without anyone noticing, so the capability should come from a probe that checks the savings actually happen: `defer_loading` survives and a `tool_reference` loads a deferred tool.
+4. **The mechanism already exists.** `llm_provider_verifications` records an MFA-gated, harness-versioned result per `(revision_id, model_id)`, and a new revision (new base URL) needs a new verification. A `toolSearch` stage in `providerFidelityHarness` fits there: with `tools: ['ToolSearch']` and one deferred tool, the stage passes when the model loads that tool via `tool_reference` and the response is 200. `resolveToolSearchPolicy` would take `endpointToolSearchVerified` from the session's catalog endpoint and apply it after the surface, kill-switch and turn-budget rules and the first-party rule. The default stays off.
+
+The decision needed: where the verification result lives. It could go in the existing `detail` jsonb (no migration, but the policy reads jsonb) or in a new boolean column on `llm_provider_verifications` (one migration, cleaner query). A `FIDELITY_HARNESS_VERSION` bump would make existing verifications stale, so it needs a re-verify plan for listed entries. Nothing is implemented in this change.
+
+## 10. Tool search for headless agents (#7428)
+
+**Date measured:** 2026-09-28 · **SDK:** `@anthropic-ai/claude-agent-sdk` 0.3.282 · **Model:** `claude-sonnet-4-6` (the default an agent run resolves) · **Decision:** keep headless agents on their static subset (D21 stands). The harness and golden set ship; `runLoop.ts` does not change behaviour.
+
+**What was measured.** A new agent golden set (`toolEval/agentGoldenTasks.ts`, 19 tasks) runs through the production `buildAgentRunSystemPrompt` / `buildAgentRunTaskPrompt` for each task's run context:
+- 16 `full`-profile tasks: alert, anomaly, ticket and scheduled triggers;
+- 3 `analysis`-profile tasks.
+
+The two agent surfaces are derived from runLoop's own exports (`resolveRunToolExposure`, `resolveRunProfileLimits`, `outcomeToolsForRun`), so they register what a queued run registers. Since #7427, the `full` floor is the declared set (`declaredFullRunToolExposure`).
+
+| surface | registered tools | alwaysLoad among them | turn cap (policy default) |
+|---|---|---|---|
+| `agent-full-remediation` (`full` + a 7-entry remediation allowlist) | 154 | 13 | 25 |
+| `agent-analysis` | 18 (incl. `submit_analysis`) | 5 | 40 |
+
+The other profiles register 0–6 tools: verdict, sweep, design and patch register 5–6; narrative and triage register only their outcome tool. Search has nothing to defer there, so they were not measured.
+
+The search-on arm is `--surface-search on`, a hypothetical opt-in. Host, override and the real turn cap still go through `resolveToolSearchPolicy`. It enables search for every task: the host is first-party, and caps of 25 and 40 turns clear the 4-turn floor.
+
+```
+pnpm --filter @breeze/api ai:tool-eval --suite agent                       # search off (production today)
+pnpm --filter @breeze/api ai:tool-eval --suite agent --surface-search on   # search on
+```
+
+**Auto-memory correction (§9.1).** The first measurement of this section ran before #7446. That harness forwarded `HOME`, so the CLI prepended the operator's `~/.claude` auto-memory to every captured first message, about 9.5k tokens per request. These agent numbers were inflated the same way. The table below is the re-run with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, on the same code, tasks and model. The inflated first run is kept on the last two rows for comparison.
+
+**Results, three runs per arm (auto-memory off):**
+
+| arm | surface | hits | mean context tokens through the first real tool call | at that call (re-sent every later turn) | API calls to the first real tool | cost to it, cold / warm cache (cents) |
+|---|---|---|---|---|---|---|
+| off | full (16) | 7, 6, 6 / 16 | 55,978 | 55,978 | 1.00 | 5.56 / 1.68 |
+| on | full (16) | 6, 6, 6 / 16 | 10,518 | 10,518 | 1.00 | 1.75 / 0.32 |
+| off | analysis (3) | 3, 3, 3 / 3 | 9,718 | 9,718 | 1.00 | 2.64 / 0.29 |
+| on | analysis (3) | 3, 3, 3 / 3 | 7,067 | 5,508 | 1.33 | 1.28 / 0.46 |
+| **off** | **all (19)** | **10, 9, 9** (mean 9.33) | | | | |
+| **on** | **all (19)** | **9, 9, 9** (mean 9.0) | | | | |
+| off, with auto-memory (superseded) | all (19) | 9, 10, 11 (mean 10.0) | full 65,650 | | 1.00 | |
+| on, with auto-memory (superseded) | all (19) | 9, 9, 9 (mean 9.0) | full 20,185 | | 1.00 | |
+
+"Cold" is each arm's first run, when the tool prefix is written to the cache. "Warm" is runs 2–3, when the identical prefix is read from the cache. Production agent runs hit either case, depending on how close together an agent's runs land.
+
+**Why search still loses where it matters.** The aggregate gap is now small (−0.33 of 19, inside the off arm's run-to-run range). It hides a systematic shift:
+- **Deferred-only tasks.** On the six `full` tasks where every acceptable first call is deferred under search (a04, a06, a07, a09, a14, a15), search-off scored 4 of 18 attempts. Search-on scored 0 of 18. That is 9 of 36 vs 0 of 36 across both measurements.
+- **What the model does instead.** With search on, its first response pairs a `ToolSearch` call with a loaded generic tool (`get_device_details`, `manage_alerts`, `list_organizations`). It reaches the domain tool one response later. This was verified on raw captures for a07 (Huntress) and a15 (unknown network device): the first response was `[ToolSearch, get_device_details]` / `[ToolSearch, manage_alerts]`, and `get_huntress_incidents` / `list_network_assets` came in the second.
+- **What offsets it in the total.** The search-on gains are on a02 and a10, where a generic `get_device_details` is an acceptable first call. So search trades domain-first investigation for a generic read plus a search, and spends the extra turn the issue worried about. The search runs in parallel with the wasted read rather than on its own turn.
+- **Search usage.** Search ran in 32 of 48 `full` attempts and 9 of 9 `analysis` attempts.
+
+**Cost.** With the memory block gone, search is clearly cheaper on `full`:
+- the re-sent context drops from 56.0k to 10.5k tokens per turn (−81%);
+- the first call drops from 5.56 to 1.75 cents cold, and from 1.68 to 0.32 cents warm.
+
+For `analysis` (18 tools), search saves about 4k tokens per turn. It costs a second response on the staged-handle task, though, and is more expensive warm (0.46 vs 0.29 cents).
+
+**Decision (the #7428 rule: enable only if at least accuracy-neutral and cheaper).** Not enabled.
+- **`full`:** much cheaper, but not accuracy-neutral. Its loss is concentrated on the deferred-domain tasks search is supposed to serve, and it was reproduced in both measurements. The total is close only because it also gains on generic tasks.
+- **`analysis`:** neutral on accuracy but not cheaper warm.
+- **A second reason not to enable `analysis`:** outcome tools (`submit_analysis`, and `submit_task_step` on task-linked runs) are built by `buildOutcomeSdkTools` without `alwaysLoad`. Under search, the one tool a run must call would be deferred, and the first-call eval does not score that.
+
+The cost case for `full` is now strong enough that this is worth another attempt after tuning, rather than a closed question.
+
+**What a later attempt needs:**
+- an agent-specific `alwaysLoad` set, since the chat set is tuned to chat's 90-day hot list, not to alert triage;
+- or a prompt rule to search before a generic device read when the trigger names a product or domain;
+- outcome tools marked `alwaysLoad`;
+- a metric for the response that reaches the first *expected* tool, not just the first real one.
+
+Re-measure with this harness.
+
+**Bookkeeping check, from code, not a live run.** runLoop reads no `tool_use` blocks from the stream. Tool accounting happens only in the MCP pre/post hooks, which `ToolSearch` never reaches. So `ToolSearch` cannot be misattributed there the way it could in `streamingSessionManager`'s FIFO queue (D22). However, `turnCount` comes from the result's `num_turns`, so a search response would count against `maxTurnsPerRun`.
+
+**Not measured:**
+- whole-run completion, cost or budget exhaustion, because deny mode refuses every tool, so a run cannot proceed past its first calls;
+- TTFT, because agent surfaces do not stream partial messages;
+- Haiku, and BYO/catalog hosts;
+- the verdict, sweep, design, patch, narrative and triage profiles (0–6 registered tools each).

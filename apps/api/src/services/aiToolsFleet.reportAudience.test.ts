@@ -341,3 +341,34 @@ describe('ruling P8b: generate_report hides a type whose read permission the cal
     expect(permissionsMock.getUserPermissions).not.toHaveBeenCalled();
   });
 });
+
+describe('generate_report never edits or deletes a multi-org series child (W02)', () => {
+  const SERIES_ID = '77777777-7777-4777-8777-777777777777';
+  const child = () => ({ ...definition('executive_summary'), seriesId: SERIES_ID });
+
+  it.each(['update', 'delete'])('%s answers series_managed and writes nothing', async (action) => {
+    selectReturning(child());
+    const r = JSON.parse(await handlerFor('generate_report')({ action, reportId: 'rep1', name: 'x' }, partnerAuth()));
+    expect(r.error).toBe('series_managed');
+    expect(r.seriesId).toBe(SERIES_ID);
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('an ordinary update pins series_id IS NULL in its WHERE (no race with a concurrent adoption)', async () => {
+    selectReturning({ ...definition('executive_summary'), seriesId: null });
+    const updateWheres: unknown[] = [];
+    mockDb.update.mockReturnValue({
+      set: () => ({
+        where: (w: unknown) => {
+          updateWheres.push(w);
+          return { returning: () => Promise.resolve([{ id: 'rep1' }]) };
+        },
+      }),
+    });
+    const r = JSON.parse(await handlerFor('generate_report')({ action: 'update', reportId: 'rep1', name: 'Renamed' }, partnerAuth()));
+    expect(r.success).toBe(true);
+    expect(new PgDialect().sqlToQuery(updateWheres[0] as SQL).sql).toContain('"reports"."series_id" is null');
+  });
+});

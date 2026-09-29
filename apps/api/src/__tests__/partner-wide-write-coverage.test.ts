@@ -70,6 +70,11 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // at all, which is a stronger property than passing the capability gate.
   'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
   'services/discoveredAssetSiteMove.ts': 'site-move re-attach is scoped `networkMonitors.orgId = <asset org>` (the monitors were captured under the same predicate), which can never match a partner-wide (org_id NULL) row',
+  // --- fix_memory (AI Suggested Fixes W1) -----------------------------------
+  // Derived aggregate recomputed from fix_outcomes by background system-context
+  // jobs (outcome watcher, sweeper, tenant-erasure rebuild). No caller chooses
+  // an owner axis: owner is resolved from the fix's own current ownership.
+  'services/fixMemory/store.ts': 'derived aggregate written only by background system-context recompute/rebuild from fix_outcomes; no caller-facing write and no caller-chosen owner axis',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs
@@ -227,6 +232,12 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // mean only a partner admin could dismiss their own suggestion, which is the
   // opposite of the intent. Same class as timeEntryService.ts above.
   'services/timeSuggestionService.ts': 'per-technician suggestion decisions keyed on user_id (partner_id is only the RLS axis); never partner-wide config',
+  // Same class as quickSupportOrg.ts above: provisions the partner's hidden
+  // unassigned-device holding org (an org-axis container). It writes no
+  // partner-owned config row, and its callers (deploy-key minting) are
+  // full-partner-admin surfaces gated at the route.
+  'services/unassignedPool/parkedExpiry.ts': 'expired/purged holding-area ledger rows, written by the scheduled expiry and purge jobs (system) and by the expire-by-key incident action, whose route resolves the partner through canManagePartnerWidePolicies',
+  'services/unassignedPool/poolOrg.ts': 'holding-org provisioning creates an org-axis container (same class as quickSupportOrg.ts)',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
@@ -333,6 +344,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiAgents/fleetDesignReport.ts': 'system-authored Fleet Design: inserts with org_id = run.org_id and updates WHERE org_id = run.org_id — never a partner-owned row, no caller-facing surface',
   'services/managedEvidenceDefinitions.ts': 'provisions the org\'s managed evidence definition with a concrete org_id (#5784); never partner-owned',
   'services/portal/reportsSelfService.ts': 'customer-portal self-service: inserts portal definitions with the portal org_id and updates a definition it loaded by org_id + portal_self_service; partner-owned rows are never portal-visible (spec 3.5)',
+  'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
 };
 

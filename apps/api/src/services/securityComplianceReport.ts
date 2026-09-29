@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '../db';
+import { isEnforcing, loadPartnerPolicy } from './authenticatorPolicy';
 import {
-  authenticatorPolicies,
   backupConfigs,
   c2cConnections,
   devicePatches,
@@ -37,8 +37,10 @@ import {
   type SecurityProductEvidence
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
+import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { classifyDeviceProtection } from './portal/protection';
 
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
 
@@ -197,7 +199,7 @@ export async function generateSecurityCompliancePostureReport(
 
   // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
   // design — exclude them from the compliance population explicitly.
-  const deviceConditions = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
+  const deviceConditions = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
   if (cfg.sites.length > 0) {
     deviceConditions.push(inArray(devices.siteId, cfg.sites));
   }
@@ -282,6 +284,9 @@ export async function generateSecurityCompliancePostureReport(
   }
 
   const vulnByDevice = await loadOpenVulnerabilityCounts(deviceIds);
+  // Device-scoped like the Huntress/SentinelOne evidence above, so it is
+  // included for a site-restricted caller too — limited to their devices.
+  const backupProviders = await loadBackupProviderEvidence(orgId, deviceIds);
 
   const includeOrgWideEvidence = authority.scope.kind === 'unrestricted';
   const orgWideEvidence = includeOrgWideEvidence
@@ -327,17 +332,15 @@ export async function generateSecurityCompliancePostureReport(
         .from(elevationRequests)
         .where(and(eq(elevationRequests.orgId, orgId), gte(elevationRequests.requestedAt, windowStart)));
 
-      let mfaStepUpEnforced = false;
-      if (orgRow?.partnerId) {
-        const [authPol] = await db
-          .select({ requireEnrollment: authenticatorPolicies.requireEnrollment, enforceFrom: authenticatorPolicies.enforceFrom })
-          .from(authenticatorPolicies)
-          .where(eq(authenticatorPolicies.partnerId, orgRow.partnerId))
-          .limit(1);
-        mfaStepUpEnforced =
-          Boolean(authPol?.requireEnrollment) &&
-          (!authPol?.enforceFrom || new Date(authPol.enforceFrom).getTime() <= Date.now());
-      }
+      // Step-up counts as enforced when under-assured high AND critical
+      // approvals are refused right now — an explicit Required policy past its
+      // grace date, or the platform default once it applies. Read through
+      // loadPartnerPolicy (system-context partner-axis read) so an explicit
+      // "not required" row is never hidden and mistaken for the default.
+      const authPol = orgRow?.partnerId ? await loadPartnerPolicy(orgRow.partnerId) : null;
+      const policyNow = new Date();
+      const mfaStepUpEnforced =
+        isEnforcing(authPol, policyNow, 'high') && isEnforcing(authPol, policyNow, 'critical');
 
       const [postureRow] = await db
         .select({ overallScore: securityPostureOrgSnapshots.overallScore })
@@ -560,6 +563,7 @@ export async function generateSecurityCompliancePostureReport(
   if (dns) productEvidence.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
   if (backup) productEvidence.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
   if (c2c) productEvidence.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
+  productEvidence.push(...backupProviders.evidence);
   if (m365) productEvidence.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
   if (google) productEvidence.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
   const securityProducts = buildSecurityProductInventory(productEvidence);
@@ -591,7 +595,9 @@ export async function generateSecurityCompliancePostureReport(
           // Proves an identity provider is CONNECTED, not that MFA is enforced.
           // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
           identityProviderConnected: Boolean(m365 || google),
-          backupConfigured: Boolean(backup || c2c),
+          // A third party counts once it has at least one fresh successful
+          // backup on an in-scope device (#6012).
+          backupConfigured: Boolean(backup || c2c || backupProviders.coveredDeviceCount > 0),
           backupEncrypted: backup ? Boolean(backup.encryption) : null,
           dnsFilteringActive: dnsActive,
           dnsFilteringSyncStatus: dnsSyncStatus,

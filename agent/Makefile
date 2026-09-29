@@ -82,6 +82,12 @@ build-winres:
 	# not in JSON-mode RT_GROUP_ICON entries, and (b) one Makefile line per
 	# binary keeps the source of truth here in the build file instead of
 	# scattered across resources/winres-*.json. The five binaries map to:
+	# breeze-agent.exe and breeze-user-helper.exe use `--manifest gui` for its
+	# per-monitor-v2 DPI awareness: both host remote-desktop capture/input, and a
+	# manifest fixes the process DPI mode before any code runs. The default
+	# `cli` manifest is <dpiAware>true</dpiAware> (system), which silently
+	# overrides internal/remote/desktop/dpi_windows.go and misplaces clicks on
+	# mixed-scale monitors.
 	#   breeze-agent.exe            - admin manifest (matches existing UAC)
 	#   breeze-user-helper.exe      - per-user session, asInvoker (NOT admin: it
 	#                                 is spawned with the user's filtered token,
@@ -89,7 +95,7 @@ build-winres:
 	#   breeze-watchdog.exe         - service, asInvoker
 	#   breeze-backup.exe           - launched by agent, asInvoker
 	#   breeze-desktop-helper.exe   - per-user session, asInvoker, GUI manifest
-	cd resources && go-winres simply --arch amd64 --no-suffix \
+	cd resources && go-winres simply --arch amd64 --no-suffix --manifest gui \
 		--icon icon.ico --admin \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM Agent" \
@@ -97,7 +103,7 @@ build-winres:
 		--copyright "Copyright (c) Breeze RMM" \
 		--original-filename "breeze-agent.exe" \
 		--out ../cmd/breeze-agent/rsrc_windows_amd64.syso
-	cd resources && go-winres simply --arch amd64 --no-suffix \
+	cd resources && go-winres simply --arch amd64 --no-suffix --manifest gui \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM User Helper" \

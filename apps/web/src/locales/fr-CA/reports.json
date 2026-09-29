@@ -210,6 +210,16 @@
       "serverReplaceAgeYears": "Planifier le remplacement des serveurs après (années)",
       "serverReplaceAgeYearsHelp": "Les serveurs suivent leur propre calendrier et figurent dans une section distincte du rapport."
     },
+    "backupStatusOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeDevicesWithoutBackup": "Inclure les appareils sans aucune sauvegarde",
+      "includeDevicesWithoutBackupHelp": "Désactivé, le rapport ne liste que les appareils disposant d’une preuve de sauvegarde, comme l’e-mail récapitulatif du fournisseur.",
+      "sources": "Sources de sauvegarde",
+      "sourcesHelp": "Choisissez les sources de sauvegarde à inclure dans le rapport.",
+      "sourceBreeze": "Sauvegarde Breeze",
+      "sourceProvider": "Fournisseurs de sauvegarde connectés"
+    },
     "vulnerabilityManagementOptions": {
       "cancel": "Annuler",
       "createReport": "Créer le rapport",
@@ -286,6 +296,13 @@
         "replaceNow": "À remplacer maintenant",
         "unknownAge": "Âge inconnu"
       },
+      "backupStatus": {
+        "healthy": "Sain",
+        "warning": "Avertissement",
+        "critical": "Critique",
+        "unknown": "Inconnu",
+        "truncated": "La liste des appareils a atteint sa limite de lignes et est incomplète."
+      },
       "vulnerabilityManagement": {
         "critical": "Critiques ouverts",
         "expiringExceptions": "Exceptions expirant à la prochaine période",
@@ -311,7 +328,8 @@
         "endpoint_management_review": "Revue de gestion des postes",
         "ticket_sla_attainment": "Respect des SLA des billets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
-        "ar_aging": "Balance âgée des comptes clients"
+        "ar_aging": "Balance âgée des comptes clients",
+        "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
         "agents": "Postes avec agent de détection",
@@ -411,14 +429,16 @@
         "endpoint_management_review": "Revue de gestion des postes",
         "ticket_sla_attainment": "Respect des SLA des billets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
-        "ar_aging": "Balance âgée des comptes clients"
+        "ar_aging": "Balance âgée des comptes clients",
+        "backup_status": "État des sauvegardes"
       },
       "runsTable": {
         "actions": "Actions",
         "completed": "Terminée le",
         "report": "Rapport",
         "started": "Démarré",
-        "status": "Statut"
+        "status": "Statut",
+        "organization": "Organisation"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -438,7 +458,8 @@
         "lastGenerated": "Dernier généré",
         "name": "Nom",
         "schedule": "Calendrier",
-        "type": "Type"
+        "type": "Type",
+        "covers": "Couvre"
       },
       "tabs": {
         "recentRuns": "Séries récentes",
@@ -448,7 +469,20 @@
       "title": "Rapports",
       "tryAgain": "Réessayer",
       "unknownReport": "Rapport inconnu",
-      "partnerWideIncomplete": "Certains rapports couvrant toutes les organisations n'ont pas pu être chargés; cette liste est donc peut-être incomplète. Passez à Toutes les organisations pour voir tous les rapports."
+      "partnerWideIncomplete": "Certains rapports couvrant toutes les organisations n'ont pas pu être chargés; cette liste est donc peut-être incomplète. Passez à Toutes les organisations pour voir tous les rapports.",
+      "covers": {
+        "combined": "Toutes les organisations · Combiné",
+        "unknownOrg": "Organisation inconnue",
+        "seriesAll": "Toutes les orgs · {{count}} · Un par organisation",
+        "seriesSelected_one": "{{count}} org · Un par organisation",
+        "seriesSelected_other": "{{count}} orgs · Un par organisation"
+      },
+      "delivery": {
+        "noRecipients": "Aucun destinataire",
+        "noRecipientsHint": "La dernière exécution planifiée n’avait aucun destinataire. Ajoutez des destinataires pour livrer ce rapport.",
+        "partial": "Partiellement livré",
+        "failed": "Courriel non envoyé"
+      }
     },
     "reportBuilder": {
       "actions": {
@@ -939,7 +973,8 @@
         "endpoint_management_review": "Revue de gestion des postes",
         "ticket_sla_attainment": "Respect des SLA des billets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
-        "ar_aging": "Balance âgée des comptes clients"
+        "ar_aging": "Balance âgée des comptes clients",
+        "backup_status": "État des sauvegardes"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -1007,6 +1042,10 @@
         "ar_aging": {
           "name": "Balance âgée des comptes clients",
           "description": "Soldes de factures impayées répartis en courant / 1–30 / 31–60 / 61–90 / plus de 90 jours de retard, un ensemble de totaux par devise sans conversion. Les factures sans date d'échéance obtiennent leur propre catégorie, jamais « courant »."
+        },
+        "backup_status": {
+          "name": "Rapport d’état des sauvegardes",
+          "description": "État de sauvegarde de chaque appareil sur Breeze et les fournisseurs de sauvegarde connectés, en un instantané : catégories de couverture, dernière sauvegarde réussie et historique de 28 jours par appareil."
         }
       },
       "title": "Modèles de rapports",
@@ -1118,6 +1157,219 @@
       "singleOrganizationHint": "L'organisation sélectionnée dans le sélecteur d'organisation.",
       "singleOrganizationDisabledHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer un rapport à l'échelle d'une organisation.",
       "needsOrganizationHint": "Sélectionnez une organisation dans le sélecteur d'organisation pour créer ce rapport. Les rapports couvrant toutes les organisations nécessitent l'accès à toutes les organisations."
+    },
+    "orgPicker": {
+      "label": "Organisation",
+      "placeholder": "Choisir une organisation",
+      "hint": "Vous consultez toutes les organisations. Choisissez l’organisation visée par ce rapport.",
+      "required": "Choisissez une organisation avant d’enregistrer ce rapport.",
+      "chooseFirst": "Choisissez une organisation ci-dessus avant d’utiliser un modèle.",
+      "previewNeedsOrg": "Choisissez une organisation pour afficher un aperçu en direct."
+    },
+    "series": {
+      "covers": {
+        "legend": "Le rapport couvre",
+        "org": "Une organisation",
+        "orgHint": "Un rapport pour un client, envoyé aux contacts de cette organisation.",
+        "series": "Un rapport par organisation",
+        "seriesHint": "Une définition, avec une copie distincte pour chaque organisation couverte, envoyée aux contacts de cette organisation.",
+        "combined": "Toutes les organisations combinées",
+        "combinedHint": "Un rapport combiné sur l’ensemble de vos organisations, pour votre propre équipe.",
+        "seriesUnavailableType": "Ce type de rapport ne peut pas être envoyé sous forme d’un rapport par organisation."
+      },
+      "schedule": {
+        "label": "Fréquence d’envoi de la copie de chaque organisation",
+        "placeholder": "Choisir une planification",
+        "hint": "Un rapport envoyé à de nombreuses organisations s’exécute selon une planification et ne peut donc pas être ponctuel. Choisissez la fréquence d’envoi de la copie de chaque organisation.",
+        "required": "Choisissez la fréquence d’envoi du rapport."
+      },
+      "targeting": {
+        "legend": "Quelles organisations",
+        "all": "Toutes les organisations",
+        "allHint": "Inclut toutes les organisations actuelles et futures. Décochez celles que vous souhaitez ignorer.",
+        "selected": "Organisations choisies",
+        "selectedHint": "Inclut exactement les organisations que vous cochez.",
+        "search": "Rechercher des organisations",
+        "summary": "Couvre {{covered}} organisations sur {{total}}",
+        "noneSelected": "Choisissez au moins une organisation.",
+        "empty": "Aucune organisation ne correspond."
+      },
+      "recipients": {
+        "legend": "Qui reçoit la copie de chaque organisation",
+        "primaryContact": "Le contact principal de l’organisation",
+        "roles": "Contacts ayant ces rôles",
+        "noRuleWarning": "Aucune règle n’est sélectionnée : une organisation ne reçoit sa copie que si vous ajoutez des contacts sur la copie de cette organisation.",
+        "internalCc": "Copies internes",
+        "internalCcHint": "La copie de chaque organisation est aussi envoyée à ces adresses de votre équipe.",
+        "ccPlaceholder": "name@example.com",
+        "ccAdd": "Ajouter",
+        "ccInvalid": "Saisissez une adresse courriel valide.",
+        "ccRemove": "Retirer {{email}}",
+        "previewLoading": "Vérification des destinataires…",
+        "previewContacts_one": "Correspond à {{count}} contact",
+        "previewContacts_other": "Correspond à {{count}} contacts",
+        "previewOrgs_one": "dans {{count}} organisation",
+        "previewOrgs_other": "dans {{count}} organisations",
+        "previewMissing_one": "{{count}} organisation n’a aucun destinataire client : {{names}}",
+        "previewMissing_other": "{{count}} organisations n’ont aucun destinataire client : {{names}}",
+        "previewMore": "et {{count}} de plus",
+        "previewFailed": "Impossible de vérifier les destinataires. Ils sont tout de même déterminés pour chaque organisation lors de l’exécution de son rapport.",
+        "previewNoTargets": "Choisissez des organisations pour voir qui reçoit le rapport."
+      },
+      "builder": {
+        "filtersDisabled": "Les filtres de site, d’appareil et de groupe ne sont pas disponibles ici : la copie de chaque organisation couvre l’ensemble de l’organisation.",
+        "created": "Rapport multi-organisation « {{name}} » créé",
+        "saved": "Rapport multi-organisation « {{name}} » enregistré",
+        "saveFailed": "Impossible d’enregistrer le rapport multi-organisation.",
+        "targetsFailed": "Les paramètres ont été enregistrés, mais les organisations couvertes n’ont pas été mises à jour. Réessayez d’enregistrer."
+      },
+      "list": {
+        "filtersLabel": "Afficher",
+        "filters": {
+          "all": "Tous",
+          "multi": "Multi-organisation",
+          "single": "Organisation unique",
+          "combined": "Combiné"
+        },
+        "noMatches": "Aucun rapport ne correspond à ce filtre.",
+        "loadFailed": "Impossible de charger les rapports multi-organisation. Les autres rapports sont affichés.",
+        "multiOrgBadge": "Multi-organisation",
+        "multiOrgBadgeTitle": "Fait partie du rapport multi-organisation « {{name}} »",
+        "expand": "Afficher les organisations",
+        "collapse": "Masquer les organisations",
+        "summary": "{{date}} · {{delivered}}/{{total}} livrés",
+        "summaryNoRecipient_one": "{{count}} sans destinataire",
+        "summaryNoRecipient_other": "{{count}} sans destinataire",
+        "summaryBlocked_one": "{{count}} bloquée",
+        "summaryBlocked_other": "{{count}} bloquées",
+        "summaryNever": "Pas encore exécuté",
+        "runsSeriesColumn": "Rapport multi-organisation",
+        "actions": {
+          "edit": "Modifier le rapport multi-organisation",
+          "transferOwner": "Transférer le propriétaire",
+          "delete": "Supprimer le rapport multi-organisation",
+          "pause": "Suspendre",
+          "resume": "Reprendre"
+        },
+        "pausedBadge": "Suspendu",
+        "pausedTitle": "Suspendu : aucune copie d’organisation ne s’exécute avant la reprise.",
+        "paused": "« {{name}} » suspendu",
+        "resumed": "« {{name}} » repris",
+        "pauseFailed": "Impossible de suspendre ou de reprendre le rapport multi-organisation.",
+        "deleteTitle": "Supprimer le rapport multi-organisation ?",
+        "deleteMessage": "« {{name}} » cesse de s’exécuter. La copie de chaque organisation est archivée avec son historique d’exécution.",
+        "deleteConfirm": "Supprimer",
+        "deleted": "Rapport multi-organisation « {{name}} » supprimé",
+        "deleteFailed": "Impossible de supprimer le rapport multi-organisation."
+      },
+      "drilldown": {
+        "columns": {
+          "org": "Organisation",
+          "state": "État",
+          "lastRun": "Dernière exécution",
+          "delivery": "Livraison",
+          "recipients": "Destinataires",
+          "actions": "Actions"
+        },
+        "states": {
+          "active": "Active",
+          "excluded": "Exclue",
+          "ineligible": "Non admissible",
+          "blocked_no_authority": "Bloquée : le propriétaire n’a pas accès",
+          "blocked_no_recipients": "Aucun destinataire client",
+          "detached": "Détachée"
+        },
+        "delivery": {
+          "sent": "Envoyé",
+          "not_scheduled": "Non envoyé par courriel"
+        },
+        "neverRun": "Pas encore exécuté",
+        "actions": {
+          "runNow": "Exécuter maintenant",
+          "editRecipients": "Modifier les destinataires",
+          "exclude": "Exclure",
+          "include": "Inclure",
+          "detach": "Détacher"
+        },
+        "lastOrgHint": "Un rapport multi-organisation avec des organisations choisies en exige au moins une. Supprimez-le plutôt.",
+        "noAuthorityHint": "Le propriétaire n’a pas accès à cette organisation, donc sa copie ne s’exécute pas. Transférez le propriétaire pour corriger.",
+        "excludeTitle": "Exclure {{org}} ?",
+        "excludeMessage": "{{org}} ne reçoit plus ce rapport. Sa copie est archivée avec son historique d’exécution, et la réinclure restaure la même copie.",
+        "excludeConfirm": "Exclure",
+        "detachTitle": "Détacher {{org}} ?",
+        "detachMessage": "La copie de {{org}} devient un rapport autonome que vous pouvez modifier librement. Elle conserve son historique d’exécution et ne suit plus ce rapport multi-organisation. Tant que cette copie autonome existe, {{org}} reste en dehors du rapport multi-organisation, même si vous la réincluez.",
+        "detachConfirm": "Détacher",
+        "excluded": "{{org}} exclue",
+        "included": "{{org}} incluse",
+        "detached": "{{org}} détachée",
+        "generated": "Rapport généré pour {{org}}",
+        "updateFailed": "Impossible de mettre à jour le rapport multi-organisation.",
+        "detachFailed": "Impossible de détacher le rapport.",
+        "generateFailed": "Impossible de générer le rapport.",
+        "detachedHint": "Sa copie autonome est gérée séparément. Supprimez ce rapport pour réintégrer cette organisation au rapport multi-organisation."
+      },
+      "transferOwner": {
+        "title": "Transférer le propriétaire",
+        "description": "La copie de chaque organisation s’exécute avec l’accès du propriétaire. Choisissez un utilisateur du partenaire ayant accès à toutes les organisations.",
+        "label": "Nouveau propriétaire",
+        "placeholder": "Choisir un utilisateur",
+        "current": "{{name}} (propriétaire actuel)",
+        "confirm": "Transférer",
+        "loadFailed": "Impossible de charger les utilisateurs.",
+        "forbidden": "Vous devez avoir l’autorisation d’afficher les utilisateurs pour transférer le propriétaire.",
+        "noCandidates": "Aucun autre utilisateur n’a accès à toutes les organisations.",
+        "transferred": "Propriétaire transféré à {{name}}",
+        "failed": "Impossible de transférer le propriétaire."
+      },
+      "child": {
+        "partOf": "Fait partie du rapport multi-organisation « {{name}} »",
+        "partOfUnnamed": "Fait partie d’un rapport multi-organisation",
+        "lockedExplanation": "Les paramètres partagés se modifient dans le rapport multi-organisation. Seuls les destinataires de cette organisation peuvent être modifiés ici.",
+        "managedByMsp": "Géré par votre MSP",
+        "managedExplanation": "Votre MSP gère ce rapport. Vous pouvez modifier qui, dans votre organisation, le reçoit.",
+        "editSeries": "Modifier le rapport multi-organisation",
+        "detach": "Détacher",
+        "archived": "Cette copie est archivée : l’organisation n’est plus couverte par le rapport multi-organisation.",
+        "summary": {
+          "type": "Type",
+          "schedule": "Planification",
+          "format": "Format"
+        },
+        "recipients": {
+          "title": "Destinataires pour cette organisation",
+          "description": "Choisissez qui reçoit la copie de cette organisation, en plus de la règle du rapport multi-organisation.",
+          "default": "Suivre la règle",
+          "add": "Toujours envoyer",
+          "remove": "Ne jamais envoyer",
+          "byRule": "Inclus par la règle",
+          "loadFailed": "Impossible de charger les destinataires.",
+          "updated": "Destinataires mis à jour",
+          "updateFailed": "Impossible de mettre à jour les destinataires.",
+          "empty": "Cette organisation n’a aucun contact avec une adresse courriel."
+        }
+      },
+      "editPage": {
+        "title": "Modifier le rapport multi-organisation",
+        "description": "Les modifications s’appliquent à la copie de chaque organisation de « {{name}} ».",
+        "breadcrumb": "Rapports",
+        "back": "Retour aux rapports",
+        "loading": "Chargement du rapport multi-organisation…",
+        "notFound": "Ce rapport multi-organisation n’existe plus.",
+        "loadFailed": "Impossible de charger le rapport multi-organisation."
+      },
+      "errors": {
+        "seriesTypeUnsupported": "Ce type de rapport ne peut pas être envoyé sous forme d’un rapport par organisation.",
+        "seriesConfigOrgSpecific": "Retirez les filtres de site, d’appareil et de groupe : un rapport multi-organisation couvre des organisations entières.",
+        "seriesManaged": "Ce rapport appartient à un rapport multi-organisation. Modifiez le rapport multi-organisation ou détachez d’abord cette copie.",
+        "seriesOwnerIneligible": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : il doit avoir accès à toutes les organisations et à tous les sites.",
+        "seriesNotFound": "Ce rapport multi-organisation n’existe plus.",
+        "seriesWriteDenied": "Seuls les utilisateurs du partenaire ayant accès à toutes les organisations peuvent modifier les rapports multi-organisation.",
+        "seriesTargetOrgInaccessible": "Une des organisations choisies ne vous est pas accessible.",
+        "reportNotSeriesChild": "Ce rapport ne fait plus partie d’un rapport multi-organisation.",
+        "recipientModeRequiresSeries": "« Ne jamais envoyer » ne s’applique qu’à une copie d’un rapport multi-organisation.",
+        "recipientsNeedExportAndMfa": "L’envoi de rapports à des destinataires exige l’autorisation d’exportation et l’authentification multifacteur.",
+        "seriesAuthorityUnverifiable": "Impossible de confirmer l’accès du propriétaire pour le moment. Réessayez dans un instant."
+      }
     }
   }
 }

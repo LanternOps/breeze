@@ -511,6 +511,91 @@ describe('metric rollups service', () => {
     });
   });
 
+  // #4276 direction 1 — the hour→day passes re-aggregate a whole UTC day of
+  // hourly rows, so on the 5-minute path they cost O(hours elapsed today) per
+  // device×series and blew the 2s held-context budget by late afternoon. The
+  // scheduler now runs them once an hour with a catch-up lookback; every other
+  // caller (backfills, the script) keeps "days touched by the window".
+  describe('#4276 bounded day-level derived rollups', () => {
+    const ORG = '11111111-1111-1111-1111-111111111111';
+    const DAY_LABELS = [
+      'metricRollups.derived.device_metrics.86400',
+      'metricRollups.derived.device_process_samples.86400',
+      'metricRollups.derived.snmp_metrics.86400',
+    ];
+    const HOUR_LABELS = [
+      'metricRollups.derived.device_metrics.3600',
+      'metricRollups.derived.device_process_samples.3600',
+      'metricRollups.derived.snmp_metrics.3600',
+    ];
+
+    /** The `[from, to)` bucket_start bounds a derived statement scans (its last two params). */
+    function sourceRangeFor(label: string): unknown[] {
+      return onlyStatementParamsFor(label).slice(-2);
+    }
+
+    it('skips every hour→day pass when told to, and still runs the raw and hour passes', async () => {
+      const result = await rollupDeviceMetricsRange({
+        orgId: ORG,
+        from: new Date('2026-06-18T16:50:00.000Z'),
+        to: new Date('2026-06-18T17:05:00.000Z'),
+        dayRollups: 'skip',
+      });
+
+      expect(result).toMatchObject({ statements: 6, skipped: false });
+      expect(executeMock).toHaveBeenCalledTimes(6);
+      for (const label of DAY_LABELS) expect(executedByLabel.has(label)).toBe(false);
+      for (const label of HOUR_LABELS) {
+        // The hour pass stays bounded to the window's own hours — this window
+        // straddles 17:00, so exactly hours 16 and 17.
+        expect(sourceRangeFor(label)).toEqual(['2026-06-18T16:00:00.000Z', '2026-06-18T18:00:00.000Z']);
+      }
+    });
+
+    it('derives the days touched by an explicit day window, reaching back past midnight for late data', async () => {
+      // The 00:15 run: its raw window is [00:00, 00:15) on the 19th, but hour 23
+      // of the 18th took its last raw update on the 00:10 run. The day window
+      // must fold the 18th in again, not only the 19th.
+      await rollupDeviceMetricsRange({
+        orgId: ORG,
+        from: new Date('2026-06-19T00:00:00.000Z'),
+        to: new Date('2026-06-19T00:15:00.000Z'),
+        dayRollups: { from: new Date('2026-06-18T21:00:00.000Z') },
+      });
+
+      for (const label of DAY_LABELS) {
+        expect(sourceRangeFor(label)).toEqual(['2026-06-18T00:00:00.000Z', '2026-06-20T00:00:00.000Z']);
+      }
+      for (const label of HOUR_LABELS) {
+        expect(sourceRangeFor(label)).toEqual(['2026-06-19T00:00:00.000Z', '2026-06-19T01:00:00.000Z']);
+      }
+    });
+
+    it('defaults to the days touched by the rollup window itself (backfills keep their old shape)', async () => {
+      await rollupDeviceMetricsRange({
+        orgId: ORG,
+        from: new Date('2026-06-18T12:00:00.000Z'),
+        to: new Date('2026-06-18T12:15:00.000Z'),
+      });
+
+      for (const label of DAY_LABELS) {
+        expect(sourceRangeFor(label)).toEqual(['2026-06-18T00:00:00.000Z', '2026-06-19T00:00:00.000Z']);
+      }
+    });
+
+    it('rejects a day window that does not start before the rollup window ends, before any write', async () => {
+      await expect(
+        rollupDeviceMetricsRange({
+          orgId: ORG,
+          from: new Date('2026-06-18T12:00:00.000Z'),
+          to: new Date('2026-06-18T12:15:00.000Z'),
+          dayRollups: { from: new Date('2026-06-18T12:15:00.000Z') },
+        }),
+      ).rejects.toThrow('from < to');
+      expect(executeMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('rejects invalid ranges before executing writes', async () => {
     await expect(
       rollupDeviceMetricsRange({

@@ -66,7 +66,9 @@ export function toRemoteItem(item: XeroItem): RemoteItem | null {
     ...(item.Code ? { sku: item.Code } : {}),
     ...(item.Description ? { description: item.Description } : {}),
     ...(typeof item.SalesDetails?.UnitPrice === 'number' ? { unitPrice: item.SalesDetails.UnitPrice } : {}),
-    active: item.IsSold !== false,
+    // Xero items have no archived state; IsSold: false means purchase-only, not
+    // archived, and hiding it would push users to create a duplicate item.
+    active: true,
     ...(remoteVersion ? { remoteVersion } : {}),
   };
 }

@@ -54,7 +54,7 @@ export type RevocationReason =
   | 'operator_abandoned';
 
 /** Pinned API version — must match partnerStripe.ts. */
-const STRIPE_API_VERSION = '2026-06-24.dahlia';
+const STRIPE_API_VERSION = '2026-08-26.dahlia';
 
 /** Per-attempt provider timeout. Matches the observed Stripe call latency. */
 export const EXPIRE_TIMEOUT_MS = 8_000;

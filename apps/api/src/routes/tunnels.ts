@@ -459,7 +459,8 @@ tunnelRoutes.post(
     if (!policyCheck.allowed) {
       return c.json({
         error: policyCheck.reason,
-        code: 'REMOTE_ACCESS_POLICY_DENIED',
+        // A parked device carries its own code (DEVICE_PENDING_ASSIGNMENT).
+        code: policyCheck.code ?? 'REMOTE_ACCESS_POLICY_DENIED',
         capability: tunnelCapability,
         policyName: policyCheck.policyName,
       }, 403);
@@ -605,7 +606,8 @@ tunnelRoutes.post(
     if (!policyCheck.allowed) {
       return c.json({
         error: policyCheck.reason,
-        code: 'REMOTE_ACCESS_POLICY_DENIED',
+        // A parked device carries its own code (DEVICE_PENDING_ASSIGNMENT).
+        code: policyCheck.code ?? 'REMOTE_ACCESS_POLICY_DENIED',
         capability: 'proxy',
         policyName: policyCheck.policyName,
       }, 403);
@@ -1667,7 +1669,10 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
 
   const policyCheck = await checkRemoteAccess(bound.deviceId, 'webrtcDesktop');
   if (!policyCheck.allowed) {
-    return c.json({ error: policyCheck.reason ?? 'WebRTC desktop access is disabled by policy' }, 403);
+    return c.json({
+      error: policyCheck.reason ?? 'WebRTC desktop access is disabled by policy',
+      ...(policyCheck.code ? { code: policyCheck.code } : {}),
+    }, 403);
   }
 
   // Reuse the same pattern as /sessions: terminate stragglers first, insert
@@ -1794,7 +1799,10 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
 
   const policyCheck = await checkRemoteAccess(bound.deviceId, 'vncRelay');
   if (!policyCheck.allowed) {
-    return c.json({ error: policyCheck.reason ?? 'VNC relay is disabled by policy' }, 403);
+    return c.json({
+      error: policyCheck.reason ?? 'VNC relay is disabled by policy',
+      ...(policyCheck.code ? { code: policyCheck.code } : {}),
+    }, 403);
   }
 
   // Falling back from the desktop viewer to VNC would drop the consent prompt:

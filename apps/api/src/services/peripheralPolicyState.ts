@@ -29,6 +29,7 @@ import type { CommandPayload } from './commandQueue';
 import { CommandTypes } from './commandTypes';
 import { randomUUID } from 'node:crypto';
 import type { AiOriginRef } from '@breeze/shared';
+import { isParkedDevice } from './unassignedPool/deliveryEligibility';
 
 export type PeripheralReconcileReason =
   | 'policy_changed'
@@ -210,6 +211,9 @@ export async function reconcilePeripheralPolicyDevice(
     // would reach the partner-trust gate below and spam capability_denied audit
     // rows every sweep (issue #5590). Bail before any trust check or write.
     if (device?.status === 'decommissioned') return 'incompatible';
+    // A device parked in a holding org receives lifecycle removal only, so a
+    // policy push is never planned for it (no desired state, no command).
+    if (device && (await isParkedDevice(tx, deviceId))) return 'incompatible';
 
     const resolved = device
       ? await loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(deviceId)

@@ -11,6 +11,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -201,6 +202,8 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
   const handleCancel = () => {
     void navigateTo('/policies');
   };
+
+  usePageItemName(defaultValues?.name);
 
   if (loading) {
     return (

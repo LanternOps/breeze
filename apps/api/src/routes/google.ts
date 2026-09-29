@@ -25,6 +25,8 @@ import { PERMISSIONS } from '../services/permissions';
 import { GOOGLE_WORKSPACE_ENABLED } from '../config/env';
 import { getDirectoryClient, parseServiceAccountKey, normalizeGoogleError } from '../services/googleClient';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const googleRoutes = new Hono();
 
 const requireOrgsRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -96,6 +98,8 @@ googleRoutes.post(
     }
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const payload = c.req.valid('json');
 

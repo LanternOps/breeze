@@ -654,8 +654,26 @@ func TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink(t *testing.T)
 	if readlinkErr != nil {
 		t.Fatalf("readlink staged symlink: %v", readlinkErr)
 	}
-	if gotTarget != "/run/systemd/resolve/stub-resolv.conf" {
-		t.Fatalf("symlink target = %q, want %q", gotTarget, "/run/systemd/resolve/stub-resolv.conf")
+	// 18b row 10 (fix round 1 / MINOR 3 corrected the mechanism claim below):
+	// the artifact's LinkTarget is POSIX-shaped (a Linux system-state
+	// symlink, e.g. /etc/resolv.conf -> systemd-resolved's stub file) — this
+	// is Linux target-string semantics, not a path this code ever
+	// interprets or joins. On Windows, symlinkFile (os.Symlink) itself
+	// converts the "/"-separated target to "\" on WRITE (os/file_windows.go
+	// applies filepathlite.FromSlash to oldname before creating the reparse
+	// point) — the target is never stored verbatim there in the first
+	// place, so os.Readlink then faithfully returns it back with
+	// backslashes. This is Go's os.Symlink/Windows behavior, not a bug in
+	// this package, so the round-trip comparison on Windows must compare
+	// after ToSlash; the Linux assertion (where symlinkFile never touches
+	// the target string) is unchanged.
+	wantTarget := "/run/systemd/resolve/stub-resolv.conf"
+	compareTarget := gotTarget
+	if runtime.GOOS == "windows" {
+		compareTarget = filepath.ToSlash(compareTarget)
+	}
+	if compareTarget != wantTarget {
+		t.Fatalf("symlink target = %q, want %q", gotTarget, wantTarget)
 	}
 }
 

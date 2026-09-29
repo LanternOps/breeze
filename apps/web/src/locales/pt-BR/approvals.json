@@ -111,5 +111,13 @@
       "unknown": "Desconhecido"
     }
   },
-  "proposedByAgentExecuteNotice": "Aprovar isto o executa agora — não é uma simulação, mesmo no modo sombra."
+  "proposedByAgentExecuteNotice": "Aprovar isto o executa agora — não é uma simulação, mesmo no modo sombra.",
+  "assuranceDefaultNotice": {
+    "upcomingTitle": "Dispositivos de aprovador serão exigidos a partir de {{date}}",
+    "upcomingBody": "Nenhuma opção de segurança de aprovações foi salva para sua conta de parceiro, então o padrão da plataforma se aplica: a partir de {{date}}, aprovar uma solicitação de risco alto ou crítico exige um dispositivo de aprovador cadastrado em vez de um único clique. Cadastre um dispositivo antes disso para que as aprovações não fiquem paradas.",
+    "activeTitle": "Aprovações de alto risco exigem um dispositivo de aprovador",
+    "activeBody": "Desde {{date}}, o padrão da plataforma exige um dispositivo de aprovador cadastrado para aprovar solicitações de risco alto e crítico, porque nenhuma opção de segurança de aprovações foi salva para sua conta de parceiro. Por isso estas aprovações pedem seu dispositivo.",
+    "settingsLink": "Revisar a segurança de aprovações",
+    "registerLink": "Registrar um dispositivo de aprovador"
+  }
 }

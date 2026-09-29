@@ -43,6 +43,7 @@ import {
   createDeviceContext,
   resolveDeviceContext,
 } from './brainDeviceContext';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -175,6 +176,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // (so RLS lets techs read their own sessions), so ephemeral devices are NOT
       // filtered by the org axis — exclude them explicitly from model-visible lists.
       conditions.push(eq(devices.isEphemeral, false));
+      // Devices parked in a holding org are never model-visible, whatever the scope.
+      conditions.push(notParkedDeviceCondition());
 
       if (input.status) conditions.push(eq(devices.status, input.status as typeof devices.status.enumValues[number]));
       if (input.osType) conditions.push(eq(devices.osType, input.osType as typeof devices.osType.enumValues[number]));
@@ -251,6 +254,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'devices',
     searchHint: 'device hardware, RAM slots and memory modules, network interfaces, disk usage and recent metrics',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_device_details',
@@ -601,6 +605,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         // Ephemeral Quick Support devices live in an org the tech can still read,
         // so exclude them explicitly or their tags leak into the tag vocabulary.
         conditions.push(eq(devices.isEphemeral, false));
+        conditions.push(notParkedDeviceCondition());
 
         // Site axis: a site-restricted caller may only enumerate tags from
         // devices in their allowed sites (RLS does NOT enforce site).

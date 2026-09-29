@@ -7,6 +7,8 @@ import {
   SERVER_TIMEOUT_RESULT_STATUS,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
   TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES,
+  RESULT_PROCESSING_FAILED_RESULT_STATUS,
+  RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES,
 } from './commandResultAcceptance';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from './commandTypes';
 
@@ -178,8 +180,54 @@ describe('commandAcceptsAgentResultCondition (#3607)', () => {
       'completed',
       ...QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES,
       BACKUP_QUEUE_ACK_RESULT_STATUS,
+      'failed',
+      ...RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES,
+      RESULT_PROCESSING_FAILED_RESULT_STATUS,
     ]);
+    expect(text).toContain(`"result"->>'processingFailedAt' IS NOT NULL`);
     expect(text).not.toContain(SERVER_TIMEOUT_RESULT_STATUS);
     expect(text).not.toContain(BACKUP_QUEUE_ACK_RESULT_STATUS);
+    expect(text).not.toContain(RESULT_PROCESSING_FAILED_RESULT_STATUS);
+  });
+});
+
+// #3530 — a result whose per-type persistence failed is rolled back and the
+// row parked as `failed` + this marker, so the history never reads
+// "completed" for a result that was not recorded, and a resubmitted result is
+// accepted and reprocessed instead of short-circuited as a duplicate.
+describe('result-processing-failed marker (#3530)', () => {
+  const marked = {
+    status: RESULT_PROCESSING_FAILED_RESULT_STATUS,
+    agentStatus: 'completed',
+    processingFailedAt: '2026-09-28T00:00:00.000Z',
+  };
+
+  it('reopens a row parked by a server-side processing failure, for any command type', () => {
+    expect(commandAcceptsAgentResult('failed', marked)).toBe(true);
+    expect(commandAcceptsAgentResult('failed', marked, 'script')).toBe(true);
+    expect(commandAcceptsAgentResult('failed', marked, 'backup_verify')).toBe(true);
+  });
+
+  it('requires the server-only processingFailedAt stamp, like timedOutBy', () => {
+    expect(
+      commandAcceptsAgentResult('failed', { status: RESULT_PROCESSING_FAILED_RESULT_STATUS }),
+    ).toBe(false);
+  });
+
+  it('never reopens a type whose command row must not be rewritten after it goes terminal', () => {
+    // network_diagnostic: plan authority lapses (same reason as the timeout
+    // exclusion). PAM: late evidence enters only the frozen PAM result
+    // transaction, never a rewrite of the command row.
+    for (const type of RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES) {
+      expect(commandAcceptsAgentResult('failed', marked, type)).toBe(false);
+    }
+    expect(RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES).toEqual(
+      expect.arrayContaining(['network_diagnostic', 'pam_apply_v2', 'pam_cleanup_v2']),
+    );
+  });
+
+  it('only reopens a failed row — never a completed one carrying the marker', () => {
+    expect(commandAcceptsAgentResult('completed', marked)).toBe(false);
+    expect(commandAcceptsAgentResult('cancelled', marked)).toBe(false);
   });
 });

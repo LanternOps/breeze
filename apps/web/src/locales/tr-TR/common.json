@@ -47,6 +47,7 @@
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
+    "unassignedDevices": "Atanmamış Cihazlar",
     "configPolicies": "Yapılandırma Politikaları",
     "integrations": "Entegrasyonlar",
     "cloudBackup": "Bulut Yedekleme",
@@ -749,7 +750,8 @@
         "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
         "keyboardShortcuts": "Klavye kısayolları",
         "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
-      }
+      },
+      "numberHint": "Açmak için {{mod}}1–9"
     },
     "notifications": {
       "title": "Bildirimler",
@@ -815,7 +817,17 @@
       "help": "Yardım panelini aç",
       "showThis": "Bu kartı göster",
       "close": "Bir iletişim kutusunu veya menüyü kapat",
-      "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır."
+      "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır.",
+      "create": "Oluştur",
+      "createHint": "c tuşuna basıp bırakın, ardından tuşa basın.",
+      "paletteNumber": "Bir arama sonucunu numarasıyla açın",
+      "newItems": {
+        "ticket": "Yeni talep",
+        "quote": "Yeni teklif",
+        "invoice": "Yeni fatura",
+        "contract": "Yeni sözleşme",
+        "script": "Yeni betik"
+      }
     }
   },
   "migrationBanner": {
@@ -2437,7 +2449,36 @@
         "requesting": "İsteniyor...",
         "requestApproval": "Onay iste",
         "waitingApprovalTitle": "PAM onayı bekleniyor",
-        "approvalPending": "Onay bekleniyor"
+        "approvalPending": "Onay bekleniyor",
+        "proven": {
+          "badge": "Kanıtlanmış çözüm",
+          "trackAllClients": "Müşterilerinizde {{attempts}} denemenin {{verified}} tanesinde işe yaradı",
+          "trackThisClient": "Bu müşteride {{attempts}} denemenin {{verified}} tanesinde işe yaradı"
+        },
+        "feedback": {
+          "worked": "İşe yaradı",
+          "didNotWork": "İşe yaramadı",
+          "recorded": "Geri bildirim kaydedildi",
+          "failed": "Geri bildirim kaydedilemedi"
+        },
+        "done": {
+          "button": "Tamamlandı",
+          "recorded": "Tamamlandı olarak işaretlendi — düzelme izleniyor",
+          "failed": "Tamamlandı olarak işaretlenemedi"
+        },
+        "outcome": {
+          "label": "Sonuç: {{state}}",
+          "state": {
+            "pending": "çalışıyor",
+            "awaitingRecovery": "düzelme izleniyor",
+            "holding": "düzeldi — kalıcılığı doğrulanıyor",
+            "verified": "düzeltme doğrulandı",
+            "failed": "sorunu düzeltmedi",
+            "recurred": "tekrarladı",
+            "inconclusive": "belirsiz",
+            "cancelled": "iptal edildi"
+          }
+        }
       }
     },
     "support": {

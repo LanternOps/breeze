@@ -201,6 +201,29 @@ describe('ConnectionsTab', () => {
     expect(screen.getByTestId('connections-meta').textContent).toBe('Running version 0.116.0 · Self-hosted');
   });
 
+  it('#7024: warns when BREEZE_VERSION does not match the running image', async () => {
+    fetchWithAuth.mockResolvedValue(ok({ version: '0.115.0', versionMismatch: { running: '0.115.0', configured: '0.116.0' } }));
+    render(<ConnectionsTab />);
+    const banner = await screen.findByTestId('connections-version-mismatch');
+    expect(banner.getAttribute('role')).toBe('alert');
+    expect(banner.textContent).toContain('0.115.0');
+    expect(banner.textContent).toContain('BREEZE_VERSION is 0.116.0');
+    expect(banner.textContent).toContain('guided-setup.sh --upgrade');
+  });
+
+  it('#7024: no version warning when there is no mismatch, or an older API omits the field', async () => {
+    fetchWithAuth.mockResolvedValue(ok({ versionMismatch: null }));
+    const { unmount } = render(<ConnectionsTab />);
+    await screen.findByTestId('connections-summary');
+    expect(screen.queryByTestId('connections-version-mismatch')).toBeNull();
+    unmount();
+
+    fetchWithAuth.mockResolvedValue(ok());
+    render(<ConnectionsTab />);
+    await screen.findByTestId('connections-summary');
+    expect(screen.queryByTestId('connections-version-mismatch')).toBeNull();
+  });
+
   it('shows a platform-admin-required panel on a 403', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes({ error: 'platform admin access required' }, 403));
     render(<ConnectionsTab />);

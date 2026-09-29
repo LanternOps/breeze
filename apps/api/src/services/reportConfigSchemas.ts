@@ -102,6 +102,23 @@ export const hardwareLifecycleConfigSchema = legacyReportConfigSchema.extend({
 });
 
 /**
+ * Config for the Backup status report (Cove email layout, #6013). `sites`
+ * follows the whole-report site-scope convention of the other org-scoped
+ * curated types (feeds `assertRequestedScopeWithinAuthority`'s generic
+ * `config.sites` check).
+ *
+ * `includeDevicesWithoutBackup` DEFAULTS TRUE — unlike the web overview's
+ * `onlyWithBackup` default, this report mirrors Cove's "All devices" email and
+ * exists to surface coverage GAPS. `sources` requires at least one entry: an
+ * empty selection would silently produce a zero-row report.
+ */
+export const backupStatusReportConfigSchema = legacyReportConfigSchema.extend({
+  sites: z.array(z.string().guid()).optional().default([]),
+  includeDevicesWithoutBackup: z.boolean().optional().default(true),
+  sources: z.array(z.enum(['breeze', 'provider'])).min(1).optional().default(['breeze', 'provider']),
+});
+
+/**
  * Config for the Threat Detection Review report (#5784 W02). `topIncidents`
  * caps the incident table so one noisy month cannot produce a 400-page PDF; the
  * artifact states the cap and the number withheld rather than truncating
@@ -161,7 +178,7 @@ export const identityAccessConfigSchema = legacyReportConfigSchema.extend({
 /** Does a stored selector value actually select something? An empty array or
  *  an object whose every value selects nothing (`filters: {}`,
  *  `filters: { siteIds: [] }`) does not; any other present value does. */
-function selectsSomething(value: unknown): boolean {
+export function selectsSomething(value: unknown): boolean {
   if (value === undefined || value === null) return false;
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === 'object') return Object.values(value).some(selectsSomething);

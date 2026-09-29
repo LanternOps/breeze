@@ -19,6 +19,7 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 /**
  * The device-id set this caller may read, across BOTH restriction axes.
@@ -46,7 +47,7 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -266,6 +267,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     domain: 'security',
     searchHint: 'device change history: software, services, startup, network, scheduled tasks, users, hardware and OS versions',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_change_log',

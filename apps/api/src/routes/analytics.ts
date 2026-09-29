@@ -25,6 +25,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/pe
 import { slaDefinitionOutOfScope, slaScopeNarrowed, type SlaTargetShape } from '../services/slaSiteScope';
 import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export const analyticsRoutes = new Hono();
 const requireAnalyticsRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -90,7 +91,7 @@ async function resolveSiteAllowedDeviceIds(
     // Ephemeral Quick Support devices live in the hidden 'quick_support' org that
     // stays inside accessibleOrgIds for RLS, so nothing excludes them for us —
     // every analytics enumeration in this file has to say so explicitly.
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
   return orgDevices
     .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
     .map((d) => d.id);
@@ -1870,7 +1871,7 @@ analyticsRoutes.get(
       .where(
         and(
           eq(devices.orgId, sla.orgId),
-          eq(devices.isEphemeral, false),
+          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
           eq(devices.status, 'online'),
           gte(devices.lastSeenAt, since)
         )
@@ -1882,7 +1883,7 @@ analyticsRoutes.get(
       .where(
         and(
           eq(devices.orgId, sla.orgId),
-          eq(devices.isEphemeral, false),
+          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
           ne(devices.status, 'decommissioned')
         )
       );
@@ -1924,7 +1925,7 @@ analyticsRoutes.get(
       // Device counts by status (exclude decommissioned)
       const statusCondition = and(
         ne(devices.status, 'decommissioned'),
-        eq(devices.isEphemeral, false),
+        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
         orgCondition,
       );
       const statusCounts = await db
@@ -1952,7 +1953,7 @@ analyticsRoutes.get(
       const twelveWeeksAgo = new Date(Date.now() - 12 * 7 * 24 * 60 * 60 * 1000);
       const weeklyTrendCondition = and(
         gte(devices.enrolledAt, twelveWeeksAgo),
-        eq(devices.isEphemeral, false),
+        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
         orgCondition,
       );
       const weeklyTrend = await db
@@ -2016,7 +2017,7 @@ analyticsRoutes.get(
       // Group by osType + osVersion for granularity
       const osDistributionCondition = and(
         ne(devices.status, 'decommissioned'),
-        eq(devices.isEphemeral, false),
+        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
         orgCondition,
       );
       const rows = await db

@@ -62,10 +62,13 @@ it('renders accuracy, missed prompts, expectations, observed actions and tokens'
     toolUses: [{ name: 'mcp__breeze__manage_alerts', input: { action: 'resolve' } }],
   });
   const markdown = renderMarkdownReport({
-    generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', toolSearch: 'off',
-    surface: 'chat', systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', suite: 'chat', toolSearch: 'off', surfaceSearch: 'production',
+    surface: 'chat', meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 1, meanCostCentsToFirstTool: 0, systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    toolSearchEnabled: false, meanContextTokensToFirstTool: 789,
     cases: [{ ...score, expected: c.expect, inputTokens: 456, cacheReadInputTokens: 10,
-      cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false }],
+      cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false,
+      apiCallsToFirstTool: 1, contextTokensToFirstTool: 486, contextTokensAtFirstTool: 486, costCentsToFirstTool: 0,
+      surface: 'chat', toolSearchEnabled: false }],
     summary: summarize([score]),
   });
   expect(markdown).toContain('accuracy 0/1 = 0.0%');
@@ -74,16 +77,21 @@ it('renders accuracy, missed prompts, expectations, observed actions and tokens'
   expect(markdown).toContain('manage_alerts.list');
   expect(markdown).toContain('manage_alerts.resolve');
   expect(markdown).toContain('456');
+  expect(markdown).toContain('through the first real tool call: 789');
+  expect(markdown).toContain('(disabled by policy)');
 });
 
 it('renders the observed cell as "<tool> (not exposed)" when unavailableTool is set', () => {
   const allowed = new Set(['mcp__breeze__manage_alerts']);
   const score = scoreFirstCall({ ...c, id: 'g05' }, { toolUses: [{ name: 'mcp__breeze__manage_tickets', input: {} }] }, allowed);
   const markdown = renderMarkdownReport({
-    generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', toolSearch: 'off',
-    surface: 'chat', systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', suite: 'chat', toolSearch: 'off', surfaceSearch: 'production',
+    surface: 'chat', meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 1, meanCostCentsToFirstTool: 0, systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    toolSearchEnabled: false, meanContextTokensToFirstTool: 789,
     cases: [{ ...score, expected: c.expect, inputTokens: 456, cacheReadInputTokens: 10,
-      cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false }],
+      cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false,
+      apiCallsToFirstTool: 1, contextTokensToFirstTool: 486, contextTokensAtFirstTool: 486, costCentsToFirstTool: 0,
+      surface: 'chat', toolSearchEnabled: false }],
     summary: summarize([score]),
   });
   expect(markdown).toContain('manage_tickets (not exposed)');

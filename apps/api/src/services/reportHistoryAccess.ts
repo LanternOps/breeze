@@ -32,7 +32,8 @@
  *    `runOutsideDbContext` / `withSystemDbAccessContext`, the #1105 / #6671
  *    second-connection hazard).
  */
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { UNASSIGNED_POOL_ORG_TYPE } from './unassignedPool/orgType';
 import { db, withSystemDbAccessContext } from '../db';
 import {
   organizations,
@@ -157,6 +158,8 @@ async function computeReachInSystemContext(partnerId: string, userId: string): P
         eq(organizations.partnerId, partnerId),
         inArray(organizations.status, [...REPORT_HISTORY_ORG_STATUSES]),
         isNull(organizations.deletedAt),
+        // Holding org is never human-reachable.
+        ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
         ...(selectedOrgIds ? [inArray(organizations.id, selectedOrgIds)] : []),
       ),
     );

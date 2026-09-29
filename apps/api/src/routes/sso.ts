@@ -79,6 +79,7 @@ import {
   auditUserLoginFailure,
   userHasUsablePasskey,
   userRequiresSetup,
+  userIsMfaProtected,
   installAuthorizedUserSessionCookies,
   type PendingMfaRecord,
 } from './auth/helpers';
@@ -114,6 +115,8 @@ import {
   withLockedSsoProviderAuthority,
 } from '../services/ssoBrowserTransition';
 
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const ssoRoutes = new Hono();
 
 // ============================================
@@ -1006,6 +1009,8 @@ ssoRoutes.post(
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     // SR2-10: the org axis validated NOTHING here — and it is the ONLY axis that
     // JIT-provisions, so an org admin could delegate a role broader than their
     // own authority to every future SSO sign-in.
@@ -1778,6 +1783,8 @@ ssoRoutes.post(
       if ('error' in orgResult) {
         return c.json({ error: orgResult.error, code: orgResult.code }, orgResult.status);
       }
+      // canAccessOrg is true for system scope: the holding org is never a target.
+      if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
       // Every other branch proves authority against an RLS-visible row before
       // the system-context PII read below. This branch's checks are app-layer
       // only (canAccessOrg), so add the DB-enforced equivalent: the org must
@@ -1950,6 +1957,8 @@ ssoRoutes.post(
     const body = c.req.valid('json');
     const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgResult.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     let pending;
     try {
@@ -2924,8 +2933,9 @@ ssoRoutes.get('/callback', async (c) => {
 
     // #4018 reauth mode: an already-authenticated, PASSWORDLESS user proving
     // identity through a fresh IdP round-trip so they can enroll a first MFA
-    // factor. Mints NO tokens, creates NO users, links NO identities — its only
-    // output is a single-use step-up grant.
+    // factor or (#4045) manage one they already hold. Mints NO tokens, creates
+    // NO users, links NO identities — its only output is a single-use step-up
+    // grant.
     if (session.reauthUserId) {
       const reauthUserId = session.reauthUserId;
 
@@ -2989,6 +2999,32 @@ ssoRoutes.get('/callback', async (c) => {
           return { ok: false as const, error: 'password_set' as const };
         }
 
+        // #4045: the grant's PURPOSE follows the account's factor state, via
+        // the SAME predicate both redemption sites use (resolveEnrollmentStepUp
+        // refuses a protected account; resolveFactorManagementStepUp refuses an
+        // unprotected one), so the three can never drift apart. An account with
+        // no factor can only enroll one; an account holding one gets a grant
+        // that stands in for the PASSWORD leg of factor management and nothing
+        // else. Deciding here rather than at /reauth/start is safe because the
+        // grant is bound to the INITIATING epochs: a factor added or removed in
+        // between bumps mfa_epoch and kills the grant whichever purpose it got.
+        //
+        // userIsMfaProtected THROWS rather than guess when it cannot read the
+        // row. Contained here: left to the callback's generic catch it would
+        // put its internal message (with the user id) into a /login URL and
+        // drop an already-signed-in user off the profile page. Fail closed
+        // like a mint failure — no grant, profile-page error, audited.
+        let accountIsProtected: boolean;
+        try {
+          accountIsProtected = await userIsMfaProtected(reauthUserId);
+        } catch (err) {
+          console.error(`[sso] reauth protection probe failed for user ${reauthUserId}:`, err);
+          return { ok: false as const, error: 'reauth_unavailable' as const, auditReason: 'protection_probe_failed' };
+        }
+        const operation = accountIsProtected
+          ? 'sso_reauth_manage_factor' as const
+          : 'enroll_first_factor' as const;
+
         // Taken from the binding result, NOT re-read off the session row with
         // `!`. validateSessionBinding is where the null check lives (it rejects
         // `link_binding_missing` -> the public `session_invalid`), so consuming
@@ -3002,6 +3038,7 @@ ssoRoutes.get('/callback', async (c) => {
           authEpoch: binding.initiating.authEpoch,
           mfaEpoch: binding.initiating.mfaEpoch,
           sid: binding.initiating.sid,
+          operation,
         };
       });
 
@@ -3028,7 +3065,7 @@ ssoRoutes.get('/callback', async (c) => {
 
       const grantId = await mintStepUpGrant({
         userId: reauthUserId,
-        operation: 'enroll_first_factor',
+        operation: outcome.operation,
         authEpoch: outcome.authEpoch,
         mfaEpoch: outcome.mfaEpoch,
         sid: outcome.sid,

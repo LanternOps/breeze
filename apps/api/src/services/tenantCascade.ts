@@ -396,8 +396,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // except organizations (snapshot, job, device) is ON DELETE CASCADE, so
   // position is determinism, not correctness.
   'backup_snapshot_attestations',
+  // Snapshot id ownership: org_id with device_id; every FK is CASCADE or SET
+  // NULL. Deleting a row tombstones its id (trigger), so erasure never frees
+  // an id for reuse.
+  'backup_snapshot_id_reservations',
   'backup_snapshot_retirements',
   'backup_snapshots',
+  // Multipart uploads of write-scoped storage sessions (FKs CASCADE).
+  'backup_storage_session_uploads',
   // Brokered storage sessions: org_id denormalised from the executing device;
   // every FK (command, both devices, snapshot, config) is ON DELETE CASCADE,
   // so position is determinism, not correctness.
@@ -536,6 +542,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // AI Suggested Fixes W1: fix_memory is dual-owner (org_id XOR partner_id).
+  // Org rows cascade with the org; partner rows (org_id NULL) are untouched by
+  // an org erasure and are rebuilt by jobs/tenantErasure.ts afterwards. FKs out
+  // only (scripts/script_versions/playbooks CASCADE, users SET NULL).
+  'fix_memory',
+  // fix_outcomes: one row per attempt, leaf table (FKs out only, all with an
+  // explicit ON DELETE). Cascades after nothing that references it.
+  'fix_outcomes',
   // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
   // CASCADE (report_runs is pre-cleared above), org_id reached here too —
   // either order is a no-op for the other. Leaf table, no children.
@@ -712,6 +726,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'remediation_suggestions',
   'remote_sessions',
   'report_schedule_recipients',
+  // Multi-org report series W02: shape-1 target rows. FK to organizations is
+  // NO ACTION (organizations is last); its series_id parent (report_series) is
+  // partner-axis and outside this set. report_series itself goes with the
+  // partner sweep (partner_id column).
+  'report_series_org_targets',
   'reports',
   'restore_jobs',
   'roles',

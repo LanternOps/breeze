@@ -12,7 +12,8 @@ import {
   XCircle,
   Loader2,
   LayoutTemplate,
-  Mail
+  Mail,
+  Layers
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -20,7 +21,21 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { PageHeader } from '../shared/PageHeader';
 import { useJwtClaims } from '@/lib/authScope';
-import { ScopeBadge } from '../shared/ScopeBadge';
+import { CoversCell } from './CoversCell';
+import { DeliveryStatusChip, type ReportDeliveryStatus } from './DeliveryStatusChip';
+import { useHashState } from '@/lib/useHashState';
+import { fetchSeriesList } from './series/seriesApi';
+import { ReportsFilterChips } from './series/ReportsFilterChips';
+import { SeriesListRow } from './series/SeriesListRow';
+import {
+  buildListEntries,
+  DEFAULT_REPORTS_LIST_VIEW,
+  filterListEntries,
+  formatReportsListHash,
+  parseReportsListHash,
+  type ReportsListView,
+} from './series/listModel';
+import type { SeriesDetail } from './series/types';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
@@ -81,6 +96,14 @@ export type Report = {
    *  `orgId` set. Ownership is immutable after create. */
   orgId: string | null;
   partnerId: string | null;
+    /** W02: set on a series child (an org-owned row a multi-org report manages). */
+    seriesId?: string | null;
+    seriesName?: string | null;
+    archivedAt?: string | null;
+    /** Multi-org series W01: the owning org's name (GET /reports joins it); null for a partner-owned report. */
+  orgName?: string | null;
+  /** Multi-org series W01: the latest SCHEDULED run's delivery outcome (manual runs excluded). */
+  lastDeliveryStatus?: ReportDeliveryStatus | null;
   portalSelfService: boolean;
   lastGeneratedAt: string | null;
   createdAt: string;
@@ -98,6 +121,14 @@ export type ReportRun = {
   createdAt: string;
   reportName?: string;
   reportType?: ReportType;
+  seriesId?: string | null;
+  seriesName?: string | null;
+  /** Multi-org series W01 (GET /reports/runs): the owning org; null for a partner-owned report's run. */
+  orgId?: string | null;
+  orgName?: string | null;
+  deliveryStatus?: ReportDeliveryStatus | null;
+  /** Customer recipients the run resolved (non-series: contacts + typed addresses). Not rendered in W01. */
+  recipientCount?: number | null;
 };
 
 type ReportsListProps = {
@@ -163,6 +194,25 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     jwtClaims.claims.scope === 'partner' &&
     canManagePartnerWide &&
     !!currentOrgId;
+  // Multi-org series (W03). Same fail-closed gate as mergePartnerWide: only a
+  // partner-scope user who may administer partner-wide state sees series. On
+  // the All-organizations view the list groups children under their series; with
+  // one org focused, children are ordinary rows with a Multi-org badge.
+  const seriesGate =
+    jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && canManagePartnerWide;
+  // A session that passes the client gate but may not read series (403) falls
+  // back to the ungrouped list, so no per-org copy disappears (W03 final review).
+  const [seriesForbidden, setSeriesForbidden] = useState(false);
+  const grouped = seriesGate && !currentOrgId && !seriesForbidden;
+  const [seriesDetails, setSeriesDetails] = useState<SeriesDetail[]>([]);
+  const [seriesLoadFailed, setSeriesLoadFailed] = useState(false);
+  const [view, setView] = useHashState<ReportsListView>(DEFAULT_REPORTS_LIST_VIEW, parseReportsListHash);
+  const updateView = useCallback((next: ReportsListView) => {
+    setView(next);
+    const hash = formatReportsListHash(next);
+    if (hash) window.location.hash = hash;
+    else window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  }, [setView]);
   const [partnerWideIncomplete, setPartnerWideIncomplete] = useState(false);
 
   const fetchPartnerWideReports = useCallback(async (): Promise<PartnerWideFetch> => {
@@ -214,11 +264,23 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     try {
       setLoading(true);
       setError(undefined);
-      const [response, partnerWide] = await Promise.all([
-        fetchWithAuth('/reports'),
+      const [response, partnerWide, seriesResult] = await Promise.all([
+        // Grouped: children are represented by their series row, so they must
+        // not consume the (50-row) first page.
+        fetchWithAuth(grouped ? '/reports?series=exclude' : '/reports'),
         mergePartnerWide
           ? fetchPartnerWideReports()
           : Promise.resolve<PartnerWideFetch>({ rows: [], complete: true }),
+        grouped
+          ? fetchSeriesList().then(
+              (rows) => ({ rows: rows ?? [], failed: false, forbidden: rows === null }),
+              (err: unknown) => {
+                // The rest of the list still renders; the banner says what is missing.
+                console.warn('Failed to fetch multi-org reports:', err);
+                return { rows: [] as SeriesDetail[], failed: true, forbidden: false };
+              },
+            )
+          : Promise.resolve({ rows: [] as SeriesDetail[], failed: false, forbidden: false }),
       ]);
       if (!response.ok) {
         throw new Error(stableT('reports.reportsList.errors.fetchReports'));
@@ -229,13 +291,17 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       const seen = new Set(own.map((r) => r.id));
       setReports([...own, ...partnerWide.rows.filter((r) => !seen.has(r.id))]);
       setPartnerWideIncomplete(!partnerWide.complete);
+      setSeriesDetails(seriesResult.rows);
+      setSeriesLoadFailed(seriesResult.failed);
+      // Refetches ungrouped: `grouped` flips, so fetchReports (and its effect) re-run.
+      if (seriesResult.forbidden) setSeriesForbidden(true);
     } catch (err) {
       if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : stableT('reports.reportsList.errors.generic'));
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [stableT, mergePartnerWide, fetchPartnerWideReports]);
+  }, [stableT, mergePartnerWide, fetchPartnerWideReports, grouped]);
 
   const fetchRecentRuns = useCallback(async () => {
     try {
@@ -451,6 +517,187 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     return formatDateTime(dateStr, { timeZone: effectiveTimezone });
   };
 
+  const entries = buildListEntries(reports, seriesDetails, grouped);
+  const visibleEntries = filterListEntries(entries, view.filter);
+  // A hash naming a series that isn't listed (deleted, other partner) expands nothing.
+  const expandedSeriesId = seriesDetails.some((d) => d.series.id === view.seriesId) ? view.seriesId : null;
+
+  const renderReportRow = (report: Report) => (
+                    <tr key={report.id} data-testid={`report-row-${report.id}`} className="hover:bg-muted/30">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <FileText className="h-4 w-4 text-muted-foreground" />
+                          <span className="font-medium">{report.name}</span>
+                          {report.portalSelfService && (
+                            <span
+                              data-testid={`report-portal-badge-${report.id}`}
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {t('reports.reportsList.visibleInPortal')}
+                            </span>
+                          )}
+                            {report.seriesId && (
+                              seriesGate ? (
+                                <a
+                                  href={`/reports/series/${report.seriesId}`}
+                                  title={t('reports.series.list.multiOrgBadgeTitle', { name: report.seriesName ?? '' })}
+                                  className="shrink-0"
+                                >
+                                  <span data-testid={`report-series-badge-${report.id}`} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                                    <Layers className="h-3 w-3" />
+                                    {t('reports.series.list.multiOrgBadge')}
+                                  </span>
+                                </a>
+                              ) : (
+                                <span data-testid={`report-series-badge-${report.id}`} className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
+                                  <Layers className="h-3 w-3" />
+                                  {t('reports.series.list.multiOrgBadge')}
+                                </span>
+                              )
+                            )}
+                          </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {/* Multi-org series W01 (spec §3.7): replaces the lone
+                            partner-owned ScopeBadge — every row says what it covers. */}
+                        <CoversCell
+                          testId={`report-covers-${report.id}`}
+                          orgId={report.orgId}
+                          orgName={report.orgName}
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {getReportTypeLabel(report.type)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+                            report.schedule === 'one_time'
+                              ? 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
+                              : 'bg-primary/10 text-primary'
+                          )}
+                        >
+                          <Calendar className="h-3 w-3" />
+                          {getScheduleLabel(report.schedule)}
+                        </span>
+                        {report.schedule !== 'one_time' && (
+                          /* Computed in the viewer's timezone; the worker fires in the
+                             org's timezone, so this is a close approximation shown to
+                             the user, not a contract for when the run actually fires.
+                             System-managed rows are fired by the AI schedule, not by
+                             this definition's cadence, so no occurrence is computed. */
+                          <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                            <span>
+                              {isSystemManagedReportType(report.type)
+                                ? t('reports.reportsList.aiNarrative.managedBySchedule')
+                                : t('reports.reportsList.nextOccurrence', {
+                                    next: formatNextOccurrence(
+                                      nextOccurrence(
+                                        new Date(),
+                                        report.schedule as ScheduleCadence,
+                                        scheduleConfigOf(report.config),
+                                        effectiveTimezone
+                                      ),
+                                      { weekday: report.schedule === 'weekly' }
+                                    )
+                                  })}
+                            </span>
+                            {recipientCountOf(report.config) > 0 && (
+                              <span className="inline-flex items-center gap-1" title={t('reports.reportsList.emailRecipients')}>
+                                <Mail className="h-3 w-3" />
+                                {recipientCountOf(report.config)}
+                              </span>
+                            )}
+                          </p>
+                        )}
+                        {report.lastDeliveryStatus === 'no_recipients' && (
+                          <div className="mt-1">
+                            <DeliveryStatusChip
+                              testId={`report-no-recipients-${report.id}`}
+                              status="no_recipients"
+                              title={t('reports.reportsList.delivery.noRecipientsHint')}
+                            />
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {getFormatLabel(report.format)}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-muted-foreground">
+                        {formatDate(report.lastGeneratedAt)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          {isSystemManagedReportType(report.type) || report.portalSelfService ? (
+                            /* Generate/Edit/Delete all return 409 for these —
+                               system-managed always, portal self-service
+                               (#4562) while the customer portal exposes
+                               reports — so the row offers reading the newest
+                               run only. Read-only, not invisible: the MSP can
+                               still open what the customer sees. */
+                            <button
+                              type="button"
+                              data-testid={`report-open-latest-${report.id}`}
+                              onClick={() => handleOpenLatest(report)}
+                              disabled={openingReportId === report.id}
+                              className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
+                            >
+                              {openingReportId === report.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Download className="h-4 w-4" />
+                              )}
+                              {t('reports.reportsList.aiNarrative.openLatest')}
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                data-testid={`report-generate-${report.id}`}
+                                onClick={() => handleGenerate(report)}
+                                disabled={generatingIds.has(report.id)}
+                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
+                                title={t('reports.reportsList.actions.generateNow')}
+                              >
+                                {generatingIds.has(report.id) ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Play className="h-4 w-4" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`report-edit-${report.id}`}
+                                onClick={() => onEdit?.(report)}
+                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                                title={t('reports.reportsList.actions.edit')}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                              {!report.seriesId && (
+                              <button
+                                type="button"
+                                data-testid={`report-delete-${report.id}`}
+                                onClick={() => handleDelete(report)}
+                                disabled={deletingId === report.id}
+                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"
+                                title={t('reports.reportsList.actions.delete')}
+                              >
+                                {deletingId === report.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-4 w-4" />
+                                )}
+                              </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -558,7 +805,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
               {t('reports.reportsList.partnerWideIncomplete')}
             </p>
           )}
-          {reports.length === 0 ? (
+            {seriesLoadFailed && (
+              <p data-testid="reports-series-load-failed" role="status" className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm">
+                {t('reports.series.list.loadFailed')}
+              </p>
+            )}
+            {entries.length > 0 && (
+              <ReportsFilterChips value={view.filter} onChange={(filter) => updateView({ ...view, filter })} />
+            )}
+            {entries.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-medium">{t('reports.reportsList.emptyReportsTitle')}</h3>
@@ -582,6 +837,9 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                       {t('reports.reportsList.table.name')}
                     </th>
                     <th className="px-4 py-3">
+                      {t('reports.reportsList.table.covers')}
+                    </th>
+                    <th className="px-4 py-3">
                       {t('reports.reportsList.table.type')}
                     </th>
                     <th className="px-4 py-3">
@@ -599,152 +857,30 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {reports.map(report => (
-                    <tr key={report.id} data-testid={`report-row-${report.id}`} className="hover:bg-muted/30">
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <FileText className="h-4 w-4 text-muted-foreground" />
-                          <span className="font-medium">{report.name}</span>
-                          {report.portalSelfService && (
-                            <span
-                              data-testid={`report-portal-badge-${report.id}`}
-                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                            >
-                              {t('reports.reportsList.visibleInPortal')}
-                            </span>
-                          )}
-                          {report.partnerId && !report.orgId && (
-                            // Partner-owned: covers all of the partner's
-                            // organizations (#3198). ScopeBadge keeps its own
-                            // fixed testid, so the per-row one lives here.
-                            <span data-testid={`report-scope-badge-${report.id}`} className="shrink-0">
-                              <ScopeBadge orgId={null} partnerId={report.partnerId} isSystem={false} />
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        {getReportTypeLabel(report.type)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-                            report.schedule === 'one_time'
-                              ? 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
-                              : 'bg-primary/10 text-primary'
-                          )}
-                        >
-                          <Calendar className="h-3 w-3" />
-                          {getScheduleLabel(report.schedule)}
-                        </span>
-                        {report.schedule !== 'one_time' && (
-                          /* Computed in the viewer's timezone; the worker fires in the
-                             org's timezone, so this is a close approximation shown to
-                             the user, not a contract for when the run actually fires.
-                             System-managed rows are fired by the AI schedule, not by
-                             this definition's cadence, so no occurrence is computed. */
-                          <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                            <span>
-                              {isSystemManagedReportType(report.type)
-                                ? t('reports.reportsList.aiNarrative.managedBySchedule')
-                                : t('reports.reportsList.nextOccurrence', {
-                                    next: formatNextOccurrence(
-                                      nextOccurrence(
-                                        new Date(),
-                                        report.schedule as ScheduleCadence,
-                                        scheduleConfigOf(report.config),
-                                        effectiveTimezone
-                                      ),
-                                      { weekday: report.schedule === 'weekly' }
-                                    )
-                                  })}
-                            </span>
-                            {recipientCountOf(report.config) > 0 && (
-                              <span className="inline-flex items-center gap-1" title={t('reports.reportsList.emailRecipients')}>
-                                <Mail className="h-3 w-3" />
-                                {recipientCountOf(report.config)}
-                              </span>
-                            )}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        {getFormatLabel(report.format)}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatDate(report.lastGeneratedAt)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
-                          {isSystemManagedReportType(report.type) || report.portalSelfService ? (
-                            /* Generate/Edit/Delete all return 409 for these —
-                               system-managed always, portal self-service
-                               (#4562) while the customer portal exposes
-                               reports — so the row offers reading the newest
-                               run only. Read-only, not invisible: the MSP can
-                               still open what the customer sees. */
-                            <button
-                              type="button"
-                              data-testid={`report-open-latest-${report.id}`}
-                              onClick={() => handleOpenLatest(report)}
-                              disabled={openingReportId === report.id}
-                              className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
-                            >
-                              {openingReportId === report.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Download className="h-4 w-4" />
-                              )}
-                              {t('reports.reportsList.aiNarrative.openLatest')}
-                            </button>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                data-testid={`report-generate-${report.id}`}
-                                onClick={() => handleGenerate(report)}
-                                disabled={generatingIds.has(report.id)}
-                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
-                                title={t('reports.reportsList.actions.generateNow')}
-                              >
-                                {generatingIds.has(report.id) ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <Play className="h-4 w-4" />
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                data-testid={`report-edit-${report.id}`}
-                                onClick={() => onEdit?.(report)}
-                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                                title={t('reports.reportsList.actions.edit')}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                data-testid={`report-delete-${report.id}`}
-                                onClick={() => handleDelete(report)}
-                                disabled={deletingId === report.id}
-                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"
-                                title={t('reports.reportsList.actions.delete')}
-                              >
-                                {deletingId === report.id ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <Trash2 className="h-4 w-4" />
-                                )}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
+                  {visibleEntries.map((entry) =>
+                    entry.kind === 'series' ? (
+                      <SeriesListRow
+                        key={`series-${entry.detail.series.id}`}
+                        detail={entry.detail}
+                        expanded={expandedSeriesId === entry.detail.series.id}
+                        onToggle={() =>
+                          updateView({ ...view, seriesId: expandedSeriesId === entry.detail.series.id ? null : entry.detail.series.id })
+                        }
+                        onChanged={fetchReports}
+                        timezone={effectiveTimezone}
+                      />
+                    ) : (
+                      renderReportRow(entry.report)
+                    ),
+                  )}
+                  </tbody>
               </table>
+              {visibleEntries.length === 0 && (
+                <p data-testid="reports-filter-no-matches" className="p-6 text-center text-sm text-muted-foreground">
+                  {t('reports.series.list.noMatches')}
+                </p>
+              )}
+  
             </div>
           )}
         </>
@@ -768,6 +904,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                     <th className="px-4 py-3">
                       {t('reports.reportsList.runsTable.report')}
                     </th>
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.runsTable.organization')}
+                    </th>
+                    <th className="px-4 py-3">{t('reports.series.list.runsSeriesColumn')}</th>
                     <th className="px-4 py-3">
                       {t('reports.reportsList.runsTable.status')}
                     </th>
@@ -796,6 +936,16 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         </div>
                       </td>
                       <td className="px-4 py-3">
+                        <CoversCell
+                          testId={`report-run-covers-${run.id}`}
+                          orgId={run.orgId}
+                          orgName={run.orgName}
+                        />
+                      </td>
+                      <td data-testid={`report-run-series-${run.id}`} className="px-4 py-3 text-sm text-muted-foreground">
+                        {run.seriesName ?? ''}
+                      </td>
+                        <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           {getStatusIcon(run.status)}
                           <span
@@ -814,6 +964,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         {run.errorMessage && (
                           <p className="text-xs text-destructive mt-1">{run.errorMessage}</p>
                         )}
+                        <DeliveryStatusChip
+                          testId={`report-run-delivery-${run.id}`}
+                          status={run.deliveryStatus}
+                          className="mt-1"
+                        />
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {formatDate(run.startedAt)}

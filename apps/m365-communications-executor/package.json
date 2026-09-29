@@ -17,7 +17,7 @@
     "@azure/msal-node": "^6.0.0",
     "@breeze/shared": "workspace:*",
     "@hono/node-server": "^2.1.1",
-    "hono": "^4.13.8",
+    "hono": "^4.13.9",
     "jose": "^6.2.3",
     "postgres": "^3.4.9",
     "zod": "^4.4.3"
@@ -25,7 +25,7 @@
   "devDependencies": {
     "@types/node": "^26.6.2",
     "tsup": "^8.3.5",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
   }

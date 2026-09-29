@@ -37,9 +37,44 @@ describe('formatAuditAction', () => {
 
   it('prettifies an unmapped dotted code rather than leaking the raw enum', () => {
     expect(formatAuditAction('device_group.create')).toBe('Device group create');
-    expect(formatAuditAction('api.post.events.ws-ticket')).toBe(
-      'Api post events ws-ticket',
+  });
+
+  // #3991: catch-all HTTP audit rows are named `api.<verb>.<path>`, with `:id`
+  // / `:n` standing in for ids. They must read as an operation, not leak the
+  // verb, the route template or the placeholder.
+  it('renders fallback route codes as an operation without route-template leakage', () => {
+    expect(formatAuditAction('api.patch.orgs.:id.billing-settings')).toBe(
+      'Updated orgs \u203a billing settings',
     );
+    expect(formatAuditAction('api.post.quotes.:id.send')).toBe('Submitted quotes \u203a send');
+    expect(formatAuditAction('api.post.orgs.organizations')).toBe(
+      'Submitted orgs \u203a organizations',
+    );
+    expect(formatAuditAction('api.delete.alerts.channels.:id')).toBe(
+      'Deleted alerts \u203a channels',
+    );
+    expect(formatAuditAction('api.put.settings.:n')).toBe('Updated settings');
+  });
+
+  it('uses the translated fallback verb template when supplied', () => {
+    expect(
+      formatAuditAction('api.patch.orgs.:id.billing-settings', {
+        'api.fallback.patch': 'Aktualisiert: {target}',
+      }),
+    ).toBe('Aktualisiert: orgs \u203a billing settings');
+  });
+
+  it('ships a {target} verb template for every locale', () => {
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR']) {
+      const actions = auditActions(locale);
+      for (const verb of ['post', 'put', 'patch', 'delete']) {
+        expect(actions[`api.fallback.${verb}`], `${locale} ${verb}`).toContain('{target}');
+      }
+    }
+  });
+
+  it('leaves non-mutating or unrecognised api.* codes to the prettifier', () => {
+    expect(formatAuditAction('api.get.events.ws-ticket')).toBe('Api get events ws-ticket');
   });
 
   it('labels each remote-session consent outcome distinctly', () => {
@@ -56,6 +91,12 @@ describe('formatAuditAction', () => {
     );
     expect(formatAuditAction('session_consent_bypassed')).toBe(
       'Remote session started without an answer to the consent prompt',
+    );
+  });
+
+  it('labels a refused screen capture or input control on a consent-required device', () => {
+    expect(formatAuditAction('screen_access_consent_blocked')).toBe(
+      'Screen access blocked: device requires user consent',
     );
   });
 

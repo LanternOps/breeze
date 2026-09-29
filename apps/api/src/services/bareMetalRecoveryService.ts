@@ -25,6 +25,7 @@ import {
   hashRecoveryNonce,
   RECOVERY_CODE_TTL_MS,
 } from './bareMetalRecoveryCodes';
+import { resolveSnapshotPlatform } from './bareMetalRebuildSchemas';
 import { generateRecoveryToken, hashRecoveryToken } from './recoveryBootstrap';
 import { RECOVERY_REFUSAL_MESSAGES } from './recoveryCapabilities';
 
@@ -228,6 +229,7 @@ export async function createBareMetalRecovery(input: {
       bareMetalReasons: backupSnapshots.bareMetalReasons,
       referencedFiles: backupJobs.referencedFiles,
       storageIdentity: backupSnapshots.storageIdentity,
+      layoutManifest: backupSnapshots.layoutManifest, // new — source of `platform`
     })
     .from(backupSnapshots)
     .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
@@ -275,6 +277,7 @@ export async function createBareMetalRecovery(input: {
       // it authenticates nothing on its own.
       nonceHash: hashRecoveryNonce(generateRecoveryNonce()),
       status: 'created',
+      platform: resolveSnapshotPlatform(snapshot.layoutManifest),
       ...(input.target ? { target: input.target } : {}),
       createdBy: input.createdBy,
       executingDeviceId: input.executingDeviceId ?? null,

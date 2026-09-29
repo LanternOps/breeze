@@ -299,6 +299,21 @@ describe('bare-metal recoveries routes', () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: 'site_access_denied' });
     });
+
+    it('includes platform on each summary', async () => {
+      const row = {
+        id: RECOVERY_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, recoveryTokenId: null, identity: 'original',
+        status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
+        target: null, plan: null, result: null, failureReason: null, warnings: null,
+        createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
+        validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null, platform: 'windows',
+      };
+      selectMock.mockReturnValueOnce(chainMock([{ row, fileIndexStatus: null }]));
+
+      const res = await app.request('/backup/bmr/recoveries', { method: 'GET' });
+      const body = await res.json();
+      expect(body.data[0].platform).toBe('windows');
+    });
   });
 
   describe('GET /backup/bmr/recoveries/:id', () => {
@@ -307,7 +322,7 @@ describe('bare-metal recoveries routes', () => {
       status: 'created', codeExpiresAt: new Date(), codeUsedAt: null, nonceHash: 'x'.repeat(64),
       target: null, plan: null, result: null, failureReason: null, warnings: null,
       createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
-      validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
+      validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null, platform: 'windows',
     };
 
     it('returns a recovery whose device site is authorized', async () => {
@@ -324,6 +339,14 @@ describe('bare-metal recoveries routes', () => {
       );
       const body = await res.json();
       expect(body).toMatchObject({ id: RECOVERY_ID });
+    });
+
+    it('includes platform', async () => {
+      selectMock.mockReturnValueOnce(chainMock([row]));
+
+      const res = await app.request(`/backup/bmr/recoveries/${RECOVERY_ID}`, { method: 'GET' });
+      const body = await res.json();
+      expect(body.platform).toBe('windows');
     });
 
     it('denies a recovery on a hidden-site device for a site-restricted caller', async () => {
@@ -828,6 +851,27 @@ describe('bare-metal recoveries routes', () => {
       const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
       expect(set.status).toBe('completed');
       expect(set.completedAt).toBeInstanceOf(Date);
+    });
+
+    it('validated on a new-identity recovery stores the Hyper-V VM outcome with the result (W06d)', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, status: 'authenticated', expiresAt: new Date(Date.now() + 60_000) }]))
+        .mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, identity: 'new', status: 'restoring', rebootedAt: null, validatedAt: null }]));
+      const res = await publicApp.request('/backup/bmr/recover/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: VALID_RECOVERY_TOKEN,
+          status: 'validated',
+          result: { status: 'completed', vmCreated: false, vmError: 'New-VM: access denied' },
+          warnings: ['hyperv VM creation failed: New-VM: access denied'],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const set = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+      expect(set.status).toBe('completed');
+      expect(set.result).toMatchObject({ vmCreated: false, vmError: 'New-VM: access denied' });
+      expect(set.warnings).toEqual(['hyperv VM creation failed: New-VM: access denied']);
     });
 
     it('failed stores the reason and the engine result', async () => {

@@ -2,7 +2,7 @@ import { HardDrive } from 'lucide-react';
 import type { BackupDeviceRow } from '@breeze/shared';
 import { cn, formatDateTime } from '@/lib/utils';
 import { CELL, EmptyState, ErrorNotice, ROW, StatusMark, TH } from './ui';
-import { humanizeStatus, testRestoreMark } from './BackupOverview';
+import { HEALTH_LABEL, HEALTH_TONE, humanizeStatus, testRestoreMark } from './BackupOverview';
 
 /**
  * The SLA worker's event types, said the way the customer's office manager
@@ -26,6 +26,9 @@ function breachLabel(eventType: string): string {
  * the way the dashboard ledger does (apps/portal/DESIGN.md, Typography).
  * Desktop keeps the real <th> and never shows these.
  */
+/** First-party (agent-run) backup, as the customer reads it. */
+const FIRST_PARTY_LABEL = 'Device backup';
+
 const PHONE_LABEL =
   'mb-0.5 block text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:hidden';
 
@@ -77,12 +80,14 @@ export function BackupDeviceTable({
         Device backup readiness
       </h2>
       <table
-        className="block w-full sm:table sm:min-w-[48rem]"
+        className="block w-full sm:table sm:min-w-[56rem]"
         data-testid="portal-backup-device-table"
       >
         <thead className="hidden border-b border-border sm:table-header-group">
           <tr>
             <th scope="col" className={cn(TH, 'text-left')}>Device</th>
+            <th scope="col" className={cn(TH, 'text-left')}>Backed up by</th>
+            <th scope="col" className={cn(TH, 'text-left')}>Health</th>
             <th scope="col" className={cn(TH, 'text-left')}>Last backup</th>
             <th scope="col" className={cn(TH, 'text-left')}>Last restore test</th>
             <th scope="col" className={cn(TH, 'text-left')}>Needs attention</th>
@@ -94,6 +99,17 @@ export function BackupDeviceTable({
             const restoreTest = device.lastTestRestore
               ? testRestoreMark(device.lastTestRestore.status)
               : null;
+            // Only a third party backs this row up: restore tests, breaches and
+            // readiness are first-party facts it cannot have.
+            const external = device.source === 'external';
+            const health = device.health ?? 'unknown';
+            // The portal wears the MSP's brand, so first-party backup is named
+            // for what it is, never for the platform running it.
+            const backedUpBy = external
+              ? (device.providerLabel ?? 'Third-party backup')
+              : device.providerLabel
+                ? `${FIRST_PARTY_LABEL}, ${device.providerLabel}`
+                : FIRST_PARTY_LABEL;
             return (
               <tr
                 key={device.id}
@@ -106,22 +122,32 @@ export function BackupDeviceTable({
                 {!device.configured ? (
                   <td
                     className={cn(CELL, 'order-2 w-full text-sm text-muted-foreground')}
-                    colSpan={4}
+                    colSpan={6}
                   >
                     No backup has run for this device yet
                   </td>
                 ) : (
                   <>
                     <td className={cn(CELL, 'order-2 text-sm text-foreground')}>
+                      <span className={PHONE_LABEL}>Backed up by</span>
+                      {backedUpBy}
+                    </td>
+                    <td className={cn(CELL, 'order-3 text-sm text-foreground')}>
+                      <span className={PHONE_LABEL}>Health</span>
+                      <StatusMark tone={HEALTH_TONE[health]}>{HEALTH_LABEL[health]}</StatusMark>
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-sm text-foreground')}>
                       <span className={PHONE_LABEL}>Last backup</span>
                       {device.lastRestorePointAt
                         ? formatDateTime(device.lastRestorePointAt, timezone, true)
                         : 'No backup has run yet'}
                       {device.lastRestorePointDegraded ? ' (degraded)' : ''}
                     </td>
-                    <td className={cn(CELL, 'order-3 text-sm text-foreground')}>
+                    <td className={cn(CELL, 'order-5 text-sm text-foreground')}>
                       <span className={PHONE_LABEL}>Last restore test</span>
-                      {device.lastTestRestore && restoreTest ? (
+                      {external ? (
+                        '—'
+                      ) : device.lastTestRestore && restoreTest ? (
                         <span className="inline-flex flex-wrap items-baseline gap-x-2">
                           {/* The row's one mark: a raw "passed" carried no tone
                               and a "failed" read exactly as calmly. */}
@@ -136,13 +162,13 @@ export function BackupDeviceTable({
                         'No restore test has run yet'
                       )}
                     </td>
-                    <td className={cn(CELL, 'order-4 text-sm text-foreground')}>
+                    <td className={cn(CELL, 'order-6 text-sm text-foreground')}>
                       <span className={PHONE_LABEL}>Needs attention</span>
-                      {device.openBreaches.map(breachLabel).join(', ') || 'None'}
+                      {external ? '—' : device.openBreaches.map(breachLabel).join(', ') || 'None'}
                     </td>
-                    <td className={cn(CELL, 'order-5 text-sm text-foreground')}>
+                    <td className={cn(CELL, 'order-7 text-sm text-foreground')}>
                       <span className={PHONE_LABEL}>Recovery readiness</span>
-                      {device.readinessScore ?? 'Not available'}
+                      {external ? '—' : (device.readinessScore ?? 'Not available')}
                     </td>
                   </>
                 )}
@@ -155,7 +181,7 @@ export function BackupDeviceTable({
           do — a count above the rows is a caption, not a ledger line. */}
       {total !== undefined && (
         <div
-          className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:min-w-[48rem]"
+          className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:min-w-[56rem]"
           data-testid="portal-backup-device-count"
         >
           Showing {devices.length} of {total} devices

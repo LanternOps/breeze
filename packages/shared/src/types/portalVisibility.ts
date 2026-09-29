@@ -1,3 +1,4 @@
+import type { BackupHealth, ExternalBackupStatus } from './backupHealth';
 import type { ServiceTileDto } from './portalService';
 
 export type TileStatus =
@@ -178,6 +179,22 @@ export interface BackupDeviceRow {
   readinessScore: number | null;
   estimatedRtoMinutes: number | null;
   estimatedRpoMinutes: number | null;
+  /** Which product `status`/`health` come from. 'breeze' = first-party backup
+   *  (or no backup at all); a third party may ALSO back the device up — see
+   *  `providerLabel`. 'external' = only a third party backs this row up: a
+   *  managed device (`id` = device id) or a third-party row with no managed
+   *  device (`id` = `provider:<row id>`). Verification, restore-test, breach
+   *  and readiness fields are first-party facts either way. (#6012) */
+  source: 'breeze' | 'external';
+  /** The third-party product label to SHOW, already resolved server-side per
+   *  the connection's portal-name toggle (spec D5): the generic "Managed cloud
+   *  backup" unless the MSP chose to name the vendor. Null when no third-party
+   *  backup covers this row. */
+  providerLabel: string | null;
+  status: ExternalBackupStatus;
+  health: BackupHealth;
+  /** Newest successful backup across every source backing this row up. */
+  lastSuccessAt: string | null;
 }
 
 export interface BackupOverviewDto {
@@ -197,6 +214,13 @@ export interface BackupOverviewDto {
   lastTestRestoreStatus: string | null;
   readinessScoredDevices: number | null;
   readinessTotalDevices: number | null;
+  /** Rows of the device ledger by derived health — one per Breeze device
+   *  (first-party and third-party merged) plus one per unlinked third-party
+   *  row. Always zero-filled. (#6012) */
+  byHealth: Record<BackupHealth, number>;
+  /** Distinct third-party backup labels shown for this org (D5-resolved),
+   *  sorted. Empty when no third-party backup reports for the org. (#6012) */
+  externalProviders: string[];
 }
 
 export interface BackupDevicesDto {

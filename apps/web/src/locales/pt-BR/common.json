@@ -47,6 +47,7 @@
     "timesheets": "Folhas de Horas",
     "productCatalog": "Catálogo de Produtos",
     "deviceGroups": "Grupos de dispositivos",
+    "unassignedDevices": "Dispositivos não atribuídos",
     "configPolicies": "Políticas de Configuração",
     "integrations": "Integrações",
     "cloudBackup": "Backup em Nuvem",
@@ -749,7 +750,8 @@
         "alertRulesDescription": "Gerenciar alertas nas Políticas de configuração",
         "keyboardShortcuts": "Atalhos de teclado",
         "keyboardShortcutsDescription": "Todas as teclas e sequências em um só cartão"
-      }
+      },
+      "numberHint": "{{mod}}1–9 para abrir"
     },
     "notifications": {
       "title": "Notificações",
@@ -815,7 +817,17 @@
       "help": "Abrir o painel de ajuda",
       "showThis": "Mostrar este cartão",
       "close": "Fechar uma caixa de diálogo ou menu",
-      "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo."
+      "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo.",
+      "create": "Criar",
+      "createHint": "Pressione c, solte e depois a tecla.",
+      "paletteNumber": "Abrir um resultado da busca pelo número",
+      "newItems": {
+        "ticket": "Novo chamado",
+        "quote": "Novo orçamento",
+        "invoice": "Nova fatura",
+        "contract": "Novo contrato",
+        "script": "Novo script"
+      }
     }
   },
   "migrationBanner": {
@@ -2437,7 +2449,36 @@
         "requesting": "Solicitando...",
         "requestApproval": "Solicitar aprovação",
         "waitingApprovalTitle": "Aguardando aprovação PAM",
-        "approvalPending": "Aprovação pendente"
+        "approvalPending": "Aprovação pendente",
+        "proven": {
+          "badge": "Correção comprovada",
+          "trackAllClients": "Funcionou {{verified}} de {{attempts}} vezes nos seus clientes",
+          "trackThisClient": "Funcionou {{verified}} de {{attempts}} vezes neste cliente"
+        },
+        "feedback": {
+          "worked": "Funcionou",
+          "didNotWork": "Não funcionou",
+          "recorded": "Feedback registrado",
+          "failed": "Não foi possível registrar o feedback"
+        },
+        "done": {
+          "button": "Concluído",
+          "recorded": "Marcado como concluído — acompanhando a recuperação",
+          "failed": "Não foi possível marcar como concluído"
+        },
+        "outcome": {
+          "label": "Resultado: {{state}}",
+          "state": {
+            "pending": "em execução",
+            "awaitingRecovery": "acompanhando a recuperação",
+            "holding": "recuperado — confirmando que se mantém",
+            "verified": "correção verificada",
+            "failed": "não corrigiu o problema",
+            "recurred": "voltou a ocorrer",
+            "inconclusive": "inconclusivo",
+            "cancelled": "cancelado"
+          }
+        }
       }
     },
     "support": {

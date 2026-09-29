@@ -121,6 +121,6 @@ export default function NetworkCheckConversionBanner({ orgId, onConverted }: { o
         </div>
       </Dialog>
     </div>}
-    <ConversionLedger orgId={orgId} revision={ledgerRevision} onChanged={() => void refresh()} />
+    <ConversionLedger orgId={orgId} sourceTable="network_monitors" revision={ledgerRevision} onChanged={() => void refresh()} />
   </>;
 }

@@ -117,7 +117,7 @@ describe('DeviceVulnerabilitiesTab', () => {
   });
 
   it('Remediate all posts the group patch-ready open finding ids', async () => {
-    const remediate = vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 2, skipped: [] });
+    const remediate = vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 2, alreadyQueued: [], skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-remediate-sw:google chrome|'));
     await waitFor(() => expect(remediate).toHaveBeenCalledWith(['a', 'b']));
@@ -130,7 +130,7 @@ describe('DeviceVulnerabilitiesTab', () => {
   });
 
   it('calls remediate when the per-finding remediate button is clicked', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
     const desktop = within(await screen.findByTestId('responsive-table-desktop'));
@@ -224,7 +224,7 @@ describe('DeviceVulnerabilitiesTab', () => {
   });
 
   it('enables Remediate button when patchAvailable is true', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
     const desktop = within(await screen.findByTestId('responsive-table-desktop'));

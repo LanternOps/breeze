@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   Loader2,
   PauseCircle,
   RefreshCw,
-  ShieldCheck,
   Unplug,
+  UserCog,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { M365_PERMISSION_PROFILES } from "@breeze/shared";
@@ -19,6 +21,7 @@ import { handleActionError, runAction } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
+import type { M365ConsentStepSummary } from "./m365ConsentSummary";
 
 const STATUSES = [
   "pending-consent",
@@ -74,6 +77,17 @@ export type M365CustomerGraphActionsCallbackResult =
 interface M365CustomerGraphActionsCardProps {
   callbackResult?: M365CustomerGraphActionsCallbackResult | null;
   callbackRefreshKey?: number;
+  /** Reports load state and connection identity to the tenant section. */
+  onStateChange?: (summary: M365ConsentStepSummary) => void;
+  /** The tenant panel header already shows the tenant name and ID. */
+  hideTenantIdentity?: boolean;
+  /**
+   * Whether Read access (step 1) is connected. `false` shows the note that AI
+   * lookups and reports need it; omitted means the caller does not know.
+   */
+  readConnected?: boolean;
+  /** Who the pre-flight names as the tenant to sign in to (tenant or org name). */
+  consentTarget?: string | null;
 }
 
 type Grant = {
@@ -311,6 +325,10 @@ function GrantList({ grants, testId }: { grants: Grant[]; testId?: string }) {
 export default function M365CustomerGraphActionsCard({
   callbackResult = null,
   callbackRefreshKey = 0,
+  onStateChange,
+  hideTenantIdentity = false,
+  readConnected,
+  consentTarget = null,
 }: M365CustomerGraphActionsCardProps) {
   const { t } = useTranslation("integrations");
   const currentOrgId = useOrgStore((value) => value.currentOrgId);
@@ -333,6 +351,12 @@ export default function M365CustomerGraphActionsCard({
   });
   const [actionState, setActionState] = useState<ScopedAction | null>(null);
   const actionRef = useRef<ScopedAction | null>(null);
+  // The pre-flight is scoped to the org generation it was opened for, so an
+  // org switch closes it rather than carrying one org's warning to another.
+  const [preflightScope, setPreflightScope] = useState<OrgGeneration | null>(null);
+  const preflightTriggerRef = useRef<HTMLButtonElement>(null);
+  const preflightHeadingRef = useRef<HTMLHeadingElement>(null);
+  const preflightId = useId();
   const canWrite = can("organizations", "write");
   const isCurrent = useCallback((target: OrgGeneration) => scopeRef.current === target, []);
 
@@ -510,6 +534,48 @@ export default function M365CustomerGraphActionsCard({
   }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
 
   const connection = data?.connection ?? null;
+
+  // Report a projection of what this step loaded to the tenant section. The
+  // callback is read through a ref so a parent passing an inline function
+  // cannot turn this into a render loop.
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  const summary = useMemo<M365ConsentStepSummary>(() => ({
+    loadState,
+    onboardingEnabled: data?.onboardingEnabled ?? false,
+    connection: connection
+      ? {
+          tenantId: connection.tenantId,
+          displayName: connection.displayName,
+          lastVerifiedAt: connection.lastVerifiedAt,
+          status: connection.status,
+        }
+      : null,
+  }), [connection, data, loadState]);
+  useEffect(() => {
+    onStateChangeRef.current?.(summary);
+  }, [summary]);
+
+  const preflightOpen = preflightScope === scope;
+  useEffect(() => {
+    if (preflightOpen) preflightHeadingRef.current?.focus();
+  }, [preflightOpen]);
+  const togglePreflight = () => {
+    setPreflightScope(preflightOpen ? null : scope);
+  };
+  const closePreflight = () => {
+    setPreflightScope(null);
+    preflightTriggerRef.current?.focus();
+  };
+  const onPreflightKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Escape") return;
+    event.stopPropagation();
+    closePreflight();
+  };
+  const preflightTarget = connection?.displayName
+    || consentTarget
+    || t("m365CustomerGraphActions.preflight.defaultTarget");
+
   const displayedMissingGrants = connection?.missingGrants ?? [];
   const displayedUnexpectedGrants = connection?.unexpectedGrants ?? [];
   const unexpectedAlert = t("m365CustomerGraphActions.grants.unexpectedAlert");
@@ -538,18 +604,24 @@ export default function M365CustomerGraphActionsCard({
 
   return (
     <section
-      className="rounded-xl border bg-card p-5 sm:p-6"
       aria-labelledby="customer-graph-actions-title"
       aria-describedby={instanceUnavailable ? instanceUnavailableId : undefined}
+      data-testid="m365-actions-step"
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <ShieldCheck aria-hidden="true" className="h-5 w-5" />
+          <span
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"
+            data-testid="m365-actions-step-icon"
+          >
+            <UserCog aria-hidden="true" className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <h2 id="customer-graph-actions-title" className="text-lg font-semibold text-foreground">{t("m365CustomerGraphActions.title")}</h2>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{t("m365CustomerGraphActions.description")}</p>
+            <h3 id="customer-graph-actions-title" className="text-base font-semibold text-foreground">
+              <span className="font-normal text-muted-foreground">{t("m365TenantPanel.stepLabel", { number: 2 })} · </span>
+              {t("m365CustomerGraphActions.stepTitle")}
+            </h3>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{t("m365CustomerGraphActions.stepDescription")}</p>
           </div>
         </div>
         {connection && (
@@ -596,7 +668,16 @@ export default function M365CustomerGraphActionsCard({
       )}
 
       {loadState === "ready" && data && !instanceUnavailable && (
-        <div className="mt-6 space-y-6">
+        <div className="mt-5 space-y-6">
+          {readConnected === false && (
+            <p
+              data-testid="m365-actions-read-note"
+              className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-foreground"
+            >
+              <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              {t("m365CustomerGraphActions.readRequiredNote")}
+            </p>
+          )}
           {!data.onboardingEnabled && (
             <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
               {t("m365CustomerGraphActions.onboardingUnavailable")}
@@ -609,8 +690,12 @@ export default function M365CustomerGraphActionsCard({
           {connection && (
             <div className="border-t pt-5">
               <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
-                <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.tenant")}</dt><dd className="mt-1 text-sm font-medium text-foreground">{connection.displayName || t("m365CustomerGraphActions.unnamedTenant")}</dd></div>
-                <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.tenantId")}</dt><dd className="mt-1 break-all font-mono text-xs text-foreground">{connection.tenantId || t("m365CustomerGraphActions.notVerified")}</dd></div>
+                {!hideTenantIdentity && (
+                  <>
+                    <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.tenant")}</dt><dd className="mt-1 text-sm font-medium text-foreground">{connection.displayName || t("m365CustomerGraphActions.unnamedTenant")}</dd></div>
+                    <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.tenantId")}</dt><dd className="mt-1 break-all font-mono text-xs text-foreground">{connection.tenantId || t("m365CustomerGraphActions.notVerified")}</dd></div>
+                  </>
+                )}
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.manifest")}</dt><dd className="mt-1 text-sm text-foreground">{t("m365CustomerGraphActions.manifestVersion", { version: connection.manifestVersion })}</dd></div>
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.grants.grantsVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.grantsVerifiedAt ? formatDateTime(connection.grantsVerifiedAt) : t("m365CustomerGraphActions.never")}</dd></div>
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.lastVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.lastVerifiedAt ? formatDateTime(connection.lastVerifiedAt) : t("m365CustomerGraphActions.never")}</dd></div>
@@ -618,23 +703,29 @@ export default function M365CustomerGraphActionsCard({
             </div>
           )}
 
-          <div className="grid gap-6 border-t pt-5 lg:grid-cols-2">
-            <div>
-              <h3 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.required")}</h3>
-              <GrantList grants={data.profile.requiredGrants} testId="required-grant" />
-            </div>
-            {connection && (
+          <details className="group border-t pt-5" data-testid="m365-actions-permissions">
+            <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-md text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
+              <ChevronRight aria-hidden="true" className="h-4 w-4 transition-transform group-open:rotate-90" />
+              {t("m365CustomerGraphActions.showPermissions")}
+            </summary>
+            <div className="mt-3 grid gap-6 lg:grid-cols-2">
               <div>
-                <h3 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.observed")}</h3>
-                <GrantList grants={connection.observedGrants} />
+                <h4 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.required")}</h4>
+                <GrantList grants={data.profile.requiredGrants} testId="required-grant" />
               </div>
-            )}
-          </div>
+              {connection && (
+                <div>
+                  <h4 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.observed")}</h4>
+                  <GrantList grants={connection.observedGrants} />
+                </div>
+              )}
+            </div>
+          </details>
 
           {connection && (displayedMissingGrants.length > 0 || displayedUnexpectedGrants.length > 0) && (
             <div className="grid gap-6 border-t pt-5 lg:grid-cols-2">
               <div>
-                <h3 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.missing")}</h3>
+                <h4 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphActions.grants.missing")}</h4>
                 <GrantList grants={displayedMissingGrants} />
               </div>
               {displayedUnexpectedGrants.length > 0 && (
@@ -647,9 +738,16 @@ export default function M365CustomerGraphActionsCard({
           )}
 
           <div className="flex flex-col gap-3 border-t pt-5 sm:flex-row sm:flex-wrap sm:items-center">
-            <button type="button" onClick={startConsent} disabled={!canWrite || !data.onboardingEnabled || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
-              {action === "consent" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
-              {connection ? t("m365CustomerGraphActions.actions.reconsent") : t("m365CustomerGraphActions.actions.connect")}
+            <button
+              ref={preflightTriggerRef}
+              type="button"
+              onClick={togglePreflight}
+              aria-expanded={preflightOpen}
+              aria-controls={preflightOpen ? preflightId : undefined}
+              disabled={!canWrite || !data.onboardingEnabled || action !== null}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {connection ? t("m365CustomerGraphActions.actions.reconsent") : t("m365CustomerGraphActions.actions.grant")}
             </button>
             {connection && (
               <>
@@ -665,6 +763,61 @@ export default function M365CustomerGraphActionsCard({
             )}
             {!canWrite && <p className="text-sm text-muted-foreground">{t("m365CustomerGraphActions.actions.permissionRequired")}</p>}
           </div>
+
+          {preflightOpen && (
+            <div
+              id={preflightId}
+              role="region"
+              aria-labelledby={`${preflightId}-title`}
+              data-testid="m365-actions-preflight"
+              onKeyDown={onPreflightKeyDown}
+              className="rounded-lg bg-muted/60 p-4 sm:p-5"
+            >
+              <h4
+                id={`${preflightId}-title`}
+                ref={preflightHeadingRef}
+                tabIndex={-1}
+                className="text-sm font-semibold text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                {t("m365CustomerGraphActions.preflight.title")}
+              </h4>
+              <p className="mt-3 text-sm text-foreground">{t("m365CustomerGraphActions.preflight.canDoIntro")}</p>
+              <ul className="mt-2 space-y-1.5 text-sm text-foreground">
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  {t("m365CustomerGraphActions.preflight.resetPasswords")}
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  {t("m365CustomerGraphActions.preflight.disableSignIn")}
+                </li>
+              </ul>
+              <p className="mt-3 max-w-prose text-sm text-foreground">
+                {t("m365CustomerGraphActions.preflight.adminRequired", { target: preflightTarget })}
+              </p>
+              <p className="mt-2 max-w-prose text-sm text-muted-foreground">
+                {t("m365CustomerGraphActions.preflight.revoke")}
+              </p>
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <button
+                  type="button"
+                  onClick={startConsent}
+                  disabled={!canWrite || !data.onboardingEnabled || action !== null}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {action === "consent" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
+                  {t("m365CustomerGraphActions.preflight.continue")}
+                </button>
+                <button
+                  type="button"
+                  onClick={closePreflight}
+                  className="inline-flex min-h-11 items-center justify-center rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                >
+                  {t("common:actions.cancel")}
+                </button>
+              </div>
+            </div>
+          )}
 
           <p className="text-xs leading-5 text-muted-foreground">
             {t("m365CustomerGraphActions.microsoftConsentHelp")} {" "}

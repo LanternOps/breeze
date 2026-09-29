@@ -65,7 +65,8 @@ func TestWinRestoreTree_DomainControllerInTreeFails(t *testing.T) {
 	opts, sys := winFakeOptions(t, t.TempDir())
 	p := opts.Provider.(*memProvider)
 	delete(p.files, "snapshots/win-1/system-state/manifest.json") // preflight has no artifact to check
-	_, _ = sys.hives["SYSTEM"].CreateKey(`ControlSet001\Services\NTDS`)
+	po, _ := sys.hives["SYSTEM"].CreateKey(`ControlSet001\Control\ProductOptions`)
+	_ = po.SetString("ProductType", "LanmanNt")
 	res, err := Run(context.Background(), opts)
 	if err == nil || res.Status != "failed" || res.PhaseReached != PhaseRestore || !strings.Contains(res.Error, "source is a domain controller") {
 		t.Fatalf("res=%+v err=%v", res, err)

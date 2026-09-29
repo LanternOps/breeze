@@ -253,6 +253,13 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
   // separate ai_sessions/sites re-points commit together.
   'ai_sessions.breeze_ai_sessions_topology_site_guard': 'fires only on UPDATE OF topology_site_id and blocks a pin change; never reads or blocks org_id',
+  // Brokered backup writes (2026-11-08-120000 / 120100): parent-org guards that
+  // check only the references (device, job, reservation, session, snapshot,
+  // configuration) an INSERT sets or an UPDATE changes. An UPDATE that changes
+  // org_id alone — a repoint or a device-move restamp — is never checked.
+  'backup_snapshot_id_reservations.backup_snapshot_id_reservations_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  'backup_storage_sessions.backup_storage_sessions_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  'backup_storage_session_uploads.backup_storage_session_uploads_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
   // Partner alerts feed (2026-10-30-130000): BEFORE INSERT OR UPDATE, only sets
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.
@@ -356,6 +363,16 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // `RETURN NEW` unconditionally — it neither RAISEs nor reverts the repoint.
   'devices.breeze_cancel_cis_remediation_before_device_org_move':
     'merge fence short-circuits during org merge; otherwise only cancels remediation rows and always RETURN NEW, never blocking or reverting the org_id write',
+  // One-way holding-area membership (2026-11-08-170100-unassigned-pool-org-
+  // guards.sql). RAISEs P0001 only when the DESTINATION
+  // org is type 'unassigned_pool'. validateMergePair refuses a holding org as
+  // loser AND as survivor, so a merge never repoints a device into one. Like
+  // custom_field_definitions_no_shadow this is a REACHABILITY argument, pinned
+  // by unassignedPoolGuards.integration.test.ts (merge validation refuses a
+  // holding org read from the database). If that refusal is ever weakened,
+  // this moves to BLOCKING.
+  'devices.devices_unassigned_pool_move_guard':
+    'raises only when the destination org is a holding org; validateMergePair refuses holding orgs on both sides, so a merge repoint never reaches it',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',

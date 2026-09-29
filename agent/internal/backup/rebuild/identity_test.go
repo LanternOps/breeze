@@ -30,6 +30,11 @@ func TestStripEnrollment_RemovesIdentityKeysKeepsServer(t *testing.T) {
 	mustMkdirAll(t, dir)
 	mustWriteFile(t, filepath.Join(dir, "agent.yaml"), "server_url: https://example.invalid\nagent_id: a1\ndevice_id: d1\norg_id: o1\nsite_id: s1\nauth_token: t1\nwatchdog_auth_token: w1\nhelper_auth_token: h1\nlog_level: info\n")
 	mustWriteFile(t, filepath.Join(dir, "secrets.yaml"), "auth_token: t1\n")
+	// 18b row 4: temp files a crashed writer (config.writeYAMLFile's ".tmp",
+	// config.atomicWriteFile's ".partial") can leave behind must be swept too.
+	for _, name := range []string{"secrets.yaml.tmp", "secrets.yaml.partial", "agent.yaml.tmp", "agent.yaml.partial"} {
+		mustWriteFile(t, filepath.Join(dir, name), "leftover")
+	}
 	mustMkdirAll(t, filepath.Join(root, "etc"))
 	mustWriteFile(t, filepath.Join(root, "etc", "machine-id"), "abc\n")
 	mustWriteFile(t, filepath.Join(root, "etc", "hostname"), "srv-1\n")
@@ -50,6 +55,11 @@ func TestStripEnrollment_RemovesIdentityKeysKeepsServer(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "secrets.yaml")); !os.IsNotExist(err) {
 		t.Error("secrets.yaml must be removed")
+	}
+	for _, name := range []string{"secrets.yaml.tmp", "secrets.yaml.partial", "agent.yaml.tmp", "agent.yaml.partial"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s must be removed", name)
+		}
 	}
 	if mid, _ := os.ReadFile(filepath.Join(root, "etc", "machine-id")); len(strings.TrimSpace(string(mid))) != 0 {
 		t.Errorf("machine-id = %q, want empty (systemd regenerates on first boot)", mid)

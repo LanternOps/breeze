@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
-  Plug,
   RefreshCw,
   Unplug,
 } from "lucide-react";
@@ -14,14 +13,23 @@ import { loginPathWithNext, getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { showToast } from "../shared/Toast";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import AccountingCustomerImport from "./AccountingCustomerImport";
 import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
+import AccountingConnectButton from "./AccountingConnectButton";
+import AccountingTenantPicker from "./AccountingTenantPicker";
+import AccountingSettingsStep from "./AccountingSettingsStep";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import {
   ACCOUNTING_PROVIDER_NAMES,
   ACCOUNTING_PROVIDER_PRODUCT_NAMES,
+  ACCOUNTING_PROVIDER_UI,
+  ALL_CAPABILITIES,
   accountingPath,
+  connectErrorKey,
+  isMfaError,
+  type AccountingCapability,
   type AccountingProviderId,
 } from "../../lib/accountingProviders";
 
@@ -29,6 +37,7 @@ type ConnectionStatus =
   | "connected"
   | "disconnected"
   | "reauth_required"
+  | "pending_tenant"
   | "error";
 type PushMode = "auto" | "manual";
 
@@ -66,6 +75,15 @@ interface QuickbooksStatus {
    * branches (connected and disconnected), same story as pullPayments.
    */
   pushPayments?: boolean;
+  /** Xero W02: which controls this connection supports. Absent on an older
+   *  API build, which never gated anything — every control renders in that
+   *  case (see `ALL_CAPABILITIES`). */
+  capabilities?: Record<AccountingCapability, boolean>;
+  /** Xero W02: which higher-level features this provider's connection
+   *  supports (multi-organisation tenant selection; settings options step). */
+  features?: { tenantSelection: boolean; settingsOptions: boolean };
+  defaultExemptTaxCodeRef?: string | null;
+  defaultPaymentAccountRef?: string | null;
 }
 
 interface OwedOperations {
@@ -81,22 +99,19 @@ interface OwedOperations {
   }>;
 }
 
-function isMfaError(err: unknown): boolean {
-  return (
-    err instanceof ActionError &&
-    err.status === 403 &&
-    /mfa required/i.test(err.message)
-  );
-}
-
 interface Props {
   provider: AccountingProviderId;
+  /** Called after a mutation that changes whether/how this provider is
+   *  connected: a successful disconnect, or the tenant picker finishing
+   *  (select or cancel). IntegrationsPage wires this in to refresh the
+   *  provider cards and org-readiness state. */
+  onConnectionChanged?: () => void;
 }
 
 /** Monogram for the panel header badge — a brand mark, never translated. */
 const PROVIDER_MONOGRAMS: Record<AccountingProviderId, string> = { quickbooks: "QB", xero: "X" };
 
-export default function AccountingConnectionPanel({ provider }: Props) {
+export default function AccountingConnectionPanel({ provider, onConnectionChanged }: Props) {
   const { t, i18n } = useTranslation("integrations");
   const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
   // Full product name — only "connectDescription" has ever said "QuickBooks
@@ -135,6 +150,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
   const [savingPullPayments, setSavingPullPayments] = useState(false);
   const [savingPushPayments, setSavingPushPayments] = useState(false);
   const [reconciling, setReconciling] = useState(false);
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
 
   const onUnauthorized = useCallback(() => {
     navigateTo(loginPathWithNext());
@@ -180,7 +196,13 @@ export default function AccountingConnectionPanel({ provider }: Props) {
       const data = await fetchStatus();
       if (data) {
         setStatus(data);
-        await fetchOwedOperations();
+        // Xero W02: owed-operations tracks payment PUSH debt only. Skipping
+        // the fetch entirely when the connection can't push payments avoids
+        // logging a 409 nobody asked for (a Xero connect-only connection has
+        // no owed-operations concept yet).
+        const paymentPushCapable = (data.capabilities ?? ALL_CAPABILITIES).paymentPush;
+        if (paymentPushCapable) await fetchOwedOperations();
+        else { setOwed(null); setOwedError(false); }
       }
     } catch (err) {
       setLoadError(
@@ -210,25 +232,27 @@ export default function AccountingConnectionPanel({ provider }: Props) {
           type: "success",
           message: t("accountingConnection.providerConnected", { provider: providerName }),
         });
-      } else if (error === "provider_conflict") {
-        // One accounting connection per partner: retrying cannot succeed
-        // until the other provider is disconnected, so say that instead of
-        // the generic "connection failed, try again".
-        showToast({
-          type: "error",
-          message: t("accountingConnection.providerConflict", { provider: providerName }),
-        });
       } else if (error) {
+        // `connectErrorKey` resolves every code to a full i18n key —
+        // QuickBooks' `provider_conflict` and unknown/null both land on the
+        // two pre-existing keys this panel always used, so their copy is
+        // byte-identical; Xero's new codes get their own specific messages.
         showToast({
           type: "error",
-          message: t(
-            "accountingConnection.providerConnectionFailedPleaseTryAgain", { provider: providerName },
-          ),
+          message: t(/* i18n-dynamic */ connectErrorKey(error), { provider: providerName }),
+        });
+      } else if (params.get("select_tenant") === "1") {
+        // Xero authorised more than one organisation; the row is
+        // `pending_tenant` and `load()` below will render the picker.
+        showToast({
+          type: "warning",
+          message: t("accountingConnection.connectErrors.selectTenant", { provider: providerName }),
         });
       }
       params.delete("accounting");
       params.delete("connected");
       params.delete("error");
+      params.delete("select_tenant");
       const next = `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`;
       window.history.replaceState({}, "", next);
     }
@@ -273,6 +297,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
         onUnauthorized,
       });
       await load();
+      onConnectionChanged?.();
     } catch (err) {
       if (isMfaError(err))
         setLoadError(t("accountingConnection.mfaRequiredHint", { provider: providerName }));
@@ -284,7 +309,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
     } finally {
       setDisconnecting(false);
     }
-  }, [provider, providerName, load, onUnauthorized]);
+  }, [provider, providerName, load, onUnauthorized, onConnectionChanged]);
 
   const handleSetPushMode = useCallback(
     async (pushMode: PushMode) => {
@@ -524,6 +549,9 @@ export default function AccountingConnectionPanel({ provider }: Props) {
 
   const isConnected = status?.status === "connected";
   const needsReauth = status?.status === "reauth_required";
+  const isPending = status?.status === "pending_tenant";
+  const caps = status?.capabilities ?? ALL_CAPABILITIES;
+  const ui = ACCOUNTING_PROVIDER_UI[provider];
 
   return (
     <div className="space-y-6" data-testid={`${provider}-panel`}>
@@ -544,6 +572,14 @@ export default function AccountingConnectionPanel({ provider }: Props) {
             <AlertTriangle className="h-3.5 w-3.5" />{" "}
             {t("accountingConnection.reconnectRequired", { provider: providerName })}
           </span>
+        ) : isPending ? (
+          <span
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700"
+            data-testid={`${provider}-status-pending`}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />{" "}
+            {t("accountingConnection.pendingTenant", { provider: providerName })}
+          </span>
         ) : (
           <span
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
@@ -563,7 +599,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
         </p>
       )}
 
-      {!isConnected && (
+      {!isConnected && !isPending && (
         <div className="rounded-lg border bg-card p-5">
           <p className="text-sm text-muted-foreground">
             {needsReauth
@@ -578,23 +614,25 @@ export default function AccountingConnectionPanel({ provider }: Props) {
               {status.lastError}
             </p>
           )}
-          <div className="mt-4 flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => void handleConnect()}
-              disabled={connecting || !canManageAccounting}
-              className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              data-testid={`${provider}-connect`}
+          {/* Gated on the FEATURE, never on the provider id — this is
+              product copy about what tenant-selection-capable reconnects do,
+              not a Xero-specific string. */}
+          {needsReauth && status?.features?.tenantSelection && (
+            <p
+              className="mt-2 text-xs text-muted-foreground"
+              data-testid={`${provider}-reconnect-keeps-org`}
             >
-              {connecting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Plug className="h-4 w-4" />
-              )}
-              {needsReauth
-                ? t("accountingConnection.reconnectProvider", { provider: providerName })
-                : t("accountingConnection.connectToProvider", { provider: providerName })}
-            </button>
+              {t("accountingConnection.reconnectKeepsOrganisation", { provider: providerName })}
+            </p>
+          )}
+          <div className="mt-4 flex items-center gap-3">
+            <AccountingConnectButton
+              provider={provider}
+              reconnect={needsReauth}
+              busy={connecting}
+              disabled={!canManageAccounting}
+              onClick={() => void handleConnect()}
+            />
             {/* A reauth-required connection can't always be repaired by
                 Reconnect — the provider may no longer be configured on this
                 instance, in which case Reconnect fails and the partner would
@@ -604,7 +642,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
             {needsReauth && (
               <button
                 type="button"
-                onClick={() => void handleDisconnect()}
+                onClick={() => (ui.confirmDisconnect ? setConfirmingDisconnect(true) : void handleDisconnect())}
                 disabled={disconnecting || !canManageAccounting}
                 className="inline-flex h-10 items-center gap-2 rounded-md border border-red-200 px-4 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                 data-testid={`${provider}-disconnect`}
@@ -619,6 +657,41 @@ export default function AccountingConnectionPanel({ provider }: Props) {
             )}
           </div>
         </div>
+      )}
+
+      {isPending && (
+        <AccountingTenantPicker
+          provider={provider}
+          onUnauthorized={onUnauthorized}
+          onDone={() => { void load(); onConnectionChanged?.(); }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmingDisconnect}
+        onClose={() => setConfirmingDisconnect(false)}
+        onConfirm={() => { setConfirmingDisconnect(false); void handleDisconnect(); }}
+        title={t("accountingConnection.disconnectConfirm.title", { provider: providerName })}
+        message={t("accountingConnection.disconnectConfirm.message", { provider: providerName })}
+        confirmLabel={t("accountingConnection.disconnectConfirm.confirm")}
+        variant="destructive"
+        isLoading={disconnecting}
+        confirmTestId={`${provider}-disconnect-confirm`}
+      />
+
+      {isConnected && status?.features?.settingsOptions && (
+        <AccountingSettingsStep
+          provider={provider}
+          values={{
+            defaultIncomeAccountRef: status.defaultIncomeAccountRef ?? null,
+            defaultTaxCodeRef: status.defaultTaxCodeRef ?? null,
+            defaultExemptTaxCodeRef: status.defaultExemptTaxCodeRef ?? null,
+            defaultPaymentAccountRef: status.defaultPaymentAccountRef ?? null,
+          }}
+          paymentPushOn={status?.pushPayments === true && caps.paymentPush}
+          onSaved={(v) => setStatus((prev) => (prev ? { ...prev, ...v } : prev))}
+          onUnauthorized={onUnauthorized}
+        />
       )}
 
       {isConnected && status && (
@@ -665,7 +738,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
             </div>
           </dl>
 
-          {canWriteInvoices && canManageAccounting && (
+          {caps.invoicePush && canWriteInvoices && canManageAccounting && (
           <div>
             <p className="text-sm font-medium">
               {t("accountingConnection.invoicePush", { provider: providerName })}
@@ -707,7 +780,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
           {/* Phase D: payment pull-back. Sits beside the push-mode row because
               the two together are the whole direction-of-travel story — push
               invoices out, pull payments back. */}
-          {canWriteInvoices && canManageAccounting && (
+          {caps.paymentPull && canWriteInvoices && canManageAccounting && (
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
@@ -744,7 +817,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
 
           {/* Phase D2: the outbound half. Sits under the pull toggle so the two
               read as one direction-of-travel pair. */}
-          {canWriteInvoices && canManageAccounting && (
+          {caps.paymentPush && canWriteInvoices && canManageAccounting && (
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
@@ -779,6 +852,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
           </div>
           )}
 
+          {(caps.paymentPull || caps.paymentPush) && (
           <div className="flex items-center gap-3 border-t pt-4">
             {canWriteInvoices && canManageAccounting && (
             <button
@@ -806,6 +880,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
                 : t("accountingConnection.never", { provider: providerName })}
             </p>
           </div>
+          )}
 
           {/* Issue #4543 (silent-failure-hunter finding): the reconcile
               worker stamps a skip/failure reason onto `last_error` even while
@@ -815,7 +890,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
               (the route's 409 already covers that click; this covers the
               15-minute sweep / webhook triggers racing a toggle-off). Mirrors
               the `needsReauth` block above. */}
-          {status.lastError && (
+          {(caps.paymentPull || caps.paymentPush) && status.lastError && (
             <p
               className="text-xs text-amber-700"
               data-testid={`${provider}-reconcile-last-error`}
@@ -849,7 +924,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => void handleDisconnect()}
+              onClick={() => (ui.confirmDisconnect ? setConfirmingDisconnect(true) : void handleDisconnect())}
               disabled={disconnecting || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
               data-testid={`${provider}-disconnect`}
@@ -865,7 +940,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
         </div>
       )}
 
-      {status && (
+      {status && caps.paymentPush && (
         <section className="space-y-3 rounded-lg border bg-card p-5" data-testid={`${provider}-owed-operations`} aria-labelledby={`${provider}-owed-heading`}>
           <h2 id={`${provider}-owed-heading`} className="font-semibold">{t("accountingConnection.owedTitle", { provider: providerName })}</h2>
           {owedError ? (
@@ -900,11 +975,12 @@ export default function AccountingConnectionPanel({ provider }: Props) {
         </section>
       )}
 
-      {isConnected && status && (
+      {isConnected && status && caps.mapping && (
         <AccountingMappingWorkbench
           provider={provider}
           onUnauthorized={onUnauthorized}
           defaultIncomeAccountRef={status.defaultIncomeAccountRef ?? null}
+          incomeAccountHome={status?.features?.settingsOptions ? "settings" : "workbench"}
           onSettingsChanged={(settings) =>
             setStatus((prev) =>
               prev ? { ...prev, defaultIncomeAccountRef: settings.defaultIncomeAccountRef } : prev,
@@ -913,7 +989,7 @@ export default function AccountingConnectionPanel({ provider }: Props) {
         />
       )}
 
-      {isConnected && (
+      {isConnected && caps.customerImport && (
         <AccountingCustomerImport provider={provider} onUnauthorized={onUnauthorized} />
       )}
     </div>

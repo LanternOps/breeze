@@ -294,7 +294,7 @@
       "threads": "Thread"
     },
     "errors": {
-      "handlerNotConfigured": "Impossibile procedere: gestore non configurato",
+      "handlerNotConfigured": "Il gestore di terminazione processi non è configurato",
       "killFailed": "Impossibile terminare il processo"
     },
     "killConfirm": "Conferma terminazione",
@@ -322,8 +322,8 @@
   "proxyTunnelPage": {
     "errors": {
       "invalidTicket": "Questo link non è valido o è scaduto.",
-      "obtainTicket": "Impossibile ottenere il ticket",
-      "prepareConnection": "Impossibile preparare la connessione",
+      "obtainTicket": "Impossibile ottenere il ticket del tunnel",
+      "prepareConnection": "Impossibile preparare la connessione proxy",
       "tlsUntrusted": "Questo dispositivo ha presentato un certificato non attendibile o autofirmato.",
       "tunnelFailed": "Impossibile aprire il tunnel"
     },
@@ -365,25 +365,25 @@
     "enterStrings": "Inserisci stringhe",
     "enterValueName": "Inserisci nome valore",
     "errors": {
-      "createKey": "Impossibile creare la chiave",
+      "createKey": "Impossibile creare la chiave di registro",
       "createKeyDetail": "Impossibile creare la chiave del registro: {{message}}",
-      "deleteKey": "Impossibile eliminare la chiave",
+      "deleteKey": "Impossibile eliminare la chiave di registro",
       "deleteKeyDetail": "Impossibile eliminare la chiave del registro: {{message}}",
-      "deleteValue": "Impossibile eliminare il valore",
+      "deleteValue": "Impossibile eliminare il valore di registro",
       "deleteValueDetail": "Impossibile eliminare il valore del registro: {{message}}",
-      "invalidFormat": "Formato non valido",
-      "invalidNumber": "Numero non valido",
-      "keyNameBackslash": "Il nome della chiave contiene una barra rovesciata non valida",
+      "invalidFormat": "Formato del valore non valido",
+      "invalidNumber": "Valore numerico non valido",
+      "keyNameBackslash": "Il nome della chiave non può contenere una barra rovesciata",
       "keyNameRequired": "Il nome della chiave è obbligatorio",
-      "keyProvider": "Errore del provider della chiave",
-      "loadKeys": "Impossibile caricare le chiavi",
+      "keyProvider": "Il provider delle chiavi di registro non è configurato",
+      "loadKeys": "Impossibile caricare le chiavi di registro",
       "loadKeysDetail": "Impossibile caricare le chiavi del registro: {{message}}",
-      "loadValues": "Impossibile caricare i valori",
+      "loadValues": "Impossibile caricare i valori di registro",
       "loadValuesDetail": "Impossibile caricare i valori del registro: {{message}}",
-      "saveValue": "Impossibile salvare il valore",
+      "saveValue": "Impossibile salvare il valore di registro",
       "saveValueDetail": "Impossibile salvare il valore del registro: {{message}}",
       "valueNameRequired": "Il nome del valore è obbligatorio",
-      "valueProvider": "Errore del provider del valore"
+      "valueProvider": "Il provider dei valori di registro non è configurato"
     },
     "hexadecimal": "Esadecimale",
     "key": "Chiave",
@@ -454,14 +454,14 @@
     "disconnect": "Disconnetti",
     "errorMessage": "Errore: {{message}}",
     "errors": {
-      "closedUnexpectedly": "La connessione si è chiusa in modo imprevisto",
-      "connection": "Connessione non riuscita",
+      "closedUnexpectedly": "Connessione chiusa inaspettatamente",
+      "connection": "Errore di connessione",
       "createSession": "Impossibile creare la sessione",
-      "createTicket": "Impossibile creare il ticket",
-      "failed": "Operazione non riuscita",
+      "createTicket": "Impossibile creare il ticket di connessione",
+      "failed": "Connessione non riuscita",
       "initialize": "Impossibile inizializzare",
-      "invalidTicket": "Ticket non valido",
-      "webSocket": "Errore WebSocket"
+      "invalidTicket": "Risposta del ticket di connessione non valida",
+      "webSocket": "Errore di connessione WebSocket"
     },
     "exitFullscreen": "Esci da schermo intero",
     "fullscreen": "Schermo intero",
@@ -503,17 +503,17 @@
       "fetchServices": "Impossibile recuperare i servizi",
       "fetchTasks": "Impossibile recuperare le attività",
       "killProcess": "Impossibile terminare il processo",
-      "processDetails": "Impossibile recuperare i dettagli del processo",
+      "processDetails": "Impossibile ottenere i dettagli del processo",
       "queryEvents": "Impossibile interrogare gli eventi",
-      "registryKeys": "Impossibile recuperare le chiavi del registro",
-      "registryValues": "Impossibile recuperare i valori del registro",
+      "registryKeys": "Impossibile caricare le chiavi di registro",
+      "registryValues": "Impossibile caricare i valori di registro",
       "restartService": "Impossibile riavviare il servizio",
       "runTask": "Impossibile eseguire l'attività",
       "setRegistryValue": "Impossibile impostare il valore del registro",
       "startService": "Impossibile avviare il servizio",
       "stopService": "Impossibile arrestare il servizio",
-      "taskDetails": "Impossibile recuperare i dettagli dell'attività",
-      "taskHistory": "Impossibile recuperare la cronologia dell'attività"
+      "taskDetails": "Impossibile caricare i dettagli dell'attività",
+      "taskHistory": "Impossibile caricare la cronologia dell'attività"
     },
     "policyDisabled": "Un criterio di configurazione ha disabilitato gli strumenti di sistema remoti.",
     "policyDisabledNamed": "Il criterio di configurazione \"{{name}}\" ha disabilitato gli strumenti di sistema remoti.",
@@ -616,7 +616,7 @@
     "displayName": "Nome visualizzato",
     "executablePath": "Percorso eseguibile",
     "loading": "Caricamento",
-    "noDescription": "Nessuna descrizione",
+    "noDescription": "Nessuna descrizione disponibile",
     "noServicesAvailable": "Nessun servizio disponibile",
     "noServicesFound": "Nessun servizio trovato",
     "ok": "OK",
@@ -688,7 +688,7 @@
   "sessionHistoryPage": {
     "detailsTitle": "Titolo dei dettagli",
     "errors": {
-      "exportFetch": "Impossibile recuperare i dati per l'esportazione"
+      "exportFetch": "Impossibile recuperare le sessioni per l'esportazione"
     },
     "fields": {
       "dataTransferred": "Dati trasferiti",
@@ -753,12 +753,12 @@
     },
     "disconnect": "Disconnetti",
     "errors": {
-      "authenticationDetail": "Dettagli dell'errore di autenticazione",
+      "authenticationDetail": "Autenticazione non riuscita: {{reason}}. Controlla la password VNC.",
       "authenticationFailed": "Autenticazione non riuscita",
-      "connectionLost": "Connessione interrotta",
-      "loadViewer": "Impossibile caricare il visualizzatore",
-      "securityFailure": "Controllo di sicurezza non riuscito",
-      "securityType": "Tipo di sicurezza non supportato"
+      "connectionLost": "Connessione persa inaspettatamente",
+      "loadViewer": "Impossibile caricare il visualizzatore VNC",
+      "securityFailure": "Errore di sicurezza: {{reason}}",
+      "securityType": "Tipo di sicurezza non supportato: {{reason}}"
     },
     "exitFullscreen": "Esci da schermo intero",
     "fullscreen": "Schermo intero",
@@ -779,8 +779,8 @@
     "disconnect": "Disconnetti",
     "errors": {
       "connect": "Impossibile connettersi",
-      "invalidTicket": "Ticket non valido",
-      "obtainTicket": "Impossibile ottenere il ticket"
+      "invalidTicket": "Risposta del ticket del tunnel non valida",
+      "obtainTicket": "Impossibile ottenere il ticket del tunnel VNC"
     },
     "sessionTitle": "Titolo sessione"
   },

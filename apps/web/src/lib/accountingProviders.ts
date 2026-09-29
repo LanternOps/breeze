@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchWithAuth } from '../stores/auth';
+import { ActionError } from './runAction';
 
 /**
  * The accounting providers the web knows how to drive (Xero W01). Mirrors
@@ -25,6 +26,56 @@ export const ACCOUNTING_PROVIDER_PRODUCT_NAMES: Record<AccountingProviderId, str
 
 export function isAccountingProviderId(v: string): v is AccountingProviderId {
   return (ACCOUNTING_PROVIDER_IDS as readonly string[]).includes(v);
+}
+
+/** Per-provider UI treatment. Xero follows its app-certification rules
+ *  (branded connect, confirmed disconnect); QuickBooks keeps the pre-W02
+ *  unbranded, unconfirmed behaviour byte-for-byte. */
+export interface AccountingProviderUi { brandedConnect: boolean; confirmDisconnect: boolean }
+export const ACCOUNTING_PROVIDER_UI: Record<AccountingProviderId, AccountingProviderUi> = {
+  quickbooks: { brandedConnect: false, confirmDisconnect: false },
+  xero: { brandedConnect: true, confirmDisconnect: true },
+};
+
+/** Status responses from an API older than Xero W02 carry no `capabilities`
+ *  field: treat every control as available rather than hiding them all. */
+export const ALL_CAPABILITIES: Record<AccountingCapability, boolean> = {
+  connect: true, mapping: true, customerImport: true, invoicePush: true, paymentPull: true, paymentPush: true,
+};
+
+// QuickBooks copy stays byte-identical. `provider_conflict` and the
+// unknown/null fallback both resolve to the two EXISTING keys the panel used
+// pre-W02 (`providerConflict`, `providerConnectionFailedPleaseTryAgain`) —
+// never a new duplicate `connectErrors.generic` / `connectErrors.providerConflict`.
+const CONNECT_ERROR_KEYS: Record<string, string> = {
+  tenant_held: 'accountingConnection.connectErrors.tenantHeld',
+  provider_conflict: 'accountingConnection.providerConflict',
+  auth_event_missing: 'accountingConnection.connectErrors.authEventMissing',
+  no_organisation: 'accountingConnection.connectErrors.noOrganisation',
+  tenant_lookup_failed: 'accountingConnection.connectErrors.tenantLookupFailed',
+  consent_denied: 'accountingConnection.connectErrors.consentDenied',
+};
+const GENERIC_CONNECT_ERROR_KEY = 'accountingConnection.providerConnectionFailedPleaseTryAgain';
+
+/** Maps an OAuth-return `error=` code to a full (namespace-relative) i18n key.
+ *  Unknown codes (incl. `exchange_failed`, `persist_failed`) and `null` fall
+ *  back to the existing generic "connection failed" key. */
+export function connectErrorKey(code: string | null): string {
+  return (code && CONNECT_ERROR_KEYS[code]) || GENERIC_CONNECT_ERROR_KEY;
+}
+
+/** Whether a runAction failure is the MFA-required 403 the accounting
+ *  `/settings` PATCH routes answer with when the caller hasn't stepped up.
+ *  Shared between `AccountingConnectionPanel` (push mode, payment sync
+ *  toggles, settings refresh) and `AccountingSettingsStep` so both surface
+ *  the same persistent `mfaRequiredHint` copy instead of
+ *  runAction's generic toast. */
+export function isMfaError(err: unknown): boolean {
+  return (
+    err instanceof ActionError &&
+    err.status === 403 &&
+    /mfa required/i.test(err.message)
+  );
 }
 
 /** `/accounting/<provider><suffix>` — the provider-scoped API path. */

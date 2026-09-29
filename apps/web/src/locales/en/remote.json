@@ -294,8 +294,8 @@
       "threads": "Threads"
     },
     "errors": {
-      "handlerNotConfigured": "Failed to handler not configured",
-      "killFailed": "Failed to kill failed"
+      "handlerNotConfigured": "Kill process handler is not configured",
+      "killFailed": "Failed to kill process"
     },
     "killConfirm": "Kill Confirm",
     "killProcess": "Kill Process",
@@ -322,8 +322,8 @@
   "proxyTunnelPage": {
     "errors": {
       "invalidTicket": "This link is invalid or has expired.",
-      "obtainTicket": "Failed to obtain ticket",
-      "prepareConnection": "Failed to prepare connection",
+      "obtainTicket": "Failed to obtain tunnel ticket",
+      "prepareConnection": "Failed to prepare the proxy connection",
       "tlsUntrusted": "This device presented an untrusted or self-signed certificate.",
       "tunnelFailed": "Tunnel failed to open"
     },
@@ -365,25 +365,25 @@
     "enterStrings": "Enter Strings",
     "enterValueName": "Enter Value Name",
     "errors": {
-      "createKey": "Failed to create key",
+      "createKey": "Failed to create registry key",
       "createKeyDetail": "Failed to create registry key: {{message}}",
-      "deleteKey": "Failed to delete key",
+      "deleteKey": "Failed to delete registry key",
       "deleteKeyDetail": "Failed to delete registry key: {{message}}",
-      "deleteValue": "Failed to delete value",
+      "deleteValue": "Failed to delete registry value",
       "deleteValueDetail": "Failed to delete registry value: {{message}}",
-      "invalidFormat": "Failed to invalid format",
-      "invalidNumber": "Failed to invalid number",
-      "keyNameBackslash": "Failed to key name backslash",
-      "keyNameRequired": "Failed to key name required",
-      "keyProvider": "Failed to key provider",
-      "loadKeys": "Failed to load keys",
+      "invalidFormat": "Invalid value format",
+      "invalidNumber": "Invalid number value",
+      "keyNameBackslash": "Key name cannot contain backslash",
+      "keyNameRequired": "Key name is required",
+      "keyProvider": "Registry key provider is not configured",
+      "loadKeys": "Failed to load registry keys",
       "loadKeysDetail": "Failed to load registry keys: {{message}}",
-      "loadValues": "Failed to load values",
+      "loadValues": "Failed to load registry values",
       "loadValuesDetail": "Failed to load registry values: {{message}}",
-      "saveValue": "Failed to save value",
+      "saveValue": "Failed to save registry value",
       "saveValueDetail": "Failed to save registry value: {{message}}",
-      "valueNameRequired": "Failed to value name required",
-      "valueProvider": "Failed to value provider"
+      "valueNameRequired": "Value name is required",
+      "valueProvider": "Registry value provider is not configured"
     },
     "hexadecimal": "Hexadecimal",
     "key": "Key",
@@ -454,14 +454,14 @@
     "disconnect": "Disconnect",
     "errorMessage": "Error: {{message}}",
     "errors": {
-      "closedUnexpectedly": "Failed to closed unexpectedly",
-      "connection": "Failed to connection",
+      "closedUnexpectedly": "Connection closed unexpectedly",
+      "connection": "Connection error",
       "createSession": "Failed to create session",
-      "createTicket": "Failed to create ticket",
-      "failed": "Failed to failed",
+      "createTicket": "Failed to create connection ticket",
+      "failed": "Connection failed",
       "initialize": "Failed to initialize",
-      "invalidTicket": "Failed to invalid ticket",
-      "webSocket": "Failed to web socket"
+      "invalidTicket": "Invalid connection ticket response",
+      "webSocket": "WebSocket connection error"
     },
     "exitFullscreen": "Exit Fullscreen",
     "fullscreen": "Fullscreen",
@@ -497,23 +497,23 @@
       "deleteRegistryValue": "Failed to delete registry value",
       "disableTask": "Failed to disable task",
       "enableTask": "Failed to enable task",
-      "eventDetails": "Failed to event details",
+      "eventDetails": "Failed to fetch event details",
       "fetchEventLogs": "Failed to fetch event logs",
       "fetchProcesses": "Failed to fetch processes",
       "fetchServices": "Failed to fetch services",
       "fetchTasks": "Failed to fetch tasks",
       "killProcess": "Failed to kill process",
-      "processDetails": "Failed to process details",
+      "processDetails": "Failed to get process details",
       "queryEvents": "Failed to query events",
-      "registryKeys": "Failed to registry keys",
-      "registryValues": "Failed to registry values",
+      "registryKeys": "Failed to load registry keys",
+      "registryValues": "Failed to load registry values",
       "restartService": "Failed to restart service",
       "runTask": "Failed to run task",
       "setRegistryValue": "Failed to set registry value",
       "startService": "Failed to start service",
       "stopService": "Failed to stop service",
-      "taskDetails": "Failed to task details",
-      "taskHistory": "Failed to task history"
+      "taskDetails": "Failed to load task details",
+      "taskHistory": "Failed to load task history"
     },
     "policyDisabled": "A configuration policy has disabled remote system tools.",
     "policyDisabledNamed": "Configuration policy \"{{name}}\" has disabled remote system tools.",
@@ -616,7 +616,7 @@
     "displayName": "Display Name",
     "executablePath": "Executable Path",
     "loading": "Loading",
-    "noDescription": "No description",
+    "noDescription": "No description available",
     "noServicesAvailable": "No Services Available",
     "noServicesFound": "No Services Found",
     "ok": "Ok",
@@ -688,7 +688,7 @@
   "sessionHistoryPage": {
     "detailsTitle": "Details Title",
     "errors": {
-      "exportFetch": "Failed to export fetch"
+      "exportFetch": "Failed to fetch sessions for export"
     },
     "fields": {
       "dataTransferred": "Data Transferred",
@@ -753,12 +753,12 @@
     },
     "disconnect": "Disconnect",
     "errors": {
-      "authenticationDetail": "Failed to authentication detail",
-      "authenticationFailed": "Failed to authentication failed",
-      "connectionLost": "Failed to connection lost",
-      "loadViewer": "Failed to load viewer",
-      "securityFailure": "Failed to security failure",
-      "securityType": "Failed to security type"
+      "authenticationDetail": "Authentication failed: {{reason}}. Check your VNC password.",
+      "authenticationFailed": "Authentication failed",
+      "connectionLost": "Connection lost unexpectedly",
+      "loadViewer": "Failed to load VNC viewer",
+      "securityFailure": "Security failure: {{reason}}",
+      "securityType": "Security type not supported: {{reason}}"
     },
     "exitFullscreen": "Exit Fullscreen",
     "fullscreen": "Fullscreen",
@@ -779,8 +779,8 @@
     "disconnect": "Disconnect",
     "errors": {
       "connect": "Failed to connect",
-      "invalidTicket": "Failed to invalid ticket",
-      "obtainTicket": "Failed to obtain ticket"
+      "invalidTicket": "Invalid tunnel ticket response",
+      "obtainTicket": "Failed to obtain VNC tunnel ticket"
     },
     "sessionTitle": "Session Title"
   },

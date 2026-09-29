@@ -59,6 +59,7 @@ import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { normalizeSiteAllowlist } from './siteAllowlist';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { notHoldingOrgCondition, notInHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
@@ -168,7 +169,8 @@ async function handleListOrganizations(
   // by the scope conditions below and must be excluded explicitly. (The slug read
   // in handleCreateOrg deliberately does NOT exclude it — its slug must stay in
   // the taken-set.)
-  const conditions: SQL[] = [isNull(organizations.deletedAt), ne(organizations.type, 'quick_support')];
+  // The holding org for unassigned devices is never listed, whatever the scope.
+  const conditions: SQL[] = [isNull(organizations.deletedAt), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()];
   if (searchCondition) conditions.push(searchCondition);
 
   if (auth.scope === 'organization') {
@@ -604,7 +606,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
         conditions.push(sql`NOT EXISTS (
     SELECT 1 FROM ${organizations} qs_org
     WHERE qs_org.id = ${sites.orgId} AND qs_org.type = 'quick_support'
-  )`, siteScopeCondition(auth, sites.id));
+  )`, notInHoldingOrgCondition(sites.orgId), siteScopeCondition(auth, sites.id));
         const search = typeof input.search === 'string' ? input.search.trim() : '';
         if (search) conditions.push(ilike(sites.name, `%${escapeLike(search)}%`));
         const whereCondition = and(...conditions);

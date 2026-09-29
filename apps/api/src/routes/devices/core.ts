@@ -8,7 +8,6 @@ import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import {
   devices,
-  deviceCommands,
   deviceHardware,
   deviceHardwareHealth,
   deviceReliability,
@@ -21,8 +20,6 @@ import {
   organizations,
   users,
 } from '../../db/schema';
-import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
-import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import {
   authMiddleware,
   isInteractiveUserSession,
@@ -77,7 +74,7 @@ import {
   publishAgentCredentialRevocation,
 } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
+import { decommissionDeviceInTransaction } from '../../services/deviceDecommission';
 import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -91,8 +88,13 @@ import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../.
 import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requireCapability } from '../../services/partnerTrust';
+import {
+  isParkedDevice,
+  PARKED_DEVICE_COMMAND_REFUSAL_CODE,
+} from '../../services/unassignedPool/deliveryEligibility';
 
 
+import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
  * These get SET NULL rather than deleted during cascade.
@@ -262,6 +264,15 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * fragility applies the moment the two orgs sit under different partners.
  * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *
+ * fix_outcomes is deliberately ABSENT too (AI Suggested Fixes W1): it has
+ * org_id and device_id but is cascade-deleted, not moved — identical
+ * reasoning to ai_agent_fix_watches: an attempt's proof belongs to the org it
+ * ran in, and its (org_id, partner_id) composite FK would 23503 on a
+ * cross-partner move. It is excluded from breeze_device_child_orgid_tables()
+ * by 2026-11-08-170000-fix-memory-tables.sql and listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. The outcome sweeper
+ * cancels in-flight rows whose device left the org.
+ *
  * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
  * org_id and device_id, but its org_id belongs to the INVOICE, which does not
  * move. Re-stamping it would break the (invoice_line_id, org_id) and
@@ -289,8 +300,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_retirements',
-  'backup_snapshots', 'backup_storage_sessions', 'backup_verifications', 'bare_metal_recoveries',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
+  'backup_snapshot_retirements', 'backup_snapshots', 'backup_storage_session_uploads', 'backup_storage_sessions',
+  'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
@@ -527,9 +539,14 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'recovery_tokens', 'backup_chains',
   // Brokered storage sessions reference the snapshot, the command and the
   // device (executing = device_id; the snapshot's source device cascades by FK).
+  // A write session's multipart upload rows go first, then the session, then
+  // the snapshot id reservations it names (deleting a reservation tombstones
+  // its id).
+  'backup_storage_session_uploads',
   'backup_storage_sessions',
   // Snapshot attestations reference the snapshot, the job and the device.
   'backup_snapshot_attestations',
+  'backup_snapshot_id_reservations',
   'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
@@ -611,6 +628,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // company here — that table has no device_id column at all (org_id +
   // agent_id only), so it needs no entry in this device-cascade list.
   'ai_agent_fix_watches',
+  // AI Suggested Fixes W1 — attempt history for a deleted device goes with it
+  // (no device FK; leaf table). The org-cascade + rebuild keeps partner memory
+  // consistent on the next rebuild.
+  'fix_outcomes',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
@@ -903,7 +924,7 @@ coreRoutes.get(
     // Quick Support devices live in the partner's hidden 'quick_support' org,
     // which deliberately stays inside accessibleOrgIds so RLS lets a tech reach
     // their own session. Nothing filters them out for us — exclude explicitly.
-    conditions.push(eq(devices.isEphemeral, false));
+    conditions.push(eq(devices.isEphemeral, false), notParkedDeviceCondition());
 
     // Org access — uses pre-computed accessibleOrgIds from auth.
     const orgFilter = auth.orgCondition(devices.orgId);
@@ -1616,15 +1637,32 @@ export async function checkRemoteAccessLauncherAvailabilityForDevice(
   return checkRemoteAccessLaunchAvailability({ customFields }, providers, preferredProviderId);
 }
 
+/** Thrown by the launcher issuance for a device parked in a holding org. */
+export class RemoteAccessLaunchParkedDeviceError extends Error {
+  readonly code = PARKED_DEVICE_COMMAND_REFUSAL_CODE;
+  constructor(readonly deviceId: string) {
+    super('This device is waiting to be assigned to an organization; remote access is unavailable until then');
+    this.name = 'RemoteAccessLaunchParkedDeviceError';
+  }
+}
+
 /**
  * Issuance: resolves (and returns) the substituted, credential-bearing
  * launch URL. Only POST /devices/:id/remote-access-launch may call this.
+ *
+ * Refuses a device parked in its partner's holding org before any provider
+ * settings are read or any password decrypted (throws
+ * RemoteAccessLaunchParkedDeviceError). Exported for the real-DB proof.
  */
-async function resolveRemoteAccessLauncherForDevice(
+export async function resolveRemoteAccessLauncherForDevice(
+  deviceId: string,
   orgId: string,
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,
 ): Promise<RemoteAccessLaunchResult> {
+  if (await isParkedDevice(db, deviceId)) {
+    throw new RemoteAccessLaunchParkedDeviceError(deviceId);
+  }
   const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
   return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId);
 }
@@ -1661,11 +1699,15 @@ coreRoutes.post(
     let launcher: RemoteAccessLaunchResult;
     try {
       launcher = await resolveRemoteAccessLauncherForDevice(
+        deviceId,
         device.orgId,
         device.customFields as Record<string, unknown> | null,
         auth,
       );
     } catch (err) {
+      if (err instanceof RemoteAccessLaunchParkedDeviceError) {
+        return c.json({ error: err.message, code: err.code }, 403);
+      }
       captureException(err, c);
       console.error(`[RemoteAccessLaunch] Failed to resolve launcher for ${deviceId}:`, err);
       return c.json({ error: 'Failed to resolve remote-access launcher', code: 'config_error' }, 500);
@@ -2075,85 +2117,13 @@ coreRoutes.delete(
     let updated: typeof devices.$inferSelect | undefined;
     let uninstallQueued = false;
     await db.transaction(async (tx) => {
-      const [row] = await tx
-        .update(devices)
-        .set({
-          status: 'decommissioned',
-          // #2787 item 4 — the window the `device_lifecycle` retention policy
-          // measures ("purge removed devices after N days") starts HERE.
-          // `updatedAt` cannot serve: every unrelated write to the row
-          // afterwards would push the purge date out. Cleared again on Restore.
-          decommissionedAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(devices.id, deviceId))
-        .returning();
-      updated = row;
-
-      // #5128 — cancel this device's ordinary queued work in the SAME
-      // transaction as the status write. `self_uninstall` is explicitly
-      // EXCLUDED: the uninstall drain's whole purpose is to survive
-      // decommission and deliver when the machine next checks in, and
-      // `queueDeviceUninstall` below may be about to write exactly such a row.
-      // Claim-time eligibility refuses to deliver ordinary work to a
-      // decommissioned device anyway; this is what stops those rows sitting
-      // `pending` until their deadline.
-      // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
-      // keys on `payload.executionId`, which `terminalPayloadErasureSet()` strips.
-      const cancelledOnDecommission = await tx
-        .select({
-          id: deviceCommands.id,
-          type: deviceCommands.type,
-          payload: deviceCommands.payload,
-        })
-        .from(deviceCommands)
-        .where(
-          and(
-            eq(deviceCommands.deviceId, deviceId),
-            eq(deviceCommands.status, 'pending'),
-            ne(deviceCommands.type, 'self_uninstall'),
-          ),
-        );
-
-      const decommissionCancelledAt = new Date();
-      await tx
-        .update(deviceCommands)
-        .set({
-          status: 'cancelled',
-          completedAt: decommissionCancelledAt,
-          result: {
-            status: 'cancelled',
-            reason: 'device_decommissioned',
-            cancelledBy: 'device_decommission',
-          },
-          ...terminalPayloadErasureSet(),
-        })
-        .where(
-          and(
-            eq(deviceCommands.deviceId, deviceId),
-            eq(deviceCommands.status, 'pending'),
-            ne(deviceCommands.type, 'self_uninstall'),
-          ),
-        );
-
-      // Terminalise the OWNING records in the same transaction — otherwise a
-      // cancelled command strands its script_executions / deployment_results
-      // row `pending` forever (the command reaper only scans pending/sent
-      // COMMANDS, and this one is already terminal).
-      await propagateCancelledDeviceCommands(
-        cancelledOnDecommission.map((row) => ({
-          id: row.id,
-          type: row.type,
-          payload: row.payload as Record<string, unknown> | null,
-        })),
-        decommissionCancelledAt,
-        tx,
-      );
-
-      if (uninstallAgent) {
-        const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);
-        uninstallQueued = queueResult.queued || queueResult.mergedIntoExisting;
-      }
+      const outcome = await decommissionDeviceInTransaction(tx, {
+        deviceId,
+        queueUninstall: uninstallAgent,
+        actorUserId: auth.user.id,
+      });
+      updated = outcome.updated;
+      uninstallQueued = outcome.uninstallQueued;
     });
 
     // Resolve any "possible replacement of THIS device" linkage now that the

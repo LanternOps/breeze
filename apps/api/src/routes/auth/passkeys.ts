@@ -57,6 +57,8 @@ import {
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
   resolveEnrollmentStepUp,
+  resolveFactorManagementStepUp,
+  consumeFactorManagementReauthGrant,
   rejectProof,
   MFA_PROOF_INVALID,
   installAuthorizedUserSessionCookies,
@@ -134,9 +136,10 @@ const passkeyNameSchema = z.string().trim().min(1).max(255);
 // #4018: BOTH enrollment proofs are optional HERE — resolveEnrollmentStepUp
 // decides which road this account may take, and "neither supplied" must be its
 // opaque 401 rather than a 400 from this schema, so the rejection never reveals
-// whether the account has a password. `deletePasskeySchema` below is untouched:
-// deleting a factor is not a first-factor enrollment and an
-// enroll_first_factor grant must never authorize it.
+// whether the account has a password. `deletePasskeySchema` below uses a
+// DIFFERENT resolver (#4045, resolveFactorManagementStepUp): deleting a factor
+// is not a first-factor enrollment and an enroll_first_factor grant must never
+// authorize it.
 const registerOptionsSchema = z.object({
   currentPassword: z.string().min(1).max(256).optional(),
   ssoReauthGrantId: z.string().uuid().optional(),
@@ -161,8 +164,14 @@ const passkeyMfaVerifySchema = z.object({
 const renamePasskeySchema = z.object({
   name: passkeyNameSchema
 });
+// #4045: the "user at the keyboard" leg takes the password OR, for a
+// passwordless SSO account, a fresh IdP re-auth grant minted for
+// `sso_reauth_manage_factor`. Both optional here — resolveFactorManagementStepUp
+// decides the road, so "neither" is its rejection, not a zod error. The
+// `enroll_first_factor` grant can never satisfy it (the bind operation differs).
 const deletePasskeySchema = z.object({
-  currentPassword: z.string().min(1).max(256),
+  currentPassword: z.string().min(1).max(256).optional(),
+  ssoReauthGrantId: z.string().uuid().optional(),
   // Optional at validation so a stale client receives the stable security
   // boundary response (`existing_factor_step_up_required`) rather than a
   // generic schema error. The handler still fails closed when it is absent.
@@ -997,16 +1006,20 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
 
   const auth = c.get('auth');
   const id = c.req.param('id');
-  const { currentPassword, stepUpGrantId } = c.req.valid('json');
+  const { currentPassword, ssoReauthGrantId, stepUpGrantId } = c.req.valid('json');
 
   if (auth.token?.mfa !== true) {
     return c.json({ error: 'MFA verification is required to delete a passkey' }, 403);
   }
 
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd', {
-    rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS,
-  });
-  if (passwordError) return passwordError;
+  // Validated here, spent at the terminal write below (no-op for a password).
+  const reauth = await resolveFactorManagementStepUp(
+    c,
+    auth,
+    { currentPassword, ssoReauthGrantId },
+    { keyPrefix: 'passkey:pwd', rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS },
+  );
+  if ('error' in reauth) return reauth.error;
 
   const resourceDigest = passkeyRemovalResourceDigest(id);
   const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, {
@@ -1055,6 +1068,13 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   if (stepUpConsumeError) {
     await cancelAuthIssuance(capability).catch(() => undefined);
     return stepUpConsumeError;
+  }
+  const reauthConsumeError = await consumeFactorManagementReauthGrant(c, auth, reauth.proof, {
+    rejectionStatus: PASSKEY_PROOF_REJECTION_STATUS,
+  });
+  if (reauthConsumeError) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    return reauthConsumeError;
   }
 
   let result;

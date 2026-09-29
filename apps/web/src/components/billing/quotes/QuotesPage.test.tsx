@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import QuotesPage from './QuotesPage';
 import { fetchWithAuth } from '../../../stores/auth';
 import { useOrgStore } from '../../../stores/orgStore';
+import { CREATE_INTENT_STORAGE_KEY, requestCreate } from '../../../lib/keyboard/createIntent';
 
 vi.mock('../../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
@@ -40,6 +41,33 @@ describe('QuotesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.location.hash = '';
+  });
+
+  it('opens the create dialog when it arrives with a "c then q" create intent', async () => {
+    sessionStorage.clear();
+    requestCreate('quote');
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    expect(await screen.findByTestId('quotes-create-dialog')).toBeInTheDocument();
+    expect(sessionStorage.getItem(CREATE_INTENT_STORAGE_KEY)).toBeNull();
+  });
+
+  it('an org-record embed ignores the create intent', async () => {
+    sessionStorage.clear();
+    requestCreate('quote');
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage lockedOrgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('quotes-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('quotes-create-dialog')).toBeNull();
+    sessionStorage.clear();
   });
 
   it('renders the empty state without crashing', async () => {

@@ -797,6 +797,26 @@ var ErrPendingRotationExpired = errors.New("pending rotation expired")
 // staged set instead of retrying.
 var ErrRotationUnresolvable = errors.New("pending rotation can never be promoted")
 
+// ErrStagedTokenRejected reports that the confirm route answered the staged
+// token with a bare 401 — agentAuth would not accept it at all.
+//
+// Issue #2773 — deliberately NOT terminal on its own. agentAuth returns the same
+// opaque 401 for an expired staged token (the ordinary case) and for a
+// suspended device or an inactive tenant. In the latter the staged token may
+// already be the server's CURRENT credential — the promotion landed and its
+// response was lost — so the copy on disk is the agent's only copy of it, and
+// discarding it strands the endpoint once the device or tenant is reinstated.
+// The caller must prove its current credential is the server's current one
+// before discarding (see Heartbeat.currentCredentialProvenCurrent).
+var ErrStagedTokenRejected = errors.New("staged token rejected")
+
+// ErrPendingTokenRequired reports `pending_token_required`: the presented token
+// IS the device's current credential while a different set is staged. Retryable
+// for a staged token (see ROTATION_CONFLICT_CODES in routes/agents/token.ts);
+// as the answer to a confirm sent with the CURRENT token it proves that token
+// is the server's current credential (#2773).
+var ErrPendingTokenRequired = errors.New("confirm must be sent with the pending rotation token")
+
 // IsRotationTerminal reports whether a ConfirmTokenRotation error means the
 // staged credential set is provably dead and must be discarded.
 //
@@ -858,8 +878,9 @@ func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
 
 	// Issue #2894 — only these two codes are terminal. Every other code
 	// (including `rotation_conflict` and `pending_token_required`, which the
-	// server emits while the staged token may still be live) falls through to
-	// the generic error below and is retried.
+	// server emits while the staged token may still be live) falls through and
+	// is retried. token.conflictCodes.test.ts reads the case labels of THIS
+	// switch as the terminal set — never add a retryable code to it.
 	//
 	// The sentinels are WRAPPED, never returned bare: discarding a credential set
 	// is the one irreversible action in this flow, and the log line the caller
@@ -874,21 +895,24 @@ func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
 		return nil, fmt.Errorf("rotate-token confirm rejected (status %d, code %q): %s: %w",
 			resp.StatusCode, result.Code, result.Error, ErrRotationUnresolvable)
 	}
-	// A 401 here means the server would not accept the STAGED token at all — it
-	// expired, or it was revoked by an admin rotation or re-enrollment. Either
-	// way it can never be promoted, so treat it as expired and stop retrying.
-	// This is safe: the agent's current credentials are untouched by a failed
-	// confirm.
-	//
-	// This inference has to stay, and it is deliberately the ONE terminal verdict
-	// not driven by a code: an expired pending hash is rejected by agentAuth
-	// BEFORE this route runs, so a 401 is the only signal the agent can ever
-	// receive for the ordinary expiry case. Making it retryable would replace a
-	// TTL-bounded loop with an unbounded one. The body is carried into the error
-	// so an operator can tell an expiry from, say, a device suspension.
+	// Retryable (not in the terminal switch above), but distinguishable: the
+	// heartbeat's current-credential probe reads it as proof (#2773).
+	if result.Code == "pending_token_required" {
+		return nil, fmt.Errorf("rotate-token confirm rejected (status %d, code %q): %s: %w",
+			resp.StatusCode, result.Code, result.Error, ErrPendingTokenRequired)
+	}
+	// A 401 here means the server would not accept the STAGED token at all. For
+	// the ordinary expiry case this is the only signal the agent can receive —
+	// agentAuth rejects an expired pending hash BEFORE this route runs — but the
+	// same opaque 401 also answers a suspended device or an inactive tenant, in
+	// which case the staged token may be the server's CURRENT credential.
+	// Issue #2773: so this is a distinct sentinel, not ErrPendingRotationExpired;
+	// the heartbeat discards only after proving its current credential is the
+	// server's current one, which keeps the ordinary expiry case bounded exactly
+	// as before. The body is carried into the error for the forensic record.
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, fmt.Errorf("rotate-token confirm rejected with 401 (the staged token is not accepted at all): %s: %w",
-			string(bodyBytes), ErrPendingRotationExpired)
+			string(bodyBytes), ErrStagedTokenRejected)
 	}
 	return nil, fmt.Errorf("rotate-token confirm failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 }

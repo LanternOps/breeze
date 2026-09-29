@@ -73,6 +73,14 @@ type WinSystem interface {
 	// AssignLetter is for the ESP only (bcdboot needs a volume letter, not
 	// a folder mount point) — first free letter Z..D.
 	AssignLetter(volumeGUIDPath string) (letter string, release func() error, err error)
+	// VolumeForLetter is GetVolumeNameForVolumeMountPointW: the volume GUID
+	// path currently mounted at driveLetter (e.g. "Y:"), or an error when
+	// nothing is mounted there. winReattach's leaked-letter reclaim (18b
+	// row 1, fix round 1 MINOR 1) uses it to confirm the letter still maps
+	// to the volume it saw before reclaiming it — between WaitForVolumes
+	// observing the letter and the reclaim call, the OS could have
+	// reassigned it to something else.
+	VolumeForLetter(driveLetter string) (string, error)
 	FlushVolume(volumeGUIDPath string) error
 	FreeSpace(dir string) (int64, error)
 	// LoadHive mounts hiveFile at HKLM\mountName under SeBackup/SeRestore
@@ -80,7 +88,11 @@ type WinSystem interface {
 	LoadHive(hiveFile, mountName string) (winhive.Handle, error)
 	// LoadHiveReadOnly is LoadHive with every key opened KEY_READ, for a
 	// hive that is only inspected (validate's BCD store, whose ACL grants
-	// Administrators ReadKey only).
+	// Administrators ReadKey only; isDomainController's preflight check, 18b row 8).
+	// KEY_READ restricts only the key HANDLES this package opens:
+	// RegLoadKeyW itself still mounts the hive file writable at the OS
+	// level, so the kernel may still touch its .LOG1/.LOG2 transaction logs
+	// even on a "read-only" load (18b row 9d).
 	LoadHiveReadOnly(hiveFile, mountName string) (winhive.Handle, error)
 	// UnloadStaleHives unloads every HKLM subkey starting with prefix,
 	// returning how many it found — cleanupLeftovers' leftover-mount sweep.

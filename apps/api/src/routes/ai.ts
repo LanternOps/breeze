@@ -1019,7 +1019,9 @@ aiRoutes.post(
           topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
           topology
             ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false }
-            : { budgetReservationId: budgetDispatch.reservationId },
+            // A-W04: only a full-registry chat turn may defer tools behind
+            // ToolSearch; the host/budget/operator policy decides the rest.
+            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true },
         );
       } catch (err) {
         return { kind: 'failed', error: err };

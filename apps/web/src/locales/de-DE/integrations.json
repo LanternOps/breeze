@@ -62,7 +62,8 @@
       "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
       "syncNow": "Jetzt synchronisieren",
       "syncFailed": "Die Mandantensynchronisierung konnte nicht angefordert werden.",
-      "syncSucceeded": "Mandantensynchronisierung angefordert."
+      "syncSucceeded": "Mandantensynchronisierung angefordert.",
+      "connectTenant": "Mandanten verbinden"
     },
     "sync": {
       "lastSynced": "Zuletzt synchronisiert {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
+    },
+    "stepTitle": "Lesezugriff",
+    "stepDescription": "Schreibgeschützter Zugriff, erteilt von einem Administrator des Kunden. Breeze fragt nie nach einem Mandantengeheimnis oder Zertifikat.",
+    "recommendedFirst": "Zuerst empfohlen",
+    "showPermissions": "Microsoft-Berechtigungen anzeigen",
+    "capabilities": {
+      "intro": "Für KI-Abfragen und Berichte kann Breeze:",
+      "users": "Benutzer und Gruppen nachschlagen",
+      "devices": "Geräte und Anmeldungen einsehen",
+      "posture": "Den Sicherheitsstatus prüfen"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Die erneute Verbindungsprüfung ist abgeschlossen.",
       "disconnectWarning": "Durch das Trennen kann Breeze diese Verbindung nicht mehr verwenden. Die mandantenweite Microsoft-Zustimmung bleibt bestehen, bis ein Kundenadministrator sie in Microsoft Entra entfernt.",
       "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
-      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt."
+      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt.",
+      "grant": "Administratoraktionen gewähren…"
     },
     "errors": {
       "consent_expired": "Die Zustimmungssitzung ist abgelaufen. Starten Sie die Zustimmung erneut.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
+    },
+    "stepTitle": "Administratoraktionen",
+    "stepDescription": "Benutzerkennwörter zurücksetzen und die Benutzeranmeldung aus Breeze heraus deaktivieren.",
+    "readRequiredNote": "KI-Abfragen und Berichte benötigen Lesezugriff (Schritt 1).",
+    "showPermissions": "Microsoft-Berechtigungen anzeigen",
+    "preflight": {
+      "title": "Bevor Sie zu Microsoft weitergehen",
+      "canDoIntro": "Breeze kann dann:",
+      "resetPasswords": "Benutzerkennwörter zurücksetzen",
+      "disableSignIn": "Die Benutzeranmeldung deaktivieren",
+      "adminRequired": "Sie müssen bei Microsoft als globaler Administrator (oder Administrator für privilegierte Rollen) für {{target}} angemeldet sein.",
+      "revoke": "Um den Zugriff später zu widerrufen, trennen Sie die Verbindung hier oder entfernen Sie die Breeze-Unternehmensanwendung in Microsoft Entra.",
+      "continue": "Weiter zu Microsoft",
+      "defaultTarget": "den Microsoft 365-Mandanten dieser Organisation"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Microsoft 365-Verbindungen werden geladen.",
+    "consentUnavailable": "Eine zustimmungsbasierte Verbindung ist auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "selectOrganization": "Wählen Sie eine Organisation aus, um ihren Microsoft 365-Mandanten zu verbinden.",
+    "noTenantForOrg": "Kein Microsoft 365-Mandant mit {{orgName}} verbunden",
+    "noTenant": "Kein Microsoft 365-Mandant mit dieser Organisation verbunden",
+    "tenantId": "Mandanten-ID",
+    "copyTenantId": "Mandanten-ID kopieren",
+    "copied": "Mandanten-ID kopiert",
+    "lastVerified": "Zuletzt überprüft {{date}}",
+    "notVerifiedYet": "Noch nicht überprüft",
+    "stepLabel": "Schritt {{number}}",
+    "legacyDisclosure": "Erweitert: eigene App-Registrierung verwenden (veraltet)"
   },
   "communicationIntegrations": {
     "critical": "Kritisch",
@@ -566,7 +606,10 @@
     "hideSecret": "Geheimnis verbergen",
     "showSecret": "Geheimnis zeigen",
     "updateConnection": "Verbindung aktualisieren",
-    "saveAndVerify": "Speichern und überprüfen"
+    "saveAndVerify": "Speichern und überprüfen",
+    "legacyBadge": "Veraltet",
+    "precedenceNote": "Diese veraltete Direktverbindung hat für diesen Mandanten Vorrang vor der zustimmungsbasierten Verbindung.",
+    "disconnectConfirm": "Die veraltete Direktverbindung trennen? Breeze löscht die gespeicherten Anmeldedaten der App-Registrierung. Die App-Registrierung selbst bleibt in Microsoft Entra erhalten."
   },
   "monitoringIntegration": {
     "deviceHealth": "Gerätezustand",
@@ -782,6 +825,8 @@
     "notConnected": "Nicht verbunden",
     "reconnectRequired": "Erneute Verbindung erforderlich",
     "disconnectOtherFirst": "Trennen Sie zuerst {{provider}}",
+    "pendingTenant": "Wählen Sie eine Organisation",
+    "finishOtherFirst": "Schließen Sie die {{provider}}-Verbindung zuerst ab oder brechen Sie sie ab",
     "loadFailed": "Die Buchhaltungsanbieter konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
     "noProviderConfigured": "Auf dieser Instanz ist kein Buchhaltungsanbieter konfiguriert."
   },
@@ -1098,7 +1143,56 @@
     "syncNowQueued": "Zahlungsabgleich eingereiht.",
     "syncNowNotQueued": "Der Zahlungsabgleich konnte nicht eingereiht werden. Bitte in Kürze erneut versuchen.",
     "syncNowPullDisabled": "Der Zahlungsabgleich ist für diese Verbindung deaktiviert – aktivieren Sie Zahlungsabgleich oder Zahlungsübertragung, um jetzt zu synchronisieren.",
-    "failedToSyncNow": "Der Zahlungsabgleich konnte nicht gestartet werden."
+    "failedToSyncNow": "Der Zahlungsabgleich konnte nicht gestartet werden.",
+    "tenantPicker": {
+      "title": "Wählen Sie Ihre {{provider}}-Organisation",
+      "description": "Sie haben mehr als eine Organisation autorisiert. Breeze verbindet sich mit genau einer; die anderen werden aus dieser Verbindung entfernt.",
+      "loadFailed": "Ihre Organisationen konnten nicht von {{provider}} geladen werden.",
+      "expired": "Diese Anmeldung bei {{provider}} ist abgelaufen. Abbrechen und erneut verbinden.",
+      "connect": "Organisation verbinden",
+      "cancel": "Verbindung abbrechen",
+      "selectFailed": "Diese Organisation konnte nicht verbunden werden.",
+      "cancelFailed": "Die Verbindung konnte nicht abgebrochen werden.",
+      "connected": "{{provider}}-Organisation verbunden",
+      "cancelled": "{{provider}}-Verbindung abgebrochen",
+      "chooseFirst": "Wählen Sie zuerst eine Organisation",
+      "grantSuperseded": "Eine neuere Anmeldung bei {{provider}} hat diese ersetzt. Wählen Sie die Organisation erneut.",
+      "deadline": "Wählen Sie eine Organisation vor {{time}}.",
+      "tenantHeld": "Diese {{provider}}-Organisation ist bereits mit einem anderen Breeze-Konto verbunden. Wählen Sie eine andere Organisation oder brechen Sie die Verbindung ab.",
+      "retry": "Erneut versuchen"
+    },
+    "connectErrors": {
+      "tenantHeld": "Diese {{provider}}-Organisation ist bereits mit einem anderen Breeze-Konto verbunden.",
+      "authEventMissing": "{{provider}} hat nicht bestätigt, welche Organisationen Sie autorisiert haben. Bitte verbinden Sie sich erneut.",
+      "noOrganisation": "Es wurde keine {{provider}}-Organisation autorisiert. Wählen Sie eine Organisation auf dem Zustimmungsbildschirm von {{provider}}.",
+      "tenantLookupFailed": "Ihre {{provider}}-Organisationen konnten nicht gelesen werden. Bitte versuchen Sie es erneut.",
+      "consentDenied": "Sie haben die Anmeldung bei {{provider}} abgebrochen. Es wurde nichts verbunden.",
+      "selectTenant": "Wählen Sie, welche {{provider}}-Organisation verbunden werden soll."
+    },
+    "disconnectConfirm": {
+      "title": "Verbindung zu {{provider}} trennen?",
+      "message": "Breeze synchronisiert nicht mehr mit {{provider}} und entfernt die Verbindung in {{provider}}. Sie können jederzeit erneut verbinden.",
+      "confirm": "Trennen"
+    },
+    "reconnectKeepsOrganisation": "Beim erneuten Verbinden bleibt Ihre aktuelle {{provider}}-Organisation erhalten. Jede andere Organisation, die Sie auf dem {{provider}}-Bildschirm ankreuzen, wird freigegeben.",
+    "pendingTenant": "Organisation auswählen",
+    "settingsStep": {
+      "title": "{{provider}}-Einstellungen",
+      "organisation": "Organisation",
+      "demoBadge": "Demo-Unternehmen",
+      "incomeAccount": "Standard-Erlöskonto",
+      "taxRate": "Steuersatz für steuerpflichtige Positionen",
+      "exemptTaxRate": "Steuersatz für steuerfreie Positionen",
+      "paymentAccount": "Bankkonto für Zahlungen",
+      "notSet": "Nicht festgelegt",
+      "save": "Einstellungen speichern",
+      "saved": "{{provider}}-Einstellungen gespeichert",
+      "saveFailed": "{{provider}}-Einstellungen konnten nicht gespeichert werden.",
+      "loadFailed": "Einstellungen von {{provider}} konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "pickDefaults": "Wählen Sie die Standardwerte, die Breeze mit {{provider}} verwendet. Wenn Sie die Organisation gewechselt haben, wählen Sie sie erneut — die Auswahl der vorherigen Organisation wurde gelöscht.",
+      "paymentAccountMissing": "In Breeze erfasste Zahlungen werden erst an {{provider}} übertragen, wenn Sie ein Bankkonto auswählen."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Kunden- und Artikelzuordnung",
@@ -1120,6 +1214,9 @@
     "syncFailed": "Synchronisierung fehlgeschlagen",
     "incomeAccount": "Ertragskonto",
     "incomeAccountRequired": "Legen Sie ein Standard-Ertragskonto fest, bevor Sie Artikel in {{provider}} erstellen oder synchronisieren.",
+    "incomeAccountInSettings": "Legen Sie vor dem Anlegen von Artikeln im Einstellungsschritt oben das {{provider}}-Erlöskonto fest.",
+    "archived": "Archiviert",
+    "duplicateNameHint": "Wählen Sie unten den vorhandenen {{provider}}-Datensatz aus und bestätigen Sie die Zuordnung.",
     "saveIncomeAccount": "Ertragskonto speichern",
     "mappingSaved": "Zuordnung gespeichert.",
     "entitySynced": "Mit {{provider}} synchronisiert.",
@@ -1152,6 +1249,9 @@
     "importing": "Importieren…",
     "importSelected": "Import {{count}} ausgewählt",
     "customerFailedCount_one": "{{count}} Kunde konnte nicht importieren",
-    "customerFailedCount_other": "{{count}} Kunden konnten nicht importiert werden"
+    "customerFailedCount_other": "{{count}} Kunden konnten nicht importiert werden",
+    "showAllContacts_one": "Alle Kontakte anzeigen ({{count}} reiner Lieferant ausgeblendet)",
+    "showAllContacts_other": "Alle Kontakte anzeigen ({{count}} reine Lieferanten ausgeblendet)",
+    "archived": "Archiviert"
   }
 }

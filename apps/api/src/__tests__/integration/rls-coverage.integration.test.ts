@@ -115,6 +115,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'sso_token_exchange_grants', // One-time SSO exchange authority. Forced RLS, one system-only ALL policy; only guarded auth lifecycle transactions may consume it.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
+  'backup_snapshot_id_tombstones', // Backup snapshot ids that may never be issued or accepted again (2026-11-08-120000). Id, reason and timestamp only — no org, device or configuration reference, so there is no tenant axis and no cascade/merge/export registration applies. Forced RLS, single system-only policy; breeze_app holds SELECT/INSERT only (UPDATE/DELETE/TRUNCATE revoked, re-revoked at boot by ensureAppRole). Written only by triggers on backup_snapshot_id_reservations and by storage reclaim, both of which elevate to system scope for that statement.
   'email_provider_domain_releases', // Provider-side "delete this domain" outbox (spec 2026-09-17 partner sending domains §3.3). Deliberately carries NO partner_id: cascadeDeletePartner deletes from every table that has one, which would erase the provider handle this table exists to keep across the partner's deletion. No tenant axis. Forced RLS, single system-only policy → only system context. Not in EXEMPT_TABLES: with no org_id and no shape-list entry, no offender scan reaches it.
 ]);
 
@@ -222,6 +223,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // or PARTNER_WIDE_SELECT_BRANCH_EXEMPT. Functional forge proof:
   // workTypesPartnerRls.integration.test.ts.
   ['work_types', 'partner_id'],
+  // report_series (multi-org report series W02): partner-owned parent of
+  // org-owned `reports` children. Shape 3, flat
+  // breeze_has_partner_access(partner_id), partner_id NOT NULL — the spec D6
+  // exception to Partner-Wide-First, so deliberately NOT in
+  // DUAL_AXIS_TENANT_TABLES. No org_id, so no org cascade/export/merge entry;
+  // report_series_org_targets (shape 1) is auto-discovered. Functional forge
+  // proof: reportSeriesPartnerRls.integration.test.ts.
+  ['report_series', 'partner_id'],
   ['billing_profiles', 'partner_id'],
   ['billing_profile_rules', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
@@ -352,6 +361,15 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // device_pool_assignment_events: the
+  // holding-area ledger. Partner-axis (Shape 3), no org_id column — from/to org
+  // ids are historical snapshots, not tenancy keys — so no cascade / export /
+  // merge registration. GRANT includes DELETE for cascadeDeletePartner's
+  // dynamic partner_id sweep; UPDATE is blocked by trigger. A RESTRICTIVE
+  // system-only policy (2026-11-08-170300) narrows every command to system
+  // scope on top of the partner-axis policy asserted here.
+  // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
+  ['device_pool_assignment_events', 'partner_id'],
   // Backup Provider Integration (#6008 W01): the MSP registers one external
   // backup vendor connection (Cove) and maps its discovered customers to
   // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
@@ -402,6 +420,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cv_policy_partner_select ships in 2026-10-26-170100. Functional forge
   // proof: callerVerification.integration.test.ts.
   'caller_verification_policies',
+  // fix_memory (AI Suggested Fixes W1): org XOR partner via
+  // fix_memory_one_owner_chk; SELECT-only partner-wide branch
+  // fix_memory_partner_wide_select ships in 2026-11-03-100000. Functional
+  // forge proof: fixMemoryPartnerRls.integration.test.ts.
+  'fix_memory',
   'topology_config_templates',
   'topology_config_template_versions',
   // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
@@ -767,6 +790,9 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // functionally by reportsPartnerRls.integration.test.ts instead.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'caller_verification_policies',
+  // fix_memory_one_owner_chk, 2026-11-03-100000 (AI Suggested Fixes W1); its
+  // partner-wide SELECT branch ships in the same migration.
+  'fix_memory',
   'topology_config_templates',
   'topology_config_template_versions',
   // monitor_definitions_one_owner_chk ((org_id IS NULL) <> (partner_id IS

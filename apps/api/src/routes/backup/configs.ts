@@ -33,6 +33,8 @@ import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared'
 import { resolveScopedOrgId } from './helpers';
 import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, validateS3Details } from './schemas';
 
+import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().guid() });
@@ -201,6 +203,8 @@ configsRoutes.post(
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const payload = c.req.valid('json');
     const details: Record<string, unknown> = { ...(payload.details ?? {}) };

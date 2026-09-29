@@ -101,6 +101,17 @@ function mockResolvedEnrollmentPartner(partnerId = 'partner-123') {
   } as any);
 }
 
+// Holding-org delivery eligibility is its own read, covered by the
+// helpers.filesystemAnalysis suite and parkedCommandDelivery.integration.test.ts;
+// kept out of this suite's ordered select queue.
+vi.mock('../services/unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('../services/unassignedPool/deliveryEligibility')>(
+    '../services/unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+  assertCommandDeliverable: vi.fn(async () => undefined),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => defaultSelectChain()),
@@ -114,6 +125,8 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
   runOutsideDbContext: vi.fn((fn: any) => fn()),
+  // #3530: the command-result route's CAS + persistence savepoint.
+  withDbTransaction: vi.fn(async (fn: any) => fn()),
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
 }));
 
@@ -269,7 +282,7 @@ vi.mock('../services/commandDispatch', () => ({
   claimPendingCommandsForDevice: vi.fn().mockResolvedValue([]),
 }));
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   devices as devicesTable,
   automationPolicies as automationPoliciesTable,
@@ -1450,15 +1463,17 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(200);
-      // runOutsideDbContext is called 3 times: command lookup, command update, and audit policy queueing
-      expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(3);
-      // withSystemDbAccessContext is called twice: once by the pre-existing
-      // path, and once wrapping the terminal device_commands compare-and-set.
-      // That second call is the #1375 fix (Sentry BREEZE-7) — this route is the
-      // REST twin of agentWs.processCommandResult and was writing
-      // device_commands with no access context. The count is load-bearing:
-      // dropping back to 1 means the write went contextless again.
-      expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(2);
+      // runOutsideDbContext is called twice: the command lookup and the
+      // audit-policy re-collect enqueue. #3530 moved the terminal
+      // device_commands compare-and-set off its own outside+system transaction
+      // and into the request-context savepoint it shares with the per-type
+      // persistence (withDbTransaction) — still an explicit context, so the
+      // #1375 invariant (no contextless device_commands write) holds.
+      expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(withDbTransaction)).toHaveBeenCalledTimes(1);
+      // The follow-up enqueue still escapes the request transaction into its
+      // own system context so the new row commits before the agent can answer.
+      expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(queueCommandForExecution)).toHaveBeenCalledWith(
         'device-123',
         'collect_audit_policy',

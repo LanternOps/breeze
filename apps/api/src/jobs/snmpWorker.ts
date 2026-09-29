@@ -17,6 +17,7 @@ import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/ag
 import type { AgentCommand } from '../routes/agentWs';
 import { decryptSnmpSecret } from '../services/snmpSecrets';
 import { buildOidSpecs, selectOidSpecsForSeq, POLL_LIMITS, type OidSpec } from '../services/snmpOidSpecs';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -442,6 +443,9 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
   const agentConditions = [
     eq(devices.orgId, device.orgId),
     eq(devices.isEphemeral, false),
+    // Never a device parked in its partner's holding org: the poll command
+    // carries SNMP credentials.
+    notParkedDeviceCondition(),
     eq(devices.status, 'online'),
   ];
   // Strict null check, not truthiness: `executionSiteId` is `string | null`,

@@ -184,6 +184,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // Parked-device assignment. Each assignment runs in its own short system
+  // transaction (one per device for a bulk batch of up to 50), and the list
+  // opens its own system read. Under the ambient request transaction every one
+  // of those would take a SECOND pooled connection while the request's sat
+  // idle-in-transaction (#1105). The handlers hold no context of their own;
+  // the service and the audit writer open and close theirs.
+  { method: 'GET', pattern: /^\/api\/v1\/pre-assignment\/devices\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/devices\/[^/]+\/assign\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/devices\/assign-bulk\/?$/ },
+  // Incident actions: the switch write and the per-device expiry
+  // transactions each open their own system context.
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/switch\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/expire-devices\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request
@@ -252,6 +265,22 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // they had under the request tx.
   { method: 'POST', pattern: /^\/api\/v1\/mobile\/devices\/[^/]+\/actions\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/[^/]+\/execute\/?$/ },
+  // #7347 — manual automation trigger (both spellings). The handler inserts the
+  // automation_runs row and enqueues `execute-run`, which the automation worker
+  // loads on its own connection. Under the ambient request transaction a fast
+  // worker found no run and threw `Automation run not found`. The handler now
+  // creates the run in a short withAuthDbAccessContext block and enqueues only
+  // after it commits.
+  { method: 'POST', pattern: /^\/api\/v1\/automations\/[^/]+\/(trigger|run)\/?$/ },
+  // #7347 — software deployment create (both routes) and retry. Each writes
+  // deployment rows and `device_commands` rows, then pushes `software_install`
+  // to live agents; the agent result path reads `device_commands` on its own
+  // connection, so under the ambient request transaction a fast agent's result
+  // was dropped as an orphan. The handlers write every row in one short
+  // withAuthDbAccessContext block with the push deferred (`deferDelivery`) and
+  // call `deliver()` after it commits.
+  { method: 'POST', pattern: /^\/api\/v1\/software\/(deployments|deploy)\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/software\/deployments\/[^/]+\/retry\/?$/ },
   // #6597 — manual backup runs (single device and run-all). Each creates
   // backup_jobs rows and enqueues a dispatch the backup worker picks up on its
   // own connection within milliseconds. Under the ambient request transaction

@@ -41,6 +41,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { buildGuardedLlmFetch } from './guardedLlmFetch';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './sdkChildEnvGuards';
 
 /**
  * Bump this whenever the harness gets meaningfully stricter — verification
@@ -222,6 +223,9 @@ export function buildFidelityChildEnv(
   const env: Record<string, string> = {
     CI: 'true',
     CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/provider-fidelity-harness',
+    // HOME is forwarded; keep the host's Claude Code memory away from the
+    // partner endpoint under test (#7444).
+    ...SDK_CHILD_HOST_CONTEXT_GUARDS,
   };
 
   for (const key of passthrough) {

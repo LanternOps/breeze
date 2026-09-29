@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// The holding-org refusal reads the org; the positional db mocks below do not model it.
+vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
 import { Hono } from 'hono';
 import { connectionsRoutes } from './connections';
 

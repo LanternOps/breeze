@@ -78,14 +78,14 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false, callerVerification: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false, callerVerification: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
   });
 
   it.each(['true', 'false', '', 'garbage'])('returns caller verification readiness for %s', async (value) => {
@@ -146,6 +146,15 @@ describe('GET /config', () => {
     expect(body.features.toolSources).toBe(true);
     vi.unstubAllEnvs();
   });
+
+  it.each([['true', true], ['1', true], ['false', false], ['', false]])(
+    'features.preAssignmentEnrollment reflects PRE_ASSIGNMENT_ENROLLMENT_ENABLED=%s', async (value, enabled) => {
+      vi.stubEnv('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', value);
+      const { body } = await request();
+      expect(body.features.preAssignmentEnrollment).toBe(enabled);
+      vi.unstubAllEnvs();
+    },
+  );
 
   it('registration.enabled defaults to false when ENABLE_REGISTRATION unset', async () => {
     const { body } = await request();

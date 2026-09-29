@@ -210,9 +210,16 @@ function quickSupportOrgTypePredicate(cond: unknown): 'exclude' | 'only' | null 
     return null;
   }
   const match = /"type"\s*(<>|=)\s*\$(\d+)/.exec(compiled.sql);
-  if (!match) return null;
-  if (compiled.params[Number(match[2]) - 1] !== 'quick_support') return null;
-  return match[1] === '<>' ? 'exclude' : 'only';
+  if (match) {
+    if (compiled.params[Number(match[2]) - 1] !== 'quick_support') return null;
+    return match[1] === '<>' ? 'exclude' : 'only';
+  }
+  // The hidden-org visibility list: `type not in (...)` / `type in (...)`.
+  const list = /"type"\s*(not in|in)\s*\(((?:\$\d+(?:,\s*)?)+)\)/.exec(compiled.sql);
+  if (!list) return null;
+  const values = [...list[2]!.matchAll(/\$(\d+)/g)].map((m) => compiled.params[Number(m[1]) - 1]);
+  if (!values.includes('quick_support')) return null;
+  return list[1] === 'not in' ? 'exclude' : 'only';
 }
 
 // Mutable across a single test: `accounting_entity_mappings` reads/writes all

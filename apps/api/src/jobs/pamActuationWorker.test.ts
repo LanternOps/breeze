@@ -132,6 +132,29 @@ describe('processPamActuationEvent', () => {
     expect(sqlText).not.toContain('INSERT INTO device_commands');
   });
 
+  it('marks an actuation for a device parked in a holding org failed without inserting a command', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rows: [{ ...current, device_org_type: 'unassigned_pool' }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+      .resolves.toBe('blocked');
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
+    expect(sqlText).toContain('device_pending_assignment');
+    expect(sqlText).not.toContain('INSERT INTO device_commands');
+    expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
+  });
+
+  it('reads the device org type with the actuation row', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+    const firstQuery = JSON.stringify(executeMock.mock.calls[0]?.[0]);
+    expect(firstQuery).toContain('JOIN organizations');
+    expect(firstQuery).toContain('device_org_type');
+  });
+
   it('uses the builder as the only expired-apply authority', async () => {
     executeMock
       .mockResolvedValueOnce({ rows: [{ ...current, expires_at: new Date(canonical.apply.serverTime) }] })

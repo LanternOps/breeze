@@ -11,7 +11,14 @@ import {
   generateApproverRegistrationOptions,
   verifyApproverRegistration,
 } from '../services/approverWebAuthn';
-import { loadPartnerPolicy, validateRaiseOnly } from '../services/authenticatorPolicy';
+import {
+  describeEffectivePolicy,
+  loadPartnerPolicy,
+  PLATFORM_DEFAULT_ENFORCED_TIERS,
+  validateRaiseOnly,
+  validateReachable,
+} from '../services/authenticatorPolicy';
+import { approverAssuranceDefaultEnforceFrom } from '../config/env';
 import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
@@ -803,21 +810,27 @@ approverDevicesRoutes.patch(
 // technicians' approval-security posture). Raise-only is re-validated here.
 // ============================================================
 
-const DEFAULT_POLICY = { floorOverrides: {}, requireEnrollment: false, enforceFrom: null as string | null };
-
 authenticatorRoutes.get(
   '/policy',
   authMiddleware,
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const policy = await loadPartnerPolicy(auth.partnerId ?? null);
-    if (!policy) return c.json({ policy: DEFAULT_POLICY });
+    const stored = await loadPartnerPolicy(auth.partnerId ?? null);
+    const platformDefaultFrom = approverAssuranceDefaultEnforceFrom();
+    // `policy` is what the partner saved (requireEnrollment null = blank, i.e.
+    // inheriting); `effective` folds in the platform default so the settings
+    // tab and the approvals notice can show the inherited value and its source.
     return c.json({
       policy: {
-        floorOverrides: policy.floorOverrides ?? {},
-        requireEnrollment: policy.requireEnrollment,
-        enforceFrom: policy.enforceFrom ? policy.enforceFrom.toISOString() : null,
+        floorOverrides: stored?.floorOverrides ?? {},
+        requireEnrollment: stored ? stored.requireEnrollment : null,
+        enforceFrom: stored?.enforceFrom ? stored.enforceFrom.toISOString() : null,
+      },
+      effective: describeEffectivePolicy(stored, new Date(), platformDefaultFrom),
+      platformDefault: {
+        enforceFrom: platformDefaultFrom.toISOString(),
+        enforcedTiers: [...PLATFORM_DEFAULT_ENFORCED_TIERS],
       },
     });
   },
@@ -853,12 +866,22 @@ authenticatorRoutes.put(
     } catch (err) {
       return c.json({ error: 'invalid_policy', detail: err instanceof Error ? err.message : 'raise-only violation' }, 400);
     }
+    // Reachable-only: a floor above what any approver device can produce for
+    // that tier would block every approve at it once enforcement applies.
+    try {
+      validateReachable(floorOverrides);
+    } catch (err) {
+      return c.json({ error: 'unreachable_floor', detail: err instanceof Error ? err.message : 'unreachable floor' }, 400);
+    }
 
     const values = {
       partnerId: auth.partnerId,
       floorOverrides,
       requireEnrollment: input.requireEnrollment,
-      enforceFrom: input.enforceFrom ? new Date(input.enforceFrom) : null,
+      // A blank (inheriting) choice follows the platform date; a stored date
+      // would only mislead a later reader.
+      enforceFrom:
+        input.requireEnrollment !== null && input.enforceFrom ? new Date(input.enforceFrom) : null,
       updatedByUserId: auth.user.id,
       updatedAt: new Date(),
     };

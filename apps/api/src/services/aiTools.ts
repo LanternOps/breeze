@@ -72,6 +72,7 @@ import { registerPlaybookTools } from './aiToolsPlaybooks';
 import { registerAlertTools } from './aiToolsAlerts';
 import { registerDeliveryTools } from './aiToolsDelivery';
 import { registerRemediationTools } from './aiToolsRemediation';
+import { registerFixMemoryTools } from './aiToolsFixMemory';
 import { registerIncidentTools } from './aiToolsIncident';
 import { registerPerformanceTools } from './aiToolsPerformance';
 import { registerUserRiskTools } from './aiToolsUserRisk';
@@ -207,7 +208,8 @@ export async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  // Never a device parked in a holding org, whatever the caller's scope.
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -295,6 +297,7 @@ export { resolveWritableToolOrgId } from './aiToolWriteOrg';
 // modules that still import `aiTools/hasCoreAiToolName` from here.
 export { aiTools, hasCoreAiToolName } from './aiToolNames';
 import { aiTools, hasCoreAiToolName, registerReservedAiToolNamePredicate } from './aiToolNames';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // Register all domain modules
 registerAgentLogTools(aiTools);
@@ -338,6 +341,7 @@ registerDeliverableTools(aiTools);
 registerQuoteTools(aiTools);
 registerOrgTools(aiTools);
 registerRemediationTools(aiTools);
+registerFixMemoryTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);
@@ -479,6 +483,9 @@ export function getToolSearchHint(toolName: string): string | undefined {
 }
 
 export function getToolAlwaysLoad(toolName: string): boolean {
+  // Approval-mode prompts instruct the model to call this chat-only tool by
+  // name, so it is never deferred behind tool search (A-W04).
+  if (toolName === 'propose_action_plan') return true;
   return aiTools.get(toolName)?.alwaysLoad === true;
 }
 

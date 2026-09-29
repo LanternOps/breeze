@@ -33,6 +33,25 @@ describe('createStreamObserver', () => {
     expect(obs.result).toEqual({ subtype: 'success', numTurns: 2, durationMs: 2100, totalCostUsd: 0.012 });
   });
 
+  it('counts assistant messages that share an API message id once and records the call that made the first real tool call', () => {
+    const o = createStreamObserver();
+    const u = (read: number) => ({ ...usage, cache_read_input_tokens: read });
+    // The CLI emits one assistant message per content block of the same response.
+    o.onMessage({ type: 'assistant', message: { id: 'msg_1', usage: u(1), content: [{ type: 'text', text: 'Searching' }] } });
+    o.onMessage({ type: 'assistant', message: { id: 'msg_1', usage: u(1), content: [
+      { type: 'tool_use', id: 't0', name: 'ToolSearch', input: { query: 'select:mcp__breeze__search_logs' } },
+    ] } });
+    o.onMessage({ type: 'assistant', message: { id: 'msg_2', usage: u(2), content: [
+      { type: 'tool_use', id: 't1', name: 'mcp__breeze__search_logs', input: {} },
+    ] } });
+    o.onMessage({ type: 'assistant', message: { id: 'msg_3', usage: u(3), content: [
+      { type: 'tool_use', id: 't2', name: 'mcp__breeze__query_devices', input: {} },
+    ] } });
+    const obs = o.finish();
+    expect(obs.apiCalls.map((c) => c.cacheReadInputTokens)).toEqual([1, 2, 3]);
+    expect(obs.firstToolApiCallIndex).toBe(1);
+  });
+
   it('derives ttft from the first content_block_delta when the SDK gives no ttft_ms', () => {
     const o = createStreamObserver(1_000);
     const realNow = Date.now; Date.now = () => 1_350;
@@ -41,7 +60,7 @@ describe('createStreamObserver', () => {
   });
 
   it('is null-safe on a session that produced nothing', () => {
-    expect(createStreamObserver().finish()).toMatchObject({ ttftMs: null, apiCalls: [], toolUses: [], result: null, sessionId: null });
+    expect(createStreamObserver().finish()).toMatchObject({ ttftMs: null, apiCalls: [], toolUses: [], firstToolApiCallIndex: null, result: null, sessionId: null });
   });
 
   it('handles a stderr line split across chunks and flushes the trailing remainder on finish()', () => {

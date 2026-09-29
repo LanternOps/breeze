@@ -15,7 +15,7 @@
  * gated, so provenance fails closed.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { addMock, getJobMock, queueCommandMock, recordDecisionMock, recordPolicyAuditMock } = vi.hoisted(() => ({
   addMock: vi.fn(async (..._args: any[]) => ({ id: 'queued-job-1' })),
@@ -589,6 +589,91 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
       target: { kind: 'install_method', catalogId: 'cat-1', installMethodId: 'im-1' },
     });
     createPolicyDeploymentMock.mockResolvedValue({ deploymentId: 'dep-1', status: 'pending' });
+  });
+
+  describe('#7347 — pushes only after the remediation transaction commits', () => {
+    // `depth`: the ambient context. `open`: uncommitted transactions.
+    // `failCommit`: the outermost transaction throws after `fn` settles.
+    const tx = { depth: 0, open: 0, failCommit: false };
+    const events: Array<{ event: string; depth: number; open: number }> = [];
+    const deliverMock = vi.fn(async () => {
+      events.push({ event: 'deliver', depth: tx.depth, open: tx.open });
+      return { deliveredDeviceIds: [DEVICE_ID] };
+    });
+
+    beforeEach(async () => {
+      tx.depth = 0;
+      tx.open = 0;
+      tx.failCommit = false;
+      events.length = 0;
+      deliverMock.mockClear();
+      const { withSystemDbAccessContext } = await import('../db');
+      vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
+        const opens = tx.depth === 0;
+        tx.depth += 1;
+        if (opens) tx.open += 1;
+        try {
+          const result = await fn();
+          if (opens && tx.failCommit) throw new Error('commit failed');
+          return result;
+        } finally {
+          tx.depth -= 1;
+          if (opens) tx.open -= 1;
+        }
+      });
+      createPolicyDeploymentMock.mockImplementation(async () => {
+        events.push({ event: 'deployment_created', depth: tx.depth, open: tx.open });
+        return { deploymentId: 'dep-1', status: 'pending' as const, deliver: deliverMock } as any;
+      });
+    });
+
+    afterEach(async () => {
+      const { withSystemDbAccessContext } = await import('../db');
+      vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    });
+
+    it('creates the deployment inside the transaction and delivers after it commits', async () => {
+      primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+      const result = await processRemediateDeviceInstall(installJob());
+
+      expect(result).toEqual({ policyId: POLICY_ID, deviceId: DEVICE_ID, deploymentsCreated: 1, skipped: 0, errors: 0 });
+      const created = events.find((e) => e.event === 'deployment_created');
+      const delivered = events.find((e) => e.event === 'deliver');
+      expect(created).toMatchObject({ open: 1 });
+      expect(delivered).toMatchObject({ depth: 0, open: 0 });
+      expect(events.indexOf(delivered!)).toBeGreaterThan(events.indexOf(created!));
+    });
+
+    it('the BullMQ processor runs it with no enclosing transaction', async () => {
+      const captured: Array<(job: any) => Promise<unknown>> = [];
+      const bullmq = await import('bullmq');
+      const OriginalWorker = (bullmq as any).Worker;
+      (bullmq as any).Worker = class {
+        constructor(_name: string, processor: (job: any) => Promise<unknown>) {
+          captured.push(processor);
+        }
+        on = vi.fn();
+        close = vi.fn();
+      };
+      createSoftwareRemediationWorker();
+      (bullmq as any).Worker = OriginalWorker;
+      primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+      await captured[0]!({ data: installJob() });
+
+      expect(events.find((e) => e.event === 'deliver')).toMatchObject({ depth: 0, open: 0 });
+    });
+
+    it('a transaction that rolls back delivers nothing', async () => {
+      primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+      tx.failCommit = true;
+
+      await expect(processRemediateDeviceInstall(installJob())).rejects.toThrow('commit failed');
+
+      expect(createPolicyDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(deliverMock).not.toHaveBeenCalled();
+    });
   });
 
   it('creates a policy-owned deployment for an armed policy and a missing violation', async () => {

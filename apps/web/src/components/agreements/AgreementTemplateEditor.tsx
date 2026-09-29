@@ -23,6 +23,7 @@ import {
   type TemplateUsage,
 } from '../../lib/api/contractTemplates';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -56,6 +57,7 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [detail, setDetail] = useState<ContractTemplateDetail | null>(null);
+  usePageItemName(detail?.name);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [body, setBody] = useState('');

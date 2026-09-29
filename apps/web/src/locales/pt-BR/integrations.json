@@ -62,7 +62,8 @@
       "upgradeFailed": "Não foi possível iniciar a aprovação das novas permissões.",
       "syncNow": "Sincronizar agora",
       "syncFailed": "Não foi possível solicitar a sincronização do locatário.",
-      "syncSucceeded": "Sincronização do locatário solicitada."
+      "syncSucceeded": "Sincronização do locatário solicitada.",
+      "connectTenant": "Conectar locatário"
     },
     "sync": {
       "lastSynced": "Última sincronização {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
+    },
+    "stepTitle": "Acesso de leitura",
+    "stepDescription": "Acesso somente leitura concedido por um administrador do cliente. O Breeze nunca pede um segredo ou certificado do locatário.",
+    "recommendedFirst": "Recomendado primeiro",
+    "showPermissions": "Mostrar permissões da Microsoft",
+    "capabilities": {
+      "intro": "Para consultas de IA e relatórios, o Breeze pode:",
+      "users": "Consultar usuários e grupos",
+      "devices": "Ver dispositivos e entradas",
+      "posture": "Revisar a postura de segurança"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "O novo teste da conexão foi concluído.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
-      "disconnectSucceeded": "A conexão do Breeze foi desconectada."
+      "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
+      "grant": "Conceder ações de administrador…"
     },
     "errors": {
       "consent_expired": "A sessão de consentimento expirou. Inicie o consentimento novamente.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
+    },
+    "stepTitle": "Ações de administrador",
+    "stepDescription": "Redefinir senhas de usuários e desabilitar a entrada de usuários pelo Breeze.",
+    "readRequiredNote": "Consultas de IA e relatórios precisam de acesso de leitura (etapa 1).",
+    "showPermissions": "Mostrar permissões da Microsoft",
+    "preflight": {
+      "title": "Antes de continuar para a Microsoft",
+      "canDoIntro": "O Breeze poderá:",
+      "resetPasswords": "Redefinir senhas de usuários",
+      "disableSignIn": "Desabilitar a entrada de usuários",
+      "adminRequired": "Você precisa estar conectado à Microsoft como Administrador Global (ou Administrador de Função Privilegiada) de {{target}}.",
+      "revoke": "Para revogar o acesso depois, desconecte aqui ou remova o aplicativo empresarial do Breeze no Microsoft Entra.",
+      "continue": "Continuar para a Microsoft",
+      "defaultTarget": "o locatário do Microsoft 365 desta organização"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Carregando conexões do Microsoft 365.",
+    "consentUnavailable": "A conexão baseada em consentimento ainda não está disponível nesta instância do Breeze.",
+    "selectOrganization": "Selecione uma organização para conectar o locatário do Microsoft 365 dela.",
+    "noTenantForOrg": "Nenhum locatário do Microsoft 365 conectado a {{orgName}}",
+    "noTenant": "Nenhum locatário do Microsoft 365 conectado a esta organização",
+    "tenantId": "ID do locatário",
+    "copyTenantId": "Copiar ID do locatário",
+    "copied": "ID do locatário copiado",
+    "lastVerified": "Última verificação: {{date}}",
+    "notVerifiedYet": "Ainda não verificado",
+    "stepLabel": "Etapa {{number}}",
+    "legacyDisclosure": "Avançado: usar seu próprio registro de aplicativo (legado)"
   },
   "communicationIntegrations": {
     "critical": "Crítico",
@@ -566,7 +606,10 @@
     "hideSecret": "Ocultar segredo",
     "showSecret": "Mostrar segredo",
     "updateConnection": "Atualizar conexão",
-    "saveAndVerify": "Salvar e verificar"
+    "saveAndVerify": "Salvar e verificar",
+    "legacyBadge": "Legado",
+    "precedenceNote": "Esta conexão direta legada tem prioridade sobre a conexão baseada em consentimento para este locatário.",
+    "disconnectConfirm": "Desconectar a conexão direta legada? O Breeze exclui as credenciais armazenadas do registro de aplicativo. O registro de aplicativo continua no Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Integridade do dispositivo",
@@ -782,6 +825,8 @@
     "notConnected": "Não conectado",
     "reconnectRequired": "Reconexão necessária",
     "disconnectOtherFirst": "Desconecte {{provider}} primeiro",
+    "pendingTenant": "Escolha uma organização",
+    "finishOtherFirst": "Conclua ou cancele primeiro a conexão do {{provider}}",
     "loadFailed": "Não foi possível carregar os provedores de contabilidade. Atualize a página para tentar novamente.",
     "noProviderConfigured": "Nenhum provedor de contabilidade está configurado nesta instância."
   },
@@ -1098,7 +1143,56 @@
     "syncNowQueued": "Sincronização de pagamentos na fila.",
     "syncNowNotQueued": "Não foi possível colocar a sincronização de pagamentos na fila. Tente novamente em instantes.",
     "syncNowPullDisabled": "A sincronização de pagamentos está desativada para esta conexão: ative Sincronização de pagamentos ou Envio de pagamentos para sincronizar agora.",
-    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos."
+    "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos.",
+    "tenantPicker": {
+      "title": "Escolha sua organização do {{provider}}",
+      "description": "Você autorizou mais de uma organização. O Breeze se conecta a exatamente uma; as demais são removidas desta conexão.",
+      "loadFailed": "Não foi possível carregar suas organizações do {{provider}}.",
+      "expired": "Este login no {{provider}} expirou. Cancele e conecte-se novamente.",
+      "connect": "Conectar organização",
+      "cancel": "Cancelar conexão",
+      "selectFailed": "Não foi possível conectar essa organização.",
+      "cancelFailed": "Não foi possível cancelar a conexão.",
+      "connected": "Organização do {{provider}} conectada",
+      "cancelled": "Conexão com o {{provider}} cancelada",
+      "chooseFirst": "Escolha uma organização primeiro",
+      "grantSuperseded": "Um login mais recente no {{provider}} substituiu este. Escolha a organização novamente.",
+      "deadline": "Escolha uma organização antes de {{time}}.",
+      "tenantHeld": "Esta organização do {{provider}} já está conectada a outra conta Breeze. Escolha outra organização ou cancele a conexão.",
+      "retry": "Tentar novamente"
+    },
+    "connectErrors": {
+      "tenantHeld": "Esta organização do {{provider}} já está conectada a outra conta Breeze.",
+      "authEventMissing": "O {{provider}} não confirmou quais organizações você autorizou. Conecte-se novamente.",
+      "noOrganisation": "Nenhuma organização do {{provider}} foi autorizada. Escolha uma organização na tela de consentimento do {{provider}}.",
+      "tenantLookupFailed": "Não foi possível ler suas organizações do {{provider}}. Tente novamente.",
+      "consentDenied": "Você cancelou o login no {{provider}}. Nada foi conectado.",
+      "selectTenant": "Escolha qual organização do {{provider}} conectar."
+    },
+    "disconnectConfirm": {
+      "title": "Desconectar do {{provider}}?",
+      "message": "O Breeze vai parar de sincronizar com o {{provider}} e remover a conexão no {{provider}}. Você pode se reconectar a qualquer momento.",
+      "confirm": "Desconectar"
+    },
+    "reconnectKeepsOrganisation": "Reconectar mantém sua organização atual do {{provider}}. Qualquer outra organização marcada na tela do {{provider}} é liberada.",
+    "pendingTenant": "Escolher uma organização",
+    "settingsStep": {
+      "title": "Configurações do {{provider}}",
+      "organisation": "Organização",
+      "demoBadge": "Empresa de demonstração",
+      "incomeAccount": "Conta de receita padrão",
+      "taxRate": "Alíquota de imposto para linhas tributáveis",
+      "exemptTaxRate": "Alíquota de imposto para linhas isentas",
+      "paymentAccount": "Conta bancária para pagamentos",
+      "notSet": "Não definido",
+      "save": "Salvar configurações",
+      "saved": "Configurações do {{provider}} salvas",
+      "saveFailed": "Não foi possível salvar as configurações do {{provider}}.",
+      "loadFailed": "Não foi possível carregar as configurações do {{provider}}.",
+      "retry": "Tentar novamente",
+      "pickDefaults": "Escolha os padrões que o Breeze usa com o {{provider}}. Se você trocou de organização, escolha-os novamente — as escolhas da organização anterior foram apagadas.",
+      "paymentAccountMissing": "Os pagamentos registrados no Breeze não são enviados ao {{provider}} até que você escolha uma conta bancária."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Mapeamento de clientes e itens",
@@ -1120,6 +1214,9 @@
     "syncFailed": "Falha na sincronização",
     "incomeAccount": "Conta de receita",
     "incomeAccountRequired": "Defina uma conta de receita padrão antes de criar ou sincronizar itens no {{provider}}.",
+    "incomeAccountInSettings": "Defina a conta de receita do {{provider}} na etapa de configurações acima antes de criar itens.",
+    "archived": "Arquivado",
+    "duplicateNameHint": "Escolha abaixo o registro existente do {{provider}} e confirme a correspondência.",
     "saveIncomeAccount": "Salvar conta de receita",
     "mappingSaved": "Mapeamento salvo.",
     "entitySynced": "Sincronizado com o {{provider}}.",
@@ -1152,6 +1249,9 @@
     "importing": "Importando…",
     "importSelected": "Importar {{count}} selecionados",
     "customerFailedCount_one": "{{count}} cliente não pôde ser importado",
-    "customerFailedCount_other": "{{count}} clientes não puderam ser importados"
+    "customerFailedCount_other": "{{count}} clientes não puderam ser importados",
+    "showAllContacts_one": "Mostrar todos os contatos ({{count}} apenas fornecedor oculto)",
+    "showAllContacts_other": "Mostrar todos os contatos ({{count}} apenas fornecedores ocultos)",
+    "archived": "Arquivado"
   }
 }

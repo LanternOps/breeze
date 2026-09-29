@@ -12,6 +12,7 @@ import { captureException } from '../sentry';
 // Package ROOT — deriveBackupHealth is a VALUE import (see Global Constraints).
 import { deriveBackupHealth, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
 import { getBackupProvider } from './registry';
+import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
 /** `alerts.context->>'source'` for every row this module writes. */
 export const BACKUP_PROVIDER_ALERT_SOURCE = 'backup_provider';
@@ -212,6 +213,8 @@ export async function evaluateProviderAlerts(
         // alerts (spec, Non-goals). They are excluded here rather than filtered
         // later so they never even acquire a pending_condition.
         eq(backupProviderDevices.accountType, 'backup_manager'),
+        // No provider alert is raised under the holding org.
+        notInHoldingOrgCondition(backupProviderDevices.orgId),
       ))) as ProviderAlertRow[];
 
     // Every open provider alert of THIS connection, including ones whose row has
@@ -330,7 +333,7 @@ export async function evaluateProviderAlerts(
 
     let resolved = 0;
     for (const alert of resolvable) {
-      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE)) resolved += 1;
+      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
     }
     // Losing an individual compare-and-swap is normal (a technician got there
     // first). Losing EVERY candidate is the shape an RLS write-policy divergence

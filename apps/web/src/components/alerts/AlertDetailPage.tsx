@@ -34,6 +34,7 @@ import {
 import { fillDevicePlaceholders, type AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type Alert = {
   id: string;
@@ -234,6 +235,8 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       setActionInProgress(false);
     }
   };
+
+  usePageItemName(alert?.title);
 
   if (loading) {
     return (

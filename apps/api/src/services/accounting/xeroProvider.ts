@@ -5,9 +5,8 @@
  * capabilities flip in W03b. W04 ships invoice push and void (capability
  * flipped in W04b). W05 ships payments: pull (reconcileChanges) and the
  * webhook doorbell (verifyWebhook) are wired in W05a; `createPayment`,
- * `deletePayment` and `paymentPushPreflight` are wired in W05b, and stay
- * unreachable behind the capability gates in routes, producers and workers
- * until W05c flips the paymentPush capability.
+ * `deletePayment` and `paymentPushPreflight` are wired in W05b. W05c flips
+ * `paymentPull` and `paymentPush` — Xero now declares all capabilities.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { xeroDailyCallLimit, xeroOAuthConfig } from '../../config/env';
@@ -81,7 +80,15 @@ export class XeroProvider implements AccountingProvider {
   readonly provider = 'xero' as const;
   readonly displayName = 'Xero';
   readonly capabilities = {
-    connect: true, mapping: false, customerImport: false, invoicePush: false, paymentPull: false, paymentPush: false,
+    connect: true,
+    // Xero W03: contacts/items mapping and contact import.
+    mapping: true,
+    customerImport: true,
+    // Xero W04: ACCREC invoice push and void.
+    invoicePush: true,
+    // Xero W05c: payment pull (reconcileChanges) and push (createPayment/deletePayment).
+    paymentPull: true,
+    paymentPush: true,
   } as const;
   // Refinement 14: the raw human reference the core may pass; the marker goes first.
   readonly limits = { paymentRefMax: XERO_PAYMENT_REF_MAX, rate: XERO_RATE_LIMIT };

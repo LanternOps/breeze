@@ -297,6 +297,9 @@ export function validateMergePair(loser: OrgMergeCandidate, survivor: OrgMergeCa
   if (loser.type === 'quick_support' || survivor.type === 'quick_support') {
     return 'quick_support organizations cannot be merged';
   }
+  if (loser.type === 'unassigned_pool' || survivor.type === 'unassigned_pool') {
+    return 'The unassigned-device holding area cannot be merged';
+  }
   if (loser.deletedAt) {
     return 'The organization being merged away has already been deleted';
   }

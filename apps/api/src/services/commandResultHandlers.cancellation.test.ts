@@ -119,6 +119,7 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withDbTransaction: (fn: () => unknown) => fn(),
 }));
 
 import { commandResultHandlers } from './commandResultHandlers';

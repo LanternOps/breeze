@@ -2312,7 +2312,7 @@
   "billingConnectionsTab": {
     "accounting": {
       "title": "Comptabilité",
-      "description": "Stripe et QuickBooks se connectent sous Intégrations — gérez-les là-bas.",
+      "description": "Stripe, QuickBooks et Xero se connectent sous Intégrations — gérez-les là-bas.",
       "cta": "Gérer les connexions comptables →"
     },
     "catalog": {

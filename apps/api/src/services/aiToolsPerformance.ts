@@ -25,6 +25,7 @@ import {
   resolveStartupItem,
 } from './startupItems';
 import { aiExecuteCommand } from './aiDispatch';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 type MetricPoint = {
@@ -78,7 +79,7 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -286,6 +287,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     domain: 'devices',
     searchHint: 'device CPU, RAM, disk and network metrics over time, time ranges and aggregation',
+    alwaysLoad: true,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_metrics',

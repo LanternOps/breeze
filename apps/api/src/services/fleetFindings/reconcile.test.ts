@@ -359,4 +359,32 @@ describe('reconcileOrgFindings', () => {
     // resolved row never blocks a fresh insert (partial unique index parity).
     expect(drizzleSpies.isNull).toHaveBeenCalledWith(fleetFindings.resolvedAt);
   });
+  it('7. a producer re-key (raw-row key -> episode key) resolves the old live row and opens the new one', async () => {
+    // #6650 follow-up: produceMetricAnomalyPatterns moved from
+    // `metric:<metric_name>:<anomaly_type>` to `episode:<anomaly_type>:<family>`
+    // WITHOUT an algorithm-version bump. The live query is version-scoped and
+    // the feed reader is not, so a bump would strand every v1 row open forever;
+    // keeping the version lets the resolve loop close the old keys on the
+    // first pass after deploy.
+    const oldMax = baseFindingRow({ id: 'old-max', semanticKey: 'metric:top_process_cpu_percent_max:process_runaway' });
+    const oldSum = baseFindingRow({ id: 'old-sum', semanticKey: 'metric:top_process_cpu_percent_sum:process_runaway' });
+    dbMocks.state.selectQueue = [[oldMax, oldSum]];
+    dbMocks.state.insertReturningQueue = [[{ id: 'new-episode-finding' }]];
+
+    const result = await reconcileOrgFindings(ORG_ID, [
+      candidate({ semanticKey: 'episode:process_runaway:process_cpu' }),
+    ]);
+
+    expect(result).toEqual({ opened: 1, updated: 0, resolved: 2 });
+    const resolvedIds = dbMocks.state.updateCalls
+      .filter((c) => c.table === fleetFindings && (c.values as Record<string, unknown>).status === 'resolved')
+      .map((c) => (c.where as { value: string }).value)
+      .sort();
+    expect(resolvedIds).toEqual(['old-max', 'old-sum']);
+    const findingInsert = dbMocks.state.insertCalls.find((c) => c.table === fleetFindings);
+    expect(findingInsert!.values).toMatchObject({
+      semanticKey: 'episode:process_runaway:process_cpu',
+      algorithmVersion: FLEET_FINDINGS_ALGORITHM_VERSION,
+    });
+  });
 });

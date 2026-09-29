@@ -58,7 +58,7 @@ export default function MonitorConversionAdmin() {
       </li>)}</ul>
       <p>Unconvertible sources remain for review or manual retirement now. A future release processes leftovers.</p>
       <button disabled={busy} onClick={() => setPreview(null)}>Cancel</button>
-      <button data-testid="admin-conversion-run" disabled={busy} onClick={() => void act(preview.partnerId, true)}>Convert reviewed scope</button>
+      <button data-testid="admin-conversion-run" disabled={busy || preview.convertible === 0} onClick={() => void act(preview.partnerId, true)}>Convert reviewed scope</button>
     </div>}
   </section>;
 }

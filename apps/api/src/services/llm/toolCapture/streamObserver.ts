@@ -9,6 +9,8 @@ export interface StreamObservation {
   ttftMs: number | null;
   apiCalls: ApiCallUsage[];
   toolUses: Array<{ name: string; input: Record<string, unknown> }>;
+  /** Index into `apiCalls` of the response that made the first non-ToolSearch tool call. */
+  firstToolApiCallIndex: number | null;
   toolSearchUses: number;
   toolSearchResultBlocks: number;
   toolReferenceNames: string[];
@@ -42,6 +44,7 @@ export function createStreamObserver(startedAtMs = Date.now()): {
     ttftMs: null,
     apiCalls: [],
     toolUses: [],
+    firstToolApiCallIndex: null,
     toolSearchUses: 0,
     toolSearchResultBlocks: 0,
     toolReferenceNames: [],
@@ -50,6 +53,9 @@ export function createStreamObserver(startedAtMs = Date.now()): {
     result: null,
   };
   let stderrRemainder = '';
+  // The CLI emits one assistant message per content block of a response, all
+  // carrying that response's id and usage — count each response once.
+  const seenMessageIds = new Set<string>();
 
   function walkContent(content: unknown, assistant: boolean): void {
     if (Array.isArray(content)) {
@@ -60,7 +66,10 @@ export function createStreamObserver(startedAtMs = Date.now()): {
     if (!block) return;
     if (assistant && block.type === 'tool_use' && typeof block.name === 'string') {
       if (block.name === 'ToolSearch') observation.toolSearchUses++;
-      else observation.toolUses.push({ name: block.name, input: asRecord(block.input) ?? {} });
+      else {
+        if (observation.toolUses.length === 0) observation.firstToolApiCallIndex = observation.apiCalls.length - 1;
+        observation.toolUses.push({ name: block.name, input: asRecord(block.input) ?? {} });
+      }
     }
     if (block.type === 'tool_search_tool_result' || block.type === 'server_tool_use') {
       observation.toolSearchResultBlocks++;
@@ -92,12 +101,16 @@ export function createStreamObserver(startedAtMs = Date.now()): {
         case 'assistant': {
           const body = asRecord(envelope.message);
           const usage = asRecord(body?.usage);
-          observation.apiCalls.push({
-            inputTokens: asNumber(usage?.input_tokens) ?? 0,
-            cacheCreationInputTokens: asNumber(usage?.cache_creation_input_tokens) ?? 0,
-            cacheReadInputTokens: asNumber(usage?.cache_read_input_tokens) ?? 0,
-            outputTokens: asNumber(usage?.output_tokens) ?? 0,
-          });
+          const messageId = typeof body?.id === 'string' ? body.id : null;
+          if (!messageId || !seenMessageIds.has(messageId)) {
+            if (messageId) seenMessageIds.add(messageId);
+            observation.apiCalls.push({
+              inputTokens: asNumber(usage?.input_tokens) ?? 0,
+              cacheCreationInputTokens: asNumber(usage?.cache_creation_input_tokens) ?? 0,
+              cacheReadInputTokens: asNumber(usage?.cache_read_input_tokens) ?? 0,
+              outputTokens: asNumber(usage?.output_tokens) ?? 0,
+            });
+          }
           walkContent(body?.content, true);
           break;
         }

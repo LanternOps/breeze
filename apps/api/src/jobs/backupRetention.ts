@@ -49,6 +49,12 @@ import {
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
 import { captureException } from '../services/sentry';
+import {
+  loadReservationGcState,
+  markReservationRetired,
+  reclaimAbandonedReservations,
+  tombstoneRetiredReservations,
+} from '../services/backupSnapshotIdReservations';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { createHash } from 'node:crypto';
 import { getRedis, isRedisAvailable } from '../services/redis';
@@ -398,6 +404,9 @@ async function deleteSnapshotRow(params: {
   });
 
   await db.delete(backupSnapshots).where(eq(backupSnapshots.id, params.id));
+  // The id's owner row follows: retired once no snapshot row carries the id,
+  // then tombstoned when the sweep confirms the prefix gone.
+  await markReservationRetired(params.snapshotId, params.orgId);
   return 'deleted';
 }
 
@@ -2099,9 +2108,15 @@ async function applyIdentityGcWriteBacks(
 ): Promise<void> {
   if (writeBacks.retiredSweptIds.length === 0 && writeBacks.selfHealRowIds.length === 0) return;
   await withSystemDbAccessContext(async () => {
+    const sweptSnapshotIds: string[] = [];
     for (const retirementId of writeBacks.retiredSweptIds) {
-      await db.update(backupSnapshotRetirements).set({ sweptAt: new Date() }).where(eq(backupSnapshotRetirements.id, retirementId));
+      const [row] = await db.update(backupSnapshotRetirements).set({ sweptAt: new Date() })
+        .where(eq(backupSnapshotRetirements.id, retirementId))
+        .returning({ snapshotId: backupSnapshotRetirements.snapshotId });
+      if (row?.snapshotId) sweptSnapshotIds.push(row.snapshotId);
     }
+    // A retired id whose prefix is confirmed gone is tombstoned for good.
+    await tombstoneRetiredReservations(sweptSnapshotIds);
     if (writeBacks.selfHealRowIds.length > 0) {
       // P1 fix: heal by PRIMARY ROW ID, guarded by storage_identity IS NULL —
       // matching on snapshot_id alone could re-stamp a DIFFERENT identity's
@@ -2318,6 +2333,15 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     if (coarse.unresolved && coarse.unresolved.code !== 'ENOENT') unresolvedLocalKeys.push(key);
   }
 
+  // Snapshot id reservations, across EVERY organization: an id still being
+  // written or sealed (or abandoned more recently than the orphan window) is
+  // never a candidate on any identity, whoever's storage it sits in. Loaded
+  // system-scoped — RLS visibility must not decide what is protected.
+  const reservationState = await withSystemDbAccessContext(() => loadReservationGcState(nowMs, orphanWindowMs));
+  // Snapshot ids present in each identity's fresh (pre-sweep) listing, for
+  // confirming an abandoned prefix is gone before its reservation is deleted.
+  const listedIdsByIdentityKey = new Map<string, Set<string>>();
+
   let deleted = 0;
   let skippedIdentities = 0;
   let blockedIdentities = 0;
@@ -2412,6 +2436,8 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       continue;
     }
 
+    for (const identity of orgIdentities) listedIdsByIdentityKey.set(identity.key, new Set(groups.keys()));
+
     for (const identity of orgIdentities) {
       if (deletesRemaining <= 0) {
         console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
@@ -2460,9 +2486,14 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         }
 
         const owners = snapshotOwnersByIdentityKey.get(identity.key);
-        const foreignOwnedSnapshotIds: ReadonlySet<string> = owners
-          ? new Set([...owners].filter(([, ownerOrgId]) => ownerOrgId !== identity.orgId).map(([snapshotId]) => snapshotId))
-          : new Set();
+        const foreignOwnedSnapshotIds: ReadonlySet<string> = new Set([
+          ...(owners
+            ? [...owners].filter(([, ownerOrgId]) => ownerOrgId !== identity.orgId).map(([snapshotId]) => snapshotId)
+            : []),
+          // Reserved / sealing / recently abandoned ids: skipped entirely,
+          // exactly like another org's snapshot.
+          ...reservationState.protectedIds,
+        ]);
 
         const identityResult = await sweepStorageIdentity(
           identity, groups, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
@@ -2522,6 +2553,22 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
         captureException(error instanceof Error ? error : new Error(String(error)));
       }
+    }
+  }
+
+  // Abandoned ids past the orphan window whose prefix this run's listing no
+  // longer shows (the previous run reclaimed it): the reservation goes, the
+  // id is tombstoned. Re-checked at delete time.
+  const reclaimable = reservationState.reclaimable
+    .filter((r) => listedIdsByIdentityKey.get(r.storageIdentity)?.has(r.snapshotId) === false)
+    .map((r) => r.snapshotId);
+  if (reclaimable.length > 0) {
+    try {
+      const n = await withSystemDbAccessContext(() => reclaimAbandonedReservations(reclaimable));
+      if (n > 0) console.log(`[BackupGC] Released ${n} abandoned snapshot id reservation(s) whose storage was reclaimed`);
+    } catch (error) {
+      console.error('[BackupGC] Could not release abandoned snapshot id reservations:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
     }
   }
 

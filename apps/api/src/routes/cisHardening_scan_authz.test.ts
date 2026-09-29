@@ -122,6 +122,8 @@ vi.mock('../db', () => {
     const op = (strings.find((s) => s.trim().length > 0) ?? '=').trim();
     const cell = row[column.includes('.') ? column.slice(column.indexOf('.') + 1) : column];
 
+    // notParkedDeviceCondition(): no fixture device is parked in a holding org.
+    if (op.startsWith('NOT EXISTS (SELECT 1 FROM organizations parked_org')) return true;
     if (op === '=') return cell === operands[0];
     if (op === '<>') return cell !== operands[0];
     if (op === 'in') {

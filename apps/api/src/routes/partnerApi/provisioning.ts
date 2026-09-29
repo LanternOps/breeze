@@ -21,7 +21,7 @@ import { ensureDefaultProfile } from '../../services/billingProfileService';
  * context per operation, mirroring the human write routes.
  */
 import { Hono } from 'hono';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { isValidIanaTimezone } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
@@ -72,6 +72,7 @@ import {
   type PartnerExportResource,
 } from './schemas';
 
+import { notHiddenOrgType } from '../../services/unassignedPool/visibility';
 // Same 365-day ceiling as the human enrollment-key routes (enrollmentKeys.ts
 // MAX_TTL_MINUTES / devices/core.ts ENROLL_TOKEN_MAX_TTL_MINUTES).
 const ENROLLMENT_KEY_MAX_TTL_MINUTES = 525_600;
@@ -290,7 +291,7 @@ partnerProvisioningRoutes.post(
         .where(and(
           eq(organizations.partnerId, partnerId),
           isNull(organizations.deletedAt),
-          ne(organizations.type, 'quick_support'),
+          notHiddenOrgType(),
         ));
       return tally?.value ?? 0;
     }

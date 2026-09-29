@@ -10,6 +10,17 @@ const { assertDeviceExecuteAllowedMock, loadEffectivePolicyMock, txMock } = vi.h
   },
 }));
 
+// Devices parked in a holding org, by id (the helper's query is proven
+// against Postgres in parkedCommandDelivery.integration.test.ts).
+const parkedDeviceIds = vi.hoisted(() => new Set<string>());
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
+  // The insert chokepoint's own check (covered in commandQueueInsert.test.ts).
+  assertCommandDeliverable: vi.fn(async () => undefined),
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
@@ -299,6 +310,36 @@ describe('reconcilePeripheralPolicyDevice trust gate', () => {
     await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'periodic_drift'))
       .resolves.toBe('incompatible');
 
+    expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
+    expect(txMock.insert).not.toHaveBeenCalled();
+    expect(txMock.update).not.toHaveBeenCalled();
+  });
+
+  it('treats a device parked in a holding org as incompatible without any write', async () => {
+    txMock.select.mockReset();
+    txMock.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => ({
+            for: () => Promise.resolve([{
+              id: identity.deviceId,
+              orgId: identity.orgId,
+              peripheralPolicyProtocolVersion: 2,
+              status: 'online',
+            }]),
+          }),
+        }),
+      }),
+    });
+    parkedDeviceIds.add(identity.deviceId);
+    try {
+      await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'policy_changed'))
+        .resolves.toBe('incompatible');
+    } finally {
+      parkedDeviceIds.clear();
+    }
+
+    expect(loadEffectivePolicyMock).not.toHaveBeenCalled();
     expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
     expect(txMock.insert).not.toHaveBeenCalled();
     expect(txMock.update).not.toHaveBeenCalled();

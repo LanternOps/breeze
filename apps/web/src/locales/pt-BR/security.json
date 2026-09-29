@@ -957,6 +957,24 @@
       "submitting": "Enviando…",
       "approveElevation": "Aprovar elevação",
       "denyRequest": "Negar solicitação"
+    },
+    "reauth": {
+      "title": "Solicitação crítica: confirme que é você",
+      "why": "Aprovar uma elevação de nível crítico exige nova autenticação além do seu dispositivo de aprovador. Ela é verificada uma única vez e nunca é armazenada.",
+      "unavailable": "Sua conta entra sem senha e não tem um aplicativo autenticador, portanto não é possível reautenticar para aprovações críticas. Chaves de acesso ainda não são aceitas nesta etapa. Configure um aplicativo autenticador em Perfil → Segurança, ou peça a um aprovador que tenha senha.",
+      "codeLabel": "Código do aplicativo autenticador",
+      "passwordLabel": "Senha da conta",
+      "codeHelp": "O código de 6 dígitos do aplicativo autenticador com o qual você entra. Chaves de acesso e códigos por SMS ainda não são aceitos nesta etapa.",
+      "passwordHelp": "A senha que você usa para entrar no Breeze.",
+      "useCode": "Usar um código do aplicativo autenticador em vez disso",
+      "usePassword": "Usar minha senha em vez disso",
+      "errors": {
+        "codeRequired": "Digite o código do seu aplicativo autenticador para aprovar esta solicitação crítica.",
+        "passwordRequired": "Digite a senha da sua conta para aprovar esta solicitação crítica.",
+        "invalid": "Essa senha ou código não foi aceito. Verifique e tente novamente.",
+        "required": "Esta é uma solicitação crítica. Digite novamente sua senha (ou o código do autenticador) e aprove novamente.",
+        "assertionFailed": "A verificação do seu dispositivo de aprovador não foi aceita. Tente novamente."
+      }
     }
   },
   "pamPamRevokeModal": {

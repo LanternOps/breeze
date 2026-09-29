@@ -13,6 +13,8 @@
  *     [--prompt "…"]                 default: Which Windows devices in the fleet are offline right now?
  *     [--model <id>]                 default: resolveDefaultModel()
  *     [--base-url URL --auth-token T | --api-key K]  BYO rows labeled byo:<host>
+ *     [--tenant-tools none|a|b]      chat only: synthetic BYO MCP tools via buildTenantSdkTools (default none)
+ *     [--tenant-count N]             tools in that set (default: the set's 12 named tools)
  *     [--out apps/api/tool-capture.jsonl]
  */
 import { appendFile } from 'node:fs/promises';
@@ -23,12 +25,13 @@ import { resolveLlmConfig } from '../llmConfigResolver';
 import { startCaptureProxy, type CaptureProxy } from '../toolCapture/captureProxy';
 import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
+import { CAPTURE_TENANT_SET_IDS, MAX_CAPTURE_TENANT_TOOLS, captureTenantDescriptors, type CaptureTenantSetId } from '../toolCapture/tenantFixtures';
 
 class UsageError extends Error {}
 
 function parseArgs(args: string[]) {
   const values = new Map<string, string>();
-  const valueFlags = new Set(['--surface', '--tool-search', '--turns', '--prompt', '--model', '--base-url', '--auth-token', '--api-key', '--out']);
+  const valueFlags = new Set(['--surface', '--tool-search', '--turns', '--prompt', '--model', '--base-url', '--auth-token', '--api-key', '--out', '--tenant-tools', '--tenant-count']);
   let proxy = false;
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!;
@@ -59,7 +62,20 @@ function parseArgs(args: string[]) {
     }
   }
   if (values.has('--auth-token') && values.has('--api-key')) throw new UsageError('Choose --auth-token or --api-key');
-  return { values, surface, toolSearch, turns: Number(turns), proxy, baseUrl };
+  const tenantSet = values.get('--tenant-tools') ?? 'none';
+  if (!(CAPTURE_TENANT_SET_IDS as readonly string[]).includes(tenantSet)) {
+    throw new UsageError(`--tenant-tools must be one of ${CAPTURE_TENANT_SET_IDS.join(', ')}`);
+  }
+  const tenantCountRaw = values.get('--tenant-count');
+  const tenantCount = tenantCountRaw === undefined ? undefined : Number(tenantCountRaw);
+  if (tenantCount !== undefined
+    && (!/^\d+$/.test(tenantCountRaw!) || tenantCount > MAX_CAPTURE_TENANT_TOOLS || tenantSet === 'none')) {
+    throw new UsageError(`--tenant-count must be an integer from 0 to ${MAX_CAPTURE_TENANT_TOOLS} and needs --tenant-tools a or b`);
+  }
+  if (tenantSet !== 'none' && surface !== 'chat') {
+    throw new UsageError('--tenant-tools needs --surface chat (not all): no other surface resolves tenant tools');
+  }
+  return { values, surface, toolSearch, turns: Number(turns), proxy, baseUrl, tenantSet: tenantSet as CaptureTenantSetId, tenantCount };
 }
 
 async function main(): Promise<void> {
@@ -78,8 +94,12 @@ async function main(): Promise<void> {
       if (authToken) env.ANTHROPIC_AUTH_TOKEN = authToken;
       if (apiKey) env.ANTHROPIC_API_KEY = apiKey;
     }
+    // The production policy (runSurface → aiToolSearchPolicy) owns
+    // ENABLE_TOOL_SEARCH; --tool-search stands in for the AI_TOOL_SEARCH
+    // override. The local proxy is a non-first-party host, so a proxy run
+    // needs `on` to search — the same rule a self-host gateway follows.
     delete env.ENABLE_TOOL_SEARCH;
-    if (args.toolSearch !== 'default') env.ENABLE_TOOL_SEARCH = args.toolSearch === 'on' ? 'true' : 'false';
+    const toolSearchOverride = args.toolSearch === 'default' ? 'auto' : args.toolSearch as 'on' | 'off';
     const upstreamHost = new URL(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').host;
     if (args.proxy) {
       proxy = await startCaptureProxy(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com');
@@ -89,13 +109,14 @@ async function main(): Promise<void> {
     const model = args.values.get('--model') ?? resolveDefaultModel();
     const out = args.values.get('--out') ?? 'tool-capture.jsonl';
     const rows: Record<string, string | number | null>[] = [];
+    const tenantTools = captureTenantDescriptors(args.tenantSet, args.tenantCount);
     for (const surface of surfaces) {
       proxy?.setLabel(surface.id);
       let resume: string | undefined;
       for (let turn = 1; turn <= args.turns; turn++) {
         const requestStart = proxy?.records().length ?? 0;
         const result = await runSurfaceCapture({
-          surface, model, env, resume,
+          surface, model, env, resume, toolSearchOverride, tenantTools,
           prompt: turn === 1
             ? args.values.get('--prompt') ?? 'Which Windows devices in the fleet are offline right now?'
             : 'Thanks. And how many of those are servers?',
@@ -106,6 +127,7 @@ async function main(): Promise<void> {
         await appendFile(out, JSON.stringify({
           at: new Date().toISOString(), ...result, turn,
           toolSearch: args.toolSearch, proxy: args.proxy, model,
+          tenantSet: args.tenantSet, tenantToolCount: tenantTools.length,
           host: new URL(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').host,
           label, upstreamHost, toolSearchForcedByProxy: args.proxy,
           systemPromptBytes: Buffer.byteLength(getCaptureSystemPrompt(surface), 'utf8'), proxyRequests,
@@ -124,6 +146,7 @@ async function main(): Promise<void> {
           ?? proxyRequests.at(-1);
         rows.push({
           surface: args.baseUrl ? `${label}/${surface.id}` : surface.id, turn,
+          tenant: args.tenantSet === 'none' ? 0 : `${args.tenantSet}:${tenantTools.length}`,
           'tools sent': toolBearingRequest?.tools.length ?? null,
           deferred: toolBearingRequest?.tools.filter((tool) => tool.deferLoading).length ?? null,
           input: usage.input, cache_create: usage.create, cache_read: usage.read,

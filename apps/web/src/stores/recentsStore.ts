@@ -27,7 +27,10 @@ export interface RecentDevice {
 export interface RecentPage {
   /** pathname + search, no hash. */
   path: string;
+  /** The page's own title ("Quote", "Organization"). */
   title: string;
+  /** The item a detail page shows ("Q-0042 Acme firewall"), once it has loaded. */
+  name?: string;
   visitedAt: number;
 }
 
@@ -39,6 +42,10 @@ interface RecentsState {
   recordDevice: (device: { id: string; name: string; orgId?: string }) => void;
   forgetDevice: (id: string) => void;
   recordPage: (page: { path: string; title: string }) => void;
+  /** Attach the displayed item's name to a detail page (see `usePageItemName`). */
+  namePage: (path: string, name: string) => void;
+  /** A name reported before its page visit was recorded; applied by `recordPage`. Not persisted. */
+  pendingPageName: { path: string; name: string } | null;
 }
 
 const STORAGE_PREFIX = 'breeze.recents.';
@@ -51,7 +58,7 @@ export function recentsStorageKey(userId: string): string {
 // pages (those are tracked as recent DEVICES, with the device's own name).
 const EXCLUDED_PREFIXES = ['/login', '/logout', '/auth/', '/register', '/reset-password', '/verify'];
 const DEVICE_DETAIL = /^\/devices\/[^/]+$/;
-const DEVICE_STATIC_SUBPAGES = new Set(['/devices/groups', '/devices/compare', '/devices/posture']);
+const DEVICE_STATIC_SUBPAGES = new Set(['/devices/groups', '/devices/compare', '/devices/posture', '/devices/unassigned']);
 
 export function isRecordablePagePath(path: string): boolean {
   if (EXCLUDED_PREFIXES.some((p) => path === p.replace(/\/$/, '') || path.startsWith(p))) return false;
@@ -79,6 +86,7 @@ function readPersisted(userId: string): Persisted {
         (p): p is RecentPage =>
           !!p && typeof p === 'object' && typeof p.path === 'string' && typeof p.title === 'string',
       )
+      .map((p) => (p.name === undefined || typeof p.name === 'string' ? p : { ...p, name: undefined }))
       .slice(0, MAX_RECENT_PAGES);
     return { devices, pages };
   } catch {
@@ -98,11 +106,12 @@ export const useRecentsStore = create<RecentsState>()((set, get) => ({
   userId: null,
   devices: [],
   pages: [],
+  pendingPageName: null,
 
   hydrate: (userId) => {
     if (userId === get().userId && userId !== null) return;
     if (userId === null) {
-      set({ userId: null, devices: [], pages: [] });
+      set({ userId: null, devices: [], pages: [], pendingPageName: null });
       return;
     }
     const { devices, pages } = readPersisted(userId);
@@ -128,10 +137,25 @@ export const useRecentsStore = create<RecentsState>()((set, get) => ({
   },
 
   recordPage: ({ path, title }) => {
-    const { userId, devices, pages } = get();
+    const { userId, devices, pages, pendingPageName } = get();
     if (!userId || !path || !isRecordablePagePath(path.split('?')[0])) return;
-    const entry: RecentPage = { path, title: title || path, visitedAt: Date.now() };
+    // The path carries the item id, so a revisit shows the same item: keep its name.
+    const name = pendingPageName?.path === path ? pendingPageName.name : pages.find((p) => p.path === path)?.name;
+    const entry: RecentPage = { path, title: title || path, visitedAt: Date.now(), ...(name ? { name } : {}) };
     const next = [entry, ...pages.filter((p) => p.path !== path)].slice(0, MAX_RECENT_PAGES);
+    set({ pages: next, pendingPageName: null });
+    writePersisted(userId, { devices, pages: next });
+  },
+
+  namePage: (path, name) => {
+    const { userId, devices, pages } = get();
+    const trimmed = name.trim();
+    if (!userId || !path || !trimmed) return;
+    if (!pages.some((p) => p.path === path)) {
+      set({ pendingPageName: { path, name: trimmed } });
+      return;
+    }
+    const next = pages.map((p) => (p.path === path ? { ...p, name: trimmed } : p));
     set({ pages: next });
     writePersisted(userId, { devices, pages: next });
   },

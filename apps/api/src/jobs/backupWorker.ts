@@ -47,6 +47,7 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { recordBackupWriteDispatch } from '../services/backupMetrics';
+import { brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
 import { captureException } from '../services/sentry';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -57,6 +58,8 @@ import {
   withQueueMeta,
 } from './queueSchemas';
 import { jobSchedule } from './scheduleRegistry';
+import { isParkedDevice, PARKED_DEVICE_CANCEL_REASON } from '../services/unassignedPool/deliveryEligibility';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 
 // Re-export enqueue functions for backward compatibility
 export const getBackupQueue = backupEnqueue.getBackupQueue;
@@ -218,7 +221,9 @@ async function loadScheduledBackupOrgIds(): Promise<Set<string>> {
         .from(organizations)
         .where(and(
           inArray(organizations.partnerId, partnerIds),
-          ne(organizations.type, 'quick_support')
+          ne(organizations.type, 'quick_support'),
+          // Nor the holding org: parked devices are never backed up.
+          notHoldingOrgCondition()
         ))
     : [];
 
@@ -814,6 +819,13 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
+  // A device parked in its partner's holding org is never backed up: fail the
+  // job before any destination credential is loaded into a payload.
+  if (await isParkedDevice(db, data.deviceId)) {
+    await markJobFailed(data.jobId, PARKED_DEVICE_CANCEL_REASON);
+    return { status: 'done', result: { dispatched: false } };
+  }
+
   // Find the agent for this device
   const [device] = await db
     .select({ agentId: devices.agentId })
@@ -834,6 +846,8 @@ interface PreparedBackupTarget {
   commandJobId: string;
   command: AgentCommand;
   commandType: string;
+  /** How the storage destination travels with this target (write-dispatch telemetry). */
+  writeDelivery?: { mode: 'brokered' | 'legacy' | 'local'; reason: string };
 }
 
 type BackupDispatchPrepare =
@@ -1420,32 +1434,48 @@ async function prepareBackupDispatchTargets(
       providerConfig: destination.providerConfig,
     });
 
+    const legacyPayload: Record<string, unknown> = {
+      jobId: commandJobId,
+      configId: data.configId,
+      provider: destination.provider,
+      providerConfig: destination.providerConfig,
+      storageEncryption: destination.storageEncryption,
+      ...target.payload,
+      // Payload fields stay file/system_image-only (spec §3.1) even though
+      // storage_identity is now stamped for every target above. Spread
+      // LAST (review fix) so the server-owned dedupe-base pin/lease can
+      // never be silently shadowed by a same-named key in target.payload
+      // (resolveBackupTargets's file/system_image branches don't produce
+      // one today, but nothing enforces that going forward).
+      ...(target.commandType === 'backup_run'
+        ? {
+            baseSnapshotId: dispatchPin.baseSnapshotId,
+            publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
+            // Only for a verified base pinned for a capable helper, which
+            // checks the downloaded base manifest against it.
+            ...(dispatchPin.baseAttestation ? { baseAttestation: dispatchPin.baseAttestation } : {}),
+          }
+        : {}),
+    };
+    // A helper that reports brokered writes gets a write-scoped storage
+    // session (server-issued snapshot id, base manifest from the dispatch pin
+    // only) instead of the destination; any other target is sent as before.
+    const delivery = await brokerWorkerBackupPayload({
+      orgId: data.orgId,
+      jobId: commandJobId,
+      deviceId: data.deviceId,
+      configId: data.configId,
+      commandType: target.commandType,
+      provider: destination.provider,
+      providerConfig: destination.providerConfig,
+      payload: legacyPayload,
+      baseSnapshotId: target.commandType === 'backup_run' ? dispatchPin.baseSnapshotId : null,
+    });
+
     const command: AgentCommand = {
       id: commandJobId,
       type: target.commandType,
-      payload: {
-        jobId: commandJobId,
-        configId: data.configId,
-        provider: destination.provider,
-        providerConfig: destination.providerConfig,
-        storageEncryption: destination.storageEncryption,
-        ...target.payload,
-        // Payload fields stay file/system_image-only (spec §3.1) even though
-        // storage_identity is now stamped for every target above. Spread
-        // LAST (review fix) so the server-owned dedupe-base pin/lease can
-        // never be silently shadowed by a same-named key in target.payload
-        // (resolveBackupTargets's file/system_image branches don't produce
-        // one today, but nothing enforces that going forward).
-        ...(target.commandType === 'backup_run'
-          ? {
-              baseSnapshotId: dispatchPin.baseSnapshotId,
-              publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
-              // Only for a verified base pinned for a capable helper, which
-              // checks the downloaded base manifest against it.
-              ...(dispatchPin.baseAttestation ? { baseAttestation: dispatchPin.baseAttestation } : {}),
-            }
-          : {}),
-      },
+      payload: delivery.payload,
     };
 
     // Record the server-side dispatch expectation BEFORE sending so the WS
@@ -1458,7 +1488,12 @@ async function prepareBackupDispatchTargets(
     // fail-closed on arrival (dropped), not trusted.
     await recordDispatchedExpectation('backup', data.deviceId, commandJobId);
 
-    prepared.push({ commandJobId, command, commandType: target.commandType });
+    prepared.push({
+      commandJobId,
+      command,
+      commandType: target.commandType,
+      writeDelivery: { mode: delivery.mode, reason: delivery.reason },
+    });
   }
 
   return { status: 'ok', prepared, preFailedTargets, backupMode, targetCount: targets.length };
@@ -1595,19 +1630,23 @@ async function processDispatchBackup(
     prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
   );
   let parentFailureDetail: string | null = null;
-  let deviceOrgChanged = false;
+  let dispatchRefusal: string | null = null;
 
   try {
     for (const target of prepared) {
       // Re-read after payload preparation and between sends: enqueue-time
       // ownership cannot authorize a backup on a device moved to another org.
       // Keep the relay acknowledgement wait outside the short DB context.
-      const admitted = await runWithSystemDbAccess(async () => {
+      // A device parked in a holding org is refused here as well.
+      const refusal = await runWithSystemDbAccess(async (): Promise<string | null> => {
         const [device] = await db.select({ orgId: devices.orgId }).from(devices)
           .where(eq(devices.id, data.deviceId)).limit(1);
-        if (device?.orgId === data.orgId) return true;
+        const reason = device?.orgId !== data.orgId
+          ? 'device_org_changed'
+          : (await isParkedDevice(db, data.deviceId)) ? PARKED_DEVICE_CANCEL_REASON : null;
+        if (reason === null) return null;
 
-        console.warn('[BackupWorker] Refusing backup dispatch: device_org_changed', {
+        console.warn(`[BackupWorker] Refusing backup dispatch: ${reason}`, {
           jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
         });
         createAuditLogAsync({
@@ -1618,20 +1657,20 @@ async function processDispatchBackup(
           resourceType: 'backup_job',
           resourceId: data.jobId,
           result: 'failure',
-          details: { deviceId: data.deviceId, reason: 'device_org_changed' },
+          details: { deviceId: data.deviceId, reason },
         });
-        return false;
+        return reason;
       });
-      if (!admitted) {
-        deviceOrgChanged = true;
+      if (refusal !== null) {
+        dispatchRefusal = refusal;
         for (const pending of prepared) {
           if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
           sendState.set(pending.commandJobId, 'failed');
-          failedTargets.push(`${pending.commandType} (device_org_changed)`);
+          failedTargets.push(`${pending.commandType} (${refusal})`);
           if (pending.commandJobId === data.jobId) {
-            parentFailureDetail = 'device_org_changed';
+            parentFailureDetail = refusal;
           } else {
-            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: 'device_org_changed' });
+            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: refusal });
           }
         }
         break;
@@ -1644,12 +1683,15 @@ async function processDispatchBackup(
       if (outcome.status === 'sent') {
         sendState.set(target.commandJobId, 'sent');
         sentCount++;
-        // The command carried its storage destination inline; a local one
-        // is a path, not a credential.
-        if (target.command.payload?.provider === 'local') {
+        // A brokered target carried a write session; otherwise the command
+        // carried its storage destination inline (a local one is a path,
+        // not a credential).
+        if (target.writeDelivery?.mode === 'brokered') {
+          recordBackupWriteDispatch(target.commandType, 'brokered', 'ok');
+        } else if (target.command.payload?.provider === 'local') {
           recordBackupWriteDispatch(target.commandType, 'local', 'no_credential');
         } else {
-          recordBackupWriteDispatch(target.commandType, 'legacy_credential', 'inline_provider_config');
+          recordBackupWriteDispatch(target.commandType, 'legacy_credential', target.writeDelivery?.reason ?? 'inline_provider_config');
         }
         continue;
       }
@@ -1690,11 +1732,10 @@ async function processDispatchBackup(
       if (sentCount === 0) {
         await markJobFailed(
           data.jobId,
-          deviceOrgChanged
-            ? 'device_org_changed'
-            : lastNonOfflineOutcomeStatus
+          dispatchRefusal
+            ?? (lastNonOfflineOutcomeStatus
               ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-              : 'Failed to send command to agent',
+              : 'Failed to send command to agent'),
         );
         return { dispatched: false };
       }

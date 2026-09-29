@@ -17,6 +17,7 @@ import {
   resolveSensitiveDataAuthorityInCurrentSystemContext,
   type PersistedSensitiveDataAuthority,
 } from '../services/sensitiveDataPolicyAuthority';
+import { notHoldingOrgCondition, notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -616,7 +617,8 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
       .from(organizations)
       .where(and(
         eq(organizations.partnerId, policy.partnerId),
-        ne(organizations.type, 'quick_support')
+        ne(organizations.type, 'quick_support'),
+        notHoldingOrgCondition()
       ));
     ownerOrgIds = orgRows.map((row) => row.id);
   } else {
@@ -648,6 +650,7 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
   const conditions: SQL[] = [
     inArray(devices.orgId, admittedOrgIds),
     eq(devices.isEphemeral, false),
+    notParkedDeviceCondition(),
     ne(devices.status, 'decommissioned')
   ];
   if (schedule.deviceIds.length > 0) {

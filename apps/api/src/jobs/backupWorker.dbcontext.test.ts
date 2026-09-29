@@ -49,6 +49,13 @@ const { mockDb, ctxState } = vi.hoisted(() => {
   };
 });
 
+// A device parked in a holding org is covered in backupWorker.test.ts; here
+// every device is an ordinary customer device.
+vi.mock('../services/unassignedPool/deliveryEligibility', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/unassignedPool/deliveryEligibility')>()),
+  isParkedDevice: vi.fn(async () => false),
+}));
+
 vi.mock('../db', () => ({
   db: mockDb,
   // Real-ish context wrapper: tracks depth around fn so the tests can assert
@@ -118,6 +125,18 @@ const agentRelayMock = {
   isAgentConnectedAnywhere: vi.fn(async () => true),
   dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
 };
+// Brokered write delivery is covered by backupStorageWriteDelivery.test.ts and
+// the write-session integration suites; here the helper never reports it
+// unless a test says otherwise.
+const writeDeliveryMock = vi.hoisted(() => ({
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
+    mode: input.provider === 'local' ? 'local' : 'legacy',
+    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
+    payload: input.payload,
+  })),
+}));
+vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,

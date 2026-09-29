@@ -32,7 +32,9 @@ import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } f
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
+import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
 import { inArray } from 'drizzle-orm';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -334,7 +336,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         const deviceId = input.deviceId as string;
 
         // Verify device access
-        const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+        const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
         const dc = orgWhere(auth, devices.orgId);
         if (dc) deviceConditions.push(dc);
         const [device] = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
@@ -470,7 +472,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!deviceId) return JSON.stringify({ error: 'deviceId is required' });
 
       // Verify device access
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db.select({ id: devices.id, hostname: devices.hostname, siteId: devices.siteId })
@@ -541,7 +543,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!deviceId || !configId) return JSON.stringify({ error: 'deviceId and configId are required' });
 
       // Verify device access
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db.select({ id: devices.id, orgId: devices.orgId, status: devices.status, siteId: devices.siteId }).from(devices)
@@ -652,7 +654,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!snapshotId || !deviceId) return JSON.stringify({ error: 'snapshotId and deviceId are required' });
 
       // Verify device access
-      const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
+      const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db.select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId }).from(devices)
@@ -685,6 +687,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const selectedPaths = Array.isArray(input.selectedPaths) ? input.selectedPaths as string[] : undefined;
       const restoreType = selectedPaths && selectedPaths.length > 0 ? 'selective' : 'full';
 
+      let resolvedSelectedPaths: string[] = [];
       if (restoreType === 'selective') {
         const snapshotFiles = await db
           .select({ sourcePath: backupSnapshotFiles.sourcePath })
@@ -695,18 +698,23 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }
 
-        const availablePaths = new Set(snapshotFiles.map((row) => row.sourcePath));
-        const invalidPath = selectedPaths?.find((path) => !availablePaths.has(path));
-        if (invalidPath) {
-          return JSON.stringify({ error: `Selected path is not available in this snapshot: ${invalidPath}` });
+        // Map each selection (possibly in the browse tree's forward-slash
+        // form) back to the stored original the agent matches against.
+        const resolution = resolveSelectedSnapshotPaths(
+          selectedPaths ?? [],
+          snapshotFiles.map((row) => row.sourcePath)
+        );
+        if (!resolution.ok) {
+          return JSON.stringify({ error: selectedSnapshotPathError(resolution) });
         }
+        resolvedSelectedPaths = resolution.paths;
       }
 
       const deviceOrgCond = orgWhere(auth, devices.orgId);
       const [targetDevice] = await db
         .select({ id: devices.id, status: devices.status })
         .from(devices)
-        .where(and(eq(devices.id, deviceId), ...(deviceOrgCond ? [deviceOrgCond] : [])))
+        .where(and(eq(devices.id, deviceId), notParkedDeviceCondition(), ...(deviceOrgCond ? [deviceOrgCond] : [])))
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       if (targetDevice.status !== 'online') {
@@ -735,7 +743,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         deviceId,
         restoreType,
         targetPath: (input.targetPath as string) ?? null,
-        selectedPaths: selectedPaths ?? [],
+        selectedPaths: resolvedSelectedPaths,
         status: 'pending',
         initiatedBy: auth.user?.id ?? null,
         createdAt: new Date(),
@@ -754,7 +762,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
             restoreJobId: restoreJob.id,
             snapshotId: snapshot.providerSnapshotId,
             targetPath: restoreJob.targetPath ?? '',
-            selectedPaths: restoreType === 'selective' ? (selectedPaths ?? []) : [],
+            selectedPaths: resolvedSelectedPaths,
             // A reference only: resolved when the command is delivered.
             ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
           },

@@ -31,3 +31,12 @@ export const AGENT_CAPTURE_FIXTURE: AgentRunPromptContext = {
   narrative: null,
   design: null,
 };
+
+/** An `analysis`-profile run: device-less, a goal, no staged handles. */
+export const AGENT_ANALYSIS_CAPTURE_FIXTURE: AgentRunPromptContext = {
+  ...AGENT_CAPTURE_FIXTURE,
+  agent: { name: 'capture-fixture-analyst', kind: 'triage' },
+  device: null,
+  profile: 'analysis',
+  analysis: { goal: 'Summarise CPU utilisation across the fleet for the last 7 days.', deviceIds: [], handles: [] },
+};

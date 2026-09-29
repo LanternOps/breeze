@@ -147,7 +147,7 @@ async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): P
     );
 
   for (const alert of openAlerts) {
-    await resolveAlert(alert.id, 'Auto-resolved: policy returned to compliant state');
+    await resolveAlert(alert.id, 'Auto-resolved: policy returned to compliant state', undefined, false, 'condition_cleared');
   }
 }
 

@@ -41,7 +41,8 @@ export class ReportsPage {
   // Reports list — saved reports tab
   savedTab = () => this.page.getByTestId('reports-tab-saved');
   reportRow = (id: string) => this.page.getByTestId(`report-row-${id}`);
-  scopeBadge = (id: string) => this.page.getByTestId(`report-scope-badge-${id}`);
+  // Multi-org series W01: the Covers cell replaced the partner-owned ScopeBadge.
+  coversCell = (id: string) => this.page.getByTestId(`report-covers-${id}`);
   generate = (id: string) => this.page.getByTestId(`report-generate-${id}`);
 
   // Reports list — recent runs tab
@@ -60,5 +61,40 @@ export class ReportsPage {
   async gotoList() {
     await this.page.goto(this.url);
     await waitForAppReady(this.page, 'reports-tab-saved');
+  }
+
+  newReportUrl = '/reports/new';
+
+  // Covers + series form (/reports/new)
+  coversControl = () => this.page.getByTestId('covers-control');
+  coversModeSeries = () => this.page.getByTestId('covers-mode-series');
+  seriesTargetModeAll = () => this.page.getByTestId('series-target-mode-all');
+  seriesRulePrimary = () => this.page.getByTestId('series-rule-primary');
+  seriesRecipientPreview = () => this.page.getByTestId('series-recipient-preview');
+  builderName = () => this.page.getByTestId('report-builder-name');
+  builderSubmit = () => this.page.getByTestId('report-builder-submit');
+
+  // Saved list — series rows and drill-down
+  seriesRow = (seriesId: string) => this.page.getByTestId(`report-series-row-${seriesId}`);
+  seriesDrilldown = (seriesId: string) => this.page.getByTestId(`series-drilldown-${seriesId}`);
+  seriesOrgRow = (orgId: string) => this.page.getByTestId(`series-org-row-${orgId}`);
+  seriesOrgExclude = (orgId: string) => this.page.getByTestId(`series-org-exclude-${orgId}`);
+  confirmExclude = () => this.page.getByTestId('series-confirm-exclude');
+  seriesDelete = (seriesId: string) => this.page.getByTestId(`report-series-delete-${seriesId}`);
+  confirmDelete = () => this.page.getByTestId('series-confirm-delete');
+
+  /** Series are grouped only on the All-organizations view: select it in the
+   *  persisted org store (key `breeze-org`) before the app boots. */
+  async useAllOrganizationsView() {
+    await this.page.addInitScript(() => {
+      let stored: { state?: Record<string, unknown>; version?: number } = {};
+      try { stored = JSON.parse(localStorage.getItem('breeze-org') ?? '{}'); } catch { /* fresh */ }
+      localStorage.setItem('breeze-org', JSON.stringify({ state: { ...stored.state, currentOrgId: null, allOrgs: true }, version: stored.version ?? 0 }));
+    });
+  }
+
+  async gotoNewReport() {
+    await this.page.goto(this.newReportUrl);
+    await waitForAppReady(this.page, 'report-builder-covers');
   }
 }

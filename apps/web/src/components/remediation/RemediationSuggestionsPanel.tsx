@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle, PencilLine, PlayCircle, RefreshCw, ShieldAlert, Sparkles, XCircle } from 'lucide-react';
+import { CheckCheck, CheckCircle, PencilLine, PlayCircle, RefreshCw, ShieldAlert, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp, XCircle } from 'lucide-react';
 
 import { handleActionError, runAction } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -8,12 +8,15 @@ import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type SuggestionStatus = 'suggested' | 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
 
+type OutcomeState = 'pending' | 'awaiting_recovery' | 'holding' | 'verified' | 'failed' | 'recurred' | 'inconclusive' | 'cancelled';
+type SuggestionOutcome = { state: OutcomeState; stateReason: string | null; humanVote: 'up' | 'down' | null };
+
 type RemediationSuggestion = {
   id: string;
   sourceType: string;
   sourceId: string;
   deviceId: string | null;
-  targetType: 'script' | 'script_template' | 'playbook' | 'diagnostic';
+  targetType: 'script' | 'script_template' | 'playbook' | 'diagnostic' | 'manual_steps';
   scriptId: string | null;
   scriptTemplateId: string | null;
   playbookId: string | null;
@@ -27,7 +30,25 @@ type RemediationSuggestion = {
   targetDeviceIds: string[];
   elevationRequestId: string | null;
   scriptExecutionId: string | null;
+  origin?: 'catalog_match' | 'memory' | 'ai_research';
+  evidence?: Record<string, unknown>;
+  outcome?: SuggestionOutcome | null;
 };
+
+const OUTCOME_STATE_KEYS: Record<OutcomeState, string> = {
+  pending: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.pending',
+  awaiting_recovery: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.awaitingRecovery',
+  holding: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.holding',
+  verified: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.verified',
+  failed: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.failed',
+  recurred: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.recurred',
+  inconclusive: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.inconclusive',
+  cancelled: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.cancelled',
+};
+
+function canMarkDone(s: RemediationSuggestion): boolean {
+  return s.targetType === 'manual_steps' && (s.status === 'accepted' || s.status === 'edited') && !s.outcome;
+}
 
 type RemediationSuggestionsPanelProps = {
   sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca';
@@ -125,6 +146,8 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [error, setError] = useState<string>();
+  const [votingId, setVotingId] = useState<string | null>(null);
+  const [markingDoneId, setMarkingDoneId] = useState<string | null>(null);
 
   const fetchSuggestions = useCallback(async () => {
     setLoading(true);
@@ -274,6 +297,62 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
       handleActionError(err, t('longTail.remediation.RemediationSuggestionsPanel.errors.executeFailed'));
     } finally {
       setExecutingId(null);
+    }
+  }
+
+  function provenTrack(s: RemediationSuggestion): string | null {
+    const e = s.evidence ?? {};
+    const verified = typeof e.verifiedCount === 'number' ? e.verifiedCount : null;
+    const attempts = typeof e.attempts === 'number' ? e.attempts : null;
+    if (verified === null || attempts === null) return null;
+    return e.scope === 'this_client'
+      ? t('longTail.remediation.RemediationSuggestionsPanel.proven.trackThisClient', { verified, attempts })
+      : t('longTail.remediation.RemediationSuggestionsPanel.proven.trackAllClients', { verified, attempts });
+  }
+
+  function applyOutcome(id: string, outcome: SuggestionOutcome | undefined) {
+    if (!outcome) return;
+    setSuggestions((current) => current.map((item) => (item.id === id ? { ...item, outcome } : item)));
+  }
+
+  async function voteOnSuggestion(suggestion: RemediationSuggestion, vote: 'up' | 'down') {
+    setVotingId(suggestion.id);
+    try {
+      const result = await runAction<{ data?: { outcome?: SuggestionOutcome } }>({
+        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}/vote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vote }),
+        }),
+        errorFallback: t('longTail.remediation.RemediationSuggestionsPanel.feedback.failed'),
+        successMessage: t('longTail.remediation.RemediationSuggestionsPanel.feedback.recorded'),
+      });
+      applyOutcome(suggestion.id, result.data?.outcome);
+    } catch (err) {
+      handleActionError(err, t('longTail.remediation.RemediationSuggestionsPanel.feedback.failed'));
+    } finally {
+      setVotingId(null);
+    }
+  }
+
+  async function markDone(suggestion: RemediationSuggestion) {
+    if (!canMarkDone(suggestion)) return;
+    setMarkingDoneId(suggestion.id);
+    try {
+      const result = await runAction<{ data?: { outcome?: SuggestionOutcome } }>({
+        request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}/done`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }),
+        errorFallback: t('longTail.remediation.RemediationSuggestionsPanel.done.failed'),
+        successMessage: t('longTail.remediation.RemediationSuggestionsPanel.done.recorded'),
+      });
+      applyOutcome(suggestion.id, result.data?.outcome);
+    } catch (err) {
+      handleActionError(err, t('longTail.remediation.RemediationSuggestionsPanel.done.failed'));
+    } finally {
+      setMarkingDoneId(null);
     }
   }
 
@@ -449,6 +528,20 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                           })}
                         </p>
                       )}
+                      {suggestion.origin === 'memory' && (
+                        <p className="mt-2 inline-flex items-center gap-1 rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300" data-testid="remediation-proven-badge">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          {t('longTail.remediation.RemediationSuggestionsPanel.proven.badge')}
+                          {provenTrack(suggestion) && <span className="font-normal">· {provenTrack(suggestion)}</span>}
+                        </p>
+                      )}
+                      {suggestion.outcome && (
+                        <p className="mt-2 text-xs text-muted-foreground" data-testid="remediation-outcome">
+                          {t('longTail.remediation.RemediationSuggestionsPanel.outcome.label', {
+                            state: t(/* i18n-dynamic */ OUTCOME_STATE_KEYS[suggestion.outcome.state]),
+                          })}
+                        </p>
+                      )}
                       {executionPreview && (
                         <div className="mt-3 rounded-md border bg-muted/30 p-3">
                           <p className="text-xs font-semibold text-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.executionPreview')}</p>
@@ -530,6 +623,45 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                       >
                         <PlayCircle className="h-4 w-4" />
                         {t('longTail.remediation.RemediationSuggestionsPanel.execute')}
+                      </button>
+                    )}
+                    {/* A cancelled attempt never counts (a vote on it changes nothing): no rating. */}
+                    {suggestion.outcome && suggestion.outcome.state !== 'cancelled' && (
+                      <>
+                        <button
+                          type="button"
+                          aria-pressed={suggestion.outcome.humanVote === 'up'}
+                          disabled={votingId === suggestion.id}
+                          onClick={() => void voteOnSuggestion(suggestion, 'up')}
+                          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 aria-pressed:bg-muted"
+                          data-testid="remediation-vote-up"
+                        >
+                          <ThumbsUp className="h-4 w-4" />
+                          {t('longTail.remediation.RemediationSuggestionsPanel.feedback.worked')}
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={suggestion.outcome.humanVote === 'down'}
+                          disabled={votingId === suggestion.id}
+                          onClick={() => void voteOnSuggestion(suggestion, 'down')}
+                          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 aria-pressed:bg-muted"
+                          data-testid="remediation-vote-down"
+                        >
+                          <ThumbsDown className="h-4 w-4" />
+                          {t('longTail.remediation.RemediationSuggestionsPanel.feedback.didNotWork')}
+                        </button>
+                      </>
+                    )}
+                    {canMarkDone(suggestion) && (
+                      <button
+                        type="button"
+                        disabled={markingDoneId === suggestion.id}
+                        onClick={() => void markDone(suggestion)}
+                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                        data-testid="remediation-mark-done"
+                      >
+                        <CheckCheck className="h-4 w-4" />
+                        {t('longTail.remediation.RemediationSuggestionsPanel.done.button')}
                       </button>
                     )}
                     {canQueueScriptSuggestion(suggestion) && requiresExecutionApproval(suggestion) && !suggestion.elevationRequestId && (

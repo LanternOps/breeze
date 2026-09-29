@@ -459,6 +459,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerApi/provisioning.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/relationships.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerLoginBranding.ts': { gap: '#6802' },
+  'preAssignment.ts': { exempt: 'human_only_tenant_restructure', note: 'Parked-device assignment and holding-area incident actions (enrollment switch, expire by deploy key) -- full-partner-admin surface that decides which customer org a pre-assignment device joins; no AI tool in v1.' },
   'partnerSendingDomains.ts': { gap: '#6803' },
   'partnerServicePrincipals.ts': { exempt: 'identity' },
   'partnerTrust.ts': { exempt: 'breeze_account', note: 'Trust review request to Breeze -- the partner-Breeze relationship itself.' },
@@ -502,7 +503,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'quotes/quotes.ts': { tools: ['list_quotes', 'get_quote', 'manage_quotes'] },
   'quotesPublic.ts': { exempt: 'portal' },
   'reliability.ts': { gap: '#6777' },
-  'remediationSuggestions.ts': { tools: ['list_remediation_suggestions'] },
+  'remediationSuggestions.ts': { tools: ['list_remediation_suggestions', 'find_proven_fixes'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
   'remote/sessions.ts': { tools: ['create_remote_session', 'list_remote_sessions'] },
   'remote/supportSessions.ts': { gap: '#6783' },
@@ -511,6 +512,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'reports/generate.ts': { tools: ['generate_report'] },
   'reports/recipients.ts': { gap: '#6789' },
   'reports/runs.ts': { tools: ['generate_report'] },
+  // Multi-org report series (W02): generate_report lists and runs series
+  // children like any org report; a series-management tool is a follow-up.
+  'reports/series.ts': { tools: ['generate_report'] },
   'roles.ts': { gap: '#6789' },
   'scriptAi.ts': { exempt: 'ai_transport' },
   'scriptBundle.ts': { gap: '#6806' },

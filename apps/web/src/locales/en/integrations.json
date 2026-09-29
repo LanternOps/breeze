@@ -62,7 +62,8 @@
       "upgradeFailed": "Approval for the new permissions could not be started.",
       "syncNow": "Sync now",
       "syncFailed": "Tenant sync could not be requested.",
-      "syncSucceeded": "Tenant sync requested."
+      "syncSucceeded": "Tenant sync requested.",
+      "connectTenant": "Connect tenant"
     },
     "sync": {
       "lastSynced": "Last synced {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
+    },
+    "stepTitle": "Read access",
+    "stepDescription": "Read-only access granted by a customer administrator. Breeze never asks for a tenant secret or certificate.",
+    "recommendedFirst": "Recommended first",
+    "showPermissions": "Show Microsoft permissions",
+    "capabilities": {
+      "intro": "For AI lookups and reports, Breeze can:",
+      "users": "Look up users and groups",
+      "devices": "See devices and sign-ins",
+      "posture": "Review security posture"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Connection retest completed.",
       "disconnectWarning": "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
       "disconnectFailed": "The connection could not be disconnected.",
-      "disconnectSucceeded": "Breeze connection disconnected."
+      "disconnectSucceeded": "Breeze connection disconnected.",
+      "grant": "Grant admin actions…"
     },
     "errors": {
       "consent_expired": "The consent session expired. Start consent again.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
+    },
+    "stepTitle": "Admin actions",
+    "stepDescription": "Reset user passwords and disable user sign-in from Breeze.",
+    "readRequiredNote": "AI lookups and reports need Read access (step 1).",
+    "showPermissions": "Show Microsoft permissions",
+    "preflight": {
+      "title": "Before you continue to Microsoft",
+      "canDoIntro": "Breeze will be able to:",
+      "resetPasswords": "Reset user passwords",
+      "disableSignIn": "Disable user sign-in",
+      "adminRequired": "You must be signed in to Microsoft as a Global Administrator (or Privileged Role Administrator) for {{target}}.",
+      "revoke": "To revoke access later, disconnect here or remove the Breeze enterprise application in Microsoft Entra.",
+      "continue": "Continue to Microsoft",
+      "defaultTarget": "this organization's Microsoft 365 tenant"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Loading Microsoft 365 connections.",
+    "consentUnavailable": "Consent-based connection isn't available on this Breeze instance yet.",
+    "selectOrganization": "Select an organization to connect its Microsoft 365 tenant.",
+    "noTenantForOrg": "No Microsoft 365 tenant connected to {{orgName}}",
+    "noTenant": "No Microsoft 365 tenant connected to this organization",
+    "tenantId": "Tenant ID",
+    "copyTenantId": "Copy tenant ID",
+    "copied": "Tenant ID copied",
+    "lastVerified": "Last verified {{date}}",
+    "notVerifiedYet": "Not verified yet",
+    "stepLabel": "Step {{number}}",
+    "legacyDisclosure": "Advanced: use your own app registration (legacy)"
   },
   "communicationIntegrations": {
     "critical": "Critical",
@@ -566,7 +606,10 @@
     "hideSecret": "Hide secret",
     "showSecret": "Show secret",
     "updateConnection": "Update connection",
-    "saveAndVerify": "Save & verify"
+    "saveAndVerify": "Save & verify",
+    "legacyBadge": "Legacy",
+    "precedenceNote": "This legacy direct connection takes precedence over the consent-based connection for this tenant.",
+    "disconnectConfirm": "Disconnect the legacy direct connection? Breeze deletes the stored app registration credentials. The app registration itself stays in Microsoft Entra."
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",
@@ -782,6 +825,8 @@
     "notConnected": "Not connected",
     "reconnectRequired": "Reconnect required",
     "disconnectOtherFirst": "Disconnect {{provider}} first",
+    "pendingTenant": "Choose an organisation",
+    "finishOtherFirst": "Finish or cancel the {{provider}} connection first",
     "loadFailed": "Could not load the accounting providers. Refresh the page to try again.",
     "noProviderConfigured": "No accounting provider is configured on this instance."
   },
@@ -1098,7 +1143,56 @@
     "syncNowQueued": "Payment sync queued.",
     "syncNowNotQueued": "Payment sync could not be queued. Try again shortly.",
     "syncNowPullDisabled": "Payment sync is turned off for this connection — turn on Payment sync or Payment push to sync now.",
-    "failedToSyncNow": "Failed to start a payment sync."
+    "failedToSyncNow": "Failed to start a payment sync.",
+    "tenantPicker": {
+      "title": "Choose your {{provider}} organisation",
+      "description": "You authorised more than one organisation. Breeze connects to exactly one; the others are removed from this connection.",
+      "loadFailed": "Couldn't load your organisations from {{provider}}.",
+      "expired": "This {{provider}} sign-in has expired. Cancel and connect again.",
+      "connect": "Connect organisation",
+      "cancel": "Cancel connection",
+      "selectFailed": "Couldn't connect that organisation.",
+      "cancelFailed": "Couldn't cancel the connection.",
+      "connected": "{{provider}} organisation connected",
+      "cancelled": "{{provider}} connection cancelled",
+      "chooseFirst": "Choose an organisation first",
+      "grantSuperseded": "A newer {{provider}} sign-in replaced this one. Choose the organisation again.",
+      "deadline": "Choose an organisation before {{time}}.",
+      "tenantHeld": "This {{provider}} organisation is connected to another Breeze account. Choose another organisation or cancel the connection.",
+      "retry": "Try again"
+    },
+    "connectErrors": {
+      "tenantHeld": "This {{provider}} organisation is connected to another Breeze account.",
+      "authEventMissing": "{{provider}} didn't confirm which organisations you authorised. Please connect again.",
+      "noOrganisation": "No {{provider}} organisation was authorised. Choose an organisation on the {{provider}} consent screen.",
+      "tenantLookupFailed": "Couldn't read your {{provider}} organisations. Please try again.",
+      "consentDenied": "You cancelled the {{provider}} sign-in. Nothing was connected.",
+      "selectTenant": "Choose which {{provider}} organisation to connect."
+    },
+    "disconnectConfirm": {
+      "title": "Disconnect from {{provider}}?",
+      "message": "Breeze will stop syncing with {{provider}} and remove its connection in {{provider}}. You can reconnect at any time.",
+      "confirm": "Disconnect"
+    },
+    "reconnectKeepsOrganisation": "Reconnecting keeps your current {{provider}} organisation. Any other organisation you tick on the {{provider}} screen is released.",
+    "pendingTenant": "Choose an organisation",
+    "settingsStep": {
+      "title": "{{provider}} settings",
+      "organisation": "Organisation",
+      "demoBadge": "Demo company",
+      "incomeAccount": "Default revenue account",
+      "taxRate": "Tax rate for taxable lines",
+      "exemptTaxRate": "Tax rate for non-taxable lines",
+      "paymentAccount": "Bank account for payments",
+      "notSet": "Not set",
+      "save": "Save settings",
+      "saved": "{{provider}} settings saved",
+      "saveFailed": "Couldn't save {{provider}} settings.",
+      "loadFailed": "Couldn't load settings from {{provider}}.",
+      "retry": "Try again",
+      "pickDefaults": "Choose the defaults Breeze uses with {{provider}}. If you switched organisation, pick them again — the old organisation's choices were cleared.",
+      "paymentAccountMissing": "Payments recorded in Breeze are not sent to {{provider}} until you choose a bank account."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Customer and item mapping",
@@ -1120,6 +1214,9 @@
     "syncFailed": "Sync failed",
     "incomeAccount": "Income account",
     "incomeAccountRequired": "Set a default income account before creating or syncing items in {{provider}}.",
+    "incomeAccountInSettings": "Set the {{provider}} income account in the settings step above before creating items.",
+    "archived": "Archived",
+    "duplicateNameHint": "Pick the existing {{provider}} record below, then choose Confirm match.",
     "saveIncomeAccount": "Save income account",
     "mappingSaved": "Mapping saved.",
     "entitySynced": "Synced with {{provider}}.",
@@ -1152,6 +1249,9 @@
     "importing": "Importing…",
     "importSelected": "Import {{count}} selected",
     "customerFailedCount_one": "{{count}} customer failed to import",
-    "customerFailedCount_other": "{{count}} customers failed to import"
+    "customerFailedCount_other": "{{count}} customers failed to import",
+    "showAllContacts_one": "Show all contacts ({{count}} supplier-only hidden)",
+    "showAllContacts_other": "Show all contacts ({{count}} supplier-only hidden)",
+    "archived": "Archived"
   }
 }

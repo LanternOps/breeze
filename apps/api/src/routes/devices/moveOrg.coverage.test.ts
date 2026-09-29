@@ -64,6 +64,11 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // which itself never follows a device move (ai_agent_runs above) — see
   // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_fix_watches',
+  // Has org_id AND device_id, but org_id is intentionally NOT re-stamped on
+  // move: fix-outcome history stays with the org the attempt ran in (AI
+  // Suggested Fixes W1) — see the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment
+  // in core.ts.
+  'fix_outcomes',
   // Has org_id AND device_id, but org_id belongs to the INVOICE and the invoice
   // does not move (#3205 W07). Re-stamping would break the composite FKs to
   // invoice_lines/invoices; the table is also excluded from
@@ -512,7 +517,7 @@ describe('ALERT_CHILD_ORG_REWRITE_TABLES coverage (#4867)', () => {
   it('moveOrg.ts issues a hand-written org_id rewrite per entry', () => {
     // The list is data; this proves the route consumes it (the same gap the
     // DEVICE_SITE_DENORMALIZED_TABLES note above calls out).
-    const src = readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
+    const src = readFileSync(fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url)), 'utf8');
     const missing = ALERT_CHILD_ORG_REWRITE_TABLES.filter(
       (name) => !new RegExp(`UPDATE \\$\\{sql\\.identifier\\('${name}'\\)\\}[^]*?SET org_id`).test(src),
     );
@@ -896,7 +901,7 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
   }
 
   const moveOrgSource = () =>
-    readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
+    readFileSync(fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url)), 'utf8');
 
   it('sanity: the derived expected set is non-empty and contains every device-lineage column', () => {
     const expected = deriveExpectedDetachColumns();
@@ -987,7 +992,7 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
  */
 describe('action_intents.scope_device_id detach coverage', () => {
   it('moveOrg.ts tombstones scope_device_id for the moved device, scoped to live statuses', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
     const src = readFileSync(moveOrgPath, 'utf8');
 
     const match = src.match(
@@ -1074,7 +1079,7 @@ describe('action_intents.scope_device_id detach coverage', () => {
  */
 describe('action_intents.scope_ticket_id detach coverage (#4792)', () => {
   it('moveOrg.ts tombstones scope_ticket_id for tickets bound to the moved device, all statuses', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
     const src = readFileSync(moveOrgPath, 'utf8');
 
     const match = src.match(
@@ -1133,7 +1138,7 @@ describe('action_intents.scope_ticket_id detach coverage (#4792)', () => {
   // integration-job-only) real-Postgres test would have caught it without
   // this check.
   it('moveOrg.ts places its own tombstone BEFORE the denormalized-table re-stamp loop', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
     const src = readFileSync(moveOrgPath, 'utf8');
     const tombstone = src.indexOf('UPDATE action_intents SET scope_ticket_id = NULL');
     // NOT a bare `indexOf('getDeviceOrgDenormalizedTables()')` — that also
@@ -1181,7 +1186,7 @@ describe('action_intents.scope_ticket_id detach coverage (#4792)', () => {
  */
 describe('device_vulnerabilities.ticket_id detach coverage (#4645)', () => {
   it('moveOrg.ts detaches a stale ticket_id, keyed off the ticket\'s own (post-restamp) org_id', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
     const src = readFileSync(moveOrgPath, 'utf8');
 
     const match = src.match(
@@ -1218,7 +1223,7 @@ describe('device_vulnerabilities.ticket_id detach coverage (#4645)', () => {
   });
 
   it('moveOrg.ts places its own detach AFTER the denormalized-table re-stamp loop', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
     const src = readFileSync(moveOrgPath, 'utf8');
     const detach = src.indexOf('UPDATE device_vulnerabilities dv SET ticket_id = NULL');
     const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
@@ -1324,7 +1329,7 @@ describe('device_group_memberships cross-org detach coverage (#3182)', () => {
   });
 
   it('moveOrg.ts mirrors the detach, before its own re-stamp loop', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
     const src = readFileSync(moveOrgPath, 'utf8');
     const detach = src.indexOf('DELETE FROM device_group_memberships WHERE device_id =');
     const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
@@ -1379,7 +1384,7 @@ describe('device_group_memberships cross-org detach coverage (#3182)', () => {
  */
 describe('manual_assets cross-org detach coverage (#4622)', () => {
   const moveOrgSource = () =>
-    readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
+    readFileSync(fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url)), 'utf8');
 
   it('moveOrg.ts nulls manual_assets.linked_device_id for the moved device', () => {
     expect(moveOrgSource()).toMatch(
@@ -1436,7 +1441,7 @@ describe('manual_assets cross-org detach coverage (#4622)', () => {
 // can end up pointing at a session or run in a DIFFERENT tenant.
 // ============================================================================
 describe('device move severs cross-tenant AI origin pointers (#5022 W01)', () => {
-  const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+  const moveOrgPath = fileURLToPath(new URL('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts', import.meta.url));
 
   it('moveOrg nulls ai_session_id and ai_agent_run_id on script_executions', () => {
     const src = readFileSync(moveOrgPath, 'utf8');

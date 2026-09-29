@@ -2,7 +2,14 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { authenticatorPolicies } from '../db/schema';
-import { DEFAULT_ASSURANCE_FLOOR, type AssuranceFloorOverrides, type RiskTier } from '@breeze/shared';
+import {
+  DEFAULT_ASSURANCE_FLOOR,
+  MAX_REACHABLE_ASSURANCE,
+  type AssuranceFloorOverrides,
+  type AssuranceLevel,
+  type RiskTier,
+} from '@breeze/shared';
+import { approverAssuranceDefaultEnforceFrom } from '../config/env';
 
 export type PartnerAuthenticatorPolicy = typeof authenticatorPolicies.$inferSelect;
 
@@ -23,10 +30,9 @@ export type PartnerAuthenticatorPolicy = typeof authenticatorPolicies.$inferSele
  * `partnerId` is server-derived from the caller's auth context, never client
  * input, so this pinned lookup does not widen which partner is legible.
  *
- * NOTE: `isEnforcing(null, …) === false` remains a deliberate fail-OPEN for a
- * partner that genuinely has no policy row. This fix makes the read honest; it
- * does not change that default. Whether an unreadable policy should instead
- * fail CLOSED is a separate decision (tracked on #2822).
+ * A partner with no row is NOT exempt: `isEnforcing(null, …)` resolves the
+ * platform default (see `resolveEffectivePolicy`), which enforces high and
+ * critical approvals from the platform date.
  */
 export async function loadPartnerPolicy(partnerId: string | null): Promise<PartnerAuthenticatorPolicy | null> {
   if (!partnerId) return null;
@@ -37,21 +43,167 @@ export async function loadPartnerPolicy(partnerId: string | null): Promise<Partn
       .where(eq(authenticatorPolicies.partnerId, partnerId))
       .limit(1)
   );
-  return row ?? null;
+  if (!row) return null;
+  const { overrides, clampedTiers } = clampFloorOverrides(row.floorOverrides ?? {});
+  if (clampedTiers.length === 0) return row;
+  console.warn(
+    `[authenticatorPolicy] partner ${partnerId} has a floor no approver device can reach on ${clampedTiers.join(', ')}; ` +
+      'using the highest reachable level instead',
+  );
+  return { ...row, floorOverrides: overrides };
 }
 
 /**
- * Whether the policy actively ENFORCES step-up right now. Fail-open: no policy,
- * enrollment not required, or still inside the grace window (`enforceFrom` in
- * the future) all mean "do not block".
+ * Lower any tier whose override is above MAX_REACHABLE_ASSURANCE to that
+ * maximum. Never goes below the Breeze floor (the maximum is always at or
+ * above it). Returns the tiers it changed so a caller can log them.
+ */
+export function clampFloorOverrides(overrides: AssuranceFloorOverrides): {
+  overrides: AssuranceFloorOverrides;
+  clampedTiers: RiskTier[];
+} {
+  const out: AssuranceFloorOverrides = {};
+  const clampedTiers: RiskTier[] = [];
+  for (const [tier, level] of Object.entries(overrides) as [RiskTier, AssuranceLevel][]) {
+    const max = MAX_REACHABLE_ASSURANCE[tier];
+    if (level > max) {
+      out[tier] = Math.max(max, DEFAULT_ASSURANCE_FLOOR[tier]) as AssuranceLevel;
+      clampedTiers.push(tier);
+    } else {
+      out[tier] = level;
+    }
+  }
+  return { overrides: out, clampedTiers };
+}
+
+/** Reject an override no approver device can satisfy. Throws on the first one. */
+export function validateReachable(overrides: AssuranceFloorOverrides): void {
+  for (const [tier, level] of Object.entries(overrides) as [RiskTier, AssuranceLevel][]) {
+    const max = MAX_REACHABLE_ASSURANCE[tier];
+    if (level > max) {
+      throw new Error(
+        `override for '${tier}' (${level}) cannot be met by any approver device; the highest reachable level for '${tier}' is ${max}`,
+      );
+    }
+  }
+}
+
+/** The stored fields the resolver reads. `requireEnrollment: null` = the
+ * partner left the enforcement choice blank and inherits the platform default. */
+export interface StoredAuthenticatorPolicy {
+  requireEnrollment: boolean | null;
+  enforceFrom: Date | null;
+  floorOverrides?: AssuranceFloorOverrides | null;
+}
+
+export type AuthenticatorPolicySource = 'explicit' | 'platform_default';
+export type AuthenticatorPolicyMode = 'off' | 'grace' | 'enforcing';
+
+const ALL_RISK_TIERS: readonly RiskTier[] = Object.freeze(['low', 'medium', 'high', 'critical']);
+
+/**
+ * Tiers the platform default enforces: the ones whose Breeze floor needs a
+ * registered approver device plus recency (L3+). Medium stays on the
+ * lightweight lane unless a partner explicitly chooses Required.
+ */
+export const PLATFORM_DEFAULT_ENFORCED_TIERS: readonly RiskTier[] = Object.freeze(
+  ALL_RISK_TIERS.filter((tier) => DEFAULT_ASSURANCE_FLOOR[tier] >= 3),
+);
+
+/** The policy that actually applies to a partner once the platform default is folded in. */
+export interface EffectiveAuthenticatorPolicy {
+  source: AuthenticatorPolicySource;
+  requireEnrollment: boolean;
+  enforceFrom: Date | null;
+  floorOverrides: AssuranceFloorOverrides;
+  /** Risk tiers an enforcing policy blocks under-assured approvals on. */
+  enforcedTiers: readonly RiskTier[];
+}
+
+/**
+ * Fold the platform default into a partner's stored policy.
+ *
+ * - An explicit choice (`requireEnrollment` true or false) is used as saved,
+ *   across every tier — including an explicit "not required", which stays
+ *   non-enforcing after the platform date.
+ * - No row, or a blank choice, inherits the platform default: required for
+ *   high/critical from `defaultEnforceFrom` (any stored `enforceFrom` is
+ *   ignored while inheriting). Floor overrides on the row still apply.
+ */
+export function resolveEffectivePolicy(
+  stored: StoredAuthenticatorPolicy | null,
+  defaultEnforceFrom: Date,
+): EffectiveAuthenticatorPolicy {
+  const floorOverrides = clampFloorOverrides(stored?.floorOverrides ?? {}).overrides;
+  if (!stored || stored.requireEnrollment === null) {
+    return {
+      source: 'platform_default',
+      requireEnrollment: true,
+      enforceFrom: defaultEnforceFrom,
+      floorOverrides,
+      enforcedTiers: PLATFORM_DEFAULT_ENFORCED_TIERS,
+    };
+  }
+  return {
+    source: 'explicit',
+    requireEnrollment: stored.requireEnrollment,
+    enforceFrom: stored.enforceFrom,
+    floorOverrides,
+    enforcedTiers: ALL_RISK_TIERS,
+  };
+}
+
+/** off = never blocks; grace = will enforce from `enforceFrom`; enforcing = blocks now. */
+export function effectivePolicyMode(policy: EffectiveAuthenticatorPolicy, now: Date): AuthenticatorPolicyMode {
+  if (!policy.requireEnrollment) return 'off';
+  if (policy.enforceFrom && policy.enforceFrom > now) return 'grace';
+  return 'enforcing';
+}
+
+/**
+ * Whether an under-assured APPROVE at `riskTier` must be refused right now.
+ * Non-enforcing (allowed, recorded as a grace downgrade) when the partner
+ * explicitly chose "not required", while a grace window is still running, or
+ * — for a partner inheriting the platform default — for low/medium tiers.
  */
 export function isEnforcing(
-  policy: { requireEnrollment: boolean; enforceFrom: Date | null } | null,
+  stored: StoredAuthenticatorPolicy | null,
   now: Date,
+  riskTier: RiskTier,
+  defaultEnforceFrom: Date = approverAssuranceDefaultEnforceFrom(),
 ): boolean {
-  if (!policy || !policy.requireEnrollment) return false;
-  if (policy.enforceFrom && policy.enforceFrom > now) return false; // grace window
-  return true;
+  const effective = resolveEffectivePolicy(stored, defaultEnforceFrom);
+  return effectivePolicyMode(effective, now) === 'enforcing' && effective.enforcedTiers.includes(riskTier);
+}
+
+/** Wire shape of the effective policy, for the settings tab and the approvals notice. */
+export interface EffectivePolicyDescription {
+  source: AuthenticatorPolicySource;
+  mode: AuthenticatorPolicyMode;
+  requireEnrollment: boolean;
+  enforceFrom: string | null;
+  enforcedTiers: RiskTier[];
+  /** Only for a partner inheriting the platform default: before the date
+   * 'upcoming', from the date 'active'. Null for an explicit choice. */
+  defaultNotice: 'upcoming' | 'active' | null;
+}
+
+export function describeEffectivePolicy(
+  stored: StoredAuthenticatorPolicy | null,
+  now: Date,
+  defaultEnforceFrom: Date = approverAssuranceDefaultEnforceFrom(),
+): EffectivePolicyDescription {
+  const effective = resolveEffectivePolicy(stored, defaultEnforceFrom);
+  const mode = effectivePolicyMode(effective, now);
+  return {
+    source: effective.source,
+    mode,
+    requireEnrollment: effective.requireEnrollment,
+    enforceFrom: effective.enforceFrom ? effective.enforceFrom.toISOString() : null,
+    enforcedTiers: [...effective.enforcedTiers],
+    defaultNotice:
+      effective.source === 'platform_default' ? (mode === 'enforcing' ? 'active' : 'upcoming') : null,
+  };
 }
 
 /**

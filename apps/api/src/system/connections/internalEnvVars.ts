@@ -43,6 +43,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // AI_*
   AI_COMPUTE_PRICE_MULTIPLIER: 'AI billing price multiplier',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
+  AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
@@ -52,6 +53,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   API_PORT: 'listen port',
   // APP_*
   APP_VERSION: 'shown as report.version',
+  // APPROVER_*
+  APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: 'approval security rollout date',
   // AUDIT_*
   AUDIT_CHAIN_ANCHOR_ENABLED: 'audit job kill switch',
   AUDIT_CHAIN_VERIFY_ENABLED: 'audit job toggle',
@@ -175,7 +178,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ENABLE_AI_PATCH_TESTING: 'feature flag',
   ENABLE_API_DOCS_UI: 'feature flag',
   ENABLE_REGISTRATION: 'signup policy flag',
-  ENABLE_TOOL_SEARCH: 'dev script (services/llm/__scripts__)',
+  ENABLE_TOOL_SEARCH: 'SDK child env, written per session by aiToolSearchPolicy',
   // ENROLLMENT_*
   ENROLLMENT_KEY_CLEANUP_ENABLED: 'cleanup job toggle',
   ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: 'timing knob',
@@ -280,6 +283,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   METRIC_ANOMALY_EPISODE_CLEAN_BUCKETS: 'anomaly episode tuning',
   METRIC_ANOMALY_EPISODE_EXPIRE_HOURS: 'timing knob',
   METRIC_ANOMALY_EPISODE_GAP_MINUTES: 'timing knob',
+  METRIC_ANOMALY_EPISODE_MIN_BUCKETS: 'anomaly episode tuning',
   METRIC_ANOMALY_EPISODE_RECURRENCE_DAYS: 'timing knob',
   METRIC_ANOMALY_EPISODE_SNOOZE_DAYS: 'timing knob',
   METRIC_ANOMALY_INCIDENT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
@@ -348,6 +352,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PORTAL_COOKIE_FORCE_SECURE: 'cookie policy override',
   PORTAL_COOKIE_SAME_SITE: 'cookie policy override',
   PORTAL_STATE_BACKEND: 'portal rate-limit store selector',
+  // PRE_*
+  PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
   // PROCESS_*
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
   // PROVISION_*

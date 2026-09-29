@@ -21,6 +21,7 @@ import { ensureOrgAccess, getOrgIdsForAuth } from './helpers';
 import { dataQuerySchema } from './schemas';
 import { alertOwningSiteIdSql } from '../alerts/helpers';
 
+import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 export const dataRoutes = new Hono();
 
 dataRoutes.use('*', authMiddleware);
@@ -114,7 +115,7 @@ dataRoutes.get(
     // 'quick_support' org, which deliberately stays inside accessibleOrgIds so
     // RLS lets a tech reach their own session — every report enumeration in
     // this file has to exclude them explicitly.
-    const conditions: SQL[] = [eq(devices.isEphemeral, false)];
+    const conditions: SQL[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -203,7 +204,7 @@ dataRoutes.get(
     }
 
     // Build conditions
-    const conditions: SQL[] = [eq(devices.isEphemeral, false)];
+    const conditions: SQL[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -470,7 +471,7 @@ dataRoutes.get(
     }
 
     // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false)];
+    const conditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -622,7 +623,7 @@ dataRoutes.get(
     }
 
     // Build conditions for devices
-    const deviceConditions: SQL[] = [eq(devices.isEphemeral, false)];
+    const deviceConditions: SQL[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);

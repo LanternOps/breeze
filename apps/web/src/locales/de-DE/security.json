@@ -957,6 +957,24 @@
       "submitting": "Einreichen…",
       "approveElevation": "Rechteerhöhung genehmigen",
       "denyRequest": "Anfrage ablehnen"
+    },
+    "reauth": {
+      "title": "Kritische Anfrage: Bestätigen Sie, dass Sie es sind",
+      "why": "Die Genehmigung einer Rechteerhöhung der Kritikalitätsstufe „Kritisch“ erfordert zusätzlich zu Ihrem Genehmigergerät eine erneute Authentifizierung. Sie wird einmalig geprüft und nie gespeichert.",
+      "unavailable": "Ihr Konto meldet sich ohne Passwort an und hat keine Authentifizierungs-App, daher kann es sich für kritische Genehmigungen nicht erneut authentifizieren. Passkeys werden für diesen Schritt noch nicht akzeptiert. Richten Sie unter Profil → Sicherheit eine Authentifizierungs-App ein, oder bitten Sie einen Genehmiger mit Passwort.",
+      "codeLabel": "Code der Authentifizierungs-App",
+      "passwordLabel": "Kontopasswort",
+      "codeHelp": "Der 6-stellige Code aus der Authentifizierungs-App, mit der Sie sich anmelden. Passkeys und SMS-Codes werden für diesen Schritt noch nicht akzeptiert.",
+      "passwordHelp": "Das Passwort, mit dem Sie sich bei Breeze anmelden.",
+      "useCode": "Stattdessen einen Code der Authentifizierungs-App verwenden",
+      "usePassword": "Stattdessen mein Passwort verwenden",
+      "errors": {
+        "codeRequired": "Geben Sie den Code aus Ihrer Authentifizierungs-App ein, um diese kritische Anfrage zu genehmigen.",
+        "passwordRequired": "Geben Sie Ihr Kontopasswort ein, um diese kritische Anfrage zu genehmigen.",
+        "invalid": "Dieses Passwort oder dieser Code wurde nicht akzeptiert. Überprüfen Sie es und versuchen Sie es erneut.",
+        "required": "Dies ist eine kritische Anfrage. Geben Sie Ihr Passwort (oder den Authentifizierungscode) erneut ein und genehmigen Sie noch einmal.",
+        "assertionFailed": "Die Überprüfung Ihres Genehmigergeräts wurde nicht akzeptiert. Versuchen Sie es erneut."
+      }
     }
   },
   "pamPamRevokeModal": {

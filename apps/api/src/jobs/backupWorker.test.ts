@@ -66,12 +66,30 @@ const agentRelayMock = {
   isAgentConnectedAnywhere: vi.fn(async () => true),
   dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
 };
+// Brokered write delivery is covered by backupStorageWriteDelivery.test.ts and
+// the write-session integration suites; here the helper never reports it
+// unless a test says otherwise.
+const writeDeliveryMock = vi.hoisted(() => ({
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
+    mode: input.provider === 'local' ? 'local' : 'legacy',
+    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
+    payload: input.payload,
+  })),
+}));
+vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
+const isParkedDeviceMock = vi.fn(async (_reader: unknown, _deviceId: string) => false);
+vi.mock('../services/unassignedPool/deliveryEligibility', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/unassignedPool/deliveryEligibility')>()),
+  isParkedDevice: isParkedDeviceMock,
+}));
 
 // Must import AFTER mock so the module-level destructure picks up our mock
 const { resolveBackupTargets, processCleanupExpiredSnapshots, EmptyBackupPathsError, __testOnly } = await import('./backupWorker');
@@ -847,6 +865,25 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
     expect(result).toEqual({ dispatched: false });
     expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(updateLog.some((u) => u.payload.errorLog === 'Agent not connected')).toBe(true);
+  });
+
+  it('fails a job for a device parked in a holding org before building any payload', async () => {
+    isParkedDeviceMock.mockResolvedValueOnce(true);
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+    expect(result).toEqual({ dispatched: false });
+    expect(isParkedDeviceMock).toHaveBeenCalledWith(expect.anything(), DATA.deviceId);
+    expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
+    expect(recordDispatchedExpectationMock).not.toHaveBeenCalled();
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_pending_assignment')).toBe(true);
+  });
+
+  it('refuses at the final pre-send recheck when the device is parked by then', async () => {
+    isParkedDeviceMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_pending_assignment')).toBe(true);
   });
 
   it('refuses dispatch after a device moves org and records the failure reason', async () => {

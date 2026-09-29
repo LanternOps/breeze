@@ -977,6 +977,41 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(conditionContainsEquality(condition, 'remoteSessions.userId', 'user-1')).toBe(true);
     });
 
+    it('refuses a device parked in a holding org with 403 before sweeping or inserting', async () => {
+      getDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_IN_ALLOWED,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE,
+        agentId: 'agent-1',
+        hostname: 'host-1',
+        osType: 'linux',
+        status: 'online',
+      });
+      checkRemoteAccess.mockResolvedValueOnce({
+        allowed: false,
+        code: 'DEVICE_PENDING_ASSIGNMENT',
+        reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+      } as never);
+
+      for (const type of ['desktop', 'terminal'] as const) {
+        if (type === 'terminal') {
+          checkRemoteAccess.mockResolvedValueOnce({ allowed: false, code: 'DEVICE_PENDING_ASSIGNMENT' } as never);
+        }
+        const res = await app.request('/remote/sessions', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId: DEVICE_IN_ALLOWED, type }),
+        });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual(expect.objectContaining({ code: 'DEVICE_PENDING_ASSIGNMENT' }));
+      }
+      expect(checkRemoteAccess).toHaveBeenCalledWith(DEVICE_IN_ALLOWED, 'webrtcDesktop');
+      expect(checkRemoteAccess).toHaveBeenCalledWith(DEVICE_IN_ALLOWED, 'remoteTools');
+      expect(db.update).not.toHaveBeenCalled();
+      expect((db as any).insert).not.toHaveBeenCalled();
+      expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
+    });
+
     it('maps partner-trust denial to a 403 without inserting', async () => {
       getDeviceWithOrgCheck.mockResolvedValue({
         id: DEVICE_IN_ALLOWED,
@@ -1470,6 +1505,27 @@ describe('remote sessions — site-scope enforcement', () => {
         expect(createDesktopConnectCode).not.toHaveBeenCalled();
       }
     );
+  });
+
+  it('passes the parked-device code through when a live session\'s device is parked', async () => {
+    getSessionWithOrgCheck.mockResolvedValue({
+      session: { id: SESSION_ID, type: 'desktop', status: 'active', deviceId: DEVICE_IN_ALLOWED, userId: 'user-1' },
+      device: { id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE, orgId: ORG_ID, agentId: 'agent-1', status: 'online' },
+    });
+    checkRemoteAccess.mockReturnValueOnce(Promise.resolve({
+      allowed: false,
+      code: 'DEVICE_PENDING_ASSIGNMENT',
+      reason: 'This device is waiting to be assigned to an organization; remote access is unavailable until then',
+    } as never));
+
+    const res = await app.request(`/remote/sessions/${SESSION_ID}/ws-ticket`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ code: 'DEVICE_PENDING_ASSIGNMENT' }));
+    expect(createWsTicket).not.toHaveBeenCalled();
   });
 
   // TURN credential mint budget wiring. Sliding-window

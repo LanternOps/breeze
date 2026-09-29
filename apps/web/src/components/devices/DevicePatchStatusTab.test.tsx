@@ -960,5 +960,11 @@ describe('DevicePatchStatusTab', () => {
     // Only the patch with no failed attempt still reads "Pending Approval".
     expect(screen.getAllByText('Pending Approval')).toHaveLength(1);
     expect(screen.queryByTestId('device-patch-clean-native-1-install-failed')).toBeNull();
+    // #7214 (paper cut #24): "Patch Controls" must not count a patch whose
+    // latest install attempt failed as awaiting approval — it stopped being
+    // "pending approval" the moment the row shows "Install failed" above.
+    // Two native patches are pending; only clean-native-1 has no failure.
+    expect(screen.getByText('(1 pending approval)')).toBeInTheDocument();
+    expect(screen.queryByText('(2 pending approval)')).not.toBeInTheDocument();
   });
 });

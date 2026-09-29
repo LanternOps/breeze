@@ -1,0 +1,14 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import SeriesEditPage from '../../../components/reports/series/SeriesEditPage';
+
+const { id } = Astro.params;
+
+if (!id) {
+  return Astro.redirect('/reports');
+}
+---
+
+<DashboardLayout titleKey="titles.reportsSeriesEdit">
+  <SeriesEditPage client:load seriesId={id} />
+</DashboardLayout>

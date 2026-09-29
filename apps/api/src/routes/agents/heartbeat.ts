@@ -20,7 +20,6 @@ import {
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
-import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
 import {
@@ -56,7 +55,8 @@ import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../../middleware/agentAuth';
-import { shouldRotateAgentToken } from './heartbeatTokenRotation';
+import { computeCredentialMaintenance } from './heartbeatCredentialMaintenance';
+import { respondParkedHeartbeat } from './heartbeatParked';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
@@ -469,6 +469,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     );
 
     return c.json({ commands: drainCommands });
+  }
+
+  // Pre-assignment — a device parked in its partner's
+  // holding org gets the minimal parked beat: liveness, credential rotation and
+  // lifecycle removal only. Before the watchdog branch, so both credential roles
+  // take it. See ./heartbeatParked.ts.
+  if (agent.isPreAssignment) {
+    return respondParkedHeartbeat(c, agent, data, {
+      authenticatedWithPreviousToken: c.get('agentTokenRotationRequired') === true,
+      pendingTokenPresented: c.get('agentPendingTokenPresented') === true,
+    });
   }
 
   // #1121 — observability for the #1065 tolerance trade-off. watchdogState is
@@ -1866,17 +1877,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  let renewCert = false;
-  if (device.mtlsCertExpiresAt && device.mtlsCertIssuedAt) {
-    const now = Date.now();
-    const issuedMs = device.mtlsCertIssuedAt.getTime();
-    const expiresMs = device.mtlsCertExpiresAt.getTime();
-    const renewalThreshold = issuedMs + ((expiresMs - issuedMs) * 2) / 3;
-    if (now >= renewalThreshold) {
-      renewCert = true;
-    }
-  }
-
   // Helper settings are resolved AFTER this org-scoped block closes (#1105
   // pattern — see below): a partner-wide helper policy (org_id NULL) is
   // invisible under this context's RLS (accessiblePartnerIds: [] above), so
@@ -1944,69 +1944,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   mergedConfigUpdate.require_manifest_signing_key_id =
     (process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true';
 
-  const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
-
-  // Issue #2621 — a staged rotation is still outstanding. Don't ask for another
-  // one (that would churn the staged set and re-open the divergence window);
-  // ask the agent to finish the one it has. This is also the recovery path for
-  // an agent that persisted the new credentials and then crashed before
-  // confirming: it reconnects on the staged token and gets told to confirm.
-  let pendingRotationLive =
-    !!device.pendingTokenHash &&
-    !!device.pendingTokenExpiresAt &&
-    device.pendingTokenExpiresAt > new Date();
-
-  // Issue #2621 — IMPLICIT PROMOTION. The agent is authenticating with the
-  // staged credential, which is the same proof of durable possession that
-  // /rotate-token/confirm requires, so promote it here too.
-  //
-  // This is what keeps PRE-#2621 agents alive. An old agent overwrites its own
-  // token file on rotation and never calls confirm; without this it would run on
-  // the pending hash until the staging window closed and then be locked out
-  // permanently, with no way to self-heal (rotateToken is suppressed while a
-  // rotation is staged, and after expiry it can no longer authenticate at all).
-  // It also backstops a current agent whose confirm response was lost in flight.
-  if (pendingRotationLive && c.get('agentPendingTokenPresented') === true && device.agentTokenHash) {
-    try {
-      const promoted = await promotePendingAgentCredentials({
-        deviceId: device.id,
-        pendingTokenHash: device.pendingTokenHash!,
-        expectedAgentTokenHash: device.agentTokenHash,
-        pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
-        pendingHelperTokenHash: device.pendingHelperTokenHash,
-        watchdogTokenHash: device.watchdogTokenHash,
-        helperTokenHash: device.helperTokenHash,
-      });
-      if (promoted) {
-        pendingRotationLive = false;
-      }
-    } catch (err) {
-      // Best-effort: the staged credential still authenticates for the rest of
-      // its window, and confirm/the next heartbeat will retry the promotion.
-      console.error('[heartbeat] implicit pending-rotation promotion failed:', err);
-    }
-  }
-
-  // #3997 — do not ASK for a rotation the mint route will now refuse.
-  // `rotate-token` is off the tenant drain surface (agentAuth's
-  // TENANT_DRAIN_ALLOWED_ACTIONS) and the route itself fails closed on a
-  // drain, so signalling it here would have every agent in an offboarding
-  // tenant attempt a mint it cannot complete on EVERY heartbeat for the whole
-  // window (OFFBOARDING_DRAIN_WINDOW_HOURS, 72h by default), logging a rotation
-  // failure each time. Suppressing the signal changes nothing about safety —
-  // `handleTokenRotation` in agent/internal/heartbeat logs and returns, never
-  // gating the heartbeat or touching on-disk credentials — it only stops a
-  // guaranteed-useless round trip and its error noise.
-  //
-  // Only the TENANT drain is checked: `deviceUninstallDraining` returns from
-  // the minimal drain beat at the top of this handler and never reaches here,
-  // so testing it too would be unreachable code.
-  const rotateToken = shouldRotateAgentToken({
-    tenantDraining: !!agent?.tenantDraining,
-    authenticatedWithPreviousToken,
-    pendingRotationLive,
-    watchdogTokenHash: device.watchdogTokenHash,
-    tokenIssuedAt: device.tokenIssuedAt,
+  // Certificate renewal, token rotation and staged-rotation confirmation —
+  // computed once, the same way the parked beat computes them
+  // (./heartbeatCredentialMaintenance.ts). Runs inside this org context
+  // because the implicit staged-rotation promotion writes the device row.
+  const credentialMaintenance = await computeCredentialMaintenance({
+    device,
+    tenantDraining: agent?.tenantDraining === true,
+    authenticatedWithPreviousToken: c.get('agentTokenRotationRequired') === true,
+    pendingTokenPresented: c.get('agentPendingTokenPresented') === true,
+    presentedTokenHash: agent.authTokenHash,
   });
 
   let manageRemoteManagement = false;
@@ -2071,13 +2018,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       upgradeTo,
       helperUpgradeTo: helperUpgradeTo ?? undefined,
       watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
-      renewCert: renewCert || undefined,
-      rotateToken: rotateToken || undefined,
-      // Issue #2621 — set when the caller authenticated with the STAGED
-      // credential, i.e. it demonstrably holds the new token but never
-      // confirmed. Tells the agent to call /rotate-token/confirm and finish.
-      confirmTokenRotation:
-        (pendingRotationLive && c.get('agentPendingTokenPresented') === true) || undefined,
+      renewCert: credentialMaintenance.renewCert,
+      rotateToken: credentialMaintenance.rotateToken,
+      // Issue #2621 — see heartbeatCredentialMaintenance.ts.
+      confirmTokenRotation: credentialMaintenance.confirmTokenRotation,
       // helperEnabled/helperSettings are merged in AFTER this org-scoped block
       // closes — see the #1105 comment below. uacInterceptionEnabled likewise
       // (#2930): the pam resolver moved out with the other policy readers.

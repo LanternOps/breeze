@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  backupStatusReportConfigSchema,
   createReportSchema,
   endpointManagementConfigSchema,
   generateReportSchema,
@@ -131,6 +132,29 @@ describe('report config schema', () => {
     expect(parsed.config.severityFloor).toBe('medium');
     expect(parsed.config.topN).toBe(50);
     expect(parsed.config.includeAccepted).toBe(false);
+  });
+
+  it('persists only the backup_status keys the caller sent and round-trips overrides', () => {
+    const empty = createReportSchema.parse({ name: 'Backup status', type: 'backup_status', config: {} });
+    expect(empty.config).toEqual({});
+
+    const overridden = createReportSchema.parse({
+      name: 'Backup status', type: 'backup_status',
+      config: { includeDevicesWithoutBackup: false, sources: ['provider'] },
+    });
+    expect(overridden.config.includeDevicesWithoutBackup).toBe(false);
+    expect(overridden.config.sources).toEqual(['provider']);
+  });
+
+  it('rejects an empty or unknown backup_status sources list', () => {
+    expect(() => createReportSchema.parse({ name: 'x', type: 'backup_status', config: { sources: [] } })).toThrow();
+    expect(() => createReportSchema.parse({ name: 'x', type: 'backup_status', config: { sources: ['carbonite'] } })).toThrow();
+  });
+
+  it('applies backup_status defaults at generation time', () => {
+    const parsed = backupStatusReportConfigSchema.parse({});
+    expect(parsed.includeDevicesWithoutBackup).toBe(true);
+    expect(parsed.sources).toEqual(['breeze', 'provider']);
   });
 
   it('preserves hardware lifecycle replaceAgeYears on create', () => {

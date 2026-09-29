@@ -62,7 +62,8 @@
       "upgradeFailed": "Yeni izinlerin onayı başlatılamadı.",
       "syncNow": "Şimdi eşitle",
       "syncFailed": "Kiracı eşitlemesi istenemedi.",
-      "syncSucceeded": "Kiracı eşitlemesi istendi."
+      "syncSucceeded": "Kiracı eşitlemesi istendi.",
+      "connectTenant": "Kiracıyı bağla"
     },
     "sync": {
       "lastSynced": "Son eşitleme {{relative}}",
@@ -101,6 +102,16 @@
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
+    },
+    "stepTitle": "Okuma erişimi",
+    "stepDescription": "Müşteri yöneticisi tarafından verilen salt okunur erişim. Breeze asla kiracı gizli anahtarı veya sertifikası istemez.",
+    "recommendedFirst": "Önce önerilir",
+    "showPermissions": "Microsoft izinlerini göster",
+    "capabilities": {
+      "intro": "Yapay zekâ sorguları ve raporlar için Breeze şunları yapabilir:",
+      "users": "Kullanıcıları ve grupları arama",
+      "devices": "Cihazları ve oturum açmaları görme",
+      "posture": "Güvenlik duruşunu inceleme"
     }
   },
   "m365CustomerGraphActions": {
@@ -153,7 +164,8 @@
       "retestSucceeded": "Bağlantının yeniden testi tamamlandı.",
       "disconnectWarning": "Bağlantının kesilmesi Breeze'nin bu bağlantıyı kullanmasını durdurur. Microsoft kiracı çapında izin, bir müşteri yöneticisi bunu Microsoft Entra'da kaldırıncaya kadar kalır.",
       "disconnectFailed": "Bağlantı kesilemedi.",
-      "disconnectSucceeded": "Breeze bağlantısı kesildi."
+      "disconnectSucceeded": "Breeze bağlantısı kesildi.",
+      "grant": "Yönetici eylemlerine izin ver…"
     },
     "errors": {
       "consent_expired": "İzin oturumunun süresi doldu. Onaylamayı yeniden başlatın.",
@@ -171,7 +183,35 @@
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
+    },
+    "stepTitle": "Yönetici eylemleri",
+    "stepDescription": "Breeze üzerinden kullanıcı parolalarını sıfırlayın ve kullanıcı oturum açmayı devre dışı bırakın.",
+    "readRequiredNote": "Yapay zekâ sorguları ve raporlar okuma erişimi gerektirir (adım 1).",
+    "showPermissions": "Microsoft izinlerini göster",
+    "preflight": {
+      "title": "Microsoft'a devam etmeden önce",
+      "canDoIntro": "Breeze şunları yapabilecek:",
+      "resetPasswords": "Kullanıcı parolalarını sıfırlama",
+      "disableSignIn": "Kullanıcı oturum açmayı devre dışı bırakma",
+      "adminRequired": "{{target}} için Microsoft'ta Genel Yönetici (veya Ayrıcalıklı Rol Yöneticisi) olarak oturum açmış olmanız gerekir.",
+      "revoke": "Erişimi daha sonra iptal etmek için buradan bağlantıyı kesin veya Microsoft Entra'da Breeze kurumsal uygulamasını kaldırın.",
+      "continue": "Microsoft'a devam et",
+      "defaultTarget": "bu kuruluşun Microsoft 365 kiracısı"
     }
+  },
+  "m365TenantPanel": {
+    "loading": "Microsoft 365 bağlantıları yükleniyor.",
+    "consentUnavailable": "Onaya dayalı bağlantı bu Breeze örneğinde henüz kullanılamıyor.",
+    "selectOrganization": "Microsoft 365 kiracısını bağlamak için bir kuruluş seçin.",
+    "noTenantForOrg": "{{orgName}} ile bağlı Microsoft 365 kiracısı yok",
+    "noTenant": "Bu kuruluşa bağlı Microsoft 365 kiracısı yok",
+    "tenantId": "Kiracı kimliği",
+    "copyTenantId": "Kiracı kimliğini kopyala",
+    "copied": "Kiracı kimliği kopyalandı",
+    "lastVerified": "Son doğrulama: {{date}}",
+    "notVerifiedYet": "Henüz doğrulanmadı",
+    "stepLabel": "Adım {{number}}",
+    "legacyDisclosure": "Gelişmiş: kendi uygulama kaydınızı kullanın (eski yöntem)"
   },
   "communicationIntegrations": {
     "critical": "Kritik",
@@ -566,7 +606,10 @@
     "hideSecret": "Sırrı gizle",
     "showSecret": "Sırrı göster",
     "updateConnection": "Bağlantıyı güncelle",
-    "saveAndVerify": "Kaydet ve doğrula"
+    "saveAndVerify": "Kaydet ve doğrula",
+    "legacyBadge": "Eski yöntem",
+    "precedenceNote": "Bu eski doğrudan bağlantı, bu kiracı için onaya dayalı bağlantıya göre önceliklidir.",
+    "disconnectConfirm": "Eski doğrudan bağlantı kesilsin mi? Breeze, kayıtlı uygulama kaydı kimlik bilgilerini siler. Uygulama kaydının kendisi Microsoft Entra'da kalır."
   },
   "monitoringIntegration": {
     "deviceHealth": "Cihaz sağlığı",
@@ -782,6 +825,8 @@
     "notConnected": "Bağlı değil",
     "reconnectRequired": "Yeniden bağlantı gerekli",
     "disconnectOtherFirst": "Önce {{provider}} bağlantısını kesin",
+    "pendingTenant": "Bir kuruluş seçin",
+    "finishOtherFirst": "{{provider}} bağlantısını önce tamamlayın veya iptal edin",
     "loadFailed": "Muhasebe sağlayıcıları yüklenemedi. Tekrar denemek için sayfayı yenileyin.",
     "noProviderConfigured": "Bu örnekte yapılandırılmış bir muhasebe sağlayıcısı yok."
   },
@@ -1053,15 +1098,15 @@
     "providerConnectionFailedPleaseTryAgain": "{{provider}} bağlantısı başarısız oldu. Lütfen tekrar deneyin.",
     "providerConflict": "Bu iş ortağı için başka bir muhasebe sistemi zaten bağlı. {{provider}} bağlantısı kurmadan önce onun bağlantısını kesin.",
     "failedToStartTheProviderConnection": "{{provider}} bağlantısı başlatılamadı.",
-    "failedToDisconnectProvider": "{{provider}}'un bağlantısı kesilemedi.",
-    "providerDisconnected": "{{provider}}'un bağlantısı kesildi",
+    "failedToDisconnectProvider": "{{provider}} bağlantısı kesilemedi.",
+    "providerDisconnected": "{{provider}} bağlantısı kesildi",
     "failedToUpdateThePushSetting": "Aktarma ayarı güncellenemedi.",
     "theProviderAccountingIntegrationIsAvailableToPartner": "{{provider}} muhasebe entegrasyonu yalnızca ortak hesaplar için geçerlidir. ",
     "loadingProviderStatus": "{{provider}} durumu yükleniyor… ",
     "reconnectRequired": "Yeniden bağlanma gerekli ",
     "environment": "Çevre",
     "invoicePush": "Fatura aktarma",
-    "controlWhenIssuedInvoicesAreSentToProvider": "Düzenlenen faturaların {{provider}}'a ne zaman gönderileceğini kontrol edin. ",
+    "controlWhenIssuedInvoicesAreSentToProvider": "Düzenlenen faturaların {{provider}} hizmetine ne zaman gönderileceğini kontrol edin. ",
     "disconnect": "Bağlantıyı kes ",
     "heading": "{{provider}}",
     "syncCustomersInvoicesAndPaymentsToYourBooks": "Müşterileri, faturaları ve ödemeleri kitaplarınızla senkronize edin.",
@@ -1072,8 +1117,8 @@
     "invoicesPushManually": "Faturalar manuel olarak iletilecek",
     "authorizationExpired": "{{provider}} yetkinizin süresi doldu. Faturaları ve ödemeleri senkronize etmeye devam etmek için yeniden bağlanın.",
     "connectDescription": "Müşterileri, faturaları ve ödemeleri senkronize etmek için {{provider}} şirketinizi bağlayın. Breeze kayıt sisteminizde kalır.",
-    "reconnectProvider": "{{provider}}'u Yeniden Bağlayın",
-    "connectToProvider": "{{provider}}'a bağlanın",
+    "reconnectProvider": "{{provider}} Bağlantısını Yenileyin",
+    "connectToProvider": "{{provider}} ile bağlanın",
     "automaticOnIssue": "Otomatik sorun var",
     "manual": "Kılavuz",
     "refreshSettings": "Ayarları yenile",
@@ -1083,14 +1128,14 @@
     "multiCurrency": "Çoklu para birimi",
     "multiCurrencyUnknown": "Bilinmiyor — kontrol için ayarları yenileyin",
     "pullPayments": "Ödeme eşitleme",
-    "pullPaymentsDescription": "{{provider}}'ta kaydedilen ödemeleri Breeze faturalarına geri çekin.",
-    "pullPaymentsEnabled": "Ödemeler {{provider}}'tan eşitlenecek",
-    "pullPaymentsDisabled": "Ödemeler artık {{provider}}'tan eşitlenmeyecek",
+    "pullPaymentsDescription": "{{provider}} tarafında kaydedilen ödemeleri Breeze faturalarına geri çekin.",
+    "pullPaymentsEnabled": "Ödemeler {{provider}} üzerinden eşitlenecek",
+    "pullPaymentsDisabled": "Ödemeler artık {{provider}} üzerinden eşitlenmeyecek",
     "failedToUpdatePullPayments": "Ödeme eşitleme ayarı güncellenemedi.",
     "pushPayments": "Ödeme gönderimi",
-    "pushPaymentsDescription": "Breeze'de kaydedilen ödemeleri {{provider}}'a gönder ve iptal edildiklerinde oradan kaldır.",
-    "pushPaymentsEnabled": "Ödemeler {{provider}}'a gönderilecek",
-    "pushPaymentsDisabled": "Ödemeler artık {{provider}}'a gönderilmeyecek",
+    "pushPaymentsDescription": "Breeze'de kaydedilen ödemeleri {{provider}} hizmetine gönder ve iptal edildiklerinde oradan kaldır.",
+    "pushPaymentsEnabled": "Ödemeler {{provider}} hizmetine gönderilecek",
+    "pushPaymentsDisabled": "Ödemeler artık {{provider}} hizmetine gönderilmeyecek",
     "failedToUpdatePushPayments": "Ödeme gönderimi ayarı güncellenemedi.",
     "lastPaymentSync": "Son ödeme eşitlemesi",
     "never": "Hiçbir zaman",
@@ -1098,7 +1143,56 @@
     "syncNowQueued": "Ödeme eşitlemesi kuyruğa alındı.",
     "syncNowNotQueued": "Ödeme eşitlemesi kuyruğa alınamadı. Kısa süre sonra yeniden deneyin.",
     "syncNowPullDisabled": "Bu bağlantı için ödeme eşitlemesi kapalı — şimdi eşitlemek için Ödeme eşitleme veya Ödeme gönderimi seçeneğini açın.",
-    "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı."
+    "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı.",
+    "tenantPicker": {
+      "title": "{{provider}} kuruluşunuzu seçin",
+      "description": "Birden fazla kuruluşu yetkilendirdiniz. Breeze tam olarak birine bağlanır; diğerleri bu bağlantıdan kaldırılır.",
+      "loadFailed": "{{provider}} tarafından kuruluşlarınız yüklenemedi.",
+      "expired": "Bu {{provider}} oturum açma işleminin süresi doldu. İptal edin ve tekrar bağlanın.",
+      "connect": "Kuruluşu bağla",
+      "cancel": "Bağlantıyı iptal et",
+      "selectFailed": "O kuruluş bağlanamadı.",
+      "cancelFailed": "Bağlantı iptal edilemedi.",
+      "connected": "{{provider}} kuruluşu bağlandı",
+      "cancelled": "{{provider}} bağlantısı iptal edildi",
+      "chooseFirst": "Önce bir kuruluş seçin",
+      "grantSuperseded": "Daha yeni bir {{provider}} oturum açma işlemi bunun yerini aldı. Kuruluşu tekrar seçin.",
+      "deadline": "{{time}} zamanından önce bir kuruluş seçin.",
+      "tenantHeld": "Bu {{provider}} kuruluşu başka bir Breeze hesabına bağlı. Başka bir kuruluş seçin veya bağlantıyı iptal edin.",
+      "retry": "Tekrar dene"
+    },
+    "connectErrors": {
+      "tenantHeld": "Bu {{provider}} kuruluşu başka bir Breeze hesabına bağlı.",
+      "authEventMissing": "{{provider}} hangi kuruluşları yetkilendirdiğinizi onaylamadı. Lütfen tekrar bağlanın.",
+      "noOrganisation": "Hiçbir {{provider}} kuruluşu yetkilendirilmedi. {{provider}} onay ekranında bir kuruluş seçin.",
+      "tenantLookupFailed": "{{provider}} kuruluşlarınız okunamadı. Lütfen tekrar deneyin.",
+      "consentDenied": "{{provider}} oturum açma işlemini iptal ettiniz. Hiçbir şey bağlanmadı.",
+      "selectTenant": "Hangi {{provider}} kuruluşunun bağlanacağını seçin."
+    },
+    "disconnectConfirm": {
+      "title": "{{provider}} bağlantısı kesilsin mi?",
+      "message": "Breeze, {{provider}} ile senkronizasyonu durduracak ve {{provider}} tarafındaki bağlantıyı kaldıracak. İstediğiniz zaman tekrar bağlanabilirsiniz.",
+      "confirm": "Bağlantıyı kes"
+    },
+    "reconnectKeepsOrganisation": "Yeniden bağlanmak mevcut {{provider}} kuruluşunuzu korur. {{provider}} ekranında işaretlediğiniz başka bir kuruluş serbest bırakılır.",
+    "pendingTenant": "Bir kuruluş seçin",
+    "settingsStep": {
+      "title": "{{provider}} ayarları",
+      "organisation": "Kuruluş",
+      "demoBadge": "Demo şirket",
+      "incomeAccount": "Varsayılan gelir hesabı",
+      "taxRate": "Vergiye tabi satırlar için vergi oranı",
+      "exemptTaxRate": "Vergiden muaf satırlar için vergi oranı",
+      "paymentAccount": "Ödemeler için banka hesabı",
+      "notSet": "Ayarlanmadı",
+      "save": "Ayarları kaydet",
+      "saved": "{{provider}} ayarları kaydedildi",
+      "saveFailed": "{{provider}} ayarları kaydedilemedi.",
+      "loadFailed": "{{provider}} tarafından ayarlar yüklenemedi.",
+      "retry": "Tekrar dene",
+      "pickDefaults": "Breeze uygulamasının {{provider}} ile kullandığı varsayılanları seçin. Kuruluş değiştirdiyseniz bunları yeniden seçin — önceki kuruluşun seçimleri temizlendi.",
+      "paymentAccountMissing": "Bir banka hesabı seçilene kadar Breeze'de kaydedilen ödemeler {{provider}} hizmetine gönderilmez."
+    }
   },
   "accountingMapping": {
     "mappingTitle": "Müşteri ve ürün eşleme",
@@ -1115,11 +1209,14 @@
     "unlink": "Bağlantıyı kaldır",
     "syncNow": "Şimdi senkronize et",
     "notSynced": "Eşitlenmedi",
-    "notSyncedHint": "Breeze'de onaylandı, henüz {{provider}}'a gönderilmedi",
-    "inProvider": "{{provider}}'ta",
+    "notSyncedHint": "Breeze'de onaylandı, henüz {{provider}} hizmetine gönderilmedi",
+    "inProvider": "{{provider}} tarafında",
     "syncFailed": "Eşitleme başarısız",
     "incomeAccount": "Gelir hesabı",
-    "incomeAccountRequired": "{{provider}}'ta ürün oluşturmadan veya senkronize etmeden önce varsayılan bir gelir hesabı belirleyin.",
+    "incomeAccountRequired": "{{provider}} tarafında ürün oluşturmadan veya senkronize etmeden önce varsayılan bir gelir hesabı belirleyin.",
+    "incomeAccountInSettings": "Ürün oluşturmadan önce yukarıdaki ayarlar adımında {{provider}} gelir hesabını belirleyin.",
+    "archived": "Arşivlendi",
+    "duplicateNameHint": "Aşağıdan mevcut {{provider}} kaydını seçin, ardından eşleşmeyi onaylayın.",
     "saveIncomeAccount": "Gelir hesabını kaydet",
     "mappingSaved": "Eşleme kaydedildi.",
     "entitySynced": "{{provider}} ile senkronize edildi.",
@@ -1131,17 +1228,17 @@
     "failedToSyncEntity": "{{provider}} ile senkronize edilemedi.",
     "failedToSaveIncomeAccount": "Gelir hesabı kaydedilemedi.",
     "incomeAccountSaved": "Gelir hesabı kaydedildi.",
-    "searchPlaceholder": "{{provider}}'ta ara",
+    "searchPlaceholder": "{{provider}} içinde ara",
     "searching": "Aranıyor…",
-    "noCandidates": "Bu arama için {{provider}}'ta eşleşme yok.",
-    "failedToSearchCandidates": "{{provider}}'ta arama yapılamadı.",
+    "noCandidates": "Bu arama için {{provider}} tarafında eşleşme yok.",
+    "failedToSearchCandidates": "{{provider}} içinde arama yapılamadı.",
     "syncedWithTaxVariance": "Vergi farkıyla eşitlendi"
   },
   "accountingCustomerImport": {
     "failedToLoadProviderCustomers": "{{provider}} müşterileri yüklenemedi.",
     "failedToImportCustomers": "Müşteriler içe aktarılamadı.",
     "importCustomers": "Müşterileri içe aktar",
-    "noCustomersFoundInProvider": "{{provider}}'ta müşteri bulunamadı.",
+    "noCustomersFoundInProvider": "{{provider}} tarafında müşteri bulunamadı.",
     "selectAll": "Tümünü seç",
     "email": "E-posta",
     "alreadyImported": "Zaten içe aktarıldı ",
@@ -1152,6 +1249,9 @@
     "importing": "İçe aktarılıyor…",
     "importSelected": "İçe aktar {{count}} seçildi",
     "customerFailedCount_one": "{{count}} müşterisi içe aktarılamadı",
-    "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu"
+    "customerFailedCount_other": "{{count}} müşteri içe aktarma işleminde başarısız oldu",
+    "showAllContacts_one": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
+    "showAllContacts_other": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
+    "archived": "Arşivlendi"
   }
 }

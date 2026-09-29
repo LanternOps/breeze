@@ -47,6 +47,7 @@
     "timesheets": "Fogli ore",
     "productCatalog": "Catalogo prodotti",
     "deviceGroups": "Gruppi di dispositivi",
+    "unassignedDevices": "Dispositivi non assegnati",
     "configPolicies": "Criteri di configurazione",
     "integrations": "Integrazioni",
     "cloudBackup": "Backup sul cloud",
@@ -749,7 +750,8 @@
         "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
         "keyboardShortcuts": "Scorciatoie da tastiera",
         "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
-      }
+      },
+      "numberHint": "{{mod}}1–9 per aprire"
     },
     "notifications": {
       "title": "Notifiche",
@@ -815,7 +817,17 @@
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
       "close": "Chiudi una finestra di dialogo o un menu",
-      "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo."
+      "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
+      "create": "Crea",
+      "createHint": "Premi c, rilascia, poi il tasto.",
+      "paletteNumber": "Apri un risultato di ricerca dal suo numero",
+      "newItems": {
+        "ticket": "Nuovo ticket",
+        "quote": "Nuovo preventivo",
+        "invoice": "Nuova fattura",
+        "contract": "Nuovo contratto",
+        "script": "Nuovo script"
+      }
     }
   },
   "migrationBanner": {
@@ -2437,7 +2449,36 @@
         "requesting": "Richiesta in corso...",
         "requestApproval": "Richiedi l'approvazione",
         "waitingApprovalTitle": "In attesa dell'approvazione PAM",
-        "approvalPending": "In attesa di approvazione"
+        "approvalPending": "In attesa di approvazione",
+        "proven": {
+          "badge": "Correzione comprovata",
+          "trackAllClients": "Ha funzionato {{verified}} volte su {{attempts}} presso i tuoi clienti",
+          "trackThisClient": "Ha funzionato {{verified}} volte su {{attempts}} presso questo cliente"
+        },
+        "feedback": {
+          "worked": "Ha funzionato",
+          "didNotWork": "Non ha funzionato",
+          "recorded": "Feedback registrato",
+          "failed": "Impossibile registrare il feedback"
+        },
+        "done": {
+          "button": "Fatto",
+          "recorded": "Segnato come fatto — in attesa del ripristino",
+          "failed": "Impossibile segnare come fatto"
+        },
+        "outcome": {
+          "label": "Esito: {{state}}",
+          "state": {
+            "pending": "in esecuzione",
+            "awaitingRecovery": "in attesa del ripristino",
+            "holding": "ripristinato — verifica della stabilità",
+            "verified": "correzione verificata",
+            "failed": "non ha risolto il problema",
+            "recurred": "si è ripresentato",
+            "inconclusive": "non conclusivo",
+            "cancelled": "annullato"
+          }
+        }
       }
     },
     "support": {

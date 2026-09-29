@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The holding-org refusal reads the org; the db mocks below do not model it.
+vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
 import { writeRouteAudit } from '../services/auditEvents';
 import { Hono } from 'hono';
 
@@ -101,6 +104,7 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { webhookRoutes } from './webhooks';
+import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 
 function mockSelectLimit(result: unknown) {
   return {
@@ -174,6 +178,18 @@ describe('webhook routes', () => {
 
     app = new Hono();
     app.route('/webhooks', webhookRoutes);
+  });
+
+  it('refuses to create a webhook on a holding org', async () => {
+    vi.mocked(isHoldingOrg).mockResolvedValueOnce(true);
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Device Alerts', url: 'https://example.com/webhooks/device', secret: 'secret-123', events: ['device.created'] }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('ORG_PROTECTED');
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('creates a webhook with secret metadata', async () => {

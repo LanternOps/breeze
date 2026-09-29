@@ -30,6 +30,7 @@ import { captureException } from './sentry';
 import type { SubjectAlertDispatch } from './alertService';
 import { escalationSeverityFor } from './monitors/escalationLatch';
 import { drainRetirementOutbox } from './hardwareHealth/retirementOutbox';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type Claimed = {
   id: string;
@@ -184,6 +185,8 @@ async function stagePendingHardwareEscalations(deviceId?: string): Promise<void>
         isNull(monitorDeviceState.escalationAlertId),
         isNotNull(monitorDeviceState.currentEpisodeId),
         eq(monitorDeviceState.lastState, 'breach'),
+        // No escalation alert for a device parked in its partner's holding org.
+        notParkedDeviceCondition(),
         deviceId ? eq(monitorDeviceState.deviceId, deviceId) : undefined,
       ))
       .orderBy(monitorDeviceState.updatedAt).limit(100)

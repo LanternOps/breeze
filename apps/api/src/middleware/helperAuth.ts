@@ -15,6 +15,8 @@ import { devices, organizations } from '../db/schema';
 import type { AuthContext } from './auth';
 import { matchAgentTokenHash } from './agentAuth';
 import { evaluateDeviceCredentialLifecycle } from './deviceCredentialLifecycle';
+import { PARKED_DEVICE_REFUSAL } from './agentAuthParked';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 
 export interface HelperDevice {
   id: string;
@@ -70,6 +72,8 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
         status: devices.status,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         partnerId: organizations.partnerId,
+        // Pre-assignment: a device parked in a holding org is refused below.
+        organizationType: organizations.type,
       })
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -120,6 +124,15 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
       default:
         return c.json({ error: 'Invalid agent credentials' }, 401);
     }
+  }
+
+  // Pre-assignment: a device parked in its partner's
+  // holding org keeps credential rotation and lifecycle removal on the agent
+  // REST surface and nothing else. A Helper session is interactive AI, tool and
+  // remote surface, so the helper token issued at enrollment is refused until
+  // the device is assigned. Same body as the agent REST refusal.
+  if (isUnassignedPoolOrgType(device.organizationType)) {
+    return c.json(PARKED_DEVICE_REFUSAL, 403);
   }
 
   c.set('helperDevice', {

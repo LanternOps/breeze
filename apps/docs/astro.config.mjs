@@ -135,6 +135,7 @@ export default defineConfig({
                 { slug: 'features/network-baselines' },
                 { slug: 'features/network-intelligence' },
                 { slug: 'features/discovery' },
+                { slug: 'features/network-topology' },
                 { slug: 'features/ip-history' },
                 { slug: 'features/boot-performance' },
                 { slug: 'features/reliability' },

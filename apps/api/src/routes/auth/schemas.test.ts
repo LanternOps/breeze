@@ -124,6 +124,15 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
+  // #4045: the other SSO-reauth-minted purpose. It stands in for the PASSWORD
+  // leg of factor management; letting a client mint it from a TOTP code would
+  // turn one factor proof into both legs of a two-proof step-up.
+  it('rejects sso_reauth_manage_factor — SSO-reauth-mint only, never client-requestable', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'sso_reauth_manage_factor' })
+    ).toThrow();
+  });
+
   // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a
   // client-requestable step-up operation, and its resource binding must be
   // accepted by this schema. The duration cap is imported from the grant

@@ -19,6 +19,11 @@ const configuredDevice: BackupDeviceRow = {
   readinessScore: 92,
   estimatedRtoMinutes: 30,
   estimatedRpoMinutes: 60,
+  source: 'breeze',
+  providerLabel: null,
+  status: 'completed',
+  health: 'healthy',
+  lastSuccessAt: '2026-09-02T10:00:00Z',
 };
 
 describe('BackupDeviceTable', () => {
@@ -31,6 +36,8 @@ describe('BackupDeviceTable', () => {
       ).map((th) => th.textContent?.trim())
     ).toEqual([
       'Device',
+      'Backed up by',
+      'Health',
       'Last backup',
       'Last restore test',
       'Needs attention',
@@ -70,6 +77,8 @@ describe('BackupDeviceTable', () => {
       screen.getByTestId('portal-backup-device-d-1').querySelectorAll('.sm\\:hidden')
     );
     expect(labels.map((el) => el.textContent)).toEqual([
+      'Backed up by',
+      'Health',
       'Last backup',
       'Last restore test',
       'Needs attention',
@@ -118,6 +127,8 @@ describe('BackupDeviceTable', () => {
           {
             ...configuredDevice,
             id: 'd-3',
+            // Neutral health, so the row's only tone-bearing mark is the restore test.
+            health: 'unknown',
             lastTestRestore: { status: 'in_progress', completedAt: null, restoreTimeSeconds: null },
           },
         ]}
@@ -179,14 +190,22 @@ describe('BackupDeviceTable', () => {
             readinessScore: null,
             estimatedRtoMinutes: null,
             estimatedRpoMinutes: null,
+            source: 'breeze',
+            providerLabel: null,
+            status: 'unknown',
+            health: 'unknown',
+            lastSuccessAt: null,
           },
         ]}
       />
     );
 
-    expect(screen.getByTestId('portal-backup-device-d-3').textContent).toContain(
-      'No backup has run for this device yet'
-    );
+    const row = screen.getByTestId('portal-backup-device-d-3');
+    expect(row.textContent).toContain('No backup has run for this device yet');
+    // A device nobody backs up has no source and no health verdict.
+    expect(row.textContent).not.toContain('Device backup');
+    expect(row.textContent).not.toContain('Unknown');
+    expect(row.querySelectorAll('td')).toHaveLength(2);
   });
 
   it('renders an honest empty state', () => {
@@ -195,5 +214,64 @@ describe('BackupDeviceTable', () => {
     expect(screen.getByTestId('portal-backup-device-empty').textContent).toContain(
       'No backup devices are available'
     );
+  });
+
+  it('shows an unlinked third-party row with its provider, health and only the facts it has', () => {
+    render(
+      <BackupDeviceTable
+        devices={[
+          {
+            ...configuredDevice,
+            id: 'provider:row-9',
+            name: 'BACKUP-SVR',
+            lastRestorePointAt: '2026-08-30T00:00:00Z',
+            lastTestRestore: null,
+            readinessScore: null,
+            source: 'external',
+            providerLabel: 'Cove Data Protection',
+            status: 'failed',
+            health: 'critical',
+          },
+        ]}
+      />
+    );
+
+    const row = screen.getByTestId('portal-backup-device-provider:row-9');
+    expect(row.textContent).toContain('BACKUP-SVR');
+    expect(row.textContent).toContain('Cove Data Protection');
+    expect(row.textContent).toContain('Critical');
+    expect(row.textContent).toContain('Aug 30, 2026');
+    // Restore test, needs attention and readiness are first-party facts.
+    const dashes = Array.from(row.querySelectorAll('td')).filter(
+      (td) => td.lastChild?.textContent === '—'
+    );
+    expect(dashes).toHaveLength(3);
+  });
+
+  it('names both backups when first-party and a third party back the same device', () => {
+    render(
+      <BackupDeviceTable
+        devices={[{ ...configuredDevice, source: 'breeze', providerLabel: 'Managed cloud backup' }]}
+      />
+    );
+
+    expect(screen.getByTestId('portal-backup-device-d-1').textContent).toContain(
+      'Device backup, Managed cloud backup'
+    );
+  });
+
+  it('never names the RMM platform to the customer — the portal is the MSP\'s brand', () => {
+    render(<BackupDeviceTable devices={[configuredDevice]} />);
+    const table = screen.getByTestId('portal-backup-device-table');
+    expect(screen.getByTestId('portal-backup-device-d-1').textContent).toContain('Device backup');
+    expect(table.textContent).not.toMatch(/breeze/i);
+  });
+
+  it('tolerates a stale payload with no health field', () => {
+    const stale = { ...configuredDevice } as Partial<BackupDeviceRow>;
+    delete stale.health;
+    render(<BackupDeviceTable devices={[stale as BackupDeviceRow]} />);
+
+    expect(screen.getByTestId('portal-backup-device-d-1').textContent).toContain('Unknown');
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { db } from '../db';
+import { MAX_REACHABLE_ASSURANCE } from '@breeze/shared';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
 import { loadPartnerPolicy } from './authenticatorPolicy';
@@ -141,8 +142,11 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
     vi.clearAllMocks();
   });
 
-  it('no proof → unchanged session_tap / level 1 (never blocks)', async () => {
+  it('no proof → unchanged session_tap / level 1 (non-enforcing policy: never blocks)', async () => {
     setupDbMocks(null);
+    // An explicit "not required" policy, so the result cannot depend on
+    // whether the platform default date has passed on the wall clock.
+    mockLoadPolicy.mockResolvedValueOnce({ requireEnrollment: false, enforceFrom: null, floorOverrides: {} });
     const d = await assertApprovalAssurance({
       approvalId: 'appr-1',
       userId: 'user-1',
@@ -180,6 +184,16 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
     expect(capture.updateSet?.signCount).toBe(5);
     expect(capture.updateSet?.lastUsedAt).toBeInstanceOf(Date);
   });
+
+  it.each(['low', 'medium', 'high'] as const)(
+    'a verified device proof at %s reaches exactly MAX_REACHABLE_ASSURANCE (no higher level is producible)',
+    async (riskTier) => {
+      setupDbMocks({ id: 'dev-1', credentialId: 'cred-123', publicKey: 'pub', signCount: 2, transports: ['internal'] });
+      mockVerify.mockResolvedValue({ verified: true, newSignCount: 5 });
+      const d = await assertApprovalAssurance({ approvalId: 'appr-1', userId: 'user-1', riskTier, proof: PROOF });
+      expect(d.decidedAssuranceLevel).toBe(MAX_REACHABLE_ASSURANCE[riskTier]);
+    },
+  );
 
   it('proof present but device not found → throws', async () => {
     setupDbMocks(null);
@@ -758,9 +772,9 @@ describe('assertApprovalAssurance — Phase 4 enforcement (partner policy, deny-
   const ENFORCING = { requireEnrollment: true, enforceFrom: null, floorOverrides: {} as Record<string, number> };
 
   it('raises the required level from a partner floor override', async () => {
-    mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: { medium: 3 } });
-    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p' });
-    expect(d.requiredLevel).toBe(3); // default medium floor is 2, raised to 3
+    mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: { low: 2 } });
+    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'low', partnerId: 'p' });
+    expect(d.requiredLevel).toBe(2); // default low floor is 1, raised to 2
   });
 
   it('BLOCKS an under-assured approve when enforcing → StepUpRequiredError', async () => {
@@ -794,11 +808,70 @@ describe('assertApprovalAssurance — Phase 4 enforcement (partner policy, deny-
     expect(d.graceDowngrade).toBe(true);
   });
 
-  it('NO POLICY: under-assured approve never blocks (unchanged default)', async () => {
-    mockLoadPolicy.mockResolvedValue(null);
-    const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: null, decision: 'approved' });
-    expect(d.decidedAssuranceLevel).toBe(1);
-    expect(d.graceDowngrade).toBe(true);
+  describe('platform default (no explicit enforcement choice)', () => {
+    const original = process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
+    const setDefaultFrom = (iso: string) => { process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = iso; };
+    afterEach(() => {
+      if (original === undefined) delete process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM;
+      else process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = original;
+    });
+
+    it('before the platform date: an under-assured high/critical approve is allowed and flagged', async () => {
+      setDefaultFrom('2999-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      for (const riskTier of ['high', 'critical'] as const) {
+        const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier, partnerId: 'p', decision: 'approved' });
+        expect(d.decidedAssuranceLevel).toBe(1);
+        expect(d.graceDowngrade).toBe(true);
+      }
+    });
+
+    it('from the platform date: no policy row BLOCKS an under-assured high approve at the L3 floor', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      await expect(
+        assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'high', partnerId: 'p', decision: 'approved' }),
+      ).rejects.toMatchObject({ name: 'StepUpRequiredError', requiredLevel: 3, achievedLevel: 1 });
+    });
+
+    it('from the platform date: a blank enforcement choice blocks critical at the L4 floor', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue({ requireEnrollment: null, enforceFrom: null, floorOverrides: {} });
+      await expect(
+        assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'approved' }),
+      ).rejects.toMatchObject({ name: 'StepUpRequiredError', requiredLevel: 4, achievedLevel: 1 });
+    });
+
+    it('from the platform date: no partner at all also gets the platform default', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      await expect(
+        assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'high', partnerId: null, decision: 'approved' }),
+      ).rejects.toMatchObject({ name: 'StepUpRequiredError' });
+    });
+
+    it('from the platform date: medium stays allowed-and-flagged under the default', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'medium', partnerId: 'p', decision: 'approved' });
+      expect(d.decidedAssuranceLevel).toBe(1);
+      expect(d.graceDowngrade).toBe(true);
+    });
+
+    it('from the platform date: an explicit "not required" choice is respected', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue({ requireEnrollment: false, enforceFrom: null, floorOverrides: {} });
+      const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'approved' });
+      expect(d.decidedAssuranceLevel).toBe(1);
+      expect(d.graceDowngrade).toBe(true);
+    });
+
+    it('from the platform date: a DENY is never blocked', async () => {
+      setDefaultFrom('2000-01-01');
+      mockLoadPolicy.mockResolvedValue(null);
+      const d = await assertApprovalAssurance({ approvalId: 'a', userId: 'u', riskTier: 'critical', partnerId: 'p', decision: 'denied' });
+      expect(d.decidedVia).toBe('session_tap');
+    });
   });
 });
 

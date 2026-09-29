@@ -986,3 +986,9 @@ export * from './metricAnomalyEpisodes';
 
 // Business reports (#3198 W02)
 export * from './businessReports';
+
+// ============================================
+// Backup Status Report (Backup Provider Integration W05)
+// ============================================
+
+export * from './backupStatusReport';

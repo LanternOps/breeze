@@ -5,6 +5,7 @@ import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { SeriesChildView } from './series/SeriesChildLockBanner';
 import { PostureBackupRequiredField } from './PostureReportOptionsForm';
 import {
   DEFAULT_HARDWARE_LIFECYCLE_OPTIONS,
@@ -12,6 +13,12 @@ import {
   hardwareLifecycleOptionsFromConfig,
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
+import {
+  DEFAULT_BACKUP_STATUS_OPTIONS,
+  BackupStatusOptionsFields,
+  backupStatusOptionsFromConfig,
+  type BackupStatusOptions,
+} from './BackupStatusOptionsForm';
 import {
   DEFAULT_THREAT_DETECTION_OPTIONS,
   ThreatDetectionOptionsFields,
@@ -72,6 +79,7 @@ import { useTranslation } from 'react-i18next';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type ReportEditPageProps = {
   reportId: string;
@@ -86,6 +94,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [notFound, setNotFound] = useState(false);
   const [backupRequired, setBackupRequired] = useState(true);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+  const [backupStatusOptions, setBackupStatusOptions] = useState<BackupStatusOptions>(DEFAULT_BACKUP_STATUS_OPTIONS);
   const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
   const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
   const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
@@ -117,6 +126,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       const config = data.config as Record<string, unknown>;
       setBackupRequired(config.backupRequired !== false);
       setLifecycleOptions(hardwareLifecycleOptionsFromConfig(config));
+      setBackupStatusOptions(backupStatusOptionsFromConfig(config));
       setThreatOptions(threatDetectionOptionsFromConfig(config));
       setEndpointManagementOptions(endpointManagementOptionsFromConfig(config));
       setVulnerabilityOptions(vulnerabilityManagementOptionsFromConfig(config));
@@ -143,6 +153,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const handleCancel = useCallback(() => {
     void navigateTo('/reports');
   }, []);
+
+  usePageItemName(report?.name);
 
   if (loading) {
     return (
@@ -188,10 +200,38 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     );
   }
 
+  // A multi-org series child (W02 `seriesId`): shared fields are locked; only
+  // the org's recipient overrides and (for the MSP) Detach are offered.
+  if (report.seriesId) {
+    return (
+      <div className="space-y-6">
+        <Breadcrumbs items={[
+          { label: t('reports.reportEditPage.reportsBreadcrumb'), href: '/reports' },
+          { label: report.name || t('reports.reportEditPage.title') }
+        ]} />
+        <div className="flex items-center gap-4">
+          <a
+            href="/reports"
+            className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
+            aria-label={t('reports.reportEditPage.backToReports')}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </a>
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportEditPage.title')}</h1>
+            <p className="text-muted-foreground">{report.name}</p>
+          </div>
+        </div>
+        <SeriesChildView report={report} onChanged={fetchReport} />
+      </div>
+    );
+  }
+
   // Convert report config to form values
   const config = report.config as Record<string, unknown>;
   const isPosture = report.type === 'security_compliance_posture';
   const isLifecycle = report.type === 'hardware_lifecycle';
+  const isBackupStatus = report.type === 'backup_status';
   const isThreatDetection = report.type === 'threat_detection_review';
   const isEndpointManagement = report.type === 'endpoint_management_review';
   const isVulnerability = report.type === 'vulnerability_management';
@@ -237,6 +277,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const curatedConfig: Partial<Record<ReportType, () => Record<string, unknown>>> = {
     security_compliance_posture: () => ({ ...config, backupRequired }),
     hardware_lifecycle: () => ({ ...config, ...lifecycleOptions }),
+    backup_status: () => ({ ...config, ...backupStatusOptions }),
     threat_detection_review: () => ({ ...config, ...threatOptions }),
     endpoint_management_review: () => ({ ...config, ...endpointManagementOptions }),
     vulnerability_management: () => ({ ...config, ...vulnerabilityOptions }),
@@ -288,6 +329,12 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       {isLifecycle && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <HardwareLifecycleOptionsFields value={lifecycleOptions} onChange={setLifecycleOptions} />
+        </div>
+      )}
+
+      {isBackupStatus && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <BackupStatusOptionsFields value={backupStatusOptions} onChange={setBackupStatusOptions} />
         </div>
       )}
 

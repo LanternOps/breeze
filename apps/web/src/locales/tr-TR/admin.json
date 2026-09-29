@@ -572,6 +572,7 @@
         "enabledMeaning": "Etkin, yapılandırılmış anlamına gelir. Breeze, yanıt verip vermediğini kontrol etmek için hizmete bağlanmaz.",
         "footnote": "Yalnızca API kapsayıcısının ortamını gösterir. Web, portal ve worker kapsayıcıları dahil değildir.",
         "meta": "Çalışan sürüm {{version}} · {{mode}}",
+        "versionMismatch": "Bu API imajı {{running}}, ancak BREEZE_VERSION {{configured}}. BREEZE_VERSION değerini değiştirmek digest ile sabitlenmiş imajı değiştirmez ve ajanlara BREEZE_VERSION sürümü sunulur. guided-setup.sh --upgrade ile yükseltin veya BREEZE_VERSION değerini {{running}} olarak geri ayarlayın.",
         "deployMode": {
           "hosted": "Barındırılan",
           "self_host": "Kendi sunucusunda"
@@ -629,6 +630,10 @@
       "agent.command.result.submit": "Komut sonucu gönderildi",
       "agent.filesystem.threshold_scan.queued": "Dosya sistemi taraması sıraya alındı",
       "agent.enroll": "Aracı kaydedildi",
+      "api.fallback.post": "Gönderildi: {target}",
+      "api.fallback.put": "Güncellendi: {target}",
+      "api.fallback.patch": "Güncellendi: {target}",
+      "api.fallback.delete": "Silindi: {target}",
       "user.login": "Oturum açıldı",
       "user.logout": "Oturum kapatıldı",
       "session_initiated": "Oturum başlatıldı",
@@ -638,6 +643,7 @@
       "session_consent_blocked_unanswered": "Uzak oturum engellendi: onay istemi yanıtlanmadı",
       "session_consent_blocked_unavailable": "Uzak oturum engellendi: onay istemi kullanılamıyor",
       "session_consent_bypassed": "Uzak oturum, onay istemine yanıt verilmeden başlatıldı",
+      "screen_access_consent_blocked": "Ekran erişimi engellendi: cihaz kullanıcı onayı gerektiriyor",
       "device.wake_on_lan": "Wake-on-LAN gönderildi",
       "device.create": "Cihaz eklendi",
       "device.update": "Cihaz güncellendi",

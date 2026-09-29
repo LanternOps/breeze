@@ -572,6 +572,7 @@
         "enabledMeaning": "Activé signifie configuré. Breeze ne contacte pas le service pour vérifier qu'il répond.",
         "footnote": "Affiche uniquement l'environnement du conteneur de l'API. Les conteneurs web, portail et worker ne sont pas inclus.",
         "meta": "Version en cours {{version}} · {{mode}}",
+        "versionMismatch": "Cette image d’API est {{running}}, mais BREEZE_VERSION vaut {{configured}}. Modifier BREEZE_VERSION ne change pas une image épinglée par empreinte, et les agents se voient proposer la version BREEZE_VERSION. Mettez à jour avec guided-setup.sh --upgrade, ou redéfinissez BREEZE_VERSION sur {{running}}.",
         "deployMode": {
           "hosted": "Hébergé",
           "self_host": "Auto-hébergé"
@@ -629,6 +630,10 @@
       "agent.command.result.submit": "Résultat de commande soumis",
       "agent.filesystem.threshold_scan.queued": "Analyse du système de fichiers mise en file",
       "agent.enroll": "Agent inscrit",
+      "api.fallback.post": "Soumis : {target}",
+      "api.fallback.put": "Mis à jour : {target}",
+      "api.fallback.patch": "Mis à jour : {target}",
+      "api.fallback.delete": "Supprimé : {target}",
       "user.login": "Connecté",
       "user.logout": "Déconnecté",
       "session_initiated": "Session amorcée",
@@ -638,6 +643,7 @@
       "session_consent_blocked_unanswered": "Session à distance bloquée : demande de consentement sans réponse",
       "session_consent_blocked_unavailable": "Session à distance bloquée : demande de consentement indisponible",
       "session_consent_bypassed": "Session à distance démarrée sans réponse à la demande de consentement",
+      "screen_access_consent_blocked": "Accès à l'écran bloqué : l'appareil exige le consentement de l'utilisateur",
       "device.wake_on_lan": "Wake-on-LAN envoyé",
       "device.create": "Appareil ajouté",
       "device.update": "Appareil mis à jour",

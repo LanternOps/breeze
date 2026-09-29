@@ -436,6 +436,10 @@ export const reportDefinitionMetadataProjection = {
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
   executionScopePrincipalKind: reports.executionScopePrincipalKind,
   portalSelfService: reports.portalSelfService,
+  // Multi-org report series W02: the write routes refuse a series child
+  // (series_managed) and Detach reads both from the same locked projection.
+  seriesId: reports.seriesId,
+  archivedAt: reports.archivedAt,
 };
 
 /**

@@ -280,4 +280,79 @@ describe("AccountingCustomerImport", () => {
     fireEvent.click(screen.getByTestId("quickbooks-import-select-all"));
     expect(screen.getByTestId("quickbooks-import-select-1")).not.toBeChecked();
   });
+
+  describe("Xero W03", () => {
+    const rows = [
+      { id: "c1", displayName: "Acme", alreadyImported: false, organizationId: null },
+      { id: "c2", displayName: "Paper Supplies Ltd", alreadyImported: false, organizationId: null, supplierOnly: true },
+      { id: "c3", displayName: "Old Client", alreadyImported: false, organizationId: null, active: false },
+    ];
+
+    it("hides supplier-only contacts behind a toggle that states how many are hidden", async () => {
+      fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ data: rows }));
+      render(<AccountingCustomerImport provider="xero" />);
+      fireEvent.click(screen.getByTestId("xero-import-load"));
+      await waitFor(() =>
+        expect(screen.getByTestId("xero-import-row-c1")).toBeInTheDocument(),
+      );
+
+      expect(screen.queryByText("Paper Supplies Ltd")).toBeNull();
+      const toggle = screen.getByTestId("xero-import-show-all");
+      expect(toggle.closest("label")).toHaveTextContent("1");
+
+      fireEvent.click(toggle);
+      expect(screen.getByText("Paper Supplies Ltd")).toBeInTheDocument();
+    });
+
+    it("select-all only selects visible rows", async () => {
+      fetchWithAuthMock
+        .mockReturnValueOnce(jsonResponse({ data: rows }))
+        .mockReturnValueOnce(
+          jsonResponse({
+            data: { imported: [], skipped: [], errors: [] },
+          }),
+        )
+        .mockReturnValueOnce(jsonResponse({ data: rows }));
+
+      render(<AccountingCustomerImport provider="xero" />);
+      fireEvent.click(screen.getByTestId("xero-import-load"));
+      await waitFor(() =>
+        expect(screen.getByTestId("xero-import-select-all")).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByTestId("xero-import-select-all"));
+      fireEvent.click(screen.getByTestId("xero-import-submit"));
+
+      await waitFor(() => expect(fetchWithAuthMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+      const postCall = fetchWithAuthMock.mock.calls[1]!;
+      expect(JSON.parse((postCall[1] as RequestInit).body as string)).toEqual({
+        customerIds: ["c1", "c3"],
+      });
+    });
+
+    it("badges archived contacts", async () => {
+      fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ data: rows }));
+      render(<AccountingCustomerImport provider="xero" />);
+      fireEvent.click(screen.getByTestId("xero-import-load"));
+      await waitFor(() =>
+        expect(screen.getByTestId("xero-import-row-c3")).toBeInTheDocument(),
+      );
+
+      expect(screen.getByTestId("xero-import-archived-c3")).toHaveTextContent("Archived");
+    });
+
+    it("shows no toggle when nothing is hidden (QuickBooks rows never carry supplierOnly)", async () => {
+      const qbRows = [
+        { id: "q1", displayName: "Acme", alreadyImported: false, organizationId: null },
+      ];
+      fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ data: qbRows }));
+      render(<AccountingCustomerImport provider="quickbooks" />);
+      fireEvent.click(screen.getByTestId("quickbooks-import-load"));
+      await waitFor(() =>
+        expect(screen.getByTestId("quickbooks-import-row-q1")).toBeInTheDocument(),
+      );
+
+      expect(screen.queryByTestId("quickbooks-import-show-all")).toBeNull();
+    });
+  });
 });

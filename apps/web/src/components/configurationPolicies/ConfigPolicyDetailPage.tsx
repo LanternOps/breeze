@@ -62,6 +62,7 @@ import DeviceLifecycleTab from './featureTabs/DeviceLifecycleTab';
 import OneDriveHelperTab from './featureTabs/OneDriveHelperTab';
 import HardwareMonitoringTab from './featureTabs/HardwareMonitoringTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
+import { usePageItemName } from '../layout/usePageItemName';
 
 type Tab = 'overview' | FeatureType | 'assignments' | 'compliance_status';
 type PolicyDetail = {
@@ -409,6 +410,8 @@ export default function ConfigPolicyDetailPage({
       icon: <Target className="h-4 w-4" />,
     },
   ];
+  usePageItemName(policy?.name);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">

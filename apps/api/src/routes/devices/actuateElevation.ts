@@ -28,6 +28,10 @@ import {
 } from '../../services/partnerTrust.commands';
 import { trustDenyBody } from '../../services/partnerTrust';
 import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
+import {
+  assertCommandDeliverable,
+  ParkedDeviceCommandRefusedError,
+} from '../../services/unassignedPool/deliveryEligibility';
 
 export const actuateElevationRoutes = new Hono();
 
@@ -157,6 +161,9 @@ actuateElevationRoutes.post(
     let result;
     try {
       result = await db.transaction(async (tx) => {
+      // A device parked in a holding org receives lifecycle removal only.
+      // First in the transaction, so a refusal flips no request state.
+      await assertCommandDeliverable(tx, { deviceId, commandType: 'actuate_elevation' });
       const [elevation] = await tx
         .select({
           id: elevationRequests.id,
@@ -323,6 +330,9 @@ actuateElevationRoutes.post(
       return { kind: 'success' as const, command };
       });
     } catch (e) {
+      if (e instanceof ParkedDeviceCommandRefusedError) {
+        return c.json({ error: e.message, code: e.code }, 409);
+      }
       if (e instanceof TrustDeniedError) {
         return c.json(
           trustDenyBody({

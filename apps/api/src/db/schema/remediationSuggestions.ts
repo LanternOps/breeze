@@ -11,6 +11,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { RemediationSuggestionOrigin } from '@breeze/shared';
 
 import { organizations } from './orgs';
 import { devices } from './devices';
@@ -39,6 +40,7 @@ export const remediationSuggestions = pgTable('remediation_suggestions', {
   title: varchar('title', { length: 255 }).notNull(),
   rationale: text('rationale').notNull(),
   expectedAction: text('expected_action').notNull(),
+  origin: varchar('origin', { length: 20 }).$type<RemediationSuggestionOrigin>().notNull().default('catalog_match'),
   riskTier: varchar('risk_tier', { length: 20 }).notNull().default('medium'),
   status: varchar('status', { length: 40 }).notNull().default('suggested'),
   confidence: doublePrecision('confidence'),

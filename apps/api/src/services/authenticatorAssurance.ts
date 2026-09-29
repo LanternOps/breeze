@@ -300,7 +300,7 @@ export async function assertApprovalAssurance(input: {
   decision.requiredLevel = requiredAssurance(input.riskTier, policy?.floorOverrides ?? null);
 
   if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
-    if (isEnforcing(policy, new Date())) {
+    if (isEnforcing(policy, new Date(), input.riskTier)) {
       throw new StepUpRequiredError(decision.requiredLevel, decision.decidedAssuranceLevel);
     }
     // Under-assured but enforcement is off / still in the grace window — allow,

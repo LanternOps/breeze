@@ -44,6 +44,7 @@ import {
 } from '../../services/fleetFindings/producers';
 import { reconcileOrgFindings } from '../../services/fleetFindings/reconcile';
 import { createAccessToken } from '../../services/jwt';
+import { seedEpisode } from './metricAnomalyEpisodeFixtures';
 import { getTestDb } from './setup';
 import {
   assignUserToOrganization,
@@ -147,7 +148,7 @@ async function seedDevice(orgId: string, siteId: string): Promise<string> {
   return device.id;
 }
 
-async function seedMetricAnomaly(
+async function seedOrphanRawAnomaly(
   orgId: string,
   deviceId: string,
   opts: { metricName: string; anomalyType: string; score: number }
@@ -309,9 +310,25 @@ async function buildFixture(): Promise<Fixture> {
   // Reliability offender: devA1 only (score < 50).
   await seedReliabilityOffender(orgA.id, devA1, 30);
   // Metric anomaly pattern: devA2 (site A1) + devA3 (site A2) — >=2 devices
-  // on the same (metric_name, anomaly_type), producer's hard minimum.
-  await seedMetricAnomaly(orgA.id, devA2, { metricName: 'cpu_percent', anomalyType: 'spike', score: 3 });
-  await seedMetricAnomaly(orgA.id, devA3, { metricName: 'cpu_percent', anomalyType: 'spike', score: 3.5 });
+  // with an OPEN episode on the same (anomaly_type, metric_family), the
+  // producer's hard minimum.
+  const episodeStart = new Date(Date.now() - 30 * 60_000);
+  for (const deviceId of [devA2, devA3]) {
+    await seedEpisode({
+      orgId: orgA.id,
+      deviceId,
+      memberCount: 1,
+      start: episodeStart,
+      metricName: 'cpu_percent',
+      metricFamily: 'cpu',
+      anomalyType: 'spike',
+    });
+  }
+  // Orphan raw rows (open, never assembled into an episode — the prod
+  // pre-release backlog) on two devices: the producer reads episodes, so
+  // these must NOT surface as a second anomaly finding (#6650 follow-up).
+  await seedOrphanRawAnomaly(orgA.id, devA1, { metricName: 'top_process_cpu_percent_max', anomalyType: 'process_runaway', score: 5 });
+  await seedOrphanRawAnomaly(orgA.id, devA4, { metricName: 'top_process_cpu_percent_max', anomalyType: 'process_runaway', score: 5 });
   // Log correlation: devA4 (site A2) only — sole member, entirely outside site A1.
   await seedLogCorrelationFinding(orgA.id, devA4, 'devA4-host');
 

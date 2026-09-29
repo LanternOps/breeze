@@ -46,6 +46,9 @@ export const REPORT_TYPES = [
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  // Backup Provider Integration W05 (#6013): generated on demand from the
+  // unified backup health read model. Not portal-visible, not managed evidence.
+  'backup_status',
 ] as const satisfies readonly string[];
 
 export type ReportType = (typeof REPORT_TYPES)[number];

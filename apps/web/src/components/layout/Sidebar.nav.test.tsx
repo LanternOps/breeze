@@ -106,6 +106,8 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
     expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
+      // Parked devices awaiting assignment (full partner admins only).
+      '/devices/unassigned',
       '/configuration-policies',
       '/software',
       '/software-inventory',
@@ -221,10 +223,11 @@ describe('navSections structure (#1321, #1324)', () => {
 });
 
 describe('go-to keyboard chords (g then key)', () => {
-  it('every chord targets a top-level nav item and reuses its label key', () => {
+  it('every chord targets a sidebar nav item and reuses its label key', () => {
+    const allNav = [...topLevelNav, ...navSections.flatMap((section) => section.items)];
     for (const shortcut of GO_TO_SHORTCUTS) {
-      const item = topLevelNav.find((nav) => nav.href === shortcut.href);
-      expect(item, `no top-level nav item for g ${shortcut.key} → ${shortcut.href}`).toBeDefined();
+      const item = allNav.find((nav) => nav.href === shortcut.href);
+      expect(item, `no sidebar nav item for g ${shortcut.key} → ${shortcut.href}`).toBeDefined();
       expect(shortcut.labelKey).toBe(item!.labelKey);
     }
   });

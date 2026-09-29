@@ -11,6 +11,7 @@ import {
   backupLayoutManifestKey,
   checkBackupProviderCapabilities,
 } from '../../services/backupSnapshotStorage';
+import { resolveSnapshotPlatform } from '../../services/bareMetalRebuildSchemas';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
@@ -20,6 +21,7 @@ import {
 } from './schemas';
 import type { SnapshotTreeItem } from './types';
 import { attachDeviceNames } from './deviceNames';
+import { normalizeSnapshotPath } from '../../services/backupSelectedPaths';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -67,10 +69,6 @@ type SnapshotFileRow = {
   modifiedAt: Date | null;
 };
 
-function normalizeSourcePath(value: string): string {
-  return value.replaceAll('\\', '/');
-}
-
 function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
   const root: SnapshotTreeItem[] = [];
 
@@ -83,7 +81,7 @@ function buildSnapshotTree(files: SnapshotFileRow[]): SnapshotTreeItem[] {
   };
 
   for (const file of files) {
-    const normalizedPath = normalizeSourcePath(file.sourcePath);
+    const normalizedPath = normalizeSnapshotPath(file.sourcePath);
     const parts = normalizedPath.split('/').filter(Boolean);
     if (parts.length === 0) continue;
 
@@ -708,6 +706,10 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     // run captured none. Restore-as-VM offers the rebuild engine only for
     // snapshots that carry one (W05a); the manifest body stays off the list.
     layoutManifestKey: row.layoutManifest ? backupLayoutManifestKey(row.snapshotId) : null,
+    // W06d: the layout's platform ('linux' | 'windows', null when absent or
+    // unknown). The rebuild engine is platform-matched, so Restore-as-VM
+    // filters rebuild hosts by it; a null platform cannot be rebuilt.
+    layoutPlatform: resolveSnapshotPlatform(row.layoutManifest),
     sizeBytes: row.size ?? null,
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,

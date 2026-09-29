@@ -59,7 +59,7 @@ it('creates two subjects; acknowledging one never blocks its sibling', async () 
 it.each(['active', 'acknowledged', 'suppressed'])('recovers only its own %s alert', async status => {
   m.open = [{ id: 'a', subjectKey: 'a', status }, { id: 'b', subjectKey: 'b', status: 'active' }];
   expect(await evaluateSubjectAlerts(input({ a: 'recovered', b: 'unknown' }))).toBe('breach');
-  expect(m.resolve).toHaveBeenCalledWith('a', 'Auto-resolved: recovered', undefined, true);
+  expect(m.resolve).toHaveBeenCalledWith('a', 'Auto-resolved: recovered', undefined, true, 'condition_cleared');
   expect(m.open.map(a => a.id)).toEqual(['b']);
 });
 

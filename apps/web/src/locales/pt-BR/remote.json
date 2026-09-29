@@ -294,7 +294,7 @@
       "threads": "Threads"
     },
     "errors": {
-      "handlerNotConfigured": "O manipulador não está configurado",
+      "handlerNotConfigured": "O manipulador de encerramento de processo não está configurado",
       "killFailed": "Falha ao encerrar o processo"
     },
     "killConfirm": "Confirmar encerramento",
@@ -322,8 +322,8 @@
   "proxyTunnelPage": {
     "errors": {
       "invalidTicket": "Este link é inválido ou expirou.",
-      "obtainTicket": "Falha ao obter o ticket de conexão",
-      "prepareConnection": "Falha ao preparar a conexão",
+      "obtainTicket": "Falha ao obter o tíquete do túnel",
+      "prepareConnection": "Falha ao preparar a conexão do proxy",
       "tlsUntrusted": "Este dispositivo apresentou um certificado não confiável ou autoassinado.",
       "tunnelFailed": "O túnel não pôde ser aberto"
     },
@@ -365,25 +365,25 @@
     "enterStrings": "Informe as strings",
     "enterValueName": "Informe o nome do valor",
     "errors": {
-      "createKey": "Falha ao criar a chave",
+      "createKey": "Falha ao criar a chave do registro",
       "createKeyDetail": "Falha ao criar a chave do Registro: {{message}}",
-      "deleteKey": "Falha ao excluir a chave",
+      "deleteKey": "Falha ao excluir a chave do registro",
       "deleteKeyDetail": "Falha ao excluir a chave do Registro: {{message}}",
-      "deleteValue": "Falha ao excluir o valor",
+      "deleteValue": "Falha ao excluir o valor do registro",
       "deleteValueDetail": "Falha ao excluir o valor do Registro: {{message}}",
-      "invalidFormat": "Formato inválido",
-      "invalidNumber": "Número inválido",
+      "invalidFormat": "Formato de valor inválido",
+      "invalidNumber": "Valor numérico inválido",
       "keyNameBackslash": "O nome da chave não pode conter barra invertida",
       "keyNameRequired": "O nome da chave é obrigatório",
-      "keyProvider": "Provedor de chaves indisponível",
-      "loadKeys": "Falha ao carregar as chaves",
+      "keyProvider": "O provedor de chaves do registro não está configurado",
+      "loadKeys": "Falha ao carregar as chaves do registro",
       "loadKeysDetail": "Falha ao carregar as chaves do Registro: {{message}}",
-      "loadValues": "Falha ao carregar os valores",
+      "loadValues": "Falha ao carregar os valores do registro",
       "loadValuesDetail": "Falha ao carregar os valores do Registro: {{message}}",
-      "saveValue": "Falha ao salvar o valor",
+      "saveValue": "Falha ao salvar o valor do registro",
       "saveValueDetail": "Falha ao salvar o valor do Registro: {{message}}",
       "valueNameRequired": "O nome do valor é obrigatório",
-      "valueProvider": "Provedor de valores indisponível"
+      "valueProvider": "O provedor de valores do registro não está configurado"
     },
     "hexadecimal": "Hexadecimal",
     "key": "Chave",
@@ -455,13 +455,13 @@
     "errorMessage": "Erro: {{message}}",
     "errors": {
       "closedUnexpectedly": "A conexão foi encerrada inesperadamente",
-      "connection": "Falha na conexão",
+      "connection": "Erro de conexão",
       "createSession": "Falha ao criar a sessão",
-      "createTicket": "Falha ao criar o ticket de conexão",
-      "failed": "A sessão falhou",
+      "createTicket": "Falha ao criar o tíquete de conexão",
+      "failed": "Falha na conexão",
       "initialize": "Falha ao inicializar o terminal",
-      "invalidTicket": "Ticket de conexão inválido",
-      "webSocket": "Falha na conexão WebSocket"
+      "invalidTicket": "Resposta de tíquete de conexão inválida",
+      "webSocket": "Erro de conexão WebSocket"
     },
     "exitFullscreen": "Sair da tela cheia",
     "fullscreen": "Tela cheia",
@@ -497,16 +497,16 @@
       "deleteRegistryValue": "Falha ao excluir o valor do Registro",
       "disableTask": "Falha ao desativar a tarefa",
       "enableTask": "Falha ao ativar a tarefa",
-      "eventDetails": "Falha ao carregar os detalhes do evento",
+      "eventDetails": "Falha ao buscar os detalhes do evento",
       "fetchEventLogs": "Falha ao carregar os logs de eventos",
       "fetchProcesses": "Falha ao carregar os processos",
       "fetchServices": "Falha ao carregar os serviços",
       "fetchTasks": "Falha ao carregar as tarefas",
       "killProcess": "Falha ao encerrar o processo",
-      "processDetails": "Falha ao carregar os detalhes do processo",
+      "processDetails": "Falha ao obter os detalhes do processo",
       "queryEvents": "Falha ao consultar os eventos",
-      "registryKeys": "Falha ao carregar as chaves do Registro",
-      "registryValues": "Falha ao carregar os valores do Registro",
+      "registryKeys": "Falha ao carregar as chaves do registro",
+      "registryValues": "Falha ao carregar os valores do registro",
       "restartService": "Falha ao reiniciar o serviço",
       "runTask": "Falha ao executar a tarefa",
       "setRegistryValue": "Falha ao definir o valor do Registro",
@@ -616,7 +616,7 @@
     "displayName": "Nome de exibição",
     "executablePath": "Caminho do executável",
     "loading": "Carregando...",
-    "noDescription": "Sem descrição",
+    "noDescription": "Nenhuma descrição disponível",
     "noServicesAvailable": "Nenhum serviço disponível",
     "noServicesFound": "Nenhum serviço encontrado",
     "ok": "OK",
@@ -688,7 +688,7 @@
   "sessionHistoryPage": {
     "detailsTitle": "Detalhes da sessão",
     "errors": {
-      "exportFetch": "Falha ao exportar a sessão"
+      "exportFetch": "Falha ao buscar as sessões para exportação"
     },
     "fields": {
       "dataTransferred": "Dados transferidos",
@@ -753,12 +753,12 @@
     },
     "disconnect": "Desconectar",
     "errors": {
-      "authenticationDetail": "Falha nos detalhes de autenticação",
+      "authenticationDetail": "Falha na autenticação: {{reason}}. Verifique sua senha do VNC.",
       "authenticationFailed": "Falha na autenticação",
-      "connectionLost": "A conexão foi perdida",
-      "loadViewer": "Falha ao carregar o visualizador",
-      "securityFailure": "Falha de segurança",
-      "securityType": "Tipo de segurança incompatível"
+      "connectionLost": "Conexão perdida inesperadamente",
+      "loadViewer": "Falha ao carregar o visualizador VNC",
+      "securityFailure": "Falha de segurança: {{reason}}",
+      "securityType": "Tipo de segurança não suportado: {{reason}}"
     },
     "exitFullscreen": "Sair da tela cheia",
     "fullscreen": "Tela cheia",
@@ -779,8 +779,8 @@
     "disconnect": "Desconectar",
     "errors": {
       "connect": "Falha ao conectar",
-      "invalidTicket": "Ticket de conexão inválido",
-      "obtainTicket": "Falha ao obter o ticket de conexão"
+      "invalidTicket": "Resposta de tíquete de túnel inválida",
+      "obtainTicket": "Falha ao obter o tíquete do túnel VNC"
     },
     "sessionTitle": "Sessão VNC"
   },

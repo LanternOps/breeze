@@ -67,6 +67,7 @@ import { registerRetentionPrometheusMetrics } from '../services/retentionMetrics
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
 import { envFloat } from '../utils/envFloat';
 
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 export {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
@@ -288,6 +289,34 @@ const backupStorageSessionMintsTotal = new Counter({
   name: 'breeze_backup_storage_session_mint_total',
   help: 'Storage-session issuance decisions at command delivery by session scope, outcome (minted, refused, deferred, legacy) and reason',
   labelNames: ['scope', 'outcome', 'reason'] as const,
+  registers: [register]
+});
+
+const backupWriteUnexpectedLegacyTotal = new Counter({
+  name: 'breeze_backup_write_dispatch_unexpected_legacy_total',
+  help: 'Backup write deliveries that carried the storage destination for a reason other than an older helper or a non-S3 destination, by command type and reason',
+  labelNames: ['command_type', 'reason'] as const,
+  registers: [register]
+});
+
+const backupConditionalWriteProbeTotal = new Counter({
+  name: 'breeze_backup_storage_conditional_write_probe_total',
+  help: 'Destination probes for create-only write support by outcome (supported, unsupported) and reason',
+  labelNames: ['outcome', 'reason'] as const,
+  registers: [register]
+});
+
+const backupSnapshotPublishRefusedTotal = new Counter({
+  name: 'breeze_backup_snapshot_publish_refused_total',
+  help: 'Backup results whose snapshot row was refused because the id is owned elsewhere, by reason (not_current_job, foreign_claim)',
+  labelNames: ['reason'] as const,
+  registers: [register]
+});
+
+const backupWriteJanitorTotal = new Counter({
+  name: 'breeze_backup_write_janitor_total',
+  help: 'Brokered backup write cleanup actions by action (abort_upload, sweep_prefix, publish, abandon) and outcome (ok, failed)',
+  labelNames: ['action', 'outcome'] as const,
   registers: [register]
 });
 
@@ -931,6 +960,30 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
 }
 
+function recordUnexpectedLegacyWriteMetric(commandType: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupWriteUnexpectedLegacyTotal.labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
+}
+
+function recordConditionalWriteProbeMetric(outcome: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupConditionalWriteProbeTotal.labels(normalizeMetricLabel(outcome, 'unknown'), normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
+}
+
+function recordSnapshotPublishRefusedMetric(reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupSnapshotPublishRefusedTotal.labels(normalizeMetricLabel(reason, 'unknown')).inc(safeCount);
+}
+
+function recordBackupWriteJanitorMetric(action: string, outcome: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupWriteJanitorTotal.labels(normalizeMetricLabel(action, 'unknown'), normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
+}
+
 function recordBackupCapabilityRegressedMetric(capability: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1124,6 +1177,10 @@ function bindMetricsRecorders(): void {
     onStorageSessionMint: recordStorageSessionMintMetric,
     onWriteDispatch: recordBackupWriteDispatchMetric,
     onAttestation: recordBackupAttestationMetric,
+    onWriteJanitor: recordBackupWriteJanitorMetric,
+    onUnexpectedLegacyWrite: recordUnexpectedLegacyWriteMetric,
+    onConditionalWriteProbe: recordConditionalWriteProbeMetric,
+    onSnapshotPublishRefused: recordSnapshotPublishRefusedMetric,
   });
 
   setAnomalyMetricsRecorder({
@@ -1285,7 +1342,7 @@ async function readFleetGauges(nowMs: number): Promise<void> {
       .where(
         and(
           gte(devices.lastSeenAt, activeSince),
-          eq(devices.isEphemeral, false),
+          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
           sql`${devices.status} != 'decommissioned'`
         )
       );
@@ -1435,7 +1492,7 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     // they never inflate the fleet counts or skew the uptime denominator.
     const deviceStatusCondition = and(
       sql`${devices.status} != 'decommissioned'`,
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
       orgCondition,
       siteCondition
     );

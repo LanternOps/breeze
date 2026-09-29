@@ -4,6 +4,10 @@ import { Hono } from 'hono';
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const REPORT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CONTACT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const RECIPIENTS_NEED_EXPORT_AND_MFA_BODY = {
+  error:
+    'Setting or changing email recipients on a report requires the export permission and an MFA-verified session',
+};
 
 const state = vi.hoisted(() => ({
   results: [] as unknown[][],
@@ -20,7 +24,12 @@ const state = vi.hoisted(() => ({
   mfaCalls: 0,
   denyPermission: false,
   lockedReportConfig: {} as Record<string, unknown>,
+  lockedReportSeriesId: null as string | null,
   lockCalls: [] as string[],
+  permissionSet: { permissions: [{ resource: '*', action: '*' }] } as unknown,
+  gateMfa: true,
+  conflictUpdates: [] as unknown[],
+  deleteRows: null as unknown[] | null,
 }));
 
 function selectChain(result: unknown[]) {
@@ -46,7 +55,7 @@ function database() {
   return {
     select: vi.fn((projection?: Record<string, unknown>) => {
       if (projection?.config === 'reports.config') {
-        return selectChain([{ config: state.lockedReportConfig }]);
+        return selectChain([{ config: state.lockedReportConfig, seriesId: state.lockedReportSeriesId }]);
       }
       return selectChain(state.results.shift() ?? []);
     }),
@@ -54,6 +63,10 @@ function database() {
       values: vi.fn((value) => {
         state.inserted.push({ table, value });
         return {
+          onConflictDoUpdate: vi.fn((config: unknown) => {
+            state.conflictUpdates.push(config);
+            return { returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])) };
+          }),
           onConflictDoNothing: vi.fn(() => ({
             returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])),
             then: (resolve: (value: unknown) => unknown) =>
@@ -70,7 +83,7 @@ function database() {
     delete: vi.fn(() => ({
       where: vi.fn((condition) => {
         state.deleted.push(condition);
-        return { returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])) };
+        return { returning: vi.fn(() => Promise.resolve(state.deleteRows ?? [{ id: 'recipient-1' }])) };
       }),
     })),
     update: vi.fn(() => ({
@@ -108,11 +121,13 @@ vi.mock('../../db/schema', () => ({
     reportId: 'recipients.reportId',
     orgId: 'recipients.orgId',
     contactId: 'recipients.contactId',
+    mode: 'recipients.mode',
   },
   reports: {
     id: 'reports.id',
     orgId: 'reports.orgId',
     config: 'reports.config',
+    seriesId: 'reports.seriesId',
   },
 }));
 
@@ -120,6 +135,7 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   asc: (column: unknown) => ({ type: 'asc', column }),
   eq: (column: unknown, value: unknown) => ({ type: 'eq', column, value }),
+  isNull: (column: unknown) => ({ type: 'isNull', column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     type: 'sql',
     strings: [...strings],
@@ -142,6 +158,7 @@ vi.mock('../../middleware/auth', () => ({
     async (c: any, next: () => Promise<void>) => {
       state.permissionCalls.push({ resource, action });
       if (state.denyPermission) return c.json({ error: 'Forbidden' }, 403);
+      c.set('permissions', state.permissionSet);
       await next();
     },
   requireScope: (...scopes: string[]) =>
@@ -149,6 +166,7 @@ vi.mock('../../middleware/auth', () => ({
       state.scopeCalls.push(scopes);
       await next();
     },
+  hasSatisfiedMfa: () => state.gateMfa,
   requireMfa: () => async (c: any, next: () => Promise<void>) => {
     state.mfaCalls += 1;
     if (c.req.header('x-test-mfa') !== 'satisfied') {
@@ -162,7 +180,9 @@ vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
     REPORTS_READ: { resource: 'reports', action: 'read' },
     REPORTS_WRITE: { resource: 'reports', action: 'write' },
+    REPORTS_EXPORT: { resource: 'reports', action: 'export' },
   },
+  hasPermission: (perms: any, resource: string, action: string) => (perms?.permissions ?? []).some((p: any) => (p.resource === resource || p.resource === '*') && (p.action === action || p.action === '*')),
 }));
 
 vi.mock('./helpers', () => ({
@@ -209,6 +229,11 @@ describe('report recipient routes', () => {
       emailRecipients: ['alex@example.test', 'keep@example.test'],
     };
     state.lockCalls.length = 0;
+    state.lockedReportSeriesId = null;
+    state.permissionSet = { permissions: [{ resource: '*', action: '*' }] };
+    state.gateMfa = true;
+    state.conflictUpdates.length = 0;
+    state.deleteRows = null;
     const tx = database();
     rootDb.current = {
       ...database(),
@@ -640,4 +665,128 @@ describe('report recipient routes', () => {
       expect(state.inserted).toHaveLength(1);
     });
   });
+
+  describe('series child recipient overrides (W02)', () => {
+    const SERIES_ID = '77777777-7777-4777-8777-777777777777';
+    const child = () => ({ id: REPORT_ID, orgId: ORG_ID, seriesId: SERIES_ID, config: { emailRecipients: ['noc@msp.test'] } });
+
+    it("refuses mode 'remove' on an ordinary report (it would be ignored and still send)", async () => {
+      const res = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID, mode: 'remove' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'recipient_mode_requires_series' });
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it("stores a 'remove' override on a child, upserting the mode", async () => {
+      state.getReport.mockResolvedValue(child());
+      state.results.push([{ id: CONTACT_ID }]);
+      const res = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID, mode: 'remove' }),
+      });
+      expect(res.status).toBe(201);
+      expect(state.inserted[0]?.value).toMatchObject({ reportId: REPORT_ID, orgId: ORG_ID, contactId: CONTACT_ID, mode: 'remove' });
+      expect(state.conflictUpdates[0]).toMatchObject({ set: { mode: 'remove' } });
+    });
+
+    it("an 'add' override on a child is a new delivery: export + MFA required", async () => {
+      state.getReport.mockResolvedValue(child());
+      state.gateMfa = false;
+      const res = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it('convert on a child answers 409 series_managed (it rewrites the series internal CC)', async () => {
+      state.getReport.mockResolvedValue(child());
+      const res = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'new@acme.test' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
+      expect(state.updated).toHaveLength(0);
+    });
+
+    // Final review minor #4: adopted as a child between the unlocked load and
+    // the locked read. The locked read refuses it, and the UPDATE is itself
+    // fenced to standalone rows.
+    it('convert refuses a report adopted as a child mid-request, writing nothing', async () => {
+      state.lockedReportSeriesId = SERIES_ID;
+      state.results.push([]);
+      const res = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'alex@example.test' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
+      expect(state.inserted).toHaveLength(0);
+      expect(state.updated).toHaveLength(0);
+      expect(state.createContact).not.toHaveBeenCalled();
+    });
+
+    it('the convert UPDATE only matches a standalone row (series_id IS NULL)', async () => {
+      state.results.push([]);
+      const res = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'alex@example.test' }),
+      });
+      expect(res.status).toBe(201);
+      const condition = state.updated[0]?.condition as { conditions?: Array<{ type?: string; column?: unknown }> };
+      expect(condition.conditions).toContainEqual({ type: 'isNull', column: 'reports.seriesId' });
+    });
+
+    describe('DELETE override rows (W02)', () => {
+      const del = () => app().request(`/${REPORT_ID}/recipients/${CONTACT_ID}`, { method: 'DELETE' });
+      const mayNot = () => { state.gateMfa = false; };
+
+      it("deleting a 'remove' override on a child needs the delivery gate (403, row stays)", async () => {
+        state.getReport.mockResolvedValue(child());
+        mayNot();
+        state.deleteRows = []; // the gate-restricted DELETE matched no 'add' row
+        state.results.push([{ id: 'override-1' }]); // ...but a 'remove' row exists
+        const res = await del();
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual(RECIPIENTS_NEED_EXPORT_AND_MFA_BODY);
+        // the DELETE itself was restricted to 'add' rows: it cannot remove a 'remove' row
+        expect(hasEquality(state.deleted[0], 'recipients.mode', 'add')).toBe(true);
+      });
+
+      it("deleting an 'add' override on a child stays ungated", async () => {
+        state.getReport.mockResolvedValue(child());
+        mayNot();
+        const res = await del();
+        expect(res.status).toBe(200);
+      });
+
+      it("with the gate satisfied a child's 'remove' override is deleted unrestricted", async () => {
+        state.getReport.mockResolvedValue(child());
+        const res = await del();
+        expect(res.status).toBe(200);
+        expect(hasEquality(state.deleted[0], 'recipients.mode', 'add')).toBe(false);
+      });
+
+      it('an ordinary report is never gated', async () => {
+        mayNot();
+        const res = await del();
+        expect(res.status).toBe(200);
+        expect(hasEquality(state.deleted[0], 'recipients.mode', 'add')).toBe(false);
+      });
+
+      it('a missing recipient is still 404 when the gate fails', async () => {
+        state.getReport.mockResolvedValue(child());
+        mayNot();
+        state.deleteRows = [];
+        const res = await del();
+        expect(res.status).toBe(404);
+      });
+    });
+  });
 });
+

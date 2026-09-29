@@ -7,6 +7,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { rollupDeviceMetricsRange, type MetricRollupResult } from '../services/metricRollups';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const METRIC_ROLLUPS_QUEUE = 'metric-rollups';
 const DEFAULT_LOOKBACK_MINUTES = 15;
@@ -24,6 +25,12 @@ type RollupOrgRangeJobData = {
   from: string;
   to: string;
   queuedAt: string;
+  /**
+   * #4276 — hour→day pass plan, serialized form of `MetricRollupRange.dayRollups`.
+   * Absent on backfills and on jobs queued before this field existed; both get
+   * the service default (days touched by the window).
+   */
+  dayRollups?: 'skip' | { from: string };
 };
 
 export type MetricRollupJobData = ScanOrgsJobData | RollupOrgRangeJobData;
@@ -55,6 +62,44 @@ function recentWindow(now = new Date(), lookbackMinutes = DEFAULT_LOOKBACK_MINUT
   return { from, to };
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+/** The one scheduled run per hour that also re-derives day buckets: the run ending at hh:15. */
+const DAY_ROLLUP_RUN_OFFSET_MS = 15 * 60 * 1000;
+/** How far before the raw window a day run reaches, so lost day runs are caught up. */
+const DAY_ROLLUP_CATCH_UP_MS = 3 * HOUR_MS;
+
+/**
+ * #4276 — which scheduled runs re-derive the day-level rollups, and over what.
+ *
+ * A day bucket is a full re-aggregate of its day's hourly rows, so on every
+ * 5-minute run it cost O(hours elapsed today) per device×series and made
+ * `metricRollupsWorker` the top `db_context_held_too_long` offender. It now
+ * runs on one run per hour (the one whose window ends at hh:15); the other
+ * eleven skip it. The day bucket for the current day therefore lags by up to
+ * an hour. Readers of 86400-second buckets (capacity forecasts, 24h/7d/30d
+ * trends, the device `1d` interval) chart whole days, where an hour of lag on
+ * the still-open current day is tolerable.
+ *
+ * Correctness: a run over [T-15m, T) rewrites the hourly rollups of the hours
+ * it overlaps, and the day holding each of those hours must be re-derived by a
+ * later day run. A day run over [from - 3h, to) covers every day touched by
+ * the hours changed since the previous day run with margin for two lost day
+ * runs — including the previous day's last hour, which keeps changing on the
+ * 00:05 and 00:10 runs after midnight. Pinned by the schedule walk in
+ * `metricRollups.test.ts`.
+ */
+export function scheduledDayRollups(window: { from: Date; to: Date }): 'skip' | { from: Date } {
+  const isDayRun = window.to.getTime() % HOUR_MS === DAY_ROLLUP_RUN_OFFSET_MS;
+  if (!isDayRun) {
+    // The catch-up above assumes a skip run rewrites at most the default
+    // lookback. A hand-queued scan with a longer `lookbackMinutes` rewrites
+    // hours the next day run would not reach, so it folds its own days.
+    const windowMs = window.to.getTime() - window.from.getTime();
+    return windowMs > DEFAULT_LOOKBACK_MINUTES * 60 * 1000 ? { from: window.from } : 'skip';
+  }
+  return { from: new Date(window.from.getTime() - DAY_ROLLUP_CATCH_UP_MS) };
+}
+
 // Quick Support exclusion: ephemeral devices (`devices.is_ephemeral`) live in
 // the hidden per-partner 'quick_support' org and are a stranger's personal
 // machine borrowed for one ~20-minute session. That org stays inside
@@ -65,7 +110,7 @@ async function findRollupOrgRows(): Promise<Array<{ orgId: string }>> {
   return db
     .select({ orgId: devices.orgId })
     .from(devices)
-    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
+    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false AND ${notParkedDeviceCondition()}`)
     .groupBy(devices.orgId);
 }
 
@@ -81,6 +126,8 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   const scannedAt = new Date();
   const queuedAt = scannedAt.toISOString();
   const { from, to } = recentWindow(scannedAt, data.lookbackMinutes);
+  const dayPlan = scheduledDayRollups({ from, to });
+  const dayRollups = dayPlan === 'skip' ? 'skip' : { from: dayPlan.from.toISOString() };
   const queue = getMetricRollupsQueue();
   await queue.addBulk(
     orgRows.map((row) => ({
@@ -91,6 +138,7 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
         from: from.toISOString(),
         to: to.toISOString(),
         queuedAt,
+        dayRollups,
       },
       opts: {
         jobId: buildMetricRollupJobId(row.orgId, from, to),
@@ -108,6 +156,9 @@ async function processRollupOrgRange(data: RollupOrgRangeJobData): Promise<Metri
     orgId: data.orgId,
     from: new Date(data.from),
     to: new Date(data.to),
+    ...(data.dayRollups === undefined
+      ? {}
+      : { dayRollups: data.dayRollups === 'skip' ? 'skip' : { from: new Date(data.dayRollups.from) } }),
   });
 }
 

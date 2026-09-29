@@ -67,6 +67,47 @@ type winSystemWindows struct{}
 // NewWinSystem is the real WinSystem.
 func NewWinSystem() WinSystem { return &winSystemWindows{} }
 
+func init() {
+	// hostWindowsDir (win_boot.go): the OS's own answer, never the
+	// SystemRoot environment variable (ruling D13/SECURITY). "" on a
+	// GetSystemWindowsDirectoryW failure — hostSystemTool's C:\Windows
+	// fallback then applies.
+	hostWindowsDir = func() string {
+		dir, err := windows.GetSystemWindowsDirectory()
+		if err != nil {
+			return ""
+		}
+		return dir
+	}
+	processState = windowsProcessState
+}
+
+// windowsProcessState: OpenProcess failing with ERROR_INVALID_PARAMETER is
+// the one definite "no process has this id"; any other failure (e.g.
+// ACCESS_DENIED for a protected process) means one exists, start unknown.
+// An opened process is running until it has an exit code (STILL_ACTIVE =
+// 259); its start time is GetProcessTimes' creation time (zero = unknown
+// when that call fails).
+func windowsProcessState(pid int) (bool, time.Time) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER), time.Time{}
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	var code uint32
+	if err := windows.GetExitCodeProcess(h, &code); err != nil {
+		return true, time.Time{}
+	}
+	if code != 259 { // STILL_ACTIVE
+		return false, time.Time{}
+	}
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &created, &exited, &kernel, &user); err != nil {
+		return true, time.Time{}
+	}
+	return true, time.Unix(0, created.Nanoseconds())
+}
+
 // attachedVHDX is the PROCESS-wide registry of VHDX attaches this process
 // holds: normalised path -> the virtual-disk handle the attach lives on.
 // Process-wide, not per WinSystem, because a non-permanent attach can only
@@ -611,19 +652,14 @@ func (w *winSystemWindows) WaitForVolumes(ctx context.Context, diskNumber int, w
 	}
 }
 
-// Format runs format.com on a temporary drive letter: format.com refuses a
+// Format runs format.com (the host's own System32 binary, ruling C4 — see
+// formatVolume) on a temporary drive letter: format.com refuses a
 // \\?\Volume{GUID}\ path ("The given volume name does not have a mount
 // point or drive letter", lab-proven). The letter exists only for the
 // format.com call and is released on every path, so the run's
 // no-letters-during-the-run contract holds outside that window.
 func (w *winSystemWindows) Format(ctx context.Context, volumeGUIDPath, filesystem, label string) error {
-	return withTemporaryLetter(volumeGUIDPath, w.AssignLetter, func(letter string) error {
-		out, err := winRunWithRetry(ctx, w, "format.com", formatComArgs(letter+":", filesystem, label)...)
-		if err != nil {
-			return fmt.Errorf("format.com %s (%s:): %s: %w", volumeGUIDPath, letter, strings.TrimSpace(string(out)), err)
-		}
-		return nil
-	})
+	return formatVolume(ctx, w, w.AssignLetter, volumeGUIDPath, filesystem, label)
 }
 
 // MountVolume: SetVolumeMountPointW(dir\, \\?\Volume{GUID}\) — both
@@ -677,6 +713,21 @@ func (w *winSystemWindows) AssignLetter(volumeGUIDPath string) (string, func() e
 		// in use (or not assignable): try the next letter
 	}
 	return "", nil, errors.New("no free drive letter Z..D available for the ESP")
+}
+
+// VolumeForLetter: GetVolumeNameForVolumeMountPointW(driveLetter\) ->
+// \\?\Volume{GUID}\. Used only to confirm a drive letter still maps to the
+// expected volume before reclaiming it (18b row 1 fix round 1, MINOR 1).
+func (w *winSystemWindows) VolumeForLetter(driveLetter string) (string, error) {
+	mountPointP, err := windows.UTF16PtrFromString(withTrailingBackslash(driveLetter))
+	if err != nil {
+		return "", err
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	if err := windows.GetVolumeNameForVolumeMountPoint(mountPointP, &buf[0], uint32(len(buf))); err != nil {
+		return "", fmt.Errorf("GetVolumeNameForVolumeMountPointW %s: %w", driveLetter, err)
+	}
+	return windows.UTF16ToString(buf), nil
 }
 
 func (w *winSystemWindows) FlushVolume(volumeGUIDPath string) error {

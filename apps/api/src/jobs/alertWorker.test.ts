@@ -19,6 +19,7 @@ const {
   const ctx = {
     depth: 0,
     orgReadDepths: [] as number[],
+    wheres: [] as unknown[],
     deviceReadDepths: [] as number[],
     addBulkDepths: [] as number[],
     networkCheckReadDepths: [] as number[],
@@ -63,6 +64,11 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: (col: unknown) => ({ op: 'isNotNull', col })
 }));
 
+vi.mock('../services/unassignedPool/selectorPredicate', () => ({
+  notHoldingOrgCondition: () => ({ op: 'notHoldingOrg' }),
+  notParkedDeviceCondition: () => ({ op: 'notParkedDevice' }),
+}));
+
 vi.mock('../db/schema', () => ({
   devices: devicesSchema,
   deviceMetrics: {},
@@ -82,14 +88,16 @@ vi.mock('../db', () => ({
       from: (table: unknown) => {
         if (table === organizationsSchema) {
           return {
-            where: () => {
+            where: (cond: unknown) => {
+              ctx.wheres.push(cond);
               ctx.orgReadDepths.push(ctx.depth);
               return Promise.resolve([{ id: 'org-1' }]);
             }
           };
         }
         return {
-          where: () => ({
+          where: (cond: unknown) => ({
+            ...(ctx.wheres.push(cond), {}),
             orderBy: () => ({
               limit: (limit: number) => {
                 ctx.deviceReadDepths.push(ctx.depth);
@@ -176,6 +184,7 @@ import { createAlertWorker, processEvaluateAll, triggerFullEvaluation } from './
 const resetCtx = () => {
   ctx.depth = 0;
   ctx.orgReadDepths.length = 0;
+  ctx.wheres.length = 0;
   ctx.deviceReadDepths.length = 0;
   ctx.addBulkDepths.length = 0;
   ctx.networkCheckReadDepths.length = 0;
@@ -211,6 +220,14 @@ describe('alertWorker.processEvaluateAll cursor fan-out', () => {
     const jobs = firstCall[0];
     expect(jobs).toHaveLength(50);
     expect(jobs[0]!.data.deviceId).toBe('device-000000');
+  });
+
+  it('leaves the holding org and parked devices out of the evaluation sweep', async () => {
+    fleetState.fleet = buildFleet(3);
+    await processEvaluateAll({ type: 'evaluate-all' });
+    const text = JSON.stringify(ctx.wheres);
+    expect(text).toContain('notHoldingOrg');
+    expect(text).toContain('notParkedDevice');
   });
 
   it('paginates through multiple chunks when fleet > chunkSize', async () => {

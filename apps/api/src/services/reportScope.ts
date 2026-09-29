@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import {
   db,
   getCurrentDbAccessContext,
@@ -9,6 +9,7 @@ import { organizations } from '../db/schema';
 import { UnexecutableReportScopeError } from './reportErrors';
 import type { ReportGenerationAuthority, ReportOwner } from './siteScope';
 
+import { notHiddenOrgType } from './unassignedPool/visibility';
 /**
  * The tenancy input a report generator receives (#3198 spec §3.2). It replaces
  * the bare `orgId: string` the generators took before W02.
@@ -152,7 +153,8 @@ export async function resolvePartnerReportOrgIds(partnerId: string): Promise<str
         eq(organizations.partnerId, partnerId),
         inArray(organizations.status, ['active', 'trial']),
         isNull(organizations.deletedAt),
-        ne(organizations.type, 'quick_support'),
+        // Quick Support and the holding org are never reported on.
+        notHiddenOrgType(),
       ))
       .orderBy(asc(organizations.id)),
   );

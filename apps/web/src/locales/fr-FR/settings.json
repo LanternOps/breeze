@@ -1077,8 +1077,19 @@
       "3": "L3 — biométrique + code PIN",
       "4": "L4 — clé matérielle + code PIN"
     },
+    "unreachableLevelHint": "Les niveaux qu’un appareil d’approbateur ne peut pas atteindre pour un niveau de risque sont indisponibles.",
     "requireEnrollment": "Exiger un dispositif d’approbateur enregistré (appliquer — bloquer les approbations sous-assurées)",
+    "enforcement": {
+      "inherit": "Valeur par défaut de la plateforme",
+      "required": "Obligatoire",
+      "notRequired": "Non obligatoire",
+      "inheritedValue": "Valeur par défaut de la plateforme : un appareil d’approbateur est requis pour les approbations à risque élevé et critique à partir du {{date}}.",
+      "inheritedSource": "Définie par la plateforme, car aucun choix n’a été enregistré ici. Choisissez Obligatoire ou Non obligatoire pour la remplacer.",
+      "requiredHint": "Obligatoire s’applique à chaque niveau de risque à partir de la date ci-dessous.",
+      "notRequiredHint": "Les approbations sous le seuil sont autorisées et enregistrées comme rétrogradées."
+    },
     "enforceFrom": "Appliquer depuis (fenêtre de grâce coupée)",
+    "enforceFromHint": "Laissez vide pour appliquer immédiatement.",
     "toasts": {
       "saved": "Politique de sécurité d’approbation enregistrée."
     },
@@ -3828,7 +3839,9 @@
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez-vous à nouveau auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
-    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification."
+    "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification.",
+    "ssoReauthManageHint": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur pour confirmer cette modification.",
+    "ssoReauthManageVerified": "Identité vérifiée auprès de votre fournisseur. Terminez l’étape ci-dessous pour confirmer cette modification."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -3945,7 +3958,11 @@
     "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
     "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer.",
     "deletePasskeyVerifyHeading": "Vérifier pour supprimer une clé d'accès",
-    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès."
+    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès.",
+    "ssoReauthManageProofExpired": "La vérification auprès de votre fournisseur d'identité a expiré. Vérifiez à nouveau pour confirmer cette modification.",
+    "verifyWithIdpToDeletePasskey": "Ce compte n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur d'identité avant de supprimer une clé d'accès.",
+    "deletePasskeySsoReauth": "Vérifier l'identité pour supprimer une clé d'accès",
+    "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer."
   },
   "roleManager": {
     "roles": "Rôles",

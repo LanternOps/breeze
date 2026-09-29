@@ -417,17 +417,23 @@ jobs:
           # with "image: unknown format"). Each invocation is checked for
           # $LASTEXITCODE so a tooling failure aborts the release.
           Push-Location agent\resources
-          & $winres simply --arch amd64 --no-suffix --icon icon.ico --admin `
+          & $winres simply --arch amd64 --no-suffix --manifest gui --icon icon.ico --admin `
             --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
             --product-name "Breeze RMM Agent" --file-description "Breeze RMM Agent" `
             --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-agent.exe" `
             --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
           if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-agent failed with exit code $LASTEXITCODE" }
+          # breeze-agent and breeze-user-helper take `--manifest gui` for its
+          # per-monitor-v2 DPI awareness. Both host remote-desktop capture and
+          # input, and a manifest fixes the process DPI mode before any code
+          # runs: the default `cli` manifest (system-aware) overrides
+          # internal/remote/desktop/dpi_windows.go and misplaces clicks on
+          # mixed-scale monitors.
           # breeze-user-helper: asInvoker (NOT --admin). It is spawned into the
           # logged-in user's session with that user's filtered token; an admin
           # manifest makes CreateProcessAsUser fail ERROR_ELEVATION_REQUIRED
           # (#949 regression). Keeps VERSIONINFO for the #944 MSI overwrite rule.
-          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+          & $winres simply --arch amd64 --no-suffix --manifest gui --icon icon.ico `
             --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
             --product-name "Breeze RMM User Helper" --file-description "Breeze RMM User Helper" `
             --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-user-helper.exe" `
@@ -491,7 +497,10 @@ jobs:
           $agText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Resolve-Path "dist\breeze-agent-windows-amd64.exe").Path))
           if ($agText -notmatch 'requestedExecutionLevel[^>]*level\s*=\s*["'']requireAdministrator') { throw "breeze-agent.exe lost its requireAdministrator manifest" }
           if ($agText -match 'level\s*=\s*["'']asInvoker') { throw "breeze-agent.exe is asInvoker — lost its requireAdministrator manifest (#949)" }
-          Write-Host "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator"
+          # Per-monitor-v2 DPI: see the go-winres note above.
+          if ($uhText -notmatch '<dpiAwareness[^>]*>[^<]*permonitorv2') { throw "breeze-user-helper.exe manifest is not per-monitor-v2 DPI aware — remote-desktop clicks misalign on mixed-scale monitors" }
+          if ($agText -notmatch '<dpiAwareness[^>]*>[^<]*permonitorv2') { throw "breeze-agent.exe manifest is not per-monitor-v2 DPI aware — remote-desktop clicks misalign on mixed-scale monitors" }
+          Write-Host "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator, both per-monitor-v2"
 
       # Regression guard (#2797): the exes packaged into the MSI must not
       # contain plaintext threat-signature strings — AV engines flag them as

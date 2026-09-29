@@ -523,4 +523,85 @@ describe('RemediationSuggestionsPanel', () => {
     fireEvent.click(disabledButton);
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/remediation-suggestions/generate', expect.anything());
   });
+
+  const listUrl = '/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5';
+  const serve = (list: unknown[], extra?: (url: string, method: string, init?: RequestInit) => Response | undefined) =>
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/config/ml-feature-flags') return Promise.resolve(makeJsonResponse(remediationFlags(true)));
+      if (url === listUrl) return Promise.resolve(makeJsonResponse({ data: list }));
+      const custom = extra?.(url, method, init as RequestInit | undefined);
+      if (custom) return Promise.resolve(custom);
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+  it('labels a memory suggestion as a proven fix with its track record', async () => {
+    serve([{ ...suggestion, origin: 'memory', confidence: null, evidence: { origin: 'memory', scope: 'all_clients', attempts: 8, verifiedCount: 7 }, outcome: null }]);
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    await screen.findByText('Disk Cleanup');
+    expect(screen.getByText('Proven fix')).toBeTruthy();
+    expect(screen.getByText(/Worked 7 of 8 times across your clients/)).toBeTruthy();
+  });
+
+  it('records 👎 after a run through runAction and shows it pressed', async () => {
+    const executed = { ...suggestion, status: 'executed', scriptExecutionId: '33333333-3333-4333-8333-333333333333', outcome: { state: 'holding', stateReason: 'condition_cleared', humanVote: null } };
+    serve([executed], (url, method) => (url === '/remediation-suggestions/suggestion-1/vote' && method === 'POST'
+      ? makeJsonResponse({ data: { outcome: { state: 'holding', stateReason: 'condition_cleared', humanVote: 'down' } } })
+      : undefined));
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    await screen.findByText(/recovered — confirming it stays fixed/);
+    fireEvent.click(screen.getByRole('button', { name: /didn.t work/i }));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      '/remediation-suggestions/suggestion-1/vote',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ vote: 'down' }) }),
+    ));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Feedback recorded' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /didn.t work/i }).getAttribute('aria-pressed')).toBe('true'));
+  });
+
+  it('surfaces a failed vote (never a silent no-op)', async () => {
+    const executed = { ...suggestion, status: 'executed', outcome: { state: 'pending', stateReason: null, humanVote: null } };
+    serve([executed], (url) => (url.endsWith('/vote') ? makeJsonResponse({ error: 'No recorded fix attempt for this suggestion' }, false, 409) : undefined));
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /^worked$/i }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+
+  it('marks accepted manual steps done', async () => {
+    const manual = { ...suggestion, targetType: 'manual_steps', scriptId: null, status: 'accepted', outcome: null };
+    serve([manual], (url, method) => (url === '/remediation-suggestions/suggestion-1/done' && method === 'POST'
+      ? makeJsonResponse({ data: { outcome: { state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null } } }, true, 201)
+      : undefined));
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /^done$/i }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Marked done — watching for recovery' })));
+    await screen.findByText(/watching for recovery/);
+  });
+
+  it('shows 👍/👎 immediately after Execute, because the response carries the new attempt', async () => {
+    const accepted = { ...suggestion, status: 'accepted', outcome: null };
+    serve([accepted], (url, method) => (url === '/remediation-suggestions/suggestion-1/execute' && method === 'POST'
+      ? makeJsonResponse({
+        data: { ...accepted, status: 'executed', scriptExecutionId: '33333333-3333-4333-8333-333333333333', outcome: { state: 'pending', stateReason: null, humanVote: null } },
+        execution: { targets: [] },
+      }, true, 201)
+      : undefined));
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    await screen.findByText('Disk Cleanup');
+    expect(screen.queryByRole('button', { name: /didn.t work/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /execute/i }));
+    await screen.findByRole('button', { name: /didn.t work/i });
+    expect(screen.getByRole('button', { name: /^worked$/i })).toBeTruthy();
+    expect(screen.getByText('Outcome: running')).toBeTruthy();
+  });
+
+  it('hides 👍/👎 on a cancelled attempt — it never counts, so a vote would change nothing (M5)', async () => {
+    const cancelled = { ...suggestion, status: 'executed', outcome: { state: 'cancelled', stateReason: 'script_cancelled', humanVote: null } };
+    serve([cancelled]);
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    await screen.findByTestId('remediation-outcome');
+    expect(screen.queryByTestId('remediation-vote-up')).toBeNull();
+    expect(screen.queryByTestId('remediation-vote-down')).toBeNull();
+  });
 });

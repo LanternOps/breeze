@@ -382,6 +382,19 @@ export default function DeviceHardwareInventory({
                   })}
             </p>
           )}
+          {/* #7214 (paper cut #21): the reported max capacity is stored and
+              returned by the API but was never shown anywhere on this tab. */}
+          {typeof hardware?.memoryMaxCapacityMb === "number" &&
+            hardware.memoryMaxCapacityMb > 0 && (
+              <p
+                className="mt-1 text-sm text-muted-foreground"
+                data-testid="memory-max-capacity"
+              >
+                {t("deviceHardwareInventory.memoryMaxCapacity", {
+                  capacity: formatRam(hardware.memoryMaxCapacityMb),
+                })}
+              </p>
+            )}
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -413,9 +426,21 @@ export default function DeviceHardwareInventory({
             {t("deviceHardwareInventory.memoryNotReported")}
           </p>
         ) : memoryModules.length === 0 ? (
-          <p className="mt-4 text-sm text-muted-foreground">
-            {t("deviceHardwareInventory.noMemoryModulesReported")}
-          </p>
+          memorySummary.soldered ? (
+            // #7214 (paper cut #21): on-package (soldered) memory has no
+            // discrete slots to enumerate — say so explicitly instead of the
+            // generic "no modules reported", which reads like missing data.
+            <p
+              className="mt-4 text-sm text-muted-foreground"
+              data-testid="memory-modules-on-package"
+            >
+              {t("deviceHardwareInventory.memoryModulesOnPackage")}
+            </p>
+          ) : (
+            <p className="mt-4 text-sm text-muted-foreground">
+              {t("deviceHardwareInventory.noMemoryModulesReported")}
+            </p>
+          )
         ) : (
           <div
             className="mt-4 overflow-x-auto rounded-md border"
@@ -522,10 +547,21 @@ export default function DeviceHardwareInventory({
                       <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
                         {module.manufacturer || "—"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
+                      {/* #7214 (paper cut #21): part/serial values (often
+                          15-25+ chars) previously forced the table wider than
+                          its scroll container at narrow viewports (Serial
+                          overflowed at 1200px). Truncate with a tooltip
+                          instead of an unconditional nowrap cell. */}
+                      <td
+                        className="max-w-[10rem] truncate px-4 py-3 font-mono text-xs"
+                        title={module.partNumber || undefined}
+                      >
                         {module.partNumber || "—"}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
+                      <td
+                        className="max-w-[10rem] truncate px-4 py-3 font-mono text-xs"
+                        title={module.serialNumber || undefined}
+                      >
                         {module.serialNumber || "—"}
                       </td>
                     </tr>

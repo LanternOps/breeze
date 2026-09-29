@@ -572,6 +572,7 @@
         "enabledMeaning": "Enabled means configured. Breeze does not contact the service to check that it responds.",
         "footnote": "Shows the API container's environment only. The web, portal and worker containers are not included.",
         "meta": "Running version {{version}} · {{mode}}",
+        "versionMismatch": "This API image is {{running}}, but BREEZE_VERSION is {{configured}}. Changing BREEZE_VERSION does not change a digest-pinned image, and agents are offered the BREEZE_VERSION release. Upgrade with guided-setup.sh --upgrade, or set BREEZE_VERSION back to {{running}}.",
         "deployMode": {
           "hosted": "Hosted",
           "self_host": "Self-hosted"
@@ -629,6 +630,10 @@
       "agent.command.result.submit": "Submitted command result",
       "agent.filesystem.threshold_scan.queued": "Filesystem scan queued",
       "agent.enroll": "Agent enrolled",
+      "api.fallback.post": "Submitted {target}",
+      "api.fallback.put": "Updated {target}",
+      "api.fallback.patch": "Updated {target}",
+      "api.fallback.delete": "Deleted {target}",
       "user.login": "Signed in",
       "user.logout": "Signed out",
       "session_initiated": "Session initiated",
@@ -638,6 +643,7 @@
       "session_consent_blocked_unanswered": "Remote session blocked: consent prompt not answered",
       "session_consent_blocked_unavailable": "Remote session blocked: consent prompt unavailable",
       "session_consent_bypassed": "Remote session started without an answer to the consent prompt",
+      "screen_access_consent_blocked": "Screen access blocked: device requires user consent",
       "device.wake_on_lan": "Sent Wake-on-LAN",
       "device.create": "Added device",
       "device.update": "Updated device",

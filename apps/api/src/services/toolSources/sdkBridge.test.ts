@@ -155,3 +155,19 @@ describe('tenantMcpToolNames', () => {
     expect(tenantMcpToolNames([])).toEqual([]);
   });
 });
+
+describe('buildTenantSdkTools under tool search (A-W04)', () => {
+  it('keeps the resolver order and never marks a tenant tool alwaysLoad, so it is always deferred', () => {
+    const names = ['hudu__get_asset', 'hudu__list_assets', 'itglue__get_password_meta'];
+    const tools = buildTenantSdkTools(
+      names.map((qualifiedName) => makeDescriptor({ qualifiedName })),
+      () => makeAuth(),
+      () => 'org-1',
+    );
+    expect(tools.map((t) => t.name)).toEqual(names);
+    for (const t of tools) {
+      const meta = (t as { _meta?: Record<string, unknown> })._meta;
+      expect(meta?.['anthropic/alwaysLoad']).not.toBe(true);
+    }
+  });
+});

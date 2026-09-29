@@ -25,6 +25,7 @@ import { canonical, mapStandaloneRule, monitorSignature, mapAutomationResponses,
 import { authorizePreview, conversionDeviceColumns, ownerAxisInputs, previewFreshness, previewScopeHash, snapshotPreviewAccess } from './previewScope';
 import { missingConversionPrerequisites } from './prerequisites';
 import { EQUIVALENCE_JOB_THRESHOLD, type ConversionPreviewItem, type PolicyConversionPreview, type PolicyConversionPreviewPending, type PolicyConversionPreviewFailed, type ConversionSourceTable, type PartnerConversionPreview } from './types';
+import { notHoldingOrgCondition } from '../../unassignedPool/selectorPredicate';
 
 export class ConversionError extends Error {
   constructor(readonly code: 'policy_not_found' | 'partner_wide_denied' | 'prerequisite_missing' | 'blocked' | 'preview_stale' | 'equivalence_delta' | 'source_not_found' | 'already_converted' | 'invalid_reason' | 'conversion_not_found' | 'conversion_revert_unavailable', message: string, readonly details?: unknown) {
@@ -411,7 +412,9 @@ async function partnerPlanInTx(partnerId: string, auth: AuthContext, tx: DbExecu
   const [partner] = await tx.select({ id: partners.id }).from(partners).where(eq(partners.id, partnerId)).limit(1);
   if (!partner) throw new ConversionError('source_not_found', 'Partner not found');
   await lockConversion(tx, { orgId: null, partnerId });
-  const orgs = await tx.select({ id: organizations.id }).from(organizations).where(eq(organizations.partnerId, partnerId));
+  // The holding org owns no policies or templates and its parked devices take none.
+  const orgs = await tx.select({ id: organizations.id }).from(organizations)
+    .where(and(eq(organizations.partnerId, partnerId), notHoldingOrgCondition()));
   const orgIds = orgs.map(o => o.id);
   const ownership = (table: typeof configurationPolicies | typeof alertTemplates) => or(
     orgIds.length ? inArray(table.orgId, orgIds) : sql`false`, and(isNull(table.orgId), eq(table.partnerId, partnerId)));
@@ -664,7 +667,8 @@ async function templateGroupPreviewInTx(templateId: string, auth: AuthContext, t
   // Include every visible device owned by this group, not merely current matches: a new
   // target policy can also change monitor precedence on a formerly unaffected device.
   const orgs = await tx.select().from(organizations).where(template.orgId
-    ? eq(organizations.id, template.orgId) : eq(organizations.partnerId, template.partnerId!)).orderBy(organizations.id);
+    ? eq(organizations.id, template.orgId)
+    : and(eq(organizations.partnerId, template.partnerId!), notHoldingOrgCondition())).orderBy(organizations.id);
   const orgIds = orgs.map((o) => o.id);
   // Conversion-relevant columns only: whole rows carry heartbeat telemetry (see conversionDeviceColumns).
   const deviceRows = orgIds.length ? await tx.select(conversionDeviceColumns).from(devices).where(inArray(devices.orgId, orgIds)).orderBy(devices.id) : [];

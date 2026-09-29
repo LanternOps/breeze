@@ -81,6 +81,12 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
+  // Background probe of a destination's create-only write support, started
+  // after a brokered backup write is issued. Writes only the
+  // provider_capabilities.conditionalWrites record, in system context; no
+  // caller-facing request reaches it.
+  'services/backupStorageCapabilityProbe.ts':
+    'writes only provider_capabilities.conditionalWrites from a background system-context probe; no caller-facing write path reaches it',
   // configurationPolicy.ts is the ONLY place that literally calls
   // .insert/.update/.delete(configurationPolicies | configPolicyFeatureLinks)
   // — routes/configurationPolicies/{crud,featureLinks}.ts and
@@ -340,6 +346,11 @@ describe('approval_generation bump coverage (contract-site-ceiling-gate §3/§7E
     // same reasoning as its entry in ALLOWED_WITHOUT_CEILING_CHECK above.
     'services/webhookDeliveryRecord.ts':
       'updates only successCount/failureCount/lastDeliveryAt after a delivery attempt — never a governing edit a queued job needs to detect',
+    // A probed capability of the destination, not a governing edit: a queued
+    // backup needs no new approval because the destination learned it
+    // supports a create-only condition.
+    'services/backupStorageCapabilityProbe.ts':
+      'records only a probed destination capability (provider_capabilities.conditionalWrites) — never a governing edit a queued job needs to detect',
   };
 
   it('every file that writes a generation-tracked table also references approvalGeneration', () => {

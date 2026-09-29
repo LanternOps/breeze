@@ -18,6 +18,8 @@ import type {
   SoftwareDeploymentAggregateStatus,
   SoftwareDeploymentCounts,
 } from "./DeploymentList";
+import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from "@breeze/shared";
+import { describeInFlight, type InFlightStage } from "./deploymentInFlight";
 
 export const DEPLOYMENT_POLL_INTERVAL_MS = 5000;
 const RESULTS_LIMIT = 200;
@@ -47,6 +49,11 @@ type DeploymentResultRow = {
   deviceCommandId?: string | null;
   hostname?: string | null;
   queuedOffline?: boolean;
+  /** #3578: when the server handed the command to the agent (null until then). */
+  sentAt?: string | null;
+  /** #3578: last in-flight stage the agent reported, and when (newer agents only). */
+  agentStage?: string | null;
+  agentStageAt?: string | null;
 };
 
 export interface DeploymentProgressProps {
@@ -95,6 +102,22 @@ const queuedOfflineStyle = {
   labelKey: "policies:software.deploymentProgress.queuedOffline",
   color: "bg-amber-500/20 text-amber-700 border-amber-500/40",
 };
+
+/**
+ * #3578: a pending row the agent is working on reads as its stage, not as a
+ * bare "Pending" (see deploymentInFlight.ts for what each stage means).
+ */
+const inFlightStyles: Record<InFlightStage, { labelKey: string; color: string }> = {
+  sent: {
+    labelKey: "policies:software.deploymentProgress.sentToAgent",
+    color: "bg-blue-500/20 text-blue-700 border-blue-500/40",
+  },
+  downloading: resultStatusStyles.downloading,
+  installing: resultStatusStyles.installing,
+  running: resultStatusStyles.running,
+};
+
+const SERVER_TIMEOUT_MINUTES = Math.round(SOFTWARE_INSTALL_SERVER_TIMEOUT_MS / 60_000);
 
 const managerUnavailableStyle = {
   labelKey: "policies:software.deploymentProgress.setupNeeded",
@@ -508,11 +531,14 @@ export default function DeploymentProgress({
                 const managerUnavailable = isManagerUnavailable(
                   result.errorMessage,
                 );
+                const inFlight = describeInFlight(result);
                 const style = result.queuedOffline
                   ? queuedOfflineStyle
                   : managerUnavailable
                     ? managerUnavailableStyle
-                    : resultStatusStyles[result.status];
+                    : inFlight
+                      ? inFlightStyles[inFlight.stage]
+                      : resultStatusStyles[result.status];
                 return (
                   <tr
                     key={result.id}
@@ -534,6 +560,32 @@ export default function DeploymentProgress({
                           ? t(/* i18n-dynamic */ style.labelKey)
                           : result.status}
                       </span>
+                      {inFlight && (
+                        <p
+                          className="mt-1 text-xs text-muted-foreground"
+                          data-testid={`deployment-result-elapsed-${result.id}`}
+                        >
+                          {inFlight.elapsedMinutes === 0
+                            ? t("policies:software.deploymentProgress.stageElapsedJustNow")
+                            : t("policies:software.deploymentProgress.stageElapsed", {
+                                count: inFlight.elapsedMinutes,
+                              })}
+                        </p>
+                      )}
+                      {inFlight?.silent && (
+                        <p
+                          className="mt-1 flex max-w-xs items-start gap-1 text-xs text-amber-700"
+                          data-testid={`deployment-result-silent-${result.id}`}
+                        >
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            {t("policies:software.deploymentProgress.noAgentUpdate", {
+                              count: inFlight.elapsedMinutes,
+                              timeoutMinutes: SERVER_TIMEOUT_MINUTES,
+                            })}
+                          </span>
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {formatDateTime(result.startedAt)}

@@ -238,6 +238,10 @@ const BINDINGS: readonly Binding[] = [
     tool: 'list_remediation_suggestions', routeFile: 'remediationSuggestions.ts', method: 'get', path: '/',
     toolOnly: { extra: [], reason: 'Explicit orgId requires organization access; exact-device scope also narrows device rows; empty site access returns no rows, including device-less suggestions.' },
   },
+  {
+    tool: 'find_proven_fixes', routeFile: 'remediationSuggestions.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Source alert/episode is resolved through the caller org condition, exact-device scope and site scope before any memory read; memory output is counts only.' },
+  },
   // Exact-device scope additionally limits these reads to linked assets.
   { tool: 'list_network_assets', routeFile: 'discovery.ts', method: 'get', path: '/assets', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
   { tool: 'get_network_asset', routeFile: 'discovery.ts', method: 'get', path: '/assets/:id', toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices.' } },
@@ -396,8 +400,12 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'get_ip_history', routeFile: 'devices/hardware.ts', method: 'get', path: '/:id/ip-history' },
   { tool: 'get_network_changes', routeFile: 'networkChanges.ts', method: 'get', path: '/' },
   {
-    tool: 'list_remote_sessions', routeFile: 'remote/sessions.ts', method: 'get', path: '/sessions',
-    toolOnly: { extra: ['remote:access'], reason: 'GET /sessions is gated on devices:read only; the tool keeps remote:access (TOOL_EXTRA_PERMISSIONS) because remote session listings are remote-access data, matching create_remote_session\'s own remote:access requirement.' },
+    tool: 'list_remote_sessions',
+    routeFile: 'remote/sessions.ts',
+    method: 'get',
+    path: '/sessions',
+    // remote:access comes from the parent router (remote/index.ts), not the session route.
+    parents: ['remote/index.ts'],
   },
   { tool: 'query_custom_fields', action: 'list_definitions', routeFile: 'customFields.ts', method: 'get', path: '/' },
   { tool: 'query_psa_status', routeFile: 'psa.ts', method: 'get', path: '/connections' },

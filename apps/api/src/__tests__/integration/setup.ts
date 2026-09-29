@@ -37,6 +37,12 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
 // Ensure JWT_SECRET is set for auth tests
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-must-be-at-least-32-characters-long';
 process.env.NODE_ENV = 'test';
+// Pin the approver-assurance platform default date far in the future so no
+// suite's outcome depends on the wall clock crossing it. Suites that exercise
+// the platform default set APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM themselves.
+if (!process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM) {
+  process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = '2999-01-01T00:00:00Z';
+}
 
 // Shared safety guard: cleanupDatabase() runs TRUNCATE CASCADE on core tenant
 // tables. It requires a parseable breeze_test(_*) database on a local allowlisted
@@ -220,6 +226,10 @@ const CLEANUP_TABLES = [
   // rows survive between tests. supported_currencies is NOT here on purpose —
   // it is seeded reference data every suite depends on.
   'exchange_rates',
+  // Global, id-only backup snapshot tombstones (no tenant FK, so no cascade
+  // reaches them). Without this a snapshot id deleted by one test stays
+  // unavailable to every later test that reuses the same literal id.
+  'backup_snapshot_id_tombstones',
   'device_commands',
   'device_group_memberships',
   'device_groups',

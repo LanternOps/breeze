@@ -1,9 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SYSTEM_CLEANUP_ACTION_IDS, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
-import { getCommandTimeoutMs, SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS } from './commandTimeouts';
+import {
+  BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
+  getCommandTimeoutMs,
+  SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS,
+} from './commandTimeouts';
 import { CommandTypes } from './commandQueue';
 
 describe('command timeouts', () => {
+  it('gives backup_run the backup job ceiling instead of the unknown-type default (#7105)', () => {
+    // backup_run used to fall through to the 30-minute default with an
+    // "Unknown command type" warning. A file backup is governed by the
+    // backup_jobs reaper, whose last-resort cap is 24 h, so a command row for
+    // it must never be timed out before that.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(getCommandTimeoutMs(CommandTypes.BACKUP_RUN)).toBe(24 * 60 * 60 * 1000);
+      expect(BACKUP_JOB_ABSOLUTE_TIMEOUT_MS).toBe(24 * 60 * 60 * 1000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('uses the restore-specific timeout policy', () => {
     expect(getCommandTimeoutMs(CommandTypes.BACKUP_RESTORE)).toBe(30 * 60 * 1000);
     // #6415: whole-machine restores measured 1 h 57 m / 2 h 41 m / 3 h 15 m in

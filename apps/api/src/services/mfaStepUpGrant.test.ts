@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
 
 const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
@@ -122,6 +122,51 @@ describe('moveOrgResourceDigest', () => {
 
   it('emits the sha256: prefixed shape the grant store compares literally', () => {
     expect(moveOrgResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('parkedAssignResourceDigest', () => {
+  const base = {
+    deviceId: '55555555-5555-4555-8555-555555555555',
+    targetOrgId: '22222222-2222-4222-8222-222222222222',
+    targetSiteId: '44444444-4444-4444-8444-444444444444',
+  };
+
+  it('is stable and insensitive to input key order', () => {
+    const reordered = { targetSiteId: base.targetSiteId, targetOrgId: base.targetOrgId, deviceId: base.deviceId };
+    expect(parkedAssignResourceDigest(reordered)).toBe(parkedAssignResourceDigest(base));
+    expect(parkedAssignResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('binds each field', () => {
+    expect(parkedAssignResourceDigest({ ...base, deviceId: '55555555-5555-4555-8555-555555555556' })).not.toBe(parkedAssignResourceDigest(base));
+    expect(parkedAssignResourceDigest({ ...base, targetOrgId: '22222222-2222-4222-8222-222222222223' })).not.toBe(parkedAssignResourceDigest(base));
+    expect(parkedAssignResourceDigest({ ...base, targetSiteId: '44444444-4444-4444-8444-444444444445' })).not.toBe(parkedAssignResourceDigest(base));
+  });
+
+  it('never equals the move-org digest for the same values', () => {
+    expect(parkedAssignResourceDigest(base)).not.toBe(moveOrgResourceDigest(base));
+  });
+});
+
+describe('parkedBulkAssignResourceDigest', () => {
+  const a = { deviceId: '11111111-1111-4111-8111-111111111111', targetOrgId: '22222222-2222-4222-8222-222222222222', targetSiteId: '33333333-3333-4333-8333-333333333333' };
+  const b = { deviceId: '44444444-4444-4444-8444-444444444444', targetOrgId: '22222222-2222-4222-8222-222222222222', targetSiteId: '33333333-3333-4333-8333-333333333333' };
+  const c = { deviceId: '66666666-6666-4666-8666-666666666666', targetOrgId: '77777777-7777-4777-8777-777777777777', targetSiteId: '88888888-8888-4888-8888-888888888888' };
+
+  it('sorts by deviceId, so item order does not matter', () => {
+    expect(parkedBulkAssignResourceDigest([b, a, c])).toBe(parkedBulkAssignResourceDigest([a, b, c]));
+  });
+
+  it('changes when an item is added, removed or changed', () => {
+    const digest = parkedBulkAssignResourceDigest([a, b]);
+    expect(parkedBulkAssignResourceDigest([a, b, c])).not.toBe(digest);
+    expect(parkedBulkAssignResourceDigest([a])).not.toBe(digest);
+    expect(parkedBulkAssignResourceDigest([a, { ...b, targetSiteId: c.targetSiteId }])).not.toBe(digest);
+  });
+
+  it('a one-item batch never equals the single-assignment digest for that item', () => {
+    expect(parkedBulkAssignResourceDigest([a])).not.toBe(parkedAssignResourceDigest(a));
   });
 });
 
@@ -295,6 +340,62 @@ describe('mfaStepUpGrant operation isolation', () => {
     await expect(validateStepUpGrant(id!, bind('register_approver_device'))).resolves.toBe(true);
     // Non-consuming: the record is still present afterward.
     expect(redisStore.has(`mfa:stepup:${id}`)).toBe(true);
+  });
+
+  // #4045: the SSO re-auth callback now mints one of TWO purposes. Each must be
+  // useless for the other — an IdP login that proved "enroll my first factor"
+  // must never authorize removing one, and vice versa — and the new purpose
+  // gets the same single-use / user / session / epoch binding as every other.
+  describe('sso_reauth_manage_factor (#4045)', () => {
+    // Mint-site shape from routes/sso.ts: no resourceDigest.
+    const ssoBind = (overrides: Partial<ReturnType<typeof bind>> = {}) => {
+      const { resourceDigest: _omit, ...rest } = bind('sso_reauth_manage_factor');
+      return { ...rest, ...overrides };
+    };
+
+    it('validates non-consumingly, then consumes exactly once (reuse fails)', async () => {
+      const id = await mintStepUpGrant(ssoBind());
+      await expect(validateStepUpGrant(id!, ssoBind())).resolves.toBe(true);
+      await expect(consumeStepUpGrant(id!, ssoBind())).resolves.toBe(true);
+      await expect(consumeStepUpGrant(id!, ssoBind())).resolves.toBe(false);
+      await expect(validateStepUpGrant(id!, ssoBind())).resolves.toBe(false);
+    });
+
+    it('is not usable as enroll_first_factor, and an enroll_first_factor grant is not usable as it', async () => {
+      const manage = await mintStepUpGrant(ssoBind());
+      const enroll = await mintStepUpGrant(ssoBind({ operation: 'enroll_first_factor' }));
+      await expect(validateStepUpGrant(manage!, ssoBind({ operation: 'enroll_first_factor' }))).resolves.toBe(false);
+      await expect(validateStepUpGrant(enroll!, ssoBind())).resolves.toBe(false);
+      await expect(consumeStepUpGrant(enroll!, ssoBind())).resolves.toBe(false);
+    });
+
+    it('is not usable as any existing-factor operation (it can never stand in for the factor proof)', async () => {
+      const manage = await mintStepUpGrant(ssoBind());
+      for (const op of ['rotate_recovery_codes', 'delete_passkey', 'add_factor'] as const) {
+        await expect(validateStepUpGrant(manage!, ssoBind({ operation: op }))).resolves.toBe(false);
+      }
+    });
+
+    it("rejects another user's grant", async () => {
+      const id = await mintStepUpGrant(ssoBind());
+      await expect(validateStepUpGrant(id!, ssoBind({ userId: 'user-2' }))).resolves.toBe(false);
+      await expect(consumeStepUpGrant(id!, ssoBind({ userId: 'user-2' }))).resolves.toBe(false);
+    });
+
+    it('rejects a stale grant after a factor or auth change (epoch bump) or from another session', async () => {
+      const a = await mintStepUpGrant(ssoBind());
+      const b = await mintStepUpGrant(ssoBind());
+      const s = await mintStepUpGrant(ssoBind());
+      await expect(validateStepUpGrant(a!, ssoBind({ mfaEpoch: 3 }))).resolves.toBe(false);
+      await expect(validateStepUpGrant(b!, ssoBind({ authEpoch: 2 }))).resolves.toBe(false);
+      await expect(validateStepUpGrant(s!, ssoBind({ sid: 'sid-2' }))).resolves.toBe(false);
+    });
+
+    it('expires on the default 300s TTL', async () => {
+      const id = await mintStepUpGrant(ssoBind());
+      expect(ttls.get(`mfa:stepup:${id}`)).toBe(300);
+      expect(stepUpGrantTtlSeconds('sso_reauth_manage_factor')).toBe(300);
+    });
   });
 });
 

@@ -110,6 +110,10 @@ vi.mock('../../services/streamingSessionManager', () => ({
   },
 }));
 
+vi.mock('../../services/aiAgentSdkTools', () => ({
+  createBreezeMcpServer: vi.fn(() => ({ type: 'sdk', name: 'breeze' })),
+}));
+
 vi.mock('../../services/aiInputSanitizer', () => ({
   sanitizeUserMessage: vi.fn(() => ({ sanitized: 'hello', flags: [] })),
 }));
@@ -190,6 +194,8 @@ import { streamingSessionManager } from '../../services/streamingSessionManager'
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { resolveClientDeclaredTool } from '../../services/clientSessionTools';
 import { storeScreenshot } from '../../services/screenshotStorage';
+import { createBreezeMcpServer } from '../../services/aiAgentSdkTools';
+import { getHelperAllowedTools } from '../../services/helperToolFilter';
 
 const VALID_TOOL_DECL = {
   name: 'search_files',
@@ -422,14 +428,23 @@ describe('helper routes permission derivation', () => {
     expect(systemPrompt).toBe('helper system prompt');
     expect(allowedTools).toContain('mcp__breeze__file_operations');
     expect(allowedTools).not.toContain('mcp__breeze__execute_command');
-    // Isolation: sessions without client tools pass NO mcpServerFactory — the
-    // default breeze MCP path is byte-identical to today.
     expect(getOrCreateCall?.[6]).toEqual(expect.objectContaining({
       source: 'partner',
       configId: 'config-1',
       configVersion: 5,
     }));
-    expect(getOrCreateCall?.[8]).toBeUndefined();
+    // A-W04: Helper REGISTERS only its permission level's tools (onlyTools),
+    // not the whole registry behind a permission-only allowlist, and resolves
+    // no tenant tools (none are in its allowlist).
+    const factory = getOrCreateCall?.[8] as ((...args: unknown[]) => { server: unknown; name: string }) | undefined;
+    expect(typeof factory).toBe('function');
+    const built = factory!(vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    expect(built.name).toBe('breeze');
+    const serverCall = vi.mocked(createBreezeMcpServer).mock.calls.at(-1)!;
+    expect(serverCall[4]).toEqual([]);
+    const onlyTools = (serverCall[5] as { onlyTools: Set<string> }).onlyTools;
+    expect([...onlyTools].sort()).toEqual(getHelperAllowedTools('standard').sort());
+    expect(allowedTools!.map((n) => n.replace('mcp__breeze__', '')).sort()).toEqual([...onlyTools].sort());
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
     expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
     // Org-axis AI rate limiter — the same ceiling technician chat enforces

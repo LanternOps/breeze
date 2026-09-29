@@ -125,6 +125,43 @@ export function remoteDesktopFenceRequired(): boolean {
   return envFlag('REMOTE_DESKTOP_FENCE_REQUIRED', false);
 }
 
+// Approver assurance platform default. A partner that has not chosen an
+// approval-security enforcement setting (no policy row, or a row whose
+// enforcement choice is blank) is treated as enforcing for high- and
+// critical-risk approvals from this instant: those approvals then need the
+// tier floor (a registered approver device) instead of a session tap. Default
+// enforcement begins 2026-11-05T00:00:00Z, about 30 days after the release
+// that introduces it, with an in-app notice beforehand. Self-hosters may move
+// the date with APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM (ISO date or
+// timestamp); config/validate.ts refuses to boot on an unparseable value.
+export const APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = '2026-11-05T00:00:00.000Z';
+
+/** Parse APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM; `null` when unset/blank or unparseable. */
+export function parseApproverAssuranceDefaultEnforceFrom(raw: string | undefined): Date | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  const ms = Date.parse(trimmed);
+  return Number.isNaN(ms) ? null : new Date(ms);
+}
+
+// Read at CALL time so an override (and a test) applies without a reload.
+// Returns a fresh Date so no caller can mutate the shared default.
+export function approverAssuranceDefaultEnforceFrom(): Date {
+  return (
+    parseApproverAssuranceDefaultEnforceFrom(process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM)
+    ?? new Date(APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM)
+  );
+}
+
+// Pre-assignment enrollment: the platform switch for deploy-key enrollment
+// into a partner's holding area. Default OFF. Deploy-key enrollment runs only
+// when this AND the partner's own deploy_key_enrollment_enabled column are on
+// (services/unassignedPool/switches.ts). Turning it off stops it everywhere.
+// Read at CALL time so it can be flipped without a module reload.
+export function preAssignmentEnrollmentEnabled(): boolean {
+  return envFlag('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', false);
+}
+
 // Caller verification (anti-vishing, #6354). W01 ships the backend dark:
 // every caller-verification route returns 404 `feature_disabled` to an
 // AUTHENTICATED caller (auth runs first, so an anonymous request still gets

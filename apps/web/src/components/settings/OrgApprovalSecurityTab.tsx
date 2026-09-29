@@ -2,12 +2,19 @@ import { useEffect, useState } from 'react';
 import { Loader2, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { DEFAULT_ASSURANCE_FLOOR, type RiskTier, type AssuranceLevel } from '@breeze/shared';
 import {
-  getAuthenticatorPolicy,
+  DEFAULT_ASSURANCE_FLOOR,
+  MAX_REACHABLE_ASSURANCE,
+  type RiskTier,
+  type AssuranceLevel,
+} from '@breeze/shared';
+import {
+  getAuthenticatorPolicyState,
   putAuthenticatorPolicy,
   type AuthenticatorPolicy,
+  type AuthenticatorPolicyState,
 } from '../../stores/authenticatorPolicy';
+import { ApproverAssuranceDefaultNotice, formatPolicyDate } from '../approvals/ApproverAssuranceNotice';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -25,25 +32,44 @@ const LEVEL_LABEL_KEYS: Record<AssuranceLevel, string> = {
   3: 'orgApprovalSecurityTab.assuranceLevels.3',
   4: 'orgApprovalSecurityTab.assuranceLevels.4',
 };
+type EnforcementChoice = 'inherit' | 'required' | 'not_required';
+
+function choiceOf(requireEnrollment: boolean | null): EnforcementChoice {
+  if (requireEnrollment === null) return 'inherit';
+  return requireEnrollment ? 'required' : 'not_required';
+}
+const REQUIRE_ENROLLMENT_FOR: Record<EnforcementChoice, boolean | null> = {
+  inherit: null,
+  required: true,
+  not_required: false,
+};
+
 /**
  * Breeze Authenticator (Phase 4) — partner "Approval Security" admin tab. Sets
  * the per-tier required assurance floor (raise-only above the Breeze default),
- * whether enrollment is required to approve above L1, and the grace cutoff.
+ * whether an approver device is required (Platform default / Required / Not
+ * required), and the grace cutoff for an explicit Required choice. The
+ * Platform default choice shows the inherited value and where it comes from.
  */
 export function OrgApprovalSecurityTab() {
-  const { t } = useTranslation('settings');
+  const { t, i18n } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [policy, setPolicy] = useState<AuthenticatorPolicy | null>(null);
+  const [serverState, setServerState] = useState<AuthenticatorPolicyState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();
   const [isSaving, setIsSaving] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let active = true;
     (async () => {
       try {
-        const p = await getAuthenticatorPolicy();
-        if (active) setPolicy(p);
+        const state = await getAuthenticatorPolicyState();
+        if (active) {
+          setServerState(state);
+          setPolicy(state.policy);
+        }
       } catch {
         if (active) setLoadError(stableT('orgApprovalSecurityTab.errors.load'));
       } finally {
@@ -53,7 +79,7 @@ export function OrgApprovalSecurityTab() {
     return () => {
       active = false;
     };
-  }, [stableT]);
+  }, [stableT, reloadKey]);
 
   function setTierLevel(tier: RiskTier, level: AssuranceLevel) {
     setPolicy((prev) =>
@@ -66,10 +92,17 @@ export function OrgApprovalSecurityTab() {
     setIsSaving(true);
     try {
       await runAction({
-        request: () => putAuthenticatorPolicy(policy),
+        request: () =>
+          putAuthenticatorPolicy({
+            ...policy,
+            // Only an explicit Required choice carries its own date.
+            enforceFrom: policy.requireEnrollment === true ? policy.enforceFrom : null,
+          }),
         successMessage: t('orgApprovalSecurityTab.toasts.saved'),
         errorFallback: t('orgApprovalSecurityTab.errors.save'),
       });
+      // Reload so the inherited value / notice reflect what was saved.
+      setReloadKey((k) => k + 1);
     } catch (err) {
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('orgApprovalSecurityTab.errors.save') });
@@ -94,8 +127,15 @@ export function OrgApprovalSecurityTab() {
     );
   }
 
+  const choice = choiceOf(policy.requireEnrollment);
+  const platformDefaultDate = serverState?.platformDefault.enforceFrom
+    ? formatPolicyDate(serverState.platformDefault.enforceFrom, i18n.language)
+    : null;
+
   return (
     <div className="space-y-6 p-1" data-testid="approval-security-tab">
+      {serverState && <ApproverAssuranceDefaultNotice effective={serverState.effective} />}
+
       <div className="flex items-start gap-3">
         <ShieldCheck className="mt-0.5 h-5 w-5 text-primary" />
         <div>
@@ -125,7 +165,9 @@ export function OrgApprovalSecurityTab() {
                 {([1, 2, 3, 4] as AssuranceLevel[])
                   .filter((lvl) => lvl >= floor)
                   .map((lvl) => (
-                    <option key={lvl} value={lvl}>
+                    // Levels an approver device cannot produce for this tier
+                    // are shown but disabled; the server refuses them too.
+                    <option key={lvl} value={lvl} disabled={lvl > MAX_REACHABLE_ASSURANCE[tier]}>
                       {t(/* i18n-dynamic */ LEVEL_LABEL_KEYS[lvl])}
                     </option>
                   ))}
@@ -133,34 +175,66 @@ export function OrgApprovalSecurityTab() {
             </div>
           );
         })}
+        <p className="text-xs text-muted-foreground" data-testid="floor-unreachable-hint">
+          {t('orgApprovalSecurityTab.unreachableLevelHint')}
+        </p>
       </div>
 
-      <label className="flex items-center gap-2 text-sm" data-testid="require-enrollment">
-        <input
-          type="checkbox"
-          checked={policy.requireEnrollment}
-          onChange={(e) => setPolicy({ ...policy, requireEnrollment: e.target.checked })}
-        />
-        {t('orgApprovalSecurityTab.requireEnrollment')}
-      </label>
+      <div className="space-y-2">
+        <label className="block text-sm">
+          <span className="mb-1 block font-medium">{t('orgApprovalSecurityTab.requireEnrollment')}</span>
+          <select
+            data-testid="enforcement-choice"
+            className="rounded-md border bg-background px-2 py-1 text-sm"
+            value={choice}
+            onChange={(e) =>
+              setPolicy({
+                ...policy,
+                requireEnrollment: REQUIRE_ENROLLMENT_FOR[e.target.value as EnforcementChoice],
+              })
+            }
+          >
+            <option value="inherit">{t('orgApprovalSecurityTab.enforcement.inherit')}</option>
+            <option value="required">{t('orgApprovalSecurityTab.enforcement.required')}</option>
+            <option value="not_required">{t('orgApprovalSecurityTab.enforcement.notRequired')}</option>
+          </select>
+        </label>
+        {choice === 'inherit' && platformDefaultDate && (
+          <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="enforcement-inherited">
+            <p>{t('orgApprovalSecurityTab.enforcement.inheritedValue', { date: platformDefaultDate })}</p>
+            <p className="text-muted-foreground">{t('orgApprovalSecurityTab.enforcement.inheritedSource')}</p>
+          </div>
+        )}
+        {choice === 'required' && (
+          <p className="text-sm text-muted-foreground">{t('orgApprovalSecurityTab.enforcement.requiredHint')}</p>
+        )}
+        {choice === 'not_required' && (
+          <p className="text-sm text-muted-foreground">{t('orgApprovalSecurityTab.enforcement.notRequiredHint')}</p>
+        )}
+      </div>
 
-      <label className="block text-sm">
-        <span className="mb-1 block text-muted-foreground">
-          {t('orgApprovalSecurityTab.enforceFrom')}
-        </span>
-        <input
-          type="date"
-          data-testid="enforce-from"
-          className="rounded-md border bg-background px-2 py-1"
-          value={policy.enforceFrom ? policy.enforceFrom.slice(0, 10) : ''}
-          onChange={(e) =>
-            setPolicy({
-              ...policy,
-              enforceFrom: e.target.value ? new Date(e.target.value).toISOString() : null,
-            })
-          }
-        />
-      </label>
+      {choice === 'required' && (
+        <label className="block text-sm">
+          <span className="mb-1 block text-muted-foreground">
+            {t('orgApprovalSecurityTab.enforceFrom')}
+          </span>
+          <input
+            type="date"
+            data-testid="enforce-from"
+            className="rounded-md border bg-background px-2 py-1"
+            value={policy.enforceFrom ? policy.enforceFrom.slice(0, 10) : ''}
+            onChange={(e) =>
+              setPolicy({
+                ...policy,
+                enforceFrom: e.target.value ? new Date(e.target.value).toISOString() : null,
+              })
+            }
+          />
+          <span className="mt-1 block text-xs text-muted-foreground">
+            {t('orgApprovalSecurityTab.enforceFromHint')}
+          </span>
+        </label>
+      )}
 
       <button
         type="button"

@@ -186,7 +186,7 @@ describe('evaluateScriptExitCodeAlert', () => {
 
     await evaluateScriptExitCodeAlert(input({ exitCode: 4 }));
 
-    expect(resolveAlertMock).toHaveBeenCalledWith('alert-open', expect.any(String));
+    expect(resolveAlertMock).toHaveBeenCalledWith('alert-open', expect.any(String), undefined, false, 'condition_cleared');
     expect(createSourcedAlertMock).not.toHaveBeenCalled();
   });
 

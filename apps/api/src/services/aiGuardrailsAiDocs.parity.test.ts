@@ -136,10 +136,31 @@ let toolTableRows = 0;
   }
 }
 
+/**
+ * Spec 2026-09-23 W01 (#6755): every read-only tool this wave wired into
+ * chat/agents must appear in some `| Tool | Tier | Description |` row —
+ * documented, not just tiered. Covers the backup/C2C family and the
+ * security/compliance reads.
+ */
+const W01_DOCUMENTED_TOOLS = [
+  'query_hyperv_vms', 'get_hyperv_vm_details', 'query_mssql_instances', 'get_mssql_backup_status',
+  'get_vault_status', 'query_backup_sla', 'get_sla_breaches', 'get_sla_compliance_report',
+  'get_vm_restore_estimate', 'query_c2c_jobs', 'search_c2c_items', 'get_software_compliance',
+  'query_compliance_policies', 'get_elevation_history', 'get_peripheral_activity', 'get_user_risk_scores',
+  'get_user_risk_detail',
+];
+
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
   it.each(['get', 'create', 'update', 'delete'])('documents manage_monitors:%s at Tier 1', (action) => {
     const entries = claims.filter((entry) => entry.tool === 'manage_monitors' && entry.actions.includes(action));
     expect(entries.map((entry) => entry.claimedTier)).toEqual([1]);
+  });
+
+  it('W01 (#6755): every newly-wired read-only tool has a documented row', () => {
+    const documented = new Set(claims.map((c) => c.tool));
+    const missing = W01_DOCUMENTED_TOOLS.filter((name) => !documented.has(name));
+    expect(missing, `Undocumented W01 read tools in ${DOC_REL}. Add a row to a ` +
+      '`| Tool | Tier | Description |` table.').toEqual([]);
   });
 
   it('found the tier tables it expects to guard', () => {

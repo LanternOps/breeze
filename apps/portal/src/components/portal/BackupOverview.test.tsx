@@ -21,6 +21,8 @@ const configuredOverview: BackupOverviewDto = {
   meanReadinessScore: 76,
   readinessScoredDevices: 3,
   readinessTotalDevices: 4,
+  byHealth: { healthy: 3, warning: 0, critical: 1, unknown: 0 },
+  externalProviders: ['Cove Data Protection'],
 };
 
 const emptyOverview: BackupOverviewDto = {
@@ -37,6 +39,8 @@ const emptyOverview: BackupOverviewDto = {
   meanReadinessScore: null,
   readinessScoredDevices: null,
   readinessTotalDevices: null,
+  byHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+  externalProviders: [],
 };
 
 describe('BackupOverview', () => {
@@ -174,7 +178,7 @@ describe('BackupOverview', () => {
     expect(ledger.className).not.toMatch(/(^|\s)border(\s|$)/);
 
     const rows = Array.from(ledger.children);
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(8);
     for (const row of rows) {
       expect(row.querySelector('dt')).not.toBeNull();
       expect(row.querySelector('dd')).not.toBeNull();
@@ -184,11 +188,13 @@ describe('BackupOverview', () => {
 
     for (const label of [
       'Protected devices',
+      'Backup health',
       'Last verification',
       'Last restore test',
       'Recovery readiness',
       'Backups behind schedule',
       'Restores slower than promised',
+      'Third-party backup',
     ]) {
       expect(screen.getByText(label).tagName).toBe('DT');
     }
@@ -217,5 +223,37 @@ describe('BackupOverview', () => {
     const secondary = screen.getByText(/Average across/);
     expect(secondary.className).toContain('text-xs');
     expect(secondary.className).not.toMatch(/font-display|text-figures/);
+  });
+
+  it('counts devices by backup health, non-zero buckets only', () => {
+    render(<BackupOverview overview={configuredOverview} hasBackupActivity />);
+
+    const row = screen.getByTestId('portal-backup-overview-health');
+    expect(row.textContent).toContain('3 Healthy');
+    expect(row.textContent).toContain('1 Critical');
+    expect(row.textContent).not.toContain('Warning');
+    expect(row.querySelector('.text-success-on-tint')).not.toBeNull();
+    expect(row.querySelector('.text-destructive-on-tint')).not.toBeNull();
+  });
+
+  it('says so when no device has been assessed', () => {
+    render(<BackupOverview overview={emptyOverview} />);
+
+    expect(screen.getByTestId('portal-backup-overview-health').textContent).toContain(
+      'No devices assessed'
+    );
+  });
+
+  it('names the third-party backup providers, or that none is connected', () => {
+    const { unmount } = render(<BackupOverview overview={configuredOverview} hasBackupActivity />);
+    expect(screen.getByTestId('portal-backup-overview-providers').textContent).toContain(
+      'Cove Data Protection'
+    );
+    unmount();
+
+    render(<BackupOverview overview={{ ...configuredOverview, externalProviders: [] }} hasBackupActivity />);
+    expect(screen.getByTestId('portal-backup-overview-providers').textContent).toContain(
+      'None connected'
+    );
   });
 });

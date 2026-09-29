@@ -13,6 +13,7 @@ import {
 } from '../db/schema';
 import { EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 const SECURITY_FACTOR_WEIGHTS = {
   patch_compliance: 25,
   encryption: 15,
@@ -568,7 +569,7 @@ async function loadDeviceInputsForOrg(orgId: string): Promise<DeviceInput[]> {
     // posture coverage denominator.
     .where(and(
       eq(devices.orgId, orgId),
-      eq(devices.isEphemeral, false),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
       sql`${devices.status} <> 'decommissioned'`,
     ));
 

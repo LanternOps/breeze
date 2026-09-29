@@ -79,6 +79,10 @@ systemToolsRoutes.use(
     if (deviceId) {
       const policyCheck = await checkRemoteAccess(deviceId, 'remoteTools');
       if (!policyCheck.allowed) {
+        // A parked device carries its own code (DEVICE_PENDING_ASSIGNMENT).
+        if (policyCheck.code) {
+          return c.json({ error: policyCheck.reason, message: policyCheck.reason, code: policyCheck.code }, 403);
+        }
         throw new HTTPException(403, { message: policyCheck.reason ?? 'Remote tools disabled by policy' });
       }
     }

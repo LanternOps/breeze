@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
+import { PARKED_ASSIGN_MAX_BULK_ITEMS } from '../../services/unassignedPool/limits';
 
 // ============================================
 // Feature flags
@@ -146,6 +147,10 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // only after a forced IdP round-trip proves identity for a PASSWORDLESS
 // account; letting a client request one here would turn a re-authentication
 // proof into a checkbox for anyone who can already satisfy step-up.
+// #4045: `sso_reauth_manage_factor`, the callback's other output, is excluded
+// for the same reason — it stands in for the PASSWORD leg of factor
+// management, so minting it from a factor proof would collapse two proofs
+// into one.
 //
 // A plain `satisfies readonly StepUpOperation[]` would NOT have stopped that —
 // it only constrains membership, so appending 'enroll_first_factor' still
@@ -160,12 +165,15 @@ const STEP_UP_OPERATIONS = [
   'agent_rollback',
   'device_maintenance',
   'device_move_org',
+  'parked_device_assign',
+  'parked_device_assign_bulk',
+  'pre_assignment_enable',
   'ai_script_lane_grant',
   'ai_partner_script_ceiling_grant',
   'topology_arm',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
-  'enroll_first_factor' | 'approval_decide'
+  'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
 >[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
@@ -197,6 +205,22 @@ export const moveOrgStepUpResource = z.object({
   targetOrgId: z.string().uuid(),
   targetSiteId: z.string().uuid(),
   acceptCurrencyMismatch: z.boolean().optional(),
+});
+// Parked-device assignment bindings. Mirror the pre-assignment route bodies
+// (routes/preAssignment.ts): one device + destination, or a batch of them.
+export const parkedAssignStepUpResource = z.object({
+  deviceId: z.string().uuid(),
+  targetOrgId: z.string().uuid(),
+  targetSiteId: z.string().uuid(),
+});
+export const parkedBulkAssignStepUpResource = z.object({
+  items: z.array(parkedAssignStepUpResource).min(1).max(PARKED_ASSIGN_MAX_BULK_ITEMS),
+});
+// Turning ON deploy-key enrollment for a partner: bound to the partner, and
+// only ever to enabled=true (turning it off needs no step-up).
+export const preAssignmentEnableStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  enabled: z.literal(true),
 });
 // Coarse pre-filter only. The AUTHORITY on "does this resource match this
 // operation" is RESOURCE_BOUND_OPERATIONS in routes/auth/mfa.ts, which
@@ -235,7 +259,7 @@ export const topologyArmStepUpResource = z.object({
   action: z.enum(['arm_policy', 'arm_telemetry']),
   subjectId: z.string().uuid(),
 });
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource]);
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

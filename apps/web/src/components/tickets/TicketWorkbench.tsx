@@ -48,6 +48,7 @@ import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../.
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -159,6 +160,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
+  // Only the full-page /tickets/[id] view names the page: the /tickets split
+  // pane embeds this too, and naming there would relabel the list itself.
+  usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<'not-found' | 'load' | undefined>();

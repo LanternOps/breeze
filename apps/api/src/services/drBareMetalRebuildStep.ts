@@ -13,10 +13,36 @@ import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { backupSnapshots } from '../db/schema/backup';
 import type { DrDb } from './bareMetalRecoveryService';
+// Pool-free leaf (imports only zod): this module must stay lazy on ../db.
+import { isAbsoluteRebuildPath, resolveSnapshotPlatform, type SnapshotPlatform } from './bareMetalRebuildSchemas';
 import { findCredentialShapedKeyPath } from './drStoredCredentialKeys';
 
 export const DR_STEP_BARE_METAL_REBUILD = 'BARE_METAL_REBUILD';
-export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR = '/var/lib/breeze/rebuild/out';
+export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX = '/var/lib/breeze/rebuild/out';
+export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_WINDOWS = 'C:\\ProgramData\\Breeze\\rebuild\\out';
+/**
+ * The value a stored config carries when the operator left `outputDir` unset
+ * (configs are stored normalised, defaults applied). It stays the Linux
+ * default so every already-stored config keeps matching it; dispatch maps it
+ * to the rebuild host's own default through `defaultRebuildOutputDir` (W06d).
+ */
+export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR = DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX;
+
+/** The rebuild host's default VHDX output directory, by `devices.osType`. */
+export function defaultRebuildOutputDir(osType: string): string {
+  return osType === 'windows' ? DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_WINDOWS : DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX;
+}
+
+/**
+ * Joins a file name onto an output dir with the dir's own separator: `\` for
+ * a drive-letter dir, `/` otherwise. Trailing separators are collapsed so the
+ * result never carries a doubled one.
+ */
+export function joinRebuildOutputPath(outputDir: string, file: string): string {
+  const sep = /^[A-Za-z]:\\/.test(outputDir) ? '\\' : '/';
+  const trimmed = sep === '\\' ? outputDir.replace(/\\+$/, '') : outputDir.replace(/\/+$/, '');
+  return `${trimmed}${sep}${file}`;
+}
 
 export const drBareMetalRebuildConfigSchema = z.object({
   commandType: z.literal(DR_STEP_BARE_METAL_REBUILD),
@@ -27,7 +53,8 @@ export const drBareMetalRebuildConfigSchema = z.object({
     .string()
     .min(1)
     .max(1024)
-    .refine((p) => p.startsWith('/'), 'absolute path required')
+    .refine(isAbsoluteRebuildPath, 'absolute path required (POSIX or a Windows drive letter, no UNC)')
+    // Still the Linux value when unset; dispatch resolves it per host OS.
     .default(DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR),
   waitTimeoutMinutes: z.number().int().min(5).max(1440).default(240),
 });
@@ -104,4 +131,33 @@ export async function resolveLatestRestorableSnapshotId(
     .orderBy(desc(backupSnapshots.timestamp))
     .limit(1);
   return row?.id ?? null;
+}
+
+/**
+ * Same selection as `resolveLatestRestorableSnapshotId`, plus the snapshot's
+ * layout platform — for the one caller that needs it: the dispatcher's
+ * rebuild-host platform match (W06d). The authorization pass only needs
+ * existence and keeps the bare-id resolver, so its callers never change.
+ */
+export async function resolveLatestRestorableSnapshot(
+  orgId: string,
+  deviceId: string,
+  tx?: DrDb,
+): Promise<{ id: string; platform: SnapshotPlatform | null } | null> {
+  // Lazy for the same reason as resolveLatestRestorableSnapshotId.
+  const runner = tx ?? (await import('../db')).db;
+  const [row] = await runner
+    .select({ id: backupSnapshots.id, layoutManifest: backupSnapshots.layoutManifest })
+    .from(backupSnapshots)
+    .where(
+      and(
+        eq(backupSnapshots.orgId, orgId),
+        eq(backupSnapshots.deviceId, deviceId),
+        eq(backupSnapshots.bareMetalRestorable, true),
+      ),
+    )
+    .orderBy(desc(backupSnapshots.timestamp))
+    .limit(1);
+  if (!row) return null;
+  return { id: row.id, platform: resolveSnapshotPlatform(row.layoutManifest) };
 }

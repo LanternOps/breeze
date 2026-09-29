@@ -18,6 +18,7 @@ import {
   type SecurityScanSchedulable,
 } from '../services/featureConfigResolver';
 import { securityScanCron, type SecurityScanSettings } from '@breeze/shared';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -269,6 +270,7 @@ export async function schedulePolicyScans(
     .where(and(
       inArray(devices.id, entry.deviceIds),
       eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ));
   if (deviceRows.length === 0) return 0;

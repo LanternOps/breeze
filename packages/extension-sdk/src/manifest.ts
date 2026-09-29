@@ -44,7 +44,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'pam', 'partner', 'partner-api', 'partner-service-principals', 'partners',
   'patch-policies', 'patches', 'pax8',
   'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
-  'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
+  'portal', 'pre-assignment', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
   'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
   'search', 'security', 'sensitive-data', 'service-principals', 'settings',
   'snmp', 'software',

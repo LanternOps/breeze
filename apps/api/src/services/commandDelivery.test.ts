@@ -442,9 +442,9 @@ describe('storage-destination delivery refreshers', () => {
     }
   });
 
-  it('routes the eight restore-shaped types through the storage-session refresher and writes through the destination refresher', async () => {
+  it('routes the eight restore-shaped types through the storage-session refresher and writes through the write-session refresher', async () => {
     const { deliverBrokeredReadCommand } = await import('./backupStorageSessions');
-    const { materializeBackupStorageCredentials } = await import('./backupCommandCredentials');
+    const { deliverBackupWriteCommand } = await import('./backupStorageWriteDelivery');
     for (const type of [
       'backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore',
       'mssql_verify', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
@@ -452,7 +452,7 @@ describe('storage-destination delivery refreshers', () => {
       expect(deliveryRefreshers[type], type).toBe(deliverBrokeredReadCommand);
     }
     for (const type of ['mssql_backup', 'hyperv_backup']) {
-      expect(deliveryRefreshers[type], type).toBe(materializeBackupStorageCredentials);
+      expect(deliveryRefreshers[type], type).toBe(deliverBackupWriteCommand);
     }
   });
 

@@ -111,6 +111,10 @@ const NOT_DEVICES_FK: ReadonlySet<string> = new Set([
   'mobile_devices',        // device_id is a varchar identifier, not a FK to devices
   'snmp_alert_thresholds', // device_id → snmp_devices.id
   'snmp_metrics',          // device_id → snmp_devices.id
+  // Holding-area ledger: device_id is a snapshot uuid
+  // with NO FK. The append-only record deliberately outlives the device row,
+  // so it is neither cascade-deleted nor detached; it goes with the partner.
+  'device_pool_assignment_events',
 ]);
 
 /**

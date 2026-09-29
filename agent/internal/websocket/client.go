@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -193,6 +194,11 @@ type Client struct {
 	// Must not block: it runs inline on the read pump. Set once at
 	// construction time, before Start().
 	OnRevocationLease func(msg RevocationLeaseMessage)
+
+	// resends is the bounded record of recently sent command results the
+	// server may ask for again with RESULT_PROCESSING_FAILED (#7365). See
+	// result_resend.go.
+	resends *sentResultTracker
 }
 
 // RevocationLeaseMessage is the server's answer to a revocation-lease renewal.
@@ -229,6 +235,7 @@ func New(cfg *Config, handler CommandHandler) *Client {
 		resultChan:      make(chan outboundResult, 256),
 		binaryFrameChan: make(chan []byte, 30),
 		orderedCmdChan:  make(chan Command, 512),
+		resends:         newSentResultTracker(),
 	}
 }
 
@@ -490,7 +497,14 @@ func (c *Client) readPump() {
 		// A server rejection of something this agent sent. Handled BEFORE the
 		// id-less skip below, which used to swallow it (#3001).
 		if msg.Type == "error" {
-			logServerErrorFrame(message)
+			c.handleServerErrorFrame(message)
+			continue
+		}
+
+		// A command-result ack carries `commandId`, not `id`, so it would fall
+		// into the id-less skip below; it clears the resend record (#7365).
+		if msg.Type == "ack" {
+			c.handleAckFrame(message)
 			continue
 		}
 
@@ -832,12 +846,33 @@ func (c *Client) SendResult(result CommandResult) error {
 		}
 	}
 
+	// Checked first: with buffer space free, the select below picks between a
+	// ready send and a closed done at random, and a result accepted into the
+	// channel of a stopped client is never written — while SendResult reports
+	// success, so the caller never falls back to the outbox.
+	select {
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+	}
+
+	// Recorded so a RESULT_PROCESSING_FAILED answer can be resent (#7365) —
+	// BEFORE the enqueue, so the server's answer can never outrun the record.
+	// A record this call created is rolled back if the result is not queued.
+	created := c.resends.record(result, len(data))
+
 	select {
 	case c.resultChan <- outboundResult{data: data, result: result}:
 		return nil
 	case <-c.done:
+		if created {
+			c.resends.ack(result.CommandID)
+		}
 		return fmt.Errorf("client is stopped")
 	default:
+		if created {
+			c.resends.ack(result.CommandID)
+		}
 		return fmt.Errorf("send channel is full")
 	}
 }
@@ -921,18 +956,13 @@ func boundResultFieldForServer(result CommandResult) (CommandResult, bool) {
 // the server's explanation was thrown away on arrival. An operator comparing
 // agent and server logs saw a result that left the endpoint and never landed,
 // with nothing anywhere naming a cause.
-func logServerErrorFrame(raw []byte) {
-	var frame struct {
-		Code        string          `json:"code"`
-		Message     string          `json:"message"`
-		MessageType string          `json:"messageType"`
-		CommandID   string          `json:"commandId"`
-		Details     json.RawMessage `json:"details"`
-	}
+//
+// It returns the parsed frame; ok is false when the frame could not be parsed.
+func logServerErrorFrame(raw []byte) (frame serverErrorFrame, ok bool) {
 	if err := json.Unmarshal(raw, &frame); err != nil {
 		log.Error("server rejected a message and the error frame could not be parsed",
 			"error", err.Error())
-		return
+		return serverErrorFrame{}, false
 	}
 	// Bounded so a verbose `details` array cannot flood the agent log.
 	details := string(frame.Details)
@@ -946,6 +976,18 @@ func logServerErrorFrame(raw []byte) {
 		"commandId", frame.CommandID,
 		"details", details,
 	)
+	return frame, true
+}
+
+// serverErrorFrame is the server's rejection frame, as built by
+// buildAgentMessageRejection and buildResultProcessingFailedFrame in
+// apps/api/src/routes/agentWs.ts.
+type serverErrorFrame struct {
+	Code        string          `json:"code"`
+	Message     string          `json:"message"`
+	MessageType string          `json:"messageType"`
+	CommandID   string          `json:"commandId"`
+	Details     json.RawMessage `json:"details"`
 }
 
 // handleResultWriteFailure hands a command result that writePump could not
@@ -1027,6 +1069,46 @@ func (c *Client) SendPatchProgress(commandID string, event any) error {
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel full, dropping progress")
+	}
+}
+
+// CommandProgressCapability is the server capability (advertised in the
+// "connected" handshake) that gates SendCommandProgress. Must match
+// COMMAND_PROGRESS_CAPABILITY / AGENT_WS_CAPABILITIES in the API (#3578).
+const CommandProgressCapability = "command_progress"
+
+// ErrServerLacksCapability is returned when a frame was not sent because the
+// connected server did not advertise support for it.
+var ErrServerLacksCapability = errors.New("server does not advertise this capability")
+
+// SendCommandProgress reports the in-flight stage of a command the agent is
+// executing (#3578) — e.g. "downloading" then "installing" for a software
+// install — so the server can show more than "Pending" for a long command.
+//
+// Advisory and fire-and-forget: no ack, never blocks (drops when the send
+// channel is full), and sends nothing to a server that did not advertise
+// CommandProgressCapability, since an older server rejects the unknown frame
+// type with an error frame.
+func (c *Client) SendCommandProgress(commandID, stage string) error {
+	if !c.HasServerCapability(CommandProgressCapability) {
+		return ErrServerLacksCapability
+	}
+	msgBytes, err := json.Marshal(map[string]any{
+		"type":      "command_progress",
+		"commandId": commandID,
+		"stage":     stage,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal command progress: %w", err)
+	}
+
+	select {
+	case c.sendChan <- msgBytes:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("client is stopped")
+	default:
+		return fmt.Errorf("send channel full, dropping command progress")
 	}
 }
 

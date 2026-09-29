@@ -21,6 +21,7 @@
   "exclude": [
     "node_modules",
     "perf-harness/**",
-    "live-signup/**"
+    "live-signup/**",
+    "ui-audit/**"
   ]
 }

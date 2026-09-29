@@ -6,7 +6,8 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
 import { useUiStore } from '../../stores/uiStore';
 import { CHORD_TIMEOUT_MS, SIDEBAR_CYCLE_MODE_EVENT, useGlobalShortcuts } from './useGlobalShortcuts';
-import { GO_TO_SHORTCUTS } from './goToShortcuts';
+import { CREATE_SHORTCUTS, GO_TO_SHORTCUTS } from './goToShortcuts';
+import { CREATE_INTENT_STORAGE_KEY } from './createIntent';
 
 function press(key: string, init: Partial<KeyboardEventInit> & { target?: EventTarget } = {}) {
   const { target, ...rest } = init;
@@ -164,6 +165,78 @@ describe('useGlobalShortcuts', () => {
     press('a');
     expect(navigateToMock).toHaveBeenCalledWith('/alerts');
     expect(useUiStore.getState().isShortcutsHelpOpen).toBe(false);
+  });
+
+  it('reaches the billing and service pages', () => {
+    renderHook(() => useGlobalShortcuts());
+    for (const [key, href] of [['t', '/tickets'], ['q', '/billing/quotes'], ['b', '/billing/invoices'], ['c', '/contracts'], ['j', '/jobs']]) {
+      press('g');
+      press(key);
+      expect(navigateToMock).toHaveBeenLastCalledWith(href);
+    }
+  });
+
+  it('c-then-key opens a create form directly when the page has its own route', () => {
+    renderHook(() => useGlobalShortcuts());
+    press('c');
+    const second = press('t');
+    expect(navigateToMock).toHaveBeenCalledWith('/tickets/new');
+    expect(second.defaultPrevented).toBe(true);
+    press('c');
+    press('s');
+    expect(navigateToMock).toHaveBeenLastCalledWith('/scripts/new');
+  });
+
+  it('c-then-key leaves a one-shot create intent for list pages that open a dialog', () => {
+    sessionStorage.clear();
+    renderHook(() => useGlobalShortcuts());
+    press('c');
+    press('q');
+    expect(navigateToMock).toHaveBeenCalledWith('/billing/quotes');
+    expect(sessionStorage.getItem(CREATE_INTENT_STORAGE_KEY)).toContain('quote');
+  });
+
+  it('on the list page already showing, c-then-key opens the dialog in place without a page swap', () => {
+    sessionStorage.clear();
+    window.history.pushState({}, '', '/billing/quotes#status=draft');
+    const onIntent = vi.fn();
+    window.addEventListener('breeze:create-intent', onIntent);
+    try {
+      renderHook(() => useGlobalShortcuts());
+      press('c');
+      press('q');
+      expect(onIntent).toHaveBeenCalledTimes(1);
+      expect(navigateToMock).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('breeze:create-intent', onIntent);
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('covers every registered create target', () => {
+    renderHook(() => useGlobalShortcuts());
+    for (const s of CREATE_SHORTCUTS) {
+      press('c');
+      press(s.key);
+      expect(navigateToMock).toHaveBeenLastCalledWith(s.href);
+    }
+    expect(navigateToMock).toHaveBeenCalledTimes(CREATE_SHORTCUTS.length);
+  });
+
+  it('exposes the pending prefix for the on-screen indicator, and clears it', () => {
+    const { result } = renderHook(() => useGlobalShortcuts());
+    expect(result.current).toBeNull();
+    act(() => { press('g'); });
+    expect(result.current).toBe('g');
+    act(() => { press('d'); });
+    expect(result.current).toBeNull();
+    act(() => { press('c'); });
+    expect(result.current).toBe('c');
+    act(() => { vi.advanceTimersByTime(CHORD_TIMEOUT_MS + 1); });
+    expect(result.current).toBeNull();
+    act(() => { press('g'); });
+    act(() => { press('Escape'); });
+    expect(result.current).toBeNull();
   });
 
   it('stops listening on unmount', () => {

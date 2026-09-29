@@ -210,7 +210,7 @@ async function resolveLinkedAlert(
   defaultNote: string,
 ): Promise<boolean> {
   if (input.resolveAlert === false || !episode.linkedAlertId) return false;
-  const resolved = await resolveAlert(episode.linkedAlertId, input.note ?? defaultNote, input.actorUserId);
+  const resolved = await resolveAlert(episode.linkedAlertId, input.note ?? defaultNote, input.actorUserId, false, 'manual');
   if (resolved) {
     await emitAlertStateFeedback({
       orgId: episode.orgId,

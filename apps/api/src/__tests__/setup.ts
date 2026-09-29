@@ -13,6 +13,12 @@ process.env.NODE_ENV = 'test';
 // by deleting this var in their beforeEach; the integration suite runs with
 // real enforcement against the test database.
 process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
+// Pin the approver-assurance platform default date far in the future so no
+// suite's outcome depends on the wall clock crossing it. Suites that exercise
+// the platform default set APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM themselves.
+if (!process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM) {
+  process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = '2999-01-01T00:00:00Z';
+}
 
 // Mock Redis client for tests that need it
 vi.mock('../services/redis', () => {

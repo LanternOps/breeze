@@ -9,7 +9,7 @@ import { Readable, Transform } from 'stream';
 import { dirname, join } from 'path';
 import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { devices, users } from '../db/schema';
+import { devices, organizations, users } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { propagateDenial } from '../middleware/propagateDenial';
@@ -19,6 +19,13 @@ import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import { PERMISSIONS } from '../services/permissions';
 import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../services/deviceSiteAccess';
 import { writeAuditEvent } from '../services/auditEvents';
+import { PARKED_DEVICE_REFUSAL } from '../middleware/agentAuthParked';
+import {
+  isParkedDevice,
+  PARKED_DEVICE_COMMAND_REFUSAL_CODE,
+  PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE,
+} from '../services/unassignedPool/deliveryEligibility';
+import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 
 // #6621: staged uploads must never live under os.tmpdir() — the container's
 // /tmp is a small tmpfs shared with tsx's compile cache, so a ~34 MB Windows
@@ -257,6 +264,14 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
   if (!device) {
     return c.json({ error: 'Device not found or access denied' }, 404);
   }
+  // A device parked in a holding org receives lifecycle removal only — never a
+  // binary. Refused before anything is staged or dispatched.
+  if (await isParkedDevice(db, device.id)) {
+    return c.json(
+      { error: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE, code: PARKED_DEVICE_COMMAND_REFUSAL_CODE },
+      409,
+    );
+  }
 
   // Stage the binary under the work dir (never os.tmpdir()).
   const workDir = resolveWorkDir();
@@ -395,8 +410,10 @@ devPushRoutes.get('/push/download/:token', async (c) => {
       .select({
         id: devices.id,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
+        orgType: organizations.type,
       })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(
         and(
           eq(devices.agentId, entry.agentId),
@@ -414,6 +431,13 @@ devPushRoutes.get('/push/download/:token', async (c) => {
   // Task 18: auto-suspended tokens fail closed at every auth gate.
   if (agentDevice.agentTokenSuspendedAt) {
     return c.json({ error: 'Invalid agent credentials' }, 401);
+  }
+
+  // A device parked in a holding org receives lifecycle removal only. The
+  // download authenticates by agent token alone, so it re-checks the org here
+  // rather than relying on the push having been refused.
+  if (isUnassignedPoolOrgType(agentDevice.orgType)) {
+    return c.json(PARKED_DEVICE_REFUSAL, 403);
   }
 
   // Stream the file

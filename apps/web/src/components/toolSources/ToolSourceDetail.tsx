@@ -22,6 +22,7 @@ import { ToolSourceForm } from './ToolSourceForm';
 import { ToolTestDrawer } from './ToolTestDrawer';
 import { StatusChip, formatDiscoveredAt } from './statusChip';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePageItemName } from '../layout/usePageItemName';
 
 /**
  * One tool source: its connection facts, its discovered tools, and the
@@ -109,9 +110,12 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
     }
   };
 
+  usePageItemName(source?.name);
+
   if (loadError) {
     return <p data-testid="tool-source-detail-error" className="p-4 text-sm text-destructive">{loadError}</p>;
   }
+
   if (!source) return <div className="p-4 text-sm text-muted-foreground">{t('detail.back')}</div>;
 
   return (

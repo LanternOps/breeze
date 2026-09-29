@@ -18,7 +18,8 @@ CGImageRef CGWindowListCreateImage_compat(CGRect screenBounds,
     CGWindowListOption listOption, CGWindowID windowID,
     CGWindowImageOption imageOption) __asm__("_CGWindowListCreateImage");
 
-// ScreenCaptureResult holds the capture result (must match capture_darwin.go)
+// ScreenCaptureResult holds the capture result (same shape as the
+// CGDisplayStream shim in capture_darwin_displaystream.go)
 typedef struct {
     void* data;
     int width;

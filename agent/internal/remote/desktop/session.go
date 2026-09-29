@@ -380,21 +380,9 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 		return nil, 0, 0, ErrNoActiveSession
 	}
 
-	// Retry a few times — the repaint needs a moment to produce a DXGI frame.
-	var img *image.RGBA
-	var err error
-	for attempt := 0; attempt < 8; attempt++ {
-		img, err = cap.Capture()
-		if err != nil {
-			return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
-		}
-		if img != nil {
-			break
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
-	if img == nil {
-		return nil, 0, 0, fmt.Errorf("capture from active session: no frame after retries")
+	img, err := captureFrameForScreenshot(cap)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
 	}
 
 	w, h, err := cap.GetScreenBounds()
@@ -404,6 +392,35 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 	}
 
 	return img, w, h, nil
+}
+
+// captureFrameForScreenshot grabs one frame from a capturer the streaming loop
+// is also reading. A LatestFrameProvider (the macOS SCStream capturer, #5928)
+// hands back its current frame directly; Capture() there reports an unchanged
+// screen as no frame once the loop has taken it. Other capturers are retried a
+// few times, since the repaint needs a moment to produce a DXGI frame.
+func captureFrameForScreenshot(cap ScreenCapturer) (*image.RGBA, error) {
+	if lp, ok := cap.(LatestFrameProvider); ok {
+		img, err := lp.CaptureLatest()
+		if err != nil {
+			return nil, err
+		}
+		if img == nil {
+			return nil, fmt.Errorf("no frame available")
+		}
+		return img, nil
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		img, err := cap.Capture()
+		if err != nil {
+			return nil, err
+		}
+		if img != nil {
+			return img, nil
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("no frame after retries")
 }
 
 // StopSession stops and removes a session

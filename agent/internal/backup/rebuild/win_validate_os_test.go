@@ -75,8 +75,8 @@ func TestValidateOSState_ClosesHivesThenChecksESPAndBCD(t *testing.T) {
 	if !bcdClosed {
 		t.Fatal("BCD hive handle not closed")
 	}
-	if r.espDir != "" || len(sys.mountLog) != 0 {
-		t.Fatalf("validate must not folder-mount the ESP: espDir=%q mounts=%v", r.espDir, sys.mountLog)
+	if len(sys.mountLog) != 0 {
+		t.Fatalf("validate must not folder-mount the ESP: mounts=%v", sys.mountLog)
 	}
 	for _, c := range sys.cmds {
 		if !strings.HasPrefix(c, "LoadHive") {
@@ -109,6 +109,33 @@ func TestValidateOSState_MissingESPFileFails(t *testing.T) {
 				t.Fatal("hives must be closed even when the ESP check fails")
 			}
 		})
+	}
+}
+
+// 18b row 9a: a Stat error other than "not exist" (a path component that
+// is a file, not a directory) must be wrapped and reported as itself, not
+// flattened into the generic "ESP is missing ..." message — that message
+// would be actively misleading for, say, a permissions error.
+func TestValidateOSState_ESPStatErrorIsWrappedNotFlattenedToMissing(t *testing.T) {
+	r, _, _ := newValidateOSRun(t) // no ESP files
+	// Fix round 1 / IMPORTANT 1: inject a non-ErrNotExist error through the
+	// statESPFile seam instead of provoking one from a real filesystem
+	// (e.g. by putting a file where a directory should be). The exact
+	// syscall a broken path component produces is not portable — on native
+	// Windows it can be ERROR_PATH_NOT_FOUND, which itself satisfies
+	// fs.ErrNotExist, or ERROR_DIRECTORY, which is not syscall.ENOTDIR —
+	// so a real-filesystem trick is not deterministic across OSes/CI.
+	injected := errors.New("simulated non-ErrNotExist stat failure")
+	prev := statESPFile
+	statESPFile = func(string) (os.FileInfo, error) { return nil, injected }
+	t.Cleanup(func() { statESPFile = prev })
+
+	err := validateOSState(context.Background(), r)
+	if err == nil || !errors.Is(err, injected) {
+		t.Fatalf("err = %v, want it to wrap the injected error", err)
+	}
+	if strings.Contains(err.Error(), "missing") {
+		t.Fatalf("err = %v, must not say \"missing\" for a non-ErrNotExist Stat failure", err)
 	}
 }
 
@@ -177,7 +204,7 @@ func TestValidateOSState_SkipBootOnlyClosesHives(t *testing.T) {
 // loaded or lettered, and the identity edits on the restored volume.
 func TestRun_WindowsVhdxFullChainCompletes(t *testing.T) {
 	withHostPlatformWindows(t)
-	t.Setenv("SystemRoot", testSystemRoot)
+	withHostWindowsDir(t, testSystemRoot)
 	opts, sys := winFakeOptions(t, t.TempDir())
 	opts.SkipBoot = false
 	opts.Identity = IdentityNew

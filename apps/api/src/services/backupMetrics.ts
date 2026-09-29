@@ -16,6 +16,10 @@ type BackupMetricsRecorder = {
   onStorageSessionMint: (scope: string, outcome: string, reason: string, count?: number) => void;
   onWriteDispatch: (commandType: string, mode: string, reason: string, count?: number) => void;
   onAttestation: (outcome: string, count?: number) => void;
+  onWriteJanitor: (action: string, outcome: string, count?: number) => void;
+  onUnexpectedLegacyWrite: (commandType: string, reason: string, count?: number) => void;
+  onConditionalWriteProbe: (outcome: string, reason: string, count?: number) => void;
+  onSnapshotPublishRefused: (reason: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -34,6 +38,10 @@ let recorder: BackupMetricsRecorder = {
   onStorageSessionMint: noop,
   onWriteDispatch: noop,
   onAttestation: noop,
+  onWriteJanitor: noop,
+  onUnexpectedLegacyWrite: noop,
+  onConditionalWriteProbe: noop,
+  onSnapshotPublishRefused: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -51,6 +59,10 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onStorageSessionMint: next?.onStorageSessionMint ?? noop,
     onWriteDispatch: next?.onWriteDispatch ?? noop,
     onAttestation: next?.onAttestation ?? noop,
+    onWriteJanitor: next?.onWriteJanitor ?? noop,
+    onUnexpectedLegacyWrite: next?.onUnexpectedLegacyWrite ?? noop,
+    onConditionalWriteProbe: next?.onConditionalWriteProbe ?? noop,
+    onSnapshotPublishRefused: next?.onSnapshotPublishRefused ?? noop,
   };
 }
 
@@ -175,6 +187,14 @@ export function recordStorageSessionMint(
  */
 export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused';
 
+/**
+ * Reasons a backup is still delivered WITH its storage credential that are
+ * expected until every helper reports brokered writes. Any other reason (a
+ * failed session issue, a server-origin or job problem, a missing reference)
+ * is also counted by `onUnexpectedLegacyWrite`, so it can be alerted on.
+ */
+const EXPECTED_LEGACY_WRITE_REASONS = new Set(['helper_unsupported', 'provider_not_s3']);
+
 export function recordBackupWriteDispatch(
   commandType: string,
   mode: BackupWriteDispatchMode,
@@ -182,6 +202,24 @@ export function recordBackupWriteDispatch(
   count = 1,
 ): void {
   recorder.onWriteDispatch(commandType, mode, reason, count);
+  if (mode === 'legacy_credential' && !EXPECTED_LEGACY_WRITE_REASONS.has(reason)) {
+    recorder.onUnexpectedLegacyWrite(commandType, reason, count);
+  }
+}
+
+/**
+ * A backup result whose snapshot row the database refused because its id is
+ * owned elsewhere: `not_current_job` (a server-issued id another backup job
+ * of the organization now holds) or `foreign_claim` (the id belongs to
+ * another backup, possibly another organization's).
+ */
+export function recordSnapshotPublishRefused(reason: 'not_current_job' | 'foreign_claim', count = 1): void {
+  recorder.onSnapshotPublishRefused(reason, count);
+}
+
+/** One destination probe for create-only write support, by outcome and reason. */
+export function recordConditionalWriteProbe(outcome: 'supported' | 'unsupported', reason: string, count = 1): void {
+  recorder.onConditionalWriteProbe(outcome, reason, count);
 }
 
 
@@ -214,4 +252,18 @@ export type BackupAttestationMetricOutcome =
 
 export function recordBackupAttestation(outcome: BackupAttestationMetricOutcome, count = 1): void {
   recorder.onAttestation(outcome, count);
+}
+
+/**
+ * One action of the brokered-write cleanup job (jobs/backupWriteSessionJanitor.ts):
+ * `abort_upload` (a recorded multipart upload aborted), `sweep_prefix` (every
+ * stray multipart upload under a finished snapshot prefix aborted), `publish`
+ * (a sealing snapshot published once every issued upload URL expired) or
+ * `abandon` (a reservation whose job ended without publishing). Outcome is
+ * `ok` or `failed` (left for the next run).
+ */
+export type BackupWriteJanitorAction = 'abort_upload' | 'settle_delete' | 'sweep_prefix' | 'publish' | 'abandon';
+
+export function recordBackupWriteJanitor(action: BackupWriteJanitorAction, outcome: 'ok' | 'failed', count = 1): void {
+  recorder.onWriteJanitor(action, outcome, count);
 }

@@ -26,7 +26,8 @@ import {
   CLIENT_DECLARED_MCP_SERVER_NAME,
   type ClientToolDeclaration,
 } from '../../services/clientSessionTools';
-import { getHelperAllowedMcpToolNames, type HelperPermissionLevel } from '../../services/helperToolFilter';
+import { getHelperAllowedMcpToolNames, getHelperAllowedTools, type HelperPermissionLevel } from '../../services/helperToolFilter';
+import { createBreezeMcpServer } from '../../services/aiAgentSdkTools';
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot, ScreenshotQuotaExceededError, ScreenshotTooLargeError } from '../../services/screenshotStorage';
@@ -96,13 +97,35 @@ function helperOwnedSessionConditions() {
   ];
 }
 
+
+/**
+ * A-W04 (#6151): the device-scoped Breeze server for a session without client
+ * tools. Only the permission level's tools are REGISTERED (not merely
+ * allow-listed), so the other ~190 definitions never ride along on the
+ * model's input. No tenant tools: none are in Helper's allowlist. Helper
+ * recreates its SDK session every turn, so a level change applies on the next
+ * message.
+ */
+function helperMcpServerFactory(level: HelperPermissionLevel) {
+  const onlyTools = new Set(getHelperAllowedTools(level));
+  return (
+    getAuth: Parameters<typeof createBreezeMcpServer>[0],
+    onPreToolUse: Parameters<typeof createBreezeMcpServer>[1],
+    onPostToolUse: Parameters<typeof createBreezeMcpServer>[2],
+    getSession: Parameters<typeof createBreezeMcpServer>[3],
+  ) => ({
+    server: createBreezeMcpServer(getAuth, onPreToolUse, onPostToolUse, getSession, [], { onlyTools }),
+    name: 'breeze',
+  });
+}
+
 async function runHelperPreFlight(
   sessionId: string,
   content: string,
   device: HelperDevice,
   partnerId: string | null,
 ): Promise<
-  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; clientTools: ClientToolDeclaration[]; resolved: UsableLlmConfig }
+  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; permissionLevel: HelperPermissionLevel; clientTools: ClientToolDeclaration[]; resolved: UsableLlmConfig }
   | { ok: false; error: string; status: number }
 > {
   // Fetch session
@@ -210,7 +233,7 @@ async function runHelperPreFlight(
     ? clientDeclaredToolMcpNames(clientTools)
     : getHelperAllowedMcpToolNames(permissionLevel);
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, allowedTools, clientTools, resolved };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, allowedTools, permissionLevel, clientTools, resolved };
 }
 
 // ============================================
@@ -343,7 +366,7 @@ helperRoutes.post(
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, allowedTools, clientTools, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, allowedTools, permissionLevel, clientTools, resolved } = preflight;
 
     // When the session declared client tools, build the generic client-declared
     // MCP server: each model tool call publishes `client_tool_request` and parks
@@ -363,7 +386,7 @@ helperRoutes.post(
           }),
           name: CLIENT_DECLARED_MCP_SERVER_NAME,
         })
-      : undefined;
+      : helperMcpServerFactory(permissionLevel);
 
     const priorSession = streamingSessionManager.get(sessionId);
     if (priorSession?.state === 'processing') {

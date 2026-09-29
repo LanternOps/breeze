@@ -34,6 +34,7 @@ import {
 } from './aiToolsSiteScope';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { notHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -276,7 +277,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           .from(organizations)
           // The hidden 'quick_support' org holds only ephemeral support devices —
           // a partner-wide peripheral policy must not fan out into it.
-          .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support')));
+          .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support'), notHoldingOrgCondition()));
         return rows.map((row) => row.id);
       };
 

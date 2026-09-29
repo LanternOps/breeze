@@ -132,7 +132,8 @@ vmRestoreRoutes.post(
 
     const payload = c.req.valid('json');
 
-    // ── Rebuild engine (W05a): Linux whole-machine snapshot → VHDX on a Linux host ──
+    // ── Rebuild engine (W05a; W06d): whole-machine snapshot → VHDX on a rebuild
+    // host of the same platform, optionally a Hyper-V VM on a Windows host ──
     if (payload.engine === 'rebuild') {
       const authorization = await authorizeRouteResilienceResources(c, orgId, [
         { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
@@ -147,13 +148,18 @@ vmRestoreRoutes.post(
           rebuildHostDeviceId: payload.rebuildHostDeviceId,
           outputPath: payload.outputPath,
           ...(payload.imageSizeGb !== undefined ? { imageSizeGb: payload.imageSizeGb } : {}),
+          ...(payload.hyperv ? { hyperv: payload.hyperv } : {}),
           userId: auth.user?.id ?? null,
           requestUrl: c.req.url,
         })
       );
 
       if (!result.ok) {
-        return c.json({ error: result.error, ...(result.details ? { details: result.details } : {}) }, result.status);
+        return c.json({
+          error: result.error,
+          ...(result.message ? { message: result.message } : {}),
+          ...(result.details ? { details: result.details } : {}),
+        }, result.status);
       }
 
       writeRouteAudit(c, {
@@ -169,6 +175,7 @@ vmRestoreRoutes.post(
           commandId: result.commandId,
           outputPath: payload.outputPath,
           identity: 'new',
+          ...(payload.hyperv ? { hyperv: payload.hyperv } : {}),
         },
       });
 

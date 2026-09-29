@@ -5,6 +5,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // This file proves the gate fires before ANY write happens, that it is
 // fail-closed, and that the opt-out exists but is off by default.
 
+// Holding-org delivery eligibility (a live device/org read) is out of this
+// suite's scope; scriptDispatch.test.ts covers the refusal and
+// parkedCommandDelivery.integration.test.ts the query.
+vi.mock('./unassignedPool/deliveryEligibility', async () => ({
+  ...(await vi.importActual<typeof import('./unassignedPool/deliveryEligibility')>(
+    './unassignedPool/deliveryEligibility',
+  )),
+  isParkedDevice: vi.fn(async () => false),
+}));
 vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

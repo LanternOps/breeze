@@ -1453,7 +1453,76 @@ async function rehomeReportChildrenThenDelete(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Multi-org report series W02: reports_series_active_child_uniq (org_id,
+// series_id) WHERE series_id IS NOT NULL AND archived_at IS NULL collides when
+// both orgs hold an active child of the same series. The survivor keeps its
+// child. The loser's child is ARCHIVED in place — never deleted, and its runs
+// are never re-homed: a run may be deliverable evidence, and
+// sd_evidence_report_run_fk (report_run_id, report_id) -> report_runs(id,
+// report_id) is NOT deferrable with no ON UPDATE action, so moving a run
+// would abort the merge with 23503. The archived child then repoints into the
+// survivor org with its history intact (the generic repoint below). Its
+// recipient overrides are unioned onto the survivor's child; a 'remove' on
+// either side wins over an 'add'.
+// ---------------------------------------------------------------------------
+async function archiveCollidingSeriesChildren(
+  loser: string,
+  survivor: string,
+): Promise<{ archived: number; removesPromoted: number; recipientsDeduplicated: number; recipientsRehomed: number }> {
+  const twin = sql`s.org_id = ${uuid(survivor)}
+       AND s.series_id = t.series_id
+       AND s.archived_at IS NULL
+       AND t.archived_at IS NULL`;
+
+  const removesPromoted = await run(sql`
+    UPDATE report_schedule_recipients AS existing
+       SET mode = 'remove'
+      FROM report_schedule_recipients c
+      JOIN reports t ON t.id = c.report_id
+      JOIN reports s ON ${twin}
+     WHERE t.org_id = ${uuid(loser)}
+       AND t.series_id IS NOT NULL
+       AND c.mode = 'remove'
+       AND existing.report_id = s.id
+       AND existing.contact_id = c.contact_id
+       AND existing.mode = 'add'`);
+
+  const recipientsDeduplicated = await run(sql`
+    DELETE FROM report_schedule_recipients AS c
+     USING reports t
+      JOIN reports s ON ${twin}
+     WHERE t.org_id = ${uuid(loser)}
+       AND t.series_id IS NOT NULL
+       AND c.report_id = t.id
+       AND EXISTS (
+         SELECT 1 FROM report_schedule_recipients existing
+          WHERE existing.report_id = s.id
+            AND existing.contact_id = c.contact_id
+       )`);
+
+  const recipientsRehomed = await run(sql`
+    UPDATE report_schedule_recipients AS c
+       SET report_id = s.id
+      FROM reports t
+      JOIN reports s ON ${twin}
+     WHERE t.org_id = ${uuid(loser)}
+       AND t.series_id IS NOT NULL
+       AND c.report_id = t.id`);
+
+  const archived = await run(sql`
+    UPDATE reports t
+       SET archived_at = now(), updated_at = now()
+      FROM reports s
+     WHERE t.org_id = ${uuid(loser)}
+       AND t.series_id IS NOT NULL
+       AND ${twin}`);
+
+  return { archived, removesPromoted, recipientsDeduplicated, recipientsRehomed };
+}
+
 const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
+  const series = await archiveCollidingSeriesChildren(loser, survivor);
   const narrative = await rehomeReportChildrenThenDelete(
     loser,
     survivor,
@@ -1487,6 +1556,11 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
   if (fleetDesign.dropped > 0) {
     notes.push(
       `reports: dropped ${fleetDesign.dropped} duplicate Fleet Design report definition from the merged-away org and re-homed its children onto the survivor's definition (report_runs: ${fleetDesign.reportRunsRehomed}; report_schedule_recipients: ${fleetDesign.recipientsDeduplicated} deduplicated, ${fleetDesign.recipientsRehomed} re-homed)`,
+    );
+  }
+  if (series.archived > 0) {
+    notes.push(
+      `reports: archived ${series.archived} multi-org report child definition(s) of the merged-away org whose series already had an active child in the survivor; their run history stays attached to the archived rows (report_schedule_recipients: ${series.recipientsRehomed} override(s) moved to the survivor's child, ${series.recipientsDeduplicated} duplicate(s) dropped, ${series.removesPromoted} add→remove promotion(s))`,
     );
   }
   return {

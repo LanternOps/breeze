@@ -241,6 +241,14 @@ vi.mock('../../services/agentRollbackResult', () => ({
   ingestRollbackObservation: ingestRollbackObservationMock,
 }));
 
+const { promotePendingAgentCredentialsMock } = vi.hoisted(() => ({
+  promotePendingAgentCredentialsMock: vi.fn(),
+}));
+vi.mock('../../services/agentTokenPromotion', () => ({
+  promotePendingAgentCredentials: promotePendingAgentCredentialsMock,
+  PREVIOUS_TOKEN_GRACE_MS: 5 * 60 * 1000,
+}));
+
 vi.mock('../../middleware/agentAuth', () => ({
   isAgentTokenRotationDue: vi.fn(() => false),
   // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
@@ -6493,6 +6501,168 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.rotateToken).toBe(true);
   });
+
+  // Characterisation of the main beat's credential signals, pinned across the
+  // extraction into heartbeatCredentialMaintenance.ts (the parked beat shares it).
+  function deviceRow(overrides: Record<string, unknown>) {
+    return {
+      id: 'device-1',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      hostname: 'host-1',
+      osType: 'linux',
+      architecture: 'amd64',
+      agentVersion: '0.65.10',
+      agentTokenHash: 'hash',
+      watchdogTokenHash: 'watchdog-hash',
+      tokenIssuedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  it('an ACTIVE tenant past two thirds of its certificate lifetime gets renewCert', async () => {
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow({
+      mtlsCertIssuedAt: new Date(Date.now() - 80 * 3_600_000),
+      mtlsCertExpiresAt: new Date(Date.now() + 10 * 3_600_000),
+    })]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.renewCert).toBe(true);
+    expect(body.rotateToken).toBeUndefined();
+    expect(body.confirmTokenRotation).toBeUndefined();
+  });
+
+  it('a live staged rotation suppresses a new rotateToken on the main beat', async () => {
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow({
+      watchdogTokenHash: null,
+      pendingTokenHash: 'pending-hash',
+      pendingTokenExpiresAt: new Date(Date.now() + 3_600_000),
+    })]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.rotateToken).toBeUndefined();
+    expect(body.confirmTokenRotation).toBeUndefined();
+    expect(body.renewCert).toBeUndefined();
+  });
+});
+
+// #2773 — the heartbeat's IMPLICIT promotion must promote the hash the caller
+// authenticated with (agent.authTokenHash), never the handler's own re-read of
+// `pendingTokenHash`. The pure decision is covered in
+// heartbeatTokenRotation.test.ts; this pins the route wiring.
+describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)', () => {
+  function buildPendingPresentedApp(): Hono {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: 'device-1',
+        agentId: 'agent-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+        siteId: 'site-1',
+        role: 'agent',
+        authTokenHash: 'presented-hash',
+      });
+      c.set('agentPendingTokenPresented', true);
+      await next();
+    });
+    app.route('/agents', heartbeatRoutes);
+    return app;
+  }
+
+  function stubDeviceRow(pendingTokenHash: string) {
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'current-hash',
+          watchdogTokenHash: 'watchdog-hash',
+          helperTokenHash: 'helper-hash',
+          pendingTokenHash,
+          pendingWatchdogTokenHash: 'pending-watchdog-hash',
+          pendingHelperTokenHash: 'pending-helper-hash',
+          pendingTokenExpiresAt: new Date(Date.now() + 30 * 60 * 1000),
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveManifestKeyDelegationsMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    promotePendingAgentCredentialsMock.mockReset();
+    promotePendingAgentCredentialsMock.mockResolvedValue(true);
+  });
+
+  it('promotes the presented hash when it is still the staged hash', async () => {
+    stubDeviceRow('presented-hash');
+
+    const resp = await buildPendingPresentedApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(promotePendingAgentCredentialsMock).toHaveBeenCalledTimes(1);
+    expect(promotePendingAgentCredentialsMock.mock.calls[0]![0]).toMatchObject({
+      deviceId: 'device-1',
+      pendingTokenHash: 'presented-hash',
+      expectedAgentTokenHash: 'current-hash',
+    });
+  });
+
+  it('does not promote a set re-staged after the caller authenticated', async () => {
+    // agentAuth matched the presented token against ITS read of the row; this
+    // handler's re-read shows a different staged hash. Promoting that one would
+    // make current a credential the endpoint never presented.
+    stubDeviceRow('restaged-hash');
+
+    const resp = await buildPendingPresentedApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(promotePendingAgentCredentialsMock).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -6849,5 +7019,311 @@ describe('tccPermissionsMeaningfullyChanged (#4340)', () => {
     expect(tccPermissionsMeaningfullyChanged(null, base)).toBe(true);
     expect(tccPermissionsMeaningfullyChanged(base, undefined)).toBe(true);
     expect(tccPermissionsMeaningfullyChanged(null, undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Pre-assignment — a device parked in its partner's
+// holding org gets a minimal beat: liveness plus credential rotation and
+// lifecycle removal. No configuration, upgrade target, trust material,
+// helper settings or policy, and no ingest.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () => {
+  const PARKED_ALLOWED_KEYS = ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation'];
+  const FORBIDDEN_KEYS = [
+    'configUpdate',
+    'upgradeTo',
+    'helperUpgradeTo',
+    'watchdogUpgradeTo',
+    'backup_server_url',
+    'mergedConfigUpdate',
+    'manifestTrustKeys',
+    'manifestKeyDelegations',
+    'manageRemoteManagement',
+    'remoteAccess',
+    'networkContextReceipt',
+    'helperEnabled',
+    'helperSettings',
+    'uacInterceptionEnabled',
+    'policyProbe',
+    'onedriveHelper',
+    'recoveryMarkerAck',
+    'acknowledgedRollbackObservationId',
+  ];
+
+  // Every ingest branch of the normal path would fire on this body, so "no
+  // ingest" is a real assertion rather than a consequence of an empty payload.
+  const richHeartbeatBody = {
+    agentVersion: '0.70.1',
+    hostname: 'renamed-host',
+    osVersion: 'Ubuntu 24.04',
+    metrics: { cpuPercent: 99, ramPercent: 99, ramUsedMb: 4096, diskPercent: 99, diskUsedGb: 500 },
+    ipHistoryUpdate: { deviceId: 'device-1', currentIPs: ['10.0.0.9'] },
+    onedriveDeviceState: {
+      signedIn: true,
+      filesOnDemandOn: true,
+      kfmFolderStates: {},
+      mountedLibraries: [],
+      entitledLibraries: [],
+      signedInUpns: ['user@example.com'],
+      driftEntries: [],
+    },
+    healthStatus: { schemaVersion: 1, deviceId: 'device-1', overall: 'healthy' },
+  };
+
+  // Credential state that makes BOTH rotation signals due: the certificate is
+  // past two thirds of its lifetime and there is no watchdog credential yet.
+  const parkedDeviceRow = {
+    id: 'device-1',
+    orgId: 'pool-org-1',
+    siteId: 'pool-site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    architecture: 'amd64',
+    agentVersion: '0.70.0',
+    status: 'online',
+    agentTokenHash: 'hash',
+    watchdogTokenHash: null,
+    helperTokenHash: 'helper-hash',
+    pendingTokenHash: null,
+    pendingTokenExpiresAt: null,
+    pendingWatchdogTokenHash: null,
+    pendingHelperTokenHash: null,
+    tokenIssuedAt: new Date(),
+    mtlsCertIssuedAt: new Date(Date.now() - 80 * 3_600_000),
+    mtlsCertExpiresAt: new Date(Date.now() + 10 * 3_600_000),
+  };
+
+  function buildParkedApp(
+    role: 'agent' | 'watchdog' = 'agent',
+    flags: { rotationRequired?: boolean; pendingPresented?: boolean } = {},
+  ): Hono {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agentTokenRotationRequired', flags.rotationRequired === true);
+      c.set('agentPendingTokenPresented', flags.pendingPresented === true);
+      c.set('agent', {
+        deviceId: 'device-1',
+        agentId: 'agent-1',
+        orgId: 'pool-org-1',
+        partnerId: 'partner-1',
+        siteId: 'pool-site-1',
+        role,
+        tenantDraining: false,
+        deviceUninstallDraining: false,
+        isPreAssignment: true,
+        claimTypeAllowlist: ['self_uninstall'] as const,
+        // The token the caller authenticated with: the staged one when it
+        // presented the staged credential.
+        authTokenHash: flags.pendingPresented ? 'pending-hash' : 'current-hash',
+      });
+      await next();
+    });
+    app.route('/agents', heartbeatRoutes);
+    return app;
+  }
+
+  let setSpy: ReturnType<typeof vi.fn>;
+  let whereSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    orgDbContexts.length = 0;
+    getActiveTrustKeysetMock.mockReset();
+    getActiveManifestKeyDelegationsMock.mockReset();
+    // Armed with values the normal path WOULD return, so a fall-through
+    // produces a loudly non-empty body.
+    getActiveTrustKeysetMock.mockResolvedValue([
+      { keyId: 'k-1', publicKeyB64: 'AAA=', validFrom: '2026-01-01T00:00:00.000Z' },
+    ]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([{ keyId: 'k-1' }]);
+    selectMock.mockReturnValue(selectChainResolving([parkedDeviceRow]));
+    whereSpy = vi.fn(() => whereResultWithReturning());
+    setSpy = vi.fn(() => ({ where: whereSpy }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    claimPendingCommandsForDeviceMock.mockResolvedValue([]);
+  });
+
+  async function parkedBeat(role: 'agent' | 'watchdog' = 'agent', body: unknown = richHeartbeatBody) {
+    return buildParkedApp(role).request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(role === 'watchdog' ? { ...(body as object), role: 'watchdog' } : body),
+    });
+  }
+
+  for (const role of ['agent', 'watchdog'] as const) {
+    it(`${role}: response carries only commands and credential rotation fields`, async () => {
+      const resp = await parkedBeat(role);
+
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as Record<string, unknown>;
+      for (const key of Object.keys(body)) {
+        expect(PARKED_ALLOWED_KEYS).toContain(key);
+      }
+      for (const key of FORBIDDEN_KEYS) {
+        expect(body).not.toHaveProperty(key);
+      }
+    });
+
+    it(`${role}: claims only self_uninstall`, async () => {
+      await parkedBeat(role);
+
+      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
+      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, role, ['self_uninstall']);
+    });
+
+    it(`${role}: runs no ingest, config, upgrade, policy or trust resolution`, async () => {
+      await parkedBeat(role);
+
+      expect(insertMock).not.toHaveBeenCalled();
+      const { writeAuditEvent } = await import('../../services/auditEvents');
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+      const { processDeviceIPHistoryUpdate } = await import('../../services/deviceIpHistory');
+      expect(processDeviceIPHistoryUpdate).not.toHaveBeenCalled();
+      const { publishEvent } = await import('../../services/eventBus');
+      expect(publishEvent).not.toHaveBeenCalled();
+      expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+      expect(ingestRollbackObservationMock).not.toHaveBeenCalled();
+      expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+      expect(loadTopologyFlagsMock).not.toHaveBeenCalled();
+      expect(withResolvedTopologyFlagsMock).not.toHaveBeenCalled();
+      expect(getActiveTrustKeysetMock).not.toHaveBeenCalled();
+      expect(getActiveManifestKeyDelegationsMock).not.toHaveBeenCalled();
+
+      const helpers = await import('./helpers');
+      expect(helpers.maybeQueueThresholdFilesystemAnalysis).not.toHaveBeenCalled();
+      expect(helpers.getOrgAgentUpdateConfig).not.toHaveBeenCalled();
+      expect(helpers.resolvePinnedUpgradeTarget).not.toHaveBeenCalled();
+      expect(helpers.buildEventLogConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildMonitoringConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildPamConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildPatchSourceConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildOnedriveHelperConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildPolicyProbeConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildHelperConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.buildWarrantyConfigUpdate).not.toHaveBeenCalled();
+      const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
+      expect(resolveRemoteAccessForDevice).not.toHaveBeenCalled();
+    });
+
+    it(`${role}: reads and writes under an org context without the partner-wide read axis`, async () => {
+      await parkedBeat(role);
+
+      expect(orgDbContexts.length).toBeGreaterThan(0);
+      for (const ctx of orgDbContexts) {
+        expect(ctx).toMatchObject({ scope: 'organization', orgId: 'pool-org-1', accessibleOrgIds: ['pool-org-1'] });
+        expect(ctx.currentPartnerId ?? null).toBeNull();
+      }
+    });
+  }
+
+  it('agent: still delivers certificate renewal and token rotation', async () => {
+    const resp = await parkedBeat('agent');
+
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body).toEqual({ commands: [], renewCert: true, rotateToken: true });
+  });
+
+  it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
+    const resp = await buildParkedApp('agent', { rotationRequired: true }).request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(richHeartbeatBody),
+    });
+
+    expect(await resp.json()).toEqual({ commands: [], renewCert: true });
+  });
+
+  it('agent: a staged-token caller is told to confirm when the implicit promotion does not land', async () => {
+    selectMock.mockReturnValue(selectChainResolving([{
+      ...parkedDeviceRow,
+      pendingTokenHash: 'pending-hash',
+      pendingTokenExpiresAt: new Date(Date.now() + 3_600_000),
+    }]));
+    // The promotion CAS matches no row.
+    promotePendingAgentCredentialsMock.mockResolvedValueOnce(false);
+
+    const resp = await buildParkedApp('agent', { pendingPresented: true }).request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(richHeartbeatBody),
+    });
+
+    expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true });
+    // Promotion was attempted for exactly the staged hash the caller presented.
+    expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'device-1',
+      pendingTokenHash: 'pending-hash',
+      expectedAgentTokenHash: 'hash',
+    }));
+  });
+
+  it('agent: delivers a queued self_uninstall', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
+      { id: 'cmd-uninstall', type: 'self_uninstall', deviceId: 'device-1', payload: {}, executedAt: new Date() },
+    ]);
+
+    const resp = await parkedBeat('agent');
+
+    const body = (await resp.json()) as { commands: Array<{ type: string }> };
+    expect(body.commands.map((cmd) => cmd.type)).toEqual(['self_uninstall']);
+  });
+
+  it('agent: records liveness only — lastSeenAt, online status and agent version, guarded against terminal statuses', async () => {
+    await parkedBeat('agent');
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.keys(written).sort()).toEqual(['agentVersion', 'lastSeenAt', 'status']);
+    expect(written.status).toBe('online');
+    expect(written.agentVersion).toBe('0.70.1');
+    expect(written.lastSeenAt).toBeInstanceOf(Date);
+    expect(whereSpy.mock.calls[0]![0]).toEqual(
+      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+    );
+  });
+
+  it('watchdog: records watchdog liveness only and receives no rotation signal', async () => {
+    const resp = await parkedBeat('watchdog');
+
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body).toEqual({ commands: [] });
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
+    expect(whereSpy.mock.calls[0]![0]).toEqual(
+      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+    );
+  });
+
+  it('refuses a credential role mismatch the same way the full beat does', async () => {
+    const resp = await buildParkedApp('agent').request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...richHeartbeatBody, role: 'watchdog' }),
+    });
+
+    expect(resp.status).toBe(401);
+    expect(await resp.json()).toMatchObject({ code: 're_enrollment_required' });
+    expect(claimPendingCommandsForDeviceMock).not.toHaveBeenCalled();
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('a device in a regular org still gets the full heartbeat (positive control)', async () => {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(Object.keys(body)).toContain('configUpdate');
+    expect(Object.keys(body)).toContain('manifestTrustKeys');
   });
 });

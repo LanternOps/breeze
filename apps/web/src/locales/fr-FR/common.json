@@ -47,6 +47,7 @@
     "timesheets": "Feuilles de temps",
     "productCatalog": "Catalogue de produits",
     "deviceGroups": "Groupes d'appareils",
+    "unassignedDevices": "Appareils non attribués",
     "configPolicies": "Politiques de configuration",
     "integrations": "Intégrations",
     "cloudBackup": "Sauvegarde cloud",
@@ -749,7 +750,8 @@
         "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
         "keyboardShortcuts": "Raccourcis clavier",
         "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
-      }
+      },
+      "numberHint": "{{mod}}1–9 pour ouvrir"
     },
     "notifications": {
       "title": "Notifications",
@@ -815,7 +817,17 @@
       "help": "Ouvrir le panneau d'aide",
       "showThis": "Afficher cette carte",
       "close": "Fermer une boîte de dialogue ou un menu",
-      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ."
+      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ.",
+      "create": "Créer",
+      "createHint": "Appuyez sur c, relâchez, puis sur la touche.",
+      "paletteNumber": "Ouvrir un résultat de recherche par son numéro",
+      "newItems": {
+        "ticket": "Nouveau ticket",
+        "quote": "Nouveau devis",
+        "invoice": "Nouvelle facture",
+        "contract": "Nouveau contrat",
+        "script": "Nouveau script"
+      }
     }
   },
   "migrationBanner": {
@@ -2437,7 +2449,36 @@
         "requesting": "Demande...",
         "requestApproval": "Demande d’approbation",
         "waitingApprovalTitle": "En attente de l’approbation du PAM",
-        "approvalPending": "Approbation en attente"
+        "approvalPending": "Approbation en attente",
+        "proven": {
+          "badge": "Correctif éprouvé",
+          "trackAllClients": "A fonctionné {{verified}} fois sur {{attempts}} chez vos clients",
+          "trackThisClient": "A fonctionné {{verified}} fois sur {{attempts}} chez ce client"
+        },
+        "feedback": {
+          "worked": "A fonctionné",
+          "didNotWork": "N'a pas fonctionné",
+          "recorded": "Retour enregistré",
+          "failed": "Impossible d'enregistrer le retour"
+        },
+        "done": {
+          "button": "Terminé",
+          "recorded": "Marqué comme terminé — surveillance du rétablissement",
+          "failed": "Impossible de marquer comme terminé"
+        },
+        "outcome": {
+          "label": "Résultat : {{state}}",
+          "state": {
+            "pending": "en cours",
+            "awaitingRecovery": "surveillance du rétablissement",
+            "holding": "rétabli — confirmation de la stabilité",
+            "verified": "correction vérifiée",
+            "failed": "n'a pas corrigé le problème",
+            "recurred": "est revenu",
+            "inconclusive": "non concluant",
+            "cancelled": "annulé"
+          }
+        }
       }
     },
     "support": {

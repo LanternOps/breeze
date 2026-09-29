@@ -319,6 +319,7 @@
     "tabs": {
       "compliance": "Compliance",
       "patches": "Patches",
+      "jobs": "Jobs",
       "updateRings": "Updateringe"
     },
     "actions": {
@@ -336,6 +337,7 @@
     "errors": {
       "fetchRings": "Updateringe konnten nicht abgerufen werden",
       "fetchPatches": "Patches konnten nicht abgerufen werden",
+      "fetchJobs": "Patch-Jobs konnten nicht abgerufen werden",
       "partnerLevel": "Patch-Freigaben werden auf Partnerebene verwaltet",
       "approvePatches": "Patches konnten nicht freigegeben werden",
       "approveCountOne": "{{count}} Patch konnte nicht freigegeben werden",
@@ -378,6 +380,68 @@
     },
     "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
     "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen."
+  },
+  "patchJobsList": {
+    "empty": "Noch keine Patch-Jobs. Von Richtlinien, Update-Ringen oder dem KI-Assistenten erstellte Jobs werden hier angezeigt.",
+    "loading": "Patch-Jobs werden geladen...",
+    "columns": {
+      "name": "Job",
+      "status": "Status",
+      "devices": "Geräte",
+      "createdBy": "Erstellt von",
+      "scheduled": "Geplant",
+      "started": "Gestartet",
+      "completed": "Abgeschlossen"
+    },
+    "status": {
+      "scheduled": "Geplant",
+      "running": "Wird ausgeführt",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
+    },
+    "devicesSummary": "{{completed}}/{{total}} abgeschlossen",
+    "devicesSummaryWithFailed": "{{completed}}/{{total}} abgeschlossen, {{failed}} fehlgeschlagen",
+    "createdBySystem": "System",
+    "notScheduled": "—",
+    "actions": {
+      "tryAgain": "Erneut versuchen",
+      "previousPage": "Zurück",
+      "nextPage": "Weiter"
+    },
+    "pagination": "Seite {{page}} von {{totalPages}}",
+    "filters": {
+      "allStatuses": "Alle Status"
+    }
+  },
+  "patchJobDetail": {
+    "title": "Patch-Job",
+    "loading": "Jobdetails werden geladen...",
+    "notFound": "Dieser Patch-Job konnte nicht gefunden werden.",
+    "summary": {
+      "status": "Status",
+      "source": "Quelle",
+      "scheduled": "Geplant",
+      "started": "Gestartet",
+      "completed": "Abgeschlossen",
+      "createdBy": "Erstellt von"
+    },
+    "resultsTitle": "Geräteergebnisse ({{count}})",
+    "resultsEmpty": "Noch keine Ergebnisse pro Gerät.",
+    "columns": {
+      "device": "Gerät",
+      "patch": "Patch",
+      "status": "Status",
+      "started": "Gestartet",
+      "completed": "Abgeschlossen",
+      "reboot": "Neustart"
+    },
+    "rebootRequired": "Erforderlich",
+    "rebootDone": "Abgeschlossen",
+    "rebootNotRequired": "—",
+    "errors": {
+      "load": "Patch-Job konnte nicht geladen werden"
+    }
   },
   "ringSelector": {
     "label": "Updatering:",

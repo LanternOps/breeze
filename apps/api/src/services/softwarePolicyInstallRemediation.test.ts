@@ -198,6 +198,31 @@ describe('createPolicyOwnedInstallDeployment', () => {
     expect(String(input.name)).toContain('Standard workstation build');
   });
 
+  it('defers the push and hands back deliver() for the caller to run after its transaction commits (#7347)', async () => {
+    const deliver = vi.fn(async () => ({ deliveredDeviceIds: ['dev-1'] }));
+    createSoftwareDeploymentMock.mockResolvedValueOnce({
+      deploymentId: 'dep-1',
+      deployment: {},
+      status: 'pending' as const,
+      dispatchedDeviceIds: ['dev-1'],
+      deviceResults: [],
+      deliver,
+    } as any);
+
+    const result = await createPolicyOwnedInstallDeployment({
+      policyId: 'pol-1',
+      policyName: 'P',
+      orgId: 'device-org-1',
+      deviceId: 'dev-1',
+      target: { kind: 'install_method', catalogId: 'cat-1', installMethodId: 'im-1' },
+    });
+
+    expect(createSoftwareDeploymentMock.mock.calls.at(-1)![0]).toMatchObject({ deferDelivery: true });
+    // Not pushed here: the caller's transaction is still open.
+    expect(deliver).not.toHaveBeenCalled();
+    expect(result.deliver).toBe(deliver);
+  });
+
   it('passes a version target as softwareVersionId and never sets installMethodId', async () => {
     await createPolicyOwnedInstallDeployment({
       policyId: 'pol-1',

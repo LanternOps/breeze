@@ -157,6 +157,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('backupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
   consumers('backupSnapshotAttestationWorker'),
+  consumers('backupWriteSessionJanitor'),
   consumers('sensitiveDataWorker'),
   consumers('securityScanWorker'),
   consumers('peripheralJobs', ['peripheralAnomalyWorker', 'peripheralPolicyDistributionWorker']),
@@ -274,6 +275,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // attachWorkerObservability hook in this merge-forward.
   consumers('deviceBulkPurge'),
   consumers('removedDevicePurge'),
+  // Pre-assignment holding area — one Worker each, unconditional, attached
+  // under its registry name.
+  consumers('parkedDeviceExpiry'),
+  consumers('parkedDevicePurge'),
   consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker']),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
@@ -300,6 +305,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // every self-hosted install and on hosted until W05 — so a plain-required row
   // would leave every api/all process permanently not-ready. Same shape and
   // same reason as aiAgentRunner above.
+  // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
+  consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
 ] as const;
 

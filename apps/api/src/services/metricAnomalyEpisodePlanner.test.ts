@@ -36,7 +36,18 @@ function anchor(first: number, last: number, overrides: Partial<AnchorEpisode> =
 
 function plan(rows: UnassignedAnomalyRow[], anchors: AnchorEpisode[] = [], snoozes = new Map<string, Date>()) {
   let n = 0;
-  return planEpisodeAssembly({ rows, anchors, activeSnoozes: snoozes, gapMinutes: 30, newId: () => `new-${++n}` });
+  // minBuckets 1 + no settle bound = the pre-persistence behaviour these cases pin.
+  return planEpisodeAssembly({
+    rows, anchors, activeSnoozes: snoozes, gapMinutes: 30, minBuckets: 1, settledBefore: null, newId: () => `new-${++n}`,
+  });
+}
+
+/** Persistence gate: a new episode needs two distinct buckets (spec amendment 2026-09-26). */
+function planPersist(rows: UnassignedAnomalyRow[], settledBefore: Date | null, anchors: AnchorEpisode[] = []) {
+  let n = 0;
+  return planEpisodeAssembly({
+    rows, anchors, activeSnoozes: new Map(), gapMinutes: 30, minBuckets: 2, settledBefore, newId: () => `new-${++n}`,
+  });
 }
 
 describe('planEpisodeAssembly (spec §5, §6)', () => {
@@ -203,5 +214,64 @@ describe('planEpisodeAssembly (spec §5, §6)', () => {
     expect(memberStatusFor('open')).toBe('open');
     expect(memberStatusFor('snoozed')).toBe('dismissed');
     expect(memberStatusFor('historical')).toBe('cleared');
+  });
+});
+
+describe('persistence gate (minBuckets)', () => {
+  // A single bucket at minute 0 ends at 5; it can still grow until a bucket
+  // starting at 5 + 30 has had its detection pass, i.e. range end >= 40.
+  it('leaves a lone bucket pending while another bucket could still join it', () => {
+    const lone = row(0);
+    const result = planPersist([lone], m(39));
+    expect(result.creates).toEqual([]);
+    expect(result.transients).toEqual([]);
+    expect(result.anchorAttaches).toEqual([]);
+  });
+
+  it('marks a lone bucket transient once no later bucket can join it', () => {
+    const lone = row(0);
+    const result = planPersist([lone], m(40));
+    expect(result.creates).toEqual([]);
+    expect(result.transients).toEqual([lone.id]);
+  });
+
+  it('opens an episode as soon as a second bucket arrives, even before the island settles', () => {
+    const result = planPersist([row(0), row(5)], m(10));
+    expect(result.transients).toEqual([]);
+    expect(result.creates).toHaveLength(1);
+    expect(result.creates[0]).toMatchObject({ disposition: 'open', bucketCount: 2, firstSeenAt: m(0), lastSeenAt: m(10) });
+  });
+
+  it('counts a _sum/_max pair in one bucket as one bucket', () => {
+    const sum = row(0, { sourceTable: 'device_process_samples', anomalyType: 'process_runaway', metricName: 'top_process_cpu_percent_sum' });
+    const max = row(0, { sourceTable: 'device_process_samples', anomalyType: 'process_runaway', metricName: 'top_process_cpu_percent_max' });
+    const result = planPersist([sum, max], m(40));
+    expect(result.creates).toEqual([]);
+    expect([...result.transients].sort()).toEqual([sum.id, max.id].sort());
+  });
+
+  it('an older lone bucket is transient and does not count toward recurrence; the newer burst opens', () => {
+    const blip = row(0);
+    const result = planPersist([blip, row(60), row(65)], m(75));
+    expect(result.transients).toEqual([blip.id]);
+    expect(result.creates).toHaveLength(1);
+    expect(result.creates[0]).toMatchObject({ disposition: 'open', firstSeenAt: m(60), priorInBatch: 0 });
+  });
+
+  it('a pending or transient lone bucket never supersedes the open anchor', () => {
+    const pending = planPersist([row(60)], m(70), [anchor(0, 15)]);
+    expect(pending.supersedes).toEqual([]);
+    const transient = planPersist([row(60)], m(100), [anchor(0, 15)]);
+    expect(transient.supersedes).toEqual([]);
+    expect(transient.creates).toEqual([]);
+  });
+
+  it('a lone bucket inside the gap of the open anchor still attaches to it', () => {
+    const next = row(40);
+    const result = planPersist([next], m(45), [anchor(0, 15)]);
+    expect(result.transients).toEqual([]);
+    expect(result.anchorAttaches).toEqual([
+      { anomalyId: next.id, episodeId: 'ep-1', memberStatus: 'open', attributionDimension: 'cpu' },
+    ]);
   });
 });

@@ -47,6 +47,7 @@
     "timesheets": "Timesheets",
     "productCatalog": "Product Catalog",
     "deviceGroups": "Device Groups",
+    "unassignedDevices": "Unassigned Devices",
     "configPolicies": "Config Policies",
     "integrations": "Integrations",
     "cloudBackup": "Cloud Backup",
@@ -749,7 +750,8 @@
         "alertRulesDescription": "Manage alerting in Configuration Policies",
         "keyboardShortcuts": "Keyboard shortcuts",
         "keyboardShortcutsDescription": "Every key and chord, on one card"
-      }
+      },
+      "numberHint": "{{mod}}1–9 to open"
     },
     "notifications": {
       "title": "Notifications",
@@ -815,7 +817,17 @@
       "help": "Open the help panel",
       "showThis": "Show this card",
       "close": "Close a dialog or menu",
-      "typingNote": "Single-key shortcuts pause while you are typing in a field."
+      "typingNote": "Single-key shortcuts pause while you are typing in a field.",
+      "create": "Create",
+      "createHint": "Press c, release, then the key.",
+      "paletteNumber": "Open a search result by its number",
+      "newItems": {
+        "ticket": "New ticket",
+        "quote": "New quote",
+        "invoice": "New invoice",
+        "contract": "New contract",
+        "script": "New script"
+      }
     }
   },
   "migrationBanner": {
@@ -2437,7 +2449,36 @@
         "requesting": "Requesting...",
         "requestApproval": "Request approval",
         "waitingApprovalTitle": "Waiting for PAM approval",
-        "approvalPending": "Approval pending"
+        "approvalPending": "Approval pending",
+        "proven": {
+          "badge": "Proven fix",
+          "trackAllClients": "Worked {{verified}} of {{attempts}} times across your clients",
+          "trackThisClient": "Worked {{verified}} of {{attempts}} times for this client"
+        },
+        "feedback": {
+          "worked": "Worked",
+          "didNotWork": "Didn't work",
+          "recorded": "Feedback recorded",
+          "failed": "Could not record feedback"
+        },
+        "done": {
+          "button": "Done",
+          "recorded": "Marked done — watching for recovery",
+          "failed": "Could not mark done"
+        },
+        "outcome": {
+          "label": "Outcome: {{state}}",
+          "state": {
+            "pending": "running",
+            "awaitingRecovery": "watching for recovery",
+            "holding": "recovered — confirming it stays fixed",
+            "verified": "verified fixed",
+            "failed": "did not fix it",
+            "recurred": "came back",
+            "inconclusive": "inconclusive",
+            "cancelled": "cancelled"
+          }
+        }
       }
     },
     "support": {

@@ -77,11 +77,11 @@ func TestFakeWinSystem_LoadHiveReturnsPreseededOrFreshFake(t *testing.T) {
 func TestFakeWinSystem_RunRecordsAndFailPrefixWorks(t *testing.T) {
 	dir := t.TempDir()
 	f := newFakeWinSystem(dir)
-	f.fail["dism.exe /Image"] = context.DeadlineExceeded
-	if _, err := f.Run(context.Background(), "dism.exe", "/Image:x", "/Add-Driver"); err == nil {
+	f.fail["tool.exe /x"] = context.DeadlineExceeded
+	if _, err := f.Run(context.Background(), "tool.exe", "/x", "/y"); err == nil {
 		t.Fatal("expected the configured failure")
 	}
-	if !f.has("dism.exe /Image") {
+	if !f.has("tool.exe /x") {
 		t.Fatalf("command not recorded: %v", f.cmds)
 	}
 }
@@ -140,6 +140,10 @@ type fakeWinSystem struct {
 	mountLog []string // "guidPath dir"
 	unmounts []string
 	letters  map[string]string // guidPath -> assigned letter
+	// letterOverride, when a letter (no colon) is a key, makes
+	// VolumeForLetter answer its value instead of the letters reverse
+	// lookup — fix round 1 MINOR 1's "letter now points elsewhere" fixture.
+	letterOverride map[string]string
 
 	hives        map[string]*winhive.Fake // hive file base name -> pre-seeded fake
 	hiveCloseErr error                    // when set, every LoadHive handle's Close returns it (a failed RegUnLoadKeyW)
@@ -457,6 +461,16 @@ func (f *fakeWinSystem) UnmountVolume(dir string) error {
 	f.mu.Lock()
 	f.unmounts = append(f.unmounts, dir)
 	f.cmds = append(f.cmds, "UnmountVolume "+dir)
+	// A bare "L:" is a drive-letter release (18b row 1's leaked-letter
+	// reclaim), not a folder-mount unmount — drop the letters entry so a
+	// repeated reclaim (or AssignLetter reusing it) sees it as free.
+	if len(dir) == 2 && dir[1] == ':' {
+		for guidPath, letter := range f.letters {
+			if strings.EqualFold(letter+":", dir) {
+				delete(f.letters, guidPath)
+			}
+		}
+	}
 	f.mu.Unlock()
 	return nil
 }
@@ -472,6 +486,29 @@ func (f *fakeWinSystem) AssignLetter(volumeGUIDPath string) (string, func() erro
 	}
 	return "Z", release, nil
 }
+
+// VolumeForLetter answers from f.letters (reverse lookup) unless a test
+// preseeds letterOverride for driveLetter — the fix-round-1 MINOR 1 fixture
+// for "the letter now points elsewhere" (a race the real seam could see
+// between WaitForVolumes and the reclaim call, that this fake cannot
+// otherwise reproduce since its own letters map is authoritative).
+func (f *fakeWinSystem) VolumeForLetter(driveLetter string) (string, error) {
+	letter := strings.TrimSuffix(driveLetter, ":")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.letterOverride != nil {
+		if v, ok := f.letterOverride[letter]; ok {
+			return v, nil
+		}
+	}
+	for guidPath, l := range f.letters {
+		if l == letter {
+			return guidPath, nil
+		}
+	}
+	return "", fmt.Errorf("fakeWinSystem: no volume currently mounted at %s", driveLetter)
+}
+
 func (f *fakeWinSystem) FlushVolume(volumeGUIDPath string) error {
 	_, err := f.record("FlushVolume", volumeGUIDPath)
 	return err

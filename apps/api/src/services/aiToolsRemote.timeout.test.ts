@@ -15,6 +15,12 @@ vi.mock('../db', () => ({
   db: { select: vi.fn() },
 }));
 
+// These devices do not require consent; the consent gate itself is covered by
+// aiToolsRemote.consent.test.ts.
+vi.mock('../routes/remote/screenAccessConsentGate', () => ({
+  checkScreenAccessConsentGate: vi.fn(async () => ({ ok: true })),
+}));
+
 vi.mock('./aiDispatch', () => ({
   aiExecuteCommand: vi.fn(async () => ({
     status: 'completed',

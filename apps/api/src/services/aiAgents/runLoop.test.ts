@@ -253,9 +253,19 @@ const createBreezeMcpServer = vi.hoisted(() =>
     extraTools?: unknown[],
     options?: { onlyTools?: ReadonlySet<string> },
   ) => unknown>());
+// #7427: the names the REAL SDK server declares. Default (set in the
+// top-level beforeEach) is the whole `aiTools` registry, i.e. "every exposure
+// name is declared"; a test narrows it to model the real
+// KNOWN_MISSING_TOOL_TIERS gap (registry tools with no `tool()` declaration).
+const listChatSurfaceToolNames = vi.hoisted(() => vi.fn<() => string[]>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
+  listChatSurfaceToolNames,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
+  // Mirrors BREEZE_MCP_TOOL_NAMES above (one tool, bare name) — runLoop.ts's
+  // full-profile exposure (WQ3, #6755) derives from Object.keys(TOOL_TIERS)
+  // now, not from BREEZE_MCP_TOOL_NAMES directly, so both mocks must agree.
+  TOOL_TIERS: { query_devices: 1 },
   // The REAL value (aiAgentSdkTools.ts) — kept in sync here so the timeout-
   // budget invariant test below asserts against the actual cap, not a
   // hardcoded guess. See that test for why.
@@ -367,6 +377,7 @@ import {
 import type { AgentRunOutcome } from './runLoop';
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
 import { BREEZE_MCP_TOOL_NAMES, POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
+import { aiTools } from '../aiToolNames';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -605,6 +616,7 @@ function expireScopeRecheckTtlBeforeFirstToolCall(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  listChatSurfaceToolNames.mockImplementation(() => [...aiTools.keys()]);
   scopeRecheckNow = 0;
   __setResourceScopeRecheckClockForTests(() => scopeRecheckNow);
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
@@ -2837,6 +2849,42 @@ describe('verdict profile in the run loop (P2-1)', () => {
       expect.arrayContaining(expectedExposure.map((name) => `mcp__breeze__${name}`)),
     );
     expect(lastQueryOptions?.allowedTools).toHaveLength(expectedExposure.length);
+  });
+
+  // #7427: `fullRunToolExposure` walks the `aiTools` registry, which carries
+  // tools the SDK server never declares (KNOWN_MISSING_TOOL_TIERS —
+  // manage_tags, manage_tickets, …). Passing one as `onlyTools` makes
+  // `createBreezeMcpServer` throw outside production and log an error on
+  // every full run in production. Exposure — `onlyTools` AND `allowedTools` —
+  // must be the floor intersected with what the server actually declares.
+  it('a full-profile run never passes an undeclared tool name as onlyTools or allowedTools', async () => {
+    const floor = fullRunToolExposure(['manage_services']);
+    // Two genuinely exposed names the "server" does not declare.
+    const undeclared = ['query_devices', 'manage_services'];
+    expect(floor).toEqual(expect.arrayContaining(undeclared));
+    const declared = [...aiTools.keys()].filter((name) => !undeclared.includes(name));
+    listChatSurfaceToolNames.mockImplementation(() => declared);
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) }); // profile defaults to 'full'
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    const onlyTools = (createBreezeMcpServer.mock.calls[0]?.[5] as { onlyTools?: ReadonlySet<string> } | undefined)
+      ?.onlyTools;
+    expect(onlyTools).toBeDefined();
+    const declaredSet = new Set(declared);
+    expect([...onlyTools!].filter((name) => !declaredSet.has(name))).toEqual([]);
+    // Nothing else is lost: every declared floor name is still registered…
+    const expected = floor.filter((name) => declaredSet.has(name));
+    expect(onlyTools).toEqual(new Set(expected));
+    // …and `allowedTools` agrees with `onlyTools` (one source of truth).
+    expect(lastQueryOptions?.allowedTools).toEqual(
+      expect.arrayContaining(expected.map((name) => `mcp__breeze__${name}`)),
+    );
+    expect(lastQueryOptions?.allowedTools).toHaveLength(expected.length);
+    for (const name of undeclared) {
+      expect(lastQueryOptions?.allowedTools).not.toContain(`mcp__breeze__${name}`);
+    }
   });
 
   // Review fix (fix round 1, IMPORTANT 3): a verdict run that submitted its

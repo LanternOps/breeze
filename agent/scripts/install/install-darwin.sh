@@ -130,10 +130,10 @@ fi
 # Install backup helper. The agent spawns breeze-backup from its own directory
 # (os.Executable dir), and neither the updater nor the heartbeat delivers it, so
 # it MUST be on disk next to breeze-agent or every backup fails with
-# "backup binary not found". The production .pkg (installer/macos/build-pkg.sh)
-# still installs to /usr/local/bin (its own migration is tracked separately);
-# this dev/manual install path targets TRUSTED_BIN_DIR to match where
-# breeze-agent itself now lives.
+# "backup binary not found". The production .pkg keeps a safe, existing
+# /usr/local/bin install where it is (installer/macos/install-location.sh,
+# #7211); this dev/manual install path always targets TRUSTED_BIN_DIR, and a
+# later .pkg install keeps an install it finds there.
 if [ -f "bin/breeze-backup" ]; then
     echo "Installing backup helper..."
     cp bin/breeze-backup "$TRUSTED_BIN_DIR/breeze-backup"

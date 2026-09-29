@@ -54,12 +54,24 @@ export type WorkerPlacement = 'global' | 'socket-owner';
 export interface WorkerModule {
   init: () => Promise<void> | void;
   shutdown?: () => Promise<void>;
+  /**
+   * Redis-less degraded mode (#7105). Called INSTEAD of `init` when the
+   * process booted without Redis and skipped every BullMQ worker. Required
+   * when the registration sets `runsWithoutRedis`.
+   */
+  startWithoutRedis?: () => Promise<void> | void;
 }
 
 export interface WorkerRegistration {
   name: string;
   placement: WorkerPlacement;
   load: () => Promise<WorkerModule>;
+  /**
+   * #7105: this entry does work that must not stop just because Redis was
+   * down at boot, and its module exports `startWithoutRedis`. Only these
+   * entries are loaded by `startRedisIndependentWorkers`.
+   */
+  runsWithoutRedis?: true;
 }
 
 export interface StartWorkersHooks {
@@ -724,6 +736,29 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Pre-assignment holding area: hourly expiry of devices parked past the
+    // window. socket-owner: it disconnects the expired agent's socket
+    // (routes/agentWs.ts), so it must run where the sockets live.
+    name: 'parkedDeviceExpiry',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/parkedDeviceExpiry');
+      return { init: m.initializeParkedDeviceExpiry, shutdown: m.shutdownParkedDeviceExpiry };
+    },
+  },
+  {
+    // Pre-assignment holding area: daily hard purge of expired parked
+    // devices. socket-owner for the same reason as removedDevicePurge above:
+    // services/deviceLifecycle -> services/deviceDeletion reaches
+    // routes/agentWs.ts.
+    name: 'parkedDevicePurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/parkedDevicePurge');
+      return { init: m.initializeParkedDevicePurge, shutdown: m.shutdownParkedDevicePurge };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
@@ -984,6 +1019,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Brokered backup writes: durable multipart aborts, sealing completion
+    // and abandonment of snapshot id reservations (every 5 minutes).
+    name: 'backupWriteSessionJanitor',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupWriteSessionJanitor');
+      return { init: m.initializeBackupWriteSessionJanitor, shutdown: m.shutdownBackupWriteSessionJanitor };
+    },
+  },
+  {
     name: 'sensitiveDataWorker',
     placement: 'socket-owner',
     load: async () => {
@@ -1106,9 +1151,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     name: 'staleCommandReaper',
     placement: 'socket-owner',
+    // #7105: the reaper needs only Postgres, and without it silent commands
+    // and backup jobs never terminalise — keep it running when Redis is down.
+    runsWithoutRedis: true,
     load: async () => {
       const m = await import('../jobs/staleCommandReaper');
-      return { init: m.initializeStaleCommandReaper, shutdown: m.shutdownStaleCommandReaper };
+      return {
+        init: m.initializeStaleCommandReaper,
+        shutdown: m.shutdownStaleCommandReaper,
+        startWithoutRedis: m.startStaleCommandReaperWithoutRedis,
+      };
     },
   },
   {
@@ -1598,6 +1650,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeSendingDomainsWorker, shutdown: m.shutdownSendingDomainsWorker };
     },
   },
+  {
+    // AI Suggested Fixes W1 — 5-minute fix-outcome sweeper. `global`: its
+    // closure is db + fixMemory services + outcomeProbes, never routes or
+    // socket-local dispatch (workerEntrypointClosure.contract.test.ts).
+    name: 'fixOutcomeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/fixOutcomeWorker');
+      return { init: m.initializeFixOutcomeWorker, shutdown: m.shutdownFixOutcomeWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {
@@ -1673,6 +1736,45 @@ export async function startRegisteredWorkers(
   await runEntries(selectWorkers(role), hooks);
 }
 
+async function runRedisIndependentEntries(
+  entries: readonly WorkerRegistration[],
+  hooks: StartWorkersHooks,
+): Promise<void> {
+  await Promise.allSettled(
+    entries
+      .filter((entry) => entry.runsWithoutRedis)
+      .map(async (entry) => {
+        try {
+          const mod = await entry.load();
+          // Registered before the start call, for the same reason as runEntries.
+          if (mod.shutdown) {
+            loadedShutdowns.set(entry.name, mod.shutdown);
+          }
+          if (!mod.startWithoutRedis) {
+            throw new Error(`${entry.name} is flagged runsWithoutRedis but exports no startWithoutRedis`);
+          }
+          await mod.startWithoutRedis();
+          hooks.onResult(entry.name, true);
+        } catch (error) {
+          hooks.onResult(entry.name, false, error);
+        }
+      }),
+  );
+}
+
+/**
+ * #7105 — the Redis-down-at-boot path. `index.ts` skips `startRegisteredWorkers`
+ * entirely when Redis is unavailable; this starts the `runsWithoutRedis`
+ * subset (selected for `role`) through their `startWithoutRedis` fallbacks
+ * instead, and registers their shutdowns so SIGTERM still stops them.
+ */
+export async function startRedisIndependentWorkers(
+  role: BreezeRole,
+  hooks: StartWorkersHooks,
+): Promise<void> {
+  await runRedisIndependentEntries(selectWorkers(role), hooks);
+}
+
 /**
  * Returns the shutdown functions for every entry selected for `role` whose
  * module was actually loaded (by a prior `startRegisteredWorkers` call —
@@ -1708,6 +1810,15 @@ export async function _startWorkersForTest(
   hooks: StartWorkersHooks,
 ): Promise<void> {
   await runEntries(filterByRole(entries, role), hooks);
+}
+
+/** @internal test seam */
+export async function _startRedisIndependentWorkersForTest(
+  entries: readonly WorkerRegistration[],
+  role: BreezeRole,
+  hooks: StartWorkersHooks,
+): Promise<void> {
+  await runRedisIndependentEntries(filterByRole(entries, role), hooks);
 }
 
 /** @internal test seam */

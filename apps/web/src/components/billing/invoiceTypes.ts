@@ -249,6 +249,8 @@ export interface InvoicePayment {
   accountingSync?: {
     status: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
     lastError: string | null;
+    /** The provider this payment was pushed to (its mapping's own connection). Absent on older API responses. */
+    provider?: AccountingProviderId;
   } | null;
 }
 

@@ -278,7 +278,7 @@ func ApplyManifestKeyDelegation(cfgPath string, d ManifestKeyDelegation, now tim
 	cfg.PinnedManifestPubKeys = serializePinnedManifestKeys(pinned)
 	cfg.ManifestDelegationEpoch = d.Epoch
 
-	return saveToLocked(cfg, cfgPath)
+	return saveToLocked(cfg, cfgPath, credentialsFromDisk)
 }
 
 // serializePinnedManifestKeys renders the trust set as sorted

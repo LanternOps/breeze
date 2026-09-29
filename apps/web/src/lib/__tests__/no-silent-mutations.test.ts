@@ -52,6 +52,10 @@ const TARGET_GLOBS = [
   // Network device "Check now" (#5988 W05): the probe reads liveness outside
   // W04's settings writer and must surface every mutation outcome.
   'src/components/devices/networkDevice/useAssetProbe.ts',
+  // Parked-device assignment: single and bulk assign mutations go through
+  // runAction from birth.
+  'src/components/devices/AssignParkedDeviceDialog.tsx',
+  'src/components/devices/UnassignedDevicesPage.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
@@ -129,6 +133,10 @@ const TARGET_GLOBS = [
   // Metric anomaly episodes W04: card actions (dismiss/resolve/promote/unsnooze)
   // are the only mutation surface for the rewritten panel.
   'src/components/devices/AnomalyEpisodeCard.tsx',
+  // AI Suggested Fixes W1: Generate/accept/dismiss/execute plus the 👍/👎 vote
+  // and Done feed the fix-memory outcome record — a silent failure here loses
+  // the evidence a proven fix is built from.
+  'src/components/remediation/RemediationSuggestionsPanel.tsx',
   // Fleet Designer W02 (#5652): the Function field's PUT is its own file.
   'src/components/devices/DeviceFunctionField.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
@@ -323,6 +331,11 @@ const TARGET_GLOBS = [
   // that 403s on the all-organizations access gate must never look identical
   // to one that succeeded.
   'src/components/reports/ReportTemplates.tsx',
+  // Multi-org report series (W03): the one client for every series mutation
+  // (create/edit/targets/transfer/delete/detach, per-org run, recipient
+  // overrides). A silent failure here reads as "this org was excluded" or
+  // "this customer will receive it" when neither is true.
+  'src/components/reports/series/seriesApi.ts',
   // Accounting connection panel (formerly the QuickBooks-only panel, Phase D): connect/disconnect/push-mode/settings
   // -refresh already routed through runAction, but the file was never guarded —
   // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
@@ -333,6 +346,15 @@ const TARGET_GLOBS = [
   // from provider customers. It already used runAction but was never listed
   // (Xero W01 Task 18), so a regression to a bare fetch would have gone unseen.
   'src/components/integrations/AccountingCustomerImport.tsx',
+  // Xero organisation (tenant) picker: select/cancel both mutate the pending
+  // tenant-selection row. A silent failure here would leave the partner
+  // believing an organisation was connected (or the pending grant cancelled)
+  // when the API never confirmed either.
+  'src/components/integrations/AccountingTenantPicker.tsx',
+  // Xero settings step: the four default-account/tax/bank picker PATCH is a
+  // one-page Save — a silent failure here would leave the operator believing
+  // new defaults are live when the server never saved them.
+  'src/components/integrations/AccountingSettingsStep.tsx',
   // Partner trust action links approve or suspend an entire partner. Keep the
   // TOTP-confirmed mutation inside runAction so this high-impact result cannot
   // fail without operator feedback.
@@ -835,7 +857,13 @@ describe('no silent mutations in targeted set', () => {
     // unlisted AccountingCustomerImport.tsx: 193 → 194.
     // 194 -> 195: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
     // 195 -> 197: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
-    expect(absoluteFiles.length).toBe(197);
+    // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 197 → 198.
+    // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 198 → 199.
+    // AI Suggested Fixes W1 adds remediation/RemediationSuggestionsPanel.tsx: 199 → 200.
+    // 200 -> 202: devices/AssignParkedDeviceDialog.tsx and
+    // devices/UnassignedDevicesPage.tsx (parked-device assignment).
+    // Multi-org report series W03 adds reports/series/seriesApi.ts: 202 → 203.
+    expect(absoluteFiles.length).toBe(203);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

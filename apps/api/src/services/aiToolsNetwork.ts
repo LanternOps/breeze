@@ -60,6 +60,7 @@ import {
   type BaselineAuthorityEnvelope,
 } from './networkBaselineAuthority';
 import { aiExecuteCommand } from './aiDispatch';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -88,7 +89,7 @@ async function verifyDeviceAccess(
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
     return { error: 'Device not found or access denied' };
   }
-  const conditions: SQL[] = [eq(devices.id, deviceId)];
+  const conditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
@@ -291,7 +292,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           },
           acknowledged: { type: 'boolean', description: 'Filter by acknowledgment status' },
           since: { type: 'string', description: 'Only include changes detected after this ISO timestamp' },
-          limit: { type: 'number', description: 'Max results (default 100, max 500)' }
+          limit: { type: 'number', description: 'Max results (default 50, max 200)' }
         }
       }
     },

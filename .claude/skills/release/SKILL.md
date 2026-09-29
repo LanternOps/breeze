@@ -184,7 +184,13 @@ Breeze RMM **vX.Y.Z** — one-line theme of the release.
 
 Self-hosters run their own droplets and read this section to decide whether an upgrade is safe and what they must touch. Always answer these four questions explicitly, even when the answer is "nothing required" — silence reads as "I don't know":
 
-1. **Upgrade command.** The standard line is: bump `BREEZE_VERSION`, then `docker compose pull api web portal && docker compose up -d` (and `pnpm install` if they build from source). Include `portal` — it is a separate container and was silently left behind for 11 days (stuck on 0.94.0 while api/web ran 0.98.1) back when the line pulled only `api web`.
+1. **Upgrade command.** Give both paths, because the right one depends on how the install pins its images (`grep '^BREEZE_API_IMAGE_REF=' .env`):
+   - **Digest-pinned** (value ends in `@sha256:…` — every `guided-setup.sh` install for v0.112.0+): `bash guided-setup.sh --upgrade 0.X.Y` (fetch the current script from `main` first). It verifies the signed image inventory and rewrites `BREEZE_VERSION` and all four `BREEZE_*_IMAGE_REF` digests together, then pulls and restarts.
+   - **Tag-form** (value ends in `:${BREEZE_VERSION}`): bump `BREEZE_VERSION`, then `docker compose pull api web portal && docker compose up -d` (and `pnpm install` if they build from source).
+
+   Link the [Upgrade Guide](https://docs.breezermm.com/deploy/upgrades/#docker-compose-upgrade). **Never write "set `BREEZE_VERSION`, then pull" as the only upgrade line.** On a digest-pinned install that re-pulls the images already running, so nothing upgrades. Until v0.118.2, `/health` also reported the edited version because Compose copied `BREEZE_VERSION` into `APP_VERSION` (#7024), so operators believed they had upgraded. Only the web footer showed the real version. Every release note from v0.112.0 to v0.118.2 gave that line, and self-hosters were stranded on 0.115→0.116 and 0.117→0.118.2. Keep `portal` in the tag-form pull list: it is a separate container and was left behind for 11 days (stuck on 0.94.0 while api/web ran 0.98.1) when the line pulled only `api web`.
+
+   **First release after #7351 only:** add a bullet telling operators to delete the `APP_VERSION:` line from their own `docker-compose.yml`. Until they do, `/health` keeps reporting `BREEZE_VERSION` instead of the running image, and the new version-mismatch warning cannot fire. Add another telling anyone who only edited `BREEZE_VERSION` on an earlier upgrade to run `guided-setup.sh --upgrade` for the current version, which re-pins the digests. Then delete this paragraph.
 2. **Database / migrations.** State the count and that they're idempotent and auto-apply on boot via `autoMigrate` (unless `AUTO_MIGRATE=false`). **Explicitly flag any large-table rewrite or backfill** — that's the difference between a 2-second upgrade and a stalled boot. If nothing: "**Database — nothing required.**"
 3. **New required environment variables.** Anything the config validator now refuses to boot without (e.g. past examples: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, `IS_HOSTED`). A new required env var must *also* be mapped in the `api`/`web` `environment:` block of their compose, not just `.env` — say so. If none: "**No new required environment variables.**"
 4. **Behavior changes & feature flags.** Anything whose default changed (call out grandfathering of existing orgs), and any feature gated behind a flag (e.g. `PUBLIC_ENABLE_EDR_INTEGRATIONS`) — name the flag and its default.
@@ -231,7 +237,7 @@ Template:
 • <feature 3>
 • <security note, if any>
 
-**Self-hosting:** <one line — "standard upgrade, N idempotent migrations, no new env vars" OR the specific action needed>
+**Self-hosting:** <one line — "`guided-setup.sh --upgrade X.Y.Z` (or bump `BREEZE_VERSION` + pull on tag-form installs), N idempotent migrations, no new env vars" OR the specific action needed>
 <⚠️ one line if there's a breaking/behavior-default change>
 
 📝 Full notes: https://github.com/LanternOps/breeze/releases/tag/vX.Y.Z

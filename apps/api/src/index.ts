@@ -89,6 +89,7 @@ import { installerRoutes } from './routes/installer';
 import { supportPublicRoutes } from './routes/supportPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
+import { preAssignmentRoutes } from './routes/preAssignment';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
 import { webhookRoutes } from './routes/webhooks';
@@ -233,6 +234,7 @@ import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redi
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuardWithExemptions } from './middleware/partnerGuard';
 import { buildHealthPayload } from './services/versionInfo';
+import { warnOnVersionMismatch } from './services/versionMismatch';
 import {
   setWorkerReadinessTransitionHandler,
   workerReadinessRegistry,
@@ -255,7 +257,11 @@ import {
 // event-dispatch/relay consumers, which have their own role gating distinct
 // from the registry's placement filter.
 import { getWebhookWorker } from './workers/webhookDelivery';
-import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/workerRegistry';
+import {
+  startRegisteredWorkers,
+  startRedisIndependentWorkers,
+  buildWorkerShutdownTasks,
+} from './services/workerRegistry';
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
@@ -940,6 +946,9 @@ api.route('/sso', ssoRoutes);
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
 // per Task 11's consumed contract (#2183).
 api.route('/partners', partnerLoginBrandingRoutes);
+// Parked-device holding area: full partner admins list and assign devices
+// waiting in their partner's holding org.
+api.route('/pre-assignment', preAssignmentRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);
 api.route('/webhooks', webhookRoutes);
@@ -1248,6 +1257,16 @@ async function initializeWorkers(): Promise<void> {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
+    // #7105: the few entries that need only Postgres (the stale command
+    // reaper) keep running on their Redis-less fallback. Readiness is
+    // unchanged — this process still consumes no queues.
+    await startRedisIndependentWorkers(breezeRole(), {
+      onResult: (name, ok, error) => {
+        if (ok) return;
+        console.error(`[CRITICAL] Failed to start ${name} without Redis:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      },
+    });
     return;
   }
 
@@ -1612,6 +1631,8 @@ async function bootstrap(): Promise<void> {
   }
 
   console.log(`Breeze API starting on port ${port}...`);
+  // #7024: BREEZE_VERSION edited without new image digests — say so at boot.
+  warnOnVersionMismatch();
 
   // Initialize error reporting first so failures during the rest of startup
   // (migrations, seeds, self-tests) and the global onError/unhandledRejection

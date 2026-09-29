@@ -108,6 +108,16 @@ type TightLoopHint interface {
 	TightLoop() bool
 }
 
+// LatestFrameProvider is implemented by capturers whose Capture() reports an
+// unchanged screen as (nil, nil) and so cannot serve a one-shot consumer that
+// shares the capturer with the streaming loop (the loop may already have taken
+// the frame). CaptureLatest always returns the current frame, changed or not,
+// and does not affect what the next Capture() returns. The macOS SCStream
+// capturer implements it (#5928).
+type LatestFrameProvider interface {
+	CaptureLatest() (*image.RGBA, error)
+}
+
 // FrameChangeHint is implemented by capturers that can report whether new
 // frames are available without a full pixel-level comparison (e.g. DXGI
 // AccumulatedFrames). When Capture() returns nil,nil the caller should skip

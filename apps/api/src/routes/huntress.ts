@@ -32,6 +32,7 @@ import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntres
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { UUID_REGEX } from '../utils/uuid';
 
+import { isUnassignedPoolOrgType, PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
     console.error('[huntress] withSystemDbAccessContext is not available — webhook DB queries may fail');
@@ -644,12 +645,17 @@ huntressRoutes.post(
       }
 
       const [targetOrg] = await db
-        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .select({ id: organizations.id, partnerId: organizations.partnerId, type: organizations.type })
         .from(organizations)
         .where(eq(organizations.id, body.orgId))
         .limit(1);
       if (!targetOrg || targetOrg.partnerId !== integration.partnerId) {
         return c.json({ error: 'Target organization does not belong to this partner' }, 403);
+      }
+      // canAccessOrg is true for system scope; the holding org is never a
+      // mapping target.
+      if (isUnassignedPoolOrgType(targetOrg.type)) {
+        return c.json(PROTECTED_ORG_ERROR, 409);
       }
     }
 

@@ -20,6 +20,7 @@ import {
 } from '../services/softwarePolicyInstallRemediation';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -294,7 +295,11 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // would let an old-tenant authorization act on a just-moved device. The lock
   // makes the ownership check and the uninstall atomic w.r.t. device retenanting.
   const [deviceRow] = await db
-    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
+    .select({
+      orgId: devices.orgId,
+      isEphemeral: devices.isEphemeral,
+      parked: sql<boolean>`NOT (${notParkedDeviceCondition()})`,
+    })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
     .limit(1)
@@ -305,7 +310,8 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // borrowed for one ~20-minute session. The compliance evaluator already keeps
   // them out of the remediation queue, but this worker installs and uninstalls
   // software, so a stale or hand-enqueued job must not slip through either.
-  if (deviceRow?.isEphemeral) {
+  // Same for a device parked in its partner's holding org.
+  if (deviceRow?.isEphemeral || deviceRow?.parked === true) {
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,
@@ -718,17 +724,38 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
  * transition are the compliance worker's (W02), and double-incrementing it
  * would halve the effective attempt budget.
  *
+ * #7347 — owns its system transaction. The deployments, their result rows and
+ * their `device_commands` rows commit together, and only then are the live
+ * agents' commands pushed (each deployment's deferred `deliver()`, which never
+ * rejects). A push made inside the transaction let a fast agent answer a row
+ * it could not see yet, and its result was dropped as an orphan. A transaction
+ * that throws — including a failed commit — propagates before anything is
+ * pushed, so a BullMQ retry re-runs the whole admission and pushes nothing
+ * twice. Call it with NO ambient context (the processor does): nested inside
+ * another transaction it would join that one and push before it commits.
+ *
  * Exported for tests and for the BullMQ processor switch.
  */
 export async function processRemediateDeviceInstall(
   data: InstallRemediateDeviceJobData
-): Promise<{
+): Promise<InstallRemediationResult> {
+  const { afterCommit, ...result } = await runWithSystemDbAccess(() => admitRemediateDeviceInstall(data));
+  if (afterCommit) await afterCommit();
+  return result;
+}
+
+type InstallRemediationResult = {
   policyId: string;
   deviceId: string;
   deploymentsCreated: number;
   skipped: number;
   errors: number;
-}> {
+};
+
+/** The admission half of processRemediateDeviceInstall; runs inside its transaction. */
+async function admitRemediateDeviceInstall(
+  data: InstallRemediateDeviceJobData
+): Promise<InstallRemediationResult & { afterCommit?: () => Promise<void> }> {
   const nothing = {
     policyId: data.policyId,
     deviceId: data.deviceId,
@@ -799,7 +826,12 @@ export async function processRemediateDeviceInstall(
   // worker's system transaction so a concurrent org move cannot land between
   // reading the device's org and creating a deployment under it (#3553).
   const [deviceRow] = await db
-    .select({ orgId: devices.orgId, osType: devices.osType, isEphemeral: devices.isEphemeral })
+    .select({
+      orgId: devices.orgId,
+      osType: devices.osType,
+      isEphemeral: devices.isEphemeral,
+      parked: sql<boolean>`NOT (${notParkedDeviceCondition()})`,
+    })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
     .limit(1)
@@ -808,7 +840,7 @@ export async function processRemediateDeviceInstall(
   // Quick Support exclusion: an ephemeral device is a stranger's personal
   // machine borrowed for one ~20-minute session. Installing software on it
   // would be strictly worse than the uninstall this same guard already blocks.
-  if (!deviceRow || deviceRow.isEphemeral) {
+  if (!deviceRow || deviceRow.isEphemeral || deviceRow.parked === true) {
     // This guard is defence-in-depth — the compliance evaluator already
     // excludes ephemeral devices — which makes a hit here a signal that the
     // upstream filter regressed. Silent absorption would hide that forever.
@@ -1022,6 +1054,8 @@ export async function processRemediateDeviceInstall(
 
     const errors: Array<{ rule: string; message: string }> = [];
     const deploymentIds: string[] = [];
+    // #7347 — pushed only after this transaction commits (see the wrapper).
+    const pendingDeliveries: Array<() => Promise<unknown>> = [];
     for (const entry of targets) {
       try {
         const created = await createPolicyOwnedInstallDeployment({
@@ -1033,6 +1067,7 @@ export async function processRemediateDeviceInstall(
           target: entry.target,
         });
         deploymentIds.push(created.deploymentId);
+        if (created.deliver) pendingDeliveries.push(created.deliver);
         recordSoftwareRemediationDecision('command_queued');
       } catch (error) {
         errors.push({
@@ -1091,6 +1126,13 @@ export async function processRemediateDeviceInstall(
       deploymentsCreated: deploymentIds.length,
       skipped: skips.length,
       errors: errors.length,
+      ...(pendingDeliveries.length > 0
+        ? {
+          afterCommit: async () => {
+            for (const deliver of pendingDeliveries) await deliver();
+          },
+        }
+        : {}),
     };
   } catch (error) {
     console.error(
@@ -1115,17 +1157,20 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
   return new Worker<SoftwareRemediationJobData>(
     SOFTWARE_REMEDIATION_QUEUE,
     async (job: Job<SoftwareRemediationJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        // #5505 W03: the two verbs are separate processors, replacing W02's
-        // parking branch. Discriminating on job.data.type keeps the uninstall
-        // path (and its #3553 manual-authorization machinery) byte-identical:
-        // processRemediateDevice is uninstall-specific end to end and would
-        // misread an install payload.
-        if (job.data.type === 'install-remediate-device') {
-          return processRemediateDeviceInstall(job.data);
-        }
-        return processRemediateDevice(job.data);
-      });
+      // #5505 W03: the two verbs are separate processors, replacing W02's
+      // parking branch. Discriminating on job.data.type keeps the uninstall
+      // path (and its #3553 manual-authorization machinery) byte-identical:
+      // processRemediateDevice is uninstall-specific end to end and would
+      // misread an install payload.
+      //
+      // #7347 — the install processor owns its transaction and pushes after it
+      // commits, so it runs with NO ambient context here: wrapped in this
+      // processor's transaction, its own would join it and push before commit.
+      const { data } = job;
+      if (data.type === 'install-remediate-device') {
+        return processRemediateDeviceInstall(data);
+      }
+      return runWithSystemDbAccess(() => processRemediateDevice(data));
     },
     {
       connection: getBullMQConnection(),

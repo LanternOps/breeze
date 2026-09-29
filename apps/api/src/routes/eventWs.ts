@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { randomBytes } from 'crypto';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
 import { z } from 'zod';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizationUsers, organizations, partnerUsers, users } from '../db/schema';
@@ -350,6 +351,8 @@ async function resolveLegacyEventAuthorization(
           and(
             eq(organizations.partnerId, user.partnerId),
             inArray(organizations.status, ['active', 'trial']),
+            // Holding org is never human-reachable.
+            ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
             isNull(organizations.deletedAt),
             ...(candidateIds ? [inArray(organizations.id, candidateIds)] : []),
           ),
@@ -594,6 +597,8 @@ export async function resolveLiveEventAuthorization(
             and(
               eq(organizations.partnerId, ticket.partnerId),
               inArray(organizations.status, ['active', 'trial']),
+              // Holding org is never human-reachable.
+              ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
               isNull(organizations.deletedAt),
             ),
           )
@@ -667,6 +672,8 @@ export async function resolveLiveEventAuthorization(
           and(
             eq(organizations.partnerId, ticket.partnerId),
             inArray(organizations.status, ['active', 'trial']),
+            // Holding org is never human-reachable.
+            ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
             isNull(organizations.deletedAt),
             ...(candidateIds ? [inArray(organizations.id, candidateIds)] : []),
           ),
@@ -741,6 +748,8 @@ export function createEventWsTicketRoute(): Hono {
         .where(and(
           eq(organizations.partnerId, partnerId),
           inArray(organizations.status, ['active', 'trial']),
+          // Holding org is never human-reachable.
+          ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
           isNull(organizations.deletedAt),
         ));
       orgIds = partnerOrganizations.map((org) => org.id);
@@ -762,6 +771,8 @@ export function createEventWsTicketRoute(): Hono {
         .where(and(
           eq(organizations.id, orgIds[0]!),
           inArray(organizations.status, ['active', 'trial']),
+          // Holding org is never human-reachable.
+          ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
           isNull(organizations.deletedAt),
         ))
         .limit(1);

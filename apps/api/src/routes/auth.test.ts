@@ -253,6 +253,10 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // operation, and a dispatch that fell through to another digest function
   // would produce the wrong constant and fail the assertion below.
   moveOrgResourceDigest: vi.fn(() => 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000'),
+  // Parked-device assignment: two more distinct constants, same reason.
+  parkedAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001'),
+  parkedBulkAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002'),
+  preAssignmentEnableResourceDigest: vi.fn(() => 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003'),
   // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
   // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
   // schemas under test bind the REAL 168/500 rather than a copy in this
@@ -475,7 +479,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -4506,6 +4510,264 @@ describe('auth routes', () => {
   // short-lived grant. The passkey branch (I2) exists specifically so a
   // passkey-only user — who has no TOTP/SMS fallback — is never locked out
   // of adding a second factor.
+  // #4045: recovery-code rotation and MFA disable were password-only, so a
+  // passwordless SSO account that enrolled a factor via #4041 could neither
+  // rotate its codes nor turn MFA off. The password leg now has a second road —
+  // a fresh IdP re-auth grant minted for `sso_reauth_manage_factor` — and the
+  // EXISTING-FACTOR leg (factor grant / live MFA code) is unchanged for everyone.
+  describe('#4045 passwordless SSO factor management', () => {
+    const SSO_GRANT = '8a5f3c2e-1b4d-4e6f-9a0b-1c2d3e4f5a6b';
+    const opOf = (call: unknown[]) => (call[1] as { operation: string }).operation;
+    const callsFor = (fn: unknown, op: string) =>
+      vi.mocked(fn as typeof validateStepUpGrant).mock.calls.filter((call) => opOf(call) === op);
+
+    // Every read these routes make — road probe, protection probes, the factor
+    // row, the audit lookup — is answered by one row carrying every field.
+    function mockPasswordlessTotpUser(overrides: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              passwordHash: null,
+              mfaEnabled: true,
+              passkeyCount: 0,
+              mfaMethod: 'totp',
+              mfaSecret: encryptMfaSecret('PLAINTEXTSECRET'),
+              phoneNumber: null,
+              ...overrides,
+            }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-123' }]),
+          })),
+        }),
+      } as any);
+    }
+
+    function allowSelfDisable() {
+      return vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
+      });
+    }
+
+    const post = (path: string, body: Record<string, unknown>) => app.request(path, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    describe('POST /auth/mfa/recovery-codes', () => {
+      it('rotates with an SSO re-auth grant PLUS the existing-factor grant, spending both exactly once', async () => {
+        vi.mocked(generateRecoveryCodes).mockReturnValue(['NEWA-0001', 'NEWB-0002']);
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+        vi.mocked(consumeStepUpGrant).mockResolvedValue(true);
+
+        const res = await post('/auth/mfa/recovery-codes', {
+          ssoReauthGrantId: SSO_GRANT,
+          stepUpGrantId: 'rotate-grant-1',
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).recoveryCodes).toEqual(['NEWA-0001', 'NEWB-0002']);
+        expect(verifyPassword).not.toHaveBeenCalled();
+        expect(callsFor(validateStepUpGrant, 'sso_reauth_manage_factor')).toEqual([
+          [SSO_GRANT, expect.objectContaining({ userId: 'user-123', sid: 'family-123' })],
+        ]);
+        expect(callsFor(consumeStepUpGrant, 'sso_reauth_manage_factor')).toHaveLength(1);
+        expect(callsFor(consumeStepUpGrant, 'rotate_recovery_codes')).toHaveLength(1);
+        expect(callsFor(validateStepUpGrant, 'enroll_first_factor')).toHaveLength(0);
+      });
+
+      it('answers a passwordless caller with no proof with an actionable sso_reauth_required (never a silent no-op)', async () => {
+        mockPasswordlessTotpUser();
+
+        const res = await post('/auth/mfa/recovery-codes', { stepUpGrantId: 'rotate-grant-1' });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'sso_reauth_required', reauthUrl: '/sso/reauth/start' });
+        expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+      });
+
+      it('still demands the existing-factor grant — the SSO grant never stands in for it', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockImplementation(async (_id, bind) => bind.operation === 'sso_reauth_manage_factor');
+
+        const res = await post('/auth/mfa/recovery-codes', { ssoReauthGrantId: SSO_GRANT });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
+        expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+      });
+
+      it('rejects a stale/reused/foreign SSO grant with sso_reauth_grant_expired before touching the factor grant', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockImplementation(async (_id, bind) => bind.operation !== 'sso_reauth_manage_factor');
+
+        const res = await post('/auth/mfa/recovery-codes', {
+          ssoReauthGrantId: SSO_GRANT,
+          stepUpGrantId: 'rotate-grant-1',
+        });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired', reauthUrl: '/sso/reauth/start' });
+        expect(callsFor(validateStepUpGrant, 'rotate_recovery_codes')).toHaveLength(0);
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      });
+
+      it('writes nothing when the SSO grant was spent between gate and write (reuse race)', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+        vi.mocked(consumeStepUpGrant).mockImplementation(async (_id, bind) => bind.operation !== 'sso_reauth_manage_factor');
+
+        const res = await post('/auth/mfa/recovery-codes', {
+          ssoReauthGrantId: SSO_GRANT,
+          stepUpGrantId: 'rotate-grant-1',
+        });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired' });
+        expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+        // The issuance admitted before the consume must be released, not leaked.
+        expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses an SSO grant from an account that HAS a password (opaque, grant untouched)', async () => {
+        mockPasswordlessTotpUser({ passwordHash: '$argon2id$hash' });
+        vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+
+        const res = await post('/auth/mfa/recovery-codes', {
+          ssoReauthGrantId: SSO_GRANT,
+          stepUpGrantId: 'rotate-grant-1',
+        });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'invalid_credentials' });
+        expect(callsFor(validateStepUpGrant, 'sso_reauth_manage_factor')).toHaveLength(0);
+        expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('POST /auth/mfa/disable', () => {
+      it('disables with an SSO re-auth grant PLUS a live TOTP code, spending the grant once', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+        vi.mocked(consumeStepUpGrant).mockResolvedValue(true);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', { code: '123456', ssoReauthGrantId: SSO_GRANT });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        expect(verifyPassword).not.toHaveBeenCalled();
+        expect(consumeMFAToken).toHaveBeenCalledTimes(1);
+        expect(callsFor(consumeStepUpGrant, 'sso_reauth_manage_factor')).toHaveLength(1);
+        expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
+      });
+
+      it('answers a passwordless caller with no proof with sso_reauth_required, not a misleading Invalid credentials — and burns no code', async () => {
+        mockPasswordlessTotpUser();
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', { code: '123456' });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'sso_reauth_required', reauthUrl: '/sso/reauth/start' });
+        expect(consumeMFAToken).not.toHaveBeenCalled();
+        expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+      });
+
+      it('a wrong TOTP code leaves the SSO grant unspent so the user can retry', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+        vi.mocked(consumeMFAToken).mockResolvedValue(false);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', { code: '000000', ssoReauthGrantId: SSO_GRANT });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'mfa_code_invalid' });
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
+        expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+      });
+
+      it('rejects a stale/reused/foreign SSO grant before the TOTP code is spent', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockResolvedValue(false);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', { code: '123456', ssoReauthGrantId: SSO_GRANT });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired', reauthUrl: '/sso/reauth/start' });
+        expect(consumeMFAToken).not.toHaveBeenCalled();
+        expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+      });
+
+      it('writes nothing when the SSO grant was spent between gate and write (reuse race)', async () => {
+        mockPasswordlessTotpUser();
+        vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+        vi.mocked(consumeStepUpGrant).mockResolvedValue(false);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', { code: '123456', ssoReauthGrantId: SSO_GRANT });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'sso_reauth_grant_expired' });
+        expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+        expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+      });
+
+      it('a password account sending BOTH proofs takes the password road and never looks at the grant', async () => {
+        mockPasswordlessTotpUser({ passwordHash: '$argon2id$hash' });
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', {
+          code: '123456',
+          currentPassword: 'OldStrongPass123',
+          ssoReauthGrantId: SSO_GRANT,
+        });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        expect(verifyPassword).toHaveBeenCalledTimes(1);
+        expect(validateStepUpGrant).not.toHaveBeenCalled();
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      });
+
+      it('keeps the password road unchanged for a password account', async () => {
+        mockPasswordlessTotpUser({ passwordHash: '$argon2id$hash' });
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+        const policySpy = allowSelfDisable();
+
+        const res = await post('/auth/mfa/disable', { code: '123456', currentPassword: 'OldStrongPass123' });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        expect(verifyPassword).toHaveBeenCalledWith('$argon2id$hash', 'OldStrongPass123');
+        expect(validateStepUpGrant).not.toHaveBeenCalled();
+        expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('POST /auth/mfa/step-up', () => {
 		let policySpy: ReturnType<typeof vi.spyOn>;
 
@@ -4700,6 +4962,90 @@ describe('auth routes', () => {
 				operation: 'device_move_org',
 				resourceDigest: 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000',
 			}));
+		});
+
+		it('mints a parked_device_assign grant bound to the single-assignment digest', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-parked');
+			const resource = {
+				deviceId: '00000000-0000-4000-8000-000000000010',
+				targetOrgId: '00000000-0000-4000-8000-000000000020',
+				targetSiteId: '00000000-0000-4000-8000-000000000030',
+			};
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'parked_device_assign', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(parkedAssignResourceDigest).toHaveBeenCalledWith(expect.objectContaining(resource));
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'parked_device_assign',
+				resourceDigest: 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001',
+			}));
+		});
+
+		it('mints a parked_device_assign_bulk grant bound to the whole batch', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-parked-bulk');
+			const items = [
+				{ deviceId: '00000000-0000-4000-8000-000000000010', targetOrgId: '00000000-0000-4000-8000-000000000020', targetSiteId: '00000000-0000-4000-8000-000000000030' },
+				{ deviceId: '00000000-0000-4000-8000-000000000011', targetOrgId: '00000000-0000-4000-8000-000000000020', targetSiteId: '00000000-0000-4000-8000-000000000030' },
+			];
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'parked_device_assign_bulk', resource: { items } }),
+			});
+			expect(res.status).toBe(200);
+			expect(parkedBulkAssignResourceDigest).toHaveBeenCalledWith(items);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'parked_device_assign_bulk',
+				resourceDigest: 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002',
+			}));
+		});
+
+		it('mints a pre_assignment_enable grant bound to the partner and enabled=true', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-enable');
+			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', enabled: true };
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'pre_assignment_enable', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(preAssignmentEnableResourceDigest).toHaveBeenCalledWith({ partnerId: resource.partnerId });
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'pre_assignment_enable',
+				resourceDigest: 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003',
+			}));
+		});
+
+		it('refuses a pre_assignment_enable grant for enabled=false (disabling needs no step-up)', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'pre_assignment_enable', resource: { partnerId: '00000000-0000-4000-8000-000000000040', enabled: false } }),
+			});
+			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('rejects parked_device_assign carrying a bulk-shaped resource, before factor verification', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					method: 'passkey',
+					credential: { id: 'credential-1' },
+					operation: 'parked_device_assign',
+					resource: { items: [{ deviceId: '00000000-0000-4000-8000-000000000010', targetOrgId: '00000000-0000-4000-8000-000000000020', targetSiteId: '00000000-0000-4000-8000-000000000030' }] },
+				}),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
 		it('rejects device_move_org without a resource binding, before factor verification', async () => {

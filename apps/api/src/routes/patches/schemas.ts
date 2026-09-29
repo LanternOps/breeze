@@ -115,3 +115,7 @@ export const listJobsSchema = z.object({
   limit: z.string().optional(),
   status: z.enum(['scheduled', 'running', 'completed', 'failed', 'cancelled']).optional()
 });
+
+export const jobIdParamSchema = z.object({
+  id: z.string().guid()
+});

@@ -1077,8 +1077,19 @@
       "3": "L3 — biometric + PIN",
       "4": "L4 — hardware key + PIN"
     },
+    "unreachableLevelHint": "Levels an approver device cannot reach for a tier are unavailable.",
     "requireEnrollment": "Require an enrolled approver device (enforce — block under-assured approvals)",
+    "enforcement": {
+      "inherit": "Platform default",
+      "required": "Required",
+      "notRequired": "Not required",
+      "inheritedValue": "Platform default: an approver device is required for high- and critical-risk approvals from {{date}}.",
+      "inheritedSource": "Set by the platform because no choice has been saved here. Choose Required or Not required to override it.",
+      "requiredHint": "Required applies to every risk tier from the date below.",
+      "notRequiredHint": "Approvals below the floor are allowed and recorded as downgraded."
+    },
     "enforceFrom": "Enforce from (grace window cutoff)",
+    "enforceFromHint": "Leave blank to enforce immediately.",
     "toasts": {
       "saved": "Approval-security policy saved."
     },
@@ -3828,7 +3839,9 @@
     "verifyYourIdentity": "Verify your identity",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
-    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app."
+    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app.",
+    "ssoReauthManageHint": "This account signs in through an identity provider and has no password. Verify with your provider to confirm this change.",
+    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -3945,7 +3958,11 @@
     "passkeyStepUpVerificationExpired": "Verification expired. Please verify again.",
     "passkeyRegistrationServerError": "Passkey registration failed. Please try again.",
     "deletePasskeyVerifyHeading": "Verify to delete a passkey",
-    "deletePasskeyVerifyHint": "Enter a current MFA code here before removing one of the passkeys above. This code has no effect on adding a new passkey."
+    "deletePasskeyVerifyHint": "Enter a current MFA code here before removing one of the passkeys above. This code has no effect on adding a new passkey.",
+    "ssoReauthManageProofExpired": "Your identity provider verification has expired. Verify again to confirm this change.",
+    "verifyWithIdpToDeletePasskey": "This account has no password. Verify with your identity provider before removing a passkey.",
+    "deletePasskeySsoReauth": "Verify identity to remove a passkey",
+    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove."
   },
   "roleManager": {
     "roles": "Roles",

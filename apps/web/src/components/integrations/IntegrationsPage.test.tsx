@@ -153,8 +153,19 @@ vi.mock("./AccountingConnectionPanel", async () => {
     "./AccountingMappingWorkbench"
   );
   return {
-    default: ({ provider }: { provider: "quickbooks" | "xero" }) => (
+    default: ({
+      provider,
+      onConnectionChanged,
+    }: {
+      provider: "quickbooks" | "xero";
+      onConnectionChanged?: () => void;
+    }) => (
       <div data-testid={`stub-${provider}`}>
+        <button
+          type="button"
+          data-testid={`stub-${provider}-connection-changed`}
+          onClick={() => onConnectionChanged?.()}
+        />
         <AccountingMappingWorkbench provider={provider} defaultIncomeAccountRef="income-1" />
       </div>
     ),
@@ -209,16 +220,21 @@ describe("IntegrationsPage — M365 coexistence", () => {
     [true, false],
     [true, true],
     [false, false],
-  ])("keeps legacy=%s and Customer Graph Read=%s as sibling cards", (legacyEnabled, graphReadEnabled) => {
+  ])("mounts legacy=%s and Customer Graph Read=%s together in the Microsoft 365 tenant section", (legacyEnabled, graphReadEnabled) => {
     m365State.legacyEnabled = legacyEnabled;
     m365State.graphReadEnabled = graphReadEnabled;
     render(<IntegrationsPage />);
 
+    // Ordering between them is the section's job (M365TenantSection.test.tsx);
+    // the page's job is to mount all three connection paths in that section.
+    const section = screen.getByTestId("m365-tenant-section");
     const legacy = screen.getByTestId("stub-m365");
     const graphRead = screen.getByTestId("stub-customer-graph-read");
     expect(legacy).toHaveAttribute("data-enabled", String(legacyEnabled));
     expect(graphRead).toHaveAttribute("data-enabled", String(graphReadEnabled));
-    expect(legacy.parentElement).toBe(graphRead.parentElement);
+    expect(section).toContainElement(legacy);
+    expect(section).toContainElement(graphRead);
+    expect(section).toContainElement(screen.getByTestId("stub-customer-graph-actions"));
   });
 });
 
@@ -851,6 +867,92 @@ describe("IntegrationsPage — accounting provider cards (Xero W01)", () => {
     providersBody = { error: "boom" };
     render(<IntegrationsPage />);
     expect(await screen.findByTestId("accounting-providers-error")).toBeTruthy();
+    expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
+  });
+
+  it("re-fetches the provider list when the panel reports a connection change", async () => {
+    render(<IntegrationsPage />);
+    await screen.findByTestId("stub-quickbooks");
+    const callsBefore = fetchWithAuthMock.mock.calls.filter(
+      (c) => c[0] === "/accounting/providers",
+    ).length;
+    fireEvent.click(screen.getByTestId("stub-quickbooks-connection-changed"));
+    await waitFor(() => {
+      const callsAfter = fetchWithAuthMock.mock.calls.filter(
+        (c) => c[0] === "/accounting/providers",
+      ).length;
+      expect(callsAfter).toBe(callsBefore + 1);
+    });
+  });
+});
+
+describe("IntegrationsPage — bare #accounting auto-picks the connected provider (Xero W02c 11b)", () => {
+  beforeEach(() => {
+    scope = "partner";
+    orgState.currentOrgId = null;
+    orgState.jwtOrgId = null;
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === "/accounting/providers"
+          ? new Response(JSON.stringify(providersBody), { status: providersStatus })
+          : new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      ),
+    );
+  });
+  afterEach(() => {
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("both configured, active connection = xero, bare #accounting opens Xero", async () => {
+    providersBody = {
+      data: PROVIDERS_BOTH.data,
+      activeConnection: { provider: "xero", status: "connected" },
+    };
+    window.history.replaceState({}, "", "/integrations#accounting");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
+    expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
+  });
+
+  it("only Xero configured, no connection, bare #accounting opens Xero", async () => {
+    providersBody = {
+      data: [
+        { id: "quickbooks", displayName: "QuickBooks", configured: false, capabilities: ALL_CAPS },
+        { id: "xero", displayName: "Xero", configured: true, capabilities: ALL_CAPS },
+      ],
+      activeConnection: null,
+    };
+    window.history.replaceState({}, "", "/integrations#accounting");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
+  });
+
+  it("both configured, active xero, explicit #quickbooks wins over the auto-pick", async () => {
+    providersBody = {
+      data: PROVIDERS_BOTH.data,
+      activeConnection: { provider: "xero", status: "connected" },
+    };
+    window.history.replaceState({}, "", "/integrations#quickbooks");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
+    expect(screen.queryByTestId("stub-xero")).toBeNull();
+  });
+
+  it("re-picks the provider when navigating from an explicit hash back to bare #accounting", async () => {
+    providersBody = {
+      data: PROVIDERS_BOTH.data,
+      activeConnection: { provider: "xero", status: "connected" },
+    };
+    window.history.replaceState({}, "", "/integrations#quickbooks");
+    render(<IntegrationsPage />);
+    expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
+
+    window.location.hash = "accounting";
+    // jsdom does not fire hashchange for a scripted hash write.
+    fireEvent(window, new HashChangeEvent("hashchange"));
+
+    expect(await screen.findByTestId("stub-xero")).toBeTruthy();
     expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
   });
 });

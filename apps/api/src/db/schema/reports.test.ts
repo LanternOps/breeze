@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { getTableColumns } from 'drizzle-orm';
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import {
+  REPORT_DELIVERY_STATUSES,
   REPORT_RUN_DELIVERY_STATES,
   reportRunDeliveries,
   reportRuns,
@@ -74,8 +75,11 @@ describe('report execution scope provenance', () => {
       'reportId',
       'orgId',
       'contactId',
+      'mode',
       'createdAt',
     ]);
+    expect(columns.mode.notNull).toBe(true);
+    expect(columns.mode.default).toBe('add');
     expect(columns.reportId.notNull).toBe(true);
     expect(columns.orgId.notNull).toBe(true);
     expect(columns.contactId.notNull).toBe(true);
@@ -177,5 +181,76 @@ describe('report_run_deliveries (#4248 W03)', () => {
 
   it('exposes the five states, and only those', () => {
     expect([...REPORT_RUN_DELIVERY_STATES]).toEqual(['pending', 'claimed', 'sent', 'failed', 'unknown']);
+  });
+});
+
+describe('report run delivery summary (multi-org report series W01)', () => {
+  const compile = (value: Parameters<PgDialect['sqlToQuery']>[0]) =>
+    new PgDialect().sqlToQuery(value).sql.replace(/\s+/g, ' ').toLowerCase();
+
+  it('models delivery_status and recipient_count as nullable run columns', () => {
+    const columns = getTableColumns(reportRuns);
+    expect(columns.deliveryStatus.name).toBe('delivery_status');
+    expect(columns.deliveryStatus.notNull).toBe(false);
+    expect(columns.recipientCount.name).toBe('recipient_count');
+    expect(columns.recipientCount.notNull).toBe(false);
+  });
+
+  it('pins the five delivery statuses, in order', () => {
+    expect(REPORT_DELIVERY_STATUSES).toEqual([
+      'sent',
+      'partial',
+      'no_recipients',
+      'failed',
+      'not_scheduled',
+    ]);
+  });
+
+  it('declares the delivery_status CHECK over exactly those statuses, NULL allowed', () => {
+    const check = getTableConfig(reportRuns).checks.find(
+      (candidate) => candidate.name === 'report_runs_delivery_status_chk',
+    );
+    expect(check).toBeDefined();
+    const compiled = compile(check!.value);
+    expect(compiled).toContain('"report_runs"."delivery_status" is null');
+    for (const status of REPORT_DELIVERY_STATUSES) {
+      expect(compiled).toContain(`'${status}'`);
+    }
+  });
+
+  it('declares a non-negative recipient_count CHECK', () => {
+    const check = getTableConfig(reportRuns).checks.find(
+      (candidate) => candidate.name === 'report_runs_recipient_count_chk',
+    );
+    expect(check).toBeDefined();
+    expect(compile(check!.value)).toContain('"report_runs"."recipient_count" >= 0');
+  });
+
+  it('indexes runs by report, newest first', () => {
+    const index = getTableConfig(reportRuns).indexes.find(
+      (candidate) => candidate.config.name === 'report_runs_report_id_created_at_idx',
+    );
+    expect(index).toBeDefined();
+  });
+
+  it('ships the same constraints and index in the migration', () => {
+    const migration = readFileSync(
+      new URL(
+        '../../../migrations/2026-11-09-100000-report-runs-delivery-status.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS delivery_status text');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS recipient_count integer');
+    expect(migration).toContain('report_runs_delivery_status_chk');
+    expect(migration).toContain('report_runs_recipient_count_chk');
+    expect(migration).toContain('report_runs_report_id_created_at_idx');
+    for (const status of REPORT_DELIVERY_STATUSES) {
+      expect(migration).toContain(`'${status}'`);
+    }
+    // Writes no rows: no scope elevation, no inner transaction.
+    expect(migration).not.toMatch(/^\s*(UPDATE|INSERT|DELETE)\b/im);
+    expect(migration).not.toMatch(/^\s*(BEGIN|COMMIT)\s*;/im);
   });
 });

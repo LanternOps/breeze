@@ -101,3 +101,23 @@ media signing, and real Windows-hardware test access) exist independently of thi
 **Action if approved:** file a follow-up issue against #5439 (or a new tracking issue) for the Option B
 code change (remove `importRegistryHives`/`restoreBootConfig` call sites in
 `restore_windows.go`'s `RestoreSystemState`) and the corresponding doc note; out of scope for Wave 4.
+
+## 2026-09-22 update
+
+Wave 6 does not change this decision or its scope — `bmr-recover`
+(reinstall-then-recover, `restore_windows.go`) still ships Option B exactly
+as decided here: hives/BCD stay collected-for-reference only, never
+live-applied. Wave 6 instead adds offline hive apply to a **separate** code
+path, the rebuild engine (`agent/internal/backup/rebuild`, `breeze-backup
+rebuild` / Restore-as-VM / DR bare-metal rebuild), which provisions an
+unbooted target disk from scratch. That path was never subject to the
+"live hive" constraint this document analyzes — there is no running target
+OS to corrupt — so it was never an Option A vs. B choice for the rebuild
+engine, and this decision stands unmodified for `bmr-recover`. The
+rebuild engine's offline-apply mechanics (file-tree-first, all-four-hive
+fallback, run-scoped `HKLM\BRZ_<runid>_<HIVE>` mount naming) are recorded in
+spec §6.1, not here. `MountedDevices` rewriting was added there as a
+corollary this wave discovered was necessary (not anticipated when this
+document was written): restoring identical partition GUIDs is not
+sufficient on its own when a target disk assigns them a different drive
+letter than the source disk did.

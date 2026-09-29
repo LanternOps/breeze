@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CONNECTOR_SETTINGS_HREF,
   deriveReadinessChips,
   purgeCountdownDays,
   repairHref,
@@ -409,5 +410,11 @@ describe('hash', () => {
 
   it('treats a bare uuid as a row highlight (the incumbent’s selected-org deep link)', () => {
     expect(parseBoardHash('#AAAAAAAA-1111-4111-8111-111111111111')).toEqual({ highlightOrgId: 'aaaaaaaa-1111-4111-8111-111111111111' });
+  });
+});
+
+describe('CONNECTOR_SETTINGS_HREF', () => {
+  it('sends Xero to the Xero panel of the integrations page (D12)', () => {
+    expect(CONNECTOR_SETTINGS_HREF.xero).toBe('/integrations#xero');
   });
 });
