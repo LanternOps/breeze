@@ -1067,6 +1067,30 @@ describe('BackupJobList', () => {
     expect(summary).not.toContain('[stale-backup-reaper]');
   });
 
+  it('puts the full error text in the Errors cell tooltip, not the 60-character truncation', async () => {
+    const longError =
+      '[stale-backup-reaper] agent did not report within the lease window after it published the snapshot manifest; job marked failed';
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [partialJob({ status: 'failed', errorCount: 0, errorLog: longError })],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    const summary = within(row).getByTestId('backup-job-error-summary');
+    // The cell stays short...
+    expect(summary.textContent).toContain('...');
+    // ...but hovering reveals the whole reason (tag prefix still stripped).
+    expect(summary.getAttribute('title')).toBe(
+      'agent did not report within the lease window after it published the snapshot manifest; job marked failed'
+    );
+  });
+
   it('shows "-" in the Errors column for a job with no error info', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {
