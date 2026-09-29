@@ -44,6 +44,12 @@ export interface ApprovalRequest {
   decidedAt: string | null;
   decisionReason: string | null;
   /**
+   * Set when this user approved but the server refused to apply it (a PAM
+   * elevation whose target could not be verified); `status` is then
+   * `denied`. Absent from older servers.
+   */
+  refusalReason?: string | null;
+  /**
    * Server-issued flag. TRUE when the approval was triggered by this
    * user's own mobile app (the same phone is the requester) — gates
    * the 5-second hold-to-confirm UX for self-approval. Replaces the
@@ -179,7 +185,28 @@ export async function approveRequest(
   if (res.status === 403) throw new Error(await approveForbiddenCode(res, reauth));
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
   const json = await res.json();
-  return json.approval;
+  return refusedAsDenied(json);
+}
+
+/**
+ * An approve the server refused to apply (a PAM elevation whose target could
+ * not be verified) is not an approval. Current servers store and return the
+ * row as `denied` with `refusalReason`. Older servers return it still
+ * `approved` and report the refusal only as `enforcementStatus: 'refused'`
+ * beside it, so read that the same way.
+ */
+function refusedAsDenied(json: {
+  approval: ApprovalRequest;
+  enforcementStatus?: unknown;
+  reason?: unknown;
+}): ApprovalRequest {
+  const { approval } = json;
+  if (json.enforcementStatus !== 'refused' || approval.status !== 'approved') return approval;
+  return {
+    ...approval,
+    status: 'denied',
+    refusalReason: approval.refusalReason ?? (typeof json.reason === 'string' ? json.reason : null),
+  };
 }
 
 export async function denyRequest(id: string, reason?: string): Promise<ApprovalRequest> {

@@ -106,6 +106,7 @@
       "cancelled": "Abgebrochen",
       "completed": "Abgeschlossen",
       "denied": "Abgelehnt",
+      "refused": "Genehmigung verweigert",
       "approved": "Genehmigt",
       "reported": "Gemeldet",
       "unknown": "Unbekannt"

@@ -125,3 +125,17 @@ export function getApprovalCopy(approval: ApprovalCopyInput): ApprovalCopy {
     holdLabel: 'Hold to approve',
   };
 }
+
+/**
+ * The toast shown once an approve returns, read from the row the server sent
+ * back. The server can refuse to apply an approve (a PAM elevation whose
+ * target could not be verified); it then returns the row as `denied` with a
+ * `refusalReason`, and that must never be confirmed as "Approved".
+ */
+export function approveOutcomeToast(
+  decided: { status: string; refusalReason?: string | null },
+  actionLabel: string,
+): { kind: 'success' | 'error'; text: string } {
+  if (decided.status === 'approved') return { kind: 'success', text: `Approved · ${actionLabel}` };
+  return { kind: 'error', text: `Not approved · ${str(decided.refusalReason) ?? actionLabel}` };
+}

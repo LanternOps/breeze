@@ -288,6 +288,9 @@ export function serialize(
     expiresAt: r.expiresAt.toISOString(),
     decidedAt: r.decidedAt?.toISOString() ?? null,
     decisionReason: r.decisionReason ?? null,
+    // Set on a `denied` row whose approver approved but the server refused
+    // it (see approvalRequests.refusalReason).
+    refusalReason: r.refusalReason ?? null,
     executionId: r.executionId ?? null,
     intentId: r.intentId ?? null,
     approvalScope,
@@ -1342,7 +1345,7 @@ export async function decideApprovalRequest(
             // was written), and the caller gets a plain 409 below.
             return { lostRace: true };
           }
-          const updated = casRows[0]!;
+          let updated = casRows[0]!;
 
           let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null = null;
           let refusalReason: string | null = null;
@@ -1428,6 +1431,28 @@ export async function decideApprovalRequest(
                   ? 'pending_dispatch'
                   : 'cleanup_pending';
               refusalReason = actuation.refusalReason ?? null;
+
+              // The approve was refused and the elevation is now denied, so
+              // this row must not read as approved to anyone who reads it (the
+              // mobile app and the inbox's Recent panel read `status`). Same
+              // transaction, and the CAS above already holds this row's lock.
+              // decided_* keep recording the approver's approve;
+              // refusal_reason is what marks it as refused rather than denied
+              // by the approver.
+              if (refusalReason && status === 'approved') {
+                const [refused] = await tx
+                  .update(approvalRequests)
+                  .set({ status: 'denied', refusalReason })
+                  .where(and(eq(approvalRequests.id, updated.id), eq(approvalRequests.status, 'approved')))
+                  .returning();
+                if (!refused) {
+                  // Unreachable: this transaction wrote 'approved' to the row
+                  // and holds its lock. Roll back rather than commit an
+                  // approval row that reads as approved.
+                  throw new Error(`refused approve could not be stored on approval ${updated.id}`);
+                }
+                updated = refused;
+              }
 
               await tx
                 .update(approvalRequests)

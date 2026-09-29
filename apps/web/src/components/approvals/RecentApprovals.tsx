@@ -40,6 +40,9 @@ export interface RecentApprovalRow {
   orgName: string | null;
   decidedAt: string | null;
   createdAt: string;
+  /** Set when the approver approved but the server refused it; the row is
+   *  then `denied`. Absent from older API responses. */
+  refusalReason?: string | null;
   intentOutcome: {
     status: string;
     errorCode: string | null;
@@ -150,7 +153,10 @@ export default function RecentApprovals() {
             <ul className="divide-y">
               {rows.map((row) => {
                 const kind = outcomeKind(row);
-                const status = row.intentOutcome?.status ?? 'unknown';
+                // A refused approve is stored as denied, but the approver
+                // approved it: label it refused so it never reads as the
+                // approver's own denial.
+                const status = row.refusalReason ? 'refused' : (row.intentOutcome?.status ?? 'unknown');
                 return (
                   <li key={row.id} className="py-2" data-testid={`approvals-recent-row-${row.id}`}>
                     <div className="flex items-start gap-2" data-outcome={kind}>
@@ -165,7 +171,7 @@ export default function RecentApprovals() {
                         <p className="truncate text-sm font-medium">{row.actionLabel}</p>
                         <p className="text-xs text-muted-foreground">
                           <span data-testid={`approvals-recent-status-${row.id}`}>
-                            {/* One key per terminal intent status, all eight
+                            {/* One key per terminal status (plus `refused`),
                                 present in every locale; a status the locale
                                 files do not know renders raw rather than
                                 blank. */}

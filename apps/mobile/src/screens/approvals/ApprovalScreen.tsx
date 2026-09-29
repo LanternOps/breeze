@@ -41,7 +41,7 @@ import { RiskBand } from './components/RiskBand';
 import { CustomerTenantBadge } from './components/CustomerTenantBadge';
 import { ApprovalButtons } from './components/ApprovalButtons';
 import { resolveApprovalFlowType, extractProposalId } from './approvalFlow';
-import { getApprovalCopy } from './approvalCopy';
+import { approveOutcomeToast, getApprovalCopy } from './approvalCopy';
 import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
 import { ToastOutlet, useToast } from '../../components/toast/ToastHost';
@@ -217,14 +217,17 @@ export function ApprovalScreen() {
       )
     )
       .unwrap()
-      .then(() => {
+      .then((decided) => {
         track('approval_decided', {
           decision: 'approve',
           risk_tier: approvalSnap.riskTier,
           is_recursive: approvalSnap.isRecursive,
           seconds_to_decide: decideSeconds,
         });
-        showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: 'success', text: `Approved · ${approvalSnap.actionLabel}` });
+        // Read from the returned row: an approve the server refused comes
+        // back `denied` and must not be confirmed as approved.
+        const outcome = approveOutcomeToast(decided, approvalSnap.actionLabel);
+        showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: outcome.kind, text: outcome.text });
       })
       .catch((err: Error) => {
         showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
