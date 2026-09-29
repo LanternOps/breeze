@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -50,7 +51,31 @@ type journalHeader struct {
 	SnapshotID string    `json:"snapshotId"`
 	CreatedAt  time.Time `json:"createdAt"`
 	Identity   string    `json:"identity"`
+
+	// FormatVersion is journalFormatVersion for a journal written by this
+	// build; absent (0) on a journal written before it existed. Entries in
+	// an older journal may carry a checksum measured before the upload, or
+	// none, so they are never resumed (see openSnapshotJournal).
+	FormatVersion int `json:"formatVersion,omitempty"`
+	// JobID is the dispatched backup job currently writing this snapshot.
+	// A later job resuming the upload rebinds it (see BindRun).
+	JobID string `json:"jobId,omitempty"`
+	// DispatchedBaseSnapshotID is the base the server pinned for JobID (""
+	// = a full dispatch); ParentSnapshotID the base the run actually used
+	// ("" = full), meaningful once BaseDecided is set.
+	DispatchedBaseSnapshotID string `json:"dispatchedBaseSnapshotId,omitempty"`
+	BaseDecided              bool   `json:"baseDecided,omitempty"`
+	ParentSnapshotID         string `json:"parentSnapshotId,omitempty"`
+	// PublishedObjects are the control objects JobID's run published, or was
+	// about to publish, under SnapshotID: each is recorded before its upload
+	// starts, with the digest of the bytes being uploaded.
+	PublishedObjects []PublishedObject `json:"publishedObjects,omitempty"`
 }
+
+// journalFormatVersion is the journal format this build writes: entries carry
+// the digest of the uploaded bytes, and the header carries the run bindings
+// and published control objects.
+const journalFormatVersion = 2
 
 // snapshotJournal is an append-only checkpoint log for one backup
 // destination (see backupIdentity), recording every file successfully
@@ -91,6 +116,17 @@ type snapshotJournal struct {
 	// journal, so the caller can best-effort clean up that snapshot's
 	// abandoned remote prefix. Empty when Open found no stale journal.
 	staleSnapshotID string
+
+	// header is the journal's current header line (see rewriteHeader).
+	header journalHeader
+
+	// discardedOldFormat is set when Open discarded a journal written in an
+	// older format, so the run can say why it did not resume.
+	discardedOldFormat bool
+
+	// discardedOtherRun names what differed ("job", "dispatched base" or
+	// "destination") when a journal written for another run was discarded.
+	discardedOtherRun string
 
 	// createdAt is the journal's original creation time (from its header,
 	// preserved verbatim across a resume — NOT reset on resume). Age()
@@ -161,6 +197,22 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 	header, entries, readErr := readJournal(path)
 	if readErr == nil {
 		identityMatches := header.Identity == identity
+		if identityMatches && time.Since(header.CreatedAt) <= maxAge && header.FormatVersion < journalFormatVersion {
+			// Written by an older helper: its entries may describe a
+			// pre-upload measurement or carry no checksum at all, and it
+			// holds no run bindings. Never resume it; its partial prefix is
+			// left to the server's manifest-less-prefix cleanup.
+			slog.Warn("discarding backup journal written in an older format",
+				"path", path, "formatVersion", header.FormatVersion)
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Warn("failed to remove old-format backup journal", "path", path, "error", rmErr.Error())
+			}
+			j, resumed, err := createFreshJournal(path, identity)
+			if j != nil {
+				j.discardedOldFormat = true
+			}
+			return j, resumed, err
+		}
 		if identityMatches && time.Since(header.CreatedAt) <= maxAge {
 			f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 			if openErr == nil {
@@ -178,6 +230,7 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 					resumedBytesTotal: resumedBytes,
 					resumed:           true,
 					createdAt:         header.CreatedAt,
+					header:            header,
 				}, true, nil
 			}
 			slog.Warn("failed to reopen backup journal for append, starting fresh",
@@ -202,6 +255,9 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 			j, resumed, err := createFreshJournal(path, identity)
 			if j != nil {
 				j.staleSnapshotID = staleID
+				if !identityMatches {
+					j.discardedOtherRun = "destination"
+				}
 			}
 			return j, resumed, err
 		}
@@ -252,6 +308,14 @@ func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
 		if len(line) == 0 {
 			continue
 		}
+		if bytes.HasPrefix(line, journalHeaderUpdatePrefix) {
+			var update journalHeaderUpdate
+			if err := json.Unmarshal(line, &update); err != nil {
+				return header, nil, fmt.Errorf("backup journal header update: %w", err)
+			}
+			applyHeaderUpdate(&header, update.HeaderUpdate)
+			continue
+		}
 		var entry SnapshotFile
 		if err := json.Unmarshal(line, &entry); err != nil {
 			return header, nil, fmt.Errorf("backup journal entry: %w", err)
@@ -279,9 +343,10 @@ func createFreshJournal(path, identity string) (*snapshotJournal, bool, error) {
 	}
 
 	header := journalHeader{
-		SnapshotID: newSnapshotID(),
-		CreatedAt:  time.Now().UTC(),
-		Identity:   identity,
+		SnapshotID:    newSnapshotID(),
+		CreatedAt:     time.Now().UTC(),
+		Identity:      identity,
+		FormatVersion: journalFormatVersion,
 	}
 	headerLine, err := json.Marshal(header)
 	if err != nil {
@@ -300,7 +365,171 @@ func createFreshJournal(path, identity string) (*snapshotJournal, bool, error) {
 		snapshotID: header.SnapshotID,
 		identity:   identity,
 		createdAt:  header.CreatedAt,
+		header:     header,
 	}, false, nil
+}
+
+// DiscardedOldFormat reports whether Open discarded a journal written in an
+// older format (see journalFormatVersion) instead of resuming it.
+func (j *snapshotJournal) DiscardedOldFormat() bool {
+	return j != nil && j.discardedOldFormat
+}
+
+// Header returns a copy of the journal's current header.
+func (j *snapshotJournal) Header() journalHeader {
+	if j == nil {
+		return journalHeader{}
+	}
+	h := j.header
+	h.PublishedObjects = append([]PublishedObject(nil), j.header.PublishedObjects...)
+	return h
+}
+
+// DiscardedOtherRun returns what differed when a journal written for another
+// run was discarded instead of resumed, or "".
+func (j *snapshotJournal) DiscardedOtherRun() string {
+	if j == nil {
+		return ""
+	}
+	return j.discardedOtherRun
+}
+
+// BindRun binds the journal to the dispatched job and base of this run.
+// Resume is per job: a journal written for a different job or dispatched
+// base is discarded and a fresh one (new snapshot id, no entries) takes its
+// place, so every entry a run inherits was produced under the same job and
+// base decision as the snapshot it completes. (A journal for a different
+// destination is already discarded when it is opened.) Call it right after
+// opening, before the journal's state is used.
+func (j *snapshotJournal) BindRun(jobID, dispatchedBaseSnapshotID string) error {
+	if j == nil {
+		return nil
+	}
+	if j.resumed {
+		reason := ""
+		switch {
+		case j.header.JobID != jobID:
+			reason = "job"
+		case j.header.DispatchedBaseSnapshotID != dispatchedBaseSnapshotID:
+			reason = "dispatched base"
+		}
+		if reason == "" {
+			return nil
+		}
+		slog.Warn("discarding a checkpoint journal written for another run",
+			"snapshotId", j.snapshotID, "differs", reason)
+		if err := j.restartFresh(); err != nil {
+			return err
+		}
+		j.discardedOtherRun = reason
+	}
+	j.header.JobID = jobID
+	j.header.DispatchedBaseSnapshotID = dispatchedBaseSnapshotID
+	return j.rewriteHeader()
+}
+
+// restartFresh replaces the journal's content with a fresh journal (new
+// snapshot id, no entries) at the same path. The discarded snapshot's partial
+// prefix is left to the server's manifest-less-prefix cleanup.
+func (j *snapshotJournal) restartFresh() error {
+	if j.file != nil {
+		_ = j.file.Close()
+		j.file = nil
+	}
+	fresh, _, err := createFreshJournal(j.path, j.identity)
+	if err != nil {
+		return err
+	}
+	j.file = fresh.file
+	j.writer = fresh.writer
+	j.snapshotID = fresh.snapshotID
+	j.header = fresh.header
+	j.createdAt = fresh.createdAt
+	j.entries = nil
+	j.resumedBytesTotal = 0
+	j.resumed = false
+	return nil
+}
+
+// StartAttempt starts this run's attempt at the journal's snapshot: it drops
+// the base decision and control objects an earlier attempt of the same job
+// recorded (the adoption check, which needs them, runs before this).
+// Uploaded entries are kept. Best effort, like every journal write.
+func (j *snapshotJournal) StartAttempt() error {
+	if j == nil {
+		return nil
+	}
+	j.header.BaseDecided = false
+	j.header.ParentSnapshotID = ""
+	j.header.PublishedObjects = nil
+	return j.rewriteHeader()
+}
+
+// RecordBaseDecision records the base this run actually uses ("" = a full
+// run), before any object referencing it is published.
+func (j *snapshotJournal) RecordBaseDecision(parentSnapshotID string) error {
+	if j == nil {
+		return nil
+	}
+	j.header.BaseDecided = true
+	j.header.ParentSnapshotID = parentSnapshotID
+	return j.rewriteHeader()
+}
+
+// RecordPublishedObject records a control object this run is about to
+// upload, replacing any earlier record for the same role.
+func (j *snapshotJournal) RecordPublishedObject(obj PublishedObject) error {
+	if j == nil {
+		return nil
+	}
+	objects := make([]PublishedObject, 0, len(j.header.PublishedObjects)+1)
+	for _, o := range j.header.PublishedObjects {
+		if o.Role != obj.Role {
+			objects = append(objects, o)
+		}
+	}
+	j.header.PublishedObjects = append(objects, obj)
+	return j.rewriteHeader()
+}
+
+// journalHeaderUpdate is a journal line that replaces the header's run
+// bindings and published control objects (everything but the snapshot id,
+// creation time, identity and format, which never change). Appending it is
+// one flushed line, however large the journal already is.
+type journalHeaderUpdate struct {
+	HeaderUpdate journalHeader `json:"headerUpdate"`
+}
+
+var journalHeaderUpdatePrefix = []byte(`{"headerUpdate":`)
+
+// rewriteHeader records j.header by appending a header-update line; the
+// latest one wins when the journal is read back (see readJournal).
+func (j *snapshotJournal) rewriteHeader() error {
+	if j.file == nil {
+		return errors.New("backup journal is closed")
+	}
+	line, err := json.Marshal(journalHeaderUpdate{HeaderUpdate: j.header})
+	if err != nil {
+		return fmt.Errorf("failed to encode backup journal header update: %w", err)
+	}
+	if _, err := j.writer.Write(append(line, '\n')); err != nil {
+		slog.Warn("failed to write backup journal header update", "path", j.path, "error", err.Error())
+		return err
+	}
+	if err := j.writer.Flush(); err != nil {
+		slog.Warn("failed to flush backup journal header update", "path", j.path, "error", err.Error())
+		return err
+	}
+	return nil
+}
+
+// applyHeaderUpdate folds a header-update line into header.
+func applyHeaderUpdate(header *journalHeader, update journalHeader) {
+	header.JobID = update.JobID
+	header.DispatchedBaseSnapshotID = update.DispatchedBaseSnapshotID
+	header.BaseDecided = update.BaseDecided
+	header.ParentSnapshotID = update.ParentSnapshotID
+	header.PublishedObjects = update.PublishedObjects
 }
 
 // StaleSnapshotID returns the snapshot ID of a stale journal that Open
@@ -327,6 +556,9 @@ func (j *snapshotJournal) StaleSnapshotID() (string, bool) {
 func (j *snapshotJournal) Record(f SnapshotFile) error {
 	if j == nil {
 		return nil
+	}
+	if j.file == nil {
+		return errors.New("backup journal is closed")
 	}
 	if !f.HasContent() {
 		// Content-less entries (symlinks/directories) are rebuilt from the
@@ -445,7 +677,10 @@ func (j *snapshotJournal) Complete() error {
 	if j == nil {
 		return nil
 	}
-	closeErr := j.file.Close()
+	var closeErr error
+	if j.file != nil {
+		closeErr = j.file.Close()
+	}
 	if rmErr := journalRemoveFn(j.path); rmErr != nil && !os.IsNotExist(rmErr) {
 		poisonErr := poisonJournalFile(j.path)
 		return errors.Join(closeErr, rmErr, poisonErr)
@@ -469,7 +704,7 @@ func poisonJournalFile(path string) error {
 // state for a stopped or failed run. Call this on every exit path except a
 // fully successful Complete.
 func (j *snapshotJournal) Abandon() {
-	if j == nil {
+	if j == nil || j.file == nil {
 		return
 	}
 	if err := j.file.Close(); err != nil {

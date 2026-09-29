@@ -98,17 +98,48 @@ func previousManifest(ctx context.Context, provider providers.BackupProvider, id
 		skippedForeign, len(snapshots))
 }
 
+// Fallback reason codes fetchServerOwnedBase returns (as the first token of
+// its reason) when the dispatched base is not reused because it cannot be
+// matched to the server's attestation of it. RunBackupContext surfaces them
+// as a result warning.
+const (
+	// BaseFallbackAttestationAbsent: a base was dispatched without the
+	// server's attestation of its manifest.
+	BaseFallbackAttestationAbsent = "base_attestation_absent"
+	// BaseFallbackAttestationMismatch: the downloaded manifest's size or
+	// SHA-256 differs from the attestation.
+	BaseFallbackAttestationMismatch = "base_attestation_mismatch"
+	// BaseFallbackKeyMismatch: the attestation names another object key.
+	BaseFallbackKeyMismatch = "base_key_mismatch"
+)
+
+// isBaseAttestationFallback reports whether reason is one of the
+// attestation fallbacks above.
+func isBaseAttestationFallback(reason string) bool {
+	for _, code := range []string{BaseFallbackAttestationAbsent, BaseFallbackAttestationMismatch, BaseFallbackKeyMismatch} {
+		if strings.HasPrefix(reason, code) {
+			return true
+		}
+	}
+	return false
+}
+
 // fetchServerOwnedBase downloads and validates the manifest for
 // baseSnapshotID as this run's incremental-dedupe base, per the D18
 // server-owned-base protocol (§3.1). Unlike previousManifest (legacy
 // bucket-listing mode), the server has already chosen the base id — this
-// function only fetches and validates it belongs to this device/
-// destination/run-kind (the same D6 identity guard as previousManifest); it
-// never lists the bucket. Returns (nil, reason) on ANY failure — empty id,
-// download error, decode error, or identity mismatch — collapsing to a full
-// run, exactly like previousManifest's fail-open contract. reason is always
-// non-empty in that case so callers can log it directly.
-func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider, baseSnapshotID, identity string) (*Snapshot, string) {
+// function only fetches and validates it; it never lists the bucket.
+//
+// The downloaded bytes must match att, the server's attestation of that
+// manifest (key, size and SHA-256), before they are even decoded; then the
+// manifest must belong to this device/destination/run-kind (the same D6
+// identity guard as previousManifest). Returns (nil, reason) on ANY failure
+// — empty id, no or mismatching attestation, download error, decode error,
+// or identity mismatch — collapsing to a full run, exactly like
+// previousManifest's fail-open contract. reason is always non-empty in that
+// case so callers can log it directly; attestation failures start with one
+// of the BaseFallback codes.
+func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider, baseSnapshotID, identity string, att *BaseAttestation) (*Snapshot, string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -123,6 +154,12 @@ func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider
 	}
 
 	manifestKey := path.Join(snapshotRootDir, baseSnapshotID, snapshotManifestKey)
+	if att == nil {
+		return nil, fmt.Sprintf("%s: the server sent no attestation for base %s", BaseFallbackAttestationAbsent, baseSnapshotID)
+	}
+	if att.ManifestKey != manifestKey {
+		return nil, fmt.Sprintf("%s: the base attestation names %q, not %q", BaseFallbackKeyMismatch, att.ManifestKey, manifestKey)
+	}
 	tempFile, err := os.CreateTemp("", "base-manifest-*.json")
 	if err != nil {
 		return nil, fmt.Sprintf("failed to create temp file for base manifest: %v", err)
@@ -153,9 +190,18 @@ func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider
 	if err != nil {
 		return nil, fmt.Sprintf("failed to read downloaded base manifest: %v", err)
 	}
+	// Compared before decoding: nothing in bytes the server did not attest
+	// is interpreted.
+	if got := digestBytes(data); got.Size != att.ManifestSize || got.SHA256 != att.ManifestSHA256 {
+		return nil, fmt.Sprintf("%s: base manifest %s is %d bytes with SHA-256 %s, attested as %d bytes with %s",
+			BaseFallbackAttestationMismatch, manifestKey, got.Size, got.SHA256, att.ManifestSize, att.ManifestSHA256)
+	}
 	var candidate Snapshot
 	if err := json.Unmarshal(data, &candidate); err != nil {
 		return nil, fmt.Sprintf("failed to decode base manifest %s: %v", manifestKey, err)
+	}
+	if candidate.ID != baseSnapshotID {
+		return nil, fmt.Sprintf("base manifest %s names snapshot %q", manifestKey, candidate.ID)
 	}
 	if candidate.BackupIdentity != identity {
 		return nil, fmt.Sprintf(

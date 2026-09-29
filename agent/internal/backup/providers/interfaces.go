@@ -17,6 +17,13 @@ type ContextDownloader interface {
 	DownloadContext(ctx context.Context, remotePath, localPath string) error
 }
 
+// StaleUploadSweeper is optionally implemented by providers that write a
+// temporary file beside an object during an upload (the local provider), so
+// ones left by an interrupted helper can be removed later.
+type StaleUploadSweeper interface {
+	SweepStaleUploads(prefix string, olderThan time.Duration) (int, error)
+}
+
 // StreamUploader is optionally implemented by providers that support streaming uploads.
 type StreamUploader interface {
 	UploadStream(reader io.Reader, remotePath string, size int64) error

@@ -48,6 +48,7 @@ func execMSSQLDiscover() backupipc.BackupCommandResult {
 
 func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	var p struct {
+		JobID      string `json:"jobId"`
 		Instance   string `json:"instance"`
 		Database   string `json:"database"`
 		BackupType string `json:"backupType"`
@@ -66,6 +67,8 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 		return fail(err.Error())
 	}
 
+	// Staged upload copies an interrupted command left behind.
+	backup.SweepStaleStagedCopies(mgr.GetStagingDir())
 	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-mssql-*")
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
@@ -85,16 +88,18 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	if statErr != nil {
 		return fail("failed to stat MSSQL backup file: " + statErr.Error())
 	}
-	totalSize := backupFileInfo.Size()
 	snapshotID := newMssqlSnapshotID(p.Instance, p.Database)
 	remotePath := path.Join("snapshots", snapshotID, "files", filepath.Base(result.BackupFile))
 
-	if err := provider.Upload(result.BackupFile, remotePath); err != nil {
+	// The manifest records the digest of the bytes the upload stored.
+	uploaded, err := backup.UploadImmutableWithDigest(context.Background(), provider, mgr.GetStagingDir(), result.BackupFile, remotePath)
+	if err != nil {
 		removeMssqlBackupFile(result.BackupFile)
 		cleanupMssqlSnapshot(provider, snapshotID)
 		return fail("failed to upload MSSQL backup: " + err.Error())
 	}
 	removeMssqlBackupFile(result.BackupFile)
+	totalSize := uploaded.Size
 
 	modTime := backupFileInfo.ModTime().UTC()
 	snapshot := backup.Snapshot{
@@ -106,17 +111,20 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 				BackupPath: remotePath,
 				Size:       totalSize,
 				ModTime:    modTime,
+				Checksum:   uploaded.SHA256,
 			},
 		},
 		Size: totalSize,
 	}
 
-	if err := uploadMssqlSnapshotManifest(provider, snapshot); err != nil {
+	manifestObj, err := uploadMssqlSnapshotManifest(provider, mgr.GetStagingDir(), snapshot)
+	if err != nil {
 		cleanupMssqlSnapshot(provider, snapshotID)
 		return fail("failed to upload MSSQL manifest: " + err.Error())
 	}
+	attestation, attestWarning := attestProviderBackedSnapshot(snapshotID, p.JobID, mgr.GetAgentID(), manifestObj)
 
-	return marshalResult(map[string]any{
+	out := map[string]any{
 		"snapshotId":    snapshotID,
 		"filesBackedUp": 1,
 		"bytesBackedUp": totalSize,
@@ -149,10 +157,18 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 					"backupPath": snapshot.Files[0].BackupPath,
 					"size":       snapshot.Files[0].Size,
 					"modTime":    snapshot.Files[0].ModTime.Format(time.RFC3339),
+					"checksum":   snapshot.Files[0].Checksum,
 				},
 			},
 		},
-	}, nil)
+	}
+	if attestation != nil {
+		out["attestation"] = attestation
+	}
+	if attestWarning != "" {
+		out["warning"] = attestWarning
+	}
+	return marshalResult(out, nil)
 }
 
 func execMSSQLRestore(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
@@ -214,6 +230,7 @@ func execHypervDiscover() backupipc.BackupCommandResult {
 
 func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
 	var p struct {
+		JobID           string `json:"jobId"`
 		VMName          string `json:"vmName"`
 		ConsistencyType string `json:"consistencyType"`
 	}
@@ -242,6 +259,8 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 	// Every return below — export failure, upload failure, manifest failure
 	// and success — removes the staged export (#5460). A helper killed
 	// mid-export is covered by sweepOrphanedHypervStaging at startup.
+	// Staged upload copies an interrupted command left behind.
+	backup.SweepStaleStagedCopies(mgr.GetStagingDir())
 	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-hyperv-*")
 	if err != nil {
 		return fail("failed to create staging dir: " + err.Error())
@@ -279,25 +298,28 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		}
 		normalizedRelPath := filepath.ToSlash(relPath)
 		remotePath := path.Join(prefix, "files", normalizedRelPath)
-		info, infoErr := d.Info()
-		var fileSize int64
 		var modTime time.Time
-		if infoErr != nil {
-			slog.Warn("failed to stat file during backup upload, size will be approximate",
+		if info, infoErr := d.Info(); infoErr != nil {
+			slog.Warn("failed to stat file during backup upload, modification time unknown",
 				"path", localPath, "error", infoErr.Error())
 		} else {
-			fileSize = info.Size()
 			modTime = info.ModTime().UTC()
-			totalSize += fileSize
 		}
+		// Size and checksum are the digest of the bytes the upload stored.
+		uploaded, uploadErr := backup.UploadImmutableWithDigest(context.Background(), provider, mgr.GetStagingDir(), localPath, remotePath)
+		if uploadErr != nil {
+			return uploadErr
+		}
+		totalSize += uploaded.Size
 		fileCount++
 		manifestFiles = append(manifestFiles, hypervSnapshotManifestFile{
 			SourcePath: normalizedRelPath,
 			BackupPath: remotePath,
-			Size:       fileSize,
+			Size:       uploaded.Size,
 			ModTime:    modTime,
+			Checksum:   uploaded.SHA256,
 		})
-		return provider.Upload(localPath, remotePath)
+		return nil
 	})
 	if err != nil {
 		return fail("failed to upload Hyper-V export: " + err.Error())
@@ -312,9 +334,14 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		Files:           manifestFiles,
 		Size:            totalSize,
 	}
-	if err := uploadHypervSnapshotManifest(provider, manifest); err != nil {
+	manifestObj, err := uploadHypervSnapshotManifest(provider, mgr.GetStagingDir(), manifest)
+	if err != nil {
 		cleanupHypervSnapshot(provider, snapshotID)
 		return fail("failed to upload Hyper-V manifest: " + err.Error())
+	}
+	attestation, attestWarning := attestProviderBackedSnapshot(snapshotID, p.JobID, mgr.GetAgentID(), manifestObj)
+	if attestWarning != "" {
+		warnings = append(warnings, attestWarning)
 	}
 
 	out := map[string]any{
@@ -343,6 +370,9 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 	// reads as "no warning" to the server, but older servers refused it.
 	if len(warnings) > 0 {
 		out["warning"] = strings.Join(warnings, "\n")
+	}
+	if attestation != nil {
+		out["attestation"] = attestation
 	}
 	return marshalResult(out, nil)
 }
@@ -462,28 +492,33 @@ type hypervSnapshotManifestFile struct {
 	BackupPath string    `json:"backupPath"`
 	Size       int64     `json:"size"`
 	ModTime    time.Time `json:"modTime,omitempty"`
+	// Checksum is the lowercase-hex SHA-256 of the bytes stored at
+	// BackupPath (the digest of the upload). Empty only in manifests
+	// written before it was recorded.
+	Checksum string `json:"checksum"`
 }
 
-func uploadHypervSnapshotManifest(provider providers.BackupProvider, manifest hypervSnapshotManifest) error {
+// uploadHypervSnapshotManifest publishes manifest as the snapshot's
+// manifest.json and returns it with the digest of the uploaded bytes.
+func uploadHypervSnapshotManifest(provider providers.BackupProvider, stagingDir string, manifest hypervSnapshotManifest) (backup.PublishedObject, error) {
 	tempFile, err := os.CreateTemp("", "hyperv-manifest-*.json")
 	if err != nil {
-		return err
+		return backup.PublishedObject{}, err
 	}
 	tempPath := tempFile.Name()
 	encoder := json.NewEncoder(tempFile)
 	if err := encoder.Encode(manifest); err != nil {
 		_ = tempFile.Close()
 		_ = os.Remove(tempPath)
-		return err
+		return backup.PublishedObject{}, err
 	}
 	if err := tempFile.Close(); err != nil {
 		_ = os.Remove(tempPath)
-		return err
+		return backup.PublishedObject{}, err
 	}
 	defer os.Remove(tempPath)
 
-	manifestKey := path.Join("snapshots", manifest.ID, "manifest.json")
-	return provider.Upload(tempPath, manifestKey)
+	return backup.PublishControlObject(context.Background(), provider, stagingDir, backup.AttestationRoleManifest, manifest.ID, tempPath)
 }
 
 func downloadHypervSnapshotManifest(snapshotID string, provider providers.BackupProvider) (*hypervSnapshotManifest, error) {
@@ -584,26 +619,45 @@ func cleanupHypervSnapshot(provider providers.BackupProvider, snapshotID string)
 	}
 }
 
-func uploadMssqlSnapshotManifest(provider providers.BackupProvider, snapshot backup.Snapshot) error {
+// uploadMssqlSnapshotManifest publishes snapshot as its manifest.json and
+// returns it with the digest of the uploaded bytes.
+func uploadMssqlSnapshotManifest(provider providers.BackupProvider, stagingDir string, snapshot backup.Snapshot) (backup.PublishedObject, error) {
 	tempFile, err := os.CreateTemp("", "mssql-manifest-*.json")
 	if err != nil {
-		return err
+		return backup.PublishedObject{}, err
 	}
 	tempPath := tempFile.Name()
 	encoder := json.NewEncoder(tempFile)
 	if err := encoder.Encode(snapshot); err != nil {
 		_ = tempFile.Close()
 		_ = os.Remove(tempPath)
-		return err
+		return backup.PublishedObject{}, err
 	}
 	if err := tempFile.Close(); err != nil {
 		_ = os.Remove(tempPath)
-		return err
+		return backup.PublishedObject{}, err
 	}
 	defer os.Remove(tempPath)
 
-	manifestKey := path.Join("snapshots", snapshot.ID, "manifest.json")
-	return provider.Upload(tempPath, manifestKey)
+	return backup.PublishControlObject(context.Background(), provider, stagingDir, backup.AttestationRoleManifest, snapshot.ID, tempPath)
+}
+
+// attestProviderBackedSnapshot builds the attestation for a database or VM
+// backup: its manifest is the only control object and it never has a base.
+// No attestation (and no warning) without a dispatched job id or an enrolled
+// agent id — the server cannot bind one. A statement that cannot be built
+// returns a warning instead.
+func attestProviderBackedSnapshot(snapshotID, jobID, agentID string, manifest backup.PublishedObject) (*backup.AttestationEnvelope, string) {
+	if jobID == "" || agentID == "" {
+		return nil, ""
+	}
+	env, err := backup.NewAttestationEnvelope(snapshotID, jobID, agentID, nil, nil,
+		map[string]backup.PublishedObject{backup.AttestationRoleManifest: manifest})
+	if err != nil {
+		slog.Warn("snapshot published without an attestation", "snapshotId", snapshotID, "error", err.Error())
+		return nil, "attestation_unavailable: " + err.Error()
+	}
+	return env, ""
 }
 
 func downloadMssqlSnapshotManifest(provider providers.BackupProvider, snapshotID string) (*backup.Snapshot, error) {

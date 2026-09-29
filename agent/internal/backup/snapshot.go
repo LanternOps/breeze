@@ -162,6 +162,20 @@ func (g *leaseGate) UploadContext(ctx context.Context, localPath, remotePath str
 	return g.BackupProvider.Upload(localPath, remotePath)
 }
 
+// UploadWithDigest implements providers.DigestUploader with the same publish
+// check as UploadContext. When the wrapped provider has no digest support it
+// uploads nothing and answers providers.ErrDigestUnavailable, so the caller
+// stages a copy and uploads that through UploadContext (checked again).
+func (g *leaseGate) UploadWithDigest(ctx context.Context, localPath, remotePath string) (providers.UploadDigest, error) {
+	if err := g.checkPublish(remotePath); err != nil {
+		return providers.UploadDigest{}, err
+	}
+	if du, ok := g.BackupProvider.(providers.DigestUploader); ok {
+		return du.UploadWithDigest(ctx, localPath, remotePath)
+	}
+	return providers.UploadDigest{}, fmt.Errorf("%w: %T", providers.ErrDigestUnavailable, g.BackupProvider)
+}
+
 // Snapshot represents a point-in-time backup.
 type Snapshot struct {
 	ID        string         `json:"id"`
@@ -224,6 +238,14 @@ type Snapshot struct {
 	// server-side instead of silently carrying entries whose mismatch checks
 	// are quietly downgraded to warnings on every future restore/verify.
 	VolatileFiles int `json:"-"`
+	// PublishedObjects holds, per attestation role, the control objects this
+	// run itself uploaded for this snapshot, with the digests of the uploaded
+	// bytes (see publishControlObject). In-memory only. Empty for a snapshot
+	// read back from storage.
+	PublishedObjects map[string]PublishedObject `json:"-"`
+	// attestationWithheld, when set, says why this run must not attest the
+	// snapshot even though it published its control objects.
+	attestationWithheld string
 }
 
 // SnapshotFile captures metadata for a backed up file.
@@ -258,7 +280,9 @@ type SnapshotFile struct {
 	Size       int64     `json:"size"`
 	ModTime    time.Time `json:"modTime"`
 	// Checksum is the lowercase-hex SHA-256 of the ORIGINAL (uncompressed)
-	// source bytes. Verify/restore compare it against the bytes returned by
+	// bytes the upload read and stored — the digest of the upload itself
+	// (see uploadWithDigest), never a separate read of the source. Size is
+	// the length of those same bytes. Verify/restore compare it against the bytes returned by
 	// provider.Download(), which yields the original source bytes for every
 	// provider: the cloud providers (S3/B2/Azure/GCS) store the object verbatim,
 	// and LocalProvider stores it gzip-compressed (the .gz suffix) but
@@ -291,11 +315,11 @@ type SnapshotFile struct {
 	// Owner is nil when unknown (Windows, pre-W02 manifests).
 	Owner *FileOwner `json:"owner,omitempty"`
 	// Volatile is true when the source file kept changing while it was being
-	// backed up (grew/shrank/rewritten between the pre-upload measurement and
-	// the re-upload retry — see reconcileAfterUpload) and Size/Checksum
-	// therefore describe the LAST measurement that was actually uploaded,
-	// not necessarily the file's state at any single instant an observer
-	// could point to. Restore/verify treat a size or checksum mismatch on a
+	// backed up (grew/shrank/rewritten between the pre-upload stat and the
+	// re-upload retry — see reconcileAfterUpload). Size/Checksum still
+	// describe exactly the bytes stored at BackupPath (the digest of the
+	// upload that holds the object), but not necessarily the file's state at
+	// any single instant an observer could point to. Restore/verify treat a size or checksum mismatch on a
 	// Volatile entry as a warning, not a failed file (#5581) — the file is
 	// inherently a moving target (a live log, the agent's own checkpoint
 	// journal) and the manifest is already self-consistent with what was
@@ -559,6 +583,7 @@ type createSnapshotOption func(*createSnapshotOptions)
 
 type createSnapshotOptions struct {
 	runIdentity           string
+	uploadStagingDir      string
 	systemStateStagingDir string
 	systemStateManifest   *systemstate.SystemStateManifest
 	layoutManifest        *layout.Manifest
@@ -568,6 +593,13 @@ type createSnapshotOptions struct {
 // see createSnapshotWithProgress's doc comment.
 func withRunIdentity(identity string) createSnapshotOption {
 	return func(o *createSnapshotOptions) { o.runIdentity = identity }
+}
+
+// withUploadStagingDir sets where uploadWithDigest stages an immutable copy
+// of a file for a provider that cannot report upload digests itself ("" =
+// the OS temp dir).
+func withUploadStagingDir(dir string) createSnapshotOption {
+	return func(o *createSnapshotOptions) { o.uploadStagingDir = dir }
 }
 
 // withSystemState arranges for the system state already collected into
@@ -698,6 +730,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		Timestamp:      time.Now().UTC(),
 		BackupIdentity: identity,
 	}
+	stagingDir := options.uploadStagingDir
+	rec := newControlRecorder(journal)
+	snapshot.PublishedObjects = rec.objects
 	if prevSnapshot != nil {
 		snapshot.FormatVersion = 2
 		snapshot.BaseSnapshotID = prevSnapshot.ID
@@ -902,6 +937,21 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		tainted := journal.foldCollidingKeys()
 		for _, file := range files {
 			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
+				// Size and modification time can match a file whose content
+				// changed. Reuse the entry only when the source still hashes
+				// to the recorded digest (the digest of the uploaded source
+				// bytes — the same quantity sha256File computes). This costs
+				// one full read of every resumable file, still far cheaper
+				// than uploading it again; a mismatch or read error uploads
+				// the file afresh and the recorded digest is never replaced
+				// by anything but a new upload's.
+				if entry.Checksum == "" || !checksumMatches(file.sourcePath, entry.Checksum) {
+					log.Info("journaled file changed since it was uploaded; uploading it again",
+						"path", file.sourcePath,
+						"snapshotId", snapshot.ID,
+					)
+					continue
+				}
 				if tainted[entry.BackupPath] {
 					// A pre-#5582 journal stored this file and a case twin at
 					// keys one object answers to; re-upload rather than
@@ -1013,7 +1063,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// stamped "5 missing" rather than 400).
 		recordIncompleteFilesOfTotal(snapshot, errs, failedSources, filesTotal)
 		finalizeManifest()
-		if pubErr := publishSnapshotManifest(ctx, provider, snapshot, prefix); pubErr != nil {
+		if _, pubErr := publishSnapshotManifest(ctx, provider, stagingDir, rec, snapshot); pubErr != nil {
 			// Deliberately NOT followed by cleanupSnapshotPrefix. Deletion is
 			// irreversible and this is a data-protection product: retained
 			// orphans cost storage, deleted backups cost the customer their
@@ -1110,7 +1160,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// anyway (the file has moved on again), so there is nothing to gain
 		// by substituting it here — only Size/Checksum need to describe the
 		// uploaded bytes (#5581).
-		pre, preErr := measureBeforeUpload(file.sourcePath)
+		pre, preErr := statBeforeUpload(file.sourcePath)
 		uploadFile := file
 		haveMeasurement := preErr == nil
 		if haveMeasurement {
@@ -1135,7 +1185,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 		uploadStart := time.Now()
 		uploadCtx := inFlight.track(ctx, file.size)
-		uploadErr := attemptFileUpload(uploadCtx, provider, uploadFile, backupPath)
+		uploaded, uploadErr := attemptFileUpload(uploadCtx, provider, stagingDir, uploadFile, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
 			// Before spending anything else on this failure, make sure the
 			// source we are reading from still exists. If the shadow copy died,
@@ -1198,7 +1248,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				case <-ctx.Done():
 					uploadErr = errBackupStopped
 				case <-time.After(retryDelay):
-					uploadErr = attemptFileUpload(uploadCtx, provider, uploadFile, backupPath)
+					uploaded, uploadErr = attemptFileUpload(uploadCtx, provider, stagingDir, uploadFile, backupPath)
 				}
 			}
 		}
@@ -1232,74 +1282,52 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 		uploadMs := time.Since(uploadStart).Milliseconds()
 
-		// Determine the manifest's Size/Checksum/Volatile for this entry so
-		// they describe the bytes that were actually uploaded (#5581)
-		// rather than a walk-time stat paired with a separately-timed
-		// post-upload hash. ModTime is deliberately NOT touched here — it
-		// stays file.modTime (the walk-time value) in every case; see the
-		// comment above the pre-measurement for why. The common path
-		// (haveMeasurement) re-stats immediately after the upload and, only
-		// on a mismatch, re-measures and re-uploads once — see
-		// reconcileAfterUpload's doc comment for the full policy, including
-		// what happens if it drifts again.
-		var (
-			finalSize     int64
-			finalChecksum string
-			volatile      bool
-		)
+		// The manifest's Size/Checksum describe the bytes the upload stored
+		// (the digest uploadWithDigest returned for the attempt that
+		// succeeded), never a separate read of a source that may have moved
+		// on. Volatile only says the source did not hold still while it was
+		// read (see reconcileAfterUpload). ModTime is deliberately NOT
+		// touched here — it stays file.modTime (the walk-time value) in
+		// every case; see the comment above the pre-measurement for why.
+		stored := uploaded
+		volatile := false
 		if haveMeasurement {
-			sumStart := time.Now()
-			reconciled, isVolatile, reconcileErr := reconcileAfterUpload(uploadCtx, provider, file.sourcePath, backupPath, pre)
-			if reconcileErr != nil {
-				// Only errBackupStopped is ever returned here (a job cancel
-				// during the reconciliation retry) — abort exactly like any
-				// other errBackupStopped in this loop.
+			reconciled, isVolatile, reconcileErr := reconcileAfterUpload(uploadCtx, provider, stagingDir, file.sourcePath, backupPath, pre, uploaded)
+			if errors.Is(reconcileErr, errBackupStopped) {
 				return abortStopped()
 			}
-			finalSize = reconciled.size
-			finalChecksum = reconciled.checksum
+			if reconcileErr != nil {
+				// The re-upload of a changing file failed: what the key now
+				// holds is not known for certain, so the file is not in this
+				// snapshot.
+				errs = append(errs, fmt.Errorf("failed to upload %s: %w", file.sourcePath, reconcileErr))
+				failedSources = append(failedSources, file.sourcePath)
+				log.Warn("re-upload of a file that changed during its upload failed, skipping file",
+					"path", file.sourcePath,
+					"error", reconcileErr.Error(),
+				)
+				continue
+			}
+			stored = reconciled
 			volatile = isVolatile
 			if volatile {
 				volatileCount++
 				log.Warn("file was modified while being backed up, recorded as volatile",
 					"path", file.sourcePath,
-					"bytes", finalSize,
+					"bytes", stored.Size,
 					"snapshotId", snapshot.ID,
 				)
 			}
-			log.Debug("file uploaded",
-				"path", file.sourcePath,
-				"bytes", finalSize,
-				"uploadMs", uploadMs,
-				"checksumMs", time.Since(sumStart).Milliseconds(),
-				"volatile", volatile,
-				"snapshotId", snapshot.ID,
-			)
-		} else {
-			// The pre-upload measurement failed (source vanished/unreadable
-			// right before the upload), yet the upload itself just
-			// succeeded — a narrow race. Fall back to the walk-time size
-			// and a best-effort post-upload hash, matching this package's
-			// behavior before #5581.
-			finalSize = file.size
-			sumStart := time.Now()
-			checksum, sumErr := sha256File(file.sourcePath)
-			if sumErr != nil {
-				log.Warn("checksum failed, file stored without one",
-					"path", file.sourcePath,
-					"bytes", file.size,
-					"error", sumErr.Error(),
-				)
-			}
-			finalChecksum = checksum
-			log.Debug("file uploaded",
-				"path", file.sourcePath,
-				"bytes", file.size,
-				"uploadMs", uploadMs,
-				"checksumMs", time.Since(sumStart).Milliseconds(),
-				"snapshotId", snapshot.ID,
-			)
 		}
+		log.Debug("file uploaded",
+			"path", file.sourcePath,
+			"bytes", stored.Size,
+			"uploadMs", uploadMs,
+			"volatile", volatile,
+			"snapshotId", snapshot.ID,
+		)
+		finalSize := stored.Size
+		finalChecksum := stored.SHA256
 
 		entry := SnapshotFile{
 			SourcePath:   file.sourcePath,
@@ -1349,11 +1377,32 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return abortStopped()
 	}
 
+	// A resumed snapshot id may already hold a layout or system-state
+	// manifest from an earlier attempt. The manifest published below would
+	// sit beside it unattested, so clear every control key this run is not
+	// about to publish itself; if that is not possible, attest nothing.
+	if journal != nil && journal.resumed {
+		publishing := map[string]bool{
+			AttestationRoleLayout:              options.layoutManifest != nil,
+			AttestationRoleSystemStateManifest: options.systemStateManifest != nil && len(options.systemStateManifest.Artifacts) > 0,
+		}
+		for _, role := range []string{AttestationRoleLayout, AttestationRoleSystemStateManifest} {
+			if publishing[role] {
+				continue
+			}
+			key, _ := ControlObjectKey(snapshot.ID, role)
+			if err := provider.Delete(key); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
+				log.Warn("could not clear a control object left by an earlier attempt", "key", key, "error", err.Error())
+				snapshot.attestationWithheld = "a control object from an earlier attempt could not be cleared: " + key
+			}
+		}
+	}
+
 	// System state (if any was collected for this run — see withSystemState)
 	// publishes BEFORE the ordinary manifest below: see withSystemState's doc
 	// comment for why the order matters to a concurrent GC sweep.
 	if options.systemStateManifest != nil && len(options.systemStateManifest.Artifacts) > 0 {
-		if err := publishSystemState(ctx, provider, snapshot.ID, options.systemStateStagingDir, options.systemStateManifest); err != nil {
+		if _, err := publishSystemState(ctx, provider, stagingDir, rec, snapshot.ID, options.systemStateStagingDir, options.systemStateManifest); err != nil {
 			log.Error("system state publish failed; the snapshot's ordinary files were still stored, "+
 				"but the restore point is missing bare-metal recovery state",
 				"snapshotId", snapshot.ID,
@@ -1367,7 +1416,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	if options.layoutManifest != nil {
-		if err := publishLayoutManifest(ctx, provider, snapshot.ID, options.layoutManifest); err != nil {
+		if _, err := publishLayoutManifest(ctx, provider, stagingDir, rec, snapshot.ID, options.layoutManifest); err != nil {
 			if errors.Is(err, errBackupStopped) {
 				return abortStopped()
 			}
@@ -1375,7 +1424,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 	}
 
-	if err := publishSnapshotManifest(ctx, provider, snapshot, prefix); err != nil {
+	if _, err := publishSnapshotManifest(ctx, provider, stagingDir, rec, snapshot); err != nil {
 		if errors.Is(err, errBackupStopped) {
 			// A manifest-upload deadline expiry is fatal for the snapshot too
 			// (unlike a per-file data upload): without the manifest the
@@ -1412,15 +1461,22 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 //     closed: upload nothing, delete nothing, since we genuinely don't
 //     know whether a real manifest exists at this prefix.
 func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, error) {
+	snapshot, _, err := fetchPublishedManifestWithDigest(ctx, provider, prefix)
+	return snapshot, err
+}
+
+// fetchPublishedManifestWithDigest is fetchPublishedManifest that also
+// returns the SHA-256 and length of the manifest bytes it read.
+func fetchPublishedManifestWithDigest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, providers.UploadDigest, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, providers.UploadDigest{}, err
 		}
 	}
 	manifestKey := path.Join(prefix, snapshotManifestKey)
 	tempFile, err := os.CreateTemp("", "resume-manifest-*.json")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file for resume manifest check: %w", err)
+		return nil, providers.UploadDigest{}, fmt.Errorf("failed to create temp file for resume manifest check: %w", err)
 	}
 	tempPath := tempFile.Name()
 	_ = tempFile.Close()
@@ -1431,19 +1487,19 @@ func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvid
 
 	if err := provider.Download(manifestKey, tempPath); err != nil {
 		if errors.Is(err, providers.ErrObjectNotFound) {
-			return nil, nil
+			return nil, providers.UploadDigest{}, nil
 		}
-		return nil, fmt.Errorf("failed to check for an already-published manifest at %s: %w", manifestKey, err)
+		return nil, providers.UploadDigest{}, fmt.Errorf("failed to check for an already-published manifest at %s: %w", manifestKey, err)
 	}
 	data, err := os.ReadFile(tempPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read downloaded resume manifest: %w", err)
+		return nil, providers.UploadDigest{}, fmt.Errorf("failed to read downloaded resume manifest: %w", err)
 	}
 	var snapshot Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return nil, fmt.Errorf("failed to decode resume manifest %s: %w", manifestKey, err)
+		return nil, providers.UploadDigest{}, fmt.Errorf("failed to decode resume manifest %s: %w", manifestKey, err)
 	}
-	return &snapshot, nil
+	return &snapshot, digestBytes(data), nil
 }
 
 // refreshUploadLease best-effort writes the current UTC time (RFC3339) to
@@ -1482,38 +1538,32 @@ func refreshUploadLease(ctx context.Context, provider providers.BackupProvider, 
 // normal completion — a second, subtly different manifest writer is how the two
 // would drift apart. errBackupStopped is returned unwrapped so callers can tell
 // a job cancel from a genuine manifest failure.
-func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvider, snapshot *Snapshot, prefix string) error {
+func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvider, stagingDir string, rec *controlRecorder, snapshot *Snapshot) (PublishedObject, error) {
 	manifestPath, manifestErr := writeSnapshotManifest(snapshot)
 	if manifestErr != nil {
-		return manifestErr
+		return PublishedObject{}, manifestErr
 	}
 	defer os.Remove(manifestPath)
 
-	manifestKey := path.Join(prefix, snapshotManifestKey)
-	manifestInfo, statErr := os.Stat(manifestPath)
-	var manifestSize int64
-	if statErr == nil {
-		manifestSize = manifestInfo.Size()
-	}
-	manifestUploadErr := uploadWithDeadline(ctx, provider, manifestPath, manifestKey, manifestSize)
-	if manifestUploadErr != nil {
-		if errors.Is(manifestUploadErr, errBackupStopped) {
-			return manifestUploadErr
+	obj, err := publishControlObject(ctx, provider, stagingDir, rec, AttestationRoleManifest, snapshot.ID, manifestPath)
+	if err != nil {
+		if errors.Is(err, errBackupStopped) {
+			return PublishedObject{}, err
 		}
-		return fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
+		return PublishedObject{}, fmt.Errorf("failed to upload snapshot manifest: %w", err)
 	}
-	return nil
+	return obj, nil
 }
 
 // publishLayoutManifest uploads manifest as snapshots/<snapshotID>/layout.json.
-func publishLayoutManifest(ctx context.Context, provider providers.BackupProvider, snapshotID string, manifest *layout.Manifest) error {
+func publishLayoutManifest(ctx context.Context, provider providers.BackupProvider, stagingDir string, rec *controlRecorder, snapshotID string, manifest *layout.Manifest) (PublishedObject, error) {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode layout manifest: %w", err)
+		return PublishedObject{}, fmt.Errorf("encode layout manifest: %w", err)
 	}
 	tmp, err := os.CreateTemp("", "breeze-layout-*.json")
 	if err != nil {
-		return fmt.Errorf("stage layout manifest: %w", err)
+		return PublishedObject{}, fmt.Errorf("stage layout manifest: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
@@ -1521,19 +1571,19 @@ func publishLayoutManifest(ctx context.Context, provider providers.BackupProvide
 		// Best-effort: we are already returning the write error, a Close
 		// failure on this already-broken fd has nothing new to add.
 		_ = tmp.Close()
-		return fmt.Errorf("stage layout manifest: %w", err)
+		return PublishedObject{}, fmt.Errorf("stage layout manifest: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("stage layout manifest: %w", err)
+		return PublishedObject{}, fmt.Errorf("stage layout manifest: %w", err)
 	}
-	key := path.Join(snapshotRootDir, snapshotID, layoutManifestKey)
-	if err := uploadWithDeadline(ctx, provider, tmpPath, key, int64(len(data))); err != nil {
+	obj, err := publishControlObject(ctx, provider, stagingDir, rec, AttestationRoleLayout, snapshotID, tmpPath)
+	if err != nil {
 		if errors.Is(err, errBackupStopped) {
-			return err
+			return PublishedObject{}, err
 		}
-		return fmt.Errorf("upload %s: %w", key, err)
+		return PublishedObject{}, fmt.Errorf("upload %s: %w", path.Join(snapshotRootDir, snapshotID, layoutManifestKey), err)
 	}
-	return nil
+	return obj, nil
 }
 
 // publishSystemState uploads every artifact manifest describes (read from
@@ -1562,9 +1612,9 @@ func publishLayoutManifest(ctx context.Context, provider providers.BackupProvide
 // Returns nil for a nil manifest (nothing to publish) — callers gate this
 // off Artifacts being non-empty before calling, but staying a safe no-op
 // keeps this function usable standalone too.
-func publishSystemState(ctx context.Context, provider providers.BackupProvider, snapshotID, stagingDir string, manifest *systemstate.SystemStateManifest) error {
+func publishSystemState(ctx context.Context, provider providers.BackupProvider, uploadStagingDir string, rec *controlRecorder, snapshotID, stagingDir string, manifest *systemstate.SystemStateManifest) (PublishedObject, error) {
 	if manifest == nil {
-		return nil
+		return PublishedObject{}, nil
 	}
 	// Belt-and-suspenders alongside systemstate.CollectSystemState (which
 	// already sets this on the real collection path): guarantees every
@@ -1586,26 +1636,35 @@ func publishSystemState(ctx context.Context, provider providers.BackupProvider, 
 
 		info, statErr := os.Stat(localPath)
 		if statErr != nil {
-			return fmt.Errorf("stat system state artifact %s: %w", art.Path, statErr)
+			return PublishedObject{}, fmt.Errorf("stat system state artifact %s: %w", art.Path, statErr)
 		}
 		if info.Size() != art.SizeBytes {
-			return fmt.Errorf("system state artifact %s changed size since collection (expected %d bytes, found %d)",
+			return PublishedObject{}, fmt.Errorf("system state artifact %s changed size since collection (expected %d bytes, found %d)",
 				art.Path, art.SizeBytes, info.Size())
 		}
 
 		remoteKey := path.Join(prefix, art.Path)
-		uploadErr := uploadWithDeadline(ctx, provider, localPath, remoteKey, info.Size())
+		d, uploadErr := uploadWithDeadline(ctx, provider, uploadStagingDir, localPath, remoteKey, info.Size())
 		if uploadErr != nil {
 			if errors.Is(uploadErr, errBackupStopped) {
-				return uploadErr
+				return PublishedObject{}, uploadErr
 			}
-			return fmt.Errorf("upload system state artifact %s: %w", art.Path, uploadErr)
+			return PublishedObject{}, fmt.Errorf("upload system state artifact %s: %w", art.Path, uploadErr)
+		}
+		// The system-state manifest (an attested control object) lists
+		// every artifact's checksum, so the uploaded bytes must be the ones
+		// the collector hashed.
+		if d.Size != art.SizeBytes || (art.Checksum != "" && d.SHA256 != art.Checksum) {
+			return PublishedObject{}, fmt.Errorf("system state artifact %s changed since collection (uploaded bytes do not match the recorded checksum)", art.Path)
+		}
+		if art.Checksum == "" {
+			art.Checksum = d.SHA256
 		}
 	}
 
 	manifestPath, manifestErr := writeSystemStateManifest(manifest)
 	if manifestErr != nil {
-		return manifestErr
+		return PublishedObject{}, manifestErr
 	}
 	// Best-effort: manifestPath is a local OS temp file, already uploaded (or
 	// about to fail trying) — a leftover on Remove failure is harmless OS
@@ -1613,20 +1672,14 @@ func publishSystemState(ctx context.Context, provider providers.BackupProvider, 
 	// over. Matches the sibling cleanup in publishSnapshotManifest above.
 	defer func() { _ = os.Remove(manifestPath) }()
 
-	manifestKey := path.Join(prefix, systemStateManifestKey)
-	manifestInfo, statErr := os.Stat(manifestPath)
-	var manifestSize int64
-	if statErr == nil {
-		manifestSize = manifestInfo.Size()
-	}
-	manifestUploadErr := uploadWithDeadline(ctx, provider, manifestPath, manifestKey, manifestSize)
-	if manifestUploadErr != nil {
-		if errors.Is(manifestUploadErr, errBackupStopped) {
-			return manifestUploadErr
+	obj, err := publishControlObject(ctx, provider, uploadStagingDir, rec, AttestationRoleSystemStateManifest, snapshotID, manifestPath)
+	if err != nil {
+		if errors.Is(err, errBackupStopped) {
+			return PublishedObject{}, err
 		}
-		return fmt.Errorf("failed to upload system state manifest: %w", manifestUploadErr)
+		return PublishedObject{}, fmt.Errorf("failed to upload system state manifest: %w", err)
 	}
-	return nil
+	return obj, nil
 }
 
 // writeSystemStateManifest serializes manifest to a temp file for upload,
@@ -1649,17 +1702,20 @@ func writeSystemStateManifest(manifest *systemstate.SystemStateManifest) (string
 
 // attemptFileUpload runs a single upload attempt for file against a fresh
 // per-attempt context scoped to ctx with a size-scaled deadline (see
-// uploadWithDeadline).
-func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, file backupFile, backupPath string) error {
-	return uploadWithDeadline(ctx, provider, file.sourcePath, backupPath, file.size)
+// uploadWithDeadline), and returns the digest of the bytes the attempt stored
+// (see uploadWithDigest).
+func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, stagingDir string, file backupFile, backupPath string) (providers.UploadDigest, error) {
+	return uploadWithDeadline(ctx, provider, stagingDir, file.sourcePath, backupPath, file.size)
 }
 
 // uploadWithDeadline uploads localPath to remotePath under a per-attempt
-// context bounded by uploadDeadline(size). It is the ONLY way a snapshot
-// upload gets a deadline: files, the snapshot manifest, the layout manifest and
-// the system-state artifacts all go through it (#7105).
+// context bounded by uploadDeadline(size) and returns the digest of the bytes
+// the stored object holds (see uploadWithDigest). It is the ONLY way a
+// snapshot upload gets a deadline: files, the snapshot manifest, the layout
+// manifest, the system-state artifacts and every other control object all go
+// through it (#7105).
 //
-// uploadSnapshotFile maps any context error to errBackupStopped, so without the
+// uploadWithDigest maps any context error to errBackupStopped, so without the
 // conversion here a deadline expiry is indistinguishable from a user cancel —
 // the publish-time uploads used to return it as-is and the run was reported as
 // stopped, with nothing logged. A deadline expiry that is not also a job-context
@@ -1671,11 +1727,11 @@ func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, f
 // caller makes at most two attempts per file (the main loop's single retry;
 // publish-time uploads never retry), so it cannot repeat for a file. The
 // main loop's per-file skip warn has the same one-per-file bound.
-func uploadWithDeadline(ctx context.Context, provider providers.BackupProvider, localPath, remotePath string, size int64) error {
+func uploadWithDeadline(ctx context.Context, provider providers.BackupProvider, stagingDir, localPath, remotePath string, size int64) (providers.UploadDigest, error) {
 	deadline := uploadDeadline(size)
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, deadline)
 	defer cancelAttempt()
-	uploadErr := uploadSnapshotFile(attemptCtx, provider, localPath, remotePath)
+	d, uploadErr := uploadWithDigest(attemptCtx, provider, stagingDir, localPath, remotePath)
 	if errors.Is(uploadErr, errBackupStopped) && ctx.Err() == nil {
 		// The per-file deadline fired, not a job cancel. Log it distinctly:
 		// a deadline expiry means we sat on one file for the whole size-
@@ -1691,93 +1747,80 @@ func uploadWithDeadline(ctx context.Context, provider providers.BackupProvider, 
 		)
 		uploadErr = fmt.Errorf("upload stalled: no completion within %s", deadline)
 	}
-	return uploadErr
+	return d, uploadErr
 }
 
-// filePreUploadMeasurement is a stat+hash of a source file taken as a single
-// unit, immediately before it is handed to an upload attempt — so
-// size/modTime/checksum all describe the SAME instant, and that instant is
-// as close as possible to the bytes the provider is about to read (see
-// measureBeforeUpload / reconcileAfterUpload, #5581).
+// filePreUploadMeasurement is a stat of a source file taken immediately
+// before it is handed to an upload attempt. It is compared with a stat taken
+// right after the upload to tell whether the source held still while it was
+// read (see reconcileAfterUpload, #5581). The manifest's Size/Checksum never
+// come from it: they are the digest of the uploaded bytes.
 type filePreUploadMeasurement struct {
-	size     int64
-	modTime  time.Time
-	checksum string
+	size    int64
+	modTime time.Time
 }
 
-// measureBeforeUpload stats and hashes sourcePath as one unit. Providers
-// upload from a path (BackupProvider.Upload(localPath, remotePath)), not a
-// reader, so there is no way to hash the exact bytes as they stream through
-// an in-flight upload without changing that interface; this is the closest
-// approximation available without it — stat+hash right before the upload
-// call, rather than a walk-time stat paired with a post-upload hash from a
-// third point in time (the original bug: two reads, two different instants).
-func measureBeforeUpload(sourcePath string) (filePreUploadMeasurement, error) {
+// statBeforeUpload is the pre-upload measurement. A variable so tests can
+// make it fail while the upload itself succeeds.
+var statBeforeUpload = func(sourcePath string) (filePreUploadMeasurement, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return filePreUploadMeasurement{}, err
 	}
-	checksum, err := sha256File(sourcePath)
-	if err != nil {
-		return filePreUploadMeasurement{}, err
-	}
-	return filePreUploadMeasurement{size: info.Size(), modTime: info.ModTime(), checksum: checksum}, nil
+	return filePreUploadMeasurement{size: info.Size(), modTime: info.ModTime()}, nil
 }
 
 // reconcileAfterUpload re-stats sourcePath immediately after a successful
-// upload and compares it against pre — the stat+hash taken right before that
-// upload began, describing exactly the bytes that were (supposed to be)
-// sent. If the source is unchanged, pre already describes the uploaded
-// object and is returned as-is: no warning, no extra work, the common case.
+// upload (whose stored bytes first describes) and compares it against pre,
+// the stat taken right before that upload began. If the source is unchanged,
+// first is returned as-is: no warning, no extra work, the common case.
 //
 // If the source drifted (grew, shrank, or was otherwise modified) during the
-// upload window, the file is re-measured and re-uploaded ONCE so the
-// manifest has a chance to catch up with a fast-moving but eventually-still
-// file. If it drifts again even across that retry, chasing it further would
-// only delay the run against a file that is not going to hold still (a live
-// log, the agent's own checkpoint journal) — the entry is recorded as
-// volatile (return volatile=true) using the LAST pre-upload measurement,
-// which is self-consistent with what backupPath actually holds (that
-// measurement is what the retry's own upload sent).
+// upload window, the file is re-uploaded ONCE so the stored object has a
+// chance to catch up with a fast-moving but eventually-still file. If it
+// drifts again even across that retry, chasing it further would only delay
+// the run against a file that is not going to hold still (a live log, the
+// agent's own checkpoint journal) — the entry is recorded as volatile
+// (volatile=true). Either way the returned digest describes the object
+// backupPath holds: the retry's upload when it succeeded, else the first.
 //
 // Returns errBackupStopped when ctx is cancelled during the retry — the
 // caller aborts the run exactly as it does for any other errBackupStopped;
 // no other error is returned (a retry upload failure or a vanished source is
 // folded into volatile=true rather than failing the file, since the object
 // already stored at backupPath from the FIRST, successful upload remains a
-// valid — if volatile — restore point).
-func reconcileAfterUpload(ctx context.Context, provider providers.BackupProvider, sourcePath, backupPath string, pre filePreUploadMeasurement) (measurement filePreUploadMeasurement, volatile bool, err error) {
+// valid — if volatile — restore point; a failed upload never replaces a
+// stored object).
+func reconcileAfterUpload(ctx context.Context, provider providers.BackupProvider, stagingDir, sourcePath, backupPath string, pre filePreUploadMeasurement, first providers.UploadDigest) (stored providers.UploadDigest, volatile bool, err error) {
 	post, statErr := os.Stat(sourcePath)
 	if statErr == nil && post.Size() == pre.size && post.ModTime().Equal(pre.modTime) {
-		return pre, false, nil
+		return first, false, nil
 	}
 
-	pre2, pre2Err := measureBeforeUpload(sourcePath)
+	pre2, pre2Err := statBeforeUpload(sourcePath)
 	if pre2Err != nil {
 		// Can no longer read the source at all (e.g. deleted moments after
 		// the first upload completed). What's already stored at backupPath
-		// came from pre — keep describing that, flagged volatile.
-		return pre, true, nil
+		// is the first upload — keep describing that, flagged volatile.
+		return first, true, nil
 	}
 	reuploadFile := backupFile{sourcePath: sourcePath, size: pre2.size}
-	if uploadErr := attemptFileUpload(ctx, provider, reuploadFile, backupPath); uploadErr != nil {
+	second, uploadErr := attemptFileUpload(ctx, provider, stagingDir, reuploadFile, backupPath)
+	if uploadErr != nil {
 		if errors.Is(uploadErr, errBackupStopped) {
-			return pre, true, errBackupStopped
+			return first, true, errBackupStopped
 		}
-		// Re-upload failed outright (destination error, deadline expiry).
-		// backupPath still holds whatever the FIRST upload put there, i.e.
-		// pre — keep describing that, flagged volatile since we now know
-		// the source didn't hold still.
-		return pre, true, nil
+		// The failed attempt may have replaced part or all of the first
+		// upload's object (a staged-copy fallback after an unverifiable
+		// upload), so the first digest can no longer be vouched for.
+		return providers.UploadDigest{}, true, fmt.Errorf("re-upload after the source changed: %w", uploadErr)
 	}
 
 	post2, statErr2 := os.Stat(sourcePath)
 	if statErr2 == nil && post2.Size() == pre2.size && post2.ModTime().Equal(pre2.modTime) {
-		return pre2, false, nil
+		return second, false, nil
 	}
-	// Changed again: stop chasing it and record the LAST pre-upload
-	// measurement — pre2, what was actually just re-uploaded — as volatile.
-	return pre2, true, nil
+	return second, true, nil
 }
 
 func uploadSnapshotFile(ctx context.Context, provider providers.BackupProvider, localPath, remotePath string) error {

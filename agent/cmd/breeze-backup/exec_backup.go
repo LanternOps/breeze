@@ -187,6 +187,11 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		// mode) and becomes non-nil (possibly pointing at "") when present.
 		BaseSnapshotID        *string `json:"baseSnapshotId"`
 		PublishLeaseExpiresAt string  `json:"publishLeaseExpiresAt"`
+		// JobID is the dispatched backup job; a snapshot attestation names
+		// it. BaseAttestation is the server's record of the pinned base's
+		// manifest, which the run checks the downloaded base against.
+		JobID           string                  `json:"jobId"`
+		BaseAttestation *backup.BaseAttestation `json:"baseAttestation"`
 		// Vss lets the server force VSS on/off for this run. Not currently sent
 		// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
 		// absent the agent defaults it itself below.
@@ -283,6 +288,8 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 			AgentVersion:          version,
 			BaseSnapshotID:        p.BaseSnapshotID,
 			PublishLeaseExpiresAt: publishLeaseExpiresAt,
+			JobID:                 p.JobID,
+			BaseAttestation:       p.BaseAttestation,
 		}
 		// #5493: a wholeMachine system_image selection fans out with Paths
 		// set (backupWorker.ts resolveBackupTargets), so this run ALSO walks
@@ -319,6 +326,8 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		AgentVersion:          version,
 		BaseSnapshotID:        p.BaseSnapshotID,
 		PublishLeaseExpiresAt: publishLeaseExpiresAt,
+		JobID:                 p.JobID,
+		BaseAttestation:       p.BaseAttestation,
 	}), nil
 }
 

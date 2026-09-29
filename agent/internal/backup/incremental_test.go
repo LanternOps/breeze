@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path"
@@ -446,7 +447,7 @@ func TestFetchServerOwnedBase(t *testing.T) {
 		}
 		storeManifest(t, provider, base)
 
-		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity)
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity, attestationOfStored(t, provider, "snap-base"))
 		if snap == nil {
 			t.Fatalf("expected a matching snapshot, got nil (reason: %s)", reason)
 		}
@@ -465,7 +466,7 @@ func TestFetchServerOwnedBase(t *testing.T) {
 		}
 		storeManifest(t, provider, base)
 
-		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity)
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity, attestationOfStored(t, provider, "snap-base"))
 		if snap != nil {
 			t.Fatalf("expected nil on identity mismatch, got %+v", snap)
 		}
@@ -476,7 +477,7 @@ func TestFetchServerOwnedBase(t *testing.T) {
 
 	t.Run("empty baseSnapshotId means full run", func(t *testing.T) {
 		provider := newMockProvider()
-		snap, reason := fetchServerOwnedBase(context.Background(), provider, "", myIdentity)
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "", myIdentity, nil)
 		if snap != nil {
 			t.Fatalf("expected nil for empty baseSnapshotId, got %+v", snap)
 		}
@@ -487,7 +488,9 @@ func TestFetchServerOwnedBase(t *testing.T) {
 
 	t.Run("404 (manifest never uploaded) falls back to full run", func(t *testing.T) {
 		provider := newMockProvider()
-		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-missing", myIdentity)
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-missing", myIdentity, &BaseAttestation{
+			ManifestKey: "snapshots/snap-missing/manifest.json", ManifestSHA256: strings.Repeat("a", 64), ManifestSize: 10,
+		})
 		if snap != nil {
 			t.Fatalf("expected nil on download failure, got %+v", snap)
 		}
@@ -506,5 +509,85 @@ func TestDecideFile_ContentlessAlwaysUploadPath(t *testing.T) {
 	decision, entry := decideFile(link, prev)
 	if decision != decideUpload || entry.BackupPath != "" {
 		t.Fatalf("decision=%v entry=%+v; content-less entries never dedupe by reference", decision, entry)
+	}
+}
+
+// attestationOfStored is the server's record of the manifest stored for id.
+func attestationOfStored(t *testing.T, provider *mockProvider, id string) *BaseAttestation {
+	t.Helper()
+	key := path.Join(snapshotRootDir, id, snapshotManifestKey)
+	data, ok := provider.files[key]
+	if !ok {
+		t.Fatalf("no manifest stored for %s", id)
+	}
+	d := digestBytes(data)
+	return &BaseAttestation{ManifestKey: key, ManifestSHA256: d.SHA256, ManifestSize: d.Size}
+}
+
+// The base's manifest is reused only when its bytes match the server's
+// attestation of it; any doubt falls back to a full run with a reason code.
+func TestFetchServerOwnedBase_VerifiesTheAttestedManifest(t *testing.T) {
+	const myIdentity = "s3|bucket-1|device-a|file"
+	const baseID = "snap-base"
+	seed := func(t *testing.T) *mockProvider {
+		provider := newMockProvider()
+		storeManifest(t, provider, &Snapshot{
+			ID:             baseID,
+			Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			BackupIdentity: myIdentity,
+			Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snap-base/files/a.txt.gz", Size: 1, Checksum: strings.Repeat("a", 64)}},
+		})
+		return provider
+	}
+	key := path.Join(snapshotRootDir, baseID, snapshotManifestKey)
+
+	cases := []struct {
+		name         string
+		att          func(t *testing.T, p *mockProvider) *BaseAttestation
+		changeStored func(p *mockProvider)
+		wantReuse    bool
+		wantReason   string
+	}{
+		{name: "matching bytes are reused", att: func(t *testing.T, p *mockProvider) *BaseAttestation { return attestationOfStored(t, p, baseID) }, wantReuse: true},
+		{name: "same-size different bytes fall back", att: func(t *testing.T, p *mockProvider) *BaseAttestation { return attestationOfStored(t, p, baseID) },
+			changeStored: func(p *mockProvider) {
+				data := append([]byte(nil), p.files[key]...)
+				i := bytes.Index(data, []byte("/data/a.txt"))
+				data[i+6] = 'b' // same length, different bytes
+				p.files[key] = data
+			}, wantReason: BaseFallbackAttestationMismatch},
+		{name: "different size falls back", att: func(t *testing.T, p *mockProvider) *BaseAttestation {
+			a := attestationOfStored(t, p, baseID)
+			a.ManifestSize++
+			return a
+		}, wantReason: BaseFallbackAttestationMismatch},
+		{name: "no attestation falls back", att: func(*testing.T, *mockProvider) *BaseAttestation { return nil }, wantReason: BaseFallbackAttestationAbsent},
+		{name: "attested key for another snapshot falls back", att: func(t *testing.T, p *mockProvider) *BaseAttestation {
+			a := attestationOfStored(t, p, baseID)
+			a.ManifestKey = "snapshots/other/manifest.json"
+			return a
+		}, wantReason: BaseFallbackKeyMismatch},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := seed(t)
+			att := tc.att(t, p)
+			if tc.changeStored != nil {
+				tc.changeStored(p)
+			}
+			snap, reason := fetchServerOwnedBase(context.Background(), p, baseID, myIdentity, att)
+			if tc.wantReuse {
+				if snap == nil || snap.ID != baseID {
+					t.Fatalf("want the base reused, got nil (%s)", reason)
+				}
+				return
+			}
+			if snap != nil {
+				t.Fatalf("want a full run, got base %s", snap.ID)
+			}
+			if !strings.HasPrefix(reason, tc.wantReason) {
+				t.Fatalf("reason = %q, want prefix %q", reason, tc.wantReason)
+			}
+		})
 	}
 }
