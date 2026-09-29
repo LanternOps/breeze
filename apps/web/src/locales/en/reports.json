@@ -1276,7 +1276,8 @@
           "excluded": "Excluded",
           "ineligible": "Not eligible",
           "blocked_no_authority": "Blocked: owner has no access",
-          "blocked_no_recipients": "No customer recipient"
+          "blocked_no_recipients": "No customer recipient",
+          "detached": "Detached"
         },
         "delivery": {
           "sent": "Sent",
@@ -1304,7 +1305,8 @@
         "generated": "Report generated for {{org}}",
         "updateFailed": "Couldn't update the multi-org report.",
         "detachFailed": "Couldn't detach the report.",
-        "generateFailed": "Couldn't generate the report."
+        "generateFailed": "Couldn't generate the report.",
+        "detachedHint": "Its standalone copy is managed separately. Delete that report to bring this organization back into the multi-org report."
       },
       "transferOwner": {
         "title": "Transfer owner",

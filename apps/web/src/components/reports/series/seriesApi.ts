@@ -195,6 +195,17 @@ export async function setChildRecipientOverride(
 ): Promise<void> {
   if (current === next) return;
   const base = `/reports/${encodeURIComponent(reportId)}/recipients`;
+  // W02 upserts `mode` on (report_id, contact_id) for a series child, so an
+  // add↔remove switch is ONE POST (no window where the contact is on the rule).
+  if (current !== 'default' && next !== 'default') {
+    await runAction({
+      request: () => fetchWithAuth(base, { method: 'POST', body: JSON.stringify({ contactId, mode: next }) }),
+      errorFallback: msgs.errorFallback,
+      successMessage: msgs.successMessage,
+      friendly,
+    });
+    return;
+  }
   if (current !== 'default') {
     await runAction({
       request: () => fetchWithAuth(`${base}/${encodeURIComponent(contactId)}`, { method: 'DELETE' }),

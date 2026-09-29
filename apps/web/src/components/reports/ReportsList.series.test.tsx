@@ -131,4 +131,18 @@ describe('ReportsList — multi-org series (W03)', () => {
     expect(await screen.findByTestId('report-row-rep-s')).toBeInTheDocument();
     expect(screen.getByTestId('reports-series-load-failed')).toBeInTheDocument();
   });
+
+  // W03 final review: a session that passes the client gate but cannot read
+  // series (403) must not lose every per-org copy from the grouped list.
+  it('falls back to the ungrouped list when the series listing is forbidden', async () => {
+    mockApi();
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/reports/series') return Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve({}) });
+      if (url === '/reports') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [single, child] }) });
+      if (url === '/reports?series=exclude') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [single] }) });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+    });
+    render(<ReportsList />);
+    expect(await screen.findByTestId('report-row-rep-child')).toBeInTheDocument();
+  });
 });

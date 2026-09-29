@@ -111,5 +111,9 @@ export function targetsAfterInclude(detail: SeriesDetail, orgId: string): Series
 
 /** A Chosen-organizations series keeps at least one org (Review Focus 1). */
 export function canExcludeOrg(detail: SeriesDetail, orgId: string): boolean {
-  return detail.series.targetMode === 'all' || detail.targets.some((id) => id !== orgId);
+  if (detail.series.targetMode === 'all') return true;
+  // Only a chosen org that can actually receive a copy counts as "the one
+  // that remains" — a suspended or detached one would leave the series empty.
+  const stateOf = new Map(detail.orgs.map((o) => [o.orgId, o.state]));
+  return detail.targets.some((id) => id !== orgId && stateOf.get(id) !== 'ineligible' && stateOf.get(id) !== 'detached');
 }

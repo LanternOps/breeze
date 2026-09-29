@@ -11,8 +11,9 @@ vi.mock('../../stores/auth', () => ({
     { getState: () => ({}) },
   ),
 }));
+const jwt = vi.hoisted(() => ({ scope: 'partner' as 'partner' | 'organization' }));
 vi.mock('@/lib/authScope', () => ({
-  useJwtClaims: () => ({ status: 'resolved', claims: { scope: 'partner', partnerId: 'p-1', orgId: null } }),
+  useJwtClaims: () => ({ status: 'resolved', claims: { scope: jwt.scope, partnerId: 'p-1', orgId: jwt.scope === 'organization' ? 'o-1' : null } }),
 }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 const navigateTo = vi.fn();
@@ -33,6 +34,7 @@ function calls(url: string, method: string) {
 describe('ReportBuilder — one report per organization (W03)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    jwt.scope = 'partner';
     useOrgStore.setState({
       currentOrgId: null,
       organizations: [
@@ -130,5 +132,14 @@ describe('ReportBuilder — one report per organization (W03)', () => {
     expect(body).not.toHaveProperty('recipientRule');
     expect(body.orgId).toBe('o-1');
     expect(calls('/reports/series', 'POST')).toHaveLength(0);
+  });
+
+  // W03 final review: no empty bordered card when Covers has nothing to offer.
+  it('renders no Covers card for an organization user (one mode, no picker)', async () => {
+    jwt.scope = 'organization';
+    useOrgStore.setState({ currentOrgId: 'o-1' });
+    render(<ReportBuilder mode="create" />);
+    await screen.findByTestId('report-builder-submit');
+    expect(screen.queryByTestId('report-builder-covers')).toBeNull();
   });
 });

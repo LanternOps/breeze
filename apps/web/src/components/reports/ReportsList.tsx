@@ -200,7 +200,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   // one org focused, children are ordinary rows with a Multi-org badge.
   const seriesGate =
     jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && canManagePartnerWide;
-  const grouped = seriesGate && !currentOrgId;
+  // A session that passes the client gate but may not read series (403) falls
+  // back to the ungrouped list, so no per-org copy disappears (W03 final review).
+  const [seriesForbidden, setSeriesForbidden] = useState(false);
+  const grouped = seriesGate && !currentOrgId && !seriesForbidden;
   const [seriesDetails, setSeriesDetails] = useState<SeriesDetail[]>([]);
   const [seriesLoadFailed, setSeriesLoadFailed] = useState(false);
   const [view, setView] = useHashState<ReportsListView>(DEFAULT_REPORTS_LIST_VIEW, parseReportsListHash);
@@ -270,14 +273,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           : Promise.resolve<PartnerWideFetch>({ rows: [], complete: true }),
         grouped
           ? fetchSeriesList().then(
-              (rows) => ({ rows: rows ?? [], failed: false }),
+              (rows) => ({ rows: rows ?? [], failed: false, forbidden: rows === null }),
               (err: unknown) => {
                 // The rest of the list still renders; the banner says what is missing.
                 console.warn('Failed to fetch multi-org reports:', err);
-                return { rows: [] as SeriesDetail[], failed: true };
+                return { rows: [] as SeriesDetail[], failed: true, forbidden: false };
               },
             )
-          : Promise.resolve({ rows: [] as SeriesDetail[], failed: false }),
+          : Promise.resolve({ rows: [] as SeriesDetail[], failed: false, forbidden: false }),
       ]);
       if (!response.ok) {
         throw new Error(stableT('reports.reportsList.errors.fetchReports'));
@@ -290,6 +293,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       setPartnerWideIncomplete(!partnerWide.complete);
       setSeriesDetails(seriesResult.rows);
       setSeriesLoadFailed(seriesResult.failed);
+      // Refetches ungrouped: `grouped` flips, so fetchReports (and its effect) re-run.
+      if (seriesResult.forbidden) setSeriesForbidden(true);
     } catch (err) {
       if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : stableT('reports.reportsList.errors.generic'));

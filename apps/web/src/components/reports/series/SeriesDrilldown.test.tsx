@@ -70,6 +70,22 @@ describe('SeriesDrilldown', () => {
     await waitFor(() => expect(api.replaceSeriesTargets).toHaveBeenCalledWith('s-1', { targetMode: 'all', orgIds: [] }, expect.anything()));
   });
 
+  // W03 final review: Include would be a no-op while the standalone copy is live.
+  it('shows a detached org as Detached with no Include/Exclude/Run, and says why', () => {
+    const withDetached: SeriesDetail = {
+      ...ALL,
+      orgs: [...ALL.orgs, { orgId: 'o-d', orgName: 'Delta', state: 'detached', childReportId: null, lastRun: null }],
+    };
+    render(<SeriesDrilldown detail={withDetached} onChanged={vi.fn()} timezone="UTC" />);
+    const row = screen.getByTestId('series-org-row-o-d');
+    expect(row).toHaveAttribute('data-state', 'detached');
+    expect(row).toHaveTextContent('Detached');
+    expect(screen.queryByTestId('series-org-include-o-d')).toBeNull();
+    expect(screen.queryByTestId('series-org-exclude-o-d')).toBeNull();
+    expect(screen.queryByTestId('series-org-run-o-d')).toBeNull();
+    expect(screen.getByTestId('series-org-hint-o-d')).toHaveTextContent('standalone');
+  });
+
   // Review Focus 1.
   it('disables Exclude on the only chosen organization', () => {
     const one: SeriesDetail = { series: series('selected'), targets: ['o-a'], orgs: [ALL.orgs[1]!] };

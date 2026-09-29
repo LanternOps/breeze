@@ -99,4 +99,12 @@ describe('target edits', () => {
     expect(canExcludeOrg(one, 'o-1')).toBe(false);
     expect(canExcludeOrg(detail(), 'o-1')).toBe(true);
   });
+  it('does not count a suspended or detached chosen org as the one that remains', () => {
+    const chosen = detail({
+      series: { id: SID, targetMode: 'selected' } as SeriesDetail['series'],
+      targets: ['o-1', 'o-s'],
+      orgs: [org({ orgId: 'o-1', state: 'active' }), org({ orgId: 'o-s', state: 'ineligible' })],
+    });
+    expect(canExcludeOrg(chosen, 'o-1')).toBe(false);
+  });
 });

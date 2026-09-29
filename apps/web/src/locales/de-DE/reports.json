@@ -1276,7 +1276,8 @@
           "excluded": "Ausgeschlossen",
           "ineligible": "Nicht berechtigt",
           "blocked_no_authority": "Blockiert: Eigentümer hat keinen Zugriff",
-          "blocked_no_recipients": "Kein Kundenempfänger"
+          "blocked_no_recipients": "Kein Kundenempfänger",
+          "detached": "Abgekoppelt"
         },
         "delivery": {
           "sent": "Gesendet",
@@ -1304,7 +1305,8 @@
         "generated": "Bericht für {{org}} erstellt",
         "updateFailed": "Der Multi-Organisations-Bericht konnte nicht aktualisiert werden.",
         "detachFailed": "Der Bericht konnte nicht abgekoppelt werden.",
-        "generateFailed": "Der Bericht konnte nicht erstellt werden."
+        "generateFailed": "Der Bericht konnte nicht erstellt werden.",
+        "detachedHint": "Die eigenständige Kopie wird separat verwaltet. Löschen Sie diesen Bericht, um die Organisation wieder in den Multi-Organisations-Bericht aufzunehmen."
       },
       "transferOwner": {
         "title": "Eigentümer übertragen",

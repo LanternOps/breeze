@@ -66,14 +66,13 @@ describe('seriesApi', () => {
     expect(showToast).not.toHaveBeenCalled();
   });
 
-  it('switches an add override to remove as DELETE then POST', async () => {
+  it('switches an add override to remove with one upserting POST (W02 upserts mode on series children)', async () => {
     fetchWithAuth.mockReturnValue(json({}));
     await setChildRecipientOverride('rep-1', 'c-1', 'add', 'remove', { errorFallback: 'fail', successMessage: 'ok' });
     expect(fetchWithAuth.mock.calls.map(([u, i]) => [u, (i as { method?: string }).method])).toEqual([
-      ['/reports/rep-1/recipients/c-1', 'DELETE'],
       ['/reports/rep-1/recipients', 'POST'],
     ]);
-    expect(JSON.parse((fetchWithAuth.mock.calls[1]![1] as { body: string }).body)).toEqual({ contactId: 'c-1', mode: 'remove' });
+    expect(JSON.parse((fetchWithAuth.mock.calls[0]![1] as { body: string }).body)).toEqual({ contactId: 'c-1', mode: 'remove' });
   });
 
   it('returns to the rule with a single DELETE', async () => {

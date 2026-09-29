@@ -10,7 +10,7 @@ export type { ReportDeliveryStatus } from '../DeliveryStatusChip';
 import type { ReportDeliveryStatus } from '../DeliveryStatusChip';
 export type SeriesTargetMode = 'all' | 'selected';
 export interface SeriesRecipientRule { primaryContact: boolean; roles: string[] }
-export type SeriesOrgState = 'active' | 'excluded' | 'ineligible' | 'blocked_no_authority' | 'blocked_no_recipients';
+export type SeriesOrgState = 'active' | 'excluded' | 'detached' | 'ineligible' | 'blocked_no_authority' | 'blocked_no_recipients';
 export interface SeriesOrgStatus {
   orgId: string;
   orgName: string;

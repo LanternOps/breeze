@@ -41,7 +41,8 @@ import { isBusinessReportType } from './businessReportAccess';
 import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
 import { CoversControl } from './series/CoversControl';
 import { SeriesRecipientsSection } from './series/SeriesRecipientsSection';
-import { ORG_SPECIFIC_CONDITION_FIELDS, coversFromSeries, firstCoveredOrgId, sameTargets, stripSeriesConfig } from './series/seriesConfig';
+import { ORG_SPECIFIC_CONDITION_FIELDS, availableCoversModes, coversFromSeries, firstCoveredOrgId, isSeriesEligibleReportType, sameTargets, stripSeriesConfig } from './series/seriesConfig';
+import { useDefaultReportOwnerScope } from './ReportOwnerScopeField';
 import { createSeries, replaceSeriesTargets, updateSeries } from './series/seriesApi';
 import type { CoversValue, SeriesDetail } from './series/types';
 
@@ -804,6 +805,7 @@ export default function ReportBuilder({
   const [covers, setCovers] = useState<CoversValue>(() => (series ? coversFromSeries(series) : { mode: 'org' }));
   const seriesMode = covers.mode === 'series';
   const showCovers = mode === 'create' || Boolean(series);
+  const { canChoose: coversPartnerWide } = useDefaultReportOwnerScope();
   const orgTarget = useReportTargetOrg(defaultOrgId ?? null);
   const orgPickerApplies = mode !== 'edit' && !partnerOwned;
   // W03: a series has no single org. Its live preview reads the first org it
@@ -818,6 +820,14 @@ export default function ReportBuilder({
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
   const [builderType, setBuilderType] = useState<BuilderReportType>(initialType);
+  // The Covers card renders only when it has something to show (W03 final
+  // review): more than one mode, W01's org picker, or the "can't fan out" note.
+  const coversType: string = series ? series.series.type : builderToLegacyType[builderType];
+  const coversCardHasContent =
+    Boolean(series)
+    || availableCoversModes(coversType, coversPartnerWide).length > 1
+    || (orgPickerApplies && orgTarget.pickerVisible)
+    || (coversPartnerWide && !isBusinessReportType(coversType) && !isSeriesEligibleReportType(coversType));
   const [reportName, setReportName] = useState(defaultValues?.name ?? '');
   const [dataSource, setDataSource] = useState<Record<string, string | boolean>>(
     defaultValues?.dataSource ?? dataSourceDefaultsByType[initialType]
@@ -1844,7 +1854,7 @@ export default function ReportBuilder({
           </div>
         )}
 
-        {showCovers && (
+        {showCovers && coversCardHasContent && (
           <div data-testid="report-builder-covers" className="rounded-lg border bg-card p-6 shadow-xs">
             <CoversControl
               reportType={series ? series.series.type : builderToLegacyType[builderType]}

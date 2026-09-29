@@ -43,16 +43,20 @@ test.describe('Multi-org report series', () => {
     await reports.builderSubmit().click();
     const created = await createResponse;
     expect(created.status(), await created.text()).toBe(201);
-    const detail = (await created.json()) as { series: { id: string }; orgs: { orgId: string; state: string }[] };
+    const detail = (await created.json()) as { series: { id: string }; orgs: { orgId: string; state: string; childReportId: string | null }[] };
     const seriesId = detail.series.id;
-    const target = detail.orgs.find((o) => o.state === 'active');
-    expect(target, `the reconciler created at least one active child: ${JSON.stringify(detail.orgs)}`).toBeTruthy();
+    // Any covered org with a child. With the rule off and a seed without
+    // contacts, children are 'blocked_no_recipients' rather than 'active' —
+    // still a real copy the drill-down can exclude.
+    const COVERED = new Set(['active', 'blocked_no_recipients', 'blocked_no_authority']);
+    const target = detail.orgs.find((o) => o.childReportId && COVERED.has(o.state));
+    expect(target, `the reconciler created at least one child: ${JSON.stringify(detail.orgs)}`).toBeTruthy();
 
     await test.step('the list lands on the new series, expanded', async () => {
       await page.waitForURL(`**/reports#series/${seriesId}`);
       await expect(reports.seriesRow(seriesId)).toBeVisible({ timeout: 15_000 });
       await expect(reports.seriesDrilldown(seriesId)).toBeVisible();
-      await expect(reports.seriesOrgRow(target!.orgId)).toHaveAttribute('data-state', 'active');
+      await expect(reports.seriesOrgRow(target!.orgId)).toHaveAttribute('data-state', target!.state);
     });
 
     await test.step('exclude one organization', async () => {

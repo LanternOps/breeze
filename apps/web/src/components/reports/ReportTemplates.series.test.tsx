@@ -95,4 +95,23 @@ describe('ReportTemplates — one report per organization (W03)', () => {
     await waitFor(() => expect(posts('/reports/series')).toHaveLength(1));
     expect(JSON.parse((posts('/reports/series')[0]![1] as { body: string }).body).schedule).toBe('weekly');
   });
+
+  // W03 final review: a series-eligible type whose modal has no Covers control
+  // (backup status) must still require an org up front, as before W03.
+  it('a template without a Covers control still asks for an organization first', async () => {
+    render(<ReportTemplates />);
+    await useTemplate('Backup Status Report');
+    expect(await screen.findByText('Choose an organization above before using a template.')).toBeInTheDocument();
+    expect(posts('/reports')).toHaveLength(0);
+  });
+
+  // Stack check: the Covers + recipients fields make the modal taller than a
+  // laptop viewport; the panel must scroll so Create stays reachable.
+  it('the template modal panel scrolls', async () => {
+    render(<ReportTemplates />);
+    await useTemplate('Hardware Lifecycle Report');
+    const panel = screen.getByTestId('template-covers-hardware_lifecycle').closest('div.rounded-lg') as HTMLElement;
+    expect(panel.className).toContain('overflow-y-auto');
+    expect(panel.className).toContain('max-h-[90vh]');
+  });
 });

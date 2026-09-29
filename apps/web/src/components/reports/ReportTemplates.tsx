@@ -811,7 +811,14 @@ export default function ReportTemplates() {
       // org picked — it can be sent as one report per organization. The org
       // is still required (handleCreateDirect, and the builder's own guard)
       // if they keep it to one organization.
-      const mayFanOut = canChooseOwnerScope && isSeriesEligibleReportType(type);
+      // Only templates whose modal shows the Covers control can fan out: the
+      // posture/lifecycle modals and the builder (builder-representable
+      // types). Others (e.g. backup status) keep W01's org-first rule.
+      const showsCovers =
+        type === 'security_compliance_posture'
+        || type === 'hardware_lifecycle'
+        || (type !== undefined && reportTypeSurvivesBuilder(type));
+      const mayFanOut = canChooseOwnerScope && isSeriesEligibleReportType(type) && showsCovers;
       if (!isBusinessReportType(type) && orgTarget.missing && !mayFanOut) {
         setError(t('reports.orgPicker.chooseFirst'));
         return;
@@ -1155,7 +1162,7 @@ export default function ReportTemplates() {
 
       {lifecycleTemplate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
             <h2 className="text-lg font-semibold">
               {t('reports.reportTemplates.useTemplateTitle', {
                 name: getTemplateDisplayName(lifecycleTemplate),
@@ -1363,7 +1370,7 @@ export default function ReportTemplates() {
 
       {postureTemplate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
             <h2 className="text-lg font-semibold">
               {t('reports.reportTemplates.useTemplateTitle', {
                 name: getTemplateDisplayName(postureTemplate),

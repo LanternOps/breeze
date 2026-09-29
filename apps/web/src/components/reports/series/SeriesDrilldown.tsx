@@ -76,8 +76,11 @@ export function SeriesDrilldown({ detail, onChanged, timezone }: { detail: Serie
             const hasChild = Boolean(org.childReportId) && HAS_CHILD_STATES.has(org.state);
             const busy = busyOrgId === org.orgId;
             const excludable = canExcludeOrg(detail, org.orgId);
+            const detached = org.state === 'detached';
             const hint =
-              org.state === 'blocked_no_authority'
+              detached
+                ? t('reports.series.drilldown.detachedHint')
+                : org.state === 'blocked_no_authority'
                 ? t('reports.series.drilldown.noAuthorityHint')
                 : org.state !== 'excluded' && !excludable
                   ? t('reports.series.drilldown.lastOrgHint')
@@ -125,7 +128,7 @@ export function SeriesDrilldown({ detail, onChanged, timezone }: { detail: Serie
                         {t('reports.series.drilldown.actions.editRecipients')}
                       </a>
                     )}
-                    {org.state === 'excluded' ? (
+                    {detached ? null : org.state === 'excluded' ? (
                       <button
                         type="button"
                         data-testid={`series-org-include-${org.orgId}`}

@@ -1276,7 +1276,8 @@
           "excluded": "Hariç tutuldu",
           "ineligible": "Uygun değil",
           "blocked_no_authority": "Engellendi: sahibin erişimi yok",
-          "blocked_no_recipients": "Müşteri alıcısı yok"
+          "blocked_no_recipients": "Müşteri alıcısı yok",
+          "detached": "Ayrıldı"
         },
         "delivery": {
           "sent": "Gönderildi",
@@ -1304,7 +1305,8 @@
         "generated": "{{org}} için rapor oluşturuldu",
         "updateFailed": "Çok kuruluşlu rapor güncellenemedi.",
         "detachFailed": "Rapor ayrılamadı.",
-        "generateFailed": "Rapor oluşturulamadı."
+        "generateFailed": "Rapor oluşturulamadı.",
+        "detachedHint": "Bağımsız kopyası ayrı olarak yönetiliyor. Bu kuruluşu çok kuruluşlu rapora geri almak için o raporu silin."
       },
       "transferOwner": {
         "title": "Sahipliği devret",

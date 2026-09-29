@@ -1276,7 +1276,8 @@
           "excluded": "Exclue",
           "ineligible": "Non admissible",
           "blocked_no_authority": "Bloquée : le propriétaire n’a pas accès",
-          "blocked_no_recipients": "Aucun destinataire client"
+          "blocked_no_recipients": "Aucun destinataire client",
+          "detached": "Détachée"
         },
         "delivery": {
           "sent": "Envoyé",
@@ -1304,7 +1305,8 @@
         "generated": "Rapport généré pour {{org}}",
         "updateFailed": "Impossible de mettre à jour le rapport multi-organisation.",
         "detachFailed": "Impossible de détacher le rapport.",
-        "generateFailed": "Impossible de générer le rapport."
+        "generateFailed": "Impossible de générer le rapport.",
+        "detachedHint": "Sa copie autonome est gérée séparément. Supprimez ce rapport pour réintégrer cette organisation au rapport multi-organisation."
       },
       "transferOwner": {
         "title": "Transférer le propriétaire",

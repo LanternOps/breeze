@@ -1276,7 +1276,8 @@
           "excluded": "Excluida",
           "ineligible": "No apta",
           "blocked_no_authority": "Bloqueada: el propietario no tiene acceso",
-          "blocked_no_recipients": "Sin destinatario cliente"
+          "blocked_no_recipients": "Sin destinatario cliente",
+          "detached": "Desvinculada"
         },
         "delivery": {
           "sent": "Enviado",
@@ -1304,7 +1305,8 @@
         "generated": "Informe generado para {{org}}",
         "updateFailed": "No se pudo actualizar el informe multiorganización.",
         "detachFailed": "No se pudo desvincular el informe.",
-        "generateFailed": "No se pudo generar el informe."
+        "generateFailed": "No se pudo generar el informe.",
+        "detachedHint": "Su copia independiente se administra por separado. Elimina ese informe para volver a incluir esta organización en el informe multiorganización."
       },
       "transferOwner": {
         "title": "Transferir propietario",
