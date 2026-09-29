@@ -7,6 +7,7 @@ import {
   CalendarClock,
   FileText,
   Gauge,
+  HardDriveDownload,
   KeyRound,
   Laptop,
   Loader2,
@@ -25,6 +26,11 @@ import {
   HardwareLifecycleOptionsForm,
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
+import {
+  DEFAULT_BACKUP_STATUS_OPTIONS,
+  BackupStatusOptionsForm,
+  type BackupStatusOptions,
+} from './BackupStatusOptionsForm';
 import {
   DEFAULT_THREAT_DETECTION_OPTIONS,
   ThreatDetectionOptionsForm,
@@ -134,6 +140,7 @@ const reportTypeValues: TemplateReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'backup_status',
   'threat_detection_review',
   'endpoint_management_review',
   'vulnerability_management',
@@ -231,6 +238,27 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-emerald-500/15',
       iconColor: 'text-emerald-600'
+    },
+    group: 'general'
+  },
+  {
+    id: 'backup_status',
+    name: 'Backup Status Report',
+    description:
+      "Every device's backup status across Breeze and connected backup providers, in one snapshot: coverage buckets, last successful backup, and a 28-day history per device.",
+    defaults: {
+      name: 'Backup Status Report',
+      type: 'backup_status',
+      dateRange: { preset: 'last_30_days' },
+      // One-time by default: the report is an as-of snapshot. A recurring
+      // cadence is set afterwards from the report's edit page.
+      schedule: 'one_time',
+      format: 'pdf'
+    },
+    icon: HardDriveDownload,
+    tone: {
+      iconBg: 'bg-sky-500/15',
+      iconColor: 'text-sky-600'
     },
     group: 'general'
   },
@@ -596,6 +624,8 @@ export default function ReportTemplates() {
   const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
   const [vulnerabilityTemplate, setVulnerabilityTemplate] = useState<ReportTemplate | null>(null);
   const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
+  const [backupStatusTemplate, setBackupStatusTemplate] = useState<ReportTemplate | null>(null);
+  const [backupStatusOptions, setBackupStatusOptions] = useState<BackupStatusOptions>(DEFAULT_BACKUP_STATUS_OPTIONS);
   const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
   // One options modal for the three business report types (#3198 W03); the
@@ -726,6 +756,11 @@ export default function ReportTemplates() {
       if (type === 'hardware_lifecycle') {
         setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
         setLifecycleTemplate(template);
+        return;
+      }
+      if (type === 'backup_status') {
+        setBackupStatusOptions(DEFAULT_BACKUP_STATUS_OPTIONS);
+        setBackupStatusTemplate(template);
         return;
       }
       if (type === 'threat_detection_review') {
@@ -1117,6 +1152,30 @@ export default function ReportTemplates() {
                 onCancel={() => setVulnerabilityTemplate(null)}
                 onSubmit={() => {
                   void handleCreateDirect(vulnerabilityTemplate, { ...vulnerabilityOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {backupStatusTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(backupStatusTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <BackupStatusOptionsForm
+                value={backupStatusOptions}
+                onChange={setBackupStatusOptions}
+                busy={creatingId === backupStatusTemplate.id}
+                submitLabel={t('reports.backupStatusOptions.createReport')}
+                onCancel={() => setBackupStatusTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(backupStatusTemplate, { ...backupStatusOptions });
                 }}
               />
             </div>
