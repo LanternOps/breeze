@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { graphNodeSchema } from '@breeze/shared';
 import type { TopologyRequestContext } from './access';
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 
 const mocks = vi.hoisted(() => ({ execute: vi.fn(), transaction: vi.fn() }));
 vi.mock('../../db', () => ({ db: { execute: mocks.execute, transaction: mocks.transaction } }));
@@ -103,6 +104,25 @@ describe('readTopologyMonitorOverlays binding query', () => {
     expect(await readTopologyMonitorOverlays(context(), [], { now: NOW })).toEqual([]);
     expect(mocks.execute).not.toHaveBeenCalled();
   });
+});
+
+describe('readTopologyMonitorOverlays offsetless result timestamps', () => {
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads network_monitor_results.timestamp text as UTC on a %s host',
+    async (zone) => {
+      // offsetless `timestamp` text from a raw query; read as UTC
+      const observed = '2026-09-17 11:59:40.250';
+      mocks.execute
+        .mockResolvedValueOnce([bindingRow({ resultAt: observed })])
+        .mockResolvedValueOnce([{ monitorId: MONITOR, count: '0' }]);
+      await withHostTimeZone(zone, async () => {
+        const [overlay] = await readTopologyMonitorOverlays(context(), [{ kind: 'node', id: NODE }], { now: NOW });
+        expect(overlay).toMatchObject({ freshness: 'fresh', coverage: 'monitored' });
+        expect(overlay?.provenance.observedAt).toBe('2026-09-17T11:59:40.250Z');
+        expect(overlay?.freshUntil).toBe('2026-09-17T12:02:40.250Z');
+      });
+    },
+  );
 });
 
 describe('readTopologyMonitorOverlays attribution', () => {

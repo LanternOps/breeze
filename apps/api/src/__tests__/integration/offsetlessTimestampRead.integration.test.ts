@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
 import { users } from '../../db/schema';
 import { isTokenIssuedBeforePasswordChange } from '../../services/tokenRevocation';
-import { sqlTimestamp } from '../../services/portal/sqlTimestamp';
+import { dateFromSqlValue, sqlTimestamp } from '../../services/portal/sqlTimestamp';
 import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -23,11 +23,17 @@ import { getTestDb } from './setup';
  * host's `getTimezoneOffset()` moves it away from the stored instant.
  *
  * A raw `db.execute(sql...)` result is different: it is the text itself.
- * Parse it with `sqlTimestamp` (UTC), never with `new Date(text)`, which
- * reads it in the host's zone.
+ * Parse it with `sqlTimestamp` or `dateFromSqlValue` (both read it as UTC),
+ * never with `new Date(text)`, which reads it in the host's zone.
  *
  * `users.password_changed_at` stands in for every offsetless column; the
  * decode is per type, not per column.
+ *
+ * Precondition: the stored wall clock is UTC. Drizzle writes a Date as its
+ * UTC wall clock, and `defaultNow()` / `now()` store the wall clock of the
+ * Postgres session's `TimeZone`, which is UTC in the stock Postgres image and
+ * is not overridden by the API's connection options. The `defaultNow()` case
+ * below fails if that stops being true.
  */
 
 const STORED_WALL_CLOCK = '2026-08-25 18:34:15.123';
@@ -108,7 +114,7 @@ describe.each(HOSTS)('offsetless timestamp columns on an API host $side ($zone)'
     });
   });
 
-  it('a raw db.execute returns the offsetless text, which sqlTimestamp reads as UTC', async () => {
+  it('a raw db.execute returns the offsetless text, which the sqlTimestamp helpers read as UTC', async () => {
     const userId = await seedUserWithPasswordChangedAt(STORED_WALL_CLOCK);
 
     await withHostTimeZone(zone, async () => {
@@ -121,6 +127,7 @@ describe.each(HOSTS)('offsetless timestamp columns on an API host $side ($zone)'
 
       expect(raw).toBe(STORED_WALL_CLOCK);
       expect(sqlTimestamp(raw as string)!.getTime()).toBe(STORED_INSTANT);
+      expect(dateFromSqlValue(raw as string).getTime()).toBe(STORED_INSTANT);
       // `new Date(text)` reads the same text in the host's zone instead.
       expect(new Date(raw as string).getTime() - STORED_INSTANT)
         .toBe(new Date(STORED_INSTANT).getTimezoneOffset() * 60_000);

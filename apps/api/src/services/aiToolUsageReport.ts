@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { dateFromSqlValue } from './portal/sqlTimestamp';
 
 export interface ToolUsageRow {
   surface: string;
@@ -97,7 +98,7 @@ export async function buildToolUsageReport(days: number): Promise<ToolUsageRepor
     rejected: Number(r.rejected),
     distinctSessions: Number(r.distinct_sessions),
     avgDurationMs: num(r.avg_duration_ms),
-    lastUsedAt: r.last_used_at == null ? null : new Date(String(r.last_used_at)).toISOString(),
+    lastUsedAt: r.last_used_at == null ? null : dateFromSqlValue(String(r.last_used_at)).toISOString(),
     withOutput: Number(r.with_output ?? 0),
     deliveredBytesP50: num(r.delivered_bytes_p50),
     deliveredBytesP95: num(r.delivered_bytes_p95),

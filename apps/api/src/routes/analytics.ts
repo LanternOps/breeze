@@ -26,6 +26,7 @@ import { slaDefinitionOutOfScope, slaScopeNarrowed, type SlaTargetShape } from '
 import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 export const analyticsRoutes = new Hono();
 const requireAnalyticsRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -566,7 +567,7 @@ analyticsRoutes.post(
         aggregation: data.aggregation,
         interval: data.interval,
         data: rows.map((row) => ({
-          timestamp: row.bucket instanceof Date ? row.bucket.toISOString() : new Date(String(row.bucket)).toISOString(),
+          timestamp: row.bucket instanceof Date ? row.bucket.toISOString() : dateFromSqlValue(String(row.bucket)).toISOString(),
           value: row.value === null ? null : Number(row.value)
         }))
       });
@@ -1653,7 +1654,7 @@ analyticsRoutes.get(
       trend: clampPercent(intercept + slope * index)
     }));
 
-    const baselineDate = pointCount > 0 ? new Date(actuals[pointCount - 1]!.timestamp) : new Date();
+    const baselineDate = pointCount > 0 ? dateFromSqlValue(actuals[pointCount - 1]!.timestamp) : new Date();
     const forecastSeries = Array.from({ length: 14 }, (_, index) => {
       const projectedDate = new Date(baselineDate);
       projectedDate.setUTCDate(projectedDate.getUTCDate() + index + 1);

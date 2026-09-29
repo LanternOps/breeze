@@ -63,7 +63,7 @@ export default defineConfig({
       'src/routes/auth/**/*.test.ts',
       // SSO re-auth freshness (sso_sessions.created_at vs auth_time).
       'src/routes/sso.reauth.test.ts',
-      // Guards the per-test zone switch the suites below rely on.
+      // Guards the per-test zone switch several suites here rely on.
       'src/testUtils/hostTimeZone.test.ts',
       'src/services/sso.test.ts',
       'src/services/ssoDomainVerification.test.ts',

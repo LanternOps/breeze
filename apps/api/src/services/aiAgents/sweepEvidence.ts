@@ -72,6 +72,7 @@ import { AI_SWEEP_KINDS, type AiSweepKind } from '@breeze/shared';
 // `vi.mock('../../db')` factory can be observed. Same idiom as
 // `alertVerdictScheduler.ts`.
 import * as dbModule from '../../db';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 
 /** Aim: the serialized per-kind evidence map should fit under this many UTF-8
  *  bytes — see this module's header. */
@@ -296,7 +297,7 @@ function roundedOrNull(value: unknown): number | null {
 function isoOrNull(value: unknown): string | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
   if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = new Date(value);
+    const parsed = dateFromSqlValue(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
   return null;

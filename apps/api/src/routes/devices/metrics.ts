@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { deviceMetrics, metricRollups, sites } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { dateFromSqlValue } from '../../services/portal/sqlTimestamp';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { metricsQuerySchema } from './schemas';
 
@@ -207,7 +208,7 @@ function aggregateMetricsByInterval(
   // For 1m interval, return data as-is
   if (interval === '1m') {
     return data.map(d => ({
-      timestamp: new Date(d.bucket).toISOString(),
+      timestamp: dateFromSqlValue(d.bucket).toISOString(),
       cpu: Number(d.avgCpuPercent?.toFixed(2) ?? 0),
       ram: Number(d.avgRamPercent?.toFixed(2) ?? 0),
       ramUsedMb: Math.round(d.avgRamUsedMb ?? 0),
@@ -232,7 +233,7 @@ function aggregateMetricsByInterval(
   const buckets = new Map<number, typeof data>();
 
   for (const point of data) {
-    const timestamp = new Date(point.bucket).getTime();
+    const timestamp = dateFromSqlValue(point.bucket).getTime();
     const bucketKey = Math.floor(timestamp / (bucketSeconds * 1000)) * (bucketSeconds * 1000);
 
     if (!buckets.has(bucketKey)) {

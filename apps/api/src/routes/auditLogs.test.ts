@@ -83,6 +83,8 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 describe('audit log routes', () => {
   let app: Hono;
@@ -161,6 +163,63 @@ describe('audit log routes', () => {
       const body = await res.json();
       expect(body.data).toEqual([]);
     });
+
+    it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+      'reads LATERAL fast-path timestamp text as UTC on a %s host',
+      async (zone) => {
+        await withHostTimeZone(zone, async () => {
+          vi.mocked(authMiddleware).mockImplementationOnce(((c: any, next: any) => {
+            c.set('auth', {
+              user: { id: 'user-123', email: 'test@example.com' },
+              scope: 'organization',
+              orgId: 'org-123',
+              accessibleOrgIds: ['org-123'],
+              orgCondition: vi.fn(() => undefined),
+            });
+            return next();
+          }) as never);
+          // audit_logs.timestamp is `timestamp WITHOUT time zone`: raw execute() hands back offsetless text.
+          const hadExecute = Object.prototype.hasOwnProperty.call(db, 'execute');
+          const previousExecute = (db as any).execute;
+          (db as any).execute = vi.fn().mockResolvedValue([
+            {
+              id: 'audit-1',
+              org_id: 'org-123',
+              timestamp: '2026-08-25 18:34:15.123',
+              actor_type: 'user',
+              actor_id: 'user-123',
+              actor_email: 'tech@example.com',
+              action: 'device.update',
+              resource_type: 'device',
+              resource_id: 'dev-1',
+              resource_name: null,
+              details: null,
+              ip_address: null,
+              user_agent: null,
+              result: 'success',
+              error_message: null,
+              checksum: null,
+              initiated_by: 'manual',
+              user_name: 'Tech',
+              device_hostname: null,
+              device_display_name: null,
+            },
+          ]);
+
+          try {
+            const res = await app.request('/audit-logs/logs?limit=5&skipCount=true');
+
+            expect(res.status).toBe(200);
+            const body = await res.json();
+            expect((db as any).execute).toHaveBeenCalledTimes(1);
+            expect(body.data[0].timestamp).toBe('2026-08-25T18:34:15.123Z');
+          } finally {
+            if (hadExecute) (db as any).execute = previousExecute;
+            else delete (db as any).execute;
+          }
+        });
+      }
+    );
 
     it('ignores empty excludeActions tokens', async () => {
       const res = await app.request('/audit-logs/logs?excludeActions=,,%20,');

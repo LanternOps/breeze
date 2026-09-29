@@ -21,6 +21,7 @@ vi.mock('./mlFeatureFlags', () => ({
 }));
 
 import { evaluateUserRiskSignalsForOrg } from './userRiskSignals';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000001';
 const USER_ID = '00000000-0000-4000-8000-000000000010';
@@ -127,6 +128,39 @@ describe('userRiskSignals', () => {
       userId: USER_ID,
     }));
   });
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads offsetless timestamp text as UTC for occurredAt and window keys on a %s host',
+    async (zone) => {
+      // offsetless `timestamp` text from a raw query; read as UTC
+      mocks.executeMock
+        .mockResolvedValueOnce([
+          { batch_id: 'b1', user_id: USER_ID, script_id: 's1', devices_targeted: 14, created_at: '2026-06-18 03:00:00.500' },
+        ])
+        .mockResolvedValueOnce([
+          { user_id: USER_ID, session_count: 6, latest_at: '2026-06-18 02:00:00.250' },
+        ])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { user_id: USER_ID, country: 'NL', login_count: 1, latest_at: '2026-06-18 02:30:00', previous_countries: ['US'] },
+        ])
+        .mockResolvedValue([]);
+
+      await withHostTimeZone(zone, async () => {
+        await evaluateUserRiskSignalsForOrg(ORG_ID, { lookbackHours: 24 });
+      });
+
+      const calls = mocks.appendUserRiskSignalEventMock.mock.calls.map((c) => c[0]);
+      const byType = (t: string) => calls.find((c) => c.eventType === t);
+      expect(byType('script.off_hours_mass_execution').occurredAt.toISOString()).toBe('2026-06-18T03:00:00.500Z');
+      const remote = byType('remote_session_burst');
+      expect(remote.occurredAt.toISOString()).toBe('2026-06-18T02:00:00.250Z');
+      expect(remote.details.fingerprint).toBe(`remote-session-burst:${ORG_ID}:${USER_ID}:2026-06-18T00:00:00.000Z`);
+      const geo = byType('auth.login.new_geography');
+      expect(geo.occurredAt.toISOString()).toBe('2026-06-18T02:30:00.000Z');
+      expect(geo.details.fingerprint).toBe(`cf-access-new-country:${ORG_ID}:${USER_ID}:NL:2026-06-18T00:00:00.000Z`);
+    },
+  );
 
   it('does not append an event when the same fingerprint already exists', async () => {
     mocks.executeMock

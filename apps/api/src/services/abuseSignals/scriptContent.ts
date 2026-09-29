@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 import { abuseScriptHosts } from '../../db/schema';
 import { scoreToSeverity, type SignalConfig, type SignalConfigKey } from './config';
 import type { ComputedSignal } from './types';
@@ -612,7 +613,7 @@ export async function loadScriptFindings(now: Date): Promise<ScriptFindingsResul
       LIMIT ${EXECUTIONS_PER_SWEEP_CAP}
     ) w
   `)) as unknown as Array<{ upper_bound: string | Date | null }>;
-  const upperBound = upperRows[0]?.upper_bound ? new Date(String(upperRows[0].upper_bound)) : null;
+  const upperBound = upperRows[0]?.upper_bound ? dateFromSqlValue(String(upperRows[0].upper_bound)) : null;
 
   const executionRows = upperBound
     ? ((await db.execute(sql`

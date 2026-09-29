@@ -109,6 +109,7 @@ import { resolveNextMaintenanceWindows } from '../maintenanceWindowProjection';
 import { classifyPatchFailure } from '../patchFailureClass';
 import { captureException } from '../sentry';
 import { sanitizeSweepText } from './runnerPrompt';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 
 /** Ceiling on the serialized sections — double the sweep ceiling: the bundle
  *  is aggregate-first and covers four row sections. */
@@ -402,7 +403,7 @@ const int = (value: unknown): number => Math.trunc(num(value) ?? 0);
 function iso(value: unknown): string | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
   if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = new Date(value);
+    const parsed = dateFromSqlValue(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
   return null;

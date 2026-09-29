@@ -28,6 +28,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { FleetDesignDrift, FleetDesignOutcome, FleetDesignReportSummary } from '@breeze/shared';
 import { db } from '../../db';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 import { deviceGroupMemberships, fleetDesignAppliedItems, reportRuns } from '../../db/schema';
 
 export interface ApprovedDesignWatch { watchType: string; name: string; enabled: boolean }
@@ -93,7 +94,7 @@ export function uuidArray(ids: readonly string[]) {
 const RETIRED_REF = /^retired:(\d+)$/;
 
 function iso(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  return value instanceof Date ? value.toISOString() : dateFromSqlValue(value).toISOString();
 }
 
 /**
