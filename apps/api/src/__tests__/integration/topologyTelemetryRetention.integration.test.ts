@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import metricFixture from '../../../../../packages/shared/src/testing/topology-interface-metrics-v1.json';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { getTestDb } from './setup';
 import { orgContext } from './topology-fixtures';
 import { topologyIngestFixture } from '../helpers/topologyIngest';
 import { registerTopologyTelemetryAuthority, resolveTopologyTelemetryProducer } from '../../services/topology/collectionAuthority';
@@ -213,9 +214,12 @@ describe('topology interface retention', () => {
 
   it('provisions leaves ahead with forced RLS through the worker tick', async () => {
     const now = Date.now(); // one instant for the tick and the leaf it must create (#7409)
+    const ahead = new Date(now + 7 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
+    // The migration already provisions +7, so remove it (owner connection:
+    // breeze_app has no DDL) to make the tick prove it creates the leaf.
+    await getTestDb().execute(sql`DROP TABLE IF EXISTS ${sql.identifier(`topology_interface_samples_raw_p${ahead}`)}`);
     const tick = await runTopologyTelemetryMaintenanceTick(new Date(now));
     expect(tick.failed).toBe(0);
-    const ahead = new Date(now + 7 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
     const [leaf] = await system(() => db.execute<{ rls: boolean; forced: boolean; policies: number }>(sql`SELECT c.relrowsecurity AS rls, c.relforcerowsecurity AS forced,
       (SELECT count(*)::int FROM pg_policies p WHERE p.tablename = c.relname) AS policies FROM pg_class c WHERE c.relname = ${`topology_interface_samples_raw_p${ahead}`}`));
     expect(leaf).toEqual({ rls: true, forced: true, policies: 4 });
