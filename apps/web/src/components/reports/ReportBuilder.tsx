@@ -1471,7 +1471,7 @@ export default function ReportBuilder({
   type SeriesSubmitPayload = {
     name: string;
     type: string;
-    schedule: ReportSchedule;
+    schedule?: ReportSchedule;
     format: ReportFormat;
     config: Record<string, unknown>;
   };
@@ -1486,7 +1486,7 @@ export default function ReportBuilder({
     }
     // Recurring-only. The builder's schedule select never offers one_time, so
     // this only narrows the type; it is never a silent substitution.
-    if (payload.schedule === 'one_time') {
+    if (!payload.schedule || payload.schedule === 'one_time') {
       setError(t('reports.series.schedule.required'));
       return;
     }

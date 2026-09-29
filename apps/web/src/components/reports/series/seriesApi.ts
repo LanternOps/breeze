@@ -21,6 +21,8 @@ import type {
  * the switcher's ambient ?orgId=.
  */
 const SERIES_ROOT = '/reports/series';
+// Reads spell the options inline: the no-silent-mutations scanner reads a
+// literal init without `method` as a GET, but cannot see through a variable.
 const CROSS_ORG = { skipOrgIdInjection: true } as const;
 
 export interface ActionMessages { errorFallback: string; successMessage?: string }
@@ -56,7 +58,7 @@ async function readJson(res: Response): Promise<unknown> {
 
 /** null = the caller may not read series (403/404): the list simply has none. */
 export async function fetchSeriesList(): Promise<SeriesDetail[] | null> {
-  const res = await fetchWithAuth(SERIES_ROOT, CROSS_ORG);
+  const res = await fetchWithAuth(SERIES_ROOT, { skipOrgIdInjection: true });
   if (res.status === 403 || res.status === 404) return null;
   if (!res.ok) throw new Error(`GET ${SERIES_ROOT} answered ${res.status}`);
   const body = (await readJson(res)) as { data?: unknown } | null;
@@ -65,7 +67,7 @@ export async function fetchSeriesList(): Promise<SeriesDetail[] | null> {
 
 /** null = the series does not exist (or is not visible). */
 export async function fetchSeriesDetail(id: string): Promise<SeriesDetail | null> {
-  const res = await fetchWithAuth(`${SERIES_ROOT}/${encodeURIComponent(id)}`, CROSS_ORG);
+  const res = await fetchWithAuth(`${SERIES_ROOT}/${encodeURIComponent(id)}`, { skipOrgIdInjection: true });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GET ${SERIES_ROOT}/${id} answered ${res.status}`);
   return (await readJson(res)) as SeriesDetail;
@@ -88,7 +90,7 @@ export async function previewSeriesRecipients(
 /** Partner users who could own a series (spec §3.4): active, org_access 'all'.
  *  The server re-checks site scope (400 series_owner_ineligible). */
 export async function fetchSeriesOwnerCandidates(): Promise<PartnerUserOption[] | 'forbidden'> {
-  const res = await fetchWithAuth('/users', CROSS_ORG);
+  const res = await fetchWithAuth('/users', { skipOrgIdInjection: true });
   if (res.status === 403) return 'forbidden';
   if (!res.ok) throw new Error(`GET /users answered ${res.status}`);
   const body = (await readJson(res)) as { data?: Record<string, unknown>[] } | null;

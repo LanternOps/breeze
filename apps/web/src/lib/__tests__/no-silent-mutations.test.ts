@@ -331,6 +331,11 @@ const TARGET_GLOBS = [
   // that 403s on the all-organizations access gate must never look identical
   // to one that succeeded.
   'src/components/reports/ReportTemplates.tsx',
+  // Multi-org report series (W03): the one client for every series mutation
+  // (create/edit/targets/transfer/delete/detach, per-org run, recipient
+  // overrides). A silent failure here reads as "this org was excluded" or
+  // "this customer will receive it" when neither is true.
+  'src/components/reports/series/seriesApi.ts',
   // Accounting connection panel (formerly the QuickBooks-only panel, Phase D): connect/disconnect/push-mode/settings
   // -refresh already routed through runAction, but the file was never guarded —
   // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
@@ -857,7 +862,8 @@ describe('no silent mutations in targeted set', () => {
     // AI Suggested Fixes W1 adds remediation/RemediationSuggestionsPanel.tsx: 199 → 200.
     // 200 -> 202: devices/AssignParkedDeviceDialog.tsx and
     // devices/UnassignedDevicesPage.tsx (parked-device assignment).
-    expect(absoluteFiles.length).toBe(202);
+    // Multi-org report series W03 adds reports/series/seriesApi.ts: 202 → 203.
+    expect(absoluteFiles.length).toBe(203);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
