@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { zValidator } from '../lib/validation';
 import {
   authMiddleware,
@@ -33,6 +34,9 @@ timeStatusRoutes.use(
   ),
 );
 timeStatusRoutes.onError((error, c) => {
+  // Auth/scope/permission middleware throw HTTPException(401/403); rethrow so
+  // the global handler maps them instead of collapsing them into a 500.
+  if (error instanceof HTTPException) throw error;
   if (error instanceof FleetTimeForbidden)
     return c.json({ error: error.message }, 403);
   console.error('[time-status] request failed', error);

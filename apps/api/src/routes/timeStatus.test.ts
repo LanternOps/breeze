@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 const m = vi.hoisted(() => ({
   authorized: true,
   permitted: true,
@@ -11,7 +12,8 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
-    if (!m.authorized) return c.json({ error: 'Unauthorized' }, 401);
+    // The real middleware throws; the route's onError must not swallow it.
+    if (!m.authorized) throw new HTTPException(401, { message: 'Unauthorized' });
     c.set('auth', {
       scope: 'organization',
       orgId: m.org,
@@ -21,8 +23,10 @@ vi.mock('../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (c: any, next: any) =>
-    m.permitted ? next() : c.json({ error: 'Forbidden' }, 403),
+  requirePermission: () => async (_c: any, next: any) => {
+    if (!m.permitted) throw new HTTPException(403, { message: 'Forbidden' });
+    await next();
+  },
 }));
 vi.mock('../db', () => ({
   db: { select: vi.fn() },
