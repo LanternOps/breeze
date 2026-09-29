@@ -1,4 +1,4 @@
-import { S3Client } from '@aws-sdk/client-s3';
+import { AbortMultipartUploadCommand, S3Client, UploadPartCommand } from '@aws-sdk/client-s3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const holder = vi.hoisted(() => ({ client: null as unknown as S3Client, send: vi.fn(), overrides: [] as unknown[] }));
@@ -136,12 +136,79 @@ describe('server-side multipart operations', () => {
     expect(input).toMatchObject({ Bucket: 'tenant-bucket', Key: KEY, ServerSideEncryption: 'aws:kms', SSEKMSKeyId: 'k' });
   });
 
-  it('reports no confirmed encryption when storage returns none', async () => {
-    holder.send.mockResolvedValueOnce({ UploadId: 'u-2' });
+  it('reports no confirmed encryption when neither the create nor the probe part reports one', async () => {
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-2' }).mockResolvedValueOnce({ ETag: '"e"' });
     await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-s3' })).resolves.toEqual({
       uploadId: 'u-2',
       encryption: { algorithm: null, kmsKeyId: null },
     });
+  });
+
+  // MinIO encrypts a multipart upload created with SSE but does not echo the
+  // encryption on CreateMultipartUpload; it does on every UploadPart.
+  it('confirms a silent create from a zero-byte probe part of the same upload (MinIO)', async () => {
+    holder.send
+      .mockResolvedValueOnce({ UploadId: 'u-3' })
+      .mockResolvedValueOnce({ ETag: '"d41d8cd98f00b204e9800998ecf8427e"', ServerSideEncryption: 'aws:kms', SSEKMSKeyId: 'arn:aws:kms:minio-key' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-kms', keyId: 'minio-key' })).resolves.toEqual({
+      uploadId: 'u-3',
+      encryption: { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:minio-key' },
+    });
+    expect(holder.send).toHaveBeenCalledTimes(2);
+    const probe = holder.send.mock.calls[1]![0];
+    expect(probe).toBeInstanceOf(UploadPartCommand);
+    // The last part number: never a part the device sends first, never listed
+    // on completion unless the device's own part replaces it.
+    expect(probe.input).toMatchObject({ Bucket: 'tenant-bucket', Key: KEY, UploadId: 'u-3', PartNumber: MAX_PARTS, ContentLength: 0 });
+    expect((probe.input.Body as Uint8Array).byteLength).toBe(0);
+    // Sent like the device's parts: no SDK body checksum.
+    expect(holder.overrides.at(-1)).toMatchObject({ requestChecksumCalculation: 'WHEN_REQUIRED' });
+  });
+
+  it('confirms a silent SSE-S3 create from the probe part', async () => {
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-4' }).mockResolvedValueOnce({ ETag: '"e"', ServerSideEncryption: 'AES256' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-s3' })).resolves.toEqual({
+      uploadId: 'u-4',
+      encryption: { algorithm: 'AES256', kmsKeyId: null },
+    });
+  });
+
+  it('reports what the probe part confirmed as-is, never the request (a mismatch stays a mismatch)', async () => {
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-8' }).mockResolvedValueOnce({ ETag: '"e"', ServerSideEncryption: 'AES256' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-kms', keyId: 'k' })).resolves.toEqual({
+      uploadId: 'u-8',
+      encryption: { algorithm: 'AES256', kmsKeyId: null },
+    });
+  });
+
+  it('never probes when the create itself answered, including with another algorithm', async () => {
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-5', ServerSideEncryption: 'AES256' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-kms', keyId: 'k' })).resolves.toEqual({
+      uploadId: 'u-5',
+      encryption: { algorithm: 'AES256', kmsKeyId: null },
+    });
+    expect(holder.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('never probes when no encryption was requested', async () => {
+    holder.send.mockResolvedValueOnce({ UploadId: 'u-6' });
+    await expect(createMultipartUpload(CFG, KEY, { mode: 'disabled' })).resolves.toEqual({
+      uploadId: 'u-6',
+      encryption: { algorithm: null, kmsKeyId: null },
+    });
+    expect(holder.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts the new upload and fails when the probe part fails', async () => {
+    holder.send
+      .mockResolvedValueOnce({ UploadId: 'u-7' })
+      .mockRejectedValueOnce(httpError(500, 'InternalError'))
+      .mockResolvedValueOnce({});
+    await expect(createMultipartUpload(CFG, KEY, { mode: 's3-sse-s3' })).rejects.toThrow('InternalError');
+    expect(holder.send).toHaveBeenCalledTimes(3);
+    const abort = holder.send.mock.calls[2]![0];
+    expect(abort).toBeInstanceOf(AbortMultipartUploadCommand);
+    expect(abort.input).toMatchObject({ Key: KEY, UploadId: 'u-7' });
   });
 
   it('completes with the create-only condition and maps a 412 to ObjectExistsError', async () => {

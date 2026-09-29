@@ -219,6 +219,18 @@ describe('appliedEncryptionOf', () => {
     expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'arn:aws:kms:us-east-1:000000000000:alias/backups' }, { algorithm: 'aws:kms', kmsKeyId: ARN })?.matches).toBe(true);
     expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: '1111-2222' }, { algorithm: 'aws:kms', kmsKeyId: null })?.matches).toBe(true);
   });
+  it('fails closed on an explicit mismatch confirmed by a probe part after a silent create', () => {
+    // createMultipartUpload reports the probe part's answer as-is.
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'backup-key' }, { algorithm: 'AES256', kmsKeyId: null }))
+      .toEqual({ algorithm: 'AES256', requested: { algorithm: 'aws:kms', kmsKeyId: 'backup-key' }, matches: false });
+    expect(appliedEncryptionOf({ mode: 's3-sse-s3' }, { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:k' })?.matches).toBe(false);
+  });
+  it('accepts a key name confirmed in the MinIO form arn:aws:kms:<name>, and only that exact name', () => {
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'backup-key' }, { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:backup-key' })?.matches).toBe(true);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'backup-key' }, { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:other-key' })?.matches).toBe(false);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'backup-key' }, { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:backup-key-2' })?.matches).toBe(false);
+    expect(appliedEncryptionOf({ mode: 's3-sse-kms', keyId: 'key' }, { algorithm: 'aws:kms', kmsKeyId: 'arn:aws:kms:other:key' })?.matches).toBe(false);
+  });
   it('reports an explicit mismatch when storage confirms nothing, another algorithm or another key', () => {
     expect(appliedEncryptionOf({ mode: 's3-sse-s3' }, none))
       .toEqual({ algorithm: null, requested: { algorithm: 'AES256' }, matches: false });
