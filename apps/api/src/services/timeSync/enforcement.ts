@@ -6,6 +6,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import { auditLogs } from '../../db/schema';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { sanitizeAuditPayload } from '../auditPayloadSanitizer';
 import type { TimeFindingsContext, TimeSyncFinding } from './findings';
@@ -92,5 +93,8 @@ export async function auditEnforcement(args: {
         unknown
       >,
     });
+    // This request wrote its own semantic audit row; the generic fallback in
+    // index.ts must not add a second one (auditDirectInsertTracking.test.ts).
+    markRequestAuditWritten();
   }
 }
