@@ -641,6 +641,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return (
           <>
             <OrgSecuritySettings
+              orgId={effectiveOrgId}
               security={orgDetails?.settings?.security}
               mtls={orgDetails?.settings?.mtls}
               onDirty={handleDirty}
@@ -694,6 +695,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       case 'event-logs':
         return (
           <OrgEventLogSettings
+            orgId={effectiveOrgId}
             onDirty={handleDirty}
             locked={locked}
           />

@@ -33,12 +33,24 @@ vi.mock('./OrgBrandingEditor', () => ({ default: (props: { onSave: (data: Record
 } }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
-vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
+// Capture the props the Security and Event Logs tabs get: both issue their own
+// org-scoped requests, so each must be handed the PAGE's org rather than fall
+// back to the header switcher's (pre-release sweep, v0.118.2 → main).
+const securityProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgSecuritySettings', () => ({ default: (props: {
   onDirty: () => void; onSave: (value: unknown) => void;
-}) => <button data-testid="security" onClick={() => {
-  onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
-}}>Save security</button> }));
-vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
+} & Record<string, unknown>) => {
+  securityProps.push(props);
+  const { onDirty, onSave } = props;
+  return <button data-testid="security" onClick={() => {
+    onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
+  }}>Save security</button>;
+} }));
+const eventLogProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgEventLogSettings', () => ({ default: (props: Record<string, unknown>) => {
+  eventLogProps.push(props);
+  return <div data-testid="event-logs" />;
+} }));
 // #6004: the AI budget editor. Capture its props — the tab is worthless if it
 // is not handed the org it is meant to edit.
 const aiBudgetProps: Array<Record<string, unknown>> = [];
@@ -472,6 +484,31 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.getByTestId('org-ai-budget')).not.toBeNull();
     expect(aiBudgetProps.at(-1)).toMatchObject({ orgId: 'org-1' });
   });
+
+  it.each([
+    ['#event-logs', 'event-logs', eventLogProps],
+    ['#security', 'security', securityProps],
+  ] as const)(
+    'hands the %s tab the org in the URL, not the header switcher org',
+    async (hash, testId, captured) => {
+      captured.length = 0;
+      window.location.hash = hash;
+      // Switcher on org-1, page on org-2.
+      useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+      fetchWithAuthMock.mockImplementation((url: string) => {
+        if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+        return Promise.resolve(makeJsonResponse({ ...orgDetails, id: 'org-2', name: 'Other Customer' }));
+      });
+
+      render(<OrgSettingsPage orgId="org-2" />);
+
+      await screen.findByTestId(testId);
+      expect(captured.length).toBeGreaterThan(0);
+      for (const props of captured) {
+        expect(props.orgId).toBe('org-2');
+      }
+    },
+  );
 
   it('places the AI tab beside Approval Security in the nav (#6004)', async () => {
     render(<OrgSettingsPage orgId="org-1" />);

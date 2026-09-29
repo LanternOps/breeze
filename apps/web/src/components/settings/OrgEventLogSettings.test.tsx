@@ -9,8 +9,14 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// The header switcher sits on a DIFFERENT org than the one the settings page
+// is editing (`/settings/organizations/<orgId>`): nothing here may read it.
+const { SWITCHER_ORG, PAGE_ORG } = vi.hoisted(() => ({
+  SWITCHER_ORG: 'org-switcher',
+  PAGE_ORG: 'org-1',
+}));
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: () => ({ currentOrgId: 'org-1' }),
+  useOrgStore: () => ({ currentOrgId: SWITCHER_ORG }),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -46,7 +52,7 @@ describe('OrgEventLogSettings: saved credentials', () => {
 
   it('shows a saved API key as a placeholder instead of putting the marker in the field', async () => {
     loadWith({ enabled: true, elasticsearchUrl: 'https://es.test:9200', elasticsearchApiKey: '********', indexPrefix: 'breeze-logs' });
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId={PAGE_ORG} />);
 
     const input = await screen.findByPlaceholderText(SAVED_PLACEHOLDER());
     expect(input).toHaveValue('');
@@ -55,7 +61,7 @@ describe('OrgEventLogSettings: saved credentials', () => {
 
   it('keeps the saved API key when the field is left untouched', async () => {
     loadWith({ enabled: true, elasticsearchUrl: 'https://es.test:9200', elasticsearchApiKey: '********', indexPrefix: 'breeze-logs' });
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId={PAGE_ORG} />);
     await screen.findByPlaceholderText(SAVED_PLACEHOLDER());
 
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
@@ -65,7 +71,7 @@ describe('OrgEventLogSettings: saved credentials', () => {
 
   it('replaces the saved API key with a typed value', async () => {
     loadWith({ enabled: true, elasticsearchUrl: 'https://es.test:9200', elasticsearchApiKey: '********', indexPrefix: 'breeze-logs' });
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId={PAGE_ORG} />);
     const input = await screen.findByPlaceholderText(SAVED_PLACEHOLDER());
 
     fireEvent.change(input, { target: { value: 'new-typed-key' } });
@@ -82,7 +88,7 @@ describe('OrgEventLogSettings: saved credentials', () => {
       elasticsearchPassword: '********',
       indexPrefix: 'breeze-logs',
     });
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId={PAGE_ORG} />);
     const input = await screen.findByPlaceholderText(SAVED_PLACEHOLDER());
     expect(input).toHaveValue('');
 
@@ -97,9 +103,34 @@ describe('OrgEventLogSettings: saved credentials', () => {
 
   it('uses the ordinary placeholder when nothing is saved', async () => {
     loadWith({ enabled: true, elasticsearchUrl: 'https://es.test:9200', indexPrefix: 'breeze-logs' });
-    render(<OrgEventLogSettings />);
+    render(<OrgEventLogSettings orgId={PAGE_ORG} />);
 
     await screen.findByPlaceholderText(i18n.t('settings:orgEventLogSettings.authentication.apiKeyPlaceholder'));
     expect(screen.queryByPlaceholderText(SAVED_PLACEHOLDER())).toBeNull();
+  });
+});
+
+// Pre-release sweep (v0.118.2 → main): on `/settings/organizations/<B>#event-logs`
+// with the header switcher on org A, the tab loaded and SAVED org A's log
+// forwarding while the page named org B.
+describe('OrgEventLogSettings: org scoping', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    loadWith({ enabled: true, elasticsearchUrl: 'https://es.test:9200', indexPrefix: 'breeze-logs' });
+  });
+
+  it('loads and saves the org it is given, never the header switcher org', async () => {
+    render(<OrgEventLogSettings orgId={PAGE_ORG} />);
+    await screen.findByDisplayValue('https://es.test:9200');
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true));
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls).toEqual([
+      `/agents/org/${PAGE_ORG}/settings/log-forwarding`,
+      `/agents/org/${PAGE_ORG}/settings/log-forwarding`,
+    ]);
+    expect(urls.some((u) => u.includes(SWITCHER_ORG))).toBe(false);
   });
 });
