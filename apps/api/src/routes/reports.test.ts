@@ -784,6 +784,42 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
       }),
     );
   });
+
+  it.each([
+    ['weekly', 'not_scheduled'],
+    ['one_time', null],
+  ] as const)(
+    'stamps a manual run of a %s definition with deliveryStatus %s (multi-org series W01)',
+    async (schedule, expected) => {
+      const app = new Hono();
+      app.route('/reports', reportRoutes);
+      vi.mocked(db.update).mockReturnValue({
+        set: () => ({ where: () => Promise.resolve() })
+      } as any);
+      vi.mocked(db.select).mockImplementation(() =>
+        selectChain([{
+          id: 'rep-1',
+          orgId: ORG_ID,
+          type: 'device_inventory',
+          name: 'Inv',
+          config: {},
+          format: 'csv',
+          schedule
+        }])
+      );
+      const insertValuesMock = vi.fn(() => ({
+        returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]),
+      }));
+      vi.mocked(db.insert).mockReturnValue({ values: insertValuesMock } as any);
+
+      const res = await app.request('/reports/rep-1/generate', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryStatus: expected }),
+      );
+    },
+  );
 });
 
 describe('generateReport dispatch — security_compliance_posture', () => {

@@ -194,7 +194,14 @@ runsRoutes.post(
       throw error;
     }
 
-    // Create a new report run
+    // Create a new report run. Multi-org series W01 (spec §3.2): this route
+    // never emails, so a manual run of a SCHEDULED definition is recorded as
+    // 'not_scheduled' — distinct from the schedule's own deliveries, which the
+    // list's latest-delivery warning reads. A one-time definition has no
+    // schedule to contrast with and stays NULL.
+    const deliveryStatus = report.schedule && report.schedule !== 'one_time'
+      ? ('not_scheduled' as const)
+      : null;
     const [run] = await db
       .insert(reportRuns)
       .values({
@@ -204,6 +211,7 @@ runsRoutes.post(
         requestedByKind: 'user',
         requestedByUserId: auth.user.id,
         requestedByPortalUserId: null,
+        deliveryStatus,
         ...persistedSiteScopeValues(executionAuthority),
       })
       .returning();
