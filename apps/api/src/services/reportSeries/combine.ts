@@ -23,6 +23,7 @@ import {
   reports,
   serviceDeliverables,
 } from '../../db/schema';
+import type { db } from '../../db';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../partnerWideAccess';
 import { notHiddenOrgType } from '../unassignedPool/visibility';
@@ -48,7 +49,9 @@ import { reconcileSeries } from './reconcile';
 import type { SeriesTx } from './types';
 import { assertSeriesConfigOrgAgnostic, assertSeriesTypeSupported } from './validation';
 
-type Tx = SeriesTx;
+/** W02's SeriesTx plus DISTINCT ON (loadStalledReportIds); `db` and every
+ *  transaction handle have it. */
+type Tx = SeriesTx & Pick<typeof db, 'selectDistinctOn'>;
 type ChildScopeColumns = Exclude<Awaited<ReturnType<typeof captureChildExecutionScope>>, 'no_authority'>;
 
 export interface CombineInput {
