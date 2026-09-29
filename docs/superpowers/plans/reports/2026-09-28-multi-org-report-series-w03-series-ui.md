@@ -4501,8 +4501,8 @@ vi.mock('./seriesApi', () => api);
 import { SeriesChildRecipients } from './SeriesChildRecipients';
 
 const CONTACTS = [
-  { id: 'c-1', name: 'Pat Primary', email: 'pat@acme.io', roles: [], isPrimary: true, siteId: null },
-  { id: 'c-2', name: 'Bill Billing', email: 'bill@acme.io', roles: ['billing'], isPrimary: false, siteId: null },
+  { id: 'c-1', name: 'Pat Primary', email: 'pat@example.com', roles: [], isPrimary: true, siteId: null },
+  { id: 'c-2', name: 'Bill Billing', email: 'bill@example.com', roles: ['billing'], isPrimary: false, siteId: null },
 ];
 
 describe('SeriesChildRecipients', () => {
