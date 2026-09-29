@@ -175,7 +175,7 @@ export default function FleetTimeSyncReport() {
         </label>
         {(['health', 'finding', 'role'] as const).map((key) => (
           <label key={key} className="text-sm">
-            {t(`timeFleet.${key}`)}
+            {t(/* i18n-dynamic */ `timeFleet.${key}`)}
             <select
               className="ml-2 max-w-72 rounded border border-border bg-background p-2"
               value={state[key]}
@@ -191,9 +191,9 @@ export default function FleetTimeSyncReport() {
               ).map((value) => (
                 <option key={value} value={value}>
                   {key === 'finding'
-                    ? t(`timeSync.findings.${value}.label`)
+                    ? t(/* i18n-dynamic */ `timeSync.findings.${value}.label`)
                     : t(
-                        `timeFleet.${key === 'health' ? 'healthLabels' : 'roles'}.${value}`,
+                        /* i18n-dynamic */ `timeFleet.${key === 'health' ? 'healthLabels' : 'roles'}.${value}`,
                       )}
                 </option>
               ))}

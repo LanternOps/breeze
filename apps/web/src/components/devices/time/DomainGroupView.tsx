@@ -24,7 +24,7 @@ export function TimeRows({ rows }: { rows: FleetTimeRow[] }) {
               'received',
             ].map((key) => (
               <th key={key} className="p-3 text-left font-medium">
-                {t(`timeFleet.${key}`)}
+                {t(/* i18n-dynamic */ `timeFleet.${key}`)}
               </th>
             ))}
           </tr>
@@ -54,7 +54,7 @@ export function TimeRows({ rows }: { rows: FleetTimeRow[] }) {
                 <span
                   className={`rounded border px-2 py-0.5 ${colors[r.view.health]}`}
                 >
-                  {t(`timeFleet.healthLabels.${r.view.health}`)}
+                  {t(/* i18n-dynamic */ `timeFleet.healthLabels.${r.view.health}`)}
                 </span>
                 {r.view.stale && (
                   <div className="mt-1 text-warning">
@@ -71,13 +71,13 @@ export function TimeRows({ rows }: { rows: FleetTimeRow[] }) {
                 {r.view.findings.length
                   ? r.view.findings.map((f) => (
                       <div key={f.code}>
-                        {t(`timeSync.findings.${f.code}.label`)}
+                        {t(/* i18n-dynamic */ `timeSync.findings.${f.code}.label`)}
                       </div>
                     ))
                   : t('timeFleet.none')}
               </td>
               <td className="p-3">
-                {t(`timeFleet.roles.${r.view.domain?.role ?? 'unknown'}`)}
+                {t(/* i18n-dynamic */ `timeFleet.roles.${r.view.domain?.role ?? 'unknown'}`)}
               </td>
               <td className="p-3">
                 {r.view.status?.source ?? t('timeFleet.unknown')}
