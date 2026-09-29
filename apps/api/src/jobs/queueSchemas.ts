@@ -125,6 +125,11 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     // field existed (legacy job payloads never re-hydrate this field, so the
     // dispatch precheck treats undefined as "skip the comparison").
     configGeneration: z.number().int().optional(),
+    // Set only on a dispatch queued again because the device had not reported
+    // its backup helper yet (backupWorker holdForHelperReport): the number of
+    // that re-queue and when the wait began (ISO 8601), which bounds it.
+    capabilityWaitAttempt: z.number().int().positive().optional(),
+    capabilityWaitSince: z.string().datetime().optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({

@@ -13,6 +13,11 @@
  * A LOCAL destination is exempt: it is a filesystem path the device already
  * reaches, not a credential, and it is delivered as before to any helper.
  *
+ * A device that has not reported its helper yet (protocol NULL: a new or
+ * re-enrolled install before its first heartbeat) is not refused here: the
+ * command is queued and its delivery waits for the report, which then
+ * decides (services/backupStorageSessions.ts).
+ *
  * Leaf module (imports only the command type table): the enqueue chokepoints
  * in commandQueue.ts and dispatchDeviceCommand.ts import it.
  */
@@ -45,7 +50,9 @@ export const BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE =
 /**
  * The refusal for a storage read to a helper reporting `protocolVersion`, or
  * null when the command may be queued. Only the six destination-reading types
- * are gated; VM restore commands carry no destination and are not.
+ * are gated; VM restore commands carry no destination and are not. `null` is
+ * the stored "not reported yet" and is queued (delivery waits for the
+ * report); `undefined` (no value at all) is refused like 0.
  */
 export function backupReadHelperRefusal(
   type: string,
@@ -57,6 +64,7 @@ export function backupReadHelperRefusal(
     ? (payload as Record<string, unknown>).provider
     : undefined;
   if (provider === 'local') return null;
+  if (protocolVersion === null) return null;
   if ((protocolVersion ?? 0) >= MIN_BACKUP_READ_PROTOCOL_VERSION) return null;
   return BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE;
 }

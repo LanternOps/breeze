@@ -2,13 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   mint: vi.fn(),
+  storedWriteProtocol: vi.fn(),
   materialize: vi.fn(),
   resolveDestination: vi.fn(),
   dispatch: vi.fn(),
   hasContext: vi.fn(() => true),
 }));
 
-vi.mock('./backupStorageWriteSessions', () => ({ mintBackupWriteSession: m.mint }));
+vi.mock('./backupStorageWriteSessions', () => ({
+  mintBackupWriteSession: m.mint,
+  loadStoredBackupWriteProtocol: m.storedWriteProtocol,
+}));
 vi.mock('./backupCommandCredentials', () => ({
   PROVIDER_CONFIG_REF_FIELD: 'providerConfigRef',
   materializeBackupStorageCredentials: m.materialize,
@@ -21,6 +25,7 @@ vi.mock('../db', () => ({
 }));
 
 import { brokerWorkerBackupPayload, deliverBackupWriteCommand } from './backupStorageWriteDelivery';
+import { CommandDeliveryDeferredError } from './commandDeliveryRefusal';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const CONFIG = '22222222-2222-4222-8222-222222222222';
@@ -49,6 +54,7 @@ beforeEach(() => {
   m.resolveDestination.mockResolvedValue({ ok: true, destination: { provider: 's3', providerConfig: S3, storageEncryption: PLAN } });
   m.mint.mockResolvedValue({ mode: 'brokered', envelope: ENVELOPE, snapshotId: 'snapshot-x', sessionId: 's' });
   m.materialize.mockImplementation(async (p: Record<string, unknown>) => ({ ...p, providerConfig: S3, materialized: true }));
+  m.storedWriteProtocol.mockResolvedValue(0);
 });
 
 describe('deliverBackupWriteCommand (delivery refresher for mssql_backup / hyperv_backup)', () => {
@@ -98,6 +104,55 @@ describe('deliverBackupWriteCommand (delivery refresher for mssql_backup / hyper
     expect(m.materialize).toHaveBeenLastCalledWith(expect.anything(), CTX, { legacyReason: 'no_job' });
   });
 
+  describe('a device that has not reported its helper protocols yet', () => {
+    const { reportedBackupWriteProtocolVersion: _r, ...NO_REPORT } = CTX;
+
+    it.each([
+      ['an S3 destination', queued()],
+      ['another provider', queued({ provider: 'b2' })],
+      ['a command without a job id', (() => { const { jobId: _j, ...p } = queued(); return p; })()],
+      ['a command without a reference', (() => { const { providerConfigRef: _p, ...p } = queued(); return p; })()],
+    ])('defers %s, never resolving its destination', async (_name, payload) => {
+      m.storedWriteProtocol.mockResolvedValueOnce(null);
+      await expect(deliverBackupWriteCommand(payload, NO_REPORT)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(m.materialize).not.toHaveBeenCalled();
+      expect(m.mint).not.toHaveBeenCalled();
+      expect(m.dispatch).toHaveBeenCalledWith('mssql_backup', 'deferred', 'helper_unreported');
+    });
+
+    it('reads the stored protocol in the referenced organization', async () => {
+      m.storedWriteProtocol.mockResolvedValueOnce(null);
+      await expect(deliverBackupWriteCommand(queued(), NO_REPORT)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(m.storedWriteProtocol).toHaveBeenCalledWith(DEVICE, ORG);
+    });
+
+    it('defers, outside the fallback, when the mint finds the report withdrawn', async () => {
+      m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unreported' });
+      await expect(deliverBackupWriteCommand(queued(), CTX)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(m.materialize).not.toHaveBeenCalled();
+    });
+
+    it('still delivers a local destination, which is a path and not a credential', async () => {
+      m.storedWriteProtocol.mockResolvedValue(null);
+      const out = await deliverBackupWriteCommand(queued({ provider: 'local' }), NO_REPORT);
+      expect(out).toMatchObject({ materialized: true });
+      expect(m.storedWriteProtocol).not.toHaveBeenCalled();
+    });
+
+    it('lets this heartbeat\'s report decide without reading the stored value', async () => {
+      await deliverBackupWriteCommand(queued(), { ...NO_REPORT, reportedBackupWriteProtocolVersion: 0 });
+      expect(m.storedWriteProtocol).not.toHaveBeenCalled();
+      expect(m.mint).toHaveBeenCalled();
+    });
+
+    it('delivers as before once the device has reported an older helper', async () => {
+      m.storedWriteProtocol.mockResolvedValueOnce(0);
+      m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unsupported' });
+      const out = await deliverBackupWriteCommand(queued(), NO_REPORT);
+      expect(out).toMatchObject({ materialized: true });
+    });
+  });
+
   it('falls back without a job id or a reference, never minting', async () => {
     const { jobId: _j, ...noJob } = queued();
     await deliverBackupWriteCommand(noJob, CTX);
@@ -117,6 +172,7 @@ describe('brokerWorkerBackupPayload (scheduled backups)', () => {
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: 'snapshot-base',
     });
     expect(out.mode).toBe('brokered');
+    if (out.mode === 'held') throw new Error('expected a payload');
     expect(out.payload).not.toHaveProperty('providerConfig');
     expect(out.payload).toMatchObject({ storageSession: ENVELOPE, provider: 's3', paths: ['/data'], storageEncryption: PLAN });
     expect(m.mint).toHaveBeenCalledWith(expect.objectContaining({ baseManifestKey: 'snapshots/snapshot-base/manifest.json' }));
@@ -135,6 +191,15 @@ describe('brokerWorkerBackupPayload (scheduled backups)', () => {
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
     });
     expect(b).toEqual({ mode: 'legacy', reason: 'mint_failed', payload });
+  });
+
+  it('holds a backup, with no payload at all, for a device that has not reported its helper protocols', async () => {
+    m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unreported' });
+    const out = await brokerWorkerBackupPayload({
+      orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
+      provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
+    });
+    expect(out).toEqual({ mode: 'held', reason: 'helper_unreported' });
   });
 
   it('never brokers a local destination', async () => {

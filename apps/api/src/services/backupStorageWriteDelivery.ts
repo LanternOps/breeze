@@ -13,13 +13,20 @@
  * the server-issued snapshot id) and NO `providerConfig`. Otherwise the
  * payload is delivered exactly as before — this release only adds the
  * brokered path for helpers that ask for it.
+ *
+ * A device that has not reported its helper yet (a new or re-enrolled
+ * install before its first heartbeat) is neither: nothing is delivered until
+ * the report arrives. The worker holds the whole dispatch (jobs/backupWorker.ts)
+ * and the refresher defers the queued command, so the next heartbeat — which
+ * carries the report — decides.
  */
 import { hasDbAccessContext, withDbAccessContext } from '../db';
 import { PROVIDER_CONFIG_REF_FIELD, materializeBackupStorageCredentials } from './backupCommandCredentials';
+import { BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE } from './backupHelperProtocols';
 import { recordBackupWriteDispatch } from './backupMetrics';
 import { resolveBackupWriteCommandDestination } from './backupProviderConfig';
-import { mintBackupWriteSession } from './backupStorageWriteSessions';
-import type { DeliveryRefreshContext } from './commandDeliveryRefusal';
+import { loadStoredBackupWriteProtocol, mintBackupWriteSession } from './backupStorageWriteSessions';
+import { CommandDeliveryDeferredError, type DeliveryRefreshContext } from './commandDeliveryRefusal';
 import { captureException } from './sentry';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,17 +50,23 @@ function baseManifestKeyFor(baseSnapshotId: string | null | undefined): string |
     : null;
 }
 
-export type WorkerWriteDelivery = {
-  mode: 'brokered' | 'legacy' | 'local';
-  reason: string;
-  payload: Record<string, unknown>;
-};
+export type WorkerWriteDelivery =
+  | {
+    mode: 'brokered' | 'legacy' | 'local';
+    reason: string;
+    payload: Record<string, unknown>;
+  }
+  // The device has not reported its helper: there is nothing to send.
+  | { mode: 'held'; reason: 'helper_unreported' };
 
 /**
  * For the backup worker (system context, before the send): the payload to
  * send for one target. `baseSnapshotId` is the server's own dispatch pin —
  * the only base a write session may read. A minting failure keeps today's
- * payload (logged), never fails the backup.
+ * payload (logged), never fails the backup. A device that has not reported
+ * its helper gets no payload at all (`held`); the worker checks for that
+ * before it gets here, so it only happens when a re-enrollment lands in
+ * between.
  */
 export async function brokerWorkerBackupPayload(input: {
   orgId: string;
@@ -77,7 +90,10 @@ export async function brokerWorkerBackupPayload(input: {
       providerConfig: input.providerConfig,
       baseManifestKey: input.commandType === 'backup_run' ? baseManifestKeyFor(input.baseSnapshotId) : null,
     });
-    if (minted.mode !== 'brokered') return { mode: 'legacy', reason: minted.reason, payload: input.payload };
+    if (minted.mode !== 'brokered') {
+      if (minted.reason === 'helper_unreported') return { mode: 'held', reason: 'helper_unreported' };
+      return { mode: 'legacy', reason: minted.reason, payload: input.payload };
+    }
     return {
       mode: 'brokered',
       reason: 'ok',
@@ -93,11 +109,21 @@ export async function brokerWorkerBackupPayload(input: {
   }
 }
 
+function deferUntilHelperReported(ctx: DeliveryRefreshContext): never {
+  recordBackupWriteDispatch(ctx.type, 'deferred', 'helper_unreported');
+  throw new CommandDeliveryDeferredError(BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE);
+}
+
 /**
  * Delivery refresher for queued MSSQL / Hyper-V backup commands. Brokers the
  * write when it can; otherwise resolves the destination reference exactly as
  * before (materializeBackupStorageCredentials), which also owns every
  * refusal (device moved, configuration gone, plan changed).
+ *
+ * Before any of that, a device that has not reported its helper yet is
+ * DEFERRED (CommandDeliveryDeferredError): the row goes back to pending and
+ * the next heartbeat, which carries the report, delivers it. Only a local
+ * destination — a path, not a credential — is delivered as before.
  */
 export async function deliverBackupWriteCommand(
   payload: Record<string, unknown>,
@@ -107,13 +133,23 @@ export async function deliverBackupWriteCommand(
   const refOrg = ref && typeof ref === 'object' ? ref.orgId : undefined;
   const refConfig = ref && typeof ref === 'object' ? ref.configId : undefined;
   const jobId = [payload.jobId, payload.backupJobId].find((v): v is string => typeof v === 'string' && UUID_PATTERN.test(v));
+  if (
+    payload.provider !== 'local'
+    && typeof ctx.reportedBackupWriteProtocolVersion !== 'number'
+    && (await loadStoredBackupWriteProtocol(
+      ctx.deviceId,
+      typeof refOrg === 'string' && UUID_PATTERN.test(refOrg) ? refOrg : null,
+    )) === null
+  ) {
+    deferUntilHelperReported(ctx);
+  }
   if (payload.provider !== 's3') return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'provider_not_s3' });
   if (typeof refOrg !== 'string' || !UUID_PATTERN.test(refOrg) || typeof refConfig !== 'string' || !UUID_PATTERN.test(refConfig)) {
     return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'no_reference' });
   }
   if (!jobId) return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'no_job' });
 
-  type Outcome = { payload: Record<string, unknown> } | { legacyReason: string };
+  type Outcome = { payload: Record<string, unknown> } | { legacyReason: string } | { deferred: true };
   const run = async (): Promise<Outcome> => {
     const destination = await resolveBackupWriteCommandDestination(refConfig, refOrg);
     if (!destination.ok) return { legacyReason: 'destination_unavailable' };
@@ -131,6 +167,8 @@ export async function deliverBackupWriteCommand(
       baseManifestKey: null,
       reportedWriteProtocolVersion: ctx.reportedBackupWriteProtocolVersion,
     });
+    // A re-enrollment between the check above and this mint.
+    if (minted.mode !== 'brokered' && minted.reason === 'helper_unreported') return { deferred: true };
     if (minted.mode !== 'brokered') return { legacyReason: minted.reason };
     recordBackupWriteDispatch(ctx.type, 'brokered', 'ok');
     return {
@@ -165,5 +203,7 @@ export async function deliverBackupWriteCommand(
     outcome = { legacyReason: 'mint_failed' };
   }
   if ('payload' in outcome) return outcome.payload;
+  // Thrown here, outside the catch above, so it can never become a fallback.
+  if ('deferred' in outcome) deferUntilHelperReported(ctx);
   return materializeBackupStorageCredentials(payload, ctx, { legacyReason: outcome.legacyReason });
 }

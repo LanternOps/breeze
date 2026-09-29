@@ -267,17 +267,26 @@ export const devices = pgTable('devices', {
   // Brokered storage-read protocol of the INSTALLED backup helper, reported by
   // the main agent as a top-level heartbeat field. 1 = the helper can restore
   // through a short-lived storage session instead of reusable storage
-  // credentials; 0 (default, and every agent that omits the field) = no.
+  // credentials; 0 (every agent that omits the field) = no.
   // Non-sticky: rewritten every beat so a helper downgrade clears the claim.
-  backupReadProtocolVersion: integer('backup_read_protocol_version').notNull().default(0),
+  //
+  // NULL = NOT REPORTED YET: a newly enrolled (or re-enrolled) install whose
+  // first heartbeat has not arrived. Unknown is not "old helper": backup and
+  // restore dispatch waits for the report rather than choosing the path an
+  // old helper would get (services/backupHelperProtocols.ts). The heartbeat
+  // always writes a number, so NULL never returns once a report is recorded
+  // except through re-enrollment, which resets all three to NULL.
+  backupReadProtocolVersion: integer('backup_read_protocol_version'),
   // Snapshot integrity protocol of the INSTALLED backup helper (same report,
-  // same non-sticky contract). 1 = the helper produces snapshot attestations;
-  // 2 = it also checks them at every restore. 0 = neither.
-  backupIntegrityProtocolVersion: integer('backup_integrity_protocol_version').notNull().default(0),
+  // same non-sticky contract, same NULL = not reported yet). 1 = the helper
+  // produces snapshot attestations; 2 = it also checks them at every restore.
+  // 0 = neither.
+  backupIntegrityProtocolVersion: integer('backup_integrity_protocol_version'),
   // Storage write protocol of the INSTALLED backup helper (same report, same
-  // non-sticky contract). 1 = the helper writes through brokered storage
-  // sessions; 0 = it writes with the configured storage destination.
-  backupWriteProtocolVersion: integer('backup_write_protocol_version').notNull().default(0),
+  // non-sticky contract, same NULL = not reported yet). 1 = the helper writes
+  // through brokered storage sessions; 0 = it writes with the configured
+  // storage destination.
+  backupWriteProtocolVersion: integer('backup_write_protocol_version'),
   rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally

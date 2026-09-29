@@ -12,6 +12,7 @@ import { backupConfigs } from '../db/schema';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import {
   backupQueueJobDataSchema,
+  type BackupQueueJobData,
   type QueueActorMeta,
   withQueueMeta,
 } from './queueSchemas';
@@ -60,6 +61,13 @@ const PRIVILEGED_JOB_OPTIONS = {
 const DISPATCH_JOB_OPTIONS = {
   attempts: 1,
 };
+
+/**
+ * How many times a dispatch is queued again while the device has not reported
+ * its backup helper (backupWorker holdForHelperReport) — and so how many
+ * re-queue ids a cancellation looks for.
+ */
+export const BACKUP_CAPABILITY_WAIT_MAX_ATTEMPTS = 40;
 
 let backupQueue: Queue | null = null;
 
@@ -230,6 +238,49 @@ export async function enqueueBackupDispatch(
   return job.id!;
 }
 
+type DispatchBackupQueueData = Extract<BackupQueueJobData, { type: 'dispatch-backup' }>;
+
+/** BullMQ id of the `attempt`-th re-queue of a dispatch waiting for the helper report. */
+function capabilityWaitQueueJobId(jobId: string, attempt: number): string {
+  return `backup-dispatch-${jobId}-capability-wait-${attempt}`;
+}
+
+/**
+ * Queue the same dispatch again, `delayMs` from now, because the device has
+ * not reported its backup helper yet (backupWorker holdForHelperReport).
+ *
+ * The payload is the original one — including the config generation it was
+ * first queued with, so an edit made while waiting still fails the job closed
+ * — plus the wait bookkeeping. Each re-queue gets its own BullMQ id: the id of
+ * the job being processed still exists (and completed ids are retained), so
+ * reusing one would be silently dropped. Same one-shot options as every
+ * dispatch; the worker's redelivery guard applies to each re-queue as well.
+ */
+export async function enqueueBackupDispatchCapabilityWait(
+  data: DispatchBackupQueueData,
+  wait: { attempt: number; since: string },
+  delayMs: number,
+): Promise<string> {
+  const queue = getBackupQueue();
+  const payload = backupQueueJobDataSchema.parse({
+    ...data,
+    capabilityWaitAttempt: wait.attempt,
+    capabilityWaitSince: wait.since,
+  });
+  const job = await queue.add(
+    'dispatch-backup',
+    payload,
+    {
+      jobId: capabilityWaitQueueJobId(data.jobId, wait.attempt),
+      delay: delayMs,
+      ...DISPATCH_JOB_OPTIONS,
+      removeOnComplete: { count: 50 },
+      removeOnFail: { count: 100 },
+    }
+  );
+  return job.id!;
+}
+
 export async function enqueueBackupResults(
   jobId: string,
   orgId: string,
@@ -260,18 +311,27 @@ export async function enqueueBackupResults(
   return job.id!;
 }
 
+/**
+ * Remove a backup's dispatch that has not started yet. A dispatch waiting for
+ * the device's helper report lives under a re-queue id instead of the
+ * original (enqueueBackupDispatchCapabilityWait), so every such id is looked
+ * up too; at most one of them is ever still queued.
+ */
 export async function removeQueuedBackupDispatch(jobId: string): Promise<boolean> {
   const queue = getBackupQueue();
-  const queuedJob = await queue.getJob(`backup-dispatch-${jobId}`);
-  if (!queuedJob) {
-    return false;
+  const ids = [`backup-dispatch-${jobId}`];
+  for (let attempt = 1; attempt <= BACKUP_CAPABILITY_WAIT_MAX_ATTEMPTS; attempt++) {
+    ids.push(capabilityWaitQueueJobId(jobId, attempt));
   }
+  const candidates = await Promise.all(ids.map((id) => queue.getJob(id)));
 
-  const state = await queuedJob.getState();
-  if (state !== 'waiting' && state !== 'delayed' && state !== ('paused' as string)) {
-    return false;
+  let removed = false;
+  for (const queuedJob of candidates) {
+    if (!queuedJob) continue;
+    const state = await queuedJob.getState();
+    if (state !== 'waiting' && state !== 'delayed' && state !== ('paused' as string)) continue;
+    await queuedJob.remove();
+    removed = true;
   }
-
-  await queuedJob.remove();
-  return true;
+  return removed;
 }
