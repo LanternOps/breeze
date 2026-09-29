@@ -385,6 +385,7 @@ describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
       report_id: 'include',
       org_id: 'include',
       contact_id: 'include',
+      mode: 'include',
       created_at: 'include',
     });
 

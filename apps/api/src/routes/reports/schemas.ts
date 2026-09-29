@@ -169,7 +169,12 @@ export const listReportsSchema = z.object({
   // partner-owned (all-organizations) reports, 'organization' only org-owned
   // ones. It narrows the caller's listing; it never widens it (also applied
   // by `GET /reports/templates`, which is org-owned only already).
-  ownerScope: z.enum(['organization', 'partner']).optional()
+  ownerScope: z.enum(['organization', 'partner']).optional(),
+  // Multi-org report series W02: narrowing only. 'only' = series children,
+  // 'exclude' = everything else.
+  series: z.enum(['only', 'exclude']).optional(),
+  // Archived series children are hidden unless asked for.
+  includeArchived: z.enum(['true', 'false']).optional(),
 });
 
 const createReportFields = {
@@ -281,6 +286,8 @@ export const reportRecipientParamSchema = z.object({
 
 export const addReportRecipientSchema = z.object({
   contactId: z.string().guid(),
+  // Multi-org report series W02: 'remove' is valid only on a series child.
+  mode: z.enum(['add', 'remove']).optional(),
 });
 
 export const convertReportRecipientSchema = z.object({

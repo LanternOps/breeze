@@ -69,6 +69,7 @@ import {
 } from '../db/schema/reports';
 import { devices, sites } from '../db/schema';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
+import { seriesManagedRefusal } from './reportSeries/types';
 import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } from 'drizzle-orm';
 import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/alerts/helpers';
 import type { AuthContext } from '../middleware/auth';
@@ -3231,6 +3232,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         );
         if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
         const existing = access.report;
+        // Multi-org report series W02: a child's shared fields belong to its
+        // series (spec §3.3 "Child writers").
+        if (existing.seriesId) return JSON.stringify(seriesManagedRefusal(existing.seriesId));
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
@@ -3241,6 +3245,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const updated = await db.update(reports).set(updates).where(and(
           eq(reports.id, existing.id),
           eq(reports.orgId, existing.orgId),
+          isNull(reports.seriesId),
           access.predicate,
         )).returning({ id: reports.id });
         if (updated.length !== 1) {
@@ -3258,12 +3263,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         );
         if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
         const existing = access.report;
+        if (existing.seriesId) return JSON.stringify(seriesManagedRefusal(existing.seriesId));
 
         const deleted = await db.transaction(async (tx) => {
           await tx.delete(reportRuns).where(eq(reportRuns.reportId, existing.id));
           const deletedRows = await tx.delete(reports).where(and(
             eq(reports.id, existing.id),
             eq(reports.orgId, existing.orgId),
+            isNull(reports.seriesId),
             access.predicate,
           )).returning({ id: reports.id });
           if (deletedRows.length !== 1) {

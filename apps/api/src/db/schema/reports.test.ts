@@ -75,8 +75,11 @@ describe('report execution scope provenance', () => {
       'reportId',
       'orgId',
       'contactId',
+      'mode',
       'createdAt',
     ]);
+    expect(columns.mode.notNull).toBe(true);
+    expect(columns.mode.default).toBe('add');
     expect(columns.reportId.notNull).toBe(true);
     expect(columns.orgId.notNull).toBe(true);
     expect(columns.contactId.notNull).toBe(true);

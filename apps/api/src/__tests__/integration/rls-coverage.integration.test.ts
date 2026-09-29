@@ -223,6 +223,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // or PARTNER_WIDE_SELECT_BRANCH_EXEMPT. Functional forge proof:
   // workTypesPartnerRls.integration.test.ts.
   ['work_types', 'partner_id'],
+  // report_series (multi-org report series W02): partner-owned parent of
+  // org-owned `reports` children. Shape 3, flat
+  // breeze_has_partner_access(partner_id), partner_id NOT NULL — the spec D6
+  // exception to Partner-Wide-First, so deliberately NOT in
+  // DUAL_AXIS_TENANT_TABLES. No org_id, so no org cascade/export/merge entry;
+  // report_series_org_targets (shape 1) is auto-discovered. Functional forge
+  // proof: reportSeriesPartnerRls.integration.test.ts.
+  ['report_series', 'partner_id'],
   ['billing_profiles', 'partner_id'],
   ['billing_profile_rules', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],

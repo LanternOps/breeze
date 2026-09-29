@@ -178,7 +178,7 @@ export const identityAccessConfigSchema = legacyReportConfigSchema.extend({
 /** Does a stored selector value actually select something? An empty array or
  *  an object whose every value selects nothing (`filters: {}`,
  *  `filters: { siteIds: [] }`) does not; any other present value does. */
-function selectsSomething(value: unknown): boolean {
+export function selectsSomething(value: unknown): boolean {
   if (value === undefined || value === null) return false;
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === 'object') return Object.values(value).some(selectsSomething);

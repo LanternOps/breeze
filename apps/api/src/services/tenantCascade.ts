@@ -726,6 +726,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'remediation_suggestions',
   'remote_sessions',
   'report_schedule_recipients',
+  // Multi-org report series W02: shape-1 target rows. FK to organizations is
+  // NO ACTION (organizations is last); its series_id parent (report_series) is
+  // partner-axis and outside this set. report_series itself goes with the
+  // partner sweep (partner_id column).
+  'report_series_org_targets',
   'reports',
   'restore_jobs',
   'roles',

@@ -135,6 +135,7 @@ vi.mock('drizzle-orm', () => ({
   desc: (column: unknown) => ({ op: 'desc', column }),
   // #4622 W03 — the device_inventory manual branch excludes retired assets.
   isNull: (column: unknown) => ({ op: 'isNull', column }),
+  isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values })
 }));
 
@@ -183,8 +184,12 @@ vi.mock('../db/schema', () => ({
     executionScopeFingerprint: 'reports.executionScopeFingerprint',
     executionScopeCapturedAt: 'reports.executionScopeCapturedAt',
     executionScopePrincipalKind: 'reports.executionScopePrincipalKind',
-    portalSelfService: 'reports.portalSelfService'
+    portalSelfService: 'reports.portalSelfService',
+    seriesId: 'reports.seriesId',
+    archivedAt: 'reports.archivedAt'
   },
+  // Multi-org report series W02 — the list joins it for seriesName.
+  reportSeries: { id: 'reportSeries.id', name: 'reportSeries.name' },
   portalBranding: {
     orgId: 'portalBranding.orgId',
     enableReports: 'portalBranding.enableReports'
@@ -919,7 +924,10 @@ describe('report definition scope enforcement', () => {
       };
     });
     // GET /reports joins organizations (W01); GET /reports/templates does not.
-    const leftJoin = vi.fn(() => ({ where: pageWhere() }));
+    // W02 adds a second (report_series) join, so the join chains.
+    const pageChain: { leftJoin?: unknown; where: unknown } = { where: pageWhere() };
+    const leftJoin = vi.fn(() => pageChain);
+    pageChain.leftJoin = leftJoin;
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -947,7 +955,7 @@ describe('report definition scope enforcement', () => {
         ? sourceRows.filter((row) => visibleIdSet.has(row.id))
         : sourceRows;
 
-    const pageWhere = vi.fn((condition: unknown) => {
+    const pageWhere: ReturnType<typeof vi.fn> = vi.fn((condition: unknown) => {
       capturedConditions.push(condition);
       return {
         orderBy: vi.fn().mockReturnValue({
@@ -959,6 +967,9 @@ describe('report definition scope enforcement', () => {
         })
       };
     });
+
+    const joined: { leftJoin?: unknown; where: unknown } = { where: pageWhere };
+    joined.leftJoin = vi.fn(() => joined);
 
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -972,7 +983,7 @@ describe('report definition scope enforcement', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           // GET /reports joins organizations (W01); GET /reports/templates does not.
-          leftJoin: vi.fn(() => ({ where: pageWhere })),
+          leftJoin: vi.fn(() => joined),
           where: pageWhere
         })
       } as any);
@@ -1211,6 +1222,11 @@ describe('report definition scope enforcement', () => {
       { id: 'organizations.id', name: 'organizations.name' },
       { op: 'eq', column: 'organizations.id', value: 'reports.orgId' }
     );
+    expect(projection.seriesName).toBe('reportSeries.name');
+    expect(leftJoin).toHaveBeenCalledWith(
+      { id: 'reportSeries.id', name: 'reportSeries.name' },
+      { op: 'eq', column: 'reportSeries.id', value: 'reports.seriesId' }
+    );
   });
 
   it.each(['', '/templates'])(
@@ -1428,7 +1444,10 @@ describe('report definition scope enforcement', () => {
       'executionScopeFingerprint',
       'executionScopeCapturedAt',
       'executionScopePrincipalKind',
-      'portalSelfService'
+      'portalSelfService',
+      // Multi-org report series W02: the write routes refuse a series child.
+      'seriesId',
+      'archivedAt'
     ]);
     expect(metadataProjection).not.toHaveProperty('config');
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(

@@ -215,3 +215,26 @@ describe('findDueReports — partner-owned definitions (#3198 W01)', () => {
     expect(sql.slice(disjunction)).not.toContain('execution_scope_user_id');
   });
 });
+
+describe('findDueReports — multi-org report series (W02)', () => {
+  beforeEach(() => {
+    selectCalls.length = 0;
+    selectResults.length = 0;
+  });
+
+  it('never polls an archived child or a child of a disabled series, in BOTH statements, with no new params', async () => {
+    selectResults.push([], [{ count: 0 }]);
+    await findDueReports(new Date('2026-07-01T07:30:00Z'));
+    const [dueQuery, skippedQuery] = selectCalls;
+    for (const call of [dueQuery!, skippedQuery!]) {
+      const where = compile(call.where);
+      expect(where.sql).toContain('"reports"."archived_at" is null');
+      expect(where.sql).toContain(
+        'NOT EXISTS (SELECT 1 FROM report_series rs WHERE rs.id = "reports"."series_id" AND rs.enabled = false)',
+      );
+    }
+    // The pollable prefix still binds exactly three params (one_time + the two
+    // worker-excluded types), so the existing complete-scope offsets hold.
+    expect(compile(dueQuery!.where).params.slice(0, 3)).toEqual(['one_time', 'ai_org_narrative', 'ai_fleet_design']);
+  });
+});

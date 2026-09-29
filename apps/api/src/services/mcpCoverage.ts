@@ -512,6 +512,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'reports/generate.ts': { tools: ['generate_report'] },
   'reports/recipients.ts': { gap: '#6789' },
   'reports/runs.ts': { tools: ['generate_report'] },
+  // Multi-org report series (W02): generate_report lists and runs series
+  // children like any org report; a series-management tool is a follow-up.
+  'reports/series.ts': { tools: ['generate_report'] },
   'roles.ts': { gap: '#6789' },
   'scriptAi.ts': { exempt: 'ai_transport' },
   'scriptBundle.ts': { gap: '#6806' },

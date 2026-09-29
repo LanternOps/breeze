@@ -79,6 +79,57 @@ export const reportRunStatusEnum = pgEnum('report_run_status', [
   'failed'
 ]);
 
+/**
+ * Multi-org report series W02 (spec 2026-09-28 §3.2). ONE partner-owned
+ * definition that fans out into one ordinary org-owned `reports` child per
+ * targeted organization. Partner-axis (shape 3, partner_id NOT NULL — the D6
+ * Partner-Wide-First exception). It never executes: the reconciler
+ * (services/reportSeries/reconcile.ts) materializes the children. CHECKs and
+ * the constraint triggers live in SQL only
+ * (migrations/2026-11-09-110000-report-series.sql).
+ */
+export const reportSeries = pgTable('report_series', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  type: reportTypeEnum('type').notNull(),
+  format: reportFormatEnum('format').notNull().default('pdf'),
+  schedule: reportScheduleEnum('schedule').notNull(),
+  config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+  targetMode: text('target_mode').$type<'all' | 'selected'>().notNull().default('all'),
+  recipientRule: jsonb('recipient_rule')
+    .$type<{ primaryContact: boolean; roles: string[] }>()
+    .notNull()
+    .default({ primaryContact: true, roles: [] }),
+  internalCc: text('internal_cc').array().notNull().default(sql`'{}'::text[]`),
+  revision: integer('revision').notNull().default(1),
+  enabled: boolean('enabled').notNull().default(true),
+  // ON DELETE SET NULL (users is in the org cascade set). NULL = every child
+  // blocked_no_authority; never a system fallback.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  partnerIdx: index('report_series_partner_idx').on(table.partnerId),
+  ownerIdx: index('report_series_owner_user_idx').on(table.ownerUserId),
+}));
+
+/**
+ * Multi-org report series W02. Shape 1 (direct org_id). In target_mode 'all'
+ * a row is an EXCLUSION; in 'selected' an INCLUSION. Same-partner is enforced
+ * by the report_series_org_targets_same_partner constraint trigger.
+ */
+export const reportSeriesOrgTargets = pgTable('report_series_org_targets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  seriesId: uuid('series_id').notNull().references(() => reportSeries.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  seriesOrgUniq: uniqueIndex('report_series_org_targets_series_org_uniq').on(table.seriesId, table.orgId),
+  orgIdx: index('report_series_org_targets_org_idx').on(table.orgId),
+}));
+
 export const reports = pgTable('reports', {
   id: uuid('id').primaryKey().defaultRandom(),
   // #3198 W01: org XOR partner ownership (reports_one_owner_chk). A partner-
@@ -117,6 +168,20 @@ export const reports = pgTable('reports', {
   // contract reads it from pg_constraint at runtime anyway.
   sourceAiAgentScheduleId: uuid('source_ai_agent_schedule_id'),
   portalSelfService: boolean('portal_self_service').notNull().default(false),
+  // Multi-org report series W02: set only on ORG-owned children
+  // (reports_series_child_shape_chk). ON DELETE SET NULL — a deleted series
+  // leaves its children archived (the BEFORE DELETE trigger archives them).
+  seriesId: uuid('series_id').references(() => reportSeries.id, { onDelete: 'set null' }),
+  // 0 = created/adopted, never reconciled (INDEX revision sentinel);
+  // report_series.revision starts at 1, so 0 is always stale.
+  seriesRevision: integer('series_revision'),
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  // Set on a STANDALONE report detached from that series (series_id NULL,
+  // reports_detached_from_series_chk). While it is live, its org is not
+  // targeted by that series (services/reportSeries/targets.ts), so a later
+  // targets change cannot mint a second child next to it.
+  detachedFromSeriesId: uuid('detached_from_series_id')
+    .references(() => reportSeries.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -132,6 +197,16 @@ export const reports = pgTable('reports', {
   aiFleetDesignOrgUniq: uniqueIndex('reports_ai_fleet_design_org_uniq')
     .on(table.orgId)
     .where(sql`${table.type} = 'ai_fleet_design'`),
+  // Multi-org report series W02: one ACTIVE child per (org, series).
+  seriesActiveChildUniq: uniqueIndex('reports_series_active_child_uniq')
+    .on(table.orgId, table.seriesId)
+    .where(sql`${table.seriesId} IS NOT NULL AND ${table.archivedAt} IS NULL`),
+  seriesIdx: index('reports_series_id_idx')
+    .on(table.seriesId)
+    .where(sql`${table.seriesId} IS NOT NULL`),
+  detachedFromSeriesIdx: index('reports_detached_from_series_id_idx')
+    .on(table.detachedFromSeriesId)
+    .where(sql`${table.detachedFromSeriesId} IS NOT NULL`),
 }));
 
 /**
@@ -300,6 +375,9 @@ export const reportScheduleRecipients = pgTable(
     reportId: uuid('report_id').notNull(),
     orgId: uuid('org_id').notNull(),
     contactId: uuid('contact_id').notNull(),
+    // Multi-org report series W02: 'remove' exists only on series children
+    // (the route refuses it elsewhere); every legacy row is 'add'.
+    mode: text('mode').$type<'add' | 'remove'>().notNull().default('add'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
