@@ -158,6 +158,9 @@ const CROSS_FILE_GUARDED_DELEGATES: ReadonlyArray<readonly [string, string]> = [
   // device and denies on `deviceSiteDenied(auth, device.siteId, device.id)`
   // (`vulnerabilityRemediation.ts`), reporting out-of-site findings as skipped.
   ['remediateVulnerabilities', 'vulnerabilityRemediation.ts'],
+  // `list_time_sync_issues`: `listFleetTimeStatus` names both axes at its entry
+  // point (siteScopeCondition + deviceScopeCondition, idempotent with fleetScope).
+  ['listFleetTimeStatus', join('timeSync', 'fleet.ts')],
 ];
 
 /**

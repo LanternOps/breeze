@@ -191,7 +191,8 @@
     "backup_continuity": "Yedekleme sürekliliği",
     "script": "Betik denetimi",
     "network_check": "Ağ denetimi",
-    "hardware_health": "Donanım sağlığı"
+    "hardware_health": "Donanım sağlığı",
+    "time_sync": "Saat eşitleme"
   },
   "fields": {
     "operator": "Karşılaştırma",
@@ -586,6 +587,25 @@
         "minHealthOptions": {
           "warning": "Uyarı",
           "critical": "Kritik"
+        }
+      },
+      "time_sync": {
+        "findings": "Bulgular",
+        "consecutiveSnapshots": "Ardışık anlık görüntüler",
+        "findingOptions": {
+          "pdc_no_external_source": "Orman kökü PDC’sinin dış kaynağı yok",
+          "source_local_clock": "Yerel saat kullanılıyor",
+          "dc_vm_host_sync": "Etki alanı denetleyicisi VM ana bilgisayarıyla eşitleniyor",
+          "ntp_server_unresolvable": "NTP sunucusu adı geçersiz veya çözümlenemiyor",
+          "ntp_peer_unreachable": "NTP eşine ulaşılamıyor",
+          "domain_source_unavailable": "Etki alanı saat kaynağı kullanılamıyor",
+          "member_not_on_hierarchy": "Etki alanı hiyerarşisi kullanılmıyor",
+          "sync_disabled": "Saat eşitleme devre dışı",
+          "sync_stale": "Yakın zamanda başarılı eşitleme yok",
+          "correction_refused": "Saat düzeltmesi reddedildi",
+          "timezone_mismatch": "Saat dilimi beklenenden farklı",
+          "policy_not_applied": "Saat ilkesi uygulanmadı",
+          "policy_conflict_gpo": "Grup İlkesi saat ayarlarını denetliyor"
         }
       }
     }

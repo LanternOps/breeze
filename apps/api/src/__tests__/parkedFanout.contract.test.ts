@@ -291,6 +291,7 @@ const EXEMPT: Record<string, string> = {
   'services/hardwareHealth/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
   'services/timeSync/ingest.ts': 'agent self-service: ownership-checks device.id+orgId; mounted only under the agent\'s own time-status route',
   'services/timeSync/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
+  'services/timeSync/exports.ts': 'derived: daily rows only for the device ids listFleetTimeStatus already selected with notParkedDeviceCondition',
   'services/helperPermissions.ts': 'agent self-service: runs on the helper route for the calling device\'s own id',
   'services/logReadAuthority.ts': 'request path: log-read authority derived from auth.canAccessOrg/allowedSiteIds on the request path only',
   'services/logSearch.ts': 'org-pinned: background correlation loop pinned per-rule to rule.orgId, an org-owned config row',

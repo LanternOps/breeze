@@ -28,6 +28,7 @@ export const SELECT_OPTION_NAMESPACE: Record<string, string> = {
   'backup_continuity:check': 'backupChecks',
   'hardware_health:componentTypes': 'monitors.fields.hardware_health.componentTypeOptions',
   'hardware_health:minHealth': 'monitors.fields.hardware_health.minHealthOptions',
+  'time_sync:findings': 'monitors.fields.time_sync.findingOptions',
 };
 
 interface FetchedScript {

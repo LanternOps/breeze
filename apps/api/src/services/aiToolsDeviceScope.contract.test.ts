@@ -197,6 +197,10 @@ const CROSS_FILE_GUARDED_DELEGATES: ReadonlyArray<readonly [string, string]> = [
   // `aiToolsMonitors.deviceScope.test.ts`.
   ['listMonitorDeviceActivity', join('monitors', 'episodeQueries.ts')],
   ['listMonitorEpisodes', join('monitors', 'episodeQueries.ts')],
+  // `list_time_sync_issues`: `listFleetTimeStatus` builds its whole read through
+  // `fleetScope` (deviceScopeCondition + siteScopeCondition) and pins an optional
+  // deviceId to the device axis. Behaviour: `timeSync/fleet.test.ts`.
+  ['listFleetTimeStatus', join('timeSync', 'fleet.ts')],
 ];
 
 /**

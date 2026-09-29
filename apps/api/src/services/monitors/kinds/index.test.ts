@@ -34,11 +34,12 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   },
   // W03 (hardware & RAID monitoring).
   hardware_health: { componentTypes: ['physical_disk'], minHealth: 'critical', includePredictiveFailure: true, consecutiveSnapshots: 2 },
+  time_sync: { findings: ['sync_stale'], consecutiveSnapshots: 2 },
 };
 
 describe('monitor kind registry (#5289)', () => {
-  it('ships twenty kinds with hardware health', () => {
-    expect(MONITOR_KINDS).toHaveLength(20);
+  it('ships twenty-one kinds with hardware health and time sync', () => {
+    expect(MONITOR_KINDS).toHaveLength(21);
   });
 
   it('has a spec for every kind and every compiled condition validates against alertConditions', () => {

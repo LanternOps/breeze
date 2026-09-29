@@ -104,7 +104,8 @@
     "deliverableTemplates": "Modèles de livrables",
     "securityScans": "Analyses IOC",
     "system": "Système",
-    "monitorConversion": "Conversion des moniteurs"
+    "monitorConversion": "Conversion des moniteurs",
+    "timeSync": "Synchronisation de l’heure"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

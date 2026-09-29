@@ -191,7 +191,8 @@
     "backup_continuity": "Backup continuity",
     "script": "Script check",
     "network_check": "Network check",
-    "hardware_health": "Hardware health"
+    "hardware_health": "Hardware health",
+    "time_sync": "Time synchronization"
   },
   "fields": {
     "operator": "Comparison",
@@ -586,6 +587,25 @@
         "minHealthOptions": {
           "warning": "Warning",
           "critical": "Critical"
+        }
+      },
+      "time_sync": {
+        "findings": "Findings",
+        "consecutiveSnapshots": "Consecutive snapshots",
+        "findingOptions": {
+          "pdc_no_external_source": "Forest root PDC has no external source",
+          "source_local_clock": "Using the local clock",
+          "dc_vm_host_sync": "DC is syncing with the VM host",
+          "ntp_server_unresolvable": "NTP server name is invalid or unresolved",
+          "ntp_peer_unreachable": "NTP peer is unreachable",
+          "domain_source_unavailable": "Domain time source unavailable",
+          "member_not_on_hierarchy": "Not using the domain hierarchy",
+          "sync_disabled": "Time synchronization is disabled",
+          "sync_stale": "No recent successful synchronization",
+          "correction_refused": "Time correction was refused",
+          "timezone_mismatch": "Timezone differs from expected",
+          "policy_not_applied": "Time policy was not applied",
+          "policy_conflict_gpo": "Group Policy controls time settings"
         }
       }
     }

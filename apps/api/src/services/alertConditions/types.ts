@@ -158,7 +158,7 @@ export interface NetworkCheckCondition {
 
 // `HardwareComponentType` from `@breeze/shared` minus 'bmc' — BMC health is a
 // separate, future, out-of-band spec (see the design doc).
-import type { HardwareComponentType } from '@breeze/shared';
+import type { HardwareComponentType, TimeSyncFindingCode } from '@breeze/shared';
 export type HardwareHealthComponentFilter = Exclude<HardwareComponentType, 'bmc'>;
 
 // Per-subject (per-component) evidence a leaf handler can report, alongside
@@ -184,6 +184,12 @@ export interface HardwareHealthCondition {
   consecutiveSnapshots: number;
 }
 
+export interface TimeSyncCondition {
+  type: 'time_sync';
+  findings: TimeSyncFindingCode[];
+  consecutiveSnapshots: number;
+}
+
 // Union of all condition types
 export type AlertCondition =
   | ThresholdCondition
@@ -202,7 +208,8 @@ export type AlertCondition =
   | BackupContinuityCondition
   | ScriptMonitorCondition
   | NetworkCheckCondition
-  | HardwareHealthCondition;
+  | HardwareHealthCondition
+  | TimeSyncCondition;
 
 // Compound condition with AND/OR logic
 export interface ConditionGroup {

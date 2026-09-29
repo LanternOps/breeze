@@ -46,3 +46,57 @@ This release derives the expected timezone from the device's site. Site values *
 Comparison uses Windows timezone IDs. For example, America/New_York and America/Detroit both map to Eastern Standard Time. Site changes are reflected the next time the device view is read. If there is no site or the site's IANA timezone has no Windows mapping, Breeze explains why no expected timezone is available. It does not invent a mapping. In particular, Antarctica/Troll has no CLDR Windows mapping.
 
 Review the displayed source and site name before correcting the device. Automatic timezone being on suppresses a mismatch finding. This visibility release does not apply time policies or offer time-changing commands.
+
+## Alerts
+
+Three built-in monitors are provisioned for each partner. They are **not attached by default**.
+Attach a monitor to a configuration policy to enable its evaluation for that policy's devices.
+
+| Monitor | Built-in key | Default severity | Findings |
+| --- | --- | --- | --- |
+| Time source problem | `time_source_problem` | High | Missing external PDC source, local clock, DC host-time synchronization, unresolvable or unreachable peers, unavailable domain source, member bypassing hierarchy, refused correction |
+| Time sync stale or disabled | `time_sync_stale` | Medium | Stale synchronization or synchronization disabled |
+| Timezone mismatch | `timezone_mismatch` | Low | Reported timezone differs from the expected timezone while automatic timezone is not on |
+
+Each default requires two consecutive accepted snapshots. Alert sweeps do not count as
+new observations. A rejected duplicate does not advance the counters. You can override
+the required count from 1 to 10 in the monitor attachment.
+
+Each finding is an independent subject. A device can have more than one time alert;
+acknowledging one does not acknowledge the others. Recovery requires the same number
+of accepted snapshots without that finding. Missing data, incomplete streaks and stale
+observations produce unknown evidence; unknown does not resolve an existing alert.
+Observations older than 90 minutes are stale. Use the existing offline monitor for
+unreachable devices. Timezone mismatch is informational for device health but remains
+alertable through its monitor.
+
+## Evidence exports
+
+Open **Time Sync**, next to **Fleet Posture**, for the Windows fleet report. Filter by
+health, finding, role, organization or site. The AD-domain view pins an accessible PDC
+first. A missing-PDC warning means no PDC is present in your accessible inventory; it
+may be unenrolled or outside your access. A pinned PDC is context and can be outside
+the selected filters or page.
+
+**Export current CSV** includes all matching devices, not just the visible page.
+Current expected timezone is recalculated from the site's current setting.
+**Export daily CSV** accepts an inclusive range of at most 400 UTC dates within the
+retained window, ending no later than today. Filters select the current device population;
+the export then lists every requested day for each selected device. Days without a
+row have `evidence_state=gap`, an empty health value and `snapshot_count=0`.
+
+Both exports begin with:
+
+> Observed synchronization reported by the Breeze agent; days without a report are listed as gaps.
+
+Daily summaries retain the worst observed health, union of finding codes, maximum
+successful-sync timestamp, observation count and the source/timezone from the latest
+accepted observation that day. An unknown observation keeps a day from being labeled
+entirely healthy. Site timezone edits do not rewrite past daily evidence.
+
+This is observational evidence, **not an attestation** that the clock was correct all
+day. Breeze does not measure an offset in this feature, and an agent's report is not
+independently verified. Exports are live reads; fleet membership may change during a
+large download. Historical rows follow a device when it moves organizations and are
+deleted with the device. Downloaded CSVs are the durable artifact. Retention removes
+rows older than 400 days; the cutoff date itself remains eligible until the next day.

@@ -1,4 +1,4 @@
-import type { MonitorKind } from '@breeze/shared';
+import { TIME_SYNC_FINDING_CODES, type MonitorKind } from '@breeze/shared';
 
 /**
  * The monitor editor's condition fields render from this map rather than
@@ -278,7 +278,21 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       max: 10,
     },
   ],
-
+  time_sync: [
+    {
+      key: 'findings',
+      labelKey: 'monitoring:monitors.fields.time_sync.findings',
+      kind: 'multiselect',
+      options: TIME_SYNC_FINDING_CODES,
+    },
+    {
+      key: 'consecutiveSnapshots',
+      labelKey: 'monitoring:monitors.fields.time_sync.consecutiveSnapshots',
+      kind: 'number',
+      min: 1,
+      max: 10,
+    },
+  ],
 };
 
 /**
@@ -360,6 +374,10 @@ export function defaultConditionFor(kind: MonitorKind): Record<string, unknown> 
         includePredictiveFailure: true,
         consecutiveSnapshots: 2,
       };
-
+    case 'time_sync':
+      return {
+        findings: ['sync_stale', 'sync_disabled'],
+        consecutiveSnapshots: 2,
+      };
   }
 }

@@ -31,6 +31,7 @@ import { backupContinuityHandler } from './handlers/backupContinuity';
 import { scriptMonitorHandler } from './handlers/scriptMonitor';
 import { networkCheckHandler } from './handlers/networkCheck';
 import { hardwareHealthHandler } from './handlers/hardwareHealth';
+import { timeSyncHandler } from './handlers/timeSync';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -50,6 +51,7 @@ conditionRegistry.register(backupContinuityHandler);
 conditionRegistry.register(scriptMonitorHandler);
 conditionRegistry.register(networkCheckHandler);
 conditionRegistry.register(hardwareHealthHandler);
+conditionRegistry.register(timeSyncHandler);
 
 // Re-export types for backward compatibility
 export type {
@@ -57,6 +59,7 @@ export type {
   SubjectStatus,
   HardwareHealthCondition,
   HardwareHealthComponentFilter,
+  TimeSyncCondition,
   ComparisonOperator,
   MetricName,
   ThresholdCondition,

@@ -103,6 +103,7 @@ export const JOB_SCHEDULES = {
   'invoice-overdue-sweep': '8 6 * * *',
   'event-log-retention': '3 7 * * *',
   'hardware-health-retention': '8 7 * * *',
+  'time-sync-retention': '18 7 * * *',
   'agent-log-retention': '23 7 * * *',
   'change-log-retention': '43 7 * * *',
   // #4210 — outbox/incident retention family, same daily tier as the other

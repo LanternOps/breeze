@@ -11,6 +11,8 @@ import {
   type ExpectedTimezone,
 } from './expectedTimezone';
 import { resolveTimeFindings, type TimeFindingsResult } from './findings';
+import { applyStreaks } from './applyStreaks';
+import { upsertDaily } from './upsertDaily';
 type StatusRow = typeof deviceTimeStatus.$inferSelect;
 export interface IngestTimeStatusResult {
   accepted: boolean;
@@ -57,6 +59,10 @@ export function buildTimeStatusRow(
     findings: resolved.findings.map((f) => f.code),
     findingDetails: Object.fromEntries(
       resolved.findings.map((f) => [f.code, f.detail]),
+    ),
+    findingStreaks: applyStreaks(
+      previous?.findingStreaks,
+      resolved.findings.map((f) => f.code),
     ),
     syncType: s.config.type,
     ntpServer: s.config.ntpServer,
@@ -144,6 +150,14 @@ export async function ingestTimeStatusSnapshot(
       .insert(deviceTimeStatus)
       .values(row)
       .onConflictDoUpdate({ target: deviceTimeStatus.deviceId, set: row });
+    await upsertDaily({
+      deviceId: args.deviceId,
+      orgId: args.orgId,
+      snapshot: args.snapshot,
+      result: resolved,
+      expectedTimezone: expected,
+      receivedAt: args.receivedAt,
+    });
     return { accepted: true, health: resolved.health };
   });
 }

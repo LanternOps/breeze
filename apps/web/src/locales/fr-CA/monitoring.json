@@ -191,7 +191,8 @@
     "backup_continuity": "Continuité des sauvegardes",
     "script": "Vérification de script",
     "network_check": "Vérification réseau",
-    "hardware_health": "État du matériel"
+    "hardware_health": "État du matériel",
+    "time_sync": "Synchronisation de l’heure"
   },
   "fields": {
     "operator": "Comparaison",
@@ -586,6 +587,25 @@
         "minHealthOptions": {
           "warning": "Avertissement",
           "critical": "Critique"
+        }
+      },
+      "time_sync": {
+        "findings": "Constats",
+        "consecutiveSnapshots": "Instantanés consécutifs",
+        "findingOptions": {
+          "pdc_no_external_source": "Le PDC racine de la forêt n’a pas de source externe",
+          "source_local_clock": "Utilisation de l’horloge locale",
+          "dc_vm_host_sync": "Le contrôleur de domaine se synchronise avec l’hôte de la machine virtuelle",
+          "ntp_server_unresolvable": "Le nom du serveur NTP est invalide ou non résolu",
+          "ntp_peer_unreachable": "Le pair NTP est injoignable",
+          "domain_source_unavailable": "La source de temps du domaine est indisponible",
+          "member_not_on_hierarchy": "La hiérarchie du domaine n’est pas utilisée",
+          "sync_disabled": "La synchronisation de l’heure est désactivée",
+          "sync_stale": "Aucune synchronisation réussie récemment",
+          "correction_refused": "La correction de l’heure a été refusée",
+          "timezone_mismatch": "Le fuseau horaire diffère de celui attendu",
+          "policy_not_applied": "La stratégie horaire n’a pas été appliquée",
+          "policy_conflict_gpo": "Une stratégie de groupe contrôle les paramètres horaires"
         }
       }
     }
