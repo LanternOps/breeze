@@ -19,7 +19,7 @@ All constraints in the index's Global constraints section apply.
 - W02 depends on corrected W01a; read corrected W01b for R4/R5/R7 wire behavior, but W01b is not a dependency and this PR changes no agent code.
 - R16: before implementation, use the feature-lifecycle status and wave issue to select the `feature/<parent#>-<slug>/wave-<subissue#>` branch required by CLAUDE.md. This document-only correction does not create branches or update tracking.
 - R17: TypeScript examples use Prettier layout (single quotes, trailing commas, two-space indentation); Task 12 runs the API/web/shared linters before commit. This wave has no Go blocks or Go outputs, so `gofmt -l` is not applicable.
-- Migration slots: `2026-11-09-110000-time-sync-daily.sql` and `2026-11-09-110100-monitor-kind-time-sync.sql`.
+- Migration slots: `2026-11-10-110000-time-sync-daily.sql` and `2026-11-10-110100-monitor-kind-time-sync.sql`.
 - `device_time_daily` has RLS enabled and forced, four `breeze_has_org_access(org_id)` policies, and `(device_id, org_id) → devices(id, org_id) ON UPDATE CASCADE ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE`.
 - `finding_streaks` is `excludedOpen`; every daily column is `included`.
 - Retention is 400 days; history date ranges contain at most 400 inclusive UTC dates.
@@ -46,8 +46,8 @@ The index's five numbered Review focus items are owned by W01a/W01b; none is rea
 
 Paths below are implementation outputs; this planning task writes only this document.
 
-- `apps/api/migrations/2026-11-09-110000-time-sync-daily.sql` — daily evidence, tenancy, and streak column.
-- `apps/api/migrations/2026-11-09-110100-monitor-kind-time-sync.sql` — append monitor enum label.
+- `apps/api/migrations/2026-11-10-110000-time-sync-daily.sql` — daily evidence, tenancy, and streak column.
+- `apps/api/migrations/2026-11-10-110100-monitor-kind-time-sync.sql` — append monitor enum label.
 - `apps/api/src/db/schema/timeSync.ts`, `apps/api/src/db/schema/index.ts` — typed daily rows and streak storage export.
 - `apps/api/src/db/schema/monitorDefinitions.ts` — enum parity.
 - `apps/api/src/services/tenantCascade.ts`, `orgMergeRegistry.ts`, `tenantExportPolicyRegistry.ts` — erasure, merge, and export classification.
@@ -188,7 +188,7 @@ it('denies forged ownership and cross-organization reads as breeze_app', async (
 it('replays without deleting observations', async () => {
   const f = await fixture();
   await withDbAccessContext(system, () => insert(f.device, f.org));
-  await replayMigration('2026-11-09-110000-time-sync-daily.sql');
+  await replayMigration('2026-11-10-110000-time-sync-daily.sql');
   const rows = await getTestDb().execute(
     sql`SELECT snapshot_count FROM device_time_daily WHERE device_id=${f.device}`,
   );
@@ -399,7 +399,7 @@ for file in ['apps/api/vitest.config.ts', 'apps/api/vitest.integration.config.ts
 - [ ] Commit:
 
 ```bash
-git add apps/api/migrations/2026-11-09-110000-time-sync-daily.sql apps/api/src/db/schema/timeSync.ts apps/api/src/db/schema/index.ts apps/api/src/services/timeSync/migrations.w02.integration.test.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
+git add apps/api/migrations/2026-11-10-110000-time-sync-daily.sql apps/api/src/db/schema/timeSync.ts apps/api/src/db/schema/index.ts apps/api/src/services/timeSync/migrations.w02.integration.test.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
 git commit -m "feat(time-sync): add tenant-scoped daily evidence" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -1354,7 +1354,7 @@ it('overrides count but never changes findings', () => {
 - [ ] Implement the schema and enum:
 
 ```sql
--- apps/api/migrations/2026-11-09-110100-monitor-kind-time-sync.sql
+-- apps/api/migrations/2026-11-10-110100-monitor-kind-time-sync.sql
 ALTER TYPE monitor_kind ADD VALUE IF NOT EXISTS 'time_sync';
 ```
 
@@ -1441,7 +1441,7 @@ The existing discovery test already checks each schema metadata entry. The new d
 - [ ] Commit:
 
 ```bash
-git add packages/shared/src/validators/monitors.ts packages/shared/src/validators/monitors.test.ts packages/shared/src/validators/monitors.timeSync.test.ts apps/api/migrations/2026-11-09-110100-monitor-kind-time-sync.sql apps/api/src/db/schema/monitorDefinitions.ts apps/api/src/services/alertConditions/types.ts apps/api/src/services/monitors/kinds/timeSync.ts apps/api/src/services/monitors/kinds/timeSync.test.ts apps/api/src/services/monitors/kinds/index.ts apps/api/src/services/monitors/kinds/index.test.ts apps/api/src/routes/monitorDefinitions.test.ts
+git add packages/shared/src/validators/monitors.ts packages/shared/src/validators/monitors.test.ts packages/shared/src/validators/monitors.timeSync.test.ts apps/api/migrations/2026-11-10-110100-monitor-kind-time-sync.sql apps/api/src/db/schema/monitorDefinitions.ts apps/api/src/services/alertConditions/types.ts apps/api/src/services/monitors/kinds/timeSync.ts apps/api/src/services/monitors/kinds/timeSync.test.ts apps/api/src/services/monitors/kinds/index.ts apps/api/src/services/monitors/kinds/index.test.ts apps/api/src/routes/monitorDefinitions.test.ts
 git commit -m "feat(monitors): register time synchronization conditions" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 

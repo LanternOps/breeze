@@ -18,7 +18,7 @@ All constraints in the index's Global constraints and final Contract resolutions
 
 - PR: W01a; no agent code, commands, policy configuration, monitor kind, streaks, daily table, fleet route, or version bump.
 - Snapshot `schemaVersion: 1`; enforcement schema exists, ingest ignores enforcement, view returns `enforcement: null`.
-- Migration: `2026-11-09-100000-time-sync-status.sql`.
+- Migration: `2026-11-10-100000-time-sync-status.sql`.
 - Composite FK: `(device_id, org_id) → devices(id, org_id) ON UPDATE CASCADE ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE`.
 - Agent body rule: `agent-time-status`, `512 * 1024` bytes; malformed snapshots return `400`; sequence rejection returns `200 { accepted: false, reason: 'stale_sequence' }` (R4). The API body ceiling remains 512 KiB; R5 separately limits collector snapshots to 256 KiB.
 - Freshness: `90` minutes; event activity: `24` hours; mark retention: `7` days; recent events: `20`; snapshot events: `100`.
@@ -71,7 +71,7 @@ Every implementation file is listed below; Task 11 changes only the execution ch
 - `packages/shared/src/utils/windowsZones.ts` — expose strict IANA/Windows lookup accessors.
 - `packages/shared/src/utils/windowsZones.test.ts` — verify windowsZones behavior and contracts.
 - `packages/shared/src/utils/index.ts` — export the new contract/schema or mount the new resource alongside hardware.
-- `apps/api/migrations/2026-11-09-100000-time-sync-status.sql` — create latest time status with ownership FKs, forced RLS and indexes.
+- `apps/api/migrations/2026-11-10-100000-time-sync-status.sql` — create latest time status with ownership FKs, forced RLS and indexes.
 - `apps/api/src/db/schema/timeSync.ts` — define typed W01a status columns, indexes and health check.
 - `apps/api/src/db/schema/index.ts` — export the new contract/schema or mount the new resource alongside hardware.
 - `apps/api/src/services/tenantCascade.ts` — register status in alphabetical tenant erasure order.
@@ -838,7 +838,7 @@ git commit -m "feat(time-sync): add pinned CLDR timezone mapping" -m "Co-Authore
 
 ### Task 3: Add the latest-status table and every lifecycle registration
 
-**Files:** Create `apps/api/migrations/2026-11-09-100000-time-sync-status.sql`, `apps/api/src/db/schema/timeSync.ts`, `apps/api/src/services/timeSync/migrations.integration.test.ts`; Modify `apps/api/src/db/schema/index.ts:16`, `apps/api/src/services/tenantCascade.ts:525`, `apps/api/src/routes/devices/core.ts:319,564`, `apps/api/src/services/orgMergeRegistry.ts:850`, `apps/api/src/services/tenantExportPolicyRegistry.ts:307`, `apps/api/src/services/deviceDeletion.test.ts:74`, `apps/api/vitest.config.ts:56`, `apps/api/vitest.integration.config.ts:30`.
+**Files:** Create `apps/api/migrations/2026-11-10-100000-time-sync-status.sql`, `apps/api/src/db/schema/timeSync.ts`, `apps/api/src/services/timeSync/migrations.integration.test.ts`; Modify `apps/api/src/db/schema/index.ts:16`, `apps/api/src/services/tenantCascade.ts:525`, `apps/api/src/routes/devices/core.ts:319,564`, `apps/api/src/services/orgMergeRegistry.ts:850`, `apps/api/src/services/tenantExportPolicyRegistry.ts:307`, `apps/api/src/services/deviceDeletion.test.ts:74`, `apps/api/vitest.config.ts:56`, `apps/api/vitest.integration.config.ts:30`.
 
 **Interfaces:** Produces `deviceTimeStatus`, `typeof deviceTimeStatus.$inferSelect`, and the SQL table specified by §D without `finding_streaks` or `enforcement`. Consumes existing `devices(id, org_id)`, `organizations.id`, `breeze_has_org_access(uuid)`, `tablePolicy`, and the dynamic `getDeviceCascadeDeleteTables()` deletion path (`services/deviceDeletion.ts:18,339–352`). Direct `org_id` RLS is auto-discovered; do not add a redundant join-policy allowlist entry. Existing test helpers are verified at `apps/api/src/__tests__/integration/db-utils.ts:176,216,295` (`createPartner`, `createOrganization`, `createSite`), `setup.ts:61` (`getTestDb`), `replayMigration.ts:85` (`replayMigration`), and `apps/api/src/utils/pgErrors.ts:3` (`pgErrorCode` re-export). `tablePolicy` is defined at `apps/api/src/services/tenantExportPolicyRegistry.ts:17`.
 
@@ -958,8 +958,8 @@ it('denies forged ownership and cross-org CRUD under the app role', async () => 
 it('replaying the migration preserves observations and FK properties', async () => {
   const f = await fixture();
   await withDbAccessContext(system, () => insert(f.device.id, f.org.id));
-  await replayMigration('2026-11-09-100000-time-sync-status.sql');
-  await replayMigration('2026-11-09-100000-time-sync-status.sql');
+  await replayMigration('2026-11-10-100000-time-sync-status.sql');
+  await replayMigration('2026-11-10-100000-time-sync-status.sql');
   expect(
     await getTestDb().execute(sql`
     SELECT * FROM device_time_status WHERE device_id=${f.device.id}`),
@@ -1406,7 +1406,7 @@ Expected PASS: four forced policies, cross-org CRUD isolation, 23503 wrong owner
 - [ ] Commit:
 
 ```bash
-git add apps/api/migrations/2026-11-09-100000-time-sync-status.sql apps/api/src/db/schema/timeSync.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/deviceDeletion.test.ts apps/api/src/services/timeSync/migrations.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
+git add apps/api/migrations/2026-11-10-100000-time-sync-status.sql apps/api/src/db/schema/timeSync.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/deviceDeletion.test.ts apps/api/src/services/timeSync/migrations.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts
 git commit -m "feat(time-sync): persist tenant-isolated device status" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
