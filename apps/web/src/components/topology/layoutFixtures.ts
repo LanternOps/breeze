@@ -29,8 +29,9 @@ export function layoutProjectionFixture(name: TopologyGraphFixtureName, mode: La
   };
 }
 export function findOverlaps(result: LayoutResult, request: LayoutRequest) {
+  const boxes = new Map(request.nodes.map((node) => [node.id, node]));
   return result.positions.flatMap((a, i) => result.positions.slice(i + 1).filter((b) => {
-    const ab = request.nodes.find((n) => n.id === a.nodeId)!, bb = request.nodes.find((n) => n.id === b.nodeId)!;
+    const ab = boxes.get(a.nodeId)!, bb = boxes.get(b.nodeId)!;
     return Math.abs(a.x - b.x) < (ab.width + bb.width) / 2 && Math.abs(a.y - b.y) < (ab.height + bb.height) / 2;
   }).map((b) => [a.nodeId, b.nodeId]));
 }
