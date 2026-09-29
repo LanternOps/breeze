@@ -925,7 +925,7 @@
         "subtotal": "Sous-total",
         "tax": "Taxe",
         "taxRate": "Taux de taxe",
-        "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
+        "taxRateHelp": "S'applique aux lignes marquées taxables. Ce taux a été fixé à la création du devis ; pour le modifier pour les devis futurs, mettez à jour les paramètres fiscaux de l'organisation.",
         "title": "Totaux en direct",
         "total": "Total"
       },

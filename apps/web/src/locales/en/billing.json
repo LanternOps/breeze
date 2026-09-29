@@ -925,7 +925,7 @@
         "subtotal": "Subtotal",
         "tax": "Tax",
         "taxRate": "Tax rate",
-        "taxRateHelp": "Applies to lines marked taxable. Set in the organization’s tax settings.",
+        "taxRateHelp": "Applies to lines marked taxable. This rate was set when the quote was created; to change it for future quotes, update the organization’s tax settings.",
         "title": "Live totals",
         "total": "Total"
       },

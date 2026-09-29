@@ -899,7 +899,7 @@
         "srUpdatedWithTax": "Totaux mis à jour. Ponctuel {{oneTime}}, récurrent mensuel {{monthly}}, récurrent annuel {{annual}}, taxe {{tax}}, dû à l'acceptation {{due}}.",
         "tax": "Taxe",
         "taxRate": "Taux de taxe",
-        "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
+        "taxRateHelp": "S'applique aux lignes marquées taxables. Ce taux a été fixé à la création de la soumission; pour le modifier pour les soumissions futures, mettez à jour les paramètres fiscaux de l'organisation.",
         "title": "Totaux en direct",
         "firstPeriodSubtotal": "Sous-total de la première période",
         "subtotal": "Sous-total",

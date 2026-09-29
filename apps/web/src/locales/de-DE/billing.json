@@ -925,7 +925,7 @@
         "subtotal": "Zwischensumme",
         "tax": "Steuer",
         "taxRate": "Steuersatz",
-        "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Wird in den Steuereinstellungen der Organisation festgelegt.",
+        "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Dieser Satz wurde bei der Erstellung des Angebots festgelegt; um ihn für künftige Angebote zu ändern, passen Sie die Steuereinstellungen der Organisation an.",
         "title": "Live-Summen",
         "total": "Gesamtsumme"
       },

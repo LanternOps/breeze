@@ -925,7 +925,7 @@
         "subtotal": "Total parcial",
         "tax": "Impuesto",
         "taxRate": "Tasa impositiva",
-        "taxRateHelp": "Aplica a líneas marcadas como sujetas a impuestos. Establecido en la configuración fiscal de la organización.",
+        "taxRateHelp": "Aplica a líneas marcadas como sujetas a impuestos. Esta tasa se estableció al crear la cotización; para cambiarla en cotizaciones futuras, actualiza la configuración fiscal de la organización.",
         "title": "Totales en vivo",
         "total": "Total"
       },
