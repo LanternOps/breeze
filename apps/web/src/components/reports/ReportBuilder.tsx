@@ -27,6 +27,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
 import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -119,6 +120,12 @@ type ReportBuilderProps = {
    * partner-owned row, `null` included, and ownership never changes on edit.
    */
   partnerOwned?: boolean;
+  /**
+   * Multi-org series W01: the org to preselect in the All-organizations org
+   * picker (the templates page passes the org chosen on the page). Ignored
+   * when the switcher names an org, and in edit mode.
+   */
+  defaultOrgId?: string | null;
   /**
    * The caller's own options (rendered outside the builder, e.g. a business
    * report's options panel on the edit page) are invalid: submit is disabled
@@ -765,6 +772,7 @@ export default function ReportBuilder({
   reportId,
   baseConfig,
   partnerOwned = false,
+  defaultOrgId,
   submitBlocked = false,
   onSubmit,
   onPreview,
@@ -775,6 +783,12 @@ export default function ReportBuilder({
   // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
   const stableT = useStableT(t);
   const { currentOrgId } = useOrgStore();
+  // Multi-org series W01 (spec §3.7): create/builder/adhoc need an org; edit
+  // never re-homes a report, and a partner-owned report has no org at all.
+  const orgTarget = useReportTargetOrg(defaultOrgId ?? null);
+  const orgPickerApplies = mode !== 'edit' && !partnerOwned;
+  const targetOrgId = orgPickerApplies ? orgTarget.orgId : currentOrgId;
+  const orgMissing = orgPickerApplies && orgTarget.missing;
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
@@ -941,6 +955,16 @@ export default function ReportBuilder({
 
   useEffect(() => {
     if (mode === 'adhoc') return;
+    if (orgMissing) {
+      // No org chosen under All organizations: the preview would 400. Drop any
+      // in-flight preview and say what to do instead.
+      previewRequestIdRef.current += 1;
+      setLivePreviewRows([]);
+      setLivePreviewSummary(null);
+      setLivePreviewLoading(false);
+      setLivePreviewError(stableT('reports.orgPicker.previewNeedsOrg'));
+      return;
+    }
 
     let mounted = true;
     const requestId = previewRequestIdRef.current + 1;
@@ -1008,7 +1032,7 @@ export default function ReportBuilder({
             type: builderToLegacyType[builderType],
             config,
             format: exportFormats[0] ?? 'csv',
-            ...(currentOrgId ? { orgId: currentOrgId } : {})
+            ...(targetOrgId ? { orgId: targetOrgId } : {})
           })
         });
 
@@ -1051,7 +1075,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
+  }, [builderType, targetOrgId, orgMissing, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1418,6 +1442,12 @@ export default function ReportBuilder({
     setError(undefined);
     setEmailError(undefined);
 
+    // Multi-org series W01: never send a create that would 400 on orgId.
+    if (orgMissing) {
+      setError(t('reports.orgPicker.required'));
+      return;
+    }
+
     if (mode !== 'adhoc' && !reportName.trim()) {
       setError(t('reports.reportBuilder.errors.reportNameRequired'));
       return;
@@ -1458,7 +1488,7 @@ export default function ReportBuilder({
       type: isBusiness && defaultValues?.type ? defaultValues.type : values.type,
       schedule: values.schedule,
       format: primaryFormat,
-      ...(currentOrgId && !partnerOwned ? { orgId: currentOrgId } : {}),
+      ...(targetOrgId && !partnerOwned ? { orgId: targetOrgId } : {}),
       config: isBusiness
         ? {
             ...omitConfigKeys(baseConfig, BUSINESS_REFUSED_CONFIG_KEYS),
@@ -1498,7 +1528,7 @@ export default function ReportBuilder({
             type: payload.type,
             config: payload.config,
             format: primaryFormat,
-            ...(currentOrgId ? { orgId: currentOrgId } : {})
+            ...(targetOrgId ? { orgId: targetOrgId } : {})
           })
         });
 
@@ -1725,6 +1755,17 @@ export default function ReportBuilder({
             <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.reportDetails.title')}</h2>
             <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.reportDetails.description')}</p>
           </div>
+
+          {orgPickerApplies && orgTarget.pickerVisible && (
+            <OrgPickerField
+              value={orgTarget.pickedOrgId}
+              onChange={(orgId) => {
+                orgTarget.setPickedOrgId(orgId);
+                setError(undefined);
+              }}
+              options={orgTarget.options}
+            />
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             <div className="space-y-2 min-w-0">
