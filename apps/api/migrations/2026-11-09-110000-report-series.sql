@@ -177,3 +177,30 @@ CREATE CONSTRAINT TRIGGER report_series_partner_immutable
   AFTER UPDATE OF partner_id ON public.report_series
   DEFERRABLE INITIALLY IMMEDIATE
   FOR EACH ROW EXECUTE FUNCTION public.breeze_report_series_partner_immutable();
+
+-- Changing target_mode inverts the meaning of every target row ('all' =
+-- exclusions, 'selected' = inclusions). Rows for orgs the writer cannot see
+-- (RLS hides suspended/offboarding orgs) would silently flip from exclusion to
+-- inclusion, so the mode change clears ALL of the series' rows in the database.
+-- Writers set target_mode FIRST, then insert the new rows.
+CREATE OR REPLACE FUNCTION public.breeze_report_series_target_mode_reset()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+BEGIN
+  IF OLD.target_mode IS DISTINCT FROM NEW.target_mode THEN
+    PERFORM set_config('breeze.scope', 'system', true);
+    DELETE FROM public.report_series_org_targets WHERE series_id = NEW.id;
+    PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  END IF;
+  RETURN NULL;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.breeze_report_series_target_mode_reset() FROM PUBLIC;
+DROP TRIGGER IF EXISTS report_series_target_mode_reset ON public.report_series;
+CREATE TRIGGER report_series_target_mode_reset
+  AFTER UPDATE OF target_mode ON public.report_series
+  FOR EACH ROW EXECUTE FUNCTION public.breeze_report_series_target_mode_reset();

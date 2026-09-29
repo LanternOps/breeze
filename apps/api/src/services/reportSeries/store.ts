@@ -248,9 +248,17 @@ export async function replaceSeriesTargets(
     requireDeliveryGate(options.mayAddDelivery);
   }
 
-  // Replaces the rows the caller can SEE. Rows for orgs outside the caller's
-  // RLS (out-of-service orgs) survive by design: they are not in any list the
-  // caller was shown, so they are not the caller's to drop.
+  // target_mode FIRST: a mode change fires report_series_target_mode_reset,
+  // which clears EVERY target row of the series (including rows for orgs the
+  // caller's RLS cannot see, whose exclusion would otherwise invert into an
+  // inclusion). The rows below are then written on top of that.
+  const [series] = await tx
+    .update(reportSeries)
+    .set({ targetMode: input.targetMode, revision: current.revision + 1, updatedAt: new Date() })
+    .where(eq(reportSeries.id, seriesId))
+    .returning();
+  // Same mode: replace the rows the caller can see; rows of orgs outside the
+  // caller's RLS were never in a list the caller was shown.
   await tx.delete(reportSeriesOrgTargets).where(eq(reportSeriesOrgTargets.seriesId, seriesId));
   if (input.orgIds.length > 0) {
     await tx
@@ -258,11 +266,6 @@ export async function replaceSeriesTargets(
       .values(input.orgIds.map((orgId) => ({ seriesId, orgId })))
       .onConflictDoNothing();
   }
-  const [series] = await tx
-    .update(reportSeries)
-    .set({ targetMode: input.targetMode, revision: current.revision + 1, updatedAt: new Date() })
-    .where(eq(reportSeries.id, seriesId))
-    .returning();
   return { series: series!, reconcile: await reconcileSeries(seriesId, tx) };
 }
 

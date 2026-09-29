@@ -10,11 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { reports, reportSeries } from '../../db/schema';
+import { reports, reportSeries, reportSeriesOrgTargets } from '../../db/schema';
 import {
   assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
 } from './db-utils';
 import { reconcileAllSeries } from '../../services/reportSeries/reconcile';
+import { parseSeriesRecipientRule } from '../../services/reportSeries/types';
 import { ReportSeriesError } from '../../services/reportSeries/errors';
 import {
   createSeries, deleteSeries, finishDetach, getSeriesDetail, replaceSeriesTargets,
@@ -118,6 +119,33 @@ describe('series store (partner request context)', () => {
     expect(narrowed.reconcile.archived).toBe(1);
     expect(await codeOf(s.inPartner((tx) => replaceSeriesTargets(series.id, { targetMode: 'all', orgIds: [] }, s.auth, tx, { mayAddDelivery: false }))))
       .toBe('recipients_need_export_and_mfa');
+  });
+
+  it('a PATCH that widens the rule needs the delivery gate; with it, it succeeds', async () => {
+    const s = await seed();
+    const quiet = input(s.owner, { recipientRule: { primaryContact: false, roles: [] } });
+    const { series } = await s.inPartner((tx) => createSeries(quiet, s.auth, tx, { mayAddDelivery: false }));
+    const widen = { recipientRule: { primaryContact: true, roles: [] } };
+    expect(await codeOf(s.inPartner((tx) => updateSeries(series.id, widen, s.auth, tx, { mayAddDelivery: false }))))
+      .toBe('recipients_need_export_and_mfa');
+    const addRole = { recipientRule: { primaryContact: false, roles: ['billing'] } };
+    expect(await codeOf(s.inPartner((tx) => updateSeries(series.id, addRole, s.auth, tx, { mayAddDelivery: false }))))
+      .toBe('recipients_need_export_and_mfa');
+    const ok = await s.inPartner((tx) => updateSeries(series.id, widen, s.auth, tx, { mayAddDelivery: true }));
+    expect(parseSeriesRecipientRule(ok.series.recipientRule).primaryContact).toBe(true);
+  });
+
+  it('flipping target_mode drops target rows the caller cannot see (suspended org exclusion is not inverted)', async () => {
+    const s = await seed();
+    const quiet = input(s.owner, { orgIds: [s.orgB], recipientRule: { primaryContact: false, roles: [] } });
+    const { series } = await s.inPartner((tx) => createSeries(quiet, s.auth, tx, { mayAddDelivery: false }));
+    await system(() => db.execute(sql`UPDATE organizations SET status = 'suspended' WHERE id = ${s.orgB}`));
+    // The suspended org drops out of the caller's accessible orgs (its targets become invisible under RLS).
+    const narrowed = { ...s.ctx, accessibleOrgIds: [s.orgA] };
+    await withDbAccessContext(narrowed, () => db.transaction((tx) =>
+      replaceSeriesTargets(series.id, { targetMode: 'selected', orgIds: [s.orgA] }, s.auth, tx as unknown as typeof db, { mayAddDelivery: true })));
+    const rows = await system(() => db.select().from(reportSeriesOrgTargets).where(eq(reportSeriesOrgTargets.seriesId, series.id)));
+    expect(rows.map((r) => r.orgId)).toEqual([s.orgA]);
   });
 
   it('transfer-owner re-captures every child\'s scope for the new owner', async () => {
