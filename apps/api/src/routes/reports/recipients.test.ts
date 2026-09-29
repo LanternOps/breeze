@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
   mfaCalls: 0,
   denyPermission: false,
   lockedReportConfig: {} as Record<string, unknown>,
+  lockedReportSeriesId: null as string | null,
   lockCalls: [] as string[],
   permissionSet: { permissions: [{ resource: '*', action: '*' }] } as unknown,
   gateMfa: true,
@@ -54,7 +55,7 @@ function database() {
   return {
     select: vi.fn((projection?: Record<string, unknown>) => {
       if (projection?.config === 'reports.config') {
-        return selectChain([{ config: state.lockedReportConfig }]);
+        return selectChain([{ config: state.lockedReportConfig, seriesId: state.lockedReportSeriesId }]);
       }
       return selectChain(state.results.shift() ?? []);
     }),
@@ -126,6 +127,7 @@ vi.mock('../../db/schema', () => ({
     id: 'reports.id',
     orgId: 'reports.orgId',
     config: 'reports.config',
+    seriesId: 'reports.seriesId',
   },
 }));
 
@@ -133,6 +135,7 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   asc: (column: unknown) => ({ type: 'asc', column }),
   eq: (column: unknown, value: unknown) => ({ type: 'eq', column, value }),
+  isNull: (column: unknown) => ({ type: 'isNull', column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     type: 'sql',
     strings: [...strings],
@@ -226,6 +229,7 @@ describe('report recipient routes', () => {
       emailRecipients: ['alex@example.test', 'keep@example.test'],
     };
     state.lockCalls.length = 0;
+    state.lockedReportSeriesId = null;
     state.permissionSet = { permissions: [{ resource: '*', action: '*' }] };
     state.gateMfa = true;
     state.conflictUpdates.length = 0;
@@ -708,6 +712,34 @@ describe('report recipient routes', () => {
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
       expect(state.updated).toHaveLength(0);
+    });
+
+    // Final review minor #4: adopted as a child between the unlocked load and
+    // the locked read. The locked read refuses it, and the UPDATE is itself
+    // fenced to standalone rows.
+    it('convert refuses a report adopted as a child mid-request, writing nothing', async () => {
+      state.lockedReportSeriesId = SERIES_ID;
+      state.results.push([]);
+      const res = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'alex@example.test' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'series_managed', seriesId: SERIES_ID });
+      expect(state.inserted).toHaveLength(0);
+      expect(state.updated).toHaveLength(0);
+      expect(state.createContact).not.toHaveBeenCalled();
+    });
+
+    it('the convert UPDATE only matches a standalone row (series_id IS NULL)', async () => {
+      state.results.push([]);
+      const res = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'alex@example.test' }),
+      });
+      expect(res.status).toBe(201);
+      const condition = state.updated[0]?.condition as { conditions?: Array<{ type?: string; column?: unknown }> };
+      expect(condition.conditions).toContainEqual({ type: 'isNull', column: 'reports.seriesId' });
     });
 
     describe('DELETE override rows (W02)', () => {

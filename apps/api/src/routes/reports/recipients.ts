@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import {
@@ -290,7 +290,7 @@ recipientsRoutes.post(
     const email = input.email.trim().toLowerCase();
 
     const result = await db.transaction(async (tx) => {
-      const [lockedReport] = await tx.select({ config: reports.config })
+      const [lockedReport] = await tx.select({ config: reports.config, seriesId: reports.seriesId })
         .from(reports)
         .where(and(
           eq(reports.id, report.id),
@@ -299,6 +299,8 @@ recipientsRoutes.post(
         .limit(1)
         .for('update');
       if (!lockedReport) return null;
+      // Adopted as a series child after the unlocked load above.
+      if (lockedReport.seriesId) return { seriesManaged: lockedReport.seriesId } as const;
 
       let [contact] = await tx.select({
         id: contacts.id,
@@ -350,12 +352,14 @@ recipientsRoutes.post(
       }).where(and(
         eq(reports.id, report.id),
         eq(reports.orgId, orgId),
+        isNull(reports.seriesId),
       ));
 
       return { contact: contact!, createdContact };
     });
 
     if (!result) return c.json({ error: 'Report not found' }, 404);
+    if ('seriesManaged' in result) return c.json(seriesManagedRefusal(result.seriesManaged), 409);
 
     if (result.createdContact) {
       const createEvent = contactCreateAuditEvent(result.createdContact);
