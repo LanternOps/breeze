@@ -16,6 +16,74 @@ describe('Claude SDK process hardening', () => {
     streamingSessionManager.shutdown();
   });
 
+  // #7444: HOME is forwarded, and `settingSources: []` does not stop the CLI
+  // from reading host-level context: auto-memory (~/.claude/projects/<key>/
+  // memory/MEMORY.md) and the managed-policy CLAUDE.md. Either one would be
+  // prepended to every Breeze AI request, including requests sent to a
+  // partner's BYO or catalog endpoint. Every branch must pin both guards, and a
+  // parent value (e.g. '0', which the CLI reads as "force on") must not win.
+  describe('host Claude Code context guards (#7444)', () => {
+    const PARENT_ENV = {
+      ANTHROPIC_API_KEY: 'platform-api-key',
+      PATH: '/usr/bin',
+      HOME: '/Users/dev',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '0',
+    };
+    const PARTNER_BASE = {
+      source: 'partner' as const,
+      partnerId: '11111111-1111-4111-8111-111111111111',
+      apiKey: 'partner-api-key',
+      model: 'claude-sonnet-4-6',
+      configId: '22222222-2222-4222-8222-222222222222',
+      configVersion: 7,
+    };
+    const PRICING = {
+      catalogEntryId: '33333333-3333-4333-8333-333333333333',
+      revisionId: '44444444-4444-4444-8444-444444444444',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+
+    it.each([
+      ['platform', () => buildClaudeSdkChildEnv(PLATFORM_CONFIG, PARENT_ENV)],
+      ['platform, self-host base URL', () => buildClaudeSdkChildEnv(PLATFORM_CONFIG, {
+        ...PARENT_ENV,
+        IS_HOSTED: 'false',
+        ANTHROPIC_BASE_URL: 'http://localhost:8000',
+      })],
+      ['direct-Anthropic partner', () => buildClaudeSdkChildEnv(
+        { ...PARTNER_BASE, endpoint: { kind: 'anthropic' as const } },
+        PARENT_ENV,
+      )],
+      ['catalog partner', () => buildClaudeSdkChildEnv(
+        {
+          ...PARTNER_BASE,
+          endpoint: {
+            kind: 'catalog' as const,
+            catalogEntryId: PRICING.catalogEntryId,
+            revisionId: PRICING.revisionId,
+            baseUrl: 'https://openrouter.ai/api/v1',
+            authMode: 'x-api-key' as const,
+            providerModel: 'anthropic/claude-sonnet-4-6',
+            pricing: PRICING,
+            models: {
+              'claude-sonnet-4-6': { providerModel: 'anthropic/claude-sonnet-4-6', pricing: PRICING },
+            },
+          },
+        },
+        PARENT_ENV,
+        { egressProxyUrl: 'http://127.0.0.1:40000' },
+      )],
+    ])('disables auto-memory and CLAUDE.md loading for a %s child', (_label, build) => {
+      const env = build();
+      expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+      expect(env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+    });
+  });
+
   it('builds an allowlisted child environment instead of forwarding process.env wholesale', () => {
     const env = buildClaudeSdkChildEnv(PLATFORM_CONFIG, {
       ANTHROPIC_API_KEY: 'sk-ant-test-key',
@@ -30,6 +98,8 @@ describe('Claude SDK process hardening', () => {
 
     expect(env).toEqual({
       CI: 'true',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       ANTHROPIC_API_KEY: 'sk-ant-test-key',
       ANTHROPIC_AUTH_TOKEN: 'platform-auth-token',
       CLAUDE_CODE_OAUTH_TOKEN: 'platform-oauth-token',
@@ -110,6 +180,8 @@ describe('Claude SDK process hardening', () => {
 
     expect(env).toEqual({
       CI: 'true',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       ANTHROPIC_API_KEY: 'partner-api-key',
       ANTHROPIC_MODEL: 'forwarded-model',

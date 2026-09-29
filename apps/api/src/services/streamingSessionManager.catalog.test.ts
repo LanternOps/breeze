@@ -284,6 +284,8 @@ describe('buildClaudeSdkChildEnv — catalog endpoints', () => {
 
     expect(env).toEqual({
       CI: 'true',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       PATH: '/usr/bin',
       HOME: '/srv/breeze',
@@ -328,6 +330,8 @@ describe('buildClaudeSdkChildEnv — catalog endpoints', () => {
 
     expect(hosted).toEqual({
       CI: 'true',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       ANTHROPIC_API_KEY: 'platform-api-key',
       ANTHROPIC_AUTH_TOKEN: 'platform-auth-token',
@@ -359,6 +363,8 @@ describe('buildClaudeSdkChildEnv — catalog endpoints', () => {
 
     expect(env).toEqual({
       CI: 'true',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       ANTHROPIC_API_KEY: 'partner-key',
       PATH: '/usr/bin',
