@@ -2308,7 +2308,17 @@ function configComplianceAfterCommit(
   const enqueueRemediation = remediationAfterCommit(deferred);
   if (!enqueueRemediation && deferredEvents.length === 0) return undefined;
   return async () => {
-    if (enqueueRemediation) await enqueueRemediation();
+    if (enqueueRemediation) {
+      // remediationAfterCommit guards each run, but not its module load. A
+      // throw there must not cost the events their only chance to publish:
+      // the scan has committed, so no retry would re-evaluate these checks.
+      try {
+        await enqueueRemediation();
+      } catch (error) {
+        console.error('[ConfigPolicyCompliance] Remediation enqueue failed after commit:', error);
+        captureException(error);
+      }
+    }
     await publishComplianceEvents(deferredEvents);
   };
 }
@@ -2319,5 +2329,6 @@ function configComplianceAfterCommit(
 export const __triggerRemediationAutomation = triggerRemediationAutomation;
 export const __triggerConfigPolicyRemediation = triggerConfigPolicyRemediation;
 export const __remediationAfterCommit = remediationAfterCommit;
+export const __configComplianceAfterCommit = configComplianceAfterCommit;
 export const __resolveTargetDevices = resolveTargetDevices;
 export const __resolveDevicesForAssignmentTarget = resolveDevicesForAssignmentTarget;

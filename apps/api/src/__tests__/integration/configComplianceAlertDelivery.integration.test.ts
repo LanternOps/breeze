@@ -253,7 +253,7 @@ describe('compliance alerts through the scheduled scan', () => {
 
     // Still failing: the alert that is already open stands for it — no second one.
     await makeDue(device.id);
-    await __processConfigPolicyComplianceScan();
+    expect((await __processConfigPolicyComplianceScan()).devicesEvaluated).toBe(1);
     const open = await openAlerts(device.id);
     expect(open.map((a) => a.id)).toEqual([raised!.id]);
     expect(await withSystemDbAccessContext(() => checkAllAutoResolve(orgId))).toBe(0);
@@ -280,7 +280,7 @@ describe('compliance alerts through the scheduled scan', () => {
       policyId,
     ));
     await makeDue(device.id);
-    await __processConfigPolicyComplianceScan();
+    expect((await __processConfigPolicyComplianceScan()).devicesEvaluated).toBe(1);
 
     // The same org-owned alert rule serves the rule across the edit, so there is
     // one rule per (org, compliance rule) — not one more per save.
@@ -293,6 +293,8 @@ describe('compliance alerts through the scheduled scan', () => {
 });
 
 describe(`migration ${MIGRATION}`, () => {
+  // Replayed the way autoMigrate applies it. This role bypasses RLS, so the test
+  // cannot catch a missing system-scope line; migrationRlsScope.test.ts does.
   const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: () => {} });
   afterAll(async () => { await adminSql.end({ timeout: 5 }); });
 

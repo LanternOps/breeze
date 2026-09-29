@@ -35,7 +35,7 @@ vi.mock('./featureConfigResolver', () => ({
   scanDueComplianceChecks: scanDueMock,
 }));
 
-import { scanAndEvaluateConfigPolicyCompliance } from './policyEvaluationService';
+import { __configComplianceAfterCommit, scanAndEvaluateConfigPolicyCompliance } from './policyEvaluationService';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE = {
@@ -134,6 +134,26 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
       expect.any(Error),
     );
     errorSpy.mockRestore();
+  });
+
+  it('afterCommit still publishes the events when the remediation step rejects', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    publishEventMock.mockResolvedValue('event-id');
+    // remediationAfterCommit loads the worker module outside its own per-run try.
+    vi.doMock('../jobs/automationWorker', () => {
+      throw new Error('module load failed');
+    });
+    try {
+      const afterCommit = __configComplianceAfterCommit(
+        [{ runId: 'run-1', deviceId: DEVICE.id }],
+        [{ type: 'policy.violation', orgId: ORG_ID, payload: { deviceId: DEVICE.id } }],
+      );
+      await expect(afterCommit!()).resolves.toBeUndefined();
+      expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.violation']);
+    } finally {
+      vi.doUnmock('../jobs/automationWorker');
+      errorSpy.mockRestore();
+    }
   });
 
   it('without deferEnqueue, publishes inline and returns no afterCommit', async () => {

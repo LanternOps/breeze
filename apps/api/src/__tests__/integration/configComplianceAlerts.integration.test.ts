@@ -391,6 +391,39 @@ describe('configuration-policy compliance → alerts (#6669)', () => {
     expect(await openAlertCount(device.id)).toBe(0);
   });
 
+  runDb('a violation evaluated just before a save still raises, against the rule that replaced it', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    const seeded = await seedCompliancePolicy({ orgId: org!.id, partnerId: null }, 'warn', { level: 'organization', targetId: org!.id });
+
+    // Evaluated and committed; the scan has not published yet.
+    publishedEvents.length = 0;
+    await withSystemDbAccessContext(() => evaluateDeviceComplianceFromConfigPolicy(device.id));
+    const heldViolation = publishedEvents.find((e) => e.type === 'policy.violation');
+    expect(heldViolation).toBeDefined();
+
+    // A save lands first: same rule, new id.
+    const newRuleId = await withSystemDbAccessContext(async () => {
+      const [old] = await db.select().from(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.id, seeded.ruleId));
+      await db.delete(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.id, seeded.ruleId));
+      const [created] = await db.insert(configPolicyComplianceRules).values({
+        featureLinkId: old!.featureLinkId,
+        name: old!.name,
+        rules: old!.rules,
+        enforcementLevel: old!.enforcementLevel,
+      }).returning();
+      return created!.id;
+    });
+
+    await deliver(heldViolation!);
+    const rows = await alertsForDevice(device.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('active');
+    expect(rows[0]!.context).toMatchObject({ configPolicyComplianceRuleId: newRuleId });
+  });
+
   runDb('a late compliant event for a rule id replaced by a save does not clear the rule that is failing now', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

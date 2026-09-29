@@ -42,7 +42,7 @@
  * device's org, never the policy's owner.
  */
 import { createHash } from 'node:crypto';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   alertRules,
@@ -122,7 +122,7 @@ type ResolvedComplianceRule = {
   policyPartnerId: string | null;
 };
 
-async function loadComplianceRule(complianceRuleId: string): Promise<ResolvedComplianceRule | null> {
+async function loadComplianceRuleWhere(where: SQL | undefined): Promise<ResolvedComplianceRule | null> {
   const [row] = await db
     .select({
       id: configPolicyComplianceRules.id,
@@ -137,9 +137,29 @@ async function loadComplianceRule(complianceRuleId: string): Promise<ResolvedCom
     .from(configPolicyComplianceRules)
     .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.id, configPolicyComplianceRules.featureLinkId))
     .innerJoin(configurationPolicies, eq(configurationPolicies.id, configPolicyFeatureLinks.configPolicyId))
-    .where(eq(configPolicyComplianceRules.id, complianceRuleId))
+    .where(where)
+    .orderBy(asc(configPolicyComplianceRules.sortOrder))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * The rule an event refers to. Events go out after the scan commits, so a save
+ * that lands before an event is handled has already replaced the rule under a
+ * new id. The event's (link, name) then finds the rule that replaced it, and
+ * the event is judged against that rule, since the persisted state it acts on
+ * is keyed the same way. `null` only when no rule with that link and name
+ * exists any more.
+ */
+async function loadEventRule(complianceRuleId: string, payload: ConfigCompliancePayload): Promise<ResolvedComplianceRule | null> {
+  const byId = await loadComplianceRuleWhere(eq(configPolicyComplianceRules.id, complianceRuleId));
+  if (byId) return byId;
+  const key = keyFromPayload(payload);
+  if (!key) return null;
+  return loadComplianceRuleWhere(and(
+    eq(configPolicyComplianceRules.featureLinkId, key.featureLinkId),
+    eq(configPolicyComplianceRules.name, key.ruleName),
+  ));
 }
 
 /**
@@ -332,7 +352,7 @@ export async function handleConfigComplianceViolation(orgId: string, payload: Co
     return;
   }
 
-  const rule = await loadComplianceRule(complianceRuleId);
+  const rule = await loadEventRule(complianceRuleId, payload);
   if (!rule) return; // Rule deleted since the evaluation — nothing to alert on.
   if (!(await policyReachesOrg(rule, orgId))) return;
 
@@ -398,7 +418,7 @@ export async function handleConfigComplianceCompliant(orgId: string, payload: Co
   // must still be able to clear what it raised, so its key falls back to the
   // event's link and name. The alert rules searched are org-owned and keyed by
   // that link, so they can only match this org's alerts.
-  const rule = await loadComplianceRule(complianceRuleId);
+  const rule = await loadEventRule(complianceRuleId, payload);
   if (rule && !(await policyReachesOrg(rule, orgId))) return;
   const key = rule ? keyOf(rule) : keyFromPayload(payload);
 
