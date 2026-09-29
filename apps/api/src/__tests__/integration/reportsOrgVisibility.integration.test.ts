@@ -13,16 +13,17 @@ import './setup';
 
 import { randomUUID } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 
-import { withSystemDbAccessContext } from '../../db';
-import { reportRuns } from '../../db/schema';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { reportRuns, reports } from '../../db/schema';
 import { processRunScheduledReport } from '../../jobs/reportScheduleWorker';
 import { authMiddleware } from '../../middleware/auth';
 import { reportRoutes } from '../../routes/reports';
 import { createAccessToken } from '../../services/jwt';
+import { createSeries, type SeriesAuth } from '../../services/reportSeries/store';
 import {
   assignUserToOrganization,
   assignUserToPartner,
@@ -93,7 +94,7 @@ async function seedFixture() {
     sub: orgUser.id, email: orgUser.email, roleId: orgRole.id, orgId: orgA.id, partnerId: partner.id,
     scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   });
-  return { partner, orgA, orgB, adminToken, orgToken };
+  return { partner, orgA, orgB, adminToken, orgToken, adminId: admin.id };
 }
 
 /** A daily org-owned definition with NO recipients (no contacts, no emailRecipients). */
@@ -256,5 +257,85 @@ describe('org visibility on the report lists (multi-org series W01)', () => {
     expect(list.status).toBe(200);
     const row = ((await list.json()) as { data: ListedDefinition[] }).data.find((r) => r.id === partnerOwned.id);
     expect(row).toMatchObject({ orgId: null, orgName: null, lastDeliveryStatus: null });
+  });
+});
+
+type SeriesListed = { id: string; orgId: string | null; seriesId: string | null; seriesName: string | null; archivedAt: string | null };
+
+describe('series fields on the report lists (multi-org series W02 Task 11)', () => {
+  /** A 2-org series (children for A and B) created as the partner admin. */
+  async function seedSeries() {
+    const f = await seedFixture();
+    const admin = { id: f.adminId };
+    const ctx: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [f.orgA.id, f.orgB.id],
+      accessiblePartnerIds: [f.partner.id], currentPartnerId: f.partner.id, userId: admin.id,
+    };
+    const auth = { scope: 'partner', partnerId: f.partner.id, partnerOrgAccess: 'all', user: { id: admin.id } } as unknown as SeriesAuth;
+    const created = await withDbAccessContext(ctx, () =>
+      db.transaction((tx) => createSeries({
+        name: `Monthly summary ${randomUUID().slice(0, 8)}`, type: 'executive_summary', format: 'pdf',
+        schedule: 'monthly', config: {}, targetMode: 'all', orgIds: [],
+        recipientRule: { primaryContact: true, roles: [] }, internalCc: [], enabled: true,
+        ownerUserId: admin.id,
+      }, auth, tx as unknown as typeof db, { mayAddDelivery: true })),
+    );
+    const childOf = async (orgId: string) => {
+      const [row] = await withSystemDbAccessContext(() =>
+        db.select({ id: reports.id }).from(reports)
+          .where(and(eq(reports.seriesId, created.series.id), eq(reports.orgId, orgId))),
+      );
+      return row!.id;
+    };
+    return { f, series: created.series, childA: await childOf(f.orgA.id), childB: await childOf(f.orgB.id) };
+  }
+
+  runDb('a partner admin sees seriesId and seriesName; an org token sees seriesId but a NULL seriesName (partner-axis RLS)', async () => {
+    const { f, series, childA, childB } = await seedSeries();
+    const app = buildApp();
+
+    const partnerRows = ((await (await call(app, f.adminToken, 'GET', '/reports?limit=100')).json()) as { data: SeriesListed[] }).data;
+    expect(partnerRows.find((r) => r.id === childA)).toMatchObject({ seriesId: series.id, seriesName: series.name, archivedAt: null });
+
+    const orgRes = await call(app, f.orgToken, 'GET', '/reports?limit=100');
+    expect(orgRes.status).toBe(200);
+    const orgRows = ((await orgRes.json()) as { data: SeriesListed[] }).data;
+    const own = orgRows.find((r) => r.id === childA);
+    // The LEFT JOIN survives: the row is listed and flagged as series-managed,
+    // but the series' name (partner-axis) never reaches the customer.
+    expect(own).toMatchObject({ seriesId: series.id, seriesName: null });
+    expect(orgRows.map((r) => r.id)).not.toContain(childB);
+    expect(orgRows.every((r) => r.seriesName === null)).toBe(true);
+
+    expect((await call(app, f.adminToken, 'POST', `/reports/${childA}/generate`)).status).toBe(200);
+    const orgRuns = await call(app, f.orgToken, 'GET', '/reports/runs?limit=100');
+    expect(orgRuns.status).toBe(200);
+    // (A child's own name mirrors the series name, so only the join field is asserted.)
+    const runRows = ((await orgRuns.json()) as { data: Array<{ seriesId: string | null; seriesName: string | null }> }).data;
+    expect(runRows.length).toBeGreaterThan(0);
+    expect(runRows.every((r) => r.seriesId === series.id)).toBe(true);
+    expect(runRows.every((r) => r.seriesName === null)).toBe(true);
+  });
+
+  runDb('?series=only|exclude narrow the list and archived children are hidden unless includeArchived=true', async () => {
+    const { f, childA, childB } = await seedSeries();
+    const app = buildApp();
+    const plain = await createOrgDefinition(app, f.adminToken, f.orgA.id, 'Acme plain');
+    await withSystemDbAccessContext(() =>
+      db.update(reports).set({ archivedAt: new Date() }).where(eq(reports.id, childB)),
+    );
+    const ids = async (query: string) =>
+      ((await (await call(app, f.adminToken, 'GET', `/reports?limit=100${query}`)).json()) as { data: SeriesListed[]; pagination: { total: number } });
+
+    const only = await ids('&series=only');
+    expect(only.data.map((r) => r.id)).toEqual([childA]);
+    expect(only.pagination.total).toBe(1);
+    const exclude = await ids('&series=exclude');
+    expect(exclude.data.map((r) => r.id)).toContain(plain.id);
+    expect(exclude.data.map((r) => r.id)).not.toContain(childA);
+    const withArchived = await ids('&series=only&includeArchived=true');
+    expect(withArchived.data.map((r) => r.id).sort()).toEqual([childA, childB].sort());
+    expect(withArchived.data.find((r) => r.id === childB)?.archivedAt).not.toBeNull();
+    expect(withArchived.pagination.total).toBe(2);
   });
 });

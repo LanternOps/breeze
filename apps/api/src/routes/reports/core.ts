@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, isNull, or, sql, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, isNotNull, or, sql, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { organizations, reports, reportRuns } from '../../db/schema';
+import { organizations, reports, reportRuns, reportSeries } from '../../db/schema';
 import type { ReportDeliveryStatus } from '../../services/reportDelivery';
 import {
   authMiddleware,
@@ -393,6 +393,12 @@ coreRoutes.get(
       conditions.push(reportOwnerScopeListFilter(query.ownerScope));
     }
 
+    // Multi-org report series W02: narrowing filters; archived children are
+    // hidden by default (spec §3.6).
+    if (query.series === 'only') conditions.push(isNotNull(reports.seriesId));
+    if (query.series === 'exclude') conditions.push(isNull(reports.seriesId));
+    if (query.includeArchived !== 'true') conditions.push(isNull(reports.archivedAt));
+
     const whereCondition = and(...conditions);
 
     // Get total count
@@ -422,9 +428,13 @@ coreRoutes.get(
           ORDER BY ${reportRuns.createdAt} DESC, ${reportRuns.id} DESC
           LIMIT 1
         )`,
+        // Partner-axis RLS: an org token's join yields null here while
+        // seriesId stays set (W03's "Managed by your MSP" badge).
+        seriesName: reportSeries.name,
       })
       .from(reports)
       .leftJoin(organizations, eq(organizations.id, reports.orgId))
+      .leftJoin(reportSeries, eq(reportSeries.id, reports.seriesId))
       .where(whereCondition)
       .orderBy(desc(reports.updatedAt), desc(reports.id))
       .limit(limit)
@@ -468,6 +478,8 @@ coreRoutes.get(
     if (query.ownerScope) {
       conditions.push(reportOwnerScopeListFilter(query.ownerScope));
     }
+    // W02: an archived series child is history, not a template.
+    conditions.push(isNull(reports.archivedAt));
     const whereCondition = and(...conditions);
 
     const countResult = await db

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { organizations, reports, reportRuns } from '../../db/schema';
+import { organizations, reports, reportRuns, reportSeries } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
@@ -442,12 +442,15 @@ runsRoutes.get(
         reportType: reports.type,
         orgId: reports.orgId,
         orgName: organizations.name,
+        seriesId: reports.seriesId,
+        seriesName: reportSeries.name,
         deliveryStatus: reportRuns.deliveryStatus,
         recipientCount: reportRuns.recipientCount
       })
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
       .leftJoin(organizations, eq(organizations.id, reports.orgId))
+      .leftJoin(reportSeries, eq(reportSeries.id, reports.seriesId))
       .where(whereCondition)
       .orderBy(desc(reportRuns.createdAt), desc(reportRuns.id))
       .limit(limit)

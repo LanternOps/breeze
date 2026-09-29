@@ -56,6 +56,7 @@ const state = vi.hoisted(() => ({
   authorityMap: new Map<string, unknown>(),
   rows: [] as Array<Record<string, unknown> | null>,
   wheres: [] as unknown[],
+  projections: [] as Array<Record<string, unknown> | undefined>,
   inserts: [] as Array<{ values: Record<string, unknown> }>,
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
   deletes: [] as Array<{ where: unknown }>,
@@ -80,6 +81,7 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../db', () => {
   const select = vi.fn((projection?: Record<string, unknown>) => {
+    state.projections.push(projection);
     const next = state.rows.shift();
     const rows = next === null || next === undefined ? [] : [next];
     const projected = projection
@@ -336,6 +338,7 @@ beforeEach(() => {
   state.authorityMap = new Map([[ORG_ID, orgAuthorityResult()]]);
   state.rows = [];
   state.wheres = [];
+  state.projections = [];
   state.inserts = [];
   state.updates = [];
   state.deletes = [];
@@ -1640,5 +1643,55 @@ describe('multi-org report series children (W02)', () => {
       expect(state.updates).toHaveLength(0);
       expect(seriesStore.detachSeriesChild).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('list additions (W02)', () => {
+  const whereSql = (i: number) => dialect.sqlToQuery(state.wheres[i] as SQL).sql;
+
+  it('GET /reports hides archived children by default; includeArchived=true shows them', async () => {
+    state.rows = [{ count: 0 }, null];
+    expect((await app().request('/reports')).status).toBe(200);
+    expect(whereSql(0)).toContain('"reports"."archived_at" is null');
+
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports?includeArchived=true');
+    expect(whereSql(0)).not.toContain('"reports"."archived_at" is null');
+  });
+
+  it('?series=only keeps children, ?series=exclude drops them', async () => {
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports?series=only');
+    expect(whereSql(0)).toContain('"reports"."series_id" is not null');
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports?series=exclude');
+    expect(whereSql(0)).toContain('"reports"."series_id" is null');
+  });
+
+  it('rejects an unknown ?series value', async () => {
+    expect((await app().request('/reports?series=sometimes')).status).toBe(400);
+  });
+
+  it('projects seriesId, archivedAt and seriesName on GET /reports', async () => {
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    const list = state.projections.find((p) => p && 'seriesName' in p);
+    expect(list).toBeDefined();
+    expect(Object.keys(list!)).toEqual(expect.arrayContaining(['seriesId', 'archivedAt', 'seriesName']));
+  });
+
+  it('projects seriesId and seriesName on GET /reports/runs', async () => {
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports/runs');
+    const runs = state.projections.find((p) => p && 'reportName' in p);
+    expect(Object.keys(runs!)).toEqual(expect.arrayContaining(['seriesId', 'seriesName']));
+  });
+
+  it('GET /reports/templates never offers an archived child', async () => {
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports/templates');
+    expect(whereSql(0)).toContain('"reports"."archived_at" is null');
   });
 });
