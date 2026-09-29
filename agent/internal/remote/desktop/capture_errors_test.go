@@ -55,7 +55,7 @@ func TestTimeoutDoesNotAssertACause(t *testing.T) {
 // Guards the rule for the whole table, so a future code added with a guessing
 // message fails here rather than in a customer's support thread.
 func TestNoCaptureErrorMessageAssertsACause(t *testing.T) {
-	for code := 0; code <= 12; code++ {
+	for code := 0; code <= 14; code++ {
 		err := translateCaptureError(code)
 		if err == nil {
 			t.Fatalf("code %d returned a nil error", code)
@@ -72,6 +72,7 @@ func TestEveryCodeHasADistinctMessage(t *testing.T) {
 		captureErrAllocFailed, captureErrBitmapContext, captureErrNotInitialized,
 		captureErrTimeout, captureErrBackendUnavailable, captureErrStreamCreate,
 		captureErrStreamStart, captureErrNoDisplayAttached,
+		captureErrSCStreamFailed, captureErrFrameUnavailable,
 	}
 	seen := make(map[string]int, len(codes))
 	for _, code := range codes {

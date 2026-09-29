@@ -29,6 +29,14 @@ const (
 	// problem was an Apple Silicon Mac with no framebuffer after its Screen
 	// Sharing session ended.
 	captureErrNoDisplayAttached = 11
+	// captureErrSCStreamFailed: an SCStream could not be created, attached to
+	// its output, or started (#5928). The shim reports the SCStreamError code
+	// alongside it.
+	captureErrSCStreamFailed = 12
+	// captureErrFrameUnavailable: the stream's latest frame could not be read
+	// (no frame in the slot, unexpected pixel format, or the pixel buffer
+	// could not be locked).
+	captureErrFrameUnavailable = 13
 )
 
 // translateCaptureError converts a C shim error code into a Go error.
@@ -71,6 +79,13 @@ func translateCaptureError(code int) error {
 		return fmt.Errorf("failed to create CGDisplayStream")
 	case captureErrStreamStart:
 		return fmt.Errorf("failed to start CGDisplayStream")
+	case captureErrSCStreamFailed:
+		return fmt.Errorf("ScreenCaptureKit stream could not be created or started. Causes: Screen " +
+			"Recording not granted to this process; the display went away; the window server " +
+			"rejected the stream")
+	case captureErrFrameUnavailable:
+		return fmt.Errorf("ScreenCaptureKit frame could not be read (no frame yet, unexpected pixel " +
+			"format, or the pixel buffer could not be locked)")
 	default:
 		return fmt.Errorf("unknown error: %d", code)
 	}
