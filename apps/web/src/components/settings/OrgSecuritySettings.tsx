@@ -27,6 +27,9 @@ type OrgSecuritySettingsProps = {
   mtls?: MtlsSettings;
   onDirty?: () => void;
   onSave?: (data: SecurityData) => void;
+  /** Fired after the mTLS policy saved through its own route, so the page can
+   *  refresh the settings blob its section saves re-post wholesale. */
+  onMtlsSaved?: () => void;
   locked?: string[];
 };
 
@@ -41,7 +44,7 @@ const defaultSecurity: SecurityData = {
   ipAllowlist: ''
 };
 
-export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, onSave, locked }: OrgSecuritySettingsProps) {
+export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, onSave, onMtlsSaved, locked }: OrgSecuritySettingsProps) {
   const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`security.${field}`) ?? false;
 
@@ -101,6 +104,7 @@ export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, on
 
       setMtlsSuccess(true);
       setTimeout(() => setMtlsSuccess(false), 3000);
+      onMtlsSaved?.();
     } catch (err) {
       setMtlsError(err instanceof Error ? err.message : t('orgSecuritySettings.mtls.errors.save'));
     } finally {

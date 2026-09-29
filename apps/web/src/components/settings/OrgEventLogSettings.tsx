@@ -24,10 +24,13 @@ type OrgEventLogSettingsProps = {
   /** The org being edited — the settings page's, never the header switcher's. */
   orgId: string;
   onDirty?: () => void;
+  /** Fired after log forwarding saved through its own route, so the page can
+   *  refresh the settings blob its section saves re-post wholesale. */
+  onSaved?: () => void;
   locked?: string[];
 };
 
-export default function OrgEventLogSettings({ orgId, onDirty, locked }: OrgEventLogSettingsProps) {
+export default function OrgEventLogSettings({ orgId, onDirty, onSaved, locked }: OrgEventLogSettingsProps) {
   const { t } = useTranslation('settings');
   // Effects use the stable translator so a locale change does not re-run them
   // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
@@ -131,6 +134,7 @@ export default function OrgEventLogSettings({ orgId, onDirty, locked }: OrgEvent
       }
 
       showToast({ message: t('orgEventLogSettings.toasts.saved'), type: 'success' });
+      onSaved?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('orgEventLogSettings.errors.save'));
     } finally {

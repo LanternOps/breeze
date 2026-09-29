@@ -510,6 +510,46 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     },
   );
 
+  // The mTLS card and the Event Logs tab write organizations.settings.<key>
+  // through their own routes, while every page-level section save re-posts the
+  // WHOLE settings blob from the page's loaded copy (the org PATCH replaces
+  // `settings` wholesale). Without a refresh after those writes, the next
+  // section save silently reverted them.
+  it.each([
+    ['#security', 'mtls', 'onMtlsSaved', securityProps, { certLifetimeDays: 90 }, { certLifetimeDays: 30 }],
+    ['#event-logs', 'logForwarding', 'onSaved', eventLogProps, { enabled: false }, { enabled: true, elasticsearchUrl: 'https://es.new:9200' }],
+  ] as const)(
+    'after a %s self-save, the next section save carries the fresh %s value, not the stale one',
+    async (hash, key, callback, captured, before, after) => {
+      captured.length = 0;
+      window.location.hash = hash;
+      let current: Record<string, unknown> = before;
+      fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+        if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({}));
+        return Promise.resolve(makeJsonResponse({ ...orgDetails, settings: { [key]: current } }));
+      });
+
+      render(<OrgSettingsPage orgId="org-1" />);
+      await screen.findByTestId(hash === '#security' ? 'security' : 'event-logs');
+
+      // The child saved `after` through its own route, then reported it.
+      current = after;
+      const onSelfSaved = captured.at(-1)![callback] as (() => void) | undefined;
+      await act(async () => { onSelfSaved?.(); });
+
+      if (hash !== '#security') await userEvent.click(screen.getByRole('link', { name: /^security$/i }));
+      await userEvent.click(await screen.findByTestId('security'));
+
+      await waitFor(() =>
+        expect(fetchWithAuthMock.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
+      );
+      const patch = fetchWithAuthMock.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')!;
+      const sent = JSON.parse(String((patch[1] as RequestInit).body)) as { settings: Record<string, unknown> };
+      expect(sent.settings[key]).toEqual(after);
+    },
+  );
+
   it('places the AI tab beside Approval Security in the nav (#6004)', async () => {
     render(<OrgSettingsPage orgId="org-1" />);
     await screen.findByTestId('org-name-input');

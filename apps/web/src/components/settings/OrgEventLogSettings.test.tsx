@@ -133,4 +133,27 @@ describe('OrgEventLogSettings: org scoping', () => {
     ]);
     expect(urls.some((u) => u.includes(SWITCHER_ORG))).toBe(false);
   });
+
+  // The page re-posts the whole settings blob on its section saves, so it must
+  // hear about this own-route write or its next save reverts it.
+  it('reports a successful save to the page, and a failed one not at all', async () => {
+    const onSaved = vi.fn();
+    const { unmount } = render(<OrgEventLogSettings orgId={PAGE_ORG} onSaved={onSaved} />);
+    await screen.findByDisplayValue('https://es.test:9200');
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    unmount();
+
+    fetchMock.mockImplementation(async (_url, init) =>
+      init?.method === 'PATCH'
+        ? ({ ok: false, status: 400, json: vi.fn().mockResolvedValue({ error: 'nope' }) } as unknown as Response)
+        : jsonResponse({ settings: { logForwarding: { enabled: true, elasticsearchUrl: 'https://es.test:9200' } } }),
+    );
+    const onFailedSave = vi.fn();
+    render(<OrgEventLogSettings orgId={PAGE_ORG} onSaved={onFailedSave} />);
+    await screen.findByDisplayValue('https://es.test:9200');
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await screen.findByText('nope');
+    expect(onFailedSave).not.toHaveBeenCalled();
+  });
 });
