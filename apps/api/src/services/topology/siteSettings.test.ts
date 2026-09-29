@@ -96,6 +96,11 @@ describe('site settings AI capability (M4-D4)', () => {
     mocks.readiness.mockResolvedValue({ provider: false, orgPolicy: true });
     expect((await readTopologySiteSettings(ctx)).capabilities.ai).toEqual({ available: false, reason: 'ai_unavailable' });
   });
+  it('reports ai_not_configured when the server has no model provider, so the UI can say so', async () => {
+    mocks.flags.mockResolvedValue({ ...flags, ai: true });
+    mocks.readiness.mockResolvedValue({ provider: false, providerNotConfigured: true, orgPolicy: true });
+    expect((await readTopologySiteSettings(ctx)).capabilities.ai).toEqual({ available: false, reason: 'ai_not_configured' });
+  });
   it('reports ai_disabled when the flag is off, whatever the policy says', async () => {
     mocks.flags.mockResolvedValue({ ...flags, ai: false });
     expect((await readTopologySiteSettings(ctx)).capabilities.ai).toEqual({ available: false, reason: 'ai_disabled' });

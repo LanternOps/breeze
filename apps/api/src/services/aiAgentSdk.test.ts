@@ -439,6 +439,23 @@ describe('runPreFlightChecks', () => {
     },
   );
 
+  it('returns the ai_not_configured 503 contract when the platform path has no model key, before any spend', async () => {
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+    try {
+      mockResolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+      expect(result).toEqual({ ok: false, error: 'ai_not_configured', status: 503 });
+      expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+      expect(mockCheckBudget).not.toHaveBeenCalled();
+      expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('captures resolver failures and returns a generic retryable 503', async () => {
     const error = new Error('raw resolver failure');
     mockResolveLlmConfigForOrg.mockRejectedValueOnce(error);

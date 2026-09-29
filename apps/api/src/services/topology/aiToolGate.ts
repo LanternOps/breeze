@@ -33,7 +33,7 @@ import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { aiSessions } from '../../db/schema';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { getEffectiveAiBudget } from '../effectiveSettings';
-import { isLlmProviderUsableForOrgInSystemContext } from '../llm/llmConfigResolver';
+import { llmUnusableCodeForOrgInSystemContext } from '../llm/llmConfigResolver';
 import { getUserPermissions } from '../permissions';
 import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
 import { loadTopologyFlags, resolveTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from './flags';
@@ -69,7 +69,8 @@ export type TopologyAiGateCode =
   | 'topology_session_required'
   | 'topology_site_mismatch'
   | 'topology_site_unavailable'
-  | 'topology_ai_disabled';
+  | 'topology_ai_disabled'
+  | 'ai_not_configured';
 
 export type TopologyAiGateResult =
   | { ok: true; ctx: TopologyRequestContext; pinnedSiteId: string; sessionId: string | null }
@@ -80,6 +81,7 @@ const REFUSALS: Record<TopologyAiGateCode, string> = {
   topology_site_mismatch: 'This topology investigation is pinned to a different site',
   topology_site_unavailable: 'Topology site not found or access denied',
   topology_ai_disabled: 'Topology AI is disabled for this organization',
+  ai_not_configured: 'AI is not configured on this server',
 };
 
 const refuse = (code: TopologyAiGateCode): TopologyAiGateResult => ({ ok: false, code, error: REFUSALS[code] });
@@ -87,6 +89,13 @@ const refuse = (code: TopologyAiGateCode): TopologyAiGateResult => ({ ok: false,
 export type TopologyAiReadiness = {
   /** A usable model provider is configured for the org (server/provider policy). */
   provider: boolean;
+  /**
+   * Set when `provider` is false because the server has no model provider at
+   * all (no platform key, no partner BYO key) — as opposed to a broken
+   * partner config. Lets the UI say "AI isn't configured" instead of offering
+   * an Explain that can never run.
+   */
+  providerNotConfigured?: true;
   /** The org's (or its partner's) AI policy has AI features enabled. */
   orgPolicy: boolean;
 };
@@ -114,9 +123,9 @@ const carriedReadiness = new AsyncLocalStorage<{ orgId: string; readiness: Topol
 /** Readiness reads on the caller's held SYSTEM connection; each half fails closed. */
 async function readReadinessInSystemContext(orgId: string): Promise<TopologyAiReadiness> {
   // Sequential on purpose: one transaction, one connection.
-  const provider = await isLlmProviderUsableForOrgInSystemContext(orgId).catch(() => false);
+  const unusable = await llmUnusableCodeForOrgInSystemContext(orgId).catch(() => 'ai_unavailable' as const);
   const orgPolicy = await getEffectiveAiBudget(orgId).then((budget) => budget.enabled === true, () => false);
-  return { provider, orgPolicy };
+  return { provider: unusable === null, ...(unusable === 'ai_not_configured' ? { providerNotConfigured: true as const } : {}), orgPolicy };
 }
 
 /**
@@ -201,6 +210,20 @@ export function topologyAiAvailable(flags: Pick<TopologyFlags, 'materialization'
   return flags.materialization && flags.ai && readiness.provider && readiness.orgPolicy;
 }
 
+/**
+ * The refusal for an unavailable topology AI. With the topology flags on, a
+ * server that has no model provider at all says exactly that — it outranks the
+ * org's own AI switch, since nothing the org does can make AI run there.
+ * Everything else (a flag off, the org policy off, a broken partner config) is
+ * `topology_ai_disabled`.
+ */
+export function topologyAiRefusalCode(
+  flags: Pick<TopologyFlags, 'materialization' | 'ai'>,
+  readiness: TopologyAiReadiness,
+): 'topology_ai_disabled' | 'ai_not_configured' {
+  return flags.materialization && flags.ai && readiness.providerNotConfigured ? 'ai_not_configured' : 'topology_ai_disabled';
+}
+
 /** The single alias-scope derivation lives with the alias key (aiAlias.ts). */
 export { topologyAiAliasScope } from './aiAlias';
 
@@ -274,7 +297,7 @@ export async function authorizeTopologyAiToolCall(
   if (sessionOrgId !== null && ctx.scope.orgId !== sessionOrgId) return refuse('topology_site_unavailable');
 
   const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(ctx);
-  if (!topologyAiAvailable(flags, readiness)) return refuse('topology_ai_disabled');
+  if (!topologyAiAvailable(flags, readiness)) return refuse(topologyAiRefusalCode(flags, readiness));
 
   return { ok: true, ctx, pinnedSiteId, sessionId };
 }
@@ -282,7 +305,7 @@ export async function authorizeTopologyAiToolCall(
 export class TopologyAiSessionError extends Error {
   constructor(
     public readonly code: Exclude<TopologyAiGateCode, 'topology_session_required' | 'topology_site_mismatch'>,
-    public readonly status: 403 | 404,
+    public readonly status: 403 | 404 | 503,
     message: string,
   ) {
     super(message);
@@ -320,6 +343,9 @@ export async function authorizeTopologySessionSite(
     throw new TopologyAiSessionError('topology_site_unavailable', 404, REFUSALS.topology_site_unavailable);
   }
   const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(ctx);
-  if (!topologyAiAvailable(flags, readiness)) throw new TopologyAiSessionError('topology_ai_disabled', 403, REFUSALS.topology_ai_disabled);
+  if (!topologyAiAvailable(flags, readiness)) {
+    const code = topologyAiRefusalCode(flags, readiness);
+    throw new TopologyAiSessionError(code, code === 'ai_not_configured' ? 503 : 403, REFUSALS[code]);
+  }
   return ctx;
 }

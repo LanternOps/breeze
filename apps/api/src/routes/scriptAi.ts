@@ -44,6 +44,7 @@ import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import { AI_NOT_CONFIGURED_BODY, llmUnusableCode } from '../services/llm/llmAvailability';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -101,6 +102,11 @@ scriptAiRoutes.post(
     }
 
     try {
+      // Refuse before a session exists: with no model provider the builder's
+      // first message could only come back empty.
+      if (llmUnusableCode(resolved) === 'ai_not_configured') {
+        return c.json(AI_NOT_CONFIGURED_BODY, 503);
+      }
       if (resolved.source === 'unavailable') {
         return c.json({ error: 'ai_unavailable' }, 503);
       }
@@ -203,6 +209,7 @@ scriptAiRoutes.post(
     const preflight = await inRequestDb(() => runPreFlightChecks(sessionId, content, auth, undefined, c));
     if (!preflight.ok) {
       const err = preflight.error;
+      if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
       if (preflight.status === 503) return c.json({ error: err }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);

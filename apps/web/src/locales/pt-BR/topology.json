@@ -551,6 +551,7 @@
     "fallback": "As evidências, a integridade e os diagnósticos desta página continuam funcionando.",
     "errors": {
       "disabled": "As explicações por IA estão desativadas para esta organização ou site.",
+      "notConfigured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos.",
       "limit": "O limite de investigações por IA foi atingido. Tente novamente mais tarde.",
       "scopeChanged": "A seleção ou o site dela mudou. Inicie uma nova explicação.",
       "accessChanged": "Você não tem mais acesso à topologia deste site.",

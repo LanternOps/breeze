@@ -1,5 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
-import { processScriptStreamEvent } from './scriptAiStore';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { fetchWithAuth } from './auth';
+import { processScriptStreamEvent, useScriptAiStore } from './scriptAiStore';
+
+vi.mock('./auth', () => ({ fetchWithAuth: vi.fn() }));
 
 // processScriptStreamEvent takes set/get as params, so the apply pipeline can be
 // driven directly with a fake store + a mock editor bridge — no SSE plumbing.
@@ -173,5 +176,30 @@ describe('processScriptStreamEvent — apply tool result', () => {
     expect(r1.snapshotTaken).toBe(true);
     expect(r2.snapshotTaken).toBe(true);
     expect(bridge.takeSnapshot).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('script builder with no model provider on the server', () => {
+  const notConfigured = () => new Response(JSON.stringify({ error: 'server text', code: 'ai_not_configured' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+  afterEach(() => {
+    vi.mocked(fetchWithAuth).mockReset();
+    useScriptAiStore.setState({ sessionId: null, messages: [], error: null, isLoading: false, isStreaming: false });
+  });
+
+  it('opening the panel says AI is not configured instead of leaving it empty', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(notConfigured());
+    await useScriptAiStore.getState().createSession();
+    const state = useScriptAiStore.getState();
+    expect(state.sessionId).toBeNull();
+    expect(state.error).toMatch(/AI isn't configured on this server/);
+  });
+
+  it('a prompt sent without a session shows the same state and sends no message', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(notConfigured());
+    await useScriptAiStore.getState().sendMessage('write a backup script');
+    const state = useScriptAiStore.getState();
+    expect(state.error).toMatch(/AI isn't configured on this server/);
+    expect(state.messages).toEqual([]);
+    expect(vi.mocked(fetchWithAuth).mock.calls.map(([url]) => String(url))).toEqual(['/ai/script-builder/sessions']);
   });
 });

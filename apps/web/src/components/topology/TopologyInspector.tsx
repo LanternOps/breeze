@@ -50,7 +50,7 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
   onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
@@ -59,6 +59,8 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   operations?: TopologyOperationsCapabilities; historyInterfaceId?: string; onHistory?: (interfaceId: string | undefined) => void; onSelectNode?: (nodeId: string) => void;
   /** M4 Task 5: "Explain this" for a canonical node or connection. */
   explain?: TopologyExplainOptions;
+  /** The server has no model provider (`ai_not_configured`): say so where "Explain this" would be. */
+  aiNotConfigured?: boolean;
 }) {
   const { t } = useTranslation('topology'); const heading = useRef<HTMLHeadingElement>(null);
   const [refresh, setRefresh] = useState(0);
@@ -105,6 +107,7 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
       historyInterfaceId={historyInterfaceId} onHistory={onHistory} onSelectNode={onSelectNode} />}
     {aiSelection && explain && siteId && <TopologyExplanationPanel siteId={siteId} selection={aiSelection} graph={graph} canApprove={explain.canApprove}
       initialSessionId={explain.investigationId} initialRunId={explain.runId} onInvestigation={explain.onInvestigation} onRun={explain.onRun} onEvidenceSelect={explain.onEvidenceSelect} />}
+    {!explain && aiNotConfigured && !schematic && <p data-testid="topology-explain-not-configured" className="text-sm text-muted-foreground">{t('ai.errors.notConfigured')}</p>}
     {!schematic && <button data-testid="topology-diagnose" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={!canDiagnose} onClick={onDiagnose}>{t('diagnose')}</button>}
     {!schematic && !canDiagnose && <p className="text-sm text-muted-foreground">{t('diagnosticsUnavailable')}</p>}
     {onPin && !schematic && selection.kind === 'node' && <button data-testid="topology-pin" className="ml-2 rounded border px-3 py-2" aria-pressed={pinned} onClick={onPin}>{pinned ? t('unpin') : t('pin')}</button>}

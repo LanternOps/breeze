@@ -23,6 +23,7 @@ import {
 } from './aiInputSanitizer';
 import { looksLikeInternalErrorDetail } from './aiToolErrors';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from './llm/llmConfigResolver';
+import { LlmNotConfiguredError, llmUnusableCode } from './llm/llmAvailability';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
 import { topologySessionAccessCondition } from './topology/aiSessionAccess';
@@ -207,6 +208,10 @@ export async function createSession(
   }
 
   const resolved = await resolveLlmConfigForOrg(orgId);
+  // No session without a model to answer it: a platform path with no key
+  // would otherwise start a turn that can only come back empty.
+  const unusable = llmUnusableCode(resolved);
+  if (unusable === 'ai_not_configured') throw new LlmNotConfiguredError();
   if (resolved.source === 'unavailable') throw new LlmUnavailableError();
 
   // #6473 — without this, every new session fell back to the `ai_sessions`

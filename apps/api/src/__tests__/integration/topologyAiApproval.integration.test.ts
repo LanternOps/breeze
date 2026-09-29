@@ -1,6 +1,6 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 // Provider governance is mocked so topology AI reads as available; nothing in
@@ -9,6 +9,11 @@ vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
   ...await original<object>(),
   resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
 }));
+// Topology AI readiness requires a usable model provider (no key = not
+// configured). These suites exercise the gate itself, so give the platform
+// path a key for their duration.
+beforeAll(() => { vi.stubEnv('ANTHROPIC_API_KEY', 'test-key'); });
+afterAll(() => { vi.unstubAllEnvs(); });
 
 // C2 race seam: the release's `authorize` callback runs its trust check AFTER
 // the execute permission was verified and BEFORE the requester's authority is

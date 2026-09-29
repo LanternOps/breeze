@@ -32,7 +32,8 @@ export type TopologyCapabilityReason =
   | 'diagnostics_disabled'
   | 'diagnostics_unavailable'
   | 'ai_disabled'
-  | 'ai_unavailable';
+  | 'ai_unavailable'
+  | 'ai_not_configured';
 
 export interface TopologyCapabilityState {
   available: boolean;
@@ -226,13 +227,16 @@ function dependentCapability(
 /**
  * `aiReady` (M4-D4, #6000) is the server/provider/org AI policy answer
  * (`topologyAiAvailable` minus the flags, see `aiToolGate.ts`) — AI readiness
- * is never an agent capability bit.
+ * is never an agent capability bit. `aiNotConfigured` names the not-ready
+ * case where the server has no model provider at all (`ai_not_configured`,
+ * the same precedence as `topologyAiRefusalCode`).
  */
 export function getTopologyCapabilities(
   flags: TopologyFlags,
   siteGraphReady: boolean,
   agentCapabilities: TopologyAgentCapabilities,
   aiReady = false,
+  aiNotConfigured = false,
 ): TopologyCapabilities {
   const effectiveUi = flags.ui && flags.materialization && siteGraphReady;
   const uiReason: TopologyCapabilityReason = !flags.materialization
@@ -273,7 +277,7 @@ export function getTopologyCapabilities(
       flags.ai,
       aiReady,
       'ai_disabled',
-      'ai_unavailable',
+      !aiReady && aiNotConfigured ? 'ai_not_configured' : 'ai_unavailable',
     ),
   };
 }

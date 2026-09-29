@@ -251,6 +251,12 @@ describe('topology capabilities', () => {
     expect(getTopologyCapabilities(allFlags, true, {}, true).ai).toEqual({ available: true, reason: null });
     expect(getTopologyCapabilities({ ...allFlags, ai: false }, true, {}, true).ai).toEqual({ available: false, reason: 'ai_disabled' });
   });
+
+  it('names a server with no model provider as ai_not_configured, behind the flags', () => {
+    expect(getTopologyCapabilities(allFlags, true, {}, false, true).ai).toEqual({ available: false, reason: 'ai_not_configured' });
+    expect(getTopologyCapabilities({ ...allFlags, ai: false }, true, {}, false, true).ai).toEqual({ available: false, reason: 'ai_disabled' });
+    expect(getTopologyCapabilities({ ...allFlags, materialization: false }, true, {}, false, true).ai).toEqual({ available: false, reason: 'materialization_disabled' });
+  });
 });
 
 describe('physical exposure (D9/D15.4)', () => {

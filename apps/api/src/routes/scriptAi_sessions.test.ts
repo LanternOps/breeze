@@ -190,6 +190,26 @@ describe('scriptAi routes — session CRUD', () => {
       expect(createScriptBuilderSession).not.toHaveBeenCalled();
     });
 
+    it('returns ai_not_configured as 503 before creating the session when no model key is configured', async () => {
+      vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
+      vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+      try {
+        vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+
+        const res = await app.request('/ai/script-builder/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Test' }),
+        });
+
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
+        expect(createScriptBuilderSession).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
     it('captures resolver throws and returns a generic retryable 503', async () => {
       const error = new Error('raw organization lookup failure');
       vi.mocked(resolveLlmConfigForOrg).mockRejectedValueOnce(error);

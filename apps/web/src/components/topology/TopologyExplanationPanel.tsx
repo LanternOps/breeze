@@ -37,6 +37,7 @@ export function withHostNames(text: string, explanation: TopologyAiExplanation, 
 function errorCopyKey(error: TopologyInvestigationError | null): string {
   switch (error?.code) {
     case 'topology_ai_disabled': return 'ai.errors.disabled';
+    case 'ai_not_configured': return 'ai.errors.notConfigured';
     case 'topology_ai_concurrency': case 'topology_ai_user_hourly': case 'topology_ai_org_daily': case 'topology_ai_budget_exhausted': return 'ai.errors.limit';
     case 'investigation_scope_changed': case 'graph_revision_changed': case 'subject_not_found': return 'ai.errors.scopeChanged';
     case 'topology_site_unavailable': case 'topology_session_required': return 'ai.errors.accessChanged';

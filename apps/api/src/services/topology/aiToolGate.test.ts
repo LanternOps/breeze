@@ -44,7 +44,7 @@ vi.mock('../../db', async () => {
 vi.mock('../permissions', () => ({ getUserPermissions: mocks.permissions }));
 vi.mock('./access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg: mocks.llm, isLlmProviderUsableForOrgInSystemContext: mocks.providerUsable }));
+vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg: mocks.llm, llmUnusableCodeForOrgInSystemContext: mocks.providerUsable }));
 vi.mock('../effectiveSettings', () => ({ getEffectiveAiBudget: mocks.budget }));
 
 import * as dbModule from '../../db';
@@ -78,7 +78,7 @@ beforeEach(() => {
   mocks.providerUsable.mockImplementation(async () => {
     // Readiness reads only ever run on a SYSTEM connection.
     if (dbModule.getCurrentDbAccessContext()?.scope !== 'system') throw new Error('provider readiness outside a system context');
-    return true;
+    return null;
   });
   mocks.budget.mockResolvedValue({ enabled: true });
   pool.acquisitions.length = 0;
@@ -142,12 +142,27 @@ describe('topology AI tool gate (M4-D1)', () => {
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
     mocks.flags.mockResolvedValueOnce({ materialization: false, ai: true });
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
-    mocks.providerUsable.mockResolvedValueOnce(false);
+    mocks.providerUsable.mockResolvedValueOnce('ai_unavailable');
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
     mocks.budget.mockResolvedValueOnce({ enabled: false });
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
     mocks.budget.mockRejectedValueOnce(new Error('db down'));
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
+  });
+
+  it('says AI is not configured when the server has no model provider at all', async () => {
+    const bound = { kind: 'ai_session', sessionId: SESSION } as const;
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'ai_not_configured' });
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    await expect(authorizeTopologySessionSite(auth(), SITE_A)).rejects.toMatchObject({ code: 'ai_not_configured', status: 503 });
+    // The org's own AI switch-off does not hide a missing server key; a topology flag off still reads as disabled.
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    mocks.budget.mockResolvedValueOnce({ enabled: false });
+    await expect(authorizeTopologySessionSite(auth(), SITE_A)).rejects.toMatchObject({ code: 'ai_not_configured', status: 503 });
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    mocks.flags.mockResolvedValueOnce({ materialization: true, ai: false });
+    await expect(authorizeTopologySessionSite(auth(), SITE_A)).rejects.toMatchObject({ code: 'topology_ai_disabled', status: 403 });
   });
 
   it('confines MCP to a key restricted to exactly one site', async () => {
@@ -201,6 +216,8 @@ describe('topology AI readiness never double-holds the pool (review R1)', () => 
   it('resolves preconditions fail-closed', async () => {
     mocks.providerUsable.mockRejectedValueOnce(new Error('db down'));
     expect((await loadTopologyAiPreconditions(ORG)).readiness).toEqual({ provider: false, orgPolicy: true });
+    mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
+    expect((await loadTopologyAiPreconditions(ORG)).readiness).toEqual({ provider: false, providerNotConfigured: true, orgPolicy: true });
     mocks.budget.mockRejectedValueOnce(new Error('db down'));
     expect((await loadTopologyAiPreconditions(ORG)).readiness).toEqual({ provider: true, orgPolicy: false });
   });

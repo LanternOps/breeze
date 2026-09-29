@@ -54,7 +54,7 @@ export async function readTopologySiteSettings(
         // Per-origin eligibility is the collectors read's job; the site
         // capability is the flag exposure (the run routes enforce the rest).
         diagnostics: true,
-      }, aiReadiness.provider && aiReadiness.orgPolicy),
+      }, aiReadiness.provider && aiReadiness.orgPolicy, aiReadiness.providerNotConfigured === true),
       // M3 Task 7: recurring monitoring exists once diagnostics do; a policy
       // still runs only after a human arms it (activation intent alone never).
       recurringMonitoring:
