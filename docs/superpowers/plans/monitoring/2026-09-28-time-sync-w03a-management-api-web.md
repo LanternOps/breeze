@@ -1143,6 +1143,16 @@ vi.mock('../../db', () => ({
   },
 }));
 vi.mock('../redis', () => ({ getRedis: () => ({ get: m.get, set: m.set }) }));
+const visibility = vi.hoisted(() => ({ calls: [] as Array<string | null> }));
+vi.mock('../configPolicyOwnership', async (orig) => ({
+  ...(await orig<typeof import('../configPolicyOwnership')>()),
+  withDevicePartnerPolicyVisibility: vi.fn(
+    async (executor: any, partnerId: string | null, fn: any) => {
+      visibility.calls.push(partnerId);
+      return fn(executor);
+    },
+  ),
+}));
 import {
   resolveDeviceTimeSyncSettings,
   getDeviceTimeSyncSettings,
@@ -1167,9 +1177,11 @@ const base = {
   pinnedTimezone: 'UTC',
   timezoneAutoFix: true,
   assignmentPriority: 0,
+  assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
 };
 beforeEach(() => {
   m.rows = [];
+  visibility.calls = [];
   m.get.mockReset().mockResolvedValue(null);
   m.set.mockReset().mockResolvedValue('OK');
 });
@@ -1180,6 +1192,20 @@ it('resolves defaults when no policy exists', async () => {
     settings: TIME_SYNC_DEFAULTS,
     policy: null,
   });
+});
+it('widens policy visibility to the device partner so partner-wide policies resolve for org-scoped callers', async () => {
+  const partnerId = '22222222-2222-4222-8222-222222222222';
+  m.rows = [[device], [{ partnerId }], [], [{ ...base, level: 'partner' }]];
+  const result = await resolveDeviceTimeSyncSettings(id);
+  expect(visibility.calls).toEqual([partnerId]);
+  expect(result.settings.enforceNtp).toBe(true);
+});
+it('breaks equal level and priority ties by assignment creation time, not policy id', async () => {
+  const older = { ...base, policyId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', level: 'org', pollIntervalMinutes: 30, assignmentCreatedAt: new Date('2026-01-01T00:00:00Z') };
+  const newer = { ...base, policyId: '00000000-0000-4000-8000-000000000000', level: 'org', pollIntervalMinutes: 45, assignmentCreatedAt: new Date('2026-02-01T00:00:00Z') };
+  m.rows = [[device], [{ partnerId: id }], [], [newer, older]];
+  const result = await resolveDeviceTimeSyncSettings(id);
+  expect(result.settings.pollIntervalMinutes).toBe(30);
 });
 it('chooses closest eligible assignment, then smallest priority', async () => {
   m.rows = [
@@ -1280,7 +1306,10 @@ import {
   deviceGroupMemberships,
   organizations,
 } from '../../db/schema';
-import { policyOwnershipCondition } from '../configPolicyOwnership';
+import {
+  policyOwnershipCondition,
+  withDevicePartnerPolicyVisibility,
+} from '../configPolicyOwnership';
 import {
   buildRoleOsFilterConditions,
   matchesRoleOsFilter,
@@ -1373,63 +1402,74 @@ export async function resolveDeviceTimeSyncSettings(
         ),
       ),
     );
-  const rows = await db
-    .select({
-      policyId: configurationPolicies.id,
-      policyName: configurationPolicies.name,
-      level: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      roleFilter: configPolicyAssignments.roleFilter,
-      osFilter: configPolicyAssignments.osFilter,
-      enforceNtp: configPolicyTimeSyncSettings.enforceNtp,
-      ntpServers: configPolicyTimeSyncSettings.ntpServers,
-      pollIntervalMinutes: configPolicyTimeSyncSettings.pollIntervalMinutes,
-      timezoneExpected: configPolicyTimeSyncSettings.timezoneExpected,
-      pinnedTimezone: configPolicyTimeSyncSettings.pinnedTimezone,
-      timezoneAutoFix: configPolicyTimeSyncSettings.timezoneAutoFix,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-    )
-    .innerJoin(
-      configPolicyEffectiveFeatureLinks,
-      and(
-        eq(
-          configPolicyEffectiveFeatureLinks.configPolicyId,
-          configurationPolicies.id,
-        ),
-        eq(configPolicyEffectiveFeatureLinks.featureType, 'time_sync'),
-      ),
-    )
-    .innerJoin(
-      configPolicyTimeSyncSettings,
-      eq(
-        configPolicyTimeSyncSettings.featureLinkId,
-        configPolicyEffectiveFeatureLinks.id,
-      ),
-    )
-    .where(
-      and(
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition({
-          orgId: device.orgId,
-          partnerId: org?.partnerId ?? null,
-        }),
-        or(...targets),
-        ...buildRoleOsFilterConditions({
-          deviceRole: device.deviceRole,
-          osType: device.osType,
-        }),
-      ),
-    );
+  // Same visibility rule as the hardware-monitoring resolver (routes/agents/helpers.ts):
+  // an org-scoped caller (device view, agent ingest) cannot see partner-wide policy rows
+  // without widening to the device's own partner. partnerId comes from the org row read
+  // above under the caller's RLS context, never from input.
+  const rows = await withDevicePartnerPolicyVisibility(
+    db,
+    org?.partnerId ?? null,
+    (executor) =>
+      executor
+          .select({
+            policyId: configurationPolicies.id,
+            policyName: configurationPolicies.name,
+            level: configPolicyAssignments.level,
+            assignmentPriority: configPolicyAssignments.priority,
+            assignmentCreatedAt: configPolicyAssignments.createdAt,
+            roleFilter: configPolicyAssignments.roleFilter,
+            osFilter: configPolicyAssignments.osFilter,
+            enforceNtp: configPolicyTimeSyncSettings.enforceNtp,
+            ntpServers: configPolicyTimeSyncSettings.ntpServers,
+            pollIntervalMinutes: configPolicyTimeSyncSettings.pollIntervalMinutes,
+            timezoneExpected: configPolicyTimeSyncSettings.timezoneExpected,
+            pinnedTimezone: configPolicyTimeSyncSettings.pinnedTimezone,
+            timezoneAutoFix: configPolicyTimeSyncSettings.timezoneAutoFix,
+          })
+          .from(configPolicyAssignments)
+          .innerJoin(
+            configurationPolicies,
+            eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          )
+          .innerJoin(
+            configPolicyEffectiveFeatureLinks,
+            and(
+              eq(
+                configPolicyEffectiveFeatureLinks.configPolicyId,
+                configurationPolicies.id,
+              ),
+              eq(configPolicyEffectiveFeatureLinks.featureType, 'time_sync'),
+            ),
+          )
+          .innerJoin(
+            configPolicyTimeSyncSettings,
+            eq(
+              configPolicyTimeSyncSettings.featureLinkId,
+              configPolicyEffectiveFeatureLinks.id,
+            ),
+          )
+          .where(
+            and(
+              eq(configurationPolicies.status, 'active'),
+              policyOwnershipCondition({
+                orgId: device.orgId,
+                partnerId: org?.partnerId ?? null,
+              }),
+              or(...targets),
+              ...buildRoleOsFilterConditions({
+                deviceRole: device.deviceRole,
+                osType: device.osType,
+              }),
+            ),
+    ,
+  );
   const eligible = rows.filter((row) => matchesRoleOsFilter(row, device));
   eligible.sort(
     (a, b) =>
       (levelPriority[b.level] ?? 0) - (levelPriority[a.level] ?? 0) ||
       a.assignmentPriority - b.assignmentPriority ||
-      a.policyId.localeCompare(b.policyId),
+      // Same tie-break as resolveEffectiveConfig (services/configurationPolicy.ts ~2554).
+      a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime(),
   );
   const winner = eligible[0];
   if (!winner)
@@ -3678,6 +3718,8 @@ The existing route tests' auth fixture uses fixed string actor/org values; no ne
 At `partnerTrust.ts:174–175`, replace:
 
 ```ts
+  'terminal_start',
+  'tunnel_data',
 ```
 
 with:
@@ -5172,11 +5214,15 @@ Replace it with:
     <TimeEventsList events={data.recentEvents} />
 ```
 
-In `FleetTimeSyncReport.tsx`, import `TimeSyncActions` from `./TimeSyncActions`. The W02 projection defines `result: FleetTimeResult | null`, and `FleetTimeRow` carries `deviceId`, `hostname` and `view` (W02 fleet service and component tasks). Immediately after this projected success-branch anchor:
+In `FleetTimeSyncReport.tsx`, import `TimeSyncActions` from `./TimeSyncActions`. The W02 projection defines `result: FleetTimeResult | null`, and `FleetTimeRow` carries `deviceId`, `hostname` and `view` (W02 fleet service and component tasks). Immediately after this success-branch anchor from W02's `FleetTimeSyncReport.tsx` (the parenthesized
+expression, then the fragment on the next line):
 
-`{!loading && !error && result && <>`
+```tsx
+      {!loading && !error && result && (
+        <>
+```
 
-insert:
+insert, as the first child inside that fragment:
 
 ```tsx
     <TimeSyncActions
