@@ -655,7 +655,6 @@
     "chooseTheSnapshotToRestoreAsAVirtual": "Wählen Sie den Snapshot aus, der als virtuelle Maschine wiederhergestellt werden soll.",
     "noSnapshotsAvailable": "Keine Snapshots verfügbar.",
     "cpu": "CPU",
-    "mb": "MB",
     "gb": "GB",
     "selectTargetHost": "Wählen Sie den Zielhost aus",
     "chooseAWindowsDeviceWithHyperVTo": "Wählen Sie ein Windows-Gerät mit Hyper-V zum Hosten der virtuellen Maschine.",

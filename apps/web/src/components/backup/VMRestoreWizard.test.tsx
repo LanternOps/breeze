@@ -103,6 +103,37 @@ describe('VMRestoreWizard', () => {
     expect(screen.getByRole('button', { name: /Nightly.*SRV01/i })).toBeTruthy();
   });
 
+  it('shows CPU, memory and disk chips from the hardware profile the snapshot list sends', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'snapshot-1',
+              label: 'Whole machine',
+              createdAt: '2026-03-28T10:00:00Z',
+              // GET /backup/snapshots shape (stored systemstate.HardwareProfile names)
+              hardwareProfile: {
+                cpuCores: 8,
+                totalMemoryMB: 16384,
+                disks: [{ sizeBytes: 256 * 1024 ** 3 }, { sizeBytes: 256 * 1024 ** 3 }],
+              },
+            },
+          ],
+        });
+      }
+      return base(input, init);
+    });
+
+    render(<VMRestoreWizard />);
+
+    const card = await screen.findByRole('button', { name: /Whole machine/i });
+    expect(card.textContent).toContain('8 CPU');
+    expect(card.textContent).toContain('16 GB');
+    expect(card.textContent).toContain('512 GB');
+  });
+
   it('renders alpha banner', async () => {
     render(<VMRestoreWizard />);
 

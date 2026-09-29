@@ -655,7 +655,6 @@
     "chooseTheSnapshotToRestoreAsAVirtual": "Choose the snapshot to restore as a virtual machine.",
     "noSnapshotsAvailable": "No snapshots available.",
     "cpu": "CPU",
-    "mb": "MB",
     "gb": "GB",
     "selectTargetHost": "Select target host",
     "chooseAWindowsDeviceWithHyperVTo": "Choose a Windows device with Hyper-V to host the virtual machine.",

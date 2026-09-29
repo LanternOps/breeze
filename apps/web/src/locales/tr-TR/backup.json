@@ -655,7 +655,6 @@
     "chooseTheSnapshotToRestoreAsAVirtual": "Sanal makine olarak geri yüklenecek anlık görüntüyü seçin.",
     "noSnapshotsAvailable": "Anlık görüntü yok.",
     "cpu": "CPU",
-    "mb": "MB",
     "gb": "TR",
     "selectTargetHost": "Hedef ana makineyi seçin",
     "chooseAWindowsDeviceWithHyperVTo": "Sanal makineyi barındırmak için Hyper-V'ye sahip bir Windows cihazı seçin.",

@@ -655,7 +655,6 @@
     "chooseTheSnapshotToRestoreAsAVirtual": "Elija la instantánea para restaurar como una máquina virtual.",
     "noSnapshotsAvailable": "No hay instantáneas disponibles.",
     "cpu": "CPU",
-    "mb": "MB",
     "gb": "GB",
     "selectTargetHost": "Seleccionar host de destino",
     "chooseAWindowsDeviceWithHyperVTo": "Elija un dispositivo Windows con Hyper-V para alojar la máquina virtual.",

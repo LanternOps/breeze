@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
+import { formatNumber } from '@/lib/i18n/format';
 import VMRestoreSpecsStep from './VMRestoreSpecsStep';
 import VMRestoreConfirmStep from './VMRestoreConfirmStep';
 import AlphaBadge from '../shared/AlphaBadge';
@@ -40,11 +41,13 @@ type Snapshot = {
   createdAt?: string;
   timestamp?: string;
   sizeBytes?: number | null;
+  /** Sizing fields of the captured hardware profile, under the stored
+   * (agent systemstate.HardwareProfile) names GET /backup/snapshots sends. */
   hardwareProfile?: {
-    cpuCount?: number;
-    memoryMB?: number;
-    diskGB?: number;
-  };
+    cpuCores?: number | null;
+    totalMemoryMB?: number | null;
+    disks?: { sizeBytes?: number | null }[] | null;
+  } | null;
   /** Storage key of the disk-layout manifest; only whole-machine snapshots
    * carry one, and only those can go through the rebuild engine. */
   layoutManifestKey?: string | null;
@@ -57,6 +60,48 @@ type Snapshot = {
    * assessed) and false are both refused with snapshot_not_bare_metal_restorable. */
   bareMetalRestorable?: boolean | null;
 };
+
+type HardwareChips = { cpuCores: number | null; memoryGb: number | null; diskGb: number | null };
+
+function hardwareChips(snapshot: Snapshot): HardwareChips | null {
+  const hw = snapshot.hardwareProfile;
+  if (!hw) return null;
+  const positive = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  const diskBytes = (hw.disks ?? []).reduce((sum, disk) => sum + (positive(disk?.sizeBytes) ?? 0), 0);
+  const memoryMb = positive(hw.totalMemoryMB);
+  const chips = {
+    cpuCores: positive(hw.cpuCores),
+    memoryGb: memoryMb === null ? null : memoryMb / 1024,
+    diskGb: diskBytes > 0 ? diskBytes / 1024 ** 3 : null,
+  };
+  return chips.cpuCores === null && chips.memoryGb === null && chips.diskGb === null ? null : chips;
+}
+
+function SnapshotHardwareChips({ snapshot }: { snapshot: Snapshot }) {
+  const { t } = useTranslation('backup');
+  const chips = hardwareChips(snapshot);
+  if (!chips) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
+      {chips.cpuCores !== null && (
+        <span className="inline-flex items-center gap-1">
+          <Cpu className="h-3 w-3" /> {chips.cpuCores} {t('vMRestoreWizard.cpu')}
+        </span>
+      )}
+      {chips.memoryGb !== null && (
+        <span className="inline-flex items-center gap-1">
+          <MemoryStick className="h-3 w-3" /> {formatNumber(chips.memoryGb, { maximumFractionDigits: 1 })} {t('vMRestoreWizard.gb')}
+        </span>
+      )}
+      {chips.diskGb !== null && (
+        <span className="inline-flex items-center gap-1">
+          <HardDrive className="h-3 w-3" /> {formatNumber(chips.diskGb, { maximumFractionDigits: 0 })} {t('vMRestoreWizard.gb')}
+        </span>
+      )}
+    </div>
+  );
+}
 
 type VMEstimate = {
   memoryMb?: number;
@@ -429,22 +474,7 @@ export default function VMRestoreWizard() {
                         {(snap.createdAt ?? snap.timestamp) && <span>{formatTime(snap.createdAt ?? snap.timestamp)}</span>}
                         {snap.sizeBytes != null && <span>{formatBytes(snap.sizeBytes)}</span>}
                       </div>
-                      {snap.hardwareProfile && (
-                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                          {snap.hardwareProfile.cpuCount && (
-                            <span className="inline-flex items-center gap-1">
-                              <Cpu className="h-3 w-3" /> {snap.hardwareProfile.cpuCount} {t('vMRestoreWizard.cpu')} </span>
-                          )}
-                          {snap.hardwareProfile.memoryMB && (
-                            <span className="inline-flex items-center gap-1">
-                              <MemoryStick className="h-3 w-3" /> {snap.hardwareProfile.memoryMB} {t('vMRestoreWizard.mb')} </span>
-                          )}
-                          {snap.hardwareProfile.diskGB && (
-                            <span className="inline-flex items-center gap-1">
-                              <HardDrive className="h-3 w-3" /> {snap.hardwareProfile.diskGB} {t('vMRestoreWizard.gb')} </span>
-                          )}
-                        </div>
-                      )}
+                      <SnapshotHardwareChips snapshot={snap} />
                     </button>
                   ))}
                 </div>
