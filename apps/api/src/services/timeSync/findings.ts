@@ -42,6 +42,19 @@ export interface TimeFindingsContext {
  * and are dropped. The slack absorbs events logged during collection.
  */
 export const TIME_SYNC_CLOCK_STEP_TOLERANCE_MS = 5 * 60_000;
+/**
+ * Insertion index of the peer name in each Time-Service failure event (R19,
+ * #7487). Event 134's template is `ErrorMessage, RetryMinutes, DomainPeer`
+ * (lab-observed), so its `properties[0]` is localized OS error text and must
+ * never reach a finding. The provider manifest gives 24 = `DomainPeer,
+ * ErrorMessage` and 47 = `ManualPeer, ErrorMessage`. Event 29 carries only
+ * `RetryMinutes`, so it never names a peer.
+ */
+const PEER_PROPERTY_INDEX: Readonly<Record<number, number>> = {
+  24: 0,
+  47: 0,
+  134: 2,
+};
 export interface TimeFindingsResult {
   health: TimeSyncHealth;
   findings: TimeSyncFinding[];
@@ -88,11 +101,17 @@ export function resolveTimeFindings(
   const active = (id: number) =>
     ref - time(marks[String(id)]) <= TIME_SYNC_EVENT_ACTIVE_WINDOW_MS &&
     time(marks[String(id)]) > success;
-  const property = (ids: number[]) =>
-    events
+  // The newest active event's peer, flag suffix (`,0x9`) stripped. Anything
+  // that is not exactly one token (absent, empty, free text) is unknown: null.
+  const peer = (ids: number[]) => {
+    const newest = events
       .filter((e) => ids.includes(e.eventId) && active(e.eventId))
-      .sort((a, b) => time(b.occurredAt) - time(a.occurredAt))[0]
-      ?.properties[0] ?? null;
+      .sort((a, b) => time(b.occurredAt) - time(a.occurredAt))[0];
+    const index = newest && PEER_PROPERTY_INDEX[newest.eventId];
+    if (!newest || index === undefined) return null;
+    const hosts = parseNtpServerHosts(newest.properties[index] ?? null);
+    return hosts.length === 1 ? hosts[0]! : null;
+  };
   const found = new Map<TimeSyncFindingCode, TimeSyncFinding>();
   const add = (
     code: TimeSyncFindingCode,
@@ -128,16 +147,25 @@ export function resolveTimeFindings(
           (host) => !isValidNtpServerHost(host),
         )
       : undefined;
-  if (badHost !== undefined || active(134))
-    add('ntp_server_unresolvable', { host: badHost ?? property([134]) });
+  if (badHost !== undefined || active(134)) {
+    const eventHost = peer([134]);
+    add('ntp_server_unresolvable', {
+      host:
+        eventHost !== null && isValidNtpServerHost(eventHost)
+          ? eventHost
+          : (badHost ?? null),
+    });
+  }
   if ([24, 29, 47].some(active))
     add('ntp_peer_unreachable', {
-      source: property([24, 29, 47]) ?? status.source,
+      source: peer([24, 47]) ?? status.source ?? null,
     });
   if (active(129))
     add('domain_source_unavailable', { domainDns: domain.domainDns });
   if (
     ['member', 'dc', 'pdc_emulator'].includes(domain.role) &&
+    // An unreadable Type (null) is unknown, not a problem.
+    config.type !== null &&
     config.type !== 'NT5DS' &&
     config.type !== 'AllSync' &&
     !config.policyManaged

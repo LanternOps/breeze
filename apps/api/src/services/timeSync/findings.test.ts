@@ -236,10 +236,14 @@ it.each([
     { domainDns: null },
   ],
   [24, 'workgroup', 'ntp_peer_unreachable', { source: 'peer.example.com' }],
-  [29, 'workgroup', 'ntp_peer_unreachable', { source: 'peer.example.com' }],
+  // Event 29's only insertion string is RetryMinutes: no peer, so the source
+  // falls back to status.source (R19).
+  [29, 'workgroup', 'ntp_peer_unreachable', { source: 'pool.ntp.org' }],
   [47, 'workgroup', 'ntp_peer_unreachable', { source: 'peer.example.com' }],
   [129, 'workgroup', 'domain_source_unavailable', { domainDns: null }],
-  [134, 'workgroup', 'ntp_server_unresolvable', { host: 'peer.example.com' }],
+  // Event 134's properties[0] is ErrorMessage, never the host (R19); the
+  // fixture has no properties[2] and every configured host is valid.
+  [134, 'workgroup', 'ntp_server_unresolvable', { host: null }],
   [52, 'workgroup', 'correction_refused', { occurredAt: NOW.toISOString() }],
 ] as const)(
   'maps active event %i with exact details',
@@ -417,4 +421,134 @@ it('measures sync_stale on the device clock in both skew directions', () => {
   s.collectedAt = at(+NOW + 2 * DAY);
   s.status.lastSuccessfulSyncAt = at(+NOW + 2 * DAY - 30 * 3_600_000);
   expect(codes(s)).toContain('sync_stale');
+});
+// R19 (#7487): the peer is read from each event's own insertion index.
+// Lab evidence (Server 2022, en-US): event 134 = ErrorMessage, RetryMinutes,
+// DomainPeer. Manifest: 24 = DomainPeer, ErrorMessage; 47 = ManualPeer,
+// ErrorMessage; 29 = RetryMinutes only.
+const LAB_134_PROPERTIES = [
+  'No such host is known. (0x80072AF9)',
+  '15',
+  'unresolvable-time.example.invalid,0x9',
+];
+const withProps = (
+  id: number,
+  occurredAt: string,
+  properties: string[],
+  recordId = id,
+) => ({ ...event(id, occurredAt, recordId), level: 3, properties });
+const detailOf = (s: TimeStatusSnapshot, code: TimeSyncFindingCode) =>
+  resolveTimeFindings(s, base).findings.find((f) => f.code === code)?.detail;
+it('reads the event 134 host from properties[2] with flags stripped, never the error text', () => {
+  const s = snapshot();
+  s.events = [withProps(134, NOW.toISOString(), LAB_134_PROPERTIES)];
+  const detail = detailOf(s, 'ntp_server_unresolvable');
+  expect(detail).toEqual({ host: 'unresolvable-time.example.invalid' });
+  const serialized = JSON.stringify(resolveTimeFindings(s, base).findings);
+  expect(serialized).not.toContain('No such host');
+  expect(serialized).not.toContain('0x80072AF9');
+  expect(serialized).not.toContain(',0x9');
+  // The event's peer wins over a syntactically bad configured host.
+  s.config.ntpServer = 'bad;host pool.ntp.org,0x9';
+  expect(detailOf(s, 'ntp_server_unresolvable')).toEqual({
+    host: 'unresolvable-time.example.invalid',
+  });
+});
+it('takes the newest active event 134 host', () => {
+  const s = snapshot();
+  s.events = [
+    withProps(134, '2026-09-28T10:39:00Z', LAB_134_PROPERTIES, 1),
+    withProps(
+      134,
+      '2026-09-28T10:30:00Z',
+      ['No such host is known. (0x80072AF9)', '15', 'older.example.com,0x9'],
+      2,
+    ),
+  ];
+  expect(detailOf(s, 'ntp_server_unresolvable')).toEqual({
+    host: 'unresolvable-time.example.invalid',
+  });
+});
+it.each([
+  ['missing properties[2]', ['No such host is known. (0x80072AF9)', '15']],
+  ['invalid properties[2]', ['No such host is known.', '15', 'bad;host,0x9']],
+  ['empty properties[2]', ['No such host is known.', '15', '']],
+  [
+    'multi-token properties[2]',
+    ['No such host is known.', '15', 'No such host is known.'],
+  ],
+])(
+  'falls back from an event 134 with %s to the first invalid configured host, else null',
+  (_label, properties) => {
+    const s = snapshot();
+    s.events = [withProps(134, NOW.toISOString(), properties)];
+    expect(detailOf(s, 'ntp_server_unresolvable')).toEqual({ host: null });
+    s.config.ntpServer = 'pool.ntp.org,0x9 bad;host other:123';
+    expect(detailOf(s, 'ntp_server_unresolvable')).toEqual({
+      host: 'bad;host',
+    });
+    expect(JSON.stringify(detailOf(s, 'ntp_server_unresolvable'))).not.toMatch(
+      /No such host/,
+    );
+  },
+);
+it.each([
+  [24, ['dc01.contoso.com', 'The peer is unreachable.'], 'dc01.contoso.com'],
+  [
+    47,
+    ['time.example.com,0x9', 'The peer is unreachable. (0x800705B4)'],
+    'time.example.com',
+  ],
+] as const)(
+  'reads the event %i peer from properties[0] with flags stripped',
+  (id, properties, source) => {
+    const s = snapshot();
+    s.events = [withProps(id, NOW.toISOString(), [...properties])];
+    expect(detailOf(s, 'ntp_peer_unreachable')).toEqual({ source });
+    expect(JSON.stringify(detailOf(s, 'ntp_peer_unreachable'))).not.toContain(
+      'unreachable',
+    );
+  },
+);
+it('never takes a peer from event 29 and falls back to status.source, else null', () => {
+  const s = snapshot();
+  s.events = [withProps(29, NOW.toISOString(), ['15'])];
+  expect(detailOf(s, 'ntp_peer_unreachable')).toEqual({
+    source: 'pool.ntp.org',
+  });
+  s.status.source = null;
+  expect(detailOf(s, 'ntp_peer_unreachable')).toEqual({ source: null });
+  // A newer 29 does not hide the peer named by an older, still-active 47.
+  s.events = [
+    withProps(29, NOW.toISOString(), ['15'], 1),
+    withProps(
+      47,
+      '2026-09-28T10:30:00Z',
+      ['manual.example.com,0x9', 'The peer is unreachable.'],
+      2,
+    ),
+  ];
+  expect(detailOf(s, 'ntp_peer_unreachable')).toEqual({
+    source: 'manual.example.com',
+  });
+  // An empty peer string falls back like an absent one.
+  s.status.source = 'fallback.example.com';
+  s.events = [
+    withProps(24, NOW.toISOString(), ['', 'The peer is unreachable.']),
+  ];
+  expect(detailOf(s, 'ntp_peer_unreachable')).toEqual({
+    source: 'fallback.example.com',
+  });
+});
+it('does not raise member_not_on_hierarchy when the W32Time type is unknown', () => {
+  const s = snapshot();
+  s.domain.role = 'member';
+  s.config.type = null;
+  expect(codes(s)).not.toContain('member_not_on_hierarchy');
+  for (const role of ['dc', 'pdc_emulator'] as const) {
+    s.domain.role = role;
+    expect(codes(s)).not.toContain('member_not_on_hierarchy');
+  }
+  s.config.type = 'NTP';
+  expect(codes(s)).toContain('member_not_on_hierarchy');
 });
