@@ -110,6 +110,17 @@ describe('buildPostureBackupMetric with a product inventory (#6012)', () => {
     ).status).toBe('bad');
   });
 
+  it('reads warn, not good, when a product backs up only some of the devices it covers', () => {
+    expect(buildPostureBackupMetric(
+      { backupRequired: true, backupConfigured: true },
+      [{ product: 'Managed cloud backup', category: 'backup', active: true, deviceCoverage: 200, activeDeviceCoverage: 1 }],
+    ).status).toBe('warn');
+    expect(buildPostureBackupMetric(
+      { backupRequired: true, backupConfigured: true },
+      [{ product: 'Managed cloud backup', category: 'backup', active: true, deviceCoverage: 3, activeDeviceCoverage: 3 }],
+    ).status).toBe('good');
+  });
+
   it('stays neutral when backup is not required', () => {
     expect(buildPostureBackupMetric({ backupRequired: false, backupConfigured: true }, products)).toEqual({
       label: 'Backup', value: 'Backup (s3), Managed cloud backup', status: 'neutral',

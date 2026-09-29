@@ -17,6 +17,8 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  backupConfigs,
+  backupJobs,
   backupProviderConnections,
   backupProviderCustomers,
   backupProviderDevices,
@@ -106,7 +108,7 @@ async function seedTenant(label: string, opts: { showVendorName: boolean; enable
     userId: null,
     currentPartnerId: null,
   };
-  return { org, device: device!, connection: connection!, portalContext };
+  return { org, site: site!, device: device!, connection: connection!, customer: customer!, base, portalContext };
 }
 
 async function seed(opts: { aShowsVendor?: boolean; aEnablesBackups?: boolean } = {}) {
@@ -168,6 +170,46 @@ describe('portal backup read model over third-party rows (#6012)', () => {
 
     const page = await withDbAccessContext(a.portalContext, () => backupDevicesPage(a.org.id, pageArgs));
     expect(new Set(page.data.map((row) => row.providerLabel))).toEqual(new Set(['Cove Data Protection']));
+  });
+
+  runDb('never counts a device twice, and never an ephemeral one, when first-party and third-party backup overlap', async () => {
+    const { a } = await seed();
+    await withSystemDbAccessContext(async () => {
+      const admin = getTestDb() as typeof db;
+      const mk = async (hostname: string, isEphemeral = false) => {
+        const [row] = await admin.insert(devices).values({
+          orgId: a.org.id, siteId: a.site.id, agentId: randomUUID(), hostname, isEphemeral,
+          osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online',
+        }).returning({ id: devices.id });
+        return row!.id;
+      };
+      const both = await mk('a-both');
+      const inactiveCfg = await mk('a-inactive-cfg');
+      const ephemeral = await mk('a-ephemeral', true);
+
+      const [active] = await db.insert(backupConfigs).values({
+        orgId: a.org.id, name: 'Active', type: 'file', provider: 'local', providerConfig: {}, isActive: true,
+      }).returning({ id: backupConfigs.id });
+      const [inactive] = await db.insert(backupConfigs).values({
+        orgId: a.org.id, name: 'Inactive', type: 'file', provider: 'local', providerConfig: {}, isActive: false,
+      }).returning({ id: backupConfigs.id });
+      await db.insert(backupJobs).values([
+        { orgId: a.org.id, configId: active!.id, deviceId: both, status: 'completed', startedAt: RECENT, completedAt: RECENT },
+        { orgId: a.org.id, configId: inactive!.id, deviceId: inactiveCfg, status: 'completed', startedAt: RECENT, completedAt: RECENT },
+      ]);
+      await db.insert(backupProviderDevices).values([both, inactiveCfg, ephemeral].map((id, i) => ({
+        ...a.base, vendorDeviceId: `vd-a-extra-${i}`, vendorDeviceName: `A-EXTRA-${i}`, breezeDeviceId: id,
+        deviceMatchSource: 'manual' as const, status: 'completed' as const, lastSuccessAt: RECENT,
+      })));
+    });
+
+    const tile = await withDbAccessContext(a.portalContext, () => backupTile(a.org.id, NOW));
+    // Non-ephemeral devices: a-laptop, a-both, a-inactive-cfg. First-party
+    // configured (active config): a-both. Third-party only: a-laptop and
+    // a-inactive-cfg (its job is under an INACTIVE config). a-both is not
+    // counted twice; the ephemeral device is not counted at all.
+    expect(tile).toMatchObject({ total: 3, configured: 3 });
+    expect(tile.configured).toBeLessThanOrEqual(tile.total);
   });
 
   runDb('counts the third-party-backed device on the dashboard tile only while portal Backups is on', async () => {

@@ -716,6 +716,22 @@ describe('loadNarrativeContext', () => {
       expect(ctx.backupProviders.lastSyncAgeMinutes).toBe(90);
     });
 
+    it('withdraws a HEALTHY verdict too on a stale, missing or never-synced connection', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW);
+      rowsFor.push({ match: 'FROM backup_provider_devices', rows: [
+        // Fresh success, but the connection has not synced for 90 min (interval 30).
+        providerRow({ name: 'STALE-OK', connection_last_sync_at: '2026-08-29T10:30:00.000Z' }),
+        // LEFT JOIN found no connection row at all.
+        providerRow({
+          name: 'NO-CONN', connection_is_active: null, connection_last_sync_at: null, connection_sync_interval_minutes: null,
+        }),
+      ] });
+      const ctx = await loadNarrativeContext(ORG);
+      expect(ctx.backupProviders.devicesByHealth).toEqual({ healthy: 0, warning: 0, critical: 0, unknown: 2 });
+      expect(ctx.backupProviders.lastSyncAgeMinutes).toBe(90);
+    });
+
     it('caps the critical names at NARRATIVE_TOP_N and says so', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(NOW);

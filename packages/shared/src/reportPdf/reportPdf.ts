@@ -645,7 +645,16 @@ export function buildPostureBackupMetric(controls: PostureControls, products: Po
   const backupRequired = controls.backupRequired !== false;
   const backupProducts = products.filter((product) => product.category === 'backup');
   if (backupProducts.length > 0 && controls.backupConfigured !== undefined) {
-    const activeCount = backupProducts.filter((product) => product.active !== false).length;
+    // A product counts as working only when it is active AND backs up every
+    // device it covers: "1 of 200 devices backed up" must not grade green on
+    // the cover (the per-device shortfall is otherwise only in the inventory).
+    const activeCount = backupProducts.filter((product) =>
+      product.active !== false &&
+      (product.deviceCoverage == null ||
+        product.activeDeviceCoverage == null ||
+        product.activeDeviceCoverage >= product.deviceCoverage),
+    ).length;
+    const anyActive = backupProducts.some((product) => product.active !== false);
     return {
       label: 'Backup',
       value: backupProducts.map((product) => product.product).join(', '),
@@ -653,7 +662,7 @@ export function buildPostureBackupMetric(controls: PostureControls, products: Po
         ? 'neutral'
         : activeCount === backupProducts.length
           ? 'good'
-          : activeCount > 0
+          : anyActive
             ? 'warn'
             : 'bad',
     } satisfies Metric;

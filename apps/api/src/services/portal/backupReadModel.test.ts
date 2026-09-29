@@ -623,6 +623,30 @@ describe('backupDevicesPage', () => {
     expect(second.pagination.total).toBe(3);
   });
 
+  it('keeps external rows off a page that is entirely managed devices, and starts them where the devices end', async () => {
+    health.providerRows = [
+      providerRow({ key: 'provider:x-1', deviceId: null, name: 'EXT-1' }),
+      providerRow({ key: 'provider:x-2', deviceId: null, name: 'EXT-2' }),
+    ];
+    // 3 devices, limit 2: page 1 = [d-1, d-2], page 2 = [d-3, x-1], page 3 = [x-2].
+    rows(K.pageCount, [{ count: 3 }], [{ count: 3 }], [{ count: 3 }]);
+    rows(
+      K.pageRows,
+      [pageRow({ id: 'd-1' }), pageRow({ id: 'd-2' })],
+      [pageRow({ id: 'd-3' })],
+      [],
+    );
+
+    const pages = [];
+    for (const page of [1, 2, 3]) pages.push(await backupDevicesPage(ORG_ID, args({ page, limit: 2 })));
+    expect(pages.map((p) => p.data.map((d) => d.id))).toEqual([
+      ['d-1', 'd-2'],
+      ['d-3', 'provider:x-1'],
+      ['provider:x-2'],
+    ]);
+    expect(new Set(pages.map((p) => p.pagination.total))).toEqual(new Set([5]));
+  });
+
   it('never lists another org\'s third-party row', async () => {
     rows(K.pageCount, [{ count: 0 }]);
     rows(K.pageRows, []);
