@@ -116,3 +116,45 @@ func TestAllTwentyDisplayEventsSurviveCountCap(t *testing.T) {
 		t.Fatal("display reservation lost", reserved)
 	}
 }
+
+func TestFreshSignalsWinRemainingSlotsOverNewerNonSignals(t *testing.T) {
+	now := time.Unix(100000, 0).UTC()
+	since := now.Add(-time.Hour)
+	f := &fakeSystem{}
+	// 90 fresh non-signal events, the newest in the window.
+	for i := 0; i < 90; i++ {
+		f.events = append(f.events, Event{RecordID: uint64(i + 1), EventID: 158, Level: 4, OccurredAt: now.Add(-time.Duration(i+1) * time.Second)})
+	}
+	// 10 fresh signal events, the oldest in the window.
+	signals := map[uint64]bool{}
+	for i := 0; i < 10; i++ {
+		id := uint64(200 + i)
+		signals[id] = true
+		f.events = append(f.events, Event{RecordID: id, EventID: 134, Level: 3, OccurredAt: since.Add(time.Duration(i+1) * time.Second)})
+	}
+	// 20 reserved display rows, all older than the window.
+	reservedIDs := map[uint64]bool{}
+	for i := 0; i < 20; i++ {
+		id := uint64(1000 + i)
+		reservedIDs[id] = true
+		f.recent = append(f.recent, Event{RecordID: id, EventID: 999, Level: 4, OccurredAt: since.Add(-time.Duration(i+1) * time.Hour)})
+	}
+	got, err := collectEvents(context.Background(), f, since, now)
+	if err != nil || len(got) != 100 {
+		t.Fatal(len(got), err)
+	}
+	gotIDs := map[uint64]bool{}
+	for _, e := range got {
+		gotIDs[e.RecordID] = true
+	}
+	for id := range reservedIDs {
+		if !gotIDs[id] {
+			t.Fatalf("reserved display event %d dropped", id)
+		}
+	}
+	for id := range signals {
+		if !gotIDs[id] {
+			t.Fatalf("fresh signal event %d dropped in favour of newer non-signal events", id)
+		}
+	}
+}
