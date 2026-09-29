@@ -208,6 +208,15 @@ describe('series store (partner request context)', () => {
     expect(standalone[0]?.archivedAt).toBeNull();
   });
 
+  it('reports a detached org as detached (not excluded) while its standalone copy is live', async () => {
+    const s = await seed();
+    const { series } = await s.inPartner((tx) => createSeries(input(s.owner), s.auth, tx, { mayAddDelivery: true }));
+    const child = (await childrenOf(series.id)).find((c) => c.orgId === s.orgA)!;
+    await s.inPartner((tx) => detachSeriesChild(tx, { seriesId: series.id, reportId: child.id, orgId: s.orgA }, s.auth));
+    const detail = await s.inPartner(() => getSeriesDetail(series.id, s.auth));
+    expect(detail.orgs.find((o) => o.orgId === s.orgA)?.state).toBe('detached');
+  });
+
   // Fix round 1: lock order is series row THEN child row (like updateSeries /
   // deleteSeries / reconcile). Hold the SERIES lock on connection A; Detach on
   // connection B must block on the series lock WITHOUT having taken the child
@@ -334,7 +343,7 @@ describe('detach is remembered across later target changes', () => {
     await reconcileAllSeries();
     expect((await activeReportsOf(s.orgA)).map((r) => r.id)).toEqual([child.id]);
     const detail = await withDbAccessContext(s.ctx, () => getSeriesDetail(series.id, s.auth));
-    expect(detail.orgs.find((o) => o.orgId === s.orgA)?.state).toBe('excluded');
+    expect(detail.orgs.find((o) => o.orgId === s.orgA)?.state).toBe('detached');  // W03 final review: shown as detached, not excluded
 
     await system(() => db.update(reports).set({ archivedAt: new Date() }).where(eq(reports.id, child.id)));
     await reconcileAllSeries();

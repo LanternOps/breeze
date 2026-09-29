@@ -27,7 +27,14 @@ const COLLAPSES_AT_SQUEEZE = /\blg:grid-cols-1\b/;
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  registerOrgIdProvider: vi.fn()
+  registerOrgIdProvider: vi.fn(),
+  // W03: the builder's Covers control reads the partner-wide gate
+  // (useJwtClaims → useAuthStore). No token here, so the gate fails closed and
+  // the builder offers one organization only — every existing assertion holds.
+  useAuthStore: Object.assign(
+    (selector: (s: Record<string, unknown>) => unknown) => selector({}),
+    { getState: () => ({}) },
+  ),
 }));
 
 vi.mock('../shared/Toast', () => ({

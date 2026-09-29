@@ -1165,6 +1165,211 @@
       "required": "Choose an organization before saving this report.",
       "chooseFirst": "Choose an organization above before using a template.",
       "previewNeedsOrg": "Choose an organization to see a live preview."
+    },
+    "series": {
+      "covers": {
+        "legend": "Covers",
+        "org": "One organization",
+        "orgHint": "A report for one customer, sent to that organization's contacts.",
+        "series": "One report per organization",
+        "seriesHint": "One definition, with a separate copy for every organization it covers, each sent to that organization's contacts.",
+        "combined": "All organizations combined",
+        "combinedHint": "One combined report across all your organizations, for your own team.",
+        "seriesUnavailableType": "This report type can't be sent as one report per organization."
+      },
+      "schedule": {
+        "label": "How often each organization's copy is sent",
+        "placeholder": "Choose a schedule",
+        "hint": "A report sent to many organizations runs on a schedule, so it can't be one-time. Choose how often each organization's copy is sent.",
+        "required": "Choose how often the report is sent."
+      },
+      "targeting": {
+        "legend": "Which organizations",
+        "all": "All organizations",
+        "allHint": "Includes every current and future organization. Untick any you want to skip.",
+        "selected": "Chosen organizations",
+        "selectedHint": "Includes exactly the organizations you tick.",
+        "search": "Search organizations",
+        "summary": "Covers {{covered}} of {{total}} organizations",
+        "noneSelected": "Choose at least one organization.",
+        "empty": "No organizations match."
+      },
+      "recipients": {
+        "legend": "Who receives each organization's copy",
+        "primaryContact": "The organization's primary contact",
+        "roles": "Contacts with these roles",
+        "noRuleWarning": "No rule is selected, so an organization receives its copy only when you add contacts on that organization's copy.",
+        "internalCc": "Internal copies",
+        "internalCcHint": "Every organization's copy is also sent to these addresses on your team.",
+        "ccPlaceholder": "name@example.com",
+        "ccAdd": "Add",
+        "ccInvalid": "Enter a valid email address.",
+        "ccRemove": "Remove {{email}}",
+        "previewLoading": "Checking recipients…",
+        "previewContacts_one": "Resolves to {{count}} contact",
+        "previewContacts_other": "Resolves to {{count}} contacts",
+        "previewOrgs_one": "across {{count}} organization",
+        "previewOrgs_other": "across {{count}} organizations",
+        "previewMissing_one": "{{count}} organization has no customer recipient: {{names}}",
+        "previewMissing_other": "{{count}} organizations have no customer recipient: {{names}}",
+        "previewMore": "and {{count}} more",
+        "previewFailed": "Couldn't check recipients. They are still worked out for each organization when its report runs.",
+        "previewNoTargets": "Choose organizations to see who receives the report."
+      },
+      "builder": {
+        "filtersDisabled": "Site, device and group filters aren't available here: each organization's copy covers the whole organization.",
+        "created": "Created multi-org report “{{name}}”",
+        "saved": "Saved multi-org report “{{name}}”",
+        "saveFailed": "Couldn't save the multi-org report.",
+        "targetsFailed": "The settings were saved, but the organizations covered were not updated. Try saving again."
+      },
+      "list": {
+        "filtersLabel": "Show",
+        "filters": {
+          "all": "All",
+          "multi": "Multi-org",
+          "single": "Single-org",
+          "combined": "Combined"
+        },
+        "noMatches": "No reports match this filter.",
+        "loadFailed": "Couldn't load multi-org reports. Other reports are shown.",
+        "multiOrgBadge": "Multi-org",
+        "multiOrgBadgeTitle": "Part of the multi-org report “{{name}}”",
+        "expand": "Show organizations",
+        "collapse": "Hide organizations",
+        "summary": "{{date}} · {{delivered}}/{{total}} delivered",
+        "summaryNoRecipient_one": "{{count}} no recipient",
+        "summaryNoRecipient_other": "{{count}} no recipients",
+        "summaryBlocked_one": "{{count}} blocked",
+        "summaryBlocked_other": "{{count}} blocked",
+        "summaryNever": "Not run yet",
+        "runsSeriesColumn": "Multi-org report",
+        "actions": {
+          "edit": "Edit multi-org report",
+          "transferOwner": "Transfer owner",
+          "delete": "Delete multi-org report",
+          "pause": "Pause",
+          "resume": "Resume"
+        },
+        "pausedBadge": "Paused",
+        "pausedTitle": "Paused: no organization's copy runs until you resume it.",
+        "paused": "Paused “{{name}}”",
+        "resumed": "Resumed “{{name}}”",
+        "pauseFailed": "Couldn't pause or resume the multi-org report.",
+        "deleteTitle": "Delete multi-org report?",
+        "deleteMessage": "“{{name}}” stops running. Each organization's copy is archived with its run history.",
+        "deleteConfirm": "Delete",
+        "deleted": "Deleted multi-org report “{{name}}”",
+        "deleteFailed": "Couldn't delete the multi-org report."
+      },
+      "drilldown": {
+        "columns": {
+          "org": "Organization",
+          "state": "State",
+          "lastRun": "Last run",
+          "delivery": "Delivery",
+          "recipients": "Recipients",
+          "actions": "Actions"
+        },
+        "states": {
+          "active": "Active",
+          "excluded": "Excluded",
+          "ineligible": "Not eligible",
+          "blocked_no_authority": "Blocked: owner has no access",
+          "blocked_no_recipients": "No customer recipient",
+          "detached": "Detached"
+        },
+        "delivery": {
+          "sent": "Sent",
+          "not_scheduled": "Not emailed"
+        },
+        "neverRun": "Not run yet",
+        "actions": {
+          "runNow": "Run now",
+          "editRecipients": "Edit recipients",
+          "exclude": "Exclude",
+          "include": "Include",
+          "detach": "Detach"
+        },
+        "lastOrgHint": "A multi-org report with chosen organizations needs at least one. Delete it instead.",
+        "noAuthorityHint": "The owner can't reach this organization, so its copy doesn't run. Transfer the owner to fix it.",
+        "excludeTitle": "Exclude {{org}}?",
+        "excludeMessage": "{{org}} stops receiving this report. Its copy is archived with its run history, and including it again restores the same copy.",
+        "excludeConfirm": "Exclude",
+        "detachTitle": "Detach {{org}}?",
+        "detachMessage": "{{org}}'s copy becomes a standalone report you can edit freely. It keeps its run history and stops following this multi-org report. While that standalone copy exists, {{org}} stays out of the multi-org report even if you include it again.",
+        "detachConfirm": "Detach",
+        "excluded": "Excluded {{org}}",
+        "included": "Included {{org}}",
+        "detached": "Detached {{org}}",
+        "generated": "Report generated for {{org}}",
+        "updateFailed": "Couldn't update the multi-org report.",
+        "detachFailed": "Couldn't detach the report.",
+        "generateFailed": "Couldn't generate the report.",
+        "detachedHint": "Its standalone copy is managed separately. Delete that report to bring this organization back into the multi-org report."
+      },
+      "transferOwner": {
+        "title": "Transfer owner",
+        "description": "Each organization's copy runs with the owner's access. Choose a partner user with access to every organization.",
+        "label": "New owner",
+        "placeholder": "Choose a user",
+        "current": "{{name}} (current owner)",
+        "confirm": "Transfer",
+        "loadFailed": "Couldn't load users.",
+        "forbidden": "You need permission to view users to transfer the owner.",
+        "noCandidates": "No other user has access to every organization.",
+        "transferred": "Owner transferred to {{name}}",
+        "failed": "Couldn't transfer the owner."
+      },
+      "child": {
+        "partOf": "Part of the multi-org report “{{name}}”",
+        "partOfUnnamed": "Part of a multi-org report",
+        "lockedExplanation": "Shared settings are edited on the multi-org report. Only this organization's recipients can be changed here.",
+        "managedByMsp": "Managed by your MSP",
+        "managedExplanation": "Your MSP manages this report. You can change who in your organization receives it.",
+        "editSeries": "Edit multi-org report",
+        "detach": "Detach",
+        "archived": "This copy is archived: the organization is no longer covered by the multi-org report.",
+        "summary": {
+          "type": "Type",
+          "schedule": "Schedule",
+          "format": "Format"
+        },
+        "recipients": {
+          "title": "Recipients for this organization",
+          "description": "Choose who receives this organization's copy, on top of the multi-org report's rule.",
+          "default": "Follow rule",
+          "add": "Always send",
+          "remove": "Never send",
+          "byRule": "Included by rule",
+          "loadFailed": "Couldn't load recipients.",
+          "updated": "Recipients updated",
+          "updateFailed": "Couldn't update recipients.",
+          "empty": "This organization has no contacts with an email address."
+        }
+      },
+      "editPage": {
+        "title": "Edit multi-org report",
+        "description": "Changes apply to every organization's copy of “{{name}}”.",
+        "breadcrumb": "Reports",
+        "back": "Back to Reports",
+        "loading": "Loading multi-org report…",
+        "notFound": "This multi-org report no longer exists.",
+        "loadFailed": "Couldn't load the multi-org report."
+      },
+      "errors": {
+        "seriesTypeUnsupported": "This report type can't be sent as one report per organization.",
+        "seriesConfigOrgSpecific": "Remove the site, device and group filters: a multi-org report covers whole organizations.",
+        "seriesManaged": "This report belongs to a multi-org report. Edit the multi-org report, or detach this copy first.",
+        "seriesOwnerIneligible": "That user can't own a multi-org report: they need access to every organization and every site.",
+        "seriesNotFound": "This multi-org report no longer exists.",
+        "seriesWriteDenied": "Only partner users with access to every organization can change multi-org reports.",
+        "seriesTargetOrgInaccessible": "One of the chosen organizations isn't available to you.",
+        "reportNotSeriesChild": "This report is no longer part of a multi-org report.",
+        "recipientModeRequiresSeries": "\"Never send\" only applies to a copy of a multi-org report.",
+        "recipientsNeedExportAndMfa": "Sending reports to recipients needs the export permission and multi-factor sign-in.",
+        "seriesAuthorityUnverifiable": "Couldn't confirm the owner's access right now. Try again in a moment."
+      }
     }
   }
 }

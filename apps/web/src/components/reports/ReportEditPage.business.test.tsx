@@ -9,6 +9,12 @@ const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
   registerOrgIdProvider: vi.fn(),
+  // W03: ReportBuilder reads the partner-wide gate for its Covers card. No
+  // token here, so it fails closed and the builder behaves exactly as before.
+  useAuthStore: Object.assign(
+    (selector: (s: Record<string, unknown>) => unknown) => selector({}),
+    { getState: () => ({}) },
+  ),
 }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));

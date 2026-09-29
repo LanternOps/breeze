@@ -23,6 +23,8 @@ export interface SeriesRecipientRule {
 export type SeriesOrgState =
   | 'active'
   | 'excluded'
+  /** Holds a live standalone detached from this series; never targeted until it is deleted/archived. */
+  | 'detached'
   | 'ineligible'
   | 'blocked_no_authority'
   | 'blocked_no_recipients';

@@ -1165,6 +1165,211 @@
       "required": "Elige una organización antes de guardar este informe.",
       "chooseFirst": "Elige una organización arriba antes de usar una plantilla.",
       "previewNeedsOrg": "Elige una organización para ver una vista previa en vivo."
+    },
+    "series": {
+      "covers": {
+        "legend": "El informe abarca",
+        "org": "Una organización",
+        "orgHint": "Un informe para un cliente, enviado a los contactos de esa organización.",
+        "series": "Un informe por organización",
+        "seriesHint": "Una definición, con una copia independiente para cada organización que abarca, enviada a los contactos de esa organización.",
+        "combined": "Todas las organizaciones combinadas",
+        "combinedHint": "Un informe combinado de todas sus organizaciones, para su propio equipo.",
+        "seriesUnavailableType": "Este tipo de informe no se puede enviar como un informe por organización."
+      },
+      "schedule": {
+        "label": "Con qué frecuencia se envía la copia de cada organización",
+        "placeholder": "Elija una programación",
+        "hint": "Un informe enviado a muchas organizaciones se ejecuta según una programación, por lo que no puede ser único. Elija con qué frecuencia se envía la copia de cada organización.",
+        "required": "Elija con qué frecuencia se envía el informe."
+      },
+      "targeting": {
+        "legend": "Qué organizaciones",
+        "all": "Todas las organizaciones",
+        "allHint": "Incluye todas las organizaciones actuales y futuras. Desmarque las que desee omitir.",
+        "selected": "Organizaciones elegidas",
+        "selectedHint": "Incluye exactamente las organizaciones que marque.",
+        "search": "Buscar organizaciones",
+        "summary": "Abarca {{covered}} de {{total}} organizaciones",
+        "noneSelected": "Elija al menos una organización.",
+        "empty": "Ninguna organización coincide."
+      },
+      "recipients": {
+        "legend": "Quién recibe la copia de cada organización",
+        "primaryContact": "El contacto principal de la organización",
+        "roles": "Contactos con estos roles",
+        "noRuleWarning": "No hay ninguna regla seleccionada, por lo que una organización recibe su copia solo cuando usted agrega contactos en la copia de esa organización.",
+        "internalCc": "Copias internas",
+        "internalCcHint": "La copia de cada organización también se envía a estas direcciones de su equipo.",
+        "ccPlaceholder": "name@example.com",
+        "ccAdd": "Agregar",
+        "ccInvalid": "Ingrese una dirección de correo electrónico válida.",
+        "ccRemove": "Quitar {{email}}",
+        "previewLoading": "Comprobando destinatarios…",
+        "previewContacts_one": "Se resuelve en {{count}} contacto",
+        "previewContacts_other": "Se resuelve en {{count}} contactos",
+        "previewOrgs_one": "en {{count}} organización",
+        "previewOrgs_other": "en {{count}} organizaciones",
+        "previewMissing_one": "{{count}} organización no tiene destinatario cliente: {{names}}",
+        "previewMissing_other": "{{count}} organizaciones no tienen destinatario cliente: {{names}}",
+        "previewMore": "y {{count}} más",
+        "previewFailed": "No se pudieron comprobar los destinatarios. Aun así, se determinan para cada organización cuando se ejecuta su informe.",
+        "previewNoTargets": "Elija organizaciones para ver quién recibe el informe."
+      },
+      "builder": {
+        "filtersDisabled": "Los filtros de sitio, dispositivo y grupo no están disponibles aquí: la copia de cada organización abarca toda la organización.",
+        "created": "Informe multiorganización “{{name}}” creado",
+        "saved": "Informe multiorganización “{{name}}” guardado",
+        "saveFailed": "No se pudo guardar el informe multiorganización.",
+        "targetsFailed": "Se guardó la configuración, pero no se actualizaron las organizaciones abarcadas. Intente guardar de nuevo."
+      },
+      "list": {
+        "filtersLabel": "Mostrar",
+        "filters": {
+          "all": "Todos",
+          "multi": "Multiorganización",
+          "single": "Una organización",
+          "combined": "Combinado"
+        },
+        "noMatches": "Ningún informe coincide con este filtro.",
+        "loadFailed": "No se pudieron cargar los informes multiorganización. Se muestran los demás informes.",
+        "multiOrgBadge": "Multiorganización",
+        "multiOrgBadgeTitle": "Parte del informe multiorganización “{{name}}”",
+        "expand": "Mostrar organizaciones",
+        "collapse": "Ocultar organizaciones",
+        "summary": "{{date}} · {{delivered}}/{{total}} entregados",
+        "summaryNoRecipient_one": "{{count}} sin destinatario",
+        "summaryNoRecipient_other": "{{count}} sin destinatario",
+        "summaryBlocked_one": "{{count}} bloqueada",
+        "summaryBlocked_other": "{{count}} bloqueadas",
+        "summaryNever": "Aún no se ejecutó",
+        "runsSeriesColumn": "Informe multiorganización",
+        "actions": {
+          "edit": "Editar informe multiorganización",
+          "transferOwner": "Transferir propietario",
+          "delete": "Eliminar informe multiorganización",
+          "pause": "Pausar",
+          "resume": "Reanudar"
+        },
+        "pausedBadge": "En pausa",
+        "pausedTitle": "En pausa: ninguna copia de organización se ejecuta hasta que lo reanude.",
+        "paused": "“{{name}}” en pausa",
+        "resumed": "“{{name}}” reanudado",
+        "pauseFailed": "No se pudo pausar ni reanudar el informe multiorganización.",
+        "deleteTitle": "¿Eliminar el informe multiorganización?",
+        "deleteMessage": "“{{name}}” deja de ejecutarse. La copia de cada organización se archiva con su historial de ejecuciones.",
+        "deleteConfirm": "Eliminar",
+        "deleted": "Informe multiorganización “{{name}}” eliminado",
+        "deleteFailed": "No se pudo eliminar el informe multiorganización."
+      },
+      "drilldown": {
+        "columns": {
+          "org": "Organización",
+          "state": "Estado",
+          "lastRun": "Última ejecución",
+          "delivery": "Entrega",
+          "recipients": "Destinatarios",
+          "actions": "Acciones"
+        },
+        "states": {
+          "active": "Activa",
+          "excluded": "Excluida",
+          "ineligible": "No apta",
+          "blocked_no_authority": "Bloqueada: el propietario no tiene acceso",
+          "blocked_no_recipients": "Sin destinatario cliente",
+          "detached": "Desvinculada"
+        },
+        "delivery": {
+          "sent": "Enviado",
+          "not_scheduled": "No enviado por correo"
+        },
+        "neverRun": "Aún no se ejecutó",
+        "actions": {
+          "runNow": "Ejecutar ahora",
+          "editRecipients": "Editar destinatarios",
+          "exclude": "Excluir",
+          "include": "Incluir",
+          "detach": "Desvincular"
+        },
+        "lastOrgHint": "Un informe multiorganización con organizaciones elegidas necesita al menos una. Elimínelo en su lugar.",
+        "noAuthorityHint": "El propietario no puede acceder a esta organización, por lo que su copia no se ejecuta. Transfiera el propietario para solucionarlo.",
+        "excludeTitle": "¿Excluir a {{org}}?",
+        "excludeMessage": "{{org}} deja de recibir este informe. Su copia se archiva con su historial de ejecuciones, y al incluirla de nuevo se restaura la misma copia.",
+        "excludeConfirm": "Excluir",
+        "detachTitle": "¿Desvincular a {{org}}?",
+        "detachMessage": "La copia de {{org}} se convierte en un informe independiente que puede editar libremente. Conserva su historial de ejecuciones y deja de seguir este informe multiorganización. Mientras exista esa copia independiente, {{org}} queda fuera del informe multiorganización aunque la incluya de nuevo.",
+        "detachConfirm": "Desvincular",
+        "excluded": "{{org}} excluida",
+        "included": "{{org}} incluida",
+        "detached": "{{org}} desvinculada",
+        "generated": "Informe generado para {{org}}",
+        "updateFailed": "No se pudo actualizar el informe multiorganización.",
+        "detachFailed": "No se pudo desvincular el informe.",
+        "generateFailed": "No se pudo generar el informe.",
+        "detachedHint": "Su copia independiente se administra por separado. Elimina ese informe para volver a incluir esta organización en el informe multiorganización."
+      },
+      "transferOwner": {
+        "title": "Transferir propietario",
+        "description": "La copia de cada organización se ejecuta con el acceso del propietario. Elija un usuario del socio con acceso a todas las organizaciones.",
+        "label": "Nuevo propietario",
+        "placeholder": "Elija un usuario",
+        "current": "{{name}} (propietario actual)",
+        "confirm": "Transferir",
+        "loadFailed": "No se pudieron cargar los usuarios.",
+        "forbidden": "Necesita permiso para ver usuarios para transferir el propietario.",
+        "noCandidates": "Ningún otro usuario tiene acceso a todas las organizaciones.",
+        "transferred": "Propietario transferido a {{name}}",
+        "failed": "No se pudo transferir el propietario."
+      },
+      "child": {
+        "partOf": "Parte del informe multiorganización “{{name}}”",
+        "partOfUnnamed": "Parte de un informe multiorganización",
+        "lockedExplanation": "La configuración compartida se edita en el informe multiorganización. Aquí solo se pueden cambiar los destinatarios de esta organización.",
+        "managedByMsp": "Administrado por su MSP",
+        "managedExplanation": "Su MSP administra este informe. Usted puede cambiar quién recibe el informe en su organización.",
+        "editSeries": "Editar informe multiorganización",
+        "detach": "Desvincular",
+        "archived": "Esta copia está archivada: la organización ya no está abarcada por el informe multiorganización.",
+        "summary": {
+          "type": "Tipo",
+          "schedule": "Programación",
+          "format": "Formato"
+        },
+        "recipients": {
+          "title": "Destinatarios de esta organización",
+          "description": "Elija quién recibe la copia de esta organización, además de la regla del informe multiorganización.",
+          "default": "Seguir la regla",
+          "add": "Enviar siempre",
+          "remove": "No enviar nunca",
+          "byRule": "Incluido por regla",
+          "loadFailed": "No se pudieron cargar los destinatarios.",
+          "updated": "Destinatarios actualizados",
+          "updateFailed": "No se pudieron actualizar los destinatarios.",
+          "empty": "Esta organización no tiene contactos con dirección de correo electrónico."
+        }
+      },
+      "editPage": {
+        "title": "Editar informe multiorganización",
+        "description": "Los cambios se aplican a la copia de cada organización de “{{name}}”.",
+        "breadcrumb": "Informes",
+        "back": "Volver a Informes",
+        "loading": "Cargando informe multiorganización…",
+        "notFound": "Este informe multiorganización ya no existe.",
+        "loadFailed": "No se pudo cargar el informe multiorganización."
+      },
+      "errors": {
+        "seriesTypeUnsupported": "Este tipo de informe no se puede enviar como un informe por organización.",
+        "seriesConfigOrgSpecific": "Quite los filtros de sitio, dispositivo y grupo: un informe multiorganización abarca organizaciones completas.",
+        "seriesManaged": "Este informe pertenece a un informe multiorganización. Edite el informe multiorganización o desvincule primero esta copia.",
+        "seriesOwnerIneligible": "Ese usuario no puede ser propietario de un informe multiorganización: necesita acceso a todas las organizaciones y a todos los sitios.",
+        "seriesNotFound": "Este informe multiorganización ya no existe.",
+        "seriesWriteDenied": "Solo los usuarios del socio con acceso a todas las organizaciones pueden modificar informes multiorganización.",
+        "seriesTargetOrgInaccessible": "Una de las organizaciones elegidas no está disponible para usted.",
+        "reportNotSeriesChild": "Este informe ya no forma parte de un informe multiorganización.",
+        "recipientModeRequiresSeries": "\"No enviar nunca\" solo se aplica a una copia de un informe multiorganización.",
+        "recipientsNeedExportAndMfa": "Enviar informes a destinatarios requiere el permiso de exportación y el inicio de sesión con autenticación multifactor.",
+        "seriesAuthorityUnverifiable": "No se pudo confirmar el acceso del propietario en este momento. Intente de nuevo en un momento."
+      }
     }
   }
 }

@@ -1694,4 +1694,12 @@ describe('list additions (W02)', () => {
     await app().request('/reports/templates');
     expect(whereSql(0)).toContain('"reports"."archived_at" is null');
   });
+
+  // W03 stack check: every per-org copy of a series would otherwise show up as
+  // its own template card — the clutter series exist to remove.
+  it('GET /reports/templates never offers a series child', async () => {
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports/templates');
+    expect(whereSql(0)).toContain('"reports"."series_id" is null');
+  });
 });
