@@ -58,6 +58,7 @@ export function buildTimeStatusRow(
     findingDetails: Object.fromEntries(
       resolved.findings.map((f) => [f.code, f.detail]),
     ),
+    findingStreaks: previous?.findingStreaks ?? {},
     syncType: s.config.type,
     ntpServer: s.config.ntpServer,
     specialPollIntervalSeconds: s.config.specialPollIntervalSeconds,
