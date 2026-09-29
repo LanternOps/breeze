@@ -287,7 +287,7 @@ describe('VMRestoreWizard', () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/backup/snapshots') {
-        return makeJsonResponse({ data: [{ id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'k', layoutPlatform: 'linux' }] });
+        return makeJsonResponse({ data: [{ id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'k', layoutPlatform: 'linux', bareMetalRestorable: true }] });
       }
       if (url.startsWith('/devices/options?')) {
         const params = new URL(url, 'http://localhost').searchParams;
@@ -297,7 +297,8 @@ describe('VMRestoreWizard', () => {
         return makeJsonResponse({ data, page: { nextCursor: null, returned: data.length, total: data.length, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } });
       }
       if (url === '/backup/restore/as-vm') {
-        return makeJsonResponse({ error: 'snapshot_not_bare_metal_restorable' }, false, 409);
+        // The verdict can flip between the list load and the submit.
+        return makeJsonResponse({ error: 'snapshot_not_bare_metal_restorable', details: {} }, false, 409);
       }
       return makeJsonResponse({});
     });
@@ -312,6 +313,38 @@ describe('VMRestoreWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Start Rebuild/i }));
 
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    // Readable copy in the toast and the banner, never the raw machine code.
+    const toast = showToastMock.mock.calls.find(([arg]) => arg.type === 'error')?.[0];
+    expect(toast?.message).toMatch(/can't be rebuilt/i);
+    expect(toast?.message).not.toContain('snapshot_not_bare_metal_restorable');
+    expect(await screen.findByText(/can't be rebuilt/i)).toBeTruthy();
+    expect(screen.queryByText(/snapshot_not_bare_metal_restorable/)).toBeNull();
+  });
+
+  it('does not offer the rebuild engine for a layout-bearing snapshot that is not bare-metal restorable', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [
+            { id: 'snapshot-unverified', label: 'Unverified Snapshot', layoutManifestKey: 'k', layoutPlatform: 'windows', bareMetalRestorable: null },
+            { id: 'snapshot-refused', label: 'Refused Snapshot', layoutManifestKey: 'k2', layoutPlatform: 'windows', bareMetalRestorable: false },
+          ],
+        });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Unverified Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
+    expect(screen.getByRole('button', { name: /Instant Boot/i })).toBeTruthy();
+    expect(screen.queryByTestId('vm-restore-engine-rebuild')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /1\. Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Refused Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));
+    expect(screen.queryByTestId('vm-restore-engine-rebuild')).toBeNull();
   });
 });
 
@@ -345,8 +378,8 @@ describe('VMRestoreWizard — platform-matched rebuild host', () => {
     });
   }
 
-  const windowsSnapshot = { id: 'snapshot-win', label: 'Windows Server Snapshot', layoutManifestKey: 'backups/snap-win/layout.json', layoutPlatform: 'windows' };
-  const linuxSnapshot = { id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'backups/snap-lin/layout.json', layoutPlatform: 'linux' };
+  const windowsSnapshot = { id: 'snapshot-win', label: 'Windows Server Snapshot', layoutManifestKey: 'backups/snap-win/layout.json', layoutPlatform: 'windows', bareMetalRestorable: true };
+  const linuxSnapshot = { id: 'snapshot-linux', label: 'Linux Server Snapshot', layoutManifestKey: 'backups/snap-lin/layout.json', layoutPlatform: 'linux', bareMetalRestorable: true };
 
   async function openRebuildFor(label: RegExp) {
     render(<VMRestoreWizard />);
@@ -371,7 +404,7 @@ describe('VMRestoreWizard — platform-matched rebuild host', () => {
   });
 
   it('does not offer the rebuild engine when the layout records no platform (the API would refuse it)', async () => {
-    mockWithSnapshots([{ id: 'snapshot-old', label: 'Old Snapshot', layoutManifestKey: 'backups/snap-old/layout.json' }]);
+    mockWithSnapshots([{ id: 'snapshot-old', label: 'Old Snapshot', layoutManifestKey: 'backups/snap-old/layout.json', bareMetalRestorable: true }]);
     render(<VMRestoreWizard />);
     fireEvent.click(await screen.findByRole('button', { name: /Old Snapshot/i }));
     fireEvent.click(screen.getByRole('button', { name: /5\. Mode/i }));

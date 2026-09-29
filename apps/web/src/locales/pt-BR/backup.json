@@ -694,6 +694,9 @@
     "hypervNoNicHint": "Nenhum switch selecionado — a VM não terá adaptador de rede até que você conecte um.",
     "startRebuild": "Iniciar reconstrução",
     "rebuildStarted": "Reconstrução iniciada. O VHDX aparecerá no host de reconstrução quando ela for concluída.",
+    "rebuildErrorNotRestorable": "Este snapshot não pode ser reconstruído: ele não está marcado como restaurável em bare metal. Escolha um snapshot da máquina inteira marcado como restaurável em bare metal ou use a restauração completa.",
+    "rebuildErrorNotRestorableReasons": "Este snapshot não pode ser reconstruído: {{reasons}}.",
+    "rebuildErrorHostUnsupported": "O host de reconstrução precisa executar o mesmo sistema operacional do snapshot. Escolha outro host.",
     "enterAVmNameToContinue": "Insira um nome de VM para continuar.",
     "enterAVmNameOnTheVmNameStep": "Insira um nome de VM na etapa «Nome da VM» para iniciar a restauração."
   },

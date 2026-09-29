@@ -10,6 +10,7 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
+import type { TFunction } from 'i18next';
 import { cn } from '@/lib/utils';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -51,6 +52,10 @@ type Snapshot = {
    * platform-matched: it picks the host OS filter, and a null platform cannot
    * be rebuilt (the API refuses it as snapshot_not_bare_metal_restorable). */
   layoutPlatform?: RebuildHostOs | null;
+  /** The bare-metal guard's verdict on the snapshot's contents. The rebuild
+   * engine requires `true` as well as a layout manifest; null (never
+   * assessed) and false are both refused with snapshot_not_bare_metal_restorable. */
+  bareMetalRestorable?: boolean | null;
 };
 
 type VMEstimate = {
@@ -65,13 +70,39 @@ type VMEstimate = {
 type RestoreMode = 'full' | 'instant' | 'rebuild';
 
 function snapshotRebuildPlatform(snapshot: Snapshot | undefined): RebuildHostOs | null {
-  if (!snapshot?.layoutManifestKey) return null;
+  // Mirrors the API's own gate (vmRestoreRebuildEngine): layout manifest AND a
+  // bare-metal-restorable verdict AND a recorded platform.
+  if (!snapshot?.layoutManifestKey || snapshot.bareMetalRestorable !== true) return null;
   return snapshot.layoutPlatform === 'linux' || snapshot.layoutPlatform === 'windows'
     ? snapshot.layoutPlatform
     : null;
 }
 
 const steps = ['Snapshot', 'Target Host', 'VM Specs', 'VM Name', 'Mode', 'Review'];
+
+/**
+ * The restore routes answer some refusals with a bare machine token in
+ * `error` (runAction would toast it verbatim). Map the rebuild-engine ones to
+ * copy; for tokens that ship their own sentence in `message`
+ * (hyperv_requires_windows_host, output_path_host_mismatch) use that.
+ */
+function friendlyRestoreError(t: TFunction, code: string, body: unknown): string | undefined {
+  const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {};
+  if (code === 'snapshot_not_bare_metal_restorable') {
+    const details = record.details && typeof record.details === 'object' ? record.details as Record<string, unknown> : {};
+    const reasons = Array.isArray(details.reasons)
+      ? details.reasons.filter((r): r is string => typeof r === 'string' && r.trim() !== '')
+      : [];
+    return reasons.length > 0
+      ? t('vMRestoreWizard.rebuildErrorNotRestorableReasons', { reasons: reasons.join('; ') })
+      : t('vMRestoreWizard.rebuildErrorNotRestorable');
+  }
+  if (code === 'rebuild_host_unsupported') return t('vMRestoreWizard.rebuildErrorHostUnsupported');
+  if (/^[a-z]+(?:_[a-z]+)+$/.test(code) && typeof record.message === 'string' && record.message.trim()) {
+    return record.message.trim();
+  }
+  return undefined;
+}
 
 // ── Component ─────────────────────────────────────────────────────
 
@@ -193,7 +224,8 @@ export default function VMRestoreWizard() {
     setSnapshotId(snapshot.id);
   };
 
-  // Switching to a snapshot without a layout manifest invalidates the rebuild engine.
+  // Switching to a snapshot the rebuild engine cannot take (no layout manifest,
+  // not bare-metal restorable, or no platform) invalidates the rebuild engine.
   useEffect(() => {
     if (mode === 'rebuild' && !rebuildEngineAvailable) setMode('full');
   }, [mode, rebuildEngineAvailable]);
@@ -272,6 +304,7 @@ export default function VMRestoreWizard() {
           }),
         errorFallback: 'Failed to start restore',
         successMessage,
+        friendly: (code, _message, body) => friendlyRestoreError(t, code, body),
       });
       setRestoreSuccess(successMessage);
     } catch (err) {

@@ -694,6 +694,9 @@
     "hypervNoNicHint": "No se seleccionó ningún conmutador; la VM no tendrá adaptador de red hasta que conecte uno.",
     "startRebuild": "Iniciar reconstrucción",
     "rebuildStarted": "Reconstrucción iniciada. El VHDX aparecerá en el host de reconstrucción cuando termine.",
+    "rebuildErrorNotRestorable": "Esta instantánea no se puede reconstruir: no está marcada como restaurable en bare metal. Elija una instantánea de equipo completo marcada como restaurable en bare metal o use la restauración completa.",
+    "rebuildErrorNotRestorableReasons": "Esta instantánea no se puede reconstruir: {{reasons}}.",
+    "rebuildErrorHostUnsupported": "El host de reconstrucción debe ejecutar el mismo sistema operativo que la instantánea. Elija otro host.",
     "enterAVmNameToContinue": "Ingrese un nombre de VM para continuar.",
     "enterAVmNameOnTheVmNameStep": "Ingrese un nombre de VM en el paso «Nombre de la VM» para iniciar la restauración."
   },

@@ -694,6 +694,9 @@
     "hypervNoNicHint": "No switch selected — the VM will have no network adapter until you connect one.",
     "startRebuild": "Start Rebuild",
     "rebuildStarted": "Rebuild started. The VHDX will appear on the rebuild host when the rebuild completes.",
+    "rebuildErrorNotRestorable": "This snapshot can't be rebuilt: it isn't marked as bare-metal restorable. Pick a whole-machine snapshot marked Bare-metal restorable, or use Full Restore.",
+    "rebuildErrorNotRestorableReasons": "This snapshot can't be rebuilt: {{reasons}}.",
+    "rebuildErrorHostUnsupported": "The rebuild host must run the same operating system as the snapshot. Pick another host.",
     "enterAVmNameToContinue": "Enter a VM name to continue.",
     "enterAVmNameOnTheVmNameStep": "Enter a VM name on the VM Name step to start the restore."
   },

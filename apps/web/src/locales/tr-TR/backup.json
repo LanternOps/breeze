@@ -694,6 +694,9 @@
     "hypervNoNicHint": "Anahtar seçilmedi — siz birini bağlayana kadar sanal makinenin ağ bağdaştırıcısı olmayacak.",
     "startRebuild": "Yeniden oluşturmayı başlat",
     "rebuildStarted": "Yeniden oluşturma başlatıldı. VHDX, işlem tamamlandığında yeniden oluşturma ana bilgisayarında görünecek.",
+    "rebuildErrorNotRestorable": "Bu anlık görüntü yeniden oluşturulamaz: bare-metal geri yüklenebilir olarak işaretlenmemiş. Bare-metal geri yüklenebilir olarak işaretlenmiş bir tam makine anlık görüntüsü seçin veya tam geri yüklemeyi kullanın.",
+    "rebuildErrorNotRestorableReasons": "Bu anlık görüntü yeniden oluşturulamaz: {{reasons}}.",
+    "rebuildErrorHostUnsupported": "Yeniden oluşturma ana bilgisayarı, anlık görüntüyle aynı işletim sistemini çalıştırmalıdır. Başka bir ana bilgisayar seçin.",
     "enterAVmNameToContinue": "Devam etmek için bir VM adı girin.",
     "enterAVmNameOnTheVmNameStep": "Geri yüklemeyi başlatmak için “VM Adı” adımında bir VM adı girin."
   },
