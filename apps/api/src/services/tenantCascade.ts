@@ -542,6 +542,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // AI Suggested Fixes W1: fix_memory is dual-owner (org_id XOR partner_id).
+  // Org rows cascade with the org; partner rows (org_id NULL) are untouched by
+  // an org erasure and are rebuilt by jobs/tenantErasure.ts afterwards. FKs out
+  // only (scripts/script_versions/playbooks CASCADE, users SET NULL).
+  'fix_memory',
+  // fix_outcomes: one row per attempt, leaf table (FKs out only, all with an
+  // explicit ON DELETE). Cascades after nothing that references it.
+  'fix_outcomes',
   // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
   // CASCADE (report_runs is pre-cleared above), org_id reached here too —
   // either order is a no-op for the other. Leaf table, no children.

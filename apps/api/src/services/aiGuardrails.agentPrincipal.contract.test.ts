@@ -187,6 +187,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'browse_snapshots',
   'configuration_policy_compliance',
   'export_dataset',
+  'find_proven_fixes', // AI Suggested Fixes W1 Tier-1 read
   // W01 (#6755) follow-up
   'generate_incident_report',
   'get_active_users',

@@ -2448,7 +2448,36 @@
         "requesting": "Demande...",
         "requestApproval": "Demande d’approbation",
         "waitingApprovalTitle": "En attente de l’approbation du PAM",
-        "approvalPending": "Approbation en attente"
+        "approvalPending": "Approbation en attente",
+        "proven": {
+          "badge": "Correctif éprouvé",
+          "trackAllClients": "A fonctionné {{verified}} fois sur {{attempts}} chez vos clients",
+          "trackThisClient": "A fonctionné {{verified}} fois sur {{attempts}} chez ce client"
+        },
+        "feedback": {
+          "worked": "A fonctionné",
+          "didNotWork": "N'a pas fonctionné",
+          "recorded": "Retour enregistré",
+          "failed": "Impossible d'enregistrer le retour"
+        },
+        "done": {
+          "button": "Terminé",
+          "recorded": "Marqué comme terminé — surveillance du rétablissement",
+          "failed": "Impossible de marquer comme terminé"
+        },
+        "outcome": {
+          "label": "Résultat : {{state}}",
+          "state": {
+            "pending": "en cours",
+            "awaitingRecovery": "surveillance du rétablissement",
+            "holding": "rétabli — confirmation de la stabilité",
+            "verified": "correction vérifiée",
+            "failed": "n'a pas corrigé le problème",
+            "recurred": "est revenu",
+            "inconclusive": "non concluant",
+            "cancelled": "annulé"
+          }
+        }
       }
     },
     "support": {

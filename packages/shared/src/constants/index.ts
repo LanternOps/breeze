@@ -20,6 +20,10 @@ export * from './hpCmsl';
 // page so the list an admin authorizes cannot drift. Leaf module, no imports.
 export * from './googleDwdScopes';
 
+// Fix memory (AI Suggested Fixes W1): proof rule, outcome states, origins,
+// alert resolution reasons. Leaf module, no imports.
+export * from './fixMemory';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

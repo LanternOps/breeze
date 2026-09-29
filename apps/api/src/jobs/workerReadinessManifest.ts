@@ -301,6 +301,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // every self-hosted install and on hosted until W05 — so a plain-required row
   // would leave every api/all process permanently not-ready. Same shape and
   // same reason as aiAgentRunner above.
+  // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
+  consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
 ] as const;
 

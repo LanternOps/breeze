@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { MonitorKind } from '@breeze/shared';
+import type { MonitorKind, AlertResolutionReason } from '@breeze/shared';
 import { db, withDbTransaction } from '../db';
 import {
   alerts,
@@ -573,14 +573,14 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     // `true` here made every caller that LOST the race look like a resolver, which
     // is what inflates `checkAllAutoResolve`'s count (#4094).
     if (!result.triggered) {
-      return await resolveAlert(alertId, 'Auto-resolved: conditions cleared');
+      return await resolveAlert(alertId, 'Auto-resolved: conditions cleared', undefined, false, 'condition_cleared');
     }
   } else {
     // Evaluate specific auto-resolve conditions
     const result = await evaluateAutoResolveConditions(autoResolveConditions, alert.deviceId);
 
     if (result.shouldResolve) {
-      return await resolveAlert(alertId, `Auto-resolved: ${result.reason}`);
+      return await resolveAlert(alertId, `Auto-resolved: ${result.reason}`, undefined, false, 'condition_cleared');
     }
   }
 
@@ -789,7 +789,12 @@ export async function resolveAlert(
   resolutionNote?: string,
   resolvedBy?: string,
   deferSubjectEffects = false,
+  // AI Suggested Fixes W1: WHY it resolved. A human resolve is 'manual'; a
+  // system caller that does not say is NULL, which the outcome watcher treats
+  // as NOT a recovery (fail closed). See ALERT_RESOLUTION_REASONS.
+  resolutionReason?: AlertResolutionReason,
 ): Promise<boolean> {
+  const reason: AlertResolutionReason | null = resolutionReason ?? (resolvedBy ? 'manual' : null);
   // Winner-takes-all. The status predicate IS the concurrency control: reading
   // the row first and then updating by id unconditionally lets two callers
   // both "resolve" the same alert and both run the fan-out below — the state
@@ -810,7 +815,8 @@ export async function resolveAlert(
       status: 'resolved',
       resolvedAt: new Date(),
       resolvedBy: resolvedBy ?? null,
-      resolutionNote: resolutionNote ?? null
+      resolutionNote: resolutionNote ?? null,
+      resolutionReason: reason,
     })
     .where(buildResolveAlertCas(alertId))
     .returning();
@@ -840,6 +846,7 @@ export async function resolveAlert(
       payload: {
         alertId, ruleId: alert.ruleId, deviceId: alert.deviceId, subjectKey: alert.subjectKey, resolutionNote,
         resolvedAt: alert.resolvedAt!.toISOString(), resolvedBy: alert.resolvedBy,
+        resolutionReason: alert.resolutionReason ?? null,
         triggeredAt: alert.triggeredAt.toISOString(),
       },
     };
@@ -907,6 +914,7 @@ export async function resolveAlert(
       resolutionNote,
       resolvedAt: alert.resolvedAt!.toISOString(),
       resolvedBy: alert.resolvedBy,
+      resolutionReason: alert.resolutionReason ?? null,
       triggeredAt: alert.triggeredAt.toISOString(),
     },
     'alert-service',

@@ -64,6 +64,11 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // which itself never follows a device move (ai_agent_runs above) — see
   // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_fix_watches',
+  // Has org_id AND device_id, but org_id is intentionally NOT re-stamped on
+  // move: fix-outcome history stays with the org the attempt ran in (AI
+  // Suggested Fixes W1) — see the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment
+  // in core.ts.
+  'fix_outcomes',
   // Has org_id AND device_id, but org_id belongs to the INVOICE and the invoice
   // does not move (#3205 W07). Re-stamping would break the composite FKs to
   // invoice_lines/invoices; the table is also excluded from

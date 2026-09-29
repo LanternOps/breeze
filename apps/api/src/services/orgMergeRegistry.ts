@@ -326,6 +326,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // org — same "history stays put" decision as ai_agent_fix_watches /
   // ai_agent_runs above, not a separate call.
   ai_agent_op_evidence: { kind: 'leave-for-erasure', note: 'evidence rows are historical copies of outcomes tied to runs/watches that stay with the source org (ai_agent_runs disposition); rows die with the loser shell' },
+  // AI Suggested Fixes W1. fix_outcomes: each row is one historical attempt in
+  // the org it ran in; restamping would double-count or re-attribute proof.
+  // fix_memory: derived; org rows are recomputed from fix_outcomes, partner
+  // rows (org_id NULL) are not merge participants. The loser's rows die with
+  // the loser shell and jobs/tenantErasure.ts rebuilds the partner aggregate.
+  fix_outcomes: { kind: 'leave-for-erasure', note: 'attempt history stays with the org it ran in; restamping would double-count proof. Rows die with the loser shell; tenantErasure rebuilds partner memory' },
+  fix_memory: { kind: 'leave-for-erasure', note: 'derived aggregate: org rows are rebuilt from fix_outcomes (which stay with the loser); partner rows have org_id NULL and are not merge participants' },
   // ticket_drafts (P2-4, #4191): CUSTOM, not leave-for-erasure — the row
   // must not survive INTO the merge, or `tickets`' own `repoint` aborts it.
   //

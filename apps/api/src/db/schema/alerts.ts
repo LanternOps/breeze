@@ -17,6 +17,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
+import type { AlertResolutionReason } from '@breeze/shared';
 import { organizations, partners, sites } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -158,6 +159,7 @@ export const alerts = pgTable('alerts', {
   resolvedAt: timestamp('resolved_at'),
   resolvedBy: uuid('resolved_by').references(() => users.id),
   resolutionNote: text('resolution_note'),
+  resolutionReason: varchar('resolution_reason', { length: 40 }).$type<AlertResolutionReason>(),
   suppressedUntil: timestamp('suppressed_until'),
   dismissedAt: timestamp('dismissed_at'),
   dismissedBy: uuid('dismissed_by').references(() => users.id),

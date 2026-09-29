@@ -28,7 +28,7 @@ import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExe
  * Anything that can run the propagation UPDATEs: the ambient `db`, or a caller's
  * open transaction handle.
  */
-type DbExecutor = Pick<typeof db, 'update' | 'select' | 'insert'>;
+type DbExecutor = Pick<typeof db, 'update' | 'select' | 'insert' | 'transaction'>;
 
 export type DeviceCommandCancelSubject = {
   id: string;

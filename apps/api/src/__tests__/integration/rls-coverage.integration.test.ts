@@ -403,6 +403,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cv_policy_partner_select ships in 2026-10-26-170100. Functional forge
   // proof: callerVerification.integration.test.ts.
   'caller_verification_policies',
+  // fix_memory (AI Suggested Fixes W1): org XOR partner via
+  // fix_memory_one_owner_chk; SELECT-only partner-wide branch
+  // fix_memory_partner_wide_select ships in 2026-11-03-100000. Functional
+  // forge proof: fixMemoryPartnerRls.integration.test.ts.
+  'fix_memory',
   'topology_config_templates',
   'topology_config_template_versions',
   // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
@@ -768,6 +773,9 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // functionally by reportsPartnerRls.integration.test.ts instead.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'caller_verification_policies',
+  // fix_memory_one_owner_chk, 2026-11-03-100000 (AI Suggested Fixes W1); its
+  // partner-wide SELECT branch ships in the same migration.
+  'fix_memory',
   'topology_config_templates',
   'topology_config_template_versions',
   // monitor_definitions_one_owner_chk ((org_id IS NULL) <> (partner_id IS

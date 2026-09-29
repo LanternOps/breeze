@@ -184,7 +184,7 @@ async function autoResolve(thisScriptsAlert: ReturnType<typeof and>, exitCode: n
   for (const candidate of candidates) {
     // No resolvedBy: a system resolution. resolveAlert's status CAS decides the
     // winner if a tech resolves the same alert concurrently.
-    await resolveAlert(candidate.id, `Auto-resolved: a later run exited ${exitCode}, which maps to no alert`);
+    await resolveAlert(candidate.id, `Auto-resolved: a later run exited ${exitCode}, which maps to no alert`, undefined, false, 'condition_cleared');
   }
 }
 

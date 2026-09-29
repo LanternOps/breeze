@@ -1627,6 +1627,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeSendingDomainsWorker, shutdown: m.shutdownSendingDomainsWorker };
     },
   },
+  {
+    // AI Suggested Fixes W1 — 5-minute fix-outcome sweeper. `global`: its
+    // closure is db + fixMemory services + outcomeProbes, never routes or
+    // socket-local dispatch (workerEntrypointClosure.contract.test.ts).
+    name: 'fixOutcomeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/fixOutcomeWorker');
+      return { init: m.initializeFixOutcomeWorker, shutdown: m.shutdownFixOutcomeWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

@@ -106,6 +106,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Alerts & Notifications
       { name: 'list_incidents', description: 'List incidents', category: 'Alerts & Notifications' },
       { name: 'list_remediation_suggestions', description: 'List remediation suggestions', category: 'Alerts & Notifications' },
+      { name: 'find_proven_fixes', description: 'Find fixes proven on the same problem', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
       { name: 'manage_delivery (resolve/list_routing/list_escalation)', description: 'Preview alert delivery and view routing rules and escalation policies', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },

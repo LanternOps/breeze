@@ -519,6 +519,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  find_proven_fixes: z.object({
+    alertId: z.string().guid().optional(),
+    anomalyEpisodeId: z.string().guid().optional(),
+    limit: z.number().int().min(1).max(20).optional(),
+  }),
+
   list_incidents: z.object({
     orgId: z.string().guid().optional(),
     status: z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']).optional(),

@@ -331,6 +331,8 @@ const EXPECTED_NAMES = [
   'toolSourceDiscoveryWorker',
   // Partner sending domains W03 (#6183).
   'sendingDomainsWorker',
+  // AI Suggested Fixes W1.
+  'fixOutcomeWorker',
 ];
 
 // ---------------------------------------------------------------------------

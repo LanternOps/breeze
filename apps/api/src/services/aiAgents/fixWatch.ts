@@ -24,12 +24,8 @@
  */
 import { and, asc, desc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 import type { AgentRunVerdict, AiAgentMode, AiSweepKind } from '@breeze/shared';
-import {
-  db,
-  getCurrentDbAccessContext,
-  runOutsideDbContext,
-  withSystemDbAccessContext,
-} from '../../db';
+import { db } from '../../db';
+import { inSystemDbContext, readAlertRecovery, windowElapsed } from '../outcomeProbes';
 // Direct module imports, not the schema barrel — same reasoning as
 // agentCircuit.ts/runService.ts: this sits on the run-finish path, and the
 // barrel would drag every partial-mock unit test of that path into stubbing
@@ -52,12 +48,6 @@ import {
   notifyDemotion,
   type NotifyDemotionInput,
 } from './supervisedKeyDemote';
-
-/** Same skip-if-already-system shape duplicated across this module family. */
-function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
-  if (getCurrentDbAccessContext()?.scope === 'system') return fn();
-  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
-}
 
 /**
  * v1 watch windows are CONSTANTS (plan header) — configurability needs the
@@ -560,15 +550,11 @@ export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhas
       return giveUpIfTimedOut(watch, watchId);
     }
 
-    let alertStatus: string | null = null;
-    if (watch.alertId) {
-      const [alertRow] = await db
-        .select({ status: alerts.status })
-        .from(alerts)
-        .where(eq(alerts.id, watch.alertId))
-        .limit(1);
-      alertStatus = alertRow?.status ?? null;
-    }
+    // Extracted probe (outcomeProbes.ts). fixWatch keeps its historical rule:
+    // ANY resolve counts as recovery here — only the suggestion watcher reads
+    // resolutionReason.
+    const reading = watch.alertId ? await readAlertRecovery(watch.alertId) : null;
+    const alertStatus: string | null = reading?.status ?? null;
 
     if (alertStatus === 'resolved') return moveToWatching(watchId);
 
@@ -621,8 +607,7 @@ async function giveUpIfTimedOut(
   watch: Pick<AiAgentFixWatch, 'createdAt'>,
   watchId: string,
 ): Promise<FixWatchPhase1Outcome> {
-  const ageMs = Date.now() - watch.createdAt.getTime();
-  if (ageMs < RECOVERY_TIMEOUT_HOURS * 60 * 60 * 1000) return { action: 'still_pending' };
+  if (!windowElapsed(watch.createdAt, RECOVERY_TIMEOUT_HOURS)) return { action: 'still_pending' };
 
   const [moved] = await db
     .update(aiAgentFixWatches)
