@@ -64,3 +64,9 @@ Chat surface, `claude-sonnet-4-6`, 67 golden cases, three runs per arm on the fi
 Helper first-turn context: 14.2k / 16.1k / 18.8k tokens (basic / standard / extended), against ~112k before.
 
 **Accuracy is −1.5 cases (≈ −2 points).** Per-case diffing puts the whole loss on three org- or device-named prompts (g59, g60, g62). There, the model first resolves the named org or device through an always-loaded context tool (`list_organizations`, `query_devices`) before the domain tool. That is one extra call, not a wrong tool. The spec's "+10 points by end of A-W04" target is **not met**, and first-call accuracy did not improve in this wave.
+
+## Follow-ups filed
+
+- #7427: `fullRunToolExposure` names 7 undeclared tools, so every production `full` agent run logs a `createBreezeMcpServer` error (found while fixing the harness).
+- #7428: measure tool search for headless agents before enabling it (D21).
+- #7429: tool search on BYO/catalog endpoints (per-endpoint capability instead of the global switch), the deferred domain-loader question, and turn-2 cache behaviour with tenant tools.

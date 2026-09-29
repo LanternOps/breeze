@@ -58,7 +58,7 @@ const DECLARED = new Set(listChatSurfaceToolNames());
 export const CAPTURE_SURFACES: Readonly<Record<CaptureSurfaceId, CaptureSurface>> = {
   chat: {
     id: 'chat', allowedTools: BREEZE_MCP_TOOL_NAMES, toolSearch: true, server: 'breeze', mcpServerName: 'breeze',
-    includePartialMessages: true, source: 'services/streamingSessionManager.ts:1290-1310 (routes/ai.ts:1022 toolSearch: true)',
+    includePartialMessages: true, source: 'services/streamingSessionManager.ts:1289-1310 (routes/ai.ts:1024 toolSearch: true)',
   },
   'helper-basic': helperSurface('basic'),
   'helper-standard': helperSurface('standard'),
