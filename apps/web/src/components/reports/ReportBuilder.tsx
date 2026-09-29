@@ -819,11 +819,15 @@ export default function ReportBuilder({
   // W03: a series has no single org. Its live preview reads the first org it
   // covers; its create/edit never sends an orgId (submitSeries returns before
   // the org payload is used). The org-required guard applies to org mode only.
+  // Edit (no picker): the report's own org, whatever the switcher shows.
   const targetOrgId =
     covers.mode === 'series'
       ? firstCoveredOrgId(covers, orgTarget.options)
-      : orgPickerApplies ? orgTarget.orgId : currentOrgId;
+      : orgPickerApplies ? orgTarget.orgId : (reportOrgId ?? currentOrgId);
   const orgMissing = orgPickerApplies && covers.mode === 'org' && orgTarget.missing;
+  // No org yet only because the org list has not arrived: the preview waits
+  // rather than POST without an org (400 for a partner with several orgs).
+  const previewOrgPending = !targetOrgId && orgTarget.pending;
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
@@ -1019,6 +1023,13 @@ export default function ReportBuilder({
       setLivePreviewError(stableT('reports.orgPicker.previewNeedsOrg'));
       return;
     }
+    if (previewOrgPending) {
+      // Show loading and send nothing; this effect re-runs once the org resolves.
+      previewRequestIdRef.current += 1;
+      setLivePreviewLoading(true);
+      setLivePreviewError(undefined);
+      return;
+    }
 
     let mounted = true;
     const requestId = previewRequestIdRef.current + 1;
@@ -1129,7 +1140,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, targetOrgId, orgMissing, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
+  }, [builderType, targetOrgId, orgMissing, previewOrgPending, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),

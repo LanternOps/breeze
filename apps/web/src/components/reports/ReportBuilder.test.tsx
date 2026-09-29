@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,6 +93,12 @@ describe('ReportBuilder filter/grouping selects accessible name (#7156)', () => 
 describe('ReportBuilder live preview', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The preview needs a known org (it waits while the org list loads).
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null });
   });
 
   it('renders live table rows from report API data', async () => {
@@ -749,5 +755,51 @@ describe('ReportBuilder org picker under All organizations (multi-org series W01
 
     expect(await screen.findByTestId('report-builder-submit')).toBeInTheDocument();
     expect(screen.queryByTestId('report-org-picker')).toBeNull();
+  });
+});
+
+// Pre-release sweep: on first load under All organizations the live preview
+// POSTed /reports/generate with no org before the org list arrived (400
+// "orgId is required when partner has multiple organizations"), and the edit
+// page previewed the header org instead of the report's own.
+describe('ReportBuilder live preview waits until the org is known', () => {
+  const orgA = { id: 'org-a', partnerId: 'p-1', name: 'Acme Dental', status: 'active' as const, createdAt: '2026-01-01T00:00:00Z' };
+  const orgB = { id: 'org-b', partnerId: 'p-1', name: 'Bravo Law', status: 'active' as const, createdAt: '2026-01-01T00:00:00Z' };
+  const generateBodies = () =>
+    fetchWithAuthMock.mock.calls
+      .filter(([url]) => url === '/reports/generate')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { rows: [] } }));
+    useOrgStore.setState({ currentOrgId: null, organizations: [], organizationsLoaded: false, error: null });
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null, organizations: [], organizationsLoaded: false, error: null });
+  });
+
+  it('sends no preview before the org list arrives, then previews the org it resolves to', async () => {
+    render(<ReportBuilder mode="create" defaultValues={{ name: 'Fleet health' }} onSubmit={vi.fn()} />);
+
+    // Past the 300 ms debounce: nothing was sent with an unknown org.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(generateBodies()).toHaveLength(0);
+
+    act(() => useOrgStore.setState({ organizations: [orgA], organizationsLoaded: true }));
+
+    await waitFor(() => expect(generateBodies()).toHaveLength(1));
+    expect(generateBodies()[0]).toMatchObject({ orgId: 'org-a' });
+  });
+
+  it("previews an edited report for its own org under All organizations, without waiting for the org list", async () => {
+    useOrgStore.setState({ organizations: [orgA, orgB] });
+    render(
+      <ReportBuilder mode="edit" reportId="report-1" reportOrgId="org-b" defaultValues={{ name: 'Fleet health', schedule: 'monthly' }} />
+    );
+
+    await waitFor(() => expect(generateBodies()).toHaveLength(1));
+    expect(generateBodies()[0]).toMatchObject({ orgId: 'org-b' });
   });
 });
