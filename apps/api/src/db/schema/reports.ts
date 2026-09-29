@@ -57,6 +57,10 @@ export const reportTypeEnum = pgEnum('report_type', [
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  // Backup Provider Integration W05 (#6013): Cove-email-style snapshot over
+  // both first-party backups and connected provider devices; see
+  // services/backupStatusReport.ts.
+  'backup_status',
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

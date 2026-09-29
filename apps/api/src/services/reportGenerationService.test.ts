@@ -28,7 +28,26 @@ vi.mock('./businessReports/arAgingReport', () => ({
   generateArAgingReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ar_aging' } })),
 }));
 
+// #6013 W05: backup_status reads through the W03 unified read model, whose
+// SQL is built from Drizzle subqueries this file's flat `db.select` chain
+// cannot render. The read model's own site binding is proven in its own
+// tests; here the REAL generateBackupStatusReport runs against a spied read
+// model, so the assertion is on the exact scope it hands over (the tenancy
+// boundary this wave owns).
+vi.mock('./backupHealthReadModel', () => ({
+  listBackupHealthRows: vi.fn(async () => ({ rows: [], nextCursor: null })),
+  summarizeBackupHealth: vi.fn(async () => ({
+    endpoints: { total: 0, covered: 0, uncovered: 0 },
+    providerOnly: 0,
+    m365Accounts: 0,
+    byStatus: {},
+    byHealth: {},
+    byRecency: {},
+  })),
+}));
+
 import { db } from '../db';
+import { listBackupHealthRows, summarizeBackupHealth } from './backupHealthReadModel';
 import { generateTicketSlaAttainmentReport } from './businessReports/ticketSlaReport';
 import { generateTechnicianTimeBillabilityReport } from './businessReports/technicianTimeReport';
 import { generateArAgingReport } from './businessReports/arAgingReport';
@@ -65,6 +84,7 @@ const REPORT_TYPES: readonly ReportType[] = [
   'endpoint_management_review',
   'vulnerability_management',
   'identity_access_review',
+  'backup_status',
 ];
 /**
  * #5784 W06. `identity_access_review` is org-wide by construction: M365 identity
@@ -74,7 +94,7 @@ const REPORT_TYPES: readonly ReportType[] = [
  * dedicated assertion in its place, so the exclusion is proven, not assumed.
  */
 const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
-  .filter((type) => type !== 'identity_access_review');
+  .filter((type) => type !== 'identity_access_review' && type !== 'backup_status');
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and
  *  only ever read back — there is no query that could reproduce it. Fleet
@@ -309,6 +329,43 @@ describe('generateReport mandatory execution authority', () => {
       expect(params).not.toContain(SITE_B);
     },
   );
+
+  // #6013 W05. backup_status is site-scoped through the read model rather than
+  // a `where` predicate on this file's mocked db, so its binding is asserted on
+  // the scope the real generator hands the read model.
+  it('backup_status hands the read model exactly the restricted site scope and never Site B', async () => {
+    await generateReport(
+      'backup_status',
+      organizationScope(ORG_ID),
+      {},
+      authority('restricted', [SITE_A]),
+    );
+
+    for (const fn of [listBackupHealthRows, summarizeBackupHealth]) {
+      expect(fn).toHaveBeenCalledTimes(1);
+      const scope = vi.mocked(fn).mock.calls[0]![0];
+      expect(scope).toEqual({ orgIds: [ORG_ID], siteIds: [SITE_A] });
+      expect(JSON.stringify(scope)).not.toContain(SITE_B);
+    }
+  });
+
+  it('backup_status refuses a config.sites entry outside the restricted authority before reading', async () => {
+    await expect(
+      generateReport(
+        'backup_status',
+        organizationScope(ORG_ID),
+        { sites: [SITE_B] },
+        authority('restricted', [SITE_A]),
+      ),
+    ).rejects.toThrow();
+    expect(listBackupHealthRows).not.toHaveBeenCalled();
+    expect(summarizeBackupHealth).not.toHaveBeenCalled();
+  });
+
+  it('backup_status with an unrestricted authority passes no siteIds ceiling to the read model', async () => {
+    await generateReport('backup_status', organizationScope(ORG_ID), {}, authority('unrestricted'));
+    expect(vi.mocked(listBackupHealthRows).mock.calls[0]![0]).toEqual({ orgIds: [ORG_ID] });
+  });
 
   // #5784 W03. The generic `emptyRowsReport()` shape carries NO summary, and
   // buildReportPdf's endpoint-management arm is guarded on the summary being

@@ -1030,6 +1030,7 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
+    case 'backup_status':
     // #5784 W02 — NOT stored-artifact-only: a restricted authority with zero
     // sites gets an empty-but-shaped result rather than a throw.
     case 'threat_detection_review':

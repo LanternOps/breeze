@@ -71,6 +71,7 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
   endpoint_management_review: { sites: [], staleEnrolmentDays: 14, trendDays: 30, includeLicences: true },
   vulnerability_management: { sites: [], severityFloor: 'high', topN: 25, includeAccepted: true },
   identity_access_review: { dormantDays: 45, homeCountries: ['US'], adminDetail: true },
+  backup_status: { sites: [], includeDevicesWithoutBackup: true, sources: ['breeze', 'provider'] },
   ticket_sla_attainment: { period: { kind: 'last_full_month' }, groupBy: 'organization', includeNoSla: true },
   technician_time_billability: { period: { kind: 'last_30_days' }, groupBy: 'technician', weeklyCapacityHours: 40 },
   ar_aging: { groupBy: 'organization', includePaidInPeriod: false },
