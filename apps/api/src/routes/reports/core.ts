@@ -6,13 +6,13 @@ import { organizations, reports, reportRuns } from '../../db/schema';
 import type { ReportDeliveryStatus } from '../../services/reportDelivery';
 import {
   authMiddleware,
-  hasSatisfiedMfa,
   requirePermission,
   requireScope,
   type AuthContext,
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { callerMaySetEmailRecipients, RECIPIENTS_NEED_EXPORT_AND_MFA } from './recipientGate';
 import {
   missingReportTypePermission,
   reportAudienceCondition,
@@ -116,29 +116,13 @@ const AUDIENCE_DENIED = 'audience_denied' as const;
 /** #3198 W01 — PUT's refusal to re-home a partner-owned definition. */
 const OWNERSHIP_IMMUTABLE = 'ownership_immutable' as const;
 
-/**
- * A scheduled report with email recipients delivers a rendered export off
- * the platform on a timer, with no per-run confirmation — the same bulk
- * output `reports:export` already gates on the interactive download and
- * generate paths (`runs.ts`, `generate.ts`). Setting or changing those
- * recipients on the definition needs the same permission plus a
- * fresh-MFA session, not just `reports:write`.
- */
-const RECIPIENTS_NEED_EXPORT_AND_MFA = {
-  error:
-    'Setting or changing email recipients on a report requires the export permission and an MFA-verified session',
-} as const;
-
 function recipientExportGateFails(
   config: unknown,
   permissions: UserPermissions | undefined,
   auth: AuthContext,
 ): boolean {
   if (reportConfigEmailRecipients(config).length === 0) return false;
-  if (!permissions || !hasPermission(permissions, PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action)) {
-    return true;
-  }
-  return !hasSatisfiedMfa(auth);
+  return !callerMaySetEmailRecipients(auth, permissions);
 }
 
 type DefinitionListScopeResult =
