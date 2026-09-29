@@ -53,6 +53,9 @@ const BACKUP_TYPE_LABELS: Record<Exclude<BackupType, 'file'>, string> = {
 type Snapshot = {
   id: string;
   label: string | null;
+  // Display name (then hostname) of the backed-up device, attached by
+  // GET /backup/snapshots; null when the lookup finds none.
+  deviceName?: string | null;
   createdAt: string;
   backupType?: BackupType;
   sizeBytes: number | null;
@@ -109,6 +112,16 @@ function flattenTree(items: SnapshotTreeItem[], parentPath = '/'): SnapshotFile[
     }
     return item.children ? flattenTree(item.children, itemPath) : [];
   });
+}
+
+// Picker text: the device leads, so snapshots of several devices that share a
+// policy label ("Nightly") can be told apart.
+function snapshotOptionLabel(snapshot: Snapshot): string {
+  const parts = [snapshot.deviceName, snapshot.label ?? snapshot.id].filter(Boolean);
+  if (snapshot.backupType && snapshot.backupType !== 'file') {
+    parts.push(BACKUP_TYPE_LABELS[snapshot.backupType]);
+  }
+  return parts.join(' — ');
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -468,10 +481,7 @@ export default function SnapshotBrowser() {
             >
               {snapshots.map((snapshot) => (
                 <option key={snapshot.id} value={snapshot.id}>
-                  {snapshot.label ?? snapshot.id}
-                  {snapshot.backupType && snapshot.backupType !== 'file'
-                    ? ` — ${BACKUP_TYPE_LABELS[snapshot.backupType]}`
-                    : ''}
+                  {snapshotOptionLabel(snapshot)}
                 </option>
               ))}
             </select>
@@ -489,6 +499,11 @@ export default function SnapshotBrowser() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-semibold text-foreground">{selectedSnapshotDisplayLabel}</span>
+                {selectedSnapshot.deviceName && (
+                  <span data-testid="snapshot-device-name" className="text-sm text-muted-foreground">
+                    {selectedSnapshot.deviceName}
+                  </span>
+                )}
                 {selectedSnapshot.backupType && selectedSnapshot.backupType !== 'file' && (
                   <span className="rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-700">
                     {BACKUP_TYPE_LABELS[selectedSnapshot.backupType]}

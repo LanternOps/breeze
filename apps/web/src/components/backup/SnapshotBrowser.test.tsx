@@ -221,6 +221,35 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Bucket object lock no longer enabled/i)).toBeTruthy();
   });
 
+  it('names the device in the snapshot picker and the details card', async () => {
+    const base = {
+      createdAt: '2026-03-31T00:00:00Z',
+      sizeBytes: 1048576,
+      fileCount: 5,
+      location: null,
+      expiresAt: null,
+      legalHold: false,
+      legalHoldReason: null,
+      isImmutable: false,
+      immutableUntil: null,
+      immutabilityEnforcement: null,
+      requestedImmutabilityEnforcement: null,
+      immutabilityFallbackReason: null,
+    };
+    fetchMock.mockImplementationOnce(async () => makeJsonResponse({
+      data: [
+        { ...base, id: 'snap-1', label: 'Nightly', deviceName: 'Mac Mini' },
+        { ...base, id: 'snap-2', label: 'Whole machine', backupType: 'system_image', deviceName: 'SRV01' },
+      ],
+    }));
+
+    render(<SnapshotBrowser />);
+
+    expect(await screen.findByRole('option', { name: 'Mac Mini — Nightly' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'SRV01 — Whole machine — System image' })).toBeTruthy();
+    expect(screen.getByTestId('snapshot-device-name').textContent).toBe('Mac Mini');
+  });
+
   it('badges a system_image snapshot with its backup type', async () => {
     fetchMock.mockImplementationOnce(async () => makeJsonResponse({
       data: [

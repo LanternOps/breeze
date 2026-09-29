@@ -34,6 +34,8 @@ import '../../lib/i18n';
 type Snapshot = {
   id: string;
   label: string;
+  /** Backed-up device's display name / hostname, from GET /backup/snapshots. */
+  deviceName?: string | null;
   createdAt?: string;
   timestamp?: string;
   sizeBytes?: number | null;
@@ -364,6 +366,9 @@ export default function VMRestoreWizard() {
                       )}
                     >
                       <div className="text-sm font-semibold text-foreground">{snap.label}</div>
+                      {snap.deviceName ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{snap.deviceName}</div>
+                      ) : null}
                       <div className="mt-1 flex flex-wrap gap-3 text-xs text-muted-foreground">
                         {(snap.createdAt ?? snap.timestamp) && <span>{formatTime(snap.createdAt ?? snap.timestamp)}</span>}
                         {snap.sizeBytes != null && <span>{formatBytes(snap.sizeBytes)}</span>}

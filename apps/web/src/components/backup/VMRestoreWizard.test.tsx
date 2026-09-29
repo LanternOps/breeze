@@ -83,6 +83,26 @@ describe('VMRestoreWizard', () => {
     expect(fetchMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
   });
 
+  it('names the device on each snapshot card', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [
+            { id: 'snapshot-1', label: 'Nightly', deviceName: 'Mac Mini', createdAt: '2026-03-28T10:00:00Z' },
+            { id: 'snapshot-2', label: 'Nightly', deviceName: 'SRV01', createdAt: '2026-03-28T11:00:00Z' },
+          ],
+        });
+      }
+      return base(input, init);
+    });
+
+    render(<VMRestoreWizard />);
+
+    expect(await screen.findByRole('button', { name: /Nightly.*Mac Mini/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Nightly.*SRV01/i })).toBeTruthy();
+  });
+
   it('renders alpha banner', async () => {
     render(<VMRestoreWizard />);
 
