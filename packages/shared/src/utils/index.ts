@@ -4,6 +4,7 @@ export * from './locale';
 export * from './docsMapping';
 export * from './semverCompare';
 export * from './timezone';
+export * from './windowsZones';
 export * from './assuranceLevel';
 export * from './ticketTemplate';
 export * from './alertTemplate';
