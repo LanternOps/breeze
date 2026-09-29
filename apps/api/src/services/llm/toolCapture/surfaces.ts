@@ -1,9 +1,16 @@
 import { BREEZE_MCP_TOOL_NAMES, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { getHelperAllowedMcpToolNames, getHelperAllowedTools, type HelperPermissionLevel } from '../../helperToolFilter';
-import { fullRunToolExposure } from '../../aiAgents/runLoop';
+import { fullRunToolExposure, resolveRunProfileLimits, resolveRunToolExposure } from '../../aiAgents/runLoop';
+import { outcomeToolsForRun, type OutcomeToolName } from '../../aiAgents/outcomeTools';
 import { SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
+import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentRunProfile } from '@breeze/shared';
 
-export type CaptureSurfaceId = 'chat' | 'helper-basic' | 'helper-standard' | 'helper-extended' | 'agent-full' | 'script-builder';
+export type CaptureSurfaceId =
+  | 'chat' | 'helper-basic' | 'helper-standard' | 'helper-extended' | 'agent-full' | 'script-builder'
+  | 'agent-full-remediation' | 'agent-analysis';
+
+/** The agent-profile surfaces the agent golden set (#7428) runs on. */
+export type AgentCaptureSurfaceId = 'agent-full-remediation' | 'agent-analysis';
 
 export interface CaptureSurface {
   id: CaptureSurfaceId;
@@ -14,6 +21,16 @@ export interface CaptureSurface {
   onlyTools?: ReadonlySet<string>;
   /** The surface's `getOrCreate` `toolSearch` opt-in; the policy still decides per host (aiToolSearchPolicy.ts). */
   toolSearch: boolean;
+  /**
+   * The production turn cap the policy's low-turn-budget rule is judged
+   * against (never the harness's own artificially low `maxTurns`). Omitted =
+   * a fresh chat session's budget (runSurface.ts).
+   */
+  turnBudget?: number;
+  /** Agent-profile surfaces: the run profile whose prompt builders and exposure this mirrors. */
+  agentProfile?: AiAgentRunProfile;
+  /** Agent-profile surfaces: the profile's outcome tools, registered as `extraTools` exactly as runLoop does. */
+  outcomeTools?: readonly OutcomeToolName[];
   server: 'breeze' | 'script_builder';
   mcpServerName: string;               // key used in query() mcpServers
   includePartialMessages: boolean;     // true for the streamingSessionManager surfaces, false for agent runs
@@ -46,6 +63,48 @@ const AGENT_FULL_EXPOSURE = fullRunToolExposure([]);
 const DECLARED = new Set(listChatSurfaceToolNames());
 
 /**
+ * A representative remediation agent's own allowlist (#7428): the handful of
+ * mutating operations a triage/remediation agent is typically granted. The
+ * `full` exposure is dominated by its read-only floor, so this adds only the
+ * mutating-only tools to the registered set; it exists so the measured
+ * surface is an agent that can act, not only a read-only one.
+ */
+export const REPRESENTATIVE_REMEDIATION_ALLOWLIST: readonly string[] = [
+  'manage_alerts:acknowledge', 'manage_alerts:resolve', 'manage_services:restart',
+  'disk_cleanup', 'execute_command', 'run_script', 'manage_patches:install',
+];
+
+/**
+ * An agent-profile surface derived from runLoop's own exports: the exposure
+ * (`resolveRunToolExposure`), the turn cap (`resolveRunProfileLimits` on the
+ * default limits) and the outcome tools (`outcomeToolsForRun`). Registration
+ * is exposure ∩ declared, same as `agent-full` (see #7427). `toolSearch`
+ * mirrors runLoop's opt-in; the eval's `--surface-search on` arm measures a
+ * hypothetical opt-in without changing it.
+ */
+function agentSurface(
+  id: AgentCaptureSurfaceId,
+  profile: AiAgentRunProfile,
+  agentAllowlist: readonly string[],
+  source: string,
+): CaptureSurface {
+  const run = { profile };
+  const { exposedNames, onlyTools } = resolveRunToolExposure(run, [...agentAllowlist]);
+  return {
+    id,
+    agentProfile: profile,
+    allowedTools: [...new Set(exposedNames)],
+    onlyTools: new Set([...(onlyTools ?? [])].filter((name) => DECLARED.has(name))),
+    outcomeTools: outcomeToolsForRun(run),
+    toolSearch: false,
+    turnBudget: resolveRunProfileLimits(run, AI_AGENT_LIMIT_DEFAULTS).maxTurnsPerRun,
+    server: 'breeze', mcpServerName: 'breeze',
+    includePartialMessages: false,
+    source,
+  };
+}
+
+/**
  * One row per in-product surface the spec names. Values are taken from the
  * SAME exports the surfaces pass to query()/createBreezeMcpServer — never
  * re-typed here — so a surface change moves the harness with it
@@ -71,6 +130,10 @@ export const CAPTURE_SURFACES: Readonly<Record<CaptureSurfaceId, CaptureSurface>
     server: 'breeze', mcpServerName: 'breeze',
     includePartialMessages: false, source: 'services/aiAgents/runLoop.ts:1979-2001 (fullRunToolExposure → exposureList/onlyTools)',
   },
+  'agent-full-remediation': agentSurface('agent-full-remediation', 'full', REPRESENTATIVE_REMEDIATION_ALLOWLIST,
+    'services/aiAgents/runLoop.ts:1701 (resolveRunToolExposure/resolveRunProfileLimits, full + REPRESENTATIVE_REMEDIATION_ALLOWLIST)'),
+  'agent-analysis': agentSurface('agent-analysis', 'analysis', [],
+    'services/aiAgents/runLoop.ts:1701 (resolveRunToolExposure/resolveRunProfileLimits); aiAgents/analysisProfile.ts:26'),
   'script-builder': {
     id: 'script-builder', allowedTools: SCRIPT_BUILDER_MCP_TOOL_NAMES, toolSearch: false, server: 'script_builder', mcpServerName: 'script_builder',
     includePartialMessages: true, source: 'routes/scriptAi.ts:268-287; services/scriptBuilderTools.ts:63,396',

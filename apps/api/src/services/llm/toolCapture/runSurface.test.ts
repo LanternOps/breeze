@@ -194,6 +194,28 @@ describe('runSurfaceCapture', () => {
     expect(captureToolSearchPolicy(CAPTURE_SURFACES['agent-full'], {}).enabled).toBe(false);
   });
 
+  it('an agent surface stays off by default and, measured as if it opted in, searches against its own turn cap (#7428)', async () => {
+    const surface = CAPTURE_SURFACES['agent-full-remediation'];
+    expect(captureToolSearchPolicy(surface, {}).reason).toBe('surface_static');
+    expect(captureToolSearchPolicy(surface, {}, 'auto', true)).toMatchObject({ enabled: true, reason: 'first_party_host' });
+    // The low-turn-budget rule reads the surface's real cap, not the chat session default.
+    expect(captureToolSearchPolicy({ ...surface, turnBudget: 3 }, {}, 'auto', true).reason).toBe('low_turn_budget');
+    queryMock.mockReturnValueOnce(messages([]));
+    await runSurfaceCapture({ ...baseOpts, surface, surfaceSearch: true, systemPrompt: 'agent task system prompt' });
+    const options = queryMock.mock.lastCall![0].options;
+    expect(options.tools).toEqual(['ToolSearch']);
+    expect(options.env.ENABLE_TOOL_SEARCH).toBe('true');
+    expect(options.systemPrompt).toBe('agent task system prompt');
+  });
+
+  it('registers an agent profile\'s outcome tools as extraTools, as runLoop does', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    const result = await runSurfaceCapture({ ...baseOpts, surface: CAPTURE_SURFACES['agent-analysis'] });
+    expect(result.registeredToolNames).toContain('submit_analysis');
+    expect(result.registeredToolNames).toContain('workspace_run');
+    expect(queryMock.mock.lastCall![0].options.systemPrompt).toBe(getCaptureSystemPrompt(CAPTURE_SURFACES['agent-analysis']));
+  });
+
   it('an onlyTools surface reports the subset size, not the full registry', async () => {
     queryMock.mockReturnValueOnce(messages([
       { type: 'result', subtype: 'success', session_id: 's-subset', num_turns: 1, duration_ms: 10, total_cost_usd: 0 },

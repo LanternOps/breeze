@@ -391,3 +391,48 @@ Why:
 4. **The mechanism already exists.** `llm_provider_verifications` records an MFA-gated, harness-versioned result per `(revision_id, model_id)`, and a new revision (new base URL) needs a new verification. A `toolSearch` stage in `providerFidelityHarness` fits there: with `tools: ['ToolSearch']` and one deferred tool, the stage passes when the model loads that tool via `tool_reference` and the response is 200. `resolveToolSearchPolicy` would take `endpointToolSearchVerified` from the session's catalog endpoint and apply it after the surface, kill-switch and turn-budget rules and the first-party rule. The default stays off.
 
 The decision needed: where the verification result lives. It could go in the existing `detail` jsonb (no migration, but the policy reads jsonb) or in a new boolean column on `llm_provider_verifications` (one migration, cleaner query). A `FIDELITY_HARNESS_VERSION` bump would make existing verifications stale, so it needs a re-verify plan for listed entries. Nothing is implemented in this change.
+
+## 10. Tool search for headless agents (#7428)
+
+**Date measured:** 2026-09-28 · **SDK:** `@anthropic-ai/claude-agent-sdk` 0.3.282 · **Model:** `claude-sonnet-4-6` (the default an agent run resolves) · **Decision:** keep headless agents on their static subset (D21 stands). Harness and golden set ship; `runLoop.ts` does not change behaviour.
+
+**What was measured.** A new agent golden set (`toolEval/agentGoldenTasks.ts`, 19 tasks) runs through the production `buildAgentRunSystemPrompt` / `buildAgentRunTaskPrompt` for each task's run context: 16 `full`-profile tasks (alert, anomaly, ticket and scheduled triggers) and 3 `analysis`-profile tasks. The two agent surfaces are derived from runLoop's own exports (`resolveRunToolExposure`, `resolveRunProfileLimits`, `outcomeToolsForRun`), so they register what a queued run registers:
+
+| surface | registered tools | alwaysLoad among them | turn cap (policy default) |
+|---|---|---|---|
+| `agent-full-remediation` (`full` + a 7-entry remediation allowlist) | 154 | 13 | 25 |
+| `agent-analysis` | 18 (incl. `submit_analysis`) | 5 | 40 |
+
+The other profiles register 0–6 tools (verdict, sweep, design and patch 5–6; narrative and triage only their outcome tool), so search has nothing to defer there and they were not measured. The search-on arm is `--surface-search on` (a hypothetical opt-in); host, override and the real turn cap still go through `resolveToolSearchPolicy`, which enables search for every task (first-party host; 25 and 40 turns clear the 4-turn floor).
+
+```
+pnpm --filter @breeze/api ai:tool-eval --suite agent                       # search off (production today)
+pnpm --filter @breeze/api ai:tool-eval --suite agent --surface-search on   # search on
+```
+
+**Results, three runs per arm:**
+
+| arm | surface | hits | mean context tokens through the first real tool call | at that call (re-sent every later turn) | API calls to the first real tool | cost to it, cold / warm cache (cents) |
+|---|---|---|---|---|---|---|
+| off | full (16) | 6, 7, 8 / 16 | 65,650 | 65,650 | 1.00 | 9.19 / 1.97 |
+| on | full (16) | 6, 6, 6 / 16 | 20,185 | 20,185 | 1.00 | 4.62 / 1.13–2.45 |
+| off | analysis (3) | 3, 3, 3 / 3 | 19,390 | 19,390 | 1.00 | 6.27 / 0.58 |
+| on | analysis (3) | 3, 3, 3 / 3 | ~19,950 | ~15,170 | 1.33 | 3.36 / 1.85–2.08 |
+| **off** | **all (19)** | **9, 10, 11** (mean 10.0) | | | | |
+| **on** | **all (19)** | **9, 9, 9** (mean 9.0) | | | | |
+
+"Cold" is each arm's first run (the tool prefix is written to the cache); "warm" is runs 2–3, where the identical prefix is read from the cache. Production agent runs hit either case, depending on how close together an agent's runs land.
+
+**Why search loses on accuracy.** The loss is entirely on tasks whose right tool is deferred under search. On the six `full` tasks where every acceptable first call is deferred (a04, a06, a07, a09, a14, a15), search-off scored 5 of 18 attempts and search-on 0 of 18. With search on, the model's first response pairs a `ToolSearch` call with a loaded generic tool (`get_device_details`, `manage_alerts`) and reaches the domain tool one response later. Verified on raw captures for a07 (Huntress) and a15 (unknown network device): first response `[ToolSearch, get_device_details]` / `[ToolSearch, manage_alerts]`, then `get_huntress_incidents` / `list_network_assets` in the second. So search spends the extra turn the issue worried about, just in parallel with a wasted generic call rather than on its own. Search-on gained on a02 and a03, where `get_device_details` is an acceptable first call; it lost a12 (the scheduled posture review) to `manage_alerts` / `get_fleet_health`, although `get_security_posture` is always loaded. Search ran in 23 of 48 `full` attempts and 8 of 9 `analysis` attempts.
+
+**Cost.** Search cuts a `full` run's re-sent context by ~45k tokens per turn (65.6k → 20.2k), about −50% on the cold first call. Warm, the gap is small or reversed, because the search round-trip changes the cached prefix. For `analysis` (18 tools) search saves ~4k tokens per turn but costs a second response on the staged-handle task and is more expensive warm.
+
+**Decision (the #7428 rule: enable only if at least accuracy-neutral and cheaper).** Not enabled. `full` is cheaper but loses one case in 19 on average, and all of the loss is on the deferred-domain tasks search is supposed to serve. `analysis` is neutral on accuracy but not cheaper warm. A second reason not to enable `analysis`: outcome tools (`submit_analysis`, and `submit_task_step` on task-linked runs) are built by `buildOutcomeSdkTools` without `alwaysLoad`, so under search the one tool a run must call would be deferred. The first-call eval does not score that.
+
+**What a later attempt needs.** An agent-specific `alwaysLoad` set (the chat set is tuned to chat's 90-day hot list, not to alert triage). Or a prompt rule to search before a generic device read when the trigger names a product or domain. Also: outcome tools marked `alwaysLoad`, and a metric for the response that reaches the first *expected* tool, not just the first real one. Re-measure with this harness. Before any enablement, runLoop's bookkeeping was checked (from code, not a live run): runLoop reads no `tool_use` blocks from the stream. Tool accounting happens only in the MCP pre/post hooks, which `ToolSearch` never reaches, so it cannot be misattributed there the way `streamingSessionManager`'s FIFO queue could (D22). But `turnCount` comes from the result's `num_turns`, so a search response would count against `maxTurnsPerRun`.
+
+**Not measured:**
+- whole-run completion, cost or budget exhaustion (deny mode refuses every tool, so a run cannot proceed past its first calls);
+- TTFT (agent surfaces do not stream partial messages);
+- Haiku or BYO/catalog hosts;
+- the verdict, sweep, design, patch, narrative and triage profiles (0–6 registered tools each).
