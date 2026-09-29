@@ -257,9 +257,16 @@ describe('transient authority failure (review I-1)', () => {
     await reconcile(s.series.id);
     await system(() => db.update(reportSeries).set({ name: 'Renamed', revision: 2 }).where(eq(reportSeries.id, s.series.id)));
     unverifiable.owners.add(s.owner);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await expect(reconcile(s.series.id)).rejects.toBeInstanceOf(SeriesAuthorityUnverifiableError);
+      // Final review minor #7: logged with enough context to diagnose a persistent wedge.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('owner authority could not be verified'),
+        expect.objectContaining({ seriesId: s.series.id, ownerUserId: s.owner, reason: 'unverifiable_scope' }),
+      );
     } finally {
+      warn.mockRestore();
       unverifiable.owners.delete(s.owner);
     }
     for (const row of await children(s.series.id)) {

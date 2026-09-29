@@ -19,6 +19,7 @@ import { captureException } from '../sentry';
 import {
   captureChildExecutionScope,
   isSeriesOwnerEligible,
+  SeriesAuthorityUnverifiableError,
   type ExecutionScopeColumns,
 } from './authority';
 import { resolveSeriesTargetOrgIds } from './targets';
@@ -106,6 +107,27 @@ async function updateSeriesChild(
 }
 
 /**
+ * Log a transient authority failure ONCE, with its series, so a series that
+ * keeps wedging on it is diagnosable; then let it propagate.
+ */
+async function logUnverifiableAuthority<T>(seriesId: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof SeriesAuthorityUnverifiableError && !err.logged) {
+      err.logged = true;
+      console.warn('[reportSeries] owner authority could not be verified; series left unchanged', {
+        seriesId,
+        ownerUserId: err.context?.ownerUserId,
+        orgId: err.context?.orgId,
+        reason: err.context?.reason,
+      });
+    }
+    throw err;
+  }
+}
+
+/**
  * A transient authority failure (SeriesAuthorityUnverifiableError) propagates
  * and aborts the whole series reconcile: the caller's transaction rolls back
  * and existing child scopes are untouched. Only a definitive denial blanks a
@@ -113,6 +135,10 @@ async function updateSeriesChild(
  * transfer-owner (neither the sweep nor the gate re-captures it).
  */
 export async function reconcileSeries(seriesId: string, tx: SeriesTx): Promise<ReconcileResult> {
+  return logUnverifiableAuthority(seriesId, () => reconcileSeriesUnlogged(seriesId, tx));
+}
+
+async function reconcileSeriesUnlogged(seriesId: string, tx: SeriesTx): Promise<ReconcileResult> {
   const result = emptyReconcileResult();
   const [series] = await tx
     .select()
@@ -383,5 +409,5 @@ export async function seriesChildGate(report: {
     }
     return 'run';
   };
-  return evaluate(true);
+  return logUnverifiableAuthority(report.seriesId, () => evaluate(true));
 }

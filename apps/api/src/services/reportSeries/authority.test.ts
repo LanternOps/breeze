@@ -159,3 +159,25 @@ describe('unverifiable authority is an error, not a denial', () => {
     expect(await captureChildExecutionScope(OWNER_ID, ORG_ID, txReturningUser(null))).toBe('no_authority');
   });
 });
+
+// Final review minor #7: a persistent wedge must be diagnosable from the error alone.
+describe('SeriesAuthorityUnverifiableError carries the resolver reason', () => {
+  const unverifiable = { ok: false, reason: 'unverifiable_scope' };
+
+  it('from the partner-level owner check: reason, owner and partner', async () => {
+    live.partner.mockResolvedValue(unverifiable);
+    const err = await assertSeriesOwnerEligible(OWNER_ID, PARTNER_ID, txReturningUser({ partnerId: PARTNER_ID })).catch((e) => e);
+    expect(err).toBeInstanceOf(SeriesAuthorityUnverifiableError);
+    expect(err.message).toContain('unverifiable_scope');
+    expect(err.message).toContain(OWNER_ID);
+    expect(err.context).toEqual({ reason: 'unverifiable_scope', ownerUserId: OWNER_ID, partnerId: PARTNER_ID });
+  });
+
+  it('from the per-org capture: reason, owner and org', async () => {
+    live.org.mockResolvedValue(unverifiable);
+    const err = await captureChildExecutionScope(OWNER_ID, ORG_ID, txReturningUser(null)).catch((e) => e);
+    expect(err.message).toContain('unverifiable_scope');
+    expect(err.message).toContain(ORG_ID);
+    expect(err.context).toEqual({ reason: 'unverifiable_scope', ownerUserId: OWNER_ID, orgId: ORG_ID });
+  });
+});

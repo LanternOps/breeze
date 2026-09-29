@@ -28,9 +28,23 @@ export type ExecutionScopeColumns = PersistedSiteScopeColumns;
  * reported as 'unverifiable_scope'). Deliberately NOT a ReportSeriesError: it
  * is not a denial. Callers must abort and retry rather than block children.
  */
+export interface SeriesAuthorityUnverifiableContext {
+  /** The live resolver's own reason (today always 'unverifiable_scope'). */
+  reason: string;
+  ownerUserId: string;
+  partnerId?: string;
+  orgId?: string;
+}
+
 export class SeriesAuthorityUnverifiableError extends Error {
-  constructor() {
-    super('report series owner authority could not be verified');
+  /** True once reconcile/gate logged it with its series id (logged once). */
+  logged = false;
+
+  constructor(readonly context?: SeriesAuthorityUnverifiableContext) {
+    super(context
+      ? `report series owner authority could not be verified (reason: ${context.reason}; owner ${context.ownerUserId}`
+        + `${context.partnerId ? `; partner ${context.partnerId}` : ''}${context.orgId ? `; org ${context.orgId}` : ''})`
+      : 'report series owner authority could not be verified');
     this.name = 'SeriesAuthorityUnverifiableError';
   }
 }
@@ -56,7 +70,9 @@ export async function assertSeriesOwnerEligible(
 
   const live = await resolveLivePartnerReportAuthority(userId, partnerId, 'export');
   if (!live.ok) {
-    if (live.reason === 'unverifiable_scope') throw new SeriesAuthorityUnverifiableError();
+    if (live.reason === 'unverifiable_scope') {
+      throw new SeriesAuthorityUnverifiableError({ reason: live.reason, ownerUserId: userId, partnerId });
+    }
     throw ineligible(live.reason);
   }
 }
@@ -83,7 +99,9 @@ export async function captureChildExecutionScope(
   _tx: SeriesTx,
 ): Promise<ExecutionScopeColumns | 'no_authority'> {
   const live = await resolveLiveReportAuthority(ownerUserId, orgId, 'export');
-  if (!live.ok && live.reason === 'unverifiable_scope') throw new SeriesAuthorityUnverifiableError();
+  if (!live.ok && live.reason === 'unverifiable_scope') {
+    throw new SeriesAuthorityUnverifiableError({ reason: live.reason, ownerUserId, orgId });
+  }
   if (!live.ok || live.authority.scope.kind !== 'unrestricted') return 'no_authority';
   return persistedSiteScopeValues(live.authority);
 }
