@@ -2839,7 +2839,7 @@ git commit -m "feat(time-sync): expose current device time view" -m "Co-Authored
 
 ### Task 7: Mount authenticated routes, limits, and MCP coverage
 
-**Files:** Create `apps/api/src/routes/agents/timeStatus.ts`, `timeStatus.test.ts`, `timeStatus.mounted.test.ts`; Create `apps/api/src/routes/devices/timeStatus.ts`, `timeStatus.test.ts`; Modify `apps/api/src/routes/agents/index.ts:18,86`, `apps/api/src/routes/devices/index.ts:17,162`, `apps/api/src/middleware/bodyLimit.ts:36,200`, `apps/api/src/middleware/bodyLimit.test.ts:250,360`, `apps/api/src/services/mcpCoverage.ts:186,348`.
+**Files:** Create `apps/api/src/routes/agents/timeStatus.ts`, `timeStatus.test.ts`, `timeStatus.mounted.test.ts`; Create `apps/api/src/routes/devices/timeStatus.ts`, `timeStatus.test.ts`; Modify `apps/api/src/routes/agents/index.ts:18,86`, `apps/api/src/routes/devices/index.ts:17,162`, `apps/api/src/middleware/bodyLimit.ts:36,200`, `apps/api/src/middleware/bodyLimit.test.ts:250,360`, `apps/api/src/services/mcpCoverage.ts:186,348`, `apps/api/src/routes/agents/parkedRouteClassification.test.ts` (`EXPECTED`: `'PUT /:id/time-status': 'deny'`), `apps/api/src/__tests__/parkedFanout.contract.test.ts` (`EXEMPT`: `services/timeSync/ingest.ts`, `services/timeSync/view.ts`, beside the hardwareHealth entries).
 
 **Interfaces:** Consumes `requireAgentRole` (`middleware/requireAgentRole.ts:15`), `AgentAuthContext` (`middleware/agentAuth.ts:26`), `zValidator` (`lib/validation.ts:150`, default 400), Task 5 ingest and Task 6 view. Produces `timeStatusRoutes` in each route module; agent `PUT /api/v1/agents/:id/time-status` → `200 { accepted: boolean, health?: TimeSyncHealth, reason?: 'stale_sequence' }` (R4); operator `GET /api/v1/devices/:id/time-status` → `DeviceTimeStatusView`, or 404 hidden/missing device. GET uses the exact scope/permission/site-check chain at `routes/devices/hardwareHealth.ts:8–12`. Existing functions are defined at `middleware/auth.ts:594,917,968` (`authMiddleware`, `requireScope`, `requirePermission`) and `routes/devices/helpers.ts:174,191` (`SITE_ACCESS_DENIED`, `getDeviceWithOrgAndSiteCheck`).
 
@@ -3408,11 +3408,11 @@ with:
   },
 ```
 
-- [ ] Run `cd apps/api && npx vitest run src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts`; expected PASS for body boundaries both with and without Content-Length, authentication, tenant/site denial, malformed input, and response shapes.
+- [ ] Run `cd apps/api && npx vitest run src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts src/routes/agents/parkedRouteClassification.test.ts src/__tests__/parkedFanout.contract.test.ts`; expected PASS for body boundaries both with and without Content-Length, authentication, tenant/site denial, malformed input, and response shapes.
 - [ ] Commit:
 
 ```bash
-git add apps/api/src/routes/agents/timeStatus.ts apps/api/src/routes/agents/timeStatus.test.ts apps/api/src/routes/agents/timeStatus.mounted.test.ts apps/api/src/routes/agents/index.ts apps/api/src/routes/devices/timeStatus.ts apps/api/src/routes/devices/timeStatus.test.ts apps/api/src/routes/devices/index.ts apps/api/src/middleware/bodyLimit.ts apps/api/src/middleware/bodyLimit.test.ts apps/api/src/services/mcpCoverage.ts
+git add apps/api/src/routes/agents/timeStatus.ts apps/api/src/routes/agents/timeStatus.test.ts apps/api/src/routes/agents/timeStatus.mounted.test.ts apps/api/src/routes/agents/index.ts apps/api/src/routes/devices/timeStatus.ts apps/api/src/routes/devices/timeStatus.test.ts apps/api/src/routes/devices/index.ts apps/api/src/middleware/bodyLimit.ts apps/api/src/middleware/bodyLimit.test.ts apps/api/src/services/mcpCoverage.ts apps/api/src/routes/agents/parkedRouteClassification.test.ts apps/api/src/__tests__/parkedFanout.contract.test.ts
 git commit -m "feat(time-sync): mount authenticated device and agent routes" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -6408,11 +6408,13 @@ git commit -m "docs(time-sync): explain device visibility and findings" -m "Co-A
 
 ```bash
 (cd packages/shared && npx vitest run src/validators/timeSync.test.ts src/validators/ntpServerHosts.test.ts src/utils/windowsZones.test.ts)
-(cd apps/api && npx vitest run src/services/timeSync/expectedTimezone.test.ts src/services/timeSync/findings.test.ts src/services/timeSync/freshness.test.ts src/services/timeSync/view.test.ts src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts)
+(cd apps/api && npx vitest run src/services/timeSync/expectedTimezone.test.ts src/services/timeSync/findings.test.ts src/services/timeSync/freshness.test.ts src/services/timeSync/view.test.ts src/routes/agents/timeStatus.test.ts src/routes/agents/timeStatus.mounted.test.ts src/routes/devices/timeStatus.test.ts src/middleware/bodyLimit.test.ts src/routes/agents/parkedRouteClassification.test.ts src/__tests__/parkedFanout.contract.test.ts)
 (cd apps/api && npx vitest run src/routes/devices/cascadeDelete.test.ts src/routes/devices/moveOrg.coverage.test.ts src/services/deviceDeletion.test.ts src/services/orgMerge.test.ts src/db/migrationRlsScope.test.ts src/db/autoMigrate.test.ts)
 (cd apps/api && npx vitest run src/services/aiToolsDevice.timeSync.test.ts src/services/aiToolsDevice.timeSync.registry.test.ts src/services/helperToolFilter.test.ts src/services/llm/toolCapture/surfaces.test.ts src/services/aiGuardrails.agentPrincipal.contract.test.ts src/services/aiAgents/runLoop.test.ts src/__tests__/mcp-coverage.test.ts)
 (cd apps/web && npx vitest run src/components/devices/time/DeviceTimeSection.test.tsx src/components/devices/time/DeviceTimeSection.integration.test.tsx src/components/devices/time/timeSyncDocs.test.ts src/components/devices/DeviceInfoTab.test.tsx src/lib/i18n/keyUsage.test.ts src/lib/i18n/translationCoverage.test.ts)
 ```
+
+Parked-registry contract: `parkedRouteClassification.test.ts` classifies every route in the real `agentRoutes` table and `parkedFanout.contract.test.ts` classifies every file under `src/services`, so every new agent route or `services/**` file needs an entry there in the same commit (W01a: `PUT /:id/time-status` → `deny`; `services/timeSync/{ingest,view}.ts` exempt). W02's routes and services must register the same way.
 
 Expected PASS with the binding R1–R17 resolutions applied. Before the corresponding implementations the exact failures are pinned in Tasks 1–10; a missing module, omitted registration, wrong scope, stale reset boundary, or untranslated key is a failure, not a reason to weaken an assertion.
 
