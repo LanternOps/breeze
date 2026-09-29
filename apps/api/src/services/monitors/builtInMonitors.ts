@@ -37,7 +37,7 @@ import type { HardwareHealthCondition, TimeSyncCondition } from '../alertConditi
  * lazily — the next `ensureBuiltInMonitorsForPartner` call (route, boot
  * backfill) inserts only the defaults newer than their stored marker.
  */
-export const BUILT_IN_MONITORS_VERSION = 4;
+export const BUILT_IN_MONITORS_VERSION = 5;
 
 export interface ThresholdDefaultCondition {
   operator: 'gt' | 'gte' | 'lt' | 'lte';
@@ -60,7 +60,8 @@ export interface BuiltInMonitorDefault {
     | 'hardware_collector_failing'
     | 'time_source_problem'
     | 'time_sync_stale'
-    | 'timezone_mismatch';
+    | 'timezone_mismatch'
+    | 'time_policy_not_applied';
   name: string;
   description: string;
   kind: MonitorKind;
@@ -225,6 +226,17 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     severity: 'low',
     cooldownMinutes: 1440,
     sinceVersion: 4,
+  },
+  {
+    key: 'time_policy_not_applied',
+    name: 'Time policy not applied',
+    description:
+      'Alerts after two snapshots reporting failed time-policy enforcement.',
+    kind: 'time_sync',
+    condition: { findings: ['policy_not_applied'], consecutiveSnapshots: 2 },
+    severity: 'low',
+    cooldownMinutes: 60,
+    sinceVersion: 5,
   },
 ];
 

@@ -142,7 +142,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     const resolution = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
     expect(resolution).toEqual({ kind: 'resolved', monitors: [] });
 
-    expect(await marker(partner.id)).toMatchObject({ version: 4 });
+    expect(await marker(partner.id)).toMatchObject({ version: 5 });
   });
 
   it('is a no-op on the second call', async () => {
@@ -168,36 +168,82 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     );
   });
 
-  // The production shape every existing partner is in — marker at version 2
-  // with the legacy rows (one of them deleted, plus an edited row) — must
-  // gain ONLY the four hardware defaults, keep the surviving rows' ids and
-  // edits, never resurrect the deleted one, and move the marker to version 3
-  // with provisionedAt kept.
+  // The production shape every existing partner is in: marker at version 2
+  // with legacy rows (one deleted, one edited) gains the eight later defaults,
+  // keeps surviving rows and edits, never resurrects the deleted one, and moves
+  // the marker to version 5 with provisionedAt kept.
   it('upgrades version 2 without restoring deleted defaults or overwriting edits', async () => {
     const partner = await newPartner();
-    await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
-    const hardwareKeys = ['raid_array_degraded', 'physical_disk_failed', 'cache_battery_problem', 'hardware_collector_failing'];
-    const timeKeys = ['time_source_problem', 'time_sync_stale', 'timezone_mismatch'];
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      ensureBuiltInMonitorsForPartner(partner.id),
+    );
+    const hardwareKeys = [
+      'raid_array_degraded',
+      'physical_disk_failed',
+      'cache_battery_problem',
+      'hardware_collector_failing',
+    ];
+    const timeKeys = [
+      'time_source_problem',
+      'time_sync_stale',
+      'timezone_mismatch',
+      'time_policy_not_applied',
+    ];
     await withDbAccessContext(SYSTEM_CTX, async () => {
-      await db.delete(monitorDefinitions).where(and(eq(monitorDefinitions.partnerId, partner.id),
-        inArray(monitorDefinitions.builtinKey, [...hardwareKeys, ...timeKeys, 'cpu_high'])));
-      await db.update(monitorDefinitions).set({ enabled: false, cooldownMinutes: 321 })
-        .where(and(eq(monitorDefinitions.partnerId, partner.id), eq(monitorDefinitions.builtinKey, 'memory_high')));
-      await db.update(partners).set({ settings: sql`jsonb_build_object('builtInMonitors', jsonb_build_object(
-        'version', 2, 'provisionedAt', '2026-01-01T00:00:00.000Z'))` }).where(eq(partners.id, partner.id));
+      await db
+        .delete(monitorDefinitions)
+        .where(
+          and(
+            eq(monitorDefinitions.partnerId, partner.id),
+            inArray(monitorDefinitions.builtinKey, [
+              ...hardwareKeys,
+              ...timeKeys,
+              'cpu_high',
+            ]),
+          ),
+        );
+      await db
+        .update(monitorDefinitions)
+        .set({ enabled: false, cooldownMinutes: 321 })
+        .where(
+          and(
+            eq(monitorDefinitions.partnerId, partner.id),
+            eq(monitorDefinitions.builtinKey, 'memory_high'),
+          ),
+        );
+      await db
+        .update(partners)
+        .set({
+          settings: sql`jsonb_build_object('builtInMonitors', jsonb_build_object(
+          'version', 2, 'provisionedAt', '2026-01-01T00:00:00.000Z'))`,
+        })
+        .where(eq(partners.id, partner.id));
     });
     const before = await builtInsFor(partner.id);
-    const result = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
-    expect(result.monitorIds).toHaveLength(7);
+    const result = await withDbAccessContext(SYSTEM_CTX, () =>
+      ensureBuiltInMonitorsForPartner(partner.id),
+    );
+    expect(result.monitorIds).toHaveLength(8);
     const after = await builtInsFor(partner.id);
-    expect(after.filter((row) => hardwareKeys.includes(row.builtinKey!))).toHaveLength(4);
-    expect(after.filter(row => timeKeys.includes(row.builtinKey!))).toHaveLength(3);
+    expect(
+      after.filter((row) => hardwareKeys.includes(row.builtinKey!)),
+    ).toHaveLength(4);
+    expect(
+      after.filter((row) => timeKeys.includes(row.builtinKey!)),
+    ).toHaveLength(4);
     expect(after.some((row) => row.builtinKey === 'cpu_high')).toBe(false);
-    for (const row of before) expect(after.find((next) => next.id === row.id)).toEqual(row);
-    expect(await marker(partner.id)).toMatchObject({ version: 4, provisionedAt: '2026-01-01T00:00:00.000Z' });
-    expect(await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id))).toEqual({ provisioned: false, monitorIds: [] });
+    for (const row of before)
+      expect(after.find((next) => next.id === row.id)).toEqual(row);
+    expect(await marker(partner.id)).toMatchObject({
+      version: 5,
+      provisionedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        ensureBuiltInMonitorsForPartner(partner.id),
+      ),
+    ).toEqual({ provisioned: false, monitorIds: [] });
   });
-
 
   it('upgrades version 3 once without restoring deleted defaults or overwriting edits', async () => {
     const partner = await newPartner();
@@ -208,6 +254,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
       'time_source_problem',
       'time_sync_stale',
       'timezone_mismatch',
+      'time_policy_not_applied',
     ];
     await withDbAccessContext(SYSTEM_CTX, async () => {
       await db
@@ -241,16 +288,16 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     const result = await withDbAccessContext(SYSTEM_CTX, () =>
       ensureBuiltInMonitorsForPartner(partner.id),
     );
-    expect(result.monitorIds).toHaveLength(3);
+    expect(result.monitorIds).toHaveLength(4);
     const after = await builtInsFor(partner.id);
-    expect(after.filter((r) => timeKeys.includes(r.builtinKey!))).toHaveLength(3);
+    expect(after.filter((r) => timeKeys.includes(r.builtinKey!))).toHaveLength(4);
     expect(after.some((r) => r.builtinKey === 'physical_disk_failed')).toBe(
       false,
     );
     for (const row of before)
       expect(after.find((r) => r.id === row.id)).toEqual(row);
     expect(await marker(partner.id)).toMatchObject({
-      version: 4,
+      version: 5,
       provisionedAt: '2026-01-01T00:00:00.000Z',
     });
     expect(
@@ -258,6 +305,50 @@ describe('ensureBuiltInMonitorsForPartner', () => {
         ensureBuiltInMonitorsForPartner(partner.id),
       ),
     ).toEqual({ provisioned: false, monitorIds: [] });
+  });
+
+  it('upgrades v4 with only the time-policy monitor and leaves deleted defaults deleted', async () => {
+    const partner = await newPartner();
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      ensureBuiltInMonitorsForPartner(partner.id),
+    );
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db
+        .delete(monitorDefinitions)
+        .where(
+          and(
+            eq(monitorDefinitions.partnerId, partner.id),
+            inArray(monitorDefinitions.builtinKey, [
+              'time_policy_not_applied',
+              'cpu_high',
+            ]),
+          ),
+        );
+      await db
+        .update(partners)
+        .set({
+          settings: sql`jsonb_set(${partners.settings}, '{builtInMonitors,version}', '4'::jsonb)`,
+        })
+        .where(eq(partners.id, partner.id));
+    });
+    const upgraded = await withDbAccessContext(SYSTEM_CTX, () =>
+      ensureBuiltInMonitorsForPartner(partner.id),
+    );
+    expect(upgraded.monitorIds).toHaveLength(1);
+    const rows = await builtInsFor(partner.id);
+    expect(rows.some((row) => row.builtinKey === 'cpu_high')).toBe(false);
+    expect(
+      rows.filter((row) => row.builtinKey === 'time_policy_not_applied'),
+    ).toHaveLength(1);
+    expect(await marker(partner.id)).toMatchObject({ version: 5 });
+    expect(
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db
+          .select()
+          .from(configurationPolicies)
+          .where(eq(configurationPolicies.partnerId, partner.id)),
+      ),
+    ).toEqual([]);
   });
 
   it('refuses an org-owned row carrying a builtin_key (CHECK)', async () => {
@@ -309,7 +400,7 @@ describe('createPartner() hook', () => {
     const rows = await builtInsFor(created.partnerId);
     expect(rows).toHaveLength(BUILT_IN_MONITOR_DEFAULTS.length);
     expect(rows.every((r) => r.createdBy === created.adminUserId)).toBe(true);
-    expect(await marker(created.partnerId)).toMatchObject({ version: 4 });
+    expect(await marker(created.partnerId)).toMatchObject({ version: 5 });
   });
 });
 
