@@ -1,6 +1,6 @@
 import ELK from 'elkjs/lib/elk.bundled.js';
 import { describe, expect, it } from 'vitest';
-import { computeTopologyLayout, packTopologyLayout, toElkGraph } from './layoutAdapter';
+import { computeTopologyLayout, layeredThoroughness, packTopologyLayout, toElkGraph } from './layoutAdapter';
 import { layoutFixture, layoutProjectionFixture, findOverlaps } from './layoutFixtures';
 describe('real ELK topology layout', () => {
   it.each(['incremental', 'reflow'] as const)('is deterministic, collision-free and retains pins in %s mode', async (mode) => {
@@ -35,6 +35,10 @@ describe('ELK Layered cost at the §9 visible projections (#7285)', () => {
     expect(thoroughness(toElkGraph(layoutProjectionFixture('V200')))).toBe('7');
     expect(thoroughness(toElkGraph(layoutProjectionFixture('V500')))).toBe('3');
     expect(thoroughness(toElkGraph(layoutProjectionFixture('V1000')))).toBe('1');
+  });
+
+  it.each([[0, 7], [800, 7], [801, 3], [2_000, 3], [2_001, 1], [5_000, 1]])('uses thoroughness %i elements -> %i', (elements, expected) => {
+    expect(layeredThoroughness(elements)).toBe(expected);
   });
 
   // The pre-fix options took ~7 s (V500) and ~40 s (V1000) of CPU for ELK alone,

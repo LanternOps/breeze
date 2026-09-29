@@ -68,6 +68,19 @@ it('does not restart the layout worker when a repeat measurement reports unchang
   expect(posted).toHaveLength(1);
 });
 
+it('still re-arranges when the shared layout revision changes but card sizes do not', async () => {
+  const initial = topologyGraphFixture();
+  initial.frontier = [{ token: 'next', label: 'More nodes', memberCount: 1 }];
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('/expansions/')
+    ? { ...initial, revisions: { ...initial.revisions, layout: String(Number(initial.revisions.layout) + 1) }, frontier: [] } : initial)));
+  const posted: unknown[] = [];
+  vi.stubGlobal('Worker', class { onmessage = null; onerror = null; postMessage(request: unknown) { posted.push(request); } terminate() {} });
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await waitFor(() => expect(posted).toHaveLength(1));
+  fireEvent.click(await screen.findByTestId('topology-frontier'));
+  await waitFor(() => expect(posted).toHaveLength(2));
+});
+
 it('enables the physical view from the capability and offers the overview from an empty physical view', async () => {
   const settings = topologySettingsFixture(); settings.capabilities.physical = { available: true, reason: null };
   vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('view=physical')
