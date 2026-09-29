@@ -12,7 +12,8 @@ import {
   XCircle,
   Loader2,
   LayoutTemplate,
-  Mail
+  Mail,
+  Layers
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -22,6 +23,19 @@ import { PageHeader } from '../shared/PageHeader';
 import { useJwtClaims } from '@/lib/authScope';
 import { CoversCell } from './CoversCell';
 import { DeliveryStatusChip, type ReportDeliveryStatus } from './DeliveryStatusChip';
+import { useHashState } from '@/lib/useHashState';
+import { fetchSeriesList } from './series/seriesApi';
+import { ReportsFilterChips } from './series/ReportsFilterChips';
+import { SeriesListRow } from './series/SeriesListRow';
+import {
+  buildListEntries,
+  DEFAULT_REPORTS_LIST_VIEW,
+  filterListEntries,
+  formatReportsListHash,
+  parseReportsListHash,
+  type ReportsListView,
+} from './series/listModel';
+import type { SeriesDetail } from './series/types';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
@@ -82,7 +96,11 @@ export type Report = {
    *  `orgId` set. Ownership is immutable after create. */
   orgId: string | null;
   partnerId: string | null;
-  /** Multi-org series W01: the owning org's name (GET /reports joins it); null for a partner-owned report. */
+    /** W02: set on a series child (an org-owned row a multi-org report manages). */
+    seriesId?: string | null;
+    seriesName?: string | null;
+    archivedAt?: string | null;
+    /** Multi-org series W01: the owning org's name (GET /reports joins it); null for a partner-owned report. */
   orgName?: string | null;
   /** Multi-org series W01: the latest SCHEDULED run's delivery outcome (manual runs excluded). */
   lastDeliveryStatus?: ReportDeliveryStatus | null;
@@ -103,6 +121,8 @@ export type ReportRun = {
   createdAt: string;
   reportName?: string;
   reportType?: ReportType;
+  seriesId?: string | null;
+  seriesName?: string | null;
   /** Multi-org series W01 (GET /reports/runs): the owning org; null for a partner-owned report's run. */
   orgId?: string | null;
   orgName?: string | null;
@@ -174,6 +194,22 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     jwtClaims.claims.scope === 'partner' &&
     canManagePartnerWide &&
     !!currentOrgId;
+  // Multi-org series (W03). Same fail-closed gate as mergePartnerWide: only a
+  // partner-scope user who may administer partner-wide state sees series. On
+  // the All-organizations view the list groups children under their series; with
+  // one org focused, children are ordinary rows with a Multi-org badge.
+  const seriesGate =
+    jwtClaims.status === 'resolved' && jwtClaims.claims.scope === 'partner' && canManagePartnerWide;
+  const grouped = seriesGate && !currentOrgId;
+  const [seriesDetails, setSeriesDetails] = useState<SeriesDetail[]>([]);
+  const [seriesLoadFailed, setSeriesLoadFailed] = useState(false);
+  const [view, setView] = useHashState<ReportsListView>(DEFAULT_REPORTS_LIST_VIEW, parseReportsListHash);
+  const updateView = useCallback((next: ReportsListView) => {
+    setView(next);
+    const hash = formatReportsListHash(next);
+    if (hash) window.location.hash = hash;
+    else window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  }, [setView]);
   const [partnerWideIncomplete, setPartnerWideIncomplete] = useState(false);
 
   const fetchPartnerWideReports = useCallback(async (): Promise<PartnerWideFetch> => {
@@ -225,11 +261,23 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     try {
       setLoading(true);
       setError(undefined);
-      const [response, partnerWide] = await Promise.all([
-        fetchWithAuth('/reports'),
+      const [response, partnerWide, seriesResult] = await Promise.all([
+        // Grouped: children are represented by their series row, so they must
+        // not consume the (50-row) first page.
+        fetchWithAuth(grouped ? '/reports?series=exclude' : '/reports'),
         mergePartnerWide
           ? fetchPartnerWideReports()
           : Promise.resolve<PartnerWideFetch>({ rows: [], complete: true }),
+        grouped
+          ? fetchSeriesList().then(
+              (rows) => ({ rows: rows ?? [], failed: false }),
+              (err: unknown) => {
+                // The rest of the list still renders; the banner says what is missing.
+                console.warn('Failed to fetch multi-org reports:', err);
+                return { rows: [] as SeriesDetail[], failed: true };
+              },
+            )
+          : Promise.resolve({ rows: [] as SeriesDetail[], failed: false }),
       ]);
       if (!response.ok) {
         throw new Error(stableT('reports.reportsList.errors.fetchReports'));
@@ -240,13 +288,15 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       const seen = new Set(own.map((r) => r.id));
       setReports([...own, ...partnerWide.rows.filter((r) => !seen.has(r.id))]);
       setPartnerWideIncomplete(!partnerWide.complete);
+      setSeriesDetails(seriesResult.rows);
+      setSeriesLoadFailed(seriesResult.failed);
     } catch (err) {
       if (!isCurrent()) return;
       setError(err instanceof Error ? err.message : stableT('reports.reportsList.errors.generic'));
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [stableT, mergePartnerWide, fetchPartnerWideReports]);
+  }, [stableT, mergePartnerWide, fetchPartnerWideReports, grouped]);
 
   const fetchRecentRuns = useCallback(async () => {
     try {
@@ -462,158 +512,12 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     return formatDateTime(dateStr, { timeZone: effectiveTimezone });
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">{t('reports.reportsList.loading')}</p>
-        </div>
-      </div>
-    );
-  }
+  const entries = buildListEntries(reports, seriesDetails, grouped);
+  const visibleEntries = filterListEntries(entries, view.filter);
+  // A hash naming a series that isn't listed (deleted, other partner) expands nothing.
+  const expandedSeriesId = seriesDetails.some((d) => d.series.id === view.seriesId) ? view.seriesId : null;
 
-  if (error && reports.length === 0) {
-    return (
-      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{error}</p>
-        <button
-          type="button"
-          onClick={fetchReports}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          {t('reports.reportsList.tryAgain')}
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        title={t('reports.reportsList.title')}
-        description={t('reports.reportsList.description')}
-        actions={
-          <>
-            <a
-              href="/reports/templates"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
-            >
-              <LayoutTemplate className="h-4 w-4" />
-              {t('reports.reportsList.templates')}
-            </a>
-            <a
-              href="/reports/builder"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
-            >
-              <FileText className="h-4 w-4" />
-              {t('reports.reportsList.adhocReport')}
-            </a>
-            <a
-              href="/reports/new"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-              <Plus className="h-4 w-4" />
-              {t('reports.reportsList.newReport')}
-            </a>
-          </>
-        }
-      />
-
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="border-b">
-        <div className="flex gap-4">
-          <button
-            type="button"
-            data-testid="reports-tab-saved"
-            onClick={() => setActiveTab('reports')}
-            className={cn(
-              'pb-3 text-sm font-medium transition-colors',
-              activeTab === 'reports'
-                ? 'border-b-2 border-primary text-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {t('reports.reportsList.tabs.savedReports')}
-          </button>
-          <button
-            type="button"
-            data-testid="reports-tab-runs"
-            onClick={() => setActiveTab('runs')}
-            className={cn(
-              'pb-3 text-sm font-medium transition-colors',
-              activeTab === 'runs'
-                ? 'border-b-2 border-primary text-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {t('reports.reportsList.tabs.recentRuns')}
-          </button>
-        </div>
-      </div>
-
-      {activeTab === 'reports' && (
-        <>
-          {partnerWideIncomplete && (
-            <p
-              data-testid="reports-partner-wide-incomplete"
-              role="status"
-              className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm"
-            >
-              {t('reports.reportsList.partnerWideIncomplete')}
-            </p>
-          )}
-          {reports.length === 0 ? (
-            <div className="rounded-lg border border-dashed p-12 text-center">
-              <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-medium">{t('reports.reportsList.emptyReportsTitle')}</h3>
-              <p className="text-sm text-muted-foreground mt-1">
-                {t('reports.reportsList.emptyReportsDescription')}
-              </p>
-              <a
-                href="/reports/new"
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 mt-4"
-              >
-                <Plus className="h-4 w-4" />
-                {t('reports.reportsList.createReport')}
-              </a>
-            </div>
-          ) : (
-            <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-muted/40">
-                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">
-                      {t('reports.reportsList.table.name')}
-                    </th>
-                    <th className="px-4 py-3">
-                      {t('reports.reportsList.table.covers')}
-                    </th>
-                    <th className="px-4 py-3">
-                      {t('reports.reportsList.table.type')}
-                    </th>
-                    <th className="px-4 py-3">
-                      {t('reports.reportsList.table.schedule')}
-                    </th>
-                    <th className="px-4 py-3">
-                      {t('reports.reportsList.table.format')}
-                    </th>
-                    <th className="px-4 py-3">
-                      {t('reports.reportsList.table.lastGenerated')}
-                    </th>
-                    <th className="px-4 py-3 text-right">
-                      {t('reports.reportsList.table.actions')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {reports.map(report => (
+  const renderReportRow = (report: Report) => (
                     <tr key={report.id} data-testid={`report-row-${report.id}`} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -627,7 +531,26 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               {t('reports.reportsList.visibleInPortal')}
                             </span>
                           )}
-                        </div>
+                            {report.seriesId && (
+                              seriesGate ? (
+                                <a
+                                  href={`/reports/series/${report.seriesId}`}
+                                  title={t('reports.series.list.multiOrgBadgeTitle', { name: report.seriesName ?? '' })}
+                                  className="shrink-0"
+                                >
+                                  <span data-testid={`report-series-badge-${report.id}`} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                                    <Layers className="h-3 w-3" />
+                                    {t('reports.series.list.multiOrgBadge')}
+                                  </span>
+                                </a>
+                              ) : (
+                                <span data-testid={`report-series-badge-${report.id}`} className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
+                                  <Layers className="h-3 w-3" />
+                                  {t('reports.series.list.multiOrgBadge')}
+                                </span>
+                              )
+                            )}
+                          </div>
                       </td>
                       <td className="px-4 py-3">
                         {/* Multi-org series W01 (spec §3.7): replaces the lone
@@ -747,6 +670,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               >
                                 <Pencil className="h-4 w-4" />
                               </button>
+                              {!report.seriesId && (
                               <button
                                 type="button"
                                 data-testid={`report-delete-${report.id}`}
@@ -761,14 +685,197 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                                   <Trash2 className="h-4 w-4" />
                                 )}
                               </button>
+                              )}
                             </>
                           )}
                         </div>
                       </td>
                     </tr>
-                  ))}
-                </tbody>
+  );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
+          <p className="mt-4 text-sm text-muted-foreground">{t('reports.reportsList.loading')}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && reports.length === 0) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
+        <button
+          type="button"
+          onClick={fetchReports}
+          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          {t('reports.reportsList.tryAgain')}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title={t('reports.reportsList.title')}
+        description={t('reports.reportsList.description')}
+        actions={
+          <>
+            <a
+              href="/reports/templates"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+            >
+              <LayoutTemplate className="h-4 w-4" />
+              {t('reports.reportsList.templates')}
+            </a>
+            <a
+              href="/reports/builder"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+            >
+              <FileText className="h-4 w-4" />
+              {t('reports.reportsList.adhocReport')}
+            </a>
+            <a
+              href="/reports/new"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" />
+              {t('reports.reportsList.newReport')}
+            </a>
+          </>
+        }
+      />
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="border-b">
+        <div className="flex gap-4">
+          <button
+            type="button"
+            data-testid="reports-tab-saved"
+            onClick={() => setActiveTab('reports')}
+            className={cn(
+              'pb-3 text-sm font-medium transition-colors',
+              activeTab === 'reports'
+                ? 'border-b-2 border-primary text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {t('reports.reportsList.tabs.savedReports')}
+          </button>
+          <button
+            type="button"
+            data-testid="reports-tab-runs"
+            onClick={() => setActiveTab('runs')}
+            className={cn(
+              'pb-3 text-sm font-medium transition-colors',
+              activeTab === 'runs'
+                ? 'border-b-2 border-primary text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {t('reports.reportsList.tabs.recentRuns')}
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'reports' && (
+        <>
+          {partnerWideIncomplete && (
+            <p
+              data-testid="reports-partner-wide-incomplete"
+              role="status"
+              className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm"
+            >
+              {t('reports.reportsList.partnerWideIncomplete')}
+            </p>
+          )}
+            {seriesLoadFailed && (
+              <p data-testid="reports-series-load-failed" role="status" className="rounded-md border border-warning/40 bg-warning/10 px-4 py-2 text-sm">
+                {t('reports.series.list.loadFailed')}
+              </p>
+            )}
+            {entries.length > 0 && (
+              <ReportsFilterChips value={view.filter} onChange={(filter) => updateView({ ...view, filter })} />
+            )}
+            {entries.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-12 text-center">
+              <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-medium">{t('reports.reportsList.emptyReportsTitle')}</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                {t('reports.reportsList.emptyReportsDescription')}
+              </p>
+              <a
+                href="/reports/new"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 mt-4"
+              >
+                <Plus className="h-4 w-4" />
+                {t('reports.reportsList.createReport')}
+              </a>
+            </div>
+          ) : (
+            <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.table.name')}
+                    </th>
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.table.covers')}
+                    </th>
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.table.type')}
+                    </th>
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.table.schedule')}
+                    </th>
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.table.format')}
+                    </th>
+                    <th className="px-4 py-3">
+                      {t('reports.reportsList.table.lastGenerated')}
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      {t('reports.reportsList.table.actions')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {visibleEntries.map((entry) =>
+                    entry.kind === 'series' ? (
+                      <SeriesListRow
+                        key={`series-${entry.detail.series.id}`}
+                        detail={entry.detail}
+                        expanded={expandedSeriesId === entry.detail.series.id}
+                        onToggle={() =>
+                          updateView({ ...view, seriesId: expandedSeriesId === entry.detail.series.id ? null : entry.detail.series.id })
+                        }
+                        onChanged={fetchReports}
+                        timezone={effectiveTimezone}
+                      />
+                    ) : (
+                      renderReportRow(entry.report)
+                    ),
+                  )}
+                  </tbody>
               </table>
+              {visibleEntries.length === 0 && (
+                <p data-testid="reports-filter-no-matches" className="p-6 text-center text-sm text-muted-foreground">
+                  {t('reports.series.list.noMatches')}
+                </p>
+              )}
+  
             </div>
           )}
         </>
@@ -795,6 +902,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                     <th className="px-4 py-3">
                       {t('reports.reportsList.runsTable.organization')}
                     </th>
+                    <th className="px-4 py-3">{t('reports.series.list.runsSeriesColumn')}</th>
                     <th className="px-4 py-3">
                       {t('reports.reportsList.runsTable.status')}
                     </th>
@@ -829,7 +937,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                           orgName={run.orgName}
                         />
                       </td>
-                      <td className="px-4 py-3">
+                      <td data-testid={`report-run-series-${run.id}`} className="px-4 py-3 text-sm text-muted-foreground">
+                        {run.seriesName ?? ''}
+                      </td>
+                        <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           {getStatusIcon(run.status)}
                           <span

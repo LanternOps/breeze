@@ -21,6 +21,10 @@ vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: nu
 
 import ReportsList from './ReportsList';
 
+// W03: a partner-wide user on All organizations lists children-free rows
+// (`/reports?series=exclude`) alongside `/reports/series`.
+const isListUrl = (u: string) => u === '/reports' || u === '/reports?series=exclude';
+
 const base = {
   type: 'device_inventory',
   schedule: 'weekly',
@@ -42,7 +46,8 @@ const runs = [
 
 function mockApi() {
   fetchWithAuth.mockImplementation((url: string) => {
-    if (url === '/reports') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [acme, bravo, combined] }) });
+    if (url === '/reports/series') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+    if (isListUrl(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [acme, bravo, combined] }) });
     if (url.startsWith('/reports/runs?')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: runs }) });
     return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
   });
