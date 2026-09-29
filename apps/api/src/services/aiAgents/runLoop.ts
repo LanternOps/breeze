@@ -65,7 +65,7 @@ import { createActionIntent } from '../actionIntents/intentService';
 import { captureException } from '../sentry';
 import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
-import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
+import { TOOL_TIERS, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
@@ -1976,7 +1976,22 @@ async function driveSdkLoop(
   // above, which stays built from `effective.toolAllowlist` unchanged).
   // `profileAllowlist` itself is untouched — still `null` for `full` — so
   // authority for a full run is exactly what it was before this task.
-  const fullExposure = run.profile === 'full' ? fullRunToolExposure(effective.toolAllowlist) : null;
+  //
+  // #7427 — the floor walks the `aiTools` registry, which still carries tools
+  // the SDK server has no `tool()` declaration for (the
+  // KNOWN_MISSING_TOOL_TIERS set: manage_tags, manage_tickets, …). Handed to
+  // `createBreezeMcpServer` as `onlyTools`, those names throw outside
+  // production and log an error on every full run in production. Intersect
+  // with the names the server actually declares under the current env, ONCE,
+  // here, so `exposedNames`/`allowedTools` and `onlyTools` below both see the
+  // same list. Profile allowlists are NOT filtered: they are hardcoded, so an
+  // undeclared name there is a bug `createBreezeMcpServer` should keep
+  // surfacing (#4447). Exposure only — authority is unchanged.
+  let fullExposure: string[] | null = null;
+  if (run.profile === 'full') {
+    const declared = new Set(listChatSurfaceToolNames());
+    fullExposure = fullRunToolExposure(effective.toolAllowlist).filter((name) => declared.has(name));
+  }
   const exposureList = profileAllowlist ?? fullExposure;
   const exposedNames = exposureList
     ? exposureList.map((name) => (
