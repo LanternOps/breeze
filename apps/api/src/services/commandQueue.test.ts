@@ -73,6 +73,7 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   hasDbAccessContext: vi.fn(() => false),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -1791,6 +1792,37 @@ describe('command queue service', () => {
       const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 1 });
       await executeCommand('dev-sql', 'mssql_verify', verifyPayload, { userId: 'user-1', timeoutMs: 10 });
       expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'mssql_verify' }));
+    });
+
+    const backupPayload = { jobId: 'job-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: 'org-1' } };
+
+    it('refuses a backup to S3 storage to a helper below the brokered write protocol, writing no row', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 1, backupWriteProtocolVersion: 0 });
+      const result = await executeCommand('dev-sql', 'mssql_backup', backupPayload, { userId: 'user-1' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toBe(
+        'Update the Breeze agent on this device, then try again. Backups now require secure storage access, '
+          + 'and the backup component on this device has not reported support for it.',
+      );
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('lets a backup to S3 storage through to a helper that reports brokered writes', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 1, backupWriteProtocolVersion: 1 });
+      await executeCommand('dev-sql', 'mssql_backup', backupPayload, { userId: 'user-1', timeoutMs: 10 });
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'mssql_backup' }));
+    });
+
+    it('lets a backup through for a device that has not reported its helper yet (delivery waits for the report)', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: null, backupWriteProtocolVersion: null });
+      await executeCommand('dev-sql', 'hyperv_backup', backupPayload, { userId: 'user-1', timeoutMs: 10 });
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'hyperv_backup' }));
+    });
+
+    it('lets a backup to a local destination through to any helper', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 0, backupWriteProtocolVersion: 0 });
+      await executeCommand('dev-sql', 'mssql_backup', { ...backupPayload, provider: 'local' }, { userId: 'user-1', timeoutMs: 10 });
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'mssql_backup' }));
     });
   });
 

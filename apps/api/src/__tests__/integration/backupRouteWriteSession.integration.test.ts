@@ -171,12 +171,26 @@ describe.each(ROUTES)('an on-demand $name backup queued through the API', (route
     expect(job?.last_keepalive_at).not.toBeNull();
   });
 
-  runDb('still delivers the destination to a helper that does not report brokered writes', async () => {
-    // Control: the capture above sees the destination whenever it IS sent, so
-    // its absence there is a real result.
-    const { frame } = await queue(0);
-
-    expect(frame.payload.providerConfig).toMatchObject({ bucket: WRITE_DESTINATION.bucket });
-    expect(frame.payload).not.toHaveProperty('storageSession');
+  runDb('refuses a helper that does not report brokered writes: 409, no frame, the job failed with the update message', async () => {
+    const { deviceId, token } = await seed(0);
+    const res = await buildApp().request(route.path, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(route.body(deviceId)),
+    });
+    const body = await res.json() as { error?: string; reason?: string };
+    expect(res.status, JSON.stringify(body)).toBe(409);
+    expect(body.reason).toBe('helper_update_required');
+    expect(body.error).toMatch(/^Update the Breeze agent on this device, then try again\. Backups now require/);
+    expect(ws.frames).toEqual([]);
+    const jobs = await getTestDb().execute(sql`
+      SELECT status, error_log FROM backup_jobs WHERE device_id = ${deviceId}
+    `) as unknown as Array<{ status: string; error_log: string | null }>;
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ status: 'failed', error_log: body.error });
+    const rows = await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM device_commands WHERE device_id = ${deviceId}
+    `) as unknown as Array<{ n: number }>;
+    expect(rows[0]!.n).toBe(0);
   });
 });

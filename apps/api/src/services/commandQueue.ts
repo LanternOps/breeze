@@ -24,6 +24,7 @@ import {
 } from './agentEditionCompat';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
+import { backupWriteHelperRefusal } from './backupWriteHelperGate';
 import {
   assertCommandDeliverable,
   isParkedDeliverableCommandType,
@@ -1183,6 +1184,7 @@ async function precheckCommandExecution(
       agentVersion: devices.agentVersion,
       watchdogVersion: devices.watchdogVersion,
       backupReadProtocolVersion: devices.backupReadProtocolVersion,
+      backupWriteProtocolVersion: devices.backupWriteProtocolVersion,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -1272,7 +1274,10 @@ async function precheckCommandExecution(
 
   // Same rule as the queue lane (dispatchDeviceCommand.ts): a storage read to
   // a helper that cannot use a storage session is refused before a row exists.
-  const helperRefusal = backupReadHelperRefusal(type, payload, device.backupReadProtocolVersion);
+  // A backup to S3 storage is written only through a write-scoped storage
+  // session, so a helper that cannot use one is refused the same way.
+  const helperRefusal = backupReadHelperRefusal(type, payload, device.backupReadProtocolVersion)
+    ?? backupWriteHelperRefusal(type, payload, device.backupWriteProtocolVersion);
   if (helperRefusal) {
     return { ok: false, result: { status: 'failed', error: helperRefusal } };
   }
