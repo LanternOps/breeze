@@ -1,12 +1,13 @@
 // Current model id so the Claude Agent SDK can price it natively. A stale id makes the
-// SDK report total_cost_usd: 0 → $0.00 cost tracking (issue #1326). Successor to the
-// previous default claude-sonnet-4-5-20250929, at the same $3/$15 per-MTok tier.
-export const BREEZE_FALLBACK_MODEL = 'claude-sonnet-4-6';
+// SDK report total_cost_usd: 0 → $0.00 cost tracking (issue #1326). #7587 moved the
+// default from claude-sonnet-4-6 ($3/$15) to Sonnet 5.5 ($2/$10), which rejects
+// `thinking: disabled` — see resolveModelThinking (aiModelThinking.ts).
+export const BREEZE_FALLBACK_MODEL = 'claude-sonnet-5-5';
 
 // ANTHROPIC_MODEL (#1412) overrides the default for self-hosted operators
 // pointing at a raw vLLM backend whose served model id differs from the
 // Anthropic alias. With a LiteLLM gateway the alias route maps
-// claude-sonnet-4-6 → backend model, so the override is unnecessary there.
+// claude-sonnet-5-5 → backend model, so the override is unnecessary there.
 // A whitespace-only/empty value falls back to the Anthropic default (never an
 // empty model id). Cost tracking stays best-effort: the SDK can't price a
 // non-Anthropic model id so it reports total_cost_usd=0, then aiCostTracker

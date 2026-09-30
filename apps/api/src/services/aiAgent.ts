@@ -22,12 +22,47 @@ import {
   UNTRUSTED_FIELD_MAX_LENGTH,
 } from './aiInputSanitizer';
 import { looksLikeInternalErrorDetail } from './aiToolErrors';
-import { LlmUnavailableError, resolveLlmConfigForOrg } from './llm/llmConfigResolver';
+import {
+  LlmUnavailableError,
+  resolveLlmConfigForOrg,
+  resolveWireModel,
+  type UsableLlmConfig,
+} from './llm/llmConfigResolver';
+import { InvalidSessionModelError, OFFERABLE_AI_MODELS } from './aiOfferableModels';
 import { LlmNotConfiguredError, llmUnusableCode } from './llm/llmAvailability';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
 import { topologySessionAccessCondition } from './topology/aiSessionAccess';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
+export { InvalidSessionModelError } from './aiOfferableModels';
+
+/**
+ * #7587 — the client-supplied session `model` used to be stored unchecked, so
+ * any chat user could run a session on any model id against the platform key.
+ *
+ * - A catalog endpoint: the existing fail-closed `resolveWireModel` gate (the
+ *   pinned revision must map AND have verified the model).
+ * - Platform key or a partner's own Anthropic key: `OFFERABLE_AI_MODELS`, the
+ *   same list a partner default pin is validated against. The configured
+ *   default itself is always allowed, so a client echoing a self-host
+ *   `ANTHROPIC_MODEL` id is not refused.
+ *
+ * `Object.hasOwn`-safe: `includes` on an array never resolves inherited keys,
+ * and `resolveWireModel` guards its own lookup.
+ */
+function assertSessionModelAllowed(resolved: UsableLlmConfig, model: string): void {
+  if (resolved.source === 'partner' && resolved.endpoint.kind === 'catalog') {
+    try {
+      resolveWireModel(resolved, model);
+      return;
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) throw new InvalidSessionModelError(model);
+      throw err;
+    }
+  }
+  if (model === resolved.model || OFFERABLE_AI_MODELS.includes(model)) return;
+  throw new InvalidSessionModelError(model);
+}
 
 // ============================================
 // Session Management
@@ -213,6 +248,7 @@ export async function createSession(
   const unusable = llmUnusableCode(resolved);
   if (unusable === 'ai_not_configured') throw new LlmNotConfiguredError();
   if (resolved.source === 'unavailable') throw new LlmUnavailableError();
+  if (options.model !== undefined) assertSessionModelAllowed(resolved, options.model);
 
   // #6473 — without this, every new session fell back to the `ai_sessions`
   // schema column default (50) regardless of the configured org/partner
