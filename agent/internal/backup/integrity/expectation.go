@@ -50,6 +50,12 @@ const (
 	ExpectationVersion = 1
 )
 
+// ProtocolVersion is the snapshot integrity protocol this build implements
+// (backup.IntegrityProtocolVersion, reported by --protocol-info and by the
+// recovery client): 1 = produces snapshot attestations and checks an
+// incremental's base; 2 = also checks attestations at every restore.
+const ProtocolVersion = 1
+
 // Control object key layout under a snapshot. Mirrors the backup package's
 // snapshotRootDir/snapshotManifestKey/layoutManifestKey/systemStateDir
 // constants (a backup package test asserts they agree).
