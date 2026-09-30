@@ -35,7 +35,7 @@ func probeCases() []probeCase {
 	}
 	out = append(out,
 		probeCase{name: "none/confirmed absent", mode: "none", dlErr: notFound},
-		probeCase{name: "none/other download error keeps the earlier soft skip", mode: "none", dlErr: generic},
+		probeCase{name: "none/other download error", mode: "none", dlErr: generic, wantFatal: true},
 	)
 	return out
 }
