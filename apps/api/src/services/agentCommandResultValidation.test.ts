@@ -5,6 +5,7 @@ import {
   vaultSyncStructuredResultSchema,
   RESTORE_QUARANTINED_PATHS_MAX,
   RESTORE_QUARANTINED_PATH_MAX_CHARS,
+  validateCriticalCommandResult,
 } from './agentCommandResultValidation';
 
 // The agent-reported byte totals use .refine(Number.isInteger) rather than .int()
@@ -114,5 +115,30 @@ describe('agentCommandResultValidation — restore result details (restricted de
     expect(ok.success).toBe(true);
     if (ok.success) expect(ok.data.code).toBe('system_state_requires_rebuild');
     expect(restoreStructuredResultSchema.safeParse({ code: 'x'.repeat(65) }).success).toBe(false);
+  });
+});
+
+describe('agentCommandResultValidation — bmr_recover command result shape', () => {
+  it('accepts the recovery helper result, whose failedFiles is a count', () => {
+    const validated = validateCriticalCommandResult('bmr_recover', {
+      commandId: 'cmd-bmr-1',
+      status: 'completed',
+      stdout: JSON.stringify({
+        status: 'completed',
+        filesRestored: 120,
+        bytesRestored: 4096,
+        stateApplied: false,
+        driversInjected: 0,
+        failedFiles: 0,
+        code: 'system_state_requires_rebuild',
+        warnings: ['system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only'],
+      }),
+    });
+    expect(validated?.structuredResult).toMatchObject({ failedFiles: 0, code: 'system_state_requires_rebuild' });
+  });
+
+  it('still accepts failedFiles as a path list and rejects a negative count', () => {
+    expect(restoreStructuredResultSchema.safeParse({ failedFiles: ['/etc/hosts'] }).success).toBe(true);
+    expect(restoreStructuredResultSchema.safeParse({ failedFiles: -1 }).success).toBe(false);
   });
 });

@@ -531,6 +531,17 @@ restoreRoutes.post(
   }
 );
 
+// Advisory restore warnings describe how a restore ran rather than why it
+// failed. Mirrors isAdvisoryRestoreWarning in the web RestoreResultNotices.
+function isAdvisoryRestoreWarning(warning: string): boolean {
+  const trimmed = warning.trim();
+  return (
+    trimmed.startsWith('system_state_requires_rebuild:') ||
+    trimmed.includes('unattested snapshot: files were not checked against a snapshot attestation') ||
+    trimmed.startsWith('vault copy differs from backup; restored from primary storage')
+  );
+}
+
 function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
   const targetConfig =
     row.targetConfig && typeof row.targetConfig === 'object' && !Array.isArray(row.targetConfig)
@@ -549,15 +560,21 @@ function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
             error: targetError,
           }
         : null;
+  // Warnings on a completed restore, and advisory warnings on any restore
+  // (e.g. an unattested snapshot), are shown as warnings, never as the error
+  // summary.
+  const summaryWarning = row.status !== 'completed' && Array.isArray(resultDetails?.warnings)
+    ? resultDetails.warnings.find(
+        (warning): warning is string => typeof warning === 'string' && warning.trim() !== '' && !isAdvisoryRestoreWarning(warning)
+      ) ?? null
+    : null;
   const errorSummary = resultDetails
     ? typeof resultDetails.error === 'string' && resultDetails.error.trim()
       ? resultDetails.error
       : typeof resultDetails.stderr === 'string' && resultDetails.stderr.trim()
         ? resultDetails.stderr
-        // Warnings on a completed restore are advisory (e.g. an unattested
-        // snapshot) and are shown as warnings, never as the error summary.
-        : row.status !== 'completed' && Array.isArray(resultDetails.warnings) && resultDetails.warnings.length > 0
-          ? String(resultDetails.warnings[0])
+        : summaryWarning
+          ? summaryWarning
           : targetError
             ? targetError
             : null

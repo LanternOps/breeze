@@ -76,7 +76,12 @@ export const restoreStructuredResultSchema = z.object({
   // semantics (integer, any magnitude) so a large backup isn't recorded failed.
   bytesRestored: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   filesFailed: z.number().int().nonnegative().optional(),
-  failedFiles: z.array(z.string().min(1).max(4096)).max(1000).optional(),
+  // A path list from file restores; a count from the bare-metal recovery
+  // helper (bmr_recover), which always sends the field.
+  failedFiles: z.union([
+    z.array(z.string().min(1).max(4096)).max(1000),
+    z.number().int().nonnegative(),
+  ]).optional(),
   warnings: warningListSchema.optional(),
   error: z.string().max(10_000).optional(),
   stagingDir: z.string().max(4096).optional(),
