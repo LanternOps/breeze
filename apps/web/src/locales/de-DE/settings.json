@@ -302,12 +302,14 @@
     "username": "Benutzername (Basisauthentifizierung)",
     "password": "Passwort (Basisauthentifizierung)",
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
-    "savedSecretPlaceholder": "Gespeichert – leer lassen, um den Wert beizubehalten",
-    "secretRemovedPlaceholder": "Wird beim Speichern entfernt",
-    "removeSecret": "Entfernen",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "Wenn diese Option aktiviert ist, senden alle untergeordneten Organisationen Ereignisprotokolle an den konfigurierten Endpunkt. Funktioniert mit jedem Elasticsearch/OpenSearch-kompatiblen <bulk>_bulk</bulk> Store (Elasticsearch, OpenSearch, Wazuh Indexer, AWS OpenSearch Service). Lassen Sie die Option deaktiviert, damit jede Organisation individuell konfiguriert werden kann."
+  },
+  "savedSecret": {
+    "savedPlaceholder": "Gespeichert – leer lassen, um den Wert beizubehalten",
+    "removedPlaceholder": "Wird beim Speichern entfernt",
+    "remove": "Entfernen"
   },
   "agentVersionPins": {
     "title": "Versionsziele aktualisieren",
@@ -1334,7 +1336,8 @@
     "webhooks": {
       "title": "Webhook-Benachrichtigungen",
       "placeholder": "https://api.example.com/alerts",
-      "empty": "Keine Webhooks konfiguriert."
+      "empty": "Keine Webhooks konfiguriert.",
+      "savedEntry": "Gespeicherter Webhook (URL verborgen)"
     },
     "preferences": {
       "title": "Benachrichtigungseinstellungen",

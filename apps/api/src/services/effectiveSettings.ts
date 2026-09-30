@@ -5,6 +5,7 @@ import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema/orgs';
 import { aiBudgets } from '../db/schema/ai';
+import { keepsStoredSettingsSecret } from './settingsSecretMasking';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -264,7 +265,7 @@ export async function assertNotLocked(
   patch: Record<string, unknown>,
 ): Promise<void> {
   const org = await db
-    .select({ partnerId: organizations.partnerId })
+    .select({ partnerId: organizations.partnerId, settings: organizations.settings })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .then((rows) => rows[0]);
@@ -292,9 +293,16 @@ export async function assertNotLocked(
 
   const partnerSettings = asRecord(partner.settings);
   const partnerCat = asRecord(partnerSettings[category]);
+  const orgCat = asRecord(asRecord(org.settings)[category]);
 
+  // The org editor re-posts its whole settings blob with every stored secret
+  // as the masked marker. A marker that leaves the org's stored value exactly
+  // as it is changes nothing, so it is not refused — even though it can never
+  // equal the partner's value, which is sealed (and masked in responses).
   const lockedFields = Object.keys(patch).filter(
-    (f) => f in partnerCat && !isDeepStrictEqual(patch[f], partnerCat[f]),
+    (f) => f in partnerCat
+      && !isDeepStrictEqual(patch[f], partnerCat[f])
+      && !keepsStoredSettingsSecret(category, f, patch[f], orgCat[f]),
   );
 
   if (lockedFields.length > 0) {

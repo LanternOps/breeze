@@ -681,6 +681,19 @@ const supportedLocales = SUPPORTED_LOCALES;
  * the web form and the billing-settings schema enforce the identical rule.
  */
 
+/**
+ * The partner settings editor echoes a saved notification destination back as
+ * the masked marker ("keep the stored value" — settingsSecretMasking.ts; a
+ * list entry carries a key naming the stored entry, `********:<key>`), which
+ * the URL validator would otherwise reject. Accept the marker alongside a
+ * valid URL; a typed replacement is still validated.
+ */
+const maskedSettingsSecretMarker = z.string().regex(/^\*+(?::[0-9a-f]+)?$/);
+
+function keptSecretOrHttpUrl(label: string) {
+  return z.union([maskedSettingsSecretMarker, httpUrlValue(label)]);
+}
+
 export const mlSettingsSchema = z.object({
   anomalies: z.object({
     enabled: z.boolean().optional(),
@@ -761,9 +774,12 @@ const partnerSettingsSchema = z.object({
     smtpUsername: z.string().optional(),
     smtpEncryption: z.enum(['tls', 'ssl', 'none']).optional(),
     // Server dials this outbound; `file://`/internal targets are SSRF.
-    slackWebhookUrl: httpUrlField('Slack webhook URL'),
+    // Stored sealed and returned masked; the marker keeps the stored value.
+    slackWebhookUrl: keptSecretOrHttpUrl('Slack webhook URL').optional(),
     slackChannel: z.string().optional(),
-    webhooks: z.array(httpUrlValue('Webhook URL')).optional(),
+    // Each saved entry comes back as a keyed marker; sending it keeps that
+    // entry, leaving it out removes it, and a typed URL is added.
+    webhooks: z.array(keptSecretOrHttpUrl('Webhook URL')).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
     pushoverAppToken: z.string().max(30).optional(),
     pushoverDefaultUser: z.string().max(30).optional(),

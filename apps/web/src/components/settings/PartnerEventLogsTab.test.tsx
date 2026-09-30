@@ -6,7 +6,7 @@ import { i18n } from '../../lib/i18n';
 
 import PartnerEventLogsTab from './PartnerEventLogsTab';
 
-const SAVED_PLACEHOLDER = () => i18n.t('settings:partnerEventLogs.savedSecretPlaceholder');
+const SAVED_PLACEHOLDER = () => i18n.t('settings:savedSecret.savedPlaceholder');
 
 // Controlled like PartnerSettingsPage: the tab reports every change upward.
 function Harness({ initial, onChange }: { initial: InheritableEventLogSettings; onChange: (d: InheritableEventLogSettings) => void }) {
@@ -58,7 +58,7 @@ describe('PartnerEventLogsTab: saved credentials', () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ elasticsearchApiKey: '' }));
     expect(screen.getByTestId('partner-event-logs-api-key')).toHaveAttribute(
       'placeholder',
-      i18n.t('settings:partnerEventLogs.secretRemovedPlaceholder'),
+      i18n.t('settings:savedSecret.removedPlaceholder'),
     );
   });
 

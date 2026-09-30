@@ -302,12 +302,14 @@
     "username": "Kullanıcı adı (temel kimlik doğrulama)",
     "password": "Şifre (temel kimlik doğrulama)",
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
-    "savedSecretPlaceholder": "Kaydedildi — korumak için boş bırakın",
-    "secretRemovedPlaceholder": "Kaydettiğinizde kaldırılacak",
-    "removeSecret": "Kaldır",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "esinti günlükleri",
     "description": "Etkinleştirildiğinde, tüm alt kuruluşlar olay günlüklerini yapılandırılmış uç noktaya gönderecektir. Herhangi bir Elasticsearch/OpenSearch uyumlu <bulk>_bulk</bulk> deposuyla çalışır (Elasticsearch, OpenSearch, Wazuh indeksleyici, AWS OpenSearch Service). Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için devre dışı bırakın."
+  },
+  "savedSecret": {
+    "savedPlaceholder": "Kaydedildi — korumak için boş bırakın",
+    "removedPlaceholder": "Kaydettiğinizde kaldırılacak",
+    "remove": "Kaldır"
   },
   "agentVersionPins": {
     "title": "Sürüm hedeflerini güncelleyin",
@@ -1334,7 +1336,8 @@
     "webhooks": {
       "title": "Web kancası bildirimleri",
       "placeholder": "https://api.example.com/alerts",
-      "empty": "Yapılandırılmış web kancası yok."
+      "empty": "Yapılandırılmış web kancası yok.",
+      "savedEntry": "Kaydedilmiş webhook (URL gizli)"
     },
     "preferences": {
       "title": "Bildirim tercihleri",

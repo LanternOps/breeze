@@ -192,6 +192,63 @@ describe('assertNotLocked', () => {
 
     await expect(assertNotLocked('org-1', 'defaults', {})).resolves.toBeUndefined();
   });
+
+  // The org editor re-posts its whole settings blob, with every stored secret
+  // as the masked marker. The marker means "keep my stored value" — it is not
+  // an attempt to change a field the partner locked.
+  it('treats the masked marker for a locked secret as unchanged', async () => {
+    primeSelect(
+      [{ partnerId: 'partner-1', settings: { notifications: { slackWebhookUrl: 'enc:v1:org-slack', webhooks: ['enc:v1:org-hook'] } } }],
+      [{ settings: { notifications: { slackWebhookUrl: 'enc:v1:partner-slack', webhooks: ['enc:v1:partner-hook'] } } }],
+    );
+
+    const { maskSettingsSecrets } = await import('./settingsSecretMasking');
+    const echoed = (maskSettingsSecrets({ notifications: { webhooks: ['enc:v1:org-hook'] } }) as {
+      notifications: { webhooks: string[] };
+    }).notifications.webhooks;
+
+    await expect(
+      assertNotLocked('org-1', 'notifications', { slackWebhookUrl: '********', webhooks: echoed }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('still rejects a typed value for a locked secret', async () => {
+    primeSelect(
+      [{ partnerId: 'partner-1' }],
+      [{ settings: { notifications: { slackWebhookUrl: 'enc:v1:partner-slack' } } }],
+    );
+
+    await expect(
+      assertNotLocked('org-1', 'notifications', { slackWebhookUrl: 'https://hooks.slack.example/org' }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('rejects a marker list that would drop entries from the stored list', async () => {
+    primeSelect(
+      [{ partnerId: 'partner-1', settings: { notifications: { webhooks: ['enc:v1:org-a', 'enc:v1:org-b'] } } }],
+      [{ settings: { notifications: { webhooks: ['enc:v1:partner-hook'] } } }],
+    );
+
+    const { maskSettingsSecrets } = await import('./settingsSecretMasking');
+    const [keepA] = (maskSettingsSecrets({ notifications: { webhooks: ['enc:v1:org-a'] } }) as {
+      notifications: { webhooks: string[] };
+    }).notifications.webhooks;
+
+    await expect(
+      assertNotLocked('org-1', 'notifications', { webhooks: [keepA] }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('does not treat an asterisk string as a stand-in for a locked non-secret field', async () => {
+    primeSelect(
+      [{ partnerId: 'partner-1' }],
+      [{ settings: { notifications: { slackChannel: '#ops-alerts' } } }],
+    );
+
+    await expect(
+      assertNotLocked('org-1', 'notifications', { slackChannel: '********' }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
 });
 
 /**
