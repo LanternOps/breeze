@@ -359,3 +359,59 @@ func TestRestoreAttested_VaultCopyDiffersRestoresFromPrimary(t *testing.T) {
 		}
 	})
 }
+
+// Integrity failures carry a stable result code the server can show.
+func TestRestoreAndVerifyReportIntegrityFailureCodes(t *testing.T) {
+	t.Run("restore manifest", func(t *testing.T) {
+		s := setupIntegritySnapshot(t, []integrityFile{{name: "a.txt", content: "alpha"}})
+		e := s.attested(t)
+		s.putObject(t, s.manifestKey(), sameSizeDifferent(string(s.storedManifest(t))))
+		res, _ := restoreWith(t, s.provider, s.snapshotID, e, t.TempDir(), t.TempDir())
+		if res == nil || res.Code != "integrity_mismatch" {
+			t.Fatalf("result = %+v, want code integrity_mismatch", res)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		file integrityFile
+		code string
+	}{
+		{name: "restore object", file: integrityFile{name: "b.txt", content: "bravo"}, code: "integrity_mismatch"},
+		{name: "restore missing checksum", file: integrityFile{name: "b.txt", content: "bravo", noChecksum: true}, code: "missing_checksum"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := setupIntegritySnapshot(t, []integrityFile{{name: "a.txt", content: "alpha"}, tc.file})
+			e := s.attested(t)
+			if !tc.file.noChecksum {
+				s.putObject(t, s.manifest.Files[1].BackupPath, sameSizeDifferent(tc.file.content))
+			}
+			res, err := restoreWith(t, s.provider, s.snapshotID, e, t.TempDir(), t.TempDir())
+			if err != nil || res.Code != tc.code {
+				t.Fatalf("result = %+v err %v, want code %s", res, err, tc.code)
+			}
+		})
+	}
+	t.Run("no expectation has no code", func(t *testing.T) {
+		s := setupIntegritySnapshot(t, []integrityFile{{name: "a.txt", content: "alpha"}, {name: "b.txt", content: "bravo"}})
+		s.putObject(t, s.manifest.Files[1].BackupPath, sameSizeDifferent("bravo"))
+		res, _ := restoreWith(t, s.provider, s.snapshotID, nil, t.TempDir(), t.TempDir())
+		if res.Code != "" {
+			t.Fatalf("code = %q, want none without an expectation", res.Code)
+		}
+	})
+	t.Run("verify and test restore", func(t *testing.T) {
+		s := setupIntegritySnapshot(t, []integrityFile{{name: "a.txt", content: "alpha"}, {name: "b.txt", content: "bravo"}})
+		e := s.attested(t)
+		s.putObject(t, s.manifest.Files[1].BackupPath, sameSizeDifferent("bravo"))
+		v, _ := VerifyIntegrityWithOptions(context.Background(), s.provider, s.snapshotID, VerifyOptions{Integrity: e})
+		tr, _ := TestRestoreWithOptions(context.Background(), s.provider, s.snapshotID, t.TempDir(), VerifyOptions{Integrity: e})
+		if v.Code != "integrity_mismatch" || tr.Code != "integrity_mismatch" {
+			t.Fatalf("verify code %q, test restore code %q", v.Code, tr.Code)
+		}
+		s.putObject(t, s.manifestKey(), sameSizeDifferent(string(s.storedManifest(t))))
+		v, _ = VerifyIntegrityWithOptions(context.Background(), s.provider, s.snapshotID, VerifyOptions{Integrity: e})
+		if v.Code != "integrity_mismatch" {
+			t.Fatalf("verify manifest code %q", v.Code)
+		}
+	})
+}

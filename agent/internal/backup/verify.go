@@ -47,6 +47,8 @@ type VerifyResult struct {
 	// mismatch against it is expected rather than corruption.
 	Warnings []string `json:"warnings,omitempty"`
 	Error    string   `json:"error,omitempty"`
+	// Code: see RestoreResult.Code.
+	Code string `json:"code,omitempty"`
 }
 
 // TestRestoreResult holds the outcome of a test restore operation.
@@ -66,6 +68,8 @@ type TestRestoreResult struct {
 	// VerifyResult.Warnings.
 	Warnings []string `json:"warnings,omitempty"`
 	Error    string   `json:"error,omitempty"`
+	// Code: see RestoreResult.Code.
+	Code string `json:"code,omitempty"`
 }
 
 // VerifyIntegrity checks a snapshot's manifest and validates each file
@@ -96,7 +100,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	// Download and parse manifest. With an integrity expectation in attested
 	// mode its bytes must match the snapshot attestation before they are
 	// decoded; no object is read otherwise.
-	snapshot, manifestWarnings, failure, err := downloadVerifyManifest(ctx, runCtx, provider, snapshotID, "", opts)
+	snapshot, manifestWarnings, failure, code, err := downloadVerifyManifest(ctx, runCtx, provider, snapshotID, "", opts)
 	if err != nil {
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, err
@@ -104,6 +108,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	if failure != "" {
 		result.Status = "failed"
 		result.Error = failure
+		result.Code = code
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, nil
 	}
@@ -143,6 +148,9 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 		case fileFailed:
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, files[i].BackupPath)
+			if result.Code == "" {
+				result.Code = o.code
+			}
 		}
 	}
 
@@ -249,7 +257,7 @@ func checkedFileOutcome(ctx context.Context, phase string, provider providers.Ba
 	if err != nil {
 		log.Warn("download or content check failed", "phase", phase, "backupPath", file.BackupPath,
 			"code", integrity.FailureCode(err), "error", err.Error())
-		return fileCheckOutcome{state: fileFailed}
+		return fileCheckOutcome{state: fileFailed, code: integrityResultCode(e, err)}
 	}
 	outcome := fileCheckOutcome{state: fileVerified, size: file.Size, sizeOnly: check.SizeOnly, warnings: warnings}
 	if info, statErr := os.Stat(dest); statErr == nil {
@@ -277,9 +285,9 @@ func unattestedVerifyWarnings(e *integrity.Expectation) []string {
 // verify or test restore, into workDir ("" = the OS temp dir). A problem that
 // ends the run with a failed result is returned as failure (the result's
 // Error); err is set only when the caller's ctx ended.
-func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.BackupProvider, snapshotID, workDir string, opts VerifyOptions) (snapshot *Snapshot, warnings []string, failure string, err error) {
+func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.BackupProvider, snapshotID, workDir string, opts VerifyOptions) (snapshot *Snapshot, warnings []string, failure, code string, err error) {
 	if err := opts.Integrity.CheckSnapshot(snapshotID); err != nil {
-		return nil, nil, err.Error(), nil
+		return nil, nil, err.Error(), "", nil
 	}
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
 	dl := func(ctx context.Context, p providers.BackupProvider, key, local string) error {
@@ -288,26 +296,26 @@ func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.Back
 	tempManifestPath, warnings, dlErr := integrity.DownloadVerifiedControlObjectVia(runCtx, dl, provider, opts.Integrity, integrity.RoleManifest, manifestKey, workDir)
 	if dlErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, "", ctxErr
+			return nil, nil, "", "", ctxErr
 		}
 		if integrity.FailureCode(dlErr) != "" {
-			return nil, nil, fmt.Sprintf("snapshot manifest does not match its attestation: %v", dlErr), nil
+			return nil, nil, fmt.Sprintf("snapshot manifest does not match its attestation: %v", dlErr), integrity.FailureCode(dlErr), nil
 		}
-		return nil, nil, manifestDownloadError(runCtx, opts, dlErr), nil
+		return nil, nil, manifestDownloadError(runCtx, opts, dlErr), "", nil
 	}
 	defer func() { _ = os.Remove(tempManifestPath) }()
 	if err := ctx.Err(); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", "", err
 	}
 	manifestData, readErr := os.ReadFile(tempManifestPath)
 	if readErr != nil {
-		return nil, nil, fmt.Sprintf("failed to read manifest: %v", readErr), nil
+		return nil, nil, fmt.Sprintf("failed to read manifest: %v", readErr), "", nil
 	}
 	var decoded Snapshot
 	if err := json.Unmarshal(manifestData, &decoded); err != nil {
-		return nil, nil, fmt.Sprintf("invalid manifest JSON: %v", err), nil
+		return nil, nil, fmt.Sprintf("invalid manifest JSON: %v", err), "", nil
 	}
-	return &decoded, warnings, "", nil
+	return &decoded, warnings, "", "", nil
 }
 
 // maxVerifyIncompletePathsReported caps how many missing source paths the
@@ -381,13 +389,14 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 
 	// Download and parse manifest (checked against the snapshot attestation
 	// in attested mode before it is decoded).
-	snapshot, manifestWarnings, failure, err := downloadVerifyManifest(ctx, runCtx, provider, snapshotID, operationRoot, opts)
+	snapshot, manifestWarnings, failure, code, err := downloadVerifyManifest(ctx, runCtx, provider, snapshotID, operationRoot, opts)
 	if err != nil {
 		return result, err
 	}
 	if failure != "" {
 		result.Status = "failed"
 		result.Error = failure
+		result.Code = code
 		return result, nil
 	}
 	result.Warnings = append(result.Warnings, unattestedVerifyWarnings(opts.Integrity)...)
@@ -449,6 +458,9 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 		case fileFailed:
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, files[i].BackupPath)
+			if result.Code == "" {
+				result.Code = o.code
+			}
 		}
 	}
 

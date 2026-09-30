@@ -389,6 +389,8 @@ type fileCheckOutcome struct {
 	size     int64
 	sizeOnly bool
 	warnings []string
+	// code is the integrity failure code of a failed check ("" otherwise).
+	code string
 }
 
 // countUnchecked returns how many content-bearing entries never reached a

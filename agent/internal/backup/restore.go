@@ -51,6 +51,10 @@ type RestoreResult struct {
 	Warnings      []string `json:"warnings,omitempty"`
 	StagingDir    string   `json:"stagingDir,omitempty"`
 	Error         string   `json:"error,omitempty"`
+	// Code is the stable code of the first integrity check that failed
+	// (integrity_mismatch, missing_checksum, …); set only when the command
+	// carried an integrity expectation.
+	Code string `json:"code,omitempty"`
 
 	// SecurityDescriptorQuarantined counts the Windows entries whose recorded
 	// security descriptor named principals the target does not recognise, so
@@ -133,6 +137,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	snapshot, manifestWarnings, err := downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity)
 	if err != nil {
 		result.Status = "failed"
+		result.Code = integrityResultCode(cfg.Integrity, err)
 		return result, fmt.Errorf("download manifest: %w", err)
 	}
 	if w := cfg.Integrity.UnattestedWarning(); w != "" {
@@ -260,6 +265,9 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
 			_ = os.Remove(stagingFile)
+			if result.Code == "" {
+				result.Code = integrityResultCode(cfg.Integrity, dlErr)
+			}
 			if w := storedBytesFailureWarning(displayPath, file, dlErr, cfg.Integrity); w != "" {
 				result.Warnings = append(result.Warnings, w)
 			}
@@ -543,6 +551,15 @@ func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProv
 		return nil, nil, fmt.Errorf("decode manifest: %w", err)
 	}
 	return &snapshot, warnings, nil
+}
+
+// integrityResultCode is the result code for err when the command carried an
+// integrity expectation and err is an integrity check failure, else "".
+func integrityResultCode(e *integrity.Expectation, err error) string {
+	if !e.Present() {
+		return ""
+	}
+	return integrity.FailureCode(err)
 }
 
 // storedBytes is what a manifest entry says about its stored object.
