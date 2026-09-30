@@ -377,7 +377,7 @@ func sanitizeConsentDetail(detail string) string {
 		return ""
 	}
 	for _, r := range detail {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
 			return ""
 		}
 	}

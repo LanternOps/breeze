@@ -43,7 +43,7 @@ func newConsentTestHelper(t *testing.T, name string, scopes []string, protocol i
 // recvRequest reads the consent_request the agent sent.
 func (c *consentTestHelper) recvRequest(t *testing.T) (*ipc.Envelope, ipc.ConsentRequest) {
 	t.Helper()
-	c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	env, err := c.conn.Recv()
 	if err != nil {
 		t.Errorf("helper recv: %v", err)
@@ -204,7 +204,7 @@ func TestSolicitConsentV2(t *testing.T) {
 					t.Errorf("request must carry the v2 protocol and a nonce: %+v", req)
 				}
 				tt.script(t, c, env, req)
-				c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+				_ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 				if next, err := c.conn.Recv(); err == nil && next.Type == ipc.TypeConsentCancel {
 					var cc ipc.ConsentCancel
 					_ = json.Unmarshal(next.Payload, &cc)
@@ -276,7 +276,7 @@ func TestSolicitConsentSkipsLegacyNativeHelper(t *testing.T) {
 
 	got := make(chan string, 1)
 	go func() {
-		c.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_ = c.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		if env, err := c.conn.Recv(); err == nil {
 			got <- env.Type
 		}

@@ -17,8 +17,8 @@ func TestOpenCommandStreamDeliversEveryEnvelopeUntilCancelled(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	session := NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "", "stream-test", nil)
 	helper := ipc.NewConn(clientConn)
-	defer session.Close()
-	defer helper.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = helper.Close() }()
 	go session.RecvLoop(func(*Session, *ipc.Envelope) {})
 
 	helperGot := make(chan *ipc.Envelope, 1)
@@ -79,7 +79,7 @@ func TestOpenCommandStreamRejectsDuplicateIDAndClosedSession(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	session := NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "", "stream-dup", nil)
 	helper := ipc.NewConn(clientConn)
-	defer helper.Close()
+	defer func() { _ = helper.Close() }()
 	go func() {
 		for {
 			if _, err := helper.Recv(); err != nil {

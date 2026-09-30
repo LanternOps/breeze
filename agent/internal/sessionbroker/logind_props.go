@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// logindSessionProperties is the property list the Linux detector asks
-// `loginctl show-session` for; applyLogindSessionProperties parses the answer.
-const logindSessionProperties = "--property=Type,Remote,Display,Seat,State,Class,LockedHint,IdleHint,IdleSinceHint"
-
 // applyLogindSessionProperties folds `loginctl show-session` KEY=VALUE output
 // into sess. Platform-neutral so it is unit-tested everywhere; only the Linux
 // detector calls it.

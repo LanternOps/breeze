@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// logindSessionProperties is the property list asked of `loginctl
+// show-session`; applyLogindSessionProperties (logind_props.go) parses it.
+const logindSessionProperties = "--property=Type,Remote,Display,Seat,State,Class,LockedHint,IdleHint,IdleSinceHint"
+
 type linuxDetector struct{}
 
 // NewSessionDetector creates a Linux session detector.

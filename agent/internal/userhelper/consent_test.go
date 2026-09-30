@@ -294,7 +294,7 @@ func TestHandleConsentRequest_RepliesSameEnvelopeId(t *testing.T) {
 				close(done)
 			}()
 
-			peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
 			env, err := peer.Recv()
 			if err != nil {
 				t.Fatalf("Recv: %v", err)
@@ -330,7 +330,7 @@ func TestHandleConsentRequest_LegacyUnavailableIsAnErrorReply(t *testing.T) {
 
 	go client.handleConsentRequest(&ipc.Envelope{ID: "consent-v1-unavail", Payload: consentRequestPayload(t, "s")})
 
-	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
 	env, err := peer.Recv()
 	if err != nil {
 		t.Fatalf("Recv: %v", err)
@@ -345,7 +345,7 @@ func recvConsentEnvelopes(t *testing.T, peer *ipc.Conn, n int) []*ipc.Envelope {
 	t.Helper()
 	var out []*ipc.Envelope
 	for i := 0; i < n; i++ {
-		peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
 		env, err := peer.Recv()
 		if err != nil {
 			t.Fatalf("Recv %d: %v", i, err)
@@ -471,7 +471,7 @@ func TestHandleConsentRequest_BadPayloadFailsClosed(t *testing.T) {
 		close(done)
 	}()
 
-	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
 	env, err := peer.Recv()
 	if err != nil {
 		t.Fatalf("Recv: %v", err)
@@ -511,7 +511,7 @@ func TestHandleConsentRequest_PanicFailsClosed(t *testing.T) {
 			close(done)
 		}()
 
-		peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
 		env, err := peer.Recv()
 		if err != nil {
 			t.Fatalf("Recv: %v", err)
