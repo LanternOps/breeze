@@ -15,7 +15,9 @@ import {
   deviceCommands,
   devices,
 } from '../db/schema';
+import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
+import { attestationJoinColumns, joinedAttestation } from './backupRestoreIntegrity';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
@@ -26,13 +28,30 @@ const snapshotColumns = () => ({
   id: backupSnapshots.id,
   orgId: backupSnapshots.orgId,
   deviceId: backupSnapshots.deviceId,
+  jobId: backupSnapshots.jobId,
   configId: backupSnapshots.configId,
   snapshotId: backupSnapshots.snapshotId,
   storageIdentity: backupSnapshots.storageIdentity,
   keyLayout: backupSnapshots.keyLayout,
   fileIndexStatus: backupSnapshots.fileIndexStatus,
+  fileIndexManifestSha256: backupSnapshots.fileIndexManifestSha256,
+  integrityStatus: backupSnapshots.integrityStatus,
   metadata: backupSnapshots.metadata,
+  // One row per snapshot at most (unique on snapshot_db_id).
+  attestation: attestationJoinColumns(),
 });
+
+function toSnapshotRow(row: Record<string, unknown>): StorageSnapshotRow {
+  return { ...(row as Omit<StorageSnapshotRow, 'attestation'>), attestation: joinedAttestation(row.attestation) };
+}
+
+// Snapshot rows always carry their attestation (if any), read in the same
+// statement: the file index is only used when it matches it.
+const selectSnapshots = () =>
+  db
+    .select(snapshotColumns())
+    .from(backupSnapshots)
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id));
 
 const sessionColumns = () => ({
   id: backupStorageSessions.id,
@@ -83,21 +102,19 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
   },
 
   async findSnapshots({ orgId, externalSnapshotId, configId }) {
-    const rows = await db
-      .select(snapshotColumns())
-      .from(backupSnapshots)
+    const rows = await selectSnapshots()
       .where(and(
         eq(backupSnapshots.orgId, orgId),
         eq(backupSnapshots.snapshotId, externalSnapshotId),
         ...(configId ? [eq(backupSnapshots.configId, configId)] : []),
       ))
       .limit(2);
-    return rows as StorageSnapshotRow[];
+    return rows.map((row) => toSnapshotRow(row));
   },
 
   async loadSnapshotById(snapshotDbId) {
-    const [row] = await db.select(snapshotColumns()).from(backupSnapshots).where(eq(backupSnapshots.id, snapshotDbId)).limit(1);
-    return (row as StorageSnapshotRow | undefined) ?? null;
+    const [row] = await selectSnapshots().where(eq(backupSnapshots.id, snapshotDbId)).limit(1);
+    return row ? toSnapshotRow(row) : null;
   },
 
   async resolveConfig(configId, orgId) {
@@ -166,11 +183,19 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
       .where(and(eq(backupStorageSessions.id, sessionId), isNull(backupStorageSessions.revokedAt)));
   },
 
-  async filterIndexedKeys(snapshotDbId, keys) {
+  async filterIndexedKeys(snapshotDbId, keys, boundManifestSha256) {
     if (keys.length === 0) return new Set();
+    // The index's state is re-read in the same statement as its rows: rows of
+    // an index being rebuilt (status 'hydrating') or rebuilt from other bytes
+    // since the caller checked it never count.
     const rows = await db
       .select({ backupPath: backupSnapshotFiles.backupPath })
       .from(backupSnapshotFiles)
+      .innerJoin(backupSnapshots, and(
+        eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId),
+        eq(backupSnapshots.fileIndexStatus, 'complete'),
+        sql`${backupSnapshots.fileIndexManifestSha256} IS NOT DISTINCT FROM ${boundManifestSha256}`,
+      ))
       .where(and(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId), inArray(backupSnapshotFiles.backupPath, keys)));
     return new Set(rows.map((r) => r.backupPath));
   },

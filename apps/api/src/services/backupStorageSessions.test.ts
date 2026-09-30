@@ -39,6 +39,7 @@ import {
 } from './backupStorageSessions';
 import { CommandDeliveryDeferredError, CommandDeliveryRefusedError } from './commandDeliveryRefusal';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupReadHelperGate';
+import type { IntegrityAttestationInput } from './backupRestoreIntegrity';
 
 type SessionDescriptor = { sessionId: string; token: string; baseUrl: string; expiresAt: string; deadline: string };
 
@@ -53,6 +54,8 @@ const COMMAND = '88888888-8888-4888-8888-888888888888';
 const SNAP = 'snap-2026-09-26-a';
 const IDENTITY = 's3::storage.example::bucket-a';
 const NOW = new Date('2026-09-26T12:00:00.000Z');
+const JOB = '99999999-9999-4999-8999-999999999999';
+const MANIFEST_SHA = 'a'.repeat(64);
 
 type FakeState = {
   device: { id: string; orgId: string; backupReadProtocolVersion: number | null; agentServerUrl: string | null } | null;
@@ -75,7 +78,30 @@ function makeSnapshot(overrides: Partial<StorageSnapshotRow> = {}): StorageSnaps
     storageIdentity: IDENTITY,
     keyLayout: 'legacy_flat',
     fileIndexStatus: 'complete',
+    fileIndexManifestSha256: MANIFEST_SHA,
+    jobId: JOB,
+    integrityStatus: 'unattested_legacy',
+    attestation: null,
     metadata: {},
+    ...overrides,
+  };
+}
+
+function makeAttestation(overrides: Partial<IntegrityAttestationInput> = {}): IntegrityAttestationInput {
+  return {
+    status: 'verified',
+    deviceId: SOURCE_DEVICE,
+    jobId: JOB,
+    providerSnapshotId: SNAP,
+    storageIdentity: IDENTITY,
+    keyLayout: 'legacy_flat',
+    manifestKey: `snapshots/${SNAP}/manifest.json`,
+    manifestSha256: MANIFEST_SHA,
+    manifestSize: 2048,
+    layoutSha256: null,
+    layoutSize: null,
+    systemStateManifestSha256: null,
+    systemStateManifestSize: null,
     ...overrides,
   };
 }
@@ -122,7 +148,13 @@ function makeStore(state: FakeState): BrokeredReadStore {
       const s = state.sessions.get(id);
       if (s) s.revokedAt = NOW;
     }),
-    filterIndexedKeys: vi.fn(async (id: string, keys: string[]) => {
+    filterIndexedKeys: vi.fn(async (id: string, keys: string[], boundManifestSha256?: string | null) => {
+      // Membership counts only while the index is still the one the caller
+      // approved (same statement in the real store).
+      const current = state.snapshots.find((snap) => snap.id === id);
+      if (!current || current.fileIndexStatus !== 'complete' || current.fileIndexManifestSha256 !== boundManifestSha256) {
+        return new Set<string>();
+      }
       const rows = new Set(state.indexed.get(id) ?? []);
       return new Set(keys.filter((k) => rows.has(k)));
     }),
@@ -150,6 +182,7 @@ function makeDeps(state: FakeState, overrides: Partial<BrokeredReadDeps> = {}) {
     materializeLocalDestination: ReturnType<typeof vi.fn>;
     recordDispatch: ReturnType<typeof vi.fn>;
     recordMint: ReturnType<typeof vi.fn>;
+    recordIntegrity: ReturnType<typeof vi.fn>;
     requestIndexHydration: ReturnType<typeof vi.fn>;
     presignGet: ReturnType<typeof vi.fn>;
   } = {
@@ -169,6 +202,7 @@ function makeDeps(state: FakeState, overrides: Partial<BrokeredReadDeps> = {}) {
     }),
     recordDispatch: vi.fn(),
     recordMint: vi.fn(),
+    recordIntegrity: vi.fn(),
     inOrgContext: async <T,>(_orgId: string, fn: () => Promise<T>) => fn(),
     lookupDeviceOrg: async () => ORG,
     ...overrides,
@@ -513,7 +547,10 @@ describe('brokered read delivery', () => {
     legacyState.device!.backupReadProtocolVersion = 0;
     const legacyDeps = makeDeps(legacyState);
     const untouched = await deliverBrokeredReadCommand(vmPayload, ctx({ type: 'vm_instant_boot' }), legacyDeps);
-    expect(untouched).toEqual(vmPayload);
+    expect(untouched).toEqual({
+      ...vmPayload,
+      integrity: { v: 1, mode: 'unattested', snapshotId: SNAP, reason: 'unattested_legacy' },
+    });
     expect(legacyDeps.materializeLocalDestination).not.toHaveBeenCalled();
   });
 
@@ -534,6 +571,212 @@ async function mintSession(state: FakeState, type = 'backup_restore', payload: R
   const desc = out.storageSession as SessionDescriptor;
   return { deps, desc, row: state.sessions.get(desc.sessionId)! };
 }
+
+describe('restore integrity expectations at delivery', () => {
+  const attested = () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ integrityStatus: 'attested', attestation: makeAttestation() })];
+    return state;
+  };
+  const attestedBlock = {
+    v: 1,
+    mode: 'attested',
+    trust: 'server_verified',
+    snapshotId: SNAP,
+    objects: [{ role: 'manifest', key: `snapshots/${SNAP}/manifest.json`, sha256: MANIFEST_SHA, size: 2048 }],
+  };
+
+  it('a brokered restore of an attested snapshot carries the attested control objects', async () => {
+    const state = attested();
+    state.snapshots[0]!.attestation = makeAttestation({ layoutSha256: 'b'.repeat(64), layoutSize: 10, systemStateManifestSha256: 'c'.repeat(64), systemStateManifestSize: 20 });
+    const deps = makeDeps(state);
+    const out = await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
+    expect(out.storageSession).toBeTruthy();
+    expect(out.integrity).toEqual({
+      v: 1,
+      mode: 'attested',
+      trust: 'server_verified',
+      snapshotId: SNAP,
+      objects: [
+        { role: 'manifest', key: `snapshots/${SNAP}/manifest.json`, sha256: MANIFEST_SHA, size: 2048 },
+        { role: 'layout', key: `snapshots/${SNAP}/layout.json`, sha256: 'b'.repeat(64), size: 10 },
+        { role: 'system_state_manifest', key: `snapshots/${SNAP}/system-state/manifest.json`, sha256: 'c'.repeat(64), size: 20 },
+      ],
+    });
+    expect(deps.recordIntegrity).toHaveBeenCalledTimes(1);
+    expect(deps.recordIntegrity).toHaveBeenCalledWith('backup_restore', 'attested', 'server_verified');
+  });
+
+  it.each(['backup_verify', 'backup_test_restore', 'mssql_restore', 'mssql_verify', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot'])(
+    'a brokered %s carries it too',
+    async (type) => {
+      const state = attested();
+      state.snapshots[0]!.metadata = { backupFileName: 'db.bak' };
+      const deps = makeDeps(state);
+      const payload = type.startsWith('vm_') ? { restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' } : restorePayload();
+      const out = await deliverBrokeredReadCommand(payload, ctx({ type }), deps);
+      expect(out.storageSession).toBeTruthy();
+      expect(out.integrity).toEqual(attestedBlock);
+      expect(deps.recordIntegrity).toHaveBeenCalledWith(type, 'attested', 'server_verified');
+    },
+  );
+
+  it('an unattested snapshot is still delivered, with the reason it is unattested', async () => {
+    const state = makeState();
+    const deps = makeDeps(state);
+    const out = await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
+    expect(out.storageSession).toBeTruthy();
+    expect(out.integrity).toEqual({ v: 1, mode: 'unattested', snapshotId: SNAP, reason: 'unattested_legacy' });
+    expect(deps.recordIntegrity).toHaveBeenCalledWith('backup_restore', 'unattested', 'unattested_legacy');
+  });
+
+  it('a pending attestation is delivered as unattested (pending) on an index built from the attested manifest', async () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ integrityStatus: 'pending', attestation: makeAttestation({ status: 'pending' }) })];
+    const deps = makeDeps(state);
+    const out = await deliverBrokeredReadCommand(restorePayload(), ctx(), deps);
+    expect(out.storageSession).toBeTruthy();
+    expect(out.integrity).toEqual({ v: 1, mode: 'unattested', snapshotId: SNAP, reason: 'pending' });
+  });
+
+  it('a local restore carries the expectation for the snapshot its reference names', async () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({
+      storageIdentity: 'local::/backups',
+      integrityStatus: 'producer_only',
+      attestation: makeAttestation({ status: 'producer_only', storageIdentity: 'local::/backups' }),
+    })];
+    const deps = makeDeps(state, {
+      materializeLocalDestination: vi.fn(async (payload: Record<string, unknown>) => {
+        const { providerConfigRef: _ref, ...rest } = payload;
+        return { ...rest, providerConfig: { path: '/backups' } };
+      }),
+    } as Partial<BrokeredReadDeps>);
+    const out = await deliverBrokeredReadCommand({ ...restorePayload(), provider: 'local' }, ctx(), deps);
+    expect(out.providerConfig).toEqual({ path: '/backups' });
+    expect(out.integrity).toEqual({ ...attestedBlock, trust: 'producer_only' });
+    expect(deps.store.findSnapshots).toHaveBeenCalledWith({ orgId: ORG, externalSnapshotId: SNAP, configId: CONFIG });
+    expect(deps.recordIntegrity).toHaveBeenCalledWith('backup_restore', 'attested', 'producer_only');
+  });
+
+  it('a VM command delivered as queued resolves its snapshot in the device organization', async () => {
+    const state = attested();
+    state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state);
+    const payload = { restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' };
+    const out = await deliverBrokeredReadCommand(payload, ctx({ type: 'vm_restore_from_backup' }), deps);
+    expect(out).toEqual({ ...payload, integrity: attestedBlock });
+    expect(deps.recordDispatch).toHaveBeenCalledWith('vm_restore_from_backup', 'legacy', 'helper_unsupported');
+    expect(deps.recordIntegrity).toHaveBeenCalledTimes(1);
+  });
+
+  it('a VM command whose snapshot cannot be resolved is delivered without a block, and counted', async () => {
+    const state = makeState();
+    state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state);
+    const payload = { restoreJobId: 'r1', snapshotId: 'snap-unknown', vmName: 'vm1' };
+    const out = await deliverBrokeredReadCommand(payload, ctx({ type: 'vm_instant_boot' }), deps);
+    expect(out).toEqual(payload);
+    expect(deps.recordIntegrity).toHaveBeenCalledWith('vm_instant_boot', 'absent', 'snapshot_unresolved');
+  });
+
+  it.each([
+    ['brokered', (p: Record<string, unknown>) => p, 'backup_restore'],
+    ['local', (p: Record<string, unknown>) => ({ ...p, provider: 'local' }), 'backup_restore'],
+    ['as queued', (_p: Record<string, unknown>) => ({ restoreJobId: 'r1', snapshotId: 'snap-unknown', vmName: 'vm1' }), 'vm_instant_boot'],
+  ])('a queued integrity block is never passed through (%s): the server writes its own or none', async (_name, shape, type) => {
+    const state = makeState();
+    if (type === 'vm_instant_boot') state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state);
+    const queued = { ...shape(restorePayload()), integrity: { v: 1, mode: 'unattested_override', snapshotId: SNAP, authorizationId: COMMAND } };
+    const out = await deliverBrokeredReadCommand(queued, ctx({ type }), deps);
+    expect(JSON.stringify(out)).not.toContain('unattested_override');
+  });
+
+  it('nothing is recorded for a delivery that is deferred or refused', async () => {
+    const state = makeState();
+    state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(deps.recordIntegrity).not.toHaveBeenCalled();
+  });
+});
+
+describe('file index bound to the snapshot attestation', () => {
+  it('defers and re-hydrates an attested snapshot whose index was built from different manifest bytes', async () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ integrityStatus: 'attested', attestation: makeAttestation({ manifestSha256: 'd'.repeat(64) }) })];
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+    expect(deps.requestIndexHydration).toHaveBeenCalledWith(SNAPSHOT_DB_ID);
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'deferred', 'index_attestation_mismatch');
+    expect(state.sessions.size).toBe(0);
+  });
+
+  it.each(['pending', 'producer_only'])('defers a %s attestation whose index digest differs', async (status) => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ attestation: makeAttestation({ status, manifestSha256: 'd'.repeat(64) }) })];
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+  });
+
+  it('never brokers on the index of a snapshot whose attestation did not match', async () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ integrityStatus: 'attestation_failed', attestation: makeAttestation({ status: 'mismatch' }) })];
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+    expect(state.sessions.size).toBe(0);
+  });
+
+  it('MSSQL reads (no index) are brokered whatever the index state, and still carry the expectation', async () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({
+      metadata: { backupFileName: 'db.bak' },
+      integrityStatus: 'attestation_failed',
+      attestation: makeAttestation({ status: 'mismatch' }),
+    })];
+    const deps = makeDeps(state);
+    const out = await deliverBrokeredReadCommand(restorePayload(), ctx({ type: 'mssql_restore' }), deps);
+    expect(out.storageSession).toBeTruthy();
+    expect(out.integrity).toEqual({ v: 1, mode: 'unattested', snapshotId: SNAP, reason: 'attestation_failed' });
+  });
+
+  it('revokes a session whose snapshot index stops matching the attestation', async () => {
+    const state = makeState();
+    const { deps, row } = await mintSession(state);
+    // An attestation recorded after the index was built names other manifest bytes.
+    state.snapshots = [makeSnapshot({ attestation: makeAttestation({ status: 'pending', manifestSha256: 'd'.repeat(64) }) })];
+    const result = await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/files/a.txt`], deps);
+    expect(result).toMatchObject({ status: 410 });
+    expect(state.revoked).toEqual([{ id: row.id, reason: 'index_attestation_mismatch' }]);
+  });
+
+  it('revokes a session once the attestation is found not to match', async () => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ attestation: makeAttestation({ status: 'pending' }) })];
+    const { deps, row } = await mintSession(state);
+    state.snapshots = [makeSnapshot({ attestation: makeAttestation({ status: 'mismatch' }) })];
+    const result = await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/manifest.json`], deps);
+    expect(result).toMatchObject({ status: 410 });
+    expect(state.revoked.map((r) => r.reason)).toEqual(['index_attestation_mismatch']);
+  });
+
+  it('checks membership against the exact index digest it approved', async () => {
+    const state = makeState();
+    const { deps, row } = await mintSession(state);
+    await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/files/a.txt`], deps);
+    expect(deps.store.filterIndexedKeys).toHaveBeenCalledWith(SNAPSHOT_DB_ID, [`snapshots/${SNAP}/files/a.txt`], MANIFEST_SHA);
+  });
+
+  it('an index being rebuilt denies file keys without ending the session', async () => {
+    const state = makeState();
+    const { deps, row } = await mintSession(state);
+    state.snapshots = [makeSnapshot({ fileIndexStatus: 'hydrating' })];
+    const result = await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/files/a.txt`], deps);
+    expect(result).toMatchObject({ status: 200, body: { objects: [], denied: [`snapshots/${SNAP}/files/a.txt`] } });
+    expect(state.revoked).toEqual([]);
+  });
+});
 
 describe('storage session authentication', () => {
   const agent = { deviceId: EXEC_DEVICE, orgId: ORG };

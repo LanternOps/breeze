@@ -258,6 +258,15 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
     expect(() => registerDeliveryRefresher('software_install', async (p) => p)).not.toThrow();
   });
 
+  it('ships an integrity refresher for every restore-shaped command type, bare-metal recovery included', () => {
+    for (const type of [
+      'backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore', 'mssql_verify',
+      'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot', 'bmr_recover', 'bare_metal_rebuild',
+    ]) {
+      expect(typeof deliveryRefreshers[type], type).toBe('function');
+    }
+  });
+
   it('ships a software_install refresher out of the box, so no import order can silence it', () => {
     // Registering by side effect from the owning feature module would deliver a
     // stale installer URL in any process that happened not to import it.
