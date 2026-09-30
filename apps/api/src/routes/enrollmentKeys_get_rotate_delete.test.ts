@@ -560,7 +560,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
       expect(db.update).not.toHaveBeenCalled();
       expect(db.delete).not.toHaveBeenCalled();
       expect(createAuditLogAsync).not.toHaveBeenCalled();
@@ -636,7 +637,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns 403 when key belongs to another org', async () => {
+    it('returns the not-found 404 when key belongs to another org', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
@@ -645,7 +646,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
         body: JSON.stringify({}),
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
     });
 
     // #2776 task 3.4 fix round 2 — a sixth uncapped path: rotate re-mints the
@@ -777,7 +779,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, { method: 'DELETE' });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
       expect(db.delete).not.toHaveBeenCalled();
       expect(createAuditLogAsync).not.toHaveBeenCalled();
     });
@@ -787,8 +790,22 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, { method: 'DELETE' });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
       expect(db.delete).not.toHaveBeenCalled();
+    });
+    it('allows a restricted organization caller to delete a key in its allowed site', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: 'site-visible' })]);
+      mockDeleteWhere();
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(db.delete).toHaveBeenCalledOnce();
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'enrollment_key.delete' })
+      );
     });
     it('deletes an enrollment key', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
@@ -818,7 +835,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns 403 when key belongs to another org', async () => {
+    it('returns the not-found 404 when key belongs to another org', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
@@ -826,7 +843,8 @@ describe('enrollment key routes — get, rotate, delete', () => {
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
     });
   });
 

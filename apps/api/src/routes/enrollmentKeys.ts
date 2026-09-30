@@ -243,6 +243,27 @@ async function ensureOrgAccess(
   return true;
 }
 
+/**
+ * Loads an enrollment key for a route that takes a key id. Returns null when
+ * the key does not exist, or when it is in an organization or site the caller
+ * cannot see, so each caller answers a hidden key exactly as it answers a
+ * missing one and never confirms that a hidden key exists.
+ */
+async function loadVisibleEnrollmentKey(
+  auth: AuthContext,
+  keyId: string,
+): Promise<typeof enrollmentKeys.$inferSelect | null> {
+  const [row] = await db
+    .select()
+    .from(enrollmentKeys)
+    .where(eq(enrollmentKeys.id, keyId))
+    .limit(1);
+  if (!row) return null;
+  if (!(await ensureOrgAccess(row.orgId, auth))) return null;
+  if (!canUseEnrollmentKeySite(auth, row.siteId)) return null;
+  return row;
+}
+
 function writeEnrollmentKeyAudit(
   c: any,
   auth: { user: { id: string; email?: string } },
@@ -1532,22 +1553,9 @@ enrollmentKeyRoutes.post(
     const keyId = c.req.param("id")!;
     const data = c.req.valid("json");
 
-    const [existingKey] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
-      .limit(1);
-
+    const existingKey = await loadVisibleEnrollmentKey(auth, keyId);
     if (!existingKey) {
       return c.json({ error: "Enrollment key not found" }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(existingKey.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-    if (!canUseEnrollmentKeySite(auth, existingKey.siteId)) {
-      return c.json({ error: "Access denied" }, 403);
     }
 
     // Reject (never clamp) a caller-supplied expiresAt above the partner cap
@@ -1668,22 +1676,9 @@ enrollmentKeyRoutes.delete(
     const auth = c.get("auth");
     const keyId = c.req.param("id")!;
 
-    const [existingKey] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
-      .limit(1);
-
+    const existingKey = await loadVisibleEnrollmentKey(auth, keyId);
     if (!existingKey) {
       return c.json({ error: "Enrollment key not found" }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(existingKey.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-    if (!canUseEnrollmentKeySite(auth, existingKey.siteId)) {
-      return c.json({ error: "Access denied" }, 403);
     }
 
     await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, keyId));
@@ -1739,24 +1734,9 @@ enrollmentKeyRoutes.get(
       );
     }
 
-    // Look up parent enrollment key
-    const [parentKey] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
-      .limit(1);
-
+    const parentKey = await loadVisibleEnrollmentKey(auth, keyId);
     if (!parentKey) {
       return c.json({ error: "Enrollment key not found" }, 404);
-    }
-
-    // Verify org access
-    const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-    if (!canUseEnrollmentKeySite(auth, parentKey.siteId)) {
-      return c.json({ error: "Access denied" }, 403);
     }
 
     // Reject (never clamp) a caller-supplied TTL above the partner cap.
@@ -2234,22 +2214,9 @@ enrollmentKeyRoutes.post(
     const { id: keyId } = c.req.valid("param");
     const { maxUsage, ttlMinutes } = c.req.valid("json");
 
-    const [parent] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
-      .limit(1);
-
+    const parent = await loadVisibleEnrollmentKey(auth, keyId);
     if (!parent) {
       return c.json({ error: "Enrollment key not found" }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(parent.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-    if (!canUseEnrollmentKeySite(auth, parent.siteId)) {
-      return c.json({ error: "Access denied" }, 403);
     }
 
     // Reject (never clamp) a caller-supplied TTL above the partner cap.
@@ -2326,24 +2293,9 @@ enrollmentKeyRoutes.post(
       ttlMinutes: childTtlMinutes,
     } = c.req.valid("json");
 
-    // Look up parent enrollment key
-    const [parentKey] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
-      .limit(1);
-
+    const parentKey = await loadVisibleEnrollmentKey(auth, keyId);
     if (!parentKey) {
       return c.json({ error: "Enrollment key not found" }, 404);
-    }
-
-    // Verify org access
-    const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
-    }
-    if (!canUseEnrollmentKeySite(auth, parentKey.siteId)) {
-      return c.json({ error: "Access denied" }, 403);
     }
 
     // Reject (never clamp) a caller-supplied TTL above the partner cap.
@@ -2546,20 +2498,9 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "rawToken is required" }, 400);
     }
 
-    // Ownership check: caller must own the key row.
-    const [row] = await db
-      .select()
-      .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
-      .limit(1);
+    // Ownership check: the key must be visible to the caller.
+    const row = await loadVisibleEnrollmentKey(auth, keyId);
     if (!row) return c.json({ error: "Not found" }, 404);
-
-    // Verify org access.
-    const hasAccess = await ensureOrgAccess(row.orgId, auth);
-    if (!hasAccess) return c.json({ error: "Not found" }, 404);
-    if (!canUseEnrollmentKeySite(auth, row.siteId)) {
-      return c.json({ error: "Not found" }, 404);
-    }
 
     // Verify the raw token matches the stored hash. Accept legacy-pepper hashes
     // for keys created before ENROLLMENT_KEY_PEPPER was mandatory.

@@ -171,7 +171,7 @@ describe('#7217 failed Add Device attempts — real PostgreSQL/Redis', () => {
       `/enrollment-keys/${outside}/installer/windows?discardKeyOnFailure=1`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
-    expect(outsideRes.status).toBe(403);
+    expect(outsideRes.status).toBe(404);
     expect(await keyRow(outside)).toBeDefined();
 
     const insideRes = await app().request(
