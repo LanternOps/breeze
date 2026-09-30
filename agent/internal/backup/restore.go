@@ -298,17 +298,10 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if file.ModeBits != 0 {
 			mode = os.FileMode(file.ModeBits)
 		}
-		// A descriptor naming principals this machine does not recognise is
-		// replaced by the restrictive quarantine descriptor (restore_sd.go).
-		var secPlan sdPlan
-		if sd := secDescs.forEntry(file); sd != nil {
-			var secErr error
-			if secPlan, secErr = secDescs.plan(sd); secErr != nil {
-				// An invalid descriptor is a fidelity warning; the content
-				// still installs (R39).
-				result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: could not reapply security descriptor: %v", displayPath, secErr))
-			}
-		}
+		// A descriptor naming principals this machine does not recognise, or
+		// one that cannot be read, is replaced by the restrictive quarantine
+		// descriptor (restore_sd.go).
+		secPlan := secDescs.entryPlan(file)
 		installWarnings, err := securefs.InstallFileWithSecurity(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs, secPlan.applier)
 		if err != nil {
 			result.FilesFailed++
@@ -347,7 +340,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// for later entries beneath it. Symlinks/junctions never take one.
 	type dirSD struct {
 		relative, display string
-		sd                []byte
+		plan              sdPlan
 	}
 	var dirSecurity []dirSD
 	var dirAttrs []pendingDirAttrs
@@ -417,8 +410,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 					if entry.WinAttrs != 0 {
 						dirAttrs = append(dirAttrs, pendingDirAttrs{relative: relativeEntry, display: displayPath, attrs: entry.WinAttrs})
 					}
-					if sd := secDescs.forEntry(entry); sd != nil {
-						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, sd: sd})
+					if plan := secDescs.entryPlan(entry); plan.applier != nil {
+						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, plan: plan})
 					}
 				}
 			}
@@ -449,10 +442,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		return strings.Count(dirSecurity[i].relative, string(filepath.Separator)) > strings.Count(dirSecurity[j].relative, string(filepath.Separator))
 	})
 	for _, ds := range dirSecurity {
-		plan, secErr := secDescs.plan(ds.sd)
-		if secErr == nil && plan.applier != nil {
-			secErr = securefs.ApplyDirSecurity(targetBase, ds.relative, *plan.applier)
-		}
+		plan := ds.plan
+		secErr := securefs.ApplyDirSecurity(targetBase, ds.relative, *plan.applier)
 		switch {
 		case secErr == nil:
 			secDescs.record(result, ds.display, plan)
@@ -462,7 +453,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			result.FilesRestored--
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, ds.display)
-			result.Warnings = append(result.Warnings, fmt.Sprintf("could not restrict %s, whose recorded security descriptor names principals this machine does not recognise: %v", ds.display, secErr))
+			result.Warnings = append(result.Warnings, fmt.Sprintf("could not restrict %s, whose recorded security descriptor names principals this machine does not recognise or cannot be read: %v", ds.display, secErr))
 		default:
 			result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: could not reapply security descriptor: %v", ds.display, secErr))
 		}

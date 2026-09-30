@@ -246,3 +246,54 @@ func TestRestore_SecurityDescriptorsAsCapturedSkipsTheDecision(t *testing.T) {
 		t.Fatalf("applies = %v domainCalls = %d, want both captured and no domain lookup", f.applies, f.domainCalls)
 	}
 }
+
+// TestRestore_UnreadableSecurityDescriptorIsQuarantined: an entry whose
+// recorded descriptor cannot be used — it does not validate, its table slot
+// does not decode, or its index points past the table — is restricted like
+// one naming unknown principals, never left with the target's inherited ACL.
+// This holds for a whole-machine rebuild too (the principal check is what
+// that opts out of, not a readable descriptor).
+func TestRestore_UnreadableSecurityDescriptorIsQuarantined(t *testing.T) {
+	for _, asCaptured := range []bool{false, true} {
+		t.Run(map[bool]string{false: "restore", true: "rebuild"}[asCaptured], func(t *testing.T) {
+			files := []sdTestFile{
+				{name: "invalid.txt", content: "i", sourcePath: "/original/top/invalid.txt", sdIndex: 1},
+				{name: "corrupt.txt", content: "c", sourcePath: "/original/top/corrupt.txt", sdIndex: 2},
+				{name: "past.txt", content: "p", sourcePath: "/original/top/past.txt", sdIndex: 9},
+				{name: "known.txt", content: "k", sourcePath: "/original/top/known.txt", sdIndex: 3},
+			}
+			extra := []SnapshotFile{
+				{SourcePath: "/original/top/cdir", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 2},
+			}
+			table := append(encSDs("invalid"), "!!!not base64!!!")
+			table = append(table, encSDs("known")...)
+			provider, snapshotID := setupRestoreTestSnapshotWithSDEntries(t, files, extra, table)
+			f := &fakeSDPlatform{applies: map[string]int{}}
+			installFakeSDPlatform(t, f, nil)
+			captured := restoreSecurityApplier
+			restoreSecurityApplier = func(sd []byte) (*securefs.SecurityApplier, error) {
+				if string(sd) == "invalid" {
+					return nil, errors.New("not a valid security descriptor")
+				}
+				return captured(sd)
+			}
+
+			result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: t.TempDir(), SecurityDescriptorsAsCaptured: asCaptured}, nil)
+			if err != nil {
+				t.Fatalf("RestoreFromSnapshot: %v", err)
+			}
+			wantPaths := []string{"/original/top/invalid.txt", "/original/top/corrupt.txt", "/original/top/past.txt", "/original/top/cdir"}
+			if result.FilesFailed != 0 || f.applies["quarantine"] != len(wantPaths) || f.applies["captured:known"] != 1 {
+				t.Fatalf("result = %+v applies = %v, want the four unreadable entries restricted and known applied", result, f.applies)
+			}
+			if result.SecurityDescriptorQuarantined != len(wantPaths) {
+				t.Fatalf("SecurityDescriptorQuarantined = %d, want %d", result.SecurityDescriptorQuarantined, len(wantPaths))
+			}
+			for _, p := range wantPaths {
+				if !slices.Contains(result.SecurityDescriptorQuarantinedPaths, p) {
+					t.Errorf("SecurityDescriptorQuarantinedPaths %v missing %q", result.SecurityDescriptorQuarantinedPaths, p)
+				}
+			}
+		})
+	}
+}

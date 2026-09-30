@@ -269,19 +269,25 @@ func recordingSecurityApplier(t *testing.T, snapshot func() sdApplyCall) *[]sdAp
 	t.Cleanup(func() { restoreSDPlatform = origPlatform })
 	restoreSDPlatform.principals = func([]byte) (sdPrincipals, error) { return sdPrincipals{}, nil }
 	restoreSDPlatform.domains = func() (knownDomains, []string) { return knownDomains{}, nil }
+	record := func(name string) *securefs.SecurityApplier {
+		return &securefs.SecurityApplier{Apply: func(uintptr) error {
+			c := snapshot()
+			c.sd = name
+			calls = append(calls, c)
+			if name == "sd-FAIL" {
+				return errors.New("injected apply failure")
+			}
+			return nil
+		}}
+	}
+	// An unusable descriptor is replaced by the restrictive one, recorded
+	// as "quarantine".
+	restoreSDPlatform.quarantine = func() (*securefs.SecurityApplier, error) { return record("quarantine"), nil }
 	restoreSecurityApplier = func(sd []byte) (*securefs.SecurityApplier, error) {
 		if string(sd) == "sd-INVALID" {
 			return nil, errors.New("injected invalid descriptor")
 		}
-		return &securefs.SecurityApplier{Apply: func(uintptr) error {
-			c := snapshot()
-			c.sd = string(sd)
-			calls = append(calls, c)
-			if string(sd) == "sd-FAIL" {
-				return errors.New("injected apply failure")
-			}
-			return nil
-		}}, nil
+		return record(string(sd)), nil
 	}
 	return &calls
 }
@@ -293,8 +299,10 @@ func recordingSecurityApplier(t *testing.T, snapshot func() sdApplyCall) *[]sdAp
 // temporary BEFORE publication (its final name does not exist yet);
 // directories are applied through securefs's pinned walk in a post-pass
 // after EVERY entry is in place, deepest first; SDIndex-0 entries collapse
-// into one aggregate warning; an apply failure and an invalid descriptor are
-// warnings and the file still counts restored (R39); symlinks get nothing.
+// into one aggregate warning; an apply failure of the captured descriptor is
+// a warning and the file still counts restored (R39); an invalid descriptor
+// is replaced by the restrictive one and the entry listed as quarantined;
+// symlinks get nothing.
 func TestRestore_SDWiring(t *testing.T) {
 	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 	files := []sdTestFile{
@@ -363,7 +371,8 @@ func TestRestore_SDWiring(t *testing.T) {
 	}{
 		{"sd-f1", 0, false},
 		{"sd-f2", 1, false},
-		{"sd-FAIL", 3, false}, // f3 (SDIndex 0) published in between
+		{"sd-FAIL", 3, false},    // f3 (SDIndex 0) published in between
+		{"quarantine", 4, false}, // f5's descriptor does not validate
 		{"sd-sub", len(files), true},
 		{"sd-top", len(files), true},
 	}
@@ -392,7 +401,7 @@ func TestRestore_SDWiring(t *testing.T) {
 		switch {
 		case strings.Contains(w, "f4.txt") && strings.Contains(w, "apply security descriptor: injected apply failure"):
 			failWarn++
-		case strings.Contains(w, "f5.txt") && strings.Contains(w, "could not reapply security descriptor: injected invalid descriptor"):
+		case strings.HasPrefix(w, "1 entries were restored with a restrictive access list") && strings.Contains(w, "f5.txt") && strings.Contains(w, "injected invalid descriptor"):
 			invalidWarn++
 		case strings.HasPrefix(w, "2 entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target"):
 			aggWarn++
@@ -401,7 +410,10 @@ func TestRestore_SDWiring(t *testing.T) {
 		}
 	}
 	if failWarn != 1 || invalidWarn != 1 || aggWarn != 1 {
-		t.Errorf("SD warnings = %v, want one apply failure (f4), one invalid descriptor (f5), one aggregate (2 entries)", sdWarnings(result.Warnings))
+		t.Errorf("SD warnings = %v, want one apply failure (f4), one quarantine (f5), one aggregate (2 entries)", sdWarnings(result.Warnings))
+	}
+	if result.SecurityDescriptorQuarantined != 1 || len(result.SecurityDescriptorQuarantinedPaths) != 1 || result.SecurityDescriptorQuarantinedPaths[0] != "/original/top/f5.txt" {
+		t.Errorf("quarantined = %d %v, want f5 only", result.SecurityDescriptorQuarantined, result.SecurityDescriptorQuarantinedPaths)
 	}
 	for _, f := range files {
 		if b, err := os.ReadFile(finalPath(f.sourcePath)); err != nil || string(b) != f.content {

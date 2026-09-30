@@ -130,7 +130,7 @@ func newRestoreSecurity(encoded []string, entries []SnapshotFile, enabled bool) 
 	}
 	if truncated > 0 {
 		warnings = append(warnings, fmt.Sprintf(
-			"security descriptor table is truncated: %d entries reference slots up to %d but the table has %d; they were restored with ACLs inherited from the restore target",
+			"security descriptor table is truncated: %d entries reference slots up to %d but the table has %d; they were restored with a restrictive access list",
 			truncated, maxIndex, len(table)))
 	}
 	return rs, warnings
@@ -158,6 +158,33 @@ func (rs *restoreSecurity) forEntry(e SnapshotFile) []byte {
 	// Past the table's end: already counted once, in newRestoreSecurity's
 	// truncation warning — not counted again here. sdBytesAt returns nil.
 	return sdBytesAt(rs.table, e.SDIndex)
+}
+
+// entryPlan is how an entry's recorded descriptor is applied. Symlinks and
+// entries without a recorded descriptor get none (the latter counted for
+// finish's aggregate warning). A recorded descriptor that cannot be used — a
+// table slot that did not decode, an index past the table's end, or bytes
+// that do not validate — is restricted exactly like one naming principals
+// this machine does not recognise, never left with the target's inherited
+// ACL. That holds for a whole-machine rebuild too: it opts out of the
+// principal check, not of a readable descriptor.
+func (rs *restoreSecurity) entryPlan(e SnapshotFile) sdPlan {
+	if !rs.hasTable || e.Kind == KindSymlink {
+		return sdPlan{}
+	}
+	if e.SDIndex <= 0 {
+		rs.missing++
+		return sdPlan{}
+	}
+	sd := sdBytesAt(rs.table, e.SDIndex)
+	if sd == nil {
+		return sdPlan{applier: quarantineRequired(), verdict: sdQuarantine, reason: "its recorded security descriptor could not be read from the snapshot"}
+	}
+	p, err := rs.plan(sd)
+	if err != nil {
+		return sdPlan{applier: quarantineRequired(), verdict: sdQuarantine, reason: fmt.Sprintf("its recorded security descriptor is not valid (%v)", err)}
+	}
+	return p
 }
 
 // plan decides how sd is applied to an entry. The captured descriptor is
@@ -251,7 +278,7 @@ func (rs *restoreSecurity) finish() []string {
 		out = append(out, fmt.Sprintf("%d entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target", rs.missing))
 	}
 	if rs.quarantined > 0 {
-		out = append(out, fmt.Sprintf("%d entries were restored with a restrictive access list (owner Administrators; SYSTEM and Administrators only) instead of their recorded security descriptor, which names principals this machine does not recognise (first: %s)", rs.quarantined, rs.firstQuarantined))
+		out = append(out, fmt.Sprintf("%d entries were restored with a restrictive access list (owner Administrators; SYSTEM and Administrators only) instead of their recorded security descriptor, which names principals this machine does not recognise or cannot be read (first: %s)", rs.quarantined, rs.firstQuarantined))
 	}
 	if rs.saclDropped > 0 {
 		out = append(out, fmt.Sprintf("%d entries were restored without their recorded audit entries (SACL), which name principals this machine does not recognise (first: %s)", rs.saclDropped, rs.firstSACLDrop))
