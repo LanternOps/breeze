@@ -136,8 +136,9 @@ async function inReferencedOrg<T>(orgId: string, fn: () => Promise<T>): Promise<
  * Delivery refresher for every storage-destination command type. Returns the
  * wire payload: the stored payload minus `providerConfigRef`, plus the
  * resolved `provider`/`providerConfig` (and, for writes, the re-checked
- * `storageEncryption`). For a READ it resolves only a local destination: an
- * S3 read is served through a storage session instead, and is refused here.
+ * `storageEncryption`). It resolves only a LOCAL destination, for a read or
+ * a write: S3 reads and writes are served through storage sessions instead,
+ * and are refused here.
  *
  * A payload with no reference is returned untouched. That covers rows queued
  * before references existed (their inline destination is still delivered, and
@@ -151,12 +152,21 @@ async function inReferencedOrg<T>(orgId: string, fn: () => Promise<T>): Promise<
 export async function materializeBackupStorageCredentials(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
-  /** Why a backup write was not delivered through a storage session (dispatch telemetry). */
-  opts: { legacyReason?: string } = {},
 ): Promise<Record<string, unknown>> {
-  if (!(PROVIDER_CONFIG_REF_FIELD in payload)) return payload;
-
   const isWrite = WRITE_TYPES.has(ctx.type);
+  if (!(PROVIDER_CONFIG_REF_FIELD in payload)) {
+    // A backup to anything but a local path is written only through a write
+    // session: an inline destination queued by an earlier version is never
+    // passed through for a write.
+    if (isWrite && payload.provider !== 'local'
+      && ('providerConfig' in payload || 'providerConfigEnvelope' in payload)) {
+      throw new CommandDeliveryRefusedError(
+        'This backup was queued by an earlier version of Breeze and can no longer be delivered. Start it again.',
+      );
+    }
+    return payload;
+  }
+
   if (!isWrite && !READ_TYPES.has(ctx.type)) {
     throw new CommandDeliveryRefusedError(
       `Command type ${ctx.type} does not take a storage destination reference.`,
@@ -193,11 +203,14 @@ export async function materializeBackupStorageCredentials(
           'The backup destination encryption settings changed after this command was queued; run it again.',
         );
       }
-      if (destination.provider === 'local') {
-        recordBackupWriteDispatch(ctx.type, 'local', 'no_credential');
-      } else {
-        recordBackupWriteDispatch(ctx.type, 'legacy_credential', opts.legacyReason ?? 'delivery_refresher');
+      // A backup to S3 storage is written only through a write session
+      // (services/backupStorageWriteDelivery.ts); only a local destination —
+      // a path, not a credential — is ever resolved into a backup command.
+      if (destination.provider !== 'local') {
+        recordBackupWriteDispatch(ctx.type, 'refused', 'provider_not_local');
+        throw new CommandDeliveryRefusedError('This backup can only be written through a secure storage session.');
       }
+      recordBackupWriteDispatch(ctx.type, 'local', 'no_credential');
       return {
         ...rest,
         provider: destination.provider,

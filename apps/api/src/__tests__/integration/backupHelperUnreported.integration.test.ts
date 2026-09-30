@@ -204,7 +204,7 @@ describe('backups started before a new device reports its backup helper', () => 
     expect(waits.calls).toHaveLength(1);
   });
 
-  it('an agent whose heartbeat omits the fields is an older helper and gets the backup as before', async () => {
+  it('an agent whose heartbeat omits the fields is an older helper: the backup is refused, never sent the destination', async () => {
     const t = await seedNewDevice();
     await heartbeat(t, {});
     expect(await helperProtocols(t.deviceId)).toEqual({ read: 0, integrity: 0, write: 0 });
@@ -212,12 +212,13 @@ describe('backups started before a new device reports its backup helper', () => 
     const jobId = await runNow(t);
     await expect(__testOnly.processDispatchBackup({
       type: 'dispatch-backup', jobId, configId: t.configId, orgId: t.orgId, deviceId: t.deviceId,
-    })).resolves.toEqual({ dispatched: true });
+    })).resolves.toEqual({ dispatched: false });
 
     expect(waits.calls).toEqual([]);
-    expect(relay.frames).toHaveLength(1);
-    expect(relay.frames[0]!.payload.providerConfig).toMatchObject({ bucket: WRITE_DESTINATION.bucket });
-    expect(relay.frames[0]!.payload).not.toHaveProperty('storageSession');
+    expect(relay.frames).toEqual([]);
+    expect(await jobStatus(jobId)).toBe('failed');
+    const [job] = await getTestDb().select({ errorLog: backupJobs.errorLog }).from(backupJobs).where(eq(backupJobs.id, jobId));
+    expect(job?.errorLog).toMatch(/^Update the Breeze agent on this device, then try again\. Backups now require/);
   });
 
   it('a waiting backup is never sent once its job is no longer pending', async () => {
