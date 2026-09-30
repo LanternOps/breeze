@@ -337,8 +337,13 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		displayPath := restoreSourcePath(entry)
 		relativeEntry, relErr := restoreRelativePath(displayPath)
 		if relErr != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", displayPath))
+			if errors.Is(relErr, securefs.ErrInvalidWindowsName) {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("invalid restore path %s: %v", displayPath, relErr))
+			} else {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", displayPath))
+			}
 			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			continue
 		}
 		// securefs walks to the entry's parent with directory descriptors and

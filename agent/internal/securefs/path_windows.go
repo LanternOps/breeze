@@ -106,7 +106,13 @@ func (c *dirChain) close() {
 
 // openRelativeComponent is the openat equivalent: name is resolved relative to
 // parent, never from the volume root.
+//
+// name is one component. It is validated here too, at the last step before
+// the kernel sees it, so no caller can reach a stream or a normalised alias.
 func openRelativeComponent(parent windows.Handle, name string, access uint32, share uint32, disposition uint32, options uint32, sa *windows.SecurityAttributes) (windows.Handle, error) {
+	if err := validWindowsComponent(name); err != nil {
+		return windows.InvalidHandle, err
+	}
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -143,15 +149,22 @@ func rejectReparseOrNonDir(handle windows.Handle, name string) error {
 	return nil
 }
 
-func splitWindowsComponents(rest string) []string {
+// splitWindowsComponents splits rest on the separator and refuses any
+// component that is not creatable under its literal name
+// (validWindowsComponent). The volume of an absolute path is never part of
+// rest: callers strip it first.
+func splitWindowsComponents(rest string) ([]string, error) {
 	var out []string
 	for _, component := range strings.Split(rest, string(filepath.Separator)) {
 		if component == "" || component == "." {
 			continue
 		}
+		if err := validWindowsComponent(component); err != nil {
+			return nil, err
+		}
 		out = append(out, component)
 	}
-	return out
+	return out, nil
 }
 
 // openVerifiedDir walks path one component at a time, each relative to the
@@ -182,7 +195,11 @@ func openVerifiedDir(path string, create bool, finalSA *windows.SecurityAttribut
 	}
 	chain := &dirChain{handles: []windows.Handle{root}}
 
-	components := splitWindowsComponents(strings.Trim(path[len(volume):], `\/`))
+	components, err := splitWindowsComponents(strings.Trim(path[len(volume):], `\/`))
+	if err != nil {
+		chain.close()
+		return nil, fmt.Errorf("directory %q: %w", path, err)
+	}
 	for i, component := range components {
 		if component == ".." {
 			chain.close()
@@ -613,6 +630,9 @@ var renameRelativeExUnsupported atomic.Bool
 // the lab host). Class 10 remains the fallback for pre-Server-2016 kernels,
 // with a short bounded retry for the same reason.
 func renameRelative(handle, parent windows.Handle, name string) error {
+	if err := validWindowsComponent(name); err != nil {
+		return err
+	}
 	if !renameRelativeExUnsupported.Load() {
 		err := setRenameInformation(handle, parent, name, fileRenameInformationEx,
 			windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS)
@@ -1063,7 +1083,11 @@ func targetIsDirectory(parent windows.Handle, linkTarget string) (isDir bool, pr
 			_ = windows.CloseHandle(h)
 		}
 	}()
-	for _, component := range splitWindowsComponents(clean) {
+	components, err := splitWindowsComponents(clean)
+	if err != nil {
+		return false, true
+	}
+	for _, component := range components {
 		handle, err := openRelativeComponent(current, component, windows.FILE_READ_ATTRIBUTES,
 			shareFile, windows.FILE_OPEN, windows.FILE_SYNCHRONOUS_IO_NONALERT, nil)
 		if err != nil {

@@ -9,7 +9,8 @@ import (
 )
 
 // CleanRelative rejects paths that could escape a directory pinned by the
-// platform-specific implementation.
+// platform-specific implementation. On Windows it also refuses any component
+// that cannot be stored under its literal name (ErrInvalidWindowsName).
 func CleanRelative(name string) (string, error) {
 	if name == "" || filepath.IsAbs(name) {
 		return "", errors.New("path must be non-empty and relative")
@@ -17,6 +18,9 @@ func CleanRelative(name string) (string, error) {
 	clean := filepath.Clean(name)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", errors.New("path escapes the target directory")
+	}
+	if err := checkPlatformComponents(clean); err != nil {
+		return "", err
 	}
 	return clean, nil
 }
