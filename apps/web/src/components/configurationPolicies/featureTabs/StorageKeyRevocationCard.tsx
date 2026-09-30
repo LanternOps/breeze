@@ -38,7 +38,10 @@ const REFUSED_FOR_LISTING_CODES = new Set(["AccessDenied", "SignatureDoesNotMatc
 
 
 
-export default function StorageKeyRevocationCard() {
+export default function StorageKeyRevocationCard({ orgId }: {
+  /** The policy's organization. Null for a partner-wide policy: nothing is shown. */
+  orgId: string | null;
+}) {
   const { t } = useTranslation("policies");
   const outcomeMessage = ({ outcome, code }: CheckResult): string => {
     if (outcome === "revoked") return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.revoked");
@@ -56,7 +59,8 @@ export default function StorageKeyRevocationCard() {
 
   const load = useCallback(async () => {
     try {
-      const response = await fetchWithAuth("/backup/storage-credentials");
+      if (!orgId) return;
+      const response = await fetchWithAuth("/backup/storage-credentials", { orgIdOverride: orgId });
       if (!response.ok) {
         setLoadFailed(true);
         return;
@@ -67,7 +71,7 @@ export default function StorageKeyRevocationCard() {
     } catch {
       setLoadFailed(true);
     }
-  }, []);
+  }, [orgId]);
 
   useEffect(() => {
     void load();
@@ -79,7 +83,7 @@ export default function StorageKeyRevocationCard() {
     setBusyId(row.id);
     try {
       const result = await runAction<CheckResult>({
-        request: () => fetchWithAuth(`/backup/storage-credentials/${row.id}/check`, { method: "POST" }),
+        request: () => fetchWithAuth(`/backup/storage-credentials/${row.id}/check`, { method: "POST", orgIdOverride: orgId! }),
         parseSuccess: (value) => {
           const body = value as { outcome: CheckOutcome; code?: string | null };
           return { outcome: body.outcome, code: body.code ?? null };
@@ -109,6 +113,7 @@ export default function StorageKeyRevocationCard() {
           fetchWithAuth(`/backup/storage-credentials/${row.id}/confirm-disabled`, {
             method: "POST",
             body: JSON.stringify({ confirm: true }),
+            orgIdOverride: orgId!,
           }),
         errorFallback: t("configurationPolicies.featureTabs.backupTab.storageKeys.confirmFailed"),
         successMessage: t("configurationPolicies.featureTabs.backupTab.storageKeys.confirmed"),
@@ -124,6 +129,7 @@ export default function StorageKeyRevocationCard() {
     }
   };
 
+  if (!orgId) return null;
   if (loadFailed) {
     return (
       <div className="rounded-md border border-muted p-3 text-xs text-muted-foreground">
@@ -188,6 +194,7 @@ export default function StorageKeyRevocationCard() {
                           type="button"
                           disabled={busy}
                           onClick={() => void confirmDisabled(row)}
+                          data-testid="storage-credential-confirm"
                           className="rounded-md border border-primary px-2 py-1 font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
                         >
                           {t("common:actions.confirm")}
@@ -196,6 +203,7 @@ export default function StorageKeyRevocationCard() {
                           type="button"
                           disabled={busy}
                           onClick={() => setConfirmingId(null)}
+                          data-testid="storage-credential-confirm-cancel"
                           className="rounded-md border px-2 py-1 hover:bg-muted disabled:opacity-50"
                         >
                           {t("common:actions.cancel")}
@@ -209,6 +217,7 @@ export default function StorageKeyRevocationCard() {
                           type="button"
                           disabled={busy}
                           onClick={() => void check(row)}
+                          data-testid="storage-credential-check"
                           className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                         >
                           {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : null}
@@ -219,6 +228,7 @@ export default function StorageKeyRevocationCard() {
                         type="button"
                         disabled={busy}
                         onClick={() => setConfirmingId(row.id)}
+                        data-testid="storage-credential-confirm-disabled"
                         className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
                       >
                         {t("configurationPolicies.featureTabs.backupTab.storageKeys.confirmDisabled")}

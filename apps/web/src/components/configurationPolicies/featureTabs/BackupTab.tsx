@@ -1930,7 +1930,7 @@ export default function BackupTab({
             </div>
           ) : (
             <>
-              <StorageKeyRevocationCard />
+              <StorageKeyRevocationCard orgId={orgId ?? null} />
               <BackupDestinationSection
                 configs={configs}
                 configsLoading={configsLoading}

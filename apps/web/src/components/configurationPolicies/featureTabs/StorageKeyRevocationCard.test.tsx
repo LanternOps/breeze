@@ -17,6 +17,8 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+const ORG = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
 const REPLACED = {
   id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   configId: 'cfg-1',
@@ -37,16 +39,32 @@ beforeEach(() => {
 });
 
 describe('StorageKeyRevocationCard', () => {
+  it('renders nothing and fetches nothing for a partner-wide policy (no organization)', () => {
+    const { container } = render(<StorageKeyRevocationCard orgId={null} />);
+    expect(container.innerHTML).toBe('');
+    expect(m.fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('marks its buttons for end-to-end tests', async () => {
+    m.fetchWithAuth.mockResolvedValueOnce(json({ data: [REPLACED] }));
+    render(<StorageKeyRevocationCard orgId={ORG} />);
+    expect(await screen.findByTestId('storage-credential-check')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('storage-credential-confirm-disabled'));
+    expect(screen.getByTestId('storage-credential-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('storage-credential-confirm-cancel'));
+    expect(screen.queryByTestId('storage-credential-confirm')).toBeNull();
+  });
+
   it('renders nothing when no key needs attention', async () => {
     m.fetchWithAuth.mockResolvedValueOnce(json({ data: [] }));
-    const { container } = render(<StorageKeyRevocationCard />);
-    await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledWith('/backup/storage-credentials'));
+    const { container } = render(<StorageKeyRevocationCard orgId={ORG} />);
+    await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledWith('/backup/storage-credentials', { orgIdOverride: ORG }));
     expect(container.querySelector('[data-testid="storage-credential-revocation"]')).toBeNull();
   });
 
   it('lists keys used before the change: replaced keys can be checked, keys in use must be replaced first', async () => {
     m.fetchWithAuth.mockResolvedValueOnce(json({ data: [REPLACED, IN_USE] }));
-    render(<StorageKeyRevocationCard />);
+    render(<StorageKeyRevocationCard orgId={ORG} />);
     const card = await screen.findByTestId('storage-credential-revocation');
     expect(card.textContent).toMatch(/Replace and disable the storage keys used before/);
     expect(screen.getByText('Primary')).toBeInTheDocument();
@@ -60,10 +78,10 @@ describe('StorageKeyRevocationCard', () => {
       .mockResolvedValueOnce(json({ data: [REPLACED] }))
       .mockResolvedValueOnce(json({ outcome: 'still_live', message: 'server text' }))
       .mockResolvedValueOnce(json({ data: [{ ...REPLACED, lastCheckOutcome: 'still_live', lastCheckedAt: '2026-12-03T00:00:00.000Z' }] }));
-    render(<StorageKeyRevocationCard />);
+    render(<StorageKeyRevocationCard orgId={ORG} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Check old key' }));
     await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledWith(
-      `/backup/storage-credentials/${REPLACED.id}/check`, { method: 'POST' },
+      `/backup/storage-credentials/${REPLACED.id}/check`, { method: 'POST', orgIdOverride: ORG },
     ));
     expect(await screen.findByText('The previous key still works. Disable it with your storage provider, then check again.'))
       .toBeInTheDocument();
@@ -74,7 +92,7 @@ describe('StorageKeyRevocationCard', () => {
       .mockResolvedValueOnce(json({ data: [REPLACED] }))
       .mockResolvedValueOnce(json({ outcome: 'inconclusive', code: 'AccessDenied', message: 'server text' }))
       .mockResolvedValueOnce(json({ data: [{ ...REPLACED, lastCheckOutcome: 'inconclusive', lastCheckCode: 'AccessDenied', lastCheckedAt: '2026-12-03T00:00:00.000Z' }] }));
-    render(<StorageKeyRevocationCard />);
+    render(<StorageKeyRevocationCard orgId={ORG} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Check old key' }));
     const text = 'The previous key was refused for listing, but it may still work for uploads. '
       + 'Disable it with your storage provider, then check again, or confirm that you disabled it.';
@@ -88,7 +106,7 @@ describe('StorageKeyRevocationCard', () => {
     m.fetchWithAuth
       .mockResolvedValueOnce(json({ data: [REPLACED] }))
       .mockResolvedValueOnce(json({ error: 'Too many key checks for this organization. Try again shortly.' }, 429));
-    render(<StorageKeyRevocationCard />);
+    render(<StorageKeyRevocationCard orgId={ORG} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Check old key' }));
     await waitFor(() => expect(m.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   });
@@ -98,21 +116,21 @@ describe('StorageKeyRevocationCard', () => {
       .mockResolvedValueOnce(json({ data: [REPLACED] }))
       .mockResolvedValueOnce(json({ outcome: 'revoked' }))
       .mockResolvedValueOnce(json({ data: [] }));
-    render(<StorageKeyRevocationCard />);
+    render(<StorageKeyRevocationCard orgId={ORG} />);
     fireEvent.click(await screen.findByRole('button', { name: 'I disabled this key' }));
     expect(m.fetchWithAuth).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/weaker evidence/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledWith(
       `/backup/storage-credentials/${REPLACED.id}/confirm-disabled`,
-      { method: 'POST', body: JSON.stringify({ confirm: true }) },
+      { method: 'POST', body: JSON.stringify({ confirm: true }), orgIdOverride: ORG },
     ));
     await waitFor(() => expect(screen.queryByTestId('storage-credential-revocation')).toBeNull());
   });
 
   it('shows a retry when the list cannot be loaded', async () => {
     m.fetchWithAuth.mockResolvedValueOnce(json({ error: 'boom' }, 500)).mockResolvedValueOnce(json({ data: [] }));
-    render(<StorageKeyRevocationCard />);
+    render(<StorageKeyRevocationCard orgId={ORG} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledTimes(2));
   });
