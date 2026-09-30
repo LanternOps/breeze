@@ -155,8 +155,8 @@ func restoreEntryPath(f vmRestoreManifFile) string {
 // Windows path (drive, UNC, \\?\ or a VSS shadow-copy device) or a POSIX one;
 // its volume or device prefix is dropped so C:\Users\x lands at Users/x on the
 // new disk. Parent components, alternate data streams, drive-relative
-// components, NUL bytes, reserved device names and 8.3 short-name forms are
-// refused rather than cleaned.
+// components, NUL bytes and reserved device names are refused rather than
+// cleaned.
 func vmRestoreRelativePath(f vmRestoreManifFile) (string, error) {
 	recorded := restoreEntryPath(f)
 	if recorded == "" {
@@ -193,8 +193,8 @@ func vmRestoreRelativePath(f vmRestoreManifFile) (string, error) {
 		return "", fmt.Errorf("path %q names a volume root, not a file", recorded)
 	}
 	rel := strings.Join(parts, "/")
-	// The new volume is NTFS: a reserved device name or an 8.3 short-name
-	// form cannot be stored under the recorded name.
+	// The new volume is NTFS: a reserved device name cannot be stored under
+	// the recorded name.
 	if err := securefs.ValidateWindowsComponents(rel); err != nil {
 		return "", fmt.Errorf("path %q: %w", recorded, err)
 	}

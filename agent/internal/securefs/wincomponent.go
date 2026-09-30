@@ -41,11 +41,11 @@ func validWindowsComponent(name string) error {
 	return nil
 }
 
-// validRestoredWindowsComponent is validWindowsComponent plus the rules for
-// a name taken from a backup manifest: it must not be a reserved device name
-// or have the shape of an 8.3 short name. Those two apply only to restored
-// names, never to the components of a base directory the restore was given
-// (a work or temp directory is often spelled with short names).
+// validRestoredWindowsComponent is validWindowsComponent plus the rule for a
+// name taken from a backup manifest: it must not be a reserved device name.
+// Short-name forms (PROGRA~1) are accepted: a recorded source path is often
+// spelled that way by the backup's own configuration (a %TEMP%-derived
+// profile path, say) and names the file that was backed up.
 func validRestoredWindowsComponent(name string) error {
 	if err := validWindowsComponent(name); err != nil {
 		return err
@@ -55,9 +55,6 @@ func validRestoredWindowsComponent(name string) error {
 	}
 	if isWindowsDeviceName(name) {
 		return fmt.Errorf("%w: path component %q names a device", ErrInvalidWindowsName, name)
-	}
-	if hasShortNameMarker(name) {
-		return fmt.Errorf("%w: path component %q has the form of a short (8.3) name", ErrInvalidWindowsName, name)
 	}
 	return nil
 }
@@ -94,19 +91,7 @@ func isWindowsDeviceName(name string) bool {
 	return false
 }
 
-// hasShortNameMarker reports whether name contains '~' followed by a digit,
-// the shape of an 8.3 short name: a short name can alias a different long
-// name already in the directory, so it is never written.
-func hasShortNameMarker(name string) bool {
-	for i := 0; i+1 < len(name); i++ {
-		if name[i] == '~' && name[i+1] >= '0' && name[i+1] <= '9' {
-			return true
-		}
-	}
-	return false
-}
-
-// ValidateWindowsComponents applies validWindowsComponent to every component
+// ValidateWindowsComponents applies validRestoredWindowsComponent to every component
 // of a relative path, splitting on both separators Windows accepts. Empty
 // components (doubled separators) are skipped, as the walk skips them. It is
 // exported for restore consumers that write outside this package on Windows;

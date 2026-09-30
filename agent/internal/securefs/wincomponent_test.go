@@ -52,8 +52,8 @@ func TestValidWindowsComponent(t *testing.T) {
 		{name: "port zero is a name", in: "COM0", ok: true},
 		{name: "device name as a prefix", in: "CONFIG.sys", ok: true},
 		{name: "device name after a dot", in: "x.con", ok: true},
-		{name: "short name", in: "PROGRA~1", ok: true, restoredOnly: true},
-		{name: "short name with extension", in: "REPORT~12.TXT", ok: true, restoredOnly: true},
+		{name: "short name", in: "PROGRA~1", ok: true},
+		{name: "short name with extension", in: "REPORT~12.TXT", ok: true},
 		{name: "tilde without digit", in: "~$doc.docx", ok: true},
 		{name: "tilde at the end", in: "backup~", ok: true},
 	}
@@ -91,7 +91,7 @@ func TestValidateWindowsComponents(t *testing.T) {
 		{name: "trailing dot on a directory", in: "one/dir./file.txt", ok: false},
 		{name: "trailing space on the leaf", in: "one/file.txt ", ok: false},
 		{name: "device name directory", in: `one\NUL\file.txt`, ok: false},
-		{name: "short name directory", in: `PROGRA~1\app\x.dll`, ok: false},
+		{name: "short name directory", in: `PROGRA~1\app\x.dll`, ok: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

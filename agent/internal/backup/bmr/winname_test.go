@@ -22,6 +22,12 @@ func TestWindowsRestorePathError(t *testing.T) {
 		{`C:\data\name.`, false},
 		{`C:\data\name \file`, false},
 		{`C:\dir:ads\file`, false},
+		// A recorded absolute path may legitimately be spelled with short
+		// names (the backup's own configuration); it names the same file.
+		{`C:\PROGRA~1\app\x.dll`, true},
+		{`C:\Users\RUNNER~1\AppData\Local\Temp\f.txt`, true},
+		{`C:\data\NUL`, false},
+		{`C:\data\com1.txt`, false},
 	}
 	for _, tc := range cases {
 		err := windowsRestorePathError(tc.path)

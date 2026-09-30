@@ -61,7 +61,8 @@ func TestHypervRestorePlanOmitsEntriesWithoutBackupPath(t *testing.T) {
 }
 
 // Export paths are names Windows must store literally: a reserved device name
-// or an 8.3 short-name form is refused before anything is downloaded.
+// is refused before anything is downloaded. A short-name form is an ordinary
+// recorded spelling and is accepted.
 func TestRestoreHypervSnapshotFilesRefusesInvalidWindowsNames(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -73,8 +74,8 @@ func TestRestoreHypervSnapshotFilesRefusesInvalidWindowsNames(t *testing.T) {
 		{name: "port device name", path: "vm/COM3", wantErr: true},
 		{name: "superscript port device name", path: "vm/LPT².vmcx", wantErr: true},
 		{name: "console output device", path: "vm/CONOUT$", wantErr: true},
-		{name: "short name directory", path: "VIRTUA~1/disk.vhdx", wantErr: true},
-		{name: "short name file", path: "vm/DISK~1.VHD", wantErr: true},
+		{name: "short name directory", path: "VIRTUA~1/disk.vhdx"},
+		{name: "short name file", path: "vm/DISK~1.VHD"},
 		{name: "trailing dot", path: "vm/disk.vhdx.", wantErr: true},
 		{name: "stream separator", path: "vm/disk.vhdx:alt", wantErr: true},
 		{name: "ordinary export file", path: "vm/Virtual Hard Disks/console-disk.vhdx"},
