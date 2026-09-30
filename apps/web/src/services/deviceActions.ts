@@ -478,19 +478,6 @@ export async function linkDevicesVmHost(
   return data.data ?? data;
 }
 
-export async function restoreDevice(deviceId: string): Promise<{ success: boolean }> {
-  const response = await fetchWithAuth(`/devices/${deviceId}/restore`, {
-    method: 'POST'
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to restore device'));
-  }
-
-  const data = await response.json();
-  return data.data ?? data;
-}
-
 /**
  * Permanently delete a REMOVED device.
  *
@@ -653,6 +640,7 @@ export type BulkLifecycleFailureCode =
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
+  | 'DEVICE_LIMIT_REACHED'
   | 'ERROR';
 
 export interface BulkLifecycleFailure {

@@ -40,7 +40,7 @@ import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
 import type { BulkMaintenanceResponse } from '../../services/deviceActions';
 import MaintenanceModeDialog from './MaintenanceModeDialog';
 import { isInMaintenance } from '../../lib/maintenanceResource';
@@ -1429,11 +1429,24 @@ export default function DevicesPage() {
           break;
         }
 
-        case 'restore':
-          await restoreDevice(device.id);
-          showToast({ type: 'success', message: t('devicesPage.toasts.restored', { hostname: device.hostname }) });
-          await refreshDevices();
+        // runAction surfaces the API's own refusal — e.g. "Device limit
+        // reached" when the partner is at its device limit — rather than a
+        // generic failure.
+        case 'restore': {
+          try {
+            await runAction({
+              request: () => fetchWithAuth(`/devices/${device.id}/restore`, { method: 'POST' }),
+              errorFallback: t('devicesPage.toasts.actionFailed', { action, hostname: device.hostname }),
+              friendly: (code) => (code === 'MFA_REQUIRED' ? t('devicesPage.toasts.mfaRequired') : undefined),
+              onUnauthorized: handleSessionExpired,
+              successMessage: t('devicesPage.toasts.restored', { hostname: device.hostname }),
+            });
+            await refreshDevices();
+          } catch {
+            // runAction already toasted (or handled the 401 redirect).
+          }
           break;
+        }
 
         case 'permanent-delete': {
           // Deferred execution with undo — gives the user 5 seconds to cancel
@@ -1845,12 +1858,16 @@ export default function DevicesPage() {
           // all-removed selection (REMOVED_ONLY_BULK_ACTIONS).
           const result = await bulkRestoreDevices(deviceIds);
           const dispatched = result.succeeded.filter(r => r.uninstallAlreadyDispatched).length;
+          // Devices refused at the partner device limit: say so, in the API's
+          // own words, instead of leaving only a failure count.
+          const limitRefusal = result.failed.find(f => f.code === 'DEVICE_LIMIT_REACHED');
+          const failureDetail = limitRefusal ? { detail: limitRefusal.message } : {};
           if (result.failed.length === 0) {
             showToast({ type: 'success', message: t('devicesPage.toasts.bulkRestored', { count: result.succeeded.length }) });
           } else if (result.succeeded.length === 0) {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }) });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }), ...failureDetail });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }) });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }), ...failureDetail });
           }
           // A SEPARATE toast, deliberately: the device row came back, but those
           // machines had already been handed the uninstall and may be gone.

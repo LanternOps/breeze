@@ -18,7 +18,7 @@
  */
 import { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { zValidator } from '../../lib/validation';
 import { runBulkIsolated } from '../../lib/bulkOps';
 import {
@@ -57,6 +57,7 @@ type BulkFailCode =
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
   | 'BACKUP_PROTECTED'
+  | 'DEVICE_LIMIT_REACHED'
   | 'ERROR';
 
 interface BulkFailed {
@@ -72,7 +73,11 @@ interface BulkFailed {
  * device (cancel the queued uninstall, flip the status), so 500 of them finish
  * inside a normal request while a purge of the same 500 would not.
  *
- * Each device runs in its OWN short RLS transaction via `runBulkIsolated`. This
+ * Each device is authorized in its OWN short RLS transaction via
+ * `runBulkIsolated`, and restored in its own short system-scoped transaction
+ * once that one has committed (`afterItemCommit`), so only one pooled
+ * connection is held at a time. The restore needs system scope for the
+ * partner device-limit admission (see POST /devices/:id/restore). This
  * route is listed in `selfManagedDbContextRoutes`, so there is no ambient
  * request transaction to hold across the loop — holding one would pin a single
  * pooled connection, plus every `devices`/`device_commands` row lock it takes,
@@ -98,50 +103,71 @@ bulkLifecycleRoutes.post(
     const succeeded: Array<{ deviceId: string; uninstallAlreadyDispatched: boolean }> = [];
     const failed: BulkFailed[] = [];
 
-    await runBulkIsolated(ctx, ids, async (deviceId) => {
-      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
-      if (device === SITE_ACCESS_DENIED) {
-        failed.push({
-          deviceId,
-          code: 'SITE_ACCESS_DENIED',
-          message: 'Access to this site denied',
-        });
-        return;
-      }
-      if (!device) {
-        failed.push({ deviceId, code: 'NOT_FOUND', message: 'Device not found' });
-        return;
-      }
+    type AuthorizedDevice = { orgId: string; siteId: string | null; hostname: string };
 
-      try {
-        const result = await db.transaction((tx) => restoreRemovedDevice(tx, deviceId));
-        succeeded.push({
-          deviceId,
-          uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
-        });
-        writeRouteAudit(c, {
-          orgId: device.orgId,
-          action: 'device.restore',
-          resourceType: 'device',
-          resourceId: deviceId,
-          resourceName: result.device?.hostname ?? device.hostname,
-          details: {
-            uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
-            bulk: true,
-          },
-        });
-      } catch (err) {
-        if (err instanceof DeviceLifecycleError) {
-          failed.push({ deviceId, code: err.code, message: err.message });
-          return;
+    await runBulkIsolated<AuthorizedDevice | null>(
+      ctx,
+      ids,
+      async (deviceId) => {
+        const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+        if (device === SITE_ACCESS_DENIED) {
+          failed.push({
+            deviceId,
+            code: 'SITE_ACCESS_DENIED',
+            message: 'Access to this site denied',
+          });
+          return null;
         }
-        // Swallowed on purpose so one bad row cannot abort the batch — but
-        // never silently: this is the only server-side record of which device
-        // failed and why.
-        console.error(`[devices] bulk restore failed for ${deviceId}:`, err);
-        failed.push({ deviceId, code: 'ERROR', message: 'Restore failed' });
-      }
-    });
+        if (!device) {
+          failed.push({ deviceId, code: 'NOT_FOUND', message: 'Device not found' });
+          return null;
+        }
+        return { orgId: device.orgId, siteId: device.siteId, hostname: device.hostname };
+      },
+      // The restore itself, in a system-scoped transaction of its own, runs
+      // only once the tenant-scoped check above has committed: restore admits
+      // the device against the partner device limit, which reads the partner
+      // row and a partner-wide count that tenant RLS hides (see POST
+      // /devices/:id/restore). Pinned to the org and site that check found.
+      async (deviceId, device) => {
+        if (!device) return;
+        try {
+          const result = await runOutsideDbContext(() =>
+            withSystemDbAccessContext(
+              () => db.transaction((tx) =>
+                restoreRemovedDevice(tx, deviceId, { orgId: device.orgId, siteId: device.siteId }),
+              ),
+              'devices.bulkRestore',
+            ),
+          );
+          succeeded.push({
+            deviceId,
+            uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
+          });
+          writeRouteAudit(c, {
+            orgId: device.orgId,
+            action: 'device.restore',
+            resourceType: 'device',
+            resourceId: deviceId,
+            resourceName: result.device?.hostname ?? device.hostname,
+            details: {
+              uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
+              bulk: true,
+            },
+          });
+        } catch (err) {
+          if (err instanceof DeviceLifecycleError) {
+            failed.push({ deviceId, code: err.code, message: err.message });
+            return;
+          }
+          // Swallowed on purpose so one bad row cannot abort the batch — but
+          // never silently: this is the only server-side record of which device
+          // failed and why.
+          console.error(`[devices] bulk restore failed for ${deviceId}:`, err);
+          failed.push({ deviceId, code: 'ERROR', message: 'Restore failed' });
+        }
+      },
+    );
 
     return c.json({ succeeded, failed });
   },

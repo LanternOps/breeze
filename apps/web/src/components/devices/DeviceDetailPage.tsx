@@ -24,7 +24,6 @@ import {
   exitMaintenanceMode,
   decommissionDevice,
   clearDeviceSessions,
-  restoreDevice,
   permanentDeleteDevice,
   sendWakeCommand,
   watchWakeOutcome,
@@ -561,14 +560,26 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           return;
         }
 
-        case "restore":
-          await restoreDevice(device.id);
-          showToast({
-            type: "success",
-            message: `${device.hostname} has been restored`,
-          });
-          await fetchDevice();
+        case "restore": {
+          // runAction surfaces the API's own refusal — e.g. "Device limit
+          // reached" when the partner is at its device limit.
+          try {
+            await runAction({
+              request: () =>
+                fetchWithAuth(`/devices/${device.id}/restore`, {
+                  method: "POST",
+                }),
+              errorFallback: `Failed to restore ${device.hostname}`,
+              successMessage: `${device.hostname} has been restored`,
+            });
+            await fetchDevice();
+          } catch (err) {
+            // 401 → the auth redirect is the feedback; any other ActionError was
+            // already toasted by runAction.
+            if (!(err instanceof ActionError)) throw err;
+          }
           break;
+        }
 
         case "permanent-delete": {
           // Deferred execution with undo — gives the user 5 seconds to cancel
