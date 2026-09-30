@@ -1154,6 +1154,7 @@
     "clearCategory": "Clear",
     "columnPath": "Path",
     "columnSize": "Size",
+    "selectionLimit": "A single cleanup run can delete at most {{max}} items. Selecting all keeps the largest {{max}}; delete them, then run the cleanup preview again for the rest.",
     "selectionSummary": "{{count}} selected · {{size}}",
     "executeSelected": "Delete selected ({{count}})",
     "confirmTitle": "Permanently delete cleanup targets",
