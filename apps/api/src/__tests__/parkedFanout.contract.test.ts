@@ -264,6 +264,7 @@ const EXEMPT: Record<string, string> = {
   'services/backupCommandCredentials.ts': 'agent self-service: delivery-time refresh for a command the device fetches from its own queue; backup commands are never queued for a parked device',
   'services/backupJobCreation.ts': 'derived: job creation keyed on devices from the guarded backup scheduler',
   'services/backupProgress.ts': 'agent self-service: agent-reported progress applied only for the calling agent\'s own device/job',
+  'services/backupRecoveryCommandIntegrity.ts': 'agent self-service: delivery-time refresh reads the org of the device fetching its own queued command',
   'services/backupStorageSessionStore.ts': 'derived: loads one device already resolved by the command/session caller',
   'services/brainDeviceContext.ts': 'request path: all queries gated by auth.orgCondition from the request\'s auth context',
   'services/callerVerification/gate.ts': 'request path: single id+orgId device check inside a per-request gate flow',
