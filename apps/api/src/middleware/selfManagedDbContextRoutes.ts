@@ -78,6 +78,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
+  // Customer-portal logout. The handler's only database work is the durable
+  // signed-out record, which must commit in its own system transaction before
+  // the response; under the portal request transaction that write would take a
+  // second pooled connection while the first sat idle (the #6671 double-hold).
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/auth\/logout\/?$/ },
   // Customer-portal "Pay quote" — createQuotePayLink → createInvoicePayLink →
   // checkout.sessions.create. Same shape as the invoice pay route; it was missed
   // when the route shipped, so the portal request tx was pinned across Stripe
