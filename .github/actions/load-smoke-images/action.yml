@@ -16,8 +16,8 @@ runs:
         IMAGE_ARCHIVE_DIR: ${{ runner.temp }}/smoke-images
         CI_IMAGE_VERSION: ci-smoke-${{ github.run_id }}
         # guided-setup.sh requires a semver-shaped BREEZE_VERSION whose numeric core
-        # clears SIGNED_IMAGE_INVENTORY_MIN_VERSION (0.112.0); a bare ci-smoke-* tag
-        # would silently take the below-floor path and skip inventory verification.
+        # clears SIGNED_IMAGE_INVENTORY_MIN_VERSION (0.112.0); it refuses a bare
+        # ci-smoke-* tag, which has no signed image inventory to verify.
         GUIDED_IMAGE_VERSION: 0.112.0-ci-smoke-${{ github.run_id }}
         CI_IMAGE_REVISION: ${{ github.sha }}
       run: |

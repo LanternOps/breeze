@@ -25,6 +25,10 @@ UPGRADE_MODE="false"
 UPGRADE_TARGET_VERSION=""
 ALLOW_DOWNGRADE="false"
 UPGRADE_STAGED_ENV=""
+# --allow-unverified-release: install a release older than
+# SIGNED_IMAGE_INVENTORY_MIN_VERSION anyway, from unverified image tags.
+# Fresh installs only. See require_verifiable_release.
+ALLOW_UNVERIFIED_RELEASE="false"
 
 MIN_CPU_CORES="${BREEZE_SETUP_MIN_CPU_CORES:-2}"
 MIN_RAM_MB="${BREEZE_SETUP_MIN_RAM_MB:-4096}"
@@ -53,9 +57,12 @@ SELECTED_BREEZE_VERSION="${BREEZE_SETUP_VERSION:-}"
 # before this floor have nothing to download or verify: template downloads are
 # pinned to the SELECTED release tag (resolve_template_remote_base), so an
 # older tag's raw.githubusercontent.com tree never contains that script, and
-# no older GitHub Release publishes a signed manifest. Below the floor, image
-# refs keep tracking BREEZE_VERSION exactly as they always have; at/above it,
-# configure_signed_release_image_refs is the fail-closed source of truth.
+# no older GitHub Release publishes a signed manifest. Release signatures only
+# cover the server container images from this floor on, so an older release
+# (or a version that is not an exact release) is refused unless the operator
+# passes --allow-unverified-release; with it, image refs track the release tag
+# unverified. At/above the floor, configure_signed_release_image_refs is the
+# fail-closed source of truth.
 SIGNED_IMAGE_INVENTORY_MIN_VERSION="0.112.0"
 BACK_STATUS=42
 BOOTSTRAP_ENV_KEYS=(
@@ -98,6 +105,12 @@ Options:
   --allow-downgrade    With --upgrade, allow a target older than the current
                        BREEZE_VERSION. Migrations are forward-only; restore the
                        matching database backup before running an older release.
+  --allow-unverified-release
+                       Install a release older than 0.112.0. Release signatures
+                       only cover the server container images from 0.112.0 on, so
+                       setup refuses older releases (and versions that are not an
+                       exact release) by default. With this flag it warns and uses
+                       the release's unverified image tags. Not valid with --upgrade.
   --work-dir DIR       Directory that should contain docker-compose.yml and .env.
                        Defaults to the current directory.
   --env-file FILE      Environment file to create/update. Defaults to WORK_DIR/.env.
@@ -178,6 +191,10 @@ while [[ $# -gt 0 ]]; do
       ALLOW_DOWNGRADE="true"
       shift
       ;;
+    --allow-unverified-release)
+      ALLOW_UNVERIFIED_RELEASE="true"
+      shift
+      ;;
     -y|--yes)
       YES_MODE="true"
       shift
@@ -209,6 +226,10 @@ esac
 
 if [[ "${ALLOW_DOWNGRADE}" == "true" && "${UPGRADE_MODE}" != "true" ]]; then
   echo "--allow-downgrade only applies to --upgrade." >&2
+  exit 2
+fi
+if [[ "${ALLOW_UNVERIFIED_RELEASE}" == "true" && "${UPGRADE_MODE}" == "true" ]]; then
+  echo "--allow-unverified-release does not apply to --upgrade: --upgrade only moves to a release whose images are covered by release signatures (${SIGNED_IMAGE_INVENTORY_MIN_VERSION} or later)." >&2
   exit 2
 fi
 if [[ "${UPGRADE_MODE}" == "true" && ( "${INSTALL_SYSTEMD_ONLY}" == "true" || -n "${RENDER_SYSTEMD_DIR}" ) ]]; then
@@ -3506,6 +3527,59 @@ release_has_signed_image_inventory() {
   version_at_least "${version}" "${SIGNED_IMAGE_INVENTORY_MIN_VERSION}"
 }
 
+# True when setup can verify the images VERSION would run: an exact release
+# version at or above SIGNED_IMAGE_INVENTORY_MIN_VERSION. Anything else has no
+# signed image inventory to check the images against.
+release_is_verifiable() {
+  local version="${1#v}"
+  is_exact_release_version "${version}" && release_has_signed_image_inventory "${version}"
+}
+
+# Why VERSION cannot be verified; shared by the refusal and the override warning.
+unverifiable_release_reason() {
+  local version="${1#v}" floor="${SIGNED_IMAGE_INVENTORY_MIN_VERSION}"
+  if is_exact_release_version "${version}"; then
+    printf 'Breeze %s is older than %s. Release signatures only cover the server container images from %s on, so setup cannot verify the images %s would run.' \
+      "${version}" "${floor}" "${floor}" "${version}"
+  else
+    printf "'%s' is not an exact release version (for example %s). Release signatures only cover the server container images of exact releases from %s on, so setup cannot verify the images it names." \
+      "${version}" "${floor}" "${floor}"
+  fi
+}
+
+unverifiable_release_choices() {
+  printf 'Choose %s or later, or rerun with --allow-unverified-release to install it from unverified image tags.' \
+    "${SIGNED_IMAGE_INVENTORY_MIN_VERSION}"
+}
+
+# Refuses a release whose images setup cannot verify, unless the operator
+# passed --allow-unverified-release. Called wherever a version is chosen
+# (preselected, latest-release lookup, read back from .env, typed) and again
+# before image refs are written.
+require_verifiable_release() {
+  local version="$1"
+  if release_is_verifiable "${version}" || [[ "${ALLOW_UNVERIFIED_RELEASE}" == "true" ]]; then
+    return 0
+  fi
+  fail "$(unverifiable_release_reason "${version}") $(unverifiable_release_choices)"
+}
+
+# Pins the four first-party image refs to the selected release's verified
+# digests. A release below SIGNED_IMAGE_INVENTORY_MIN_VERSION has no signed
+# image inventory, so it is refused here as well as at selection unless
+# --allow-unverified-release was given; then its refs keep tracking the
+# unverified release tag.
+configure_release_image_refs() {
+  if release_has_signed_image_inventory "${SELECTED_BREEZE_VERSION}"; then
+    configure_signed_release_image_refs
+    return
+  fi
+  require_verifiable_release "${SELECTED_BREEZE_VERSION}"
+  warn "Proceeding because --allow-unverified-release was given. $(unverifiable_release_reason "${SELECTED_BREEZE_VERSION}")"
+  warn "The API, web, portal and binaries image refs track the ${SELECTED_BREEZE_VERSION#v} tag and are NOT verified."
+  warn "Move to ${SIGNED_IMAGE_INVENTORY_MIN_VERSION} or later with guided-setup.sh --upgrade for signed, digest-pinned images."
+}
+
 configure_signed_release_image_refs() {
   local version tag repo base manifest signature resolved key variable value line_count
 
@@ -3697,6 +3771,7 @@ select_breeze_version() {
   local current latest default_value answer
 
   if [[ -n "${SELECTED_BREEZE_VERSION}" ]]; then
+    require_verifiable_release "${SELECTED_BREEZE_VERSION}"
     return
   fi
 
@@ -3727,6 +3802,7 @@ select_breeze_version() {
   if [[ "${YES_MODE}" == "true" ]]; then
     if [[ -n "${default_value}" ]]; then
       answer="${default_value#v}"
+      require_verifiable_release "${answer}"
       confirm_breeze_version_available "${answer}"
       SELECTED_BREEZE_VERSION="${answer}"
       log "Selected Breeze version: ${answer}"
@@ -3749,6 +3825,15 @@ select_breeze_version() {
 
     if [[ -n "${answer}" ]]; then
       answer="${answer#v}"
+      if ! release_is_verifiable "${answer}" && [[ "${ALLOW_UNVERIFIED_RELEASE}" != "true" ]]; then
+        warn "$(unverifiable_release_reason "${answer}")"
+        warn "$(unverifiable_release_choices)"
+        # Stop offering a refused default (e.g. an old BREEZE_VERSION from .env).
+        if [[ "${answer}" == "${default_value#v}" ]]; then
+          default_value=""
+        fi
+        continue
+      fi
       if ! confirm_breeze_version_available "${answer}"; then
         continue
       fi
@@ -4006,11 +4091,7 @@ configure_core_env() {
 
   prompt_breeze_version
   configure_release_manifest_trust_root
-  if release_has_signed_image_inventory "${SELECTED_BREEZE_VERSION}"; then
-    configure_signed_release_image_refs
-  else
-    warn "Release v${SELECTED_BREEZE_VERSION} predates signed image inventories; image refs track the release tag as before. Upgrade to ${SIGNED_IMAGE_INVENTORY_MIN_VERSION}+ for digest-pinned images."
-  fi
+  configure_release_image_refs
 
   section "Database And Redis"
   subsection "Postgres"
@@ -4622,7 +4703,7 @@ run_upgrade() {
   is_exact_release_version "${target}" \
     || fail "Upgrade target '${target}' is not an exact release version (for example 0.116.0)."
   release_has_signed_image_inventory "${target}" \
-    || fail "--upgrade only targets releases with a signed image inventory (${SIGNED_IMAGE_INVENTORY_MIN_VERSION} or later); v${target} has none."
+    || fail "--upgrade only targets releases with a signed image inventory (${SIGNED_IMAGE_INVENTORY_MIN_VERSION} or later); v${target} has none. Release signatures only cover the server container images from ${SIGNED_IMAGE_INVENTORY_MIN_VERSION} on, and --upgrade never pulls an image it cannot verify."
 
   log "Current release (BREEZE_VERSION): ${current}"
   log "Target release:                   ${target}"

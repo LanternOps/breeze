@@ -18,8 +18,9 @@
 #   2. a non-release target or current BREEZE_VERSION is refused;
 #   3. a downgrade is refused without --allow-downgrade;
 #   4. --upgrade without an existing .env / docker-compose.yml is refused;
-#   5. `--upgrade -y` does not swallow -y as the target version, and
-#      --allow-downgrade is rejected without --upgrade;
+#   5. `--upgrade -y` does not swallow -y as the target version,
+#      --allow-downgrade is rejected without --upgrade, and
+#      --allow-unverified-release is rejected with --upgrade;
 #   6. the installer's closing output tells the operator how to upgrade.
 
 set -euo pipefail
@@ -135,6 +136,15 @@ status=0
 output="$(bash "${SETUP}" --allow-downgrade --work-dir "${TMP_DIR}/unused" 2>&1)" || status=$?
 [[ "${status}" -eq 2 ]] && grep -q "only applies to --upgrade" <<< "${output}" \
   || fail "--allow-downgrade without --upgrade must be a usage error; got status ${status}:\n${output}"
+# --upgrade has no unverified path: the install-time override must not be
+# silently accepted (and ignored) next to it.
+dir="$(new_install unverified-override "${FLOOR}")"
+before="$(cat "${dir}/.env")"
+status=0
+output="$(bash "${SETUP}" --work-dir "${dir}" --no-up -y --upgrade 0.111.0 --allow-unverified-release 2>&1)" || status=$?
+[[ "${status}" -eq 2 ]] && grep -q "does not apply to --upgrade" <<< "${output}" \
+  || fail "--allow-unverified-release with --upgrade must be a usage error; got status ${status}:\n${output}"
+[[ "$(cat "${dir}/.env")" == "${before}" ]] || fail "--upgrade --allow-unverified-release changed ${dir}/.env"
 echo "  OK  --upgrade argument parsing"
 
 # --- 6. installer tells the operator how to upgrade --------------------------

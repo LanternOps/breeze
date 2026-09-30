@@ -156,7 +156,7 @@ chmod +x guided-setup.sh
 ./guided-setup.sh
 ```
 
-The guided setup checks required commands, Docker Compose, CPU, RAM, and free disk space before generating configuration. It asks which Breeze release to install, downloads that release's `docker-compose.yml` and `.env.example`, preserves the comments from `.env.example` in your generated `.env`, prompts for the required settings, and can generate secure passwords and application secrets with `openssl rand`.
+The guided setup checks required commands, Docker Compose, CPU, RAM, and free disk space before generating configuration. It asks which Breeze release to install (0.112.0 or later; older releases, whose images release signatures do not cover, need `--allow-unverified-release`), downloads that release's `docker-compose.yml` and `.env.example`, preserves the comments from `.env.example` in your generated `.env`, prompts for the required settings, and can generate secure passwords and application secrets with `openssl rand`.
 
 During setup you can choose the packaged Caddy reverse proxy, Nginx Proxy Manager, or another external reverse proxy path. You can also choose Docker named volumes or local `./data` subdirectories for persistent container data.
 
@@ -188,7 +188,9 @@ chmod +x guided-setup.sh
 #
 # The setup verifies the selected release's Ed25519-signed image inventory and
 # writes exact repository@sha256 refs. Do not replace those refs with tags or
-# copy digests from the package page. To upgrade, run
+# copy digests from the package page. Releases before 0.112.0 have no signed
+# inventory and are refused unless you pass --allow-unverified-release. To
+# upgrade, download the current guided-setup.sh and run
 # `./guided-setup.sh --upgrade [VERSION]`: `docker compose pull` alone re-fetches
 # the same pinned digests.
 
