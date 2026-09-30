@@ -516,6 +516,8 @@ Runs after each collection when `enforce_ntp` or `timezone.auto_fix` is set, and
    list, `SpecialPollInterval`, service start type. Domain-hierarchy roles: `Type` (`NT5DS` or
    `AllSync` is compliant) and service start type only. Equal → nothing to do.
 4. **Apply** with `exec.Command` argument arrays (never a shell):
+   (Order amended by plan index R20: service start type and start come first, because
+   `w32tm /config … /update` fails while W32Time is stopped.)
    - Manual peers: `w32tm /config /manualpeerlist:"<h1>,0x9 <h2>,0x9" /syncfromflags:manual /update`,
      and `/reliable:yes` added on the forest-root PDC. Then set `SpecialPollInterval =
      pollIntervalMinutes × 60` in the registry and `w32tm /config /update`.
