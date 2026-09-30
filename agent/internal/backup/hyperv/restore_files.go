@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -259,7 +260,13 @@ func stripWindowsVolume(p string) (string, error) {
 // path under root. Directory entries are created; symlinks are skipped with a
 // warning (a new VM volume gets no links). Every refused, failed or corrupt
 // file is counted; tally.err() decides the restore's outcome.
-func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provider providers.BackupProvider, root string) fileRestoreTally {
+//
+// With an integrity expectation each object is staged beside its destination
+// (same directory, so the same mounted volume), checked with
+// integrity.CheckStoredBytes (exact size and SHA-256 when attested; Volatile
+// never waives it) and only then renamed into place. Without one it is
+// downloaded straight to its destination and checked afterwards, as before.
+func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provider providers.BackupProvider, root string, expect *integrity.Expectation) fileRestoreTally {
 	var t fileRestoreTally
 	cleanRoot := filepath.Clean(root)
 
@@ -322,6 +329,23 @@ func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provi
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			t.fail(display, fmt.Sprintf("create directory: %v", err))
+			continue
+		}
+		if expect.Present() {
+			want := integrity.Stored{Size: file.Size, SHA256: file.Checksum, Volatile: file.Volatile}
+			res, warnings, err := integrity.StageAndPublish(ctx, provider, file.BackupPath, target, want, expect)
+			if err != nil {
+				t.fail(display, err.Error())
+				continue
+			}
+			for _, w := range warnings {
+				t.warn(w)
+			}
+			if res.Warning != "" {
+				t.warn(fmt.Sprintf("%s: %s", display, res.Warning))
+			}
+			t.Restored++
+			t.Bytes += file.Size
 			continue
 		}
 		if err := downloadObject(ctx, provider, file.BackupPath, target); err != nil {
@@ -412,7 +436,7 @@ func verifyRestoredFile(target string, file vmRestoreManifFile) (msg string, ok 
 // moment the command reports a terminal result. An incomplete sync leaves
 // result "degraded" with the counts and removes the partial staging
 // directory; the booted VM is left running.
-func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir string, files []vmRestoreManifFile, provider providers.BackupProvider) {
+func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir string, files []vmRestoreManifFile, provider providers.BackupProvider, expect *integrity.Expectation) {
 	result.BackgroundSyncActive = false
 	if len(files) == 0 {
 		return
@@ -436,7 +460,7 @@ func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir s
 	}
 	slog.Info("instantboot: background sync started", "vmName", result.VMName, "files", len(files), "syncDir", syncDir)
 
-	tally := restoreManifestFiles(ctx, files, provider, syncDir)
+	tally := restoreManifestFiles(ctx, files, provider, syncDir, expect)
 	progress.Total = tally.Total
 	progress.Synced = tally.Restored
 	progress.Failed = tally.Failed

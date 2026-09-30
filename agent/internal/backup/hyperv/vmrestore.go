@@ -4,15 +4,14 @@ package hyperv
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -24,6 +23,9 @@ type VMRestoreFromBackupConfig struct {
 	CPUCount   int    `json:"cpuCount,omitempty"`
 	DiskSizeGB int64  `json:"diskSizeGb,omitempty"`
 	SwitchName string `json:"switchName,omitempty"`
+	// Integrity is the command's integrity expectation (nil when the
+	// payload carried none). Not part of the JSON form.
+	Integrity *integrity.Expectation `json:"-"`
 }
 
 // RestoreAsVM creates a new Hyper-V Generation 2 VM from a backup snapshot.
@@ -107,11 +109,12 @@ func RestoreAsVM(
 	progress("downloading_manifest", 1, 6)
 	slog.Info("vmrestore: downloading snapshot manifest", "snapshotId", cfg.SnapshotID)
 
-	manifest, err := downloadVMRestoreManifest(cfg.SnapshotID, provider)
+	manifest, manifestWarnings, err := fetchVMRestoreManifest(ctx, cfg.SnapshotID, provider, cfg.Integrity)
 	if err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("vmrestore: download manifest: %w", err)
 	}
+	result.Warnings = appendBoundedWarnings(result.Warnings, manifestWarnings...)
 	slog.Info("vmrestore: manifest downloaded", "files", len(manifest.Files))
 
 	// 2. Create the VHDX inside the restore directory.
@@ -170,12 +173,12 @@ func RestoreAsVM(
 	}
 	slog.Info("vmrestore: restoring files to volume", "target", targetRoot, "files", len(manifest.Files))
 
-	tally := restoreManifestFiles(ctx, manifest.Files, provider, targetRoot)
+	tally := restoreManifestFiles(ctx, manifest.Files, provider, targetRoot, cfg.Integrity)
 	result.FilesRestored = tally.Restored
 	result.FilesFailed = tally.Failed
 	result.BytesRestored = tally.Bytes
 	result.FailedFiles = tally.FailedFiles
-	result.Warnings = append(result.Warnings, tally.Warnings...)
+	result.Warnings = appendBoundedWarnings(result.Warnings, tally.Warnings...)
 	if err := tally.err(); err != nil {
 		// No VM is created from a disk that is missing files; the deferred
 		// cleanup dismounts the disk and removes the restore directory.
@@ -219,41 +222,6 @@ func RestoreAsVM(
 	)
 
 	return result, nil
-}
-
-// vmRestoreManifest matches the snapshot manifest shape for deserialization.
-type vmRestoreManifest struct {
-	ID    string               `json:"id"`
-	Files []vmRestoreManifFile `json:"files"`
-	Size  int64                `json:"size"`
-}
-
-// downloadVMRestoreManifest fetches and parses a snapshot manifest from the provider.
-func downloadVMRestoreManifest(snapshotID string, provider providers.BackupProvider) (*vmRestoreManifest, error) {
-	manifestKey := path.Join("snapshots", snapshotID, "manifest.json")
-
-	tmpFile, err := os.CreateTemp("", "vmrestore-manifest-*.json")
-	if err != nil {
-		return nil, fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer os.Remove(tmpPath)
-
-	if err := provider.Download(manifestKey, tmpPath); err != nil {
-		return nil, fmt.Errorf("download manifest: %w", err)
-	}
-
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return nil, fmt.Errorf("read manifest: %w", err)
-	}
-
-	var manifest vmRestoreManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("decode manifest: %w", err)
-	}
-	return &manifest, nil
 }
 
 // mountAndPartitionVHDX mounts a VHDX, initializes the disk as GPT, creates a

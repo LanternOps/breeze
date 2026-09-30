@@ -904,6 +904,10 @@ func execVMRestoreFromBackup(parentCtx context.Context, payload json.RawMessage,
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid VM restore payload: " + err.Error())
 	}
+	expect, err := appRestoreIntegrity(payload, p.SnapshotID)
+	if err != nil {
+		return fail("VM restore: " + err.Error())
+	}
 
 	cfg := hyperv.VMRestoreFromBackupConfig{
 		SnapshotID: p.SnapshotID,
@@ -912,6 +916,7 @@ func execVMRestoreFromBackup(parentCtx context.Context, payload json.RawMessage,
 		CPUCount:   p.CPUCount,
 		DiskSizeGB: p.DiskSizeGB,
 		SwitchName: p.SwitchName,
+		Integrity:  expect,
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, backupipc.VMRestoreFromBackupRunBudget)
@@ -933,6 +938,10 @@ func execInstantBoot(parentCtx context.Context, payload json.RawMessage, mgr *ba
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid instant boot payload: " + err.Error())
 	}
+	expect, err := appRestoreIntegrity(payload, p.SnapshotID)
+	if err != nil {
+		return fail("instant boot: " + err.Error())
+	}
 
 	cfg := hyperv.InstantBootConfig{
 		SnapshotID: p.SnapshotID,
@@ -941,6 +950,7 @@ func execInstantBoot(parentCtx context.Context, payload json.RawMessage, mgr *ba
 		CPUCount:   p.CPUCount,
 		DiskSizeGB: p.DiskSizeGB,
 		WorkDir:    p.WorkDir,
+		Integrity:  expect,
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, backupipc.VMInstantBootRunBudget)

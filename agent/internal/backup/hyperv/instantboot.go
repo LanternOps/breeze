@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -23,6 +24,9 @@ type InstantBootConfig struct {
 	CPUCount   int    `json:"cpuCount,omitempty"`
 	DiskSizeGB int64  `json:"diskSizeGb,omitempty"`
 	WorkDir    string `json:"workDir,omitempty"`
+	// Integrity is the command's integrity expectation (nil when the
+	// payload carried none). Not part of the JSON form.
+	Integrity *integrity.Expectation `json:"-"`
 }
 
 // bootCriticalPatterns lists path patterns that must be present for a
@@ -128,11 +132,12 @@ func InstantBoot(
 	progress("downloading_manifest", 1, 8)
 	slog.Info("instantboot: downloading snapshot manifest", "snapshotId", cfg.SnapshotID)
 
-	manifest, err := downloadVMRestoreManifest(cfg.SnapshotID, provider)
+	manifest, manifestWarnings, err := fetchVMRestoreManifest(ctx, cfg.SnapshotID, provider, cfg.Integrity)
 	if err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("instantboot: download manifest: %w", err)
 	}
+	result.Warnings = appendBoundedWarnings(result.Warnings, manifestWarnings...)
 
 	// 2. Classify files into boot-critical and remaining.
 	bootFiles, remainingFiles := classifyFiles(manifest.Files)
@@ -184,8 +189,8 @@ func InstantBoot(
 	}
 	slog.Info("instantboot: restoring boot-critical files", "count", len(bootFiles))
 
-	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot)
-	result.Warnings = append(result.Warnings, bootTally.Warnings...)
+	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot, cfg.Integrity)
+	result.Warnings = appendBoundedWarnings(result.Warnings, bootTally.Warnings...)
 	if bootTally.Failed > 0 {
 		// A VM missing boot-critical files is not booted, and nothing is left
 		// behind: the deferred cleanup removes the restore directory.
@@ -275,7 +280,7 @@ func InstantBoot(
 	// 11. Sync the remaining files before returning. The command's context is
 	// cancelled and its storage session revoked as soon as this returns, so
 	// the sync runs inside the command, bounded by its run budget.
-	runBackgroundSync(ctx, result, filepath.Join(workDir, "sync-staging"), remainingFiles, provider)
+	runBackgroundSync(ctx, result, filepath.Join(workDir, "sync-staging"), remainingFiles, provider, cfg.Integrity)
 
 	return result, nil
 }

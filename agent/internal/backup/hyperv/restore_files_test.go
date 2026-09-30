@@ -125,7 +125,7 @@ func TestRestoreManifestFiles_PlacesVSSSnapshotUnderRoot(t *testing.T) {
 		files = append(files, vssEntry(1, orig, key, data))
 	}
 
-	tally := restoreManifestFiles(context.Background(), files, store, root)
+	tally := restoreManifestFiles(context.Background(), files, store, root, nil)
 
 	if err := tally.err(); err != nil {
 		t.Fatalf("unexpected failure: %v (warnings %v)", err, tally.Warnings)
@@ -212,7 +212,7 @@ func TestRestoreManifestFiles_OutcomeRules(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			store := &fakeObjectStore{objects: map[string][]byte{"k1": good, "k2": good}, errs: tt.errs}
-			tally := restoreManifestFiles(context.Background(), tt.files, store, root)
+			tally := restoreManifestFiles(context.Background(), tt.files, store, root, nil)
 			if tally.Restored != tt.wantRestored || tally.Failed != tt.wantFailed {
 				t.Fatalf("tally = %+v, want restored %d failed %d", tally, tt.wantRestored, tt.wantFailed)
 			}
@@ -238,7 +238,7 @@ func TestRestoreManifestFiles_NeverWritesOutsideRoot(t *testing.T) {
 		{SourcePath: "../outside2.txt", BackupPath: "k", Size: 1},
 		{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\..\outside3.txt`, BackupPath: "k", Size: 1},
 	}
-	tally := restoreManifestFiles(context.Background(), files, store, root)
+	tally := restoreManifestFiles(context.Background(), files, store, root, nil)
 	if tally.Failed != 3 || tally.err() == nil {
 		t.Fatalf("tally = %+v, want all 3 refused and a failed outcome", tally)
 	}
@@ -256,7 +256,7 @@ func TestRestoreManifestFiles_BoundsReportedFiles(t *testing.T) {
 	for i := 0; i < maxReportedFiles+50; i++ {
 		files = append(files, vmRestoreManifFile{SourcePath: `C:\..\x`, BackupPath: "k", Size: 1})
 	}
-	tally := restoreManifestFiles(context.Background(), files, &fakeObjectStore{}, t.TempDir())
+	tally := restoreManifestFiles(context.Background(), files, &fakeObjectStore{}, t.TempDir(), nil)
 	if tally.Failed != maxReportedFiles+50 {
 		t.Fatalf("failed = %d", tally.Failed)
 	}
@@ -279,7 +279,7 @@ func TestRunBackgroundSync_CompletesBeforeReturning(t *testing.T) {
 	result := &InstantBootResult{Status: "completed"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runBackgroundSync(ctx, result, syncDir, files, store)
+	runBackgroundSync(ctx, result, syncDir, files, store, nil)
 	cancel() // what execInstantBoot's deferred cancel does on return
 
 	if result.SyncProgress == nil || result.SyncProgress.Synced != 3 || result.SyncProgress.Failed != 0 || result.SyncProgress.Total != 3 {
@@ -318,7 +318,7 @@ func TestRunBackgroundSync_FailureDegradesAndCleansUp(t *testing.T) {
 			files := []vmRestoreManifFile{vssEntry(1, `C:\d\1.bin`, "k1", data), vssEntry(1, `C:\d\2.bin`, "k2", data)}
 			result := &InstantBootResult{Status: "completed"}
 
-			runBackgroundSync(tt.ctx(), result, syncDir, files, store)
+			runBackgroundSync(tt.ctx(), result, syncDir, files, store, nil)
 
 			if result.SyncProgress == nil || result.SyncProgress.Synced != tt.wantSynced || result.SyncProgress.Failed != tt.wantFailed {
 				t.Fatalf("sync progress = %+v, want synced %d failed %d", result.SyncProgress, tt.wantSynced, tt.wantFailed)
@@ -335,7 +335,7 @@ func TestRunBackgroundSync_FailureDegradesAndCleansUp(t *testing.T) {
 
 func TestRunBackgroundSync_NothingToSync(t *testing.T) {
 	result := &InstantBootResult{Status: "completed"}
-	runBackgroundSync(context.Background(), result, filepath.Join(t.TempDir(), "s"), nil, &fakeObjectStore{})
+	runBackgroundSync(context.Background(), result, filepath.Join(t.TempDir(), "s"), nil, &fakeObjectStore{}, nil)
 	if result.Status != "completed" || result.BackgroundSyncActive {
 		t.Fatalf("result = %+v", result)
 	}
@@ -385,7 +385,7 @@ func TestRestoreManifestFiles_PlansOnlyPlaceableFiles(t *testing.T) {
 		vssEntry(1, `C:\a\3.txt`, "k3", data),
 		{SourcePath: `C:\a\nokey.txt`},
 	}
-	restoreManifestFiles(context.Background(), files, store, t.TempDir())
+	restoreManifestFiles(context.Background(), files, store, t.TempDir(), nil)
 	if len(store.plans) != 1 || strings.Join(store.plans[0], ",") != "k1,k3" {
 		t.Fatalf("plans = %v, want one plan [k1 k3]", store.plans)
 	}
