@@ -502,6 +502,46 @@ export async function processSSELines(
 
 const USERNAME_KEY = 'breeze-helper-username';
 
+// Shown when the agent never supplies the helper token. Keep in sync with
+// HELPER_TOKEN_UNAVAILABLE in src-tauri/src/lib.rs (returned by helper_fetch).
+const HELPER_TOKEN_UNAVAILABLE_MESSAGE =
+  'Breeze Assist has not received its credentials from the Breeze agent. Check that the Breeze agent is running, then retry. If this keeps happening, contact your administrator.';
+
+// After the initial wait gives up, keep checking in the background: the token
+// can still arrive (an Assist that started while the agent was restarting sits
+// in the IPC reconnect backoff), and the window is hidden rather than
+// re-created, so nothing else would call initialize again. Only reads the
+// in-memory token state; restarting a rejected IPC client is left to Retry.
+const LATE_TOKEN_POLL_INTERVAL_MS = 5_000;
+let lateTokenPoll: ReturnType<typeof setInterval> | null = null;
+
+function stopLateTokenWatch(): void {
+  if (lateTokenPoll) clearInterval(lateTokenPoll);
+  lateTokenPoll = null;
+}
+
+function watchForLateHelperToken(
+  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>,
+  initialize: () => Promise<void>,
+  connectionState: () => ConnectionState,
+): void {
+  if (lateTokenPoll) return;
+  lateTokenPoll = setInterval(() => {
+    if (connectionState() !== 'error') {
+      stopLateTokenWatch();
+      return;
+    }
+    invoke('helper_token_ready')
+      .then((ready) => {
+        if (ready && connectionState() === 'error') {
+          stopLateTokenWatch();
+          void initialize();
+        }
+      })
+      .catch(() => {});
+  }, LATE_TOKEN_POLL_INTERVAL_MS);
+}
+
 /** Max time to wait on a cold-start capabilities probe before creating a session. */
 const WORKSPACE_PROBE_TIMEOUT_MS = 3000;
 
@@ -560,6 +600,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Avoid stacking concurrent inits (e.g. Retry pressed while a token poll is still running).
     const cs = get().connectionState;
     if (cs === 'connecting' || cs === 'waiting-for-token') return;
+    // A fresh attempt (e.g. Retry) replaces any background wait from the last one.
+    stopLateTokenWatch();
 
     set({ connectionState: 'connecting', connectionError: null });
 
@@ -588,11 +630,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // In Tauri, the helper auth token is delivered over IPC by the agent and
       // may not be present at the instant the window opens. Show a transient
-      // "connecting to agent" state while we wait for it. In Phase 1 the file
-      // token is still a fallback, so we proceed after a bounded number of
-      // attempts even if the IPC token hasn't landed; in Phase 2 (no file
-      // fallback) this gate prevents requests that would 401.
+      // "connecting to agent" state while we wait for it. helper_token_ready
+      // also reports a token the agent left on disk that this user can read,
+      // so this only fails when no token exists at all — every request would
+      // be refused.
       if (invoke) {
+        // The IPC client stops after a permanent broker reject (for example
+        // on Windows, when Assist started outside the active console session).
+        // Restart it so Retry can recover once this session is eligible.
+        try {
+          await invoke('restart_ipc_if_stopped');
+        } catch (err) {
+          console.debug('[helper] restart_ipc_if_stopped failed:', err);
+        }
         const TOKEN_POLL_INTERVAL_MS = 500;
         const TOKEN_POLL_MAX_ATTEMPTS = 20; // ~10s
         let ready = false;
@@ -621,14 +671,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
 
         if (!ready) {
-          // Phase 1: file-token fallback is still valid, so we continue to
-          // 'connected'. Requests may still succeed via the on-disk token.
-          // Phase 2 (no file fallback): replace this branch with a transition
-          // to an 'agent-unreachable' / 'error' state instead of 'connected'.
-          console.warn(
-            '[helper] IPC token not received before timeout; proceeding with file-fallback token (Phase 1).' +
-              ' If requests fail, ensure the Breeze agent is running.',
+          watchForLateHelperToken(
+            invoke,
+            () => get().initialize(),
+            () => get().connectionState,
           );
+          throw new Error(HELPER_TOKEN_UNAVAILABLE_MESSAGE);
         }
       }
 

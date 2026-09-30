@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use reqwest::{header::HeaderMap, Client, Identity, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -35,7 +35,12 @@ pub struct AgentConfig {
 #[derive(Debug, Clone)]
 struct AgentConfigFull {
     api_url: String,
-    token: String,
+    /// Helper token the agent left on disk, if this user can read it:
+    /// helper_token.yaml (macOS/Linux agents since v0.118.0, readable by the
+    /// `breeze` group) or agent.yaml (Windows agents and older macOS/Linux
+    /// agents). Only a fallback: the agent also delivers the token over IPC,
+    /// and that token wins.
+    file_token: Option<String>,
     agent_id: String,
     mtls_cert_pem: Option<String>,
     mtls_key_pem: Option<String>,
@@ -101,6 +106,53 @@ fn helper_token_from_config(
         .filter(|s| !s.is_empty())
 }
 
+/// Beside agent.yaml: where macOS/Linux agents since v0.118.0 keep the helper
+/// token (root-owned, mode 0640, group `breeze`), instead of in agent.yaml.
+const HELPER_TOKEN_FILE_NAME: &str = "helper_token.yaml";
+
+/// Read and parse a YAML file. Missing, unreadable (e.g. secrets.yaml, which
+/// only SYSTEM/root can read) or malformed files are simply absent.
+fn read_yaml_file(path: &Path) -> Option<serde_yaml::Value> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_yaml::from_str(&s).ok())
+}
+
+/// Pick the on-disk helper token from the most authoritative source this user
+/// can read: secrets.yaml (only when the Helper runs elevated), then
+/// helper_token.yaml, then agent.yaml — helper_token.yaml over agent.yaml as in
+/// the agent's own LoadHelperConfig. Empty values are skipped. Never falls
+/// back to the full agent bearer token (`auth_token`).
+fn file_helper_token(
+    yaml: Option<&serde_yaml::Value>,
+    secrets: Option<&serde_yaml::Value>,
+    helper_token_file: Option<&serde_yaml::Value>,
+) -> Option<String> {
+    [secrets, helper_token_file, yaml]
+        .into_iter()
+        .flatten()
+        .find_map(|doc| helper_token_from_config(doc, None))
+}
+
+/// Re-read the helper token from disk. Quiet by design: every source is
+/// optional, and this runs while waiting for the token to show up.
+fn read_file_helper_token(agent_yaml: &Path) -> Option<String> {
+    file_helper_token(
+        read_yaml_file(agent_yaml).as_ref(),
+        read_yaml_file(&agent_yaml.with_file_name("secrets.yaml")).as_ref(),
+        read_yaml_file(&agent_yaml.with_file_name(HELPER_TOKEN_FILE_NAME)).as_ref(),
+    )
+}
+
+/// The cached config keeps the on-disk token it found at load time. If it
+/// found none, look again: the agent may have written one since (for example
+/// once enrollment finished). A token already found is not re-read.
+fn refresh_missing_file_token(config: &mut AgentConfigFull, agent_yaml: &Path) {
+    if config.file_token.is_none() {
+        config.file_token = read_file_helper_token(agent_yaml);
+    }
+}
+
 /// Parse the agent YAML config from disk.
 fn load_agent_config_full() -> Result<AgentConfigFull, String> {
     let path = agent_config_path();
@@ -120,6 +172,25 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
             .to_string()
     })?;
 
+    // secrets.yaml holds the mTLS material. It is readable only by
+    // SYSTEM/Administrators (root on Unix), so for a Helper running as the
+    // logged-in user this read normally fails and is simply skipped.
+    let secrets = read_yaml_file(&path.with_file_name("secrets.yaml"));
+    let helper_token_file = read_yaml_file(&path.with_file_name(HELPER_TOKEN_FILE_NAME));
+
+    agent_config_from_yaml(&yaml, secrets.as_ref(), helper_token_file.as_ref())
+}
+
+/// Build the Helper's view of the agent config from the parsed agent.yaml,
+/// plus secrets.yaml and helper_token.yaml when this user can read them.
+/// `server_url` and `agent_id` are required. The helper token is optional:
+/// macOS/Linux agents since v0.118.0 no longer write it to agent.yaml, and the
+/// agent delivers it over IPC in any case.
+fn agent_config_from_yaml(
+    yaml: &serde_yaml::Value,
+    secrets: Option<&serde_yaml::Value>,
+    helper_token_file: Option<&serde_yaml::Value>,
+) -> Result<AgentConfigFull, String> {
     let api_url = yaml
         .get("server_url")
         .and_then(|v| v.as_str())
@@ -129,18 +200,7 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         })?
         .to_string();
 
-    // Read secrets from secrets.yaml for mTLS material only. The helper uses
-    // a helper-scoped token from agent.yaml and must never fall back to the
-    // full agent bearer token.
-    let secrets_path = path.with_file_name("secrets.yaml");
-    let secrets: Option<serde_yaml::Value> = std::fs::read_to_string(&secrets_path)
-        .ok()
-        .and_then(|s| serde_yaml::from_str(&s).ok());
-
-    let token = helper_token_from_config(&yaml, secrets.as_ref()).ok_or_else(|| {
-        log_helper_error("missing helper_auth_token in agent config");
-        "The Breeze agent is still setting up. Wait a moment and retry, or contact your administrator.".to_string()
-    })?;
+    let file_token = file_helper_token(Some(yaml), secrets, helper_token_file);
 
     let agent_id = yaml
         .get("agent_id")
@@ -152,7 +212,6 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .to_string();
 
     let mtls_cert_pem = secrets
-        .as_ref()
         .and_then(|s| s.get("mtls_cert_pem"))
         .and_then(|v| v.as_str())
         .or_else(|| yaml.get("mtls_cert_pem").and_then(|v| v.as_str()))
@@ -160,7 +219,6 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         .filter(|s| !s.is_empty());
 
     let mtls_key_pem = secrets
-        .as_ref()
         .and_then(|s| s.get("mtls_key_pem"))
         .and_then(|v| v.as_str())
         .or_else(|| yaml.get("mtls_key_pem").and_then(|v| v.as_str()))
@@ -169,11 +227,29 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
 
     Ok(AgentConfigFull {
         api_url,
-        token,
+        file_token,
         agent_id,
         mtls_cert_pem,
         mtls_key_pem,
     })
+}
+
+/// Shown when the helper token is neither delivered over IPC nor readable on
+/// disk. Keep in sync with HELPER_TOKEN_UNAVAILABLE_MESSAGE in
+/// src/stores/chatStore.ts.
+const HELPER_TOKEN_UNAVAILABLE: &str = "Breeze Assist has not received its credentials from the Breeze agent. Check that the Breeze agent is running, then retry. If this keeps happening, contact your administrator.";
+
+/// Pick the bearer token for an API request: the IPC-delivered token, else the
+/// on-disk token. Never returns an empty token — sending `Bearer ` would only
+/// produce a confusing 401.
+fn select_bearer_token(
+    ipc_token: Option<String>,
+    file_token: Option<String>,
+) -> Result<String, String> {
+    ipc_token
+        .filter(|t| !t.is_empty())
+        .or_else(|| file_token.filter(|t| !t.is_empty()))
+        .ok_or_else(|| HELPER_TOKEN_UNAVAILABLE.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -410,11 +486,67 @@ fn get_http_state_lock() -> &'static Mutex<Option<HttpClientState>> {
 }
 
 /// Process-global helper auth token delivered over IPC from the Breeze agent.
-/// Distinct from the file-loaded `HttpClientState::config.token` (Phase-1 fallback).
+/// Authoritative over the on-disk `HttpClientState::config.file_token`.
 static HELPER_TOKEN: OnceLock<HelperToken> = OnceLock::new();
 
 fn helper_token() -> &'static HelperToken {
     HELPER_TOKEN.get_or_init(HelperToken::new)
+}
+
+/// Admits at most one IPC client driver at a time. The driver exits for good
+/// on a permanent broker reject (e.g. on Windows, Assist started outside the
+/// active console session); the slot lets Retry start a fresh one without ever
+/// running two side by side.
+#[derive(Default)]
+struct IpcDriverSlot(AtomicBool);
+
+impl IpcDriverSlot {
+    fn try_claim(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
+    }
+
+    fn release(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Releases the slot when the driver task ends, however it ends.
+struct IpcDriverSlotGuard(&'static IpcDriverSlot);
+
+impl Drop for IpcDriverSlotGuard {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// What the IPC client driver needs to (re)start. Set once during setup.
+struct IpcDriverCtx {
+    stop: tokio::sync::watch::Receiver<bool>,
+    desktop_ctx: crate::ipc::client::DesktopCtx,
+}
+
+static IPC_DRIVER_CTX: OnceLock<IpcDriverCtx> = OnceLock::new();
+static IPC_DRIVER_SLOT: OnceLock<IpcDriverSlot> = OnceLock::new();
+
+/// Start the IPC client driver unless one is already running. Returns true
+/// when a new driver was started.
+fn start_ipc_driver() -> bool {
+    let Some(ctx) = IPC_DRIVER_CTX.get() else {
+        return false;
+    };
+    let slot = IPC_DRIVER_SLOT.get_or_init(IpcDriverSlot::default);
+    if !slot.try_claim() {
+        return false;
+    }
+    let guard = IpcDriverSlotGuard(slot);
+    let token = helper_token().clone();
+    let stop = ctx.stop.clone();
+    let desktop_ctx = ctx.desktop_ctx.clone();
+    tauri::async_runtime::spawn(async move {
+        let _guard = guard;
+        crate::ipc::client::run(token, stop, desktop_ctx).await;
+    });
+    true
 }
 
 /// Build a reqwest::Client, optionally with mTLS identity.
@@ -589,13 +721,37 @@ fn get_helper_config() -> HelperConfig {
     load_helper_config()
 }
 
-/// Report whether the helper auth token has been delivered over IPC yet.
-/// The frontend polls this on startup to show a transient "connecting to
-/// agent" state until the token arrives (relevant when there is no file
-/// fallback in Phase 2).
+/// Restart the IPC client if it stopped (it gives up after a permanent broker
+/// reject). Called by the frontend on init/Retry, so a Helper that was
+/// rejected (e.g. on Windows, outside the console session) can recover once
+/// it is eligible.
+#[tauri::command]
+fn restart_ipc_if_stopped() -> bool {
+    start_ipc_driver()
+}
+
+/// Report whether a helper token is available for API requests: delivered over
+/// IPC, or readable on disk (see `AgentConfigFull::file_token`). The frontend
+/// polls this on startup to show a transient "connecting to agent" state until
+/// the token arrives, and an error with Retry if it never does.
 #[tauri::command]
 async fn helper_token_ready() -> bool {
-    helper_token().get().await.is_some()
+    if helper_token().get().await.is_some_and(|t| !t.is_empty()) {
+        return true;
+    }
+    if ensure_http_state().await.is_err() {
+        return false;
+    }
+    let lock = get_http_state_lock();
+    let mut guard = lock.lock().await;
+    guard.as_mut().is_some_and(|state| {
+        refresh_missing_file_token(&mut state.config, &agent_config_path());
+        state
+            .config
+            .file_token
+            .as_deref()
+            .is_some_and(|t| !t.is_empty())
+    })
 }
 
 // -- helper_fetch types -----------------------------------------------------
@@ -744,19 +900,21 @@ async fn helper_fetch(
 ) -> Result<HelperFetchResponse, String> {
     ensure_http_state().await?;
 
-    // Phase 1: prefer the IPC-delivered token; fall back to the file-loaded
-    // token while older agents still write it to agent.yaml. Phase 2 removes
-    // the file fallback.
+    // Prefer the IPC-delivered token; fall back to the token the agent left
+    // on disk (see select_bearer_token).
     let ipc_token = helper_token().get().await;
     let (client, file_token, api_url) = {
         let lock = get_http_state_lock();
-        let guard = lock.lock().await;
+        let mut guard = lock.lock().await;
         let state = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| "HTTP state not initialized".to_string())?;
+        if ipc_token.as_deref().is_none_or(str::is_empty) {
+            refresh_missing_file_token(&mut state.config, &agent_config_path());
+        }
         (
             state.client.clone(),
-            state.config.token.clone(),
+            state.config.file_token.clone(),
             state.config.api_url.clone(),
         )
     };
@@ -805,13 +963,14 @@ async fn helper_fetch(
 
     enum SendError {
         Url(String),
+        NoToken(String),
         Request { error: reqwest::Error, url: String },
     }
 
     // Construct the URL and request from the supplied state snapshot on every
     // call. The retry supplies a snapshot loaded after invalidation, so both
     // the client and URL use the freshly re-read agent.yaml.
-    let send_once = |client: Client, file_token: String, api_url: String| {
+    let send_once = |client: Client, file_token: Option<String>, api_url: String| {
         let ipc_token = ipc_token.clone();
         let method = method.clone();
         let header_map = header_map.clone();
@@ -827,7 +986,7 @@ async fn helper_fetch(
             url.set_query(request_query.as_deref());
             let request_url = url.to_string();
             request_url_allowed(&api_url, &request_url).map_err(SendError::Url)?;
-            let token = ipc_token.unwrap_or(file_token);
+            let token = select_bearer_token(ipc_token, file_token).map_err(SendError::NoToken)?;
 
             let mut req_builder = client.request(method, url).headers(header_map);
 
@@ -864,14 +1023,16 @@ async fn helper_fetch(
                     .ok_or_else(|| "HTTP state not initialized".to_string())?;
                 (
                     state.client.clone(),
-                    state.config.token.clone(),
+                    state.config.file_token.clone(),
                     state.config.api_url.clone(),
                 )
             };
 
             match send_once(fresh_client, fresh_file_token, fresh_api_url).await {
                 Ok(response) => response,
-                Err(SendError::Url(message)) => return Err(message),
+                Err(SendError::Url(message)) | Err(SendError::NoToken(message)) => {
+                    return Err(message)
+                }
                 Err(SendError::Request { error, url }) => {
                     log_helper_error(&format!("HTTP request to {} failed: {}", url, error));
                     return Err(
@@ -881,7 +1042,7 @@ async fn helper_fetch(
                 }
             }
         }
-        Err(SendError::Url(message)) => return Err(message),
+        Err(SendError::Url(message)) | Err(SendError::NoToken(message)) => return Err(message),
         Err(SendError::Request { error, url }) => {
             log_helper_error(&format!("HTTP request to {} failed: {}", url, error));
             return Err(
@@ -1092,6 +1253,7 @@ pub fn run() {
             get_helper_config,
             update_chat_active,
             helper_token_ready,
+            restart_ipc_if_stopped,
             submit_consent,
             workspace_open::open_workspace_path,
         ])
@@ -1286,8 +1448,7 @@ pub fn run() {
             // Keep the stop sender in managed state so the watch channel stays open
             // for the app's lifetime; on app exit the state is dropped, the channel
             // closes, and the client task exits. (The task also exits on a permanent
-            // broker reject — that is intentional.)
-            let token = helper_token().clone();
+            // broker reject; restart_ipc_if_stopped lets Retry start a new one.)
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             app.manage(stop_tx);
 
@@ -1300,7 +1461,11 @@ pub fn run() {
                 app: app.handle().clone(),
                 bridge,
             };
-            tauri::async_runtime::spawn(crate::ipc::client::run(token, stop_rx, desktop_ctx));
+            let _ = IPC_DRIVER_CTX.set(IpcDriverCtx {
+                stop: stop_rx,
+                desktop_ctx,
+            });
+            start_ipc_driver();
 
             Ok(())
         })
@@ -1507,6 +1672,239 @@ auth_token: brz_full_agent
         .expect("parse yaml");
 
         assert_eq!(helper_token_from_config(&yaml, None), None);
+    }
+
+    // Since v0.118.0, macOS/Linux agents no longer write the helper token to
+    // agent.yaml; the agent delivers it over IPC. A config without it must
+    // still load: an on-disk token is a fallback, not a requirement.
+    #[test]
+    fn agent_config_loads_without_file_helper_token() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+server_url: https://api.example.test
+agent_id: agent-1
+"#,
+        )
+        .expect("parse yaml");
+
+        let cfg = agent_config_from_yaml(&yaml, None, None).expect("config without a file token loads");
+        assert_eq!(cfg.api_url, "https://api.example.test");
+        assert_eq!(cfg.agent_id, "agent-1");
+        assert_eq!(cfg.file_token, None);
+    }
+
+    #[test]
+    fn agent_config_keeps_legacy_file_helper_token() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+server_url: https://api.example.test
+agent_id: agent-1
+helper_auth_token: brz_helper_agent_yaml
+"#,
+        )
+        .expect("parse yaml");
+
+        let cfg = agent_config_from_yaml(&yaml, None, None).expect("legacy config loads");
+        assert_eq!(cfg.file_token.as_deref(), Some("brz_helper_agent_yaml"));
+    }
+
+    #[test]
+    fn agent_config_still_requires_server_url_and_agent_id() {
+        for doc in [
+            "agent_id: agent-1\n",
+            "server_url: https://api.example.test\n",
+        ] {
+            let yaml: serde_yaml::Value = serde_yaml::from_str(doc).expect("parse yaml");
+            assert!(
+                agent_config_from_yaml(&yaml, None, None).is_err(),
+                "incomplete config must not load: {doc}"
+            );
+        }
+    }
+
+    // macOS/Linux agents since v0.118.0 keep the helper token in
+    // helper_token.yaml (readable by the breeze group) instead of agent.yaml.
+    // It takes precedence over agent.yaml, as in the agent's own
+    // LoadHelperConfig; an empty value there falls back to agent.yaml.
+    #[test]
+    fn agent_config_reads_helper_token_file() {
+        let yaml = |doc: &str| -> serde_yaml::Value { serde_yaml::from_str(doc).expect("parse yaml") };
+        let base = "server_url: https://api.example.test\nagent_id: agent-1\n";
+        let with_agent_yaml_token = format!("{base}helper_auth_token: brz_helper_agent_yaml\n");
+        let helper_file = yaml("helper_auth_token: brz_helper_file\n");
+        let empty_helper_file = yaml("helper_auth_token: \"\"\n");
+
+        let cases: [(&str, String, Option<&serde_yaml::Value>, Option<&str>); 4] = [
+            ("helper file only", base.to_string(), Some(&helper_file), Some("brz_helper_file")),
+            (
+                "helper file wins over agent.yaml",
+                with_agent_yaml_token.clone(),
+                Some(&helper_file),
+                Some("brz_helper_file"),
+            ),
+            (
+                "empty helper file falls back to agent.yaml",
+                with_agent_yaml_token.clone(),
+                Some(&empty_helper_file),
+                Some("brz_helper_agent_yaml"),
+            ),
+            ("empty helper file and no agent.yaml token", base.to_string(), Some(&empty_helper_file), None),
+        ];
+        for (name, agent_yaml, helper_token_file, want) in cases {
+            let cfg = agent_config_from_yaml(&yaml(&agent_yaml), None, helper_token_file)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(cfg.file_token.as_deref(), want, "{name}");
+        }
+
+        // An elevated Helper that can read secrets.yaml uses the agent's own copy.
+        let secrets = yaml("helper_auth_token: brz_helper_secret\n");
+        let cfg = agent_config_from_yaml(&yaml(&with_agent_yaml_token), Some(&secrets), Some(&helper_file))
+            .expect("config loads");
+        assert_eq!(cfg.file_token.as_deref(), Some("brz_helper_secret"), "secrets.yaml wins");
+    }
+
+    /// A fresh directory for tests that read the agent's config files from disk.
+    fn test_config_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "breeze-helper-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test config dir");
+        dir
+    }
+
+    #[test]
+    fn read_file_helper_token_reads_both_on_disk_locations() {
+        let dir = test_config_dir("read-file-helper-token");
+        let agent_yaml = dir.join("agent.yaml");
+        let helper_file = dir.join("helper_token.yaml");
+
+        std::fs::write(&agent_yaml, "server_url: https://api.example.test\nagent_id: agent-1\n")
+            .unwrap();
+        assert_eq!(read_file_helper_token(&agent_yaml), None, "no token anywhere");
+
+        std::fs::write(&helper_file, "helper_auth_token: brz_helper_file\n").unwrap();
+        assert_eq!(
+            read_file_helper_token(&agent_yaml).as_deref(),
+            Some("brz_helper_file"),
+            "helper_token.yaml beside agent.yaml"
+        );
+
+        // A Helper whose user is not in the breeze group cannot read the file;
+        // that is not an error, just no token from this source.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&helper_file, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read(&helper_file).is_err() {
+                assert_eq!(read_file_helper_token(&agent_yaml), None, "unreadable helper file");
+            }
+            std::fs::set_permissions(&helper_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        std::fs::remove_file(&helper_file).unwrap();
+        std::fs::write(
+            &agent_yaml,
+            "server_url: https://api.example.test\nagent_id: agent-1\nhelper_auth_token: brz_helper_agent_yaml\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_file_helper_token(&agent_yaml).as_deref(),
+            Some("brz_helper_agent_yaml"),
+            "agent.yaml token from an agent that still writes it there"
+        );
+
+        // The group-readable file alone is enough, even if agent.yaml is gone.
+        std::fs::remove_file(&agent_yaml).unwrap();
+        std::fs::write(&helper_file, "helper_auth_token: brz_helper_file\n").unwrap();
+        assert_eq!(read_file_helper_token(&agent_yaml).as_deref(), Some("brz_helper_file"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The cached config keeps the on-disk token it found at load time. When it
+    // found none, a token written afterwards (e.g. once enrollment completes)
+    // must still be picked up without restarting the Helper — but a token it
+    // already has is not re-read on every request.
+    #[test]
+    fn refresh_missing_file_token_rereads_only_when_none_was_found() {
+        let dir = test_config_dir("refresh-missing-file-token");
+        let agent_yaml = dir.join("agent.yaml");
+        std::fs::write(&agent_yaml, "server_url: https://api.example.test\nagent_id: agent-1\n")
+            .unwrap();
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&agent_yaml).unwrap()).unwrap();
+        let mut cfg = agent_config_from_yaml(&yaml, None, None).expect("config loads");
+        assert_eq!(cfg.file_token, None);
+
+        refresh_missing_file_token(&mut cfg, &agent_yaml);
+        assert_eq!(cfg.file_token, None, "still nothing on disk");
+
+        std::fs::write(dir.join("helper_token.yaml"), "helper_auth_token: brz_late\n").unwrap();
+        refresh_missing_file_token(&mut cfg, &agent_yaml);
+        assert_eq!(cfg.file_token.as_deref(), Some("brz_late"), "late token picked up");
+
+        std::fs::write(dir.join("helper_token.yaml"), "helper_auth_token: brz_newer\n").unwrap();
+        refresh_missing_file_token(&mut cfg, &agent_yaml);
+        assert_eq!(cfg.file_token.as_deref(), Some("brz_late"), "a found token is kept");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A permanently rejected IPC client (e.g. on Windows, Assist started
+    // outside the active console session) stops its driver. Retry must be able to start
+    // exactly one new driver, never a second one alongside a live driver.
+    #[test]
+    fn ipc_driver_slot_admits_one_driver_at_a_time() {
+        let slot = IpcDriverSlot::default();
+        assert!(slot.try_claim(), "idle slot must admit a driver");
+        assert!(!slot.try_claim(), "a running driver must not be duplicated");
+        slot.release();
+        assert!(slot.try_claim(), "a stopped driver can be restarted");
+    }
+
+    #[test]
+    fn bearer_token_selection() {
+        let ipc = || Some("brz_ipc".to_string());
+        let file = || Some("brz_file".to_string());
+        let cases: [(&str, Option<String>, Option<String>, Option<&str>); 6] = [
+            ("ipc wins over file", ipc(), file(), Some("brz_ipc")),
+            ("ipc only", ipc(), None, Some("brz_ipc")),
+            (
+                "on-disk fallback",
+                None,
+                file(),
+                Some("brz_file"),
+            ),
+            ("neither", None, None, None),
+            (
+                "empty ipc falls back",
+                Some(String::new()),
+                file(),
+                Some("brz_file"),
+            ),
+            (
+                "empty everywhere",
+                Some(String::new()),
+                Some(String::new()),
+                None,
+            ),
+        ];
+        for (name, ipc_token, file_token, want) in cases {
+            let got = select_bearer_token(ipc_token, file_token);
+            match want {
+                Some(w) => assert_eq!(got.as_deref(), Ok(w), "{name}"),
+                None => {
+                    let err = got.expect_err(name);
+                    assert!(
+                        !err.is_empty(),
+                        "{name}: error message must explain the wait"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
