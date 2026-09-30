@@ -2,9 +2,11 @@ package timesync
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func settingsFixture() Settings {
@@ -154,5 +156,17 @@ func TestManagementSettingsErrorsAreDeterministic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+func TestManagementErrorLengthUsesUTF16(t *testing.T) {
+	message := errorText(errors.New(strings.Repeat("😀", 300)))
+	if message == nil || len(utf16.Encode([]rune(*message))) != 512 {
+		t.Fatal(message)
+	}
+	if errorText(nil) != nil {
+		t.Fatal("nil error must stay null")
+	}
+	if ntpValues(Observation{})["serviceStartType"] != nil {
+		t.Fatal("unknown start type must be null")
 	}
 }

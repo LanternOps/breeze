@@ -475,3 +475,98 @@ func TestReconcileStartsStoppedServiceBeforeConfigWrites(t *testing.T) {
 		})
 	}
 }
+func TestReconcileTimezoneRoleGuardMatrix(t *testing.T) {
+	// Spec §8.4: the W32Time role and Policies\Microsoft\W32Time never gate the
+	// timezone, so every role/GPO combination applies; only read-back decides.
+	for _, role := range []string{"workgroup", "entra_only", "forest_root_pdc_emulator", "member", "dc", "pdc_emulator", "unknown"} {
+		for _, managed := range []bool{false, true} {
+			for _, mismatch := range []bool{false, true} {
+				now := time.Now()
+				f := newFakeTimeSystem(role)
+				f.obs.Config.PolicyManaged = managed
+				f.mismatch = mismatch
+				r := fakeReconciler(f, &now)
+				r.State.Settings.EnforceNTP = false
+				r.State.Settings.Timezone = TimezoneSettings{managementPtr("Eastern Standard Time"), true}
+				if e := r.Run(context.Background(), false); e != nil {
+					t.Fatal(e)
+				}
+				got := r.State.Report.Timezone
+				outcome, reason := "ok", "applied"
+				if mismatch {
+					outcome, reason = "failed", "readback_mismatch"
+				}
+				if got.Outcome != outcome || got.Reason != reason {
+					t.Fatal(role, managed, mismatch, got)
+				}
+				if !reflect.DeepEqual(f.calls, []string{"timezone"}) {
+					t.Fatal(role, managed, mismatch, f.calls)
+				}
+			}
+		}
+	}
+}
+func TestReconcileTimezoneGuardRereadsAutoUpdate(t *testing.T) {
+	now := time.Now()
+	f := newFakeTimeSystem("workgroup")
+	r := fakeReconciler(f, &now)
+	r.State.Settings.EnforceNTP = false
+	r.State.Settings.Timezone = TimezoneSettings{managementPtr("Eastern Standard Time"), true}
+	f.beforeRead = func(f *fakeTimeSystem) {
+		if f.reads >= 2 {
+			f.obs.Timezone.AutoUpdate = "on"
+		}
+	}
+	if e := r.Run(context.Background(), true); e != nil {
+		t.Fatal(e)
+	}
+	if r.State.Report.Timezone.Reason != "auto_timezone_on" || len(f.calls) != 0 {
+		t.Fatal(r.State.Report, f.calls)
+	}
+}
+func TestReconcileSuccessfulGateAndIndependentKinds(t *testing.T) {
+	now := time.Now()
+	f := newFakeTimeSystem("workgroup")
+	r := fakeReconciler(f, &now)
+	r.State.Settings.Timezone = TimezoneSettings{managementPtr("Eastern Standard Time"), true}
+	f.fail = "manual"
+	if e := r.Run(context.Background(), false); e != nil {
+		t.Fatal(e)
+	}
+	if r.State.Report.NTP.Outcome != "failed" || r.State.Report.Timezone.Outcome != "ok" {
+		t.Fatal(r.State.Report)
+	}
+	zoneID := r.State.Report.Timezone.ResultID
+	now = now.Add(30 * time.Minute)
+	if e := r.Run(context.Background(), false); e != nil {
+		t.Fatal(e)
+	}
+	if r.State.Report.Timezone.ResultID != zoneID {
+		t.Fatal("successful kind bypassed one-hour gate")
+	}
+	now = now.Add(30 * time.Minute)
+	if e := r.Run(context.Background(), false); e != nil {
+		t.Fatal(e)
+	}
+	if r.State.NTPGate.Next.Sub(now) != 2*time.Hour || r.State.TimezoneGate.Next.Sub(now) != time.Hour {
+		t.Fatal(r.State)
+	}
+}
+func TestReconcileEveryWriteFailureStopsLaterWrites(t *testing.T) {
+	// Real apply order: auto → start (service stopped) → manual → poll → update → resync.
+	for index, name := range []string{"auto", "start", "manual", "poll", "update"} {
+		now := time.Now()
+		f := newFakeTimeSystem("workgroup")
+		f.fail = name
+		r := fakeReconciler(f, &now)
+		if e := r.Run(context.Background(), true); e != nil {
+			t.Fatal(e)
+		}
+		if len(f.calls) != index+1 || r.State.Report.NTP.Reason != "exec_failed" {
+			t.Fatal(name, f.calls, r.State.Report)
+		}
+		if r.State.Report.NTP.After == nil {
+			t.Fatal("partial read-back discarded")
+		}
+	}
+}

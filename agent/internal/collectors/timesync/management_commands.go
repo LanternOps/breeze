@@ -84,10 +84,8 @@ func (m *Manager) resync(ctx context.Context, payload map[string]any) (ResyncRes
 	}
 	after, readErr := m.read(ctx)
 	out.After = after.Status.LastSuccessfulSyncAt
+	// ExitCode describes the resync process. CommandResult.Status describes the whole operation.
 	e = errors.Join(e, readErr)
-	if e != nil && out.ExitCode == 0 {
-		out.ExitCode = 1
-	}
 	out.Error = errorText(e)
 	return out, e
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -410,4 +411,292 @@ func TestManagementResyncIgnoresConfigurationGuards(t *testing.T) {
 			}
 		})
 	}
+}
+func TestManagementResyncReadFailurePreservesProcessExit(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	f.obs.Config.ServiceState = "running"
+	f.beforeRead = func(f *fakeTimeSystem) {
+		for _, call := range f.calls {
+			if call == "resync" {
+				f.fail = "read"
+			}
+		}
+	}
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	data, e := m.Command(context.Background(), "time_resync", map[string]any{})
+	got := data.(ResyncResult)
+	if e == nil || got.Error == nil {
+		t.Fatal("read failure hidden", got, e)
+	}
+	if got.ExitCode != 0 {
+		t.Fatalf("successful resync process exit rewritten: %d", got.ExitCode)
+	}
+	if got.After != nil {
+		t.Fatal("invented last successful sync after failed read")
+	}
+}
+func TestManagementContextBoundsSerializationWait(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	if e := m.lock(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { _, e := m.Command(ctx, "time_resync", map[string]any{}); done <- e }()
+	select {
+	case e := <-done:
+		if !errors.Is(e, context.Canceled) {
+			t.Fatal(e)
+		}
+	case <-time.After(time.Second):
+		m.unlock()
+		t.Fatal("cancelled command waited for another operation")
+	}
+	m.unlock()
+	if len(f.calls) != 0 {
+		t.Fatal("cancelled command wrote")
+	}
+}
+func TestManagementDisabledFailureDoesNotFailApply(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	f.fail = "manual"
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	s := settingsFixture()
+	if _, e := m.Apply(rawSettings(t, s)); e != nil {
+		t.Fatal(e)
+	}
+	if e := m.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if m.state.Report.NTP.Outcome != "failed" {
+		t.Fatal(m.state.Report)
+	}
+	s.EnforceNTP = false
+	s.NTPServers = []string{}
+	s.Fingerprint = "sha256:" + fmt.Sprintf("%064x", 7)
+	if _, e := m.Apply(rawSettings(t, s)); e != nil {
+		t.Fatal(e)
+	}
+	calls := len(f.calls)
+	if _, e := m.Command(context.Background(), "time_apply_policy", map[string]any{}); e != nil {
+		t.Fatal(e)
+	}
+	if len(f.calls) != calls {
+		t.Fatal("disabled policy wrote")
+	}
+}
+func TestManagementCollectorCursorSurvivesFailureAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	initial := now.Add(-24 * time.Hour)
+	if e := writeState(filepath.Join(dir, stateName), diskState{Sequence: 7, EventsSince: initial}); e != nil {
+		t.Fatal(e)
+	}
+	sys := &fakeSystem{events: []Event{{RecordID: 17, EventID: 37, Level: 4, OccurredAt: now.Add(-time.Minute), Properties: []string{}}}}
+	var sequences []uint64
+	fail := true
+	send := func(_ context.Context, p any) error {
+		snapshot := p.(*Snapshot)
+		sequences = append(sequences, snapshot.Sequence)
+		if len(snapshot.Events) != 1 || snapshot.Events[0].RecordID != 17 {
+			t.Fatal("event lost on replay", snapshot.Events)
+		}
+		state, e := readState(filepath.Join(dir, stateName), now)
+		if e != nil {
+			return e
+		}
+		if !state.EventsSince.Equal(initial) {
+			t.Fatal("cursor advanced before acceptance", state)
+		}
+		if fail {
+			return errors.New("offline")
+		}
+		return nil
+	}
+	m, e := NewManagement(dir, sys, newFakeTimeSystem("workgroup"), send)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m.collector.(*Collector).now = func() time.Time { return now }
+	if e = m.Cycle(context.Background()); e == nil {
+		t.Fatal("send failure hidden")
+	}
+	state, e := readState(filepath.Join(dir, stateName), now)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !state.EventsSince.Equal(initial) {
+		t.Fatal("failed send committed", state)
+	}
+	now = now.Add(time.Minute)
+	fail = false
+	n, e := NewManagement(dir, sys, newFakeTimeSystem("workgroup"), send)
+	if e != nil {
+		t.Fatal(e)
+	}
+	n.collector.(*Collector).now = func() time.Time { return now }
+	if e = n.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	state, e = readState(filepath.Join(dir, stateName), now)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(sequences) != 2 || sequences[1] != sequences[0]+1 || !state.EventsSince.Equal(now) || !sys.since.Equal(initial) {
+		t.Fatal(sequences, state, sys.since)
+	}
+	for _, name := range []string{stateName, managementFile} {
+		b, e := os.ReadFile(filepath.Join(dir, name))
+		if e != nil {
+			t.Fatal(e)
+		}
+		var saved map[string]json.RawMessage
+		if e = json.Unmarshal(b, &saved); e != nil {
+			t.Fatal(e)
+		}
+		if name == stateName && (len(saved) != 2 || saved["sequence"] == nil || saved["eventsSince"] == nil) {
+			t.Fatal("unexpected collector persistence", saved)
+		}
+		if saved["pendingEvents"] != nil {
+			t.Fatal("management took event ownership")
+		}
+	}
+}
+func TestManagementNilOrFailedCollectionDoesNotSendOrCommit(t *testing.T) {
+	for _, mode := range []string{"nil", "error"} {
+		t.Run(mode, func(t *testing.T) {
+			m := managementFixture(t, t.TempDir(), newFakeTimeSystem("workgroup"), func(context.Context, any) error { t.Fatal("unexpected send"); return nil })
+			c := m.collector.(*managementCollectorFake)
+			c.collect = func(context.Context) (*Snapshot, error) {
+				if mode == "error" {
+					return nil, errors.New("read failed")
+				}
+				return nil, nil
+			}
+			e := m.Cycle(context.Background())
+			if (e != nil) != (mode == "error") || c.commits != 0 {
+				t.Fatal(e, c.commits)
+			}
+		})
+	}
+}
+func TestManagementGuardsDoNotCollectOrCommit(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	c := m.collector.(*managementCollectorFake)
+	if _, e := m.Apply(rawSettings(t, settingsFixture())); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 3; i++ {
+		if _, e := m.read(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if c.collections != 0 || c.commits != 0 {
+		t.Fatal("guard advanced collector", c)
+	}
+	if e := m.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if f.reads < 6 || c.collections != 1 || c.commits != 1 {
+		t.Fatal(f.reads, c.collections, c.commits)
+	}
+}
+func TestManagementCommitFailuresReplayWithFreshSequence(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	c := m.collector.(*managementCollectorFake)
+	c.commit = func(*Snapshot) error { return errors.New("disk full") }
+	if e := m.Cycle(context.Background()); e == nil {
+		t.Fatal("commit failure hidden")
+	}
+	first := c.last.Sequence
+	if c.commits != 0 {
+		t.Fatal("failed commit advanced cursor")
+	}
+	c.commit = nil
+	if e := m.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if c.last.Sequence != first+1 || c.commits != 1 || c.last.Events[0].RecordID != 42 {
+		t.Fatal(c)
+	}
+}
+func TestManagementBudgetRetainsDisplayReservation(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(_ context.Context, p any) error {
+		snapshot := p.(*Snapshot)
+		b, e := json.Marshal(snapshot)
+		if e != nil {
+			return e
+		}
+		if len(b) > maxPayloadBytes {
+			t.Fatal("oversized management snapshot", len(b))
+		}
+		if snapshot.Enforcement.NTP == nil {
+			t.Fatal("missing report")
+		}
+		reserved := 0
+		for _, event := range snapshot.Events {
+			if event.displayReserved {
+				reserved++
+			}
+		}
+		if reserved != 20 {
+			t.Fatal("lost display events", reserved)
+		}
+		return nil
+	})
+	c := m.collector.(*managementCollectorFake)
+	c.collect = func(context.Context) (*Snapshot, error) {
+		s := emptySnapshot(time.Now())
+		s.Sequence = 1
+		for id := uint64(100); id > 0; id-- {
+			s.Events = append(s.Events, Event{RecordID: id, EventID: 37, Level: 4, OccurredAt: time.Unix(int64(id), 0).UTC(),
+				Message: strings.Repeat("\x00", 1000), Properties: []string{"peer.example"}, displayReserved: id <= 20})
+		}
+		if e := fitPayload(&s); e != nil {
+			return nil, e
+		}
+		return &s, nil
+	}
+	m.state.Report.NTP = newResult(settingsFixture(), time.Now(), "failed", "exec_failed", ntpValues(f.obs), ntpValues(f.obs), errors.New(strings.Repeat("x", 512)))
+	if e := m.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if c.collections != 1 || c.commits != 1 {
+		t.Fatal(c)
+	}
+}
+func TestManagementSystemReadsAreFreshAndFailClosed(t *testing.T) {
+	sys := &fakeSystem{
+		strings: map[string]string{serviceKey + `\Parameters|Type`: "NT5DS"},
+		dwords:  map[string]uint32{`SYSTEM\CurrentControlSet\Services\tzautoupdate|Start`: 4},
+		names:   map[string][]string{policyKey + `\Parameters`: {}, policyKey + `\TimeProviders\NtpClient`: {}},
+		service: ServiceInfo{State: "running", StartType: "auto"},
+		zone:    Timezone{WindowsID: managementPtr("UTC")},
+	}
+	m, e := newManagement(t.TempDir(), nil, sys, nil, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	before, e := m.read(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if before.Config.PolicyManaged || !value(before.Config.Type, "NT5DS") {
+		t.Fatal(before)
+	}
+	sys.strings[serviceKey+`\Parameters|Type`] = "AllSync"
+	sys.namesErr = map[string]error{policyKey + `\Parameters`: errors.New("access denied")}
+	after, e := m.read(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !after.Config.PolicyManaged || !value(after.Config.Type, "AllSync") {
+		t.Fatal("cached or fail-open guard", after)
+	}
+	// A nil collector above would panic if either guard used Collect or Commit.
 }
