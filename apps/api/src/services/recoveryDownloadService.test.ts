@@ -30,6 +30,7 @@ const resolveSnapshotProviderConfigMock = vi.fn();
 // snapshot's file_index_status, the backup_snapshot_files membership row, and
 // the backup_snapshot_origins row.
 const lineageRows = vi.hoisted(() => [] as Array<Array<Record<string, unknown>>>);
+const innerJoins = vi.hoisted(() => [] as unknown[][]);
 
 vi.mock('../db', () => ({
   db: {
@@ -37,6 +38,11 @@ vi.mock('../db', () => ({
       const chain: Record<string, any> = {};
       chain.from = vi.fn(() => chain);
       chain.where = vi.fn(() => chain);
+      chain.leftJoin = vi.fn(() => chain);
+      chain.innerJoin = vi.fn((...args: unknown[]) => {
+        innerJoins.push(args);
+        return chain;
+      });
       chain.limit = vi.fn(async () => lineageRows.shift() ?? []);
       return chain;
     }),
@@ -548,6 +554,41 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         unavailable: true,
         reason: 'Requested path references an object this recovery is not authorized to read.',
       });
+    });
+
+    it('an external key is refused when the index was not built from the manifest bytes the attestation names', async () => {
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'verified', manifestSha256: 'b'.repeat(64) } }]);
+      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result).toMatchObject({ unavailable: true });
+    });
+
+    it('an external key is refused when the attestation did not match', async () => {
+      mockCurrentSnapshotLocal();
+      lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'mismatch', manifestSha256: 'a'.repeat(64) } }]);
+      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result).toMatchObject({ unavailable: true });
+    });
+
+    it('an external key bound to a matching attestation is authorized, and membership is read against the approved index', async () => {
+      mockCurrentSnapshotLocal('store-1');
+      innerJoins.length = 0;
+      lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'pending', manifestSha256: 'a'.repeat(64) } }]);
+      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      expect(result.unavailable).toBe(false);
+      expect(innerJoins).toHaveLength(1);
     });
 
     it("an external key is refused when the snapshot's file_index_status is not complete (e.g. agent)", async () => {

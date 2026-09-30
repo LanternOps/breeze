@@ -335,6 +335,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
           providerSnapshotId: backupSnapshotAttestations.providerSnapshotId,
           storageIdentity: backupSnapshotAttestations.storageIdentity,
           keyLayout: backupSnapshotAttestations.keyLayout,
+          manifestSha256: backupSnapshotAttestations.manifestSha256,
         })
         .from(backupSnapshotAttestations)
         .where(and(eq(backupSnapshotAttestations.id, attestationId), eq(backupSnapshotAttestations.status, 'pending')))
@@ -361,6 +362,32 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
         .update(backupSnapshots)
         .set({ integrityStatus: written === 'verified' ? 'attested' : 'attestation_failed' })
         .where(eq(backupSnapshots.id, snapshotDbId));
+      // The snapshot's file index follows the decision, under the same row
+      // lock hydration publishes under (backupSnapshotFileIndex.ts): a
+      // complete index built from other manifest bytes than the verified ones
+      // goes back to 'none' (hydration rebuilds it on its next use), and no
+      // index of a snapshot that did not match stays usable. Its rows stay
+      // until hydration replaces them; a non-complete index authorizes
+      // nothing. Readers apply the same rule (indexMatchesAttestation), so
+      // this only keeps the stored state honest.
+      if (written === 'verified') {
+        await db
+          .update(backupSnapshots)
+          .set({ fileIndexStatus: 'none', fileIndexError: null })
+          .where(and(
+            eq(backupSnapshots.id, snapshotDbId),
+            eq(backupSnapshots.fileIndexStatus, 'complete'),
+            sql`${backupSnapshots.fileIndexManifestSha256} IS DISTINCT FROM ${row.manifestSha256}`,
+          ));
+      } else {
+        await db
+          .update(backupSnapshots)
+          .set({
+            fileIndexStatus: 'failed',
+            fileIndexError: "attestation_failed: the snapshot's attestation does not match its stored objects",
+          })
+          .where(and(eq(backupSnapshots.id, snapshotDbId), eq(backupSnapshots.fileIndexStatus, 'complete')));
+      }
       return written;
     }),
   defer: ({ attestationId, reason, retryAt }) =>
