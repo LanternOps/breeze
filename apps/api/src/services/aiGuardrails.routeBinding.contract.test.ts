@@ -328,6 +328,14 @@ const BINDINGS: readonly Binding[] = [
   // §2.4 — a registry read is an agent EXECUTION (SR5-01 precedent).
   { tool: 'registry_operations', action: 'read_key', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands' },
 
+  // Live device inspection: every /system-tools route dispatches to the agent,
+  // and the router (systemTools/index.ts) gates every method on devices:execute.
+  { tool: 'manage_processes', action: 'list', routeFile: 'systemTools/processes.ts', method: 'get', path: '/devices/:deviceId/processes', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'list', routeFile: 'systemTools/scheduledTasks.ts', method: 'get', path: '/devices/:deviceId/tasks', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
+  { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
+
   // §2.6 — the ten resources that did not exist in the canonical catalog.
   { tool: 'manage_deployments', action: 'get', routeFile: 'deployments.ts', method: 'get', path: '/:id' },
   { tool: 'manage_deployments', action: 'create', routeFile: 'deployments.ts', method: 'post', path: '/' },

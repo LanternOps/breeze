@@ -6,13 +6,33 @@ import ProcessDrilldownPanel from './ProcessDrilldownPanel';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...args: any[]) => fetchWithAuth(...args) }));
+const perms = vi.hoisted(() => ({ granted: new Set<string>(['devices:read', 'devices:execute']) }));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => perms.granted.has(`${r}:${a}`) }),
+}));
 
 function jsonResponse(body: any) {
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) } as Response);
 }
 
 describe('ProcessDrilldownPanel', () => {
-  beforeEach(() => { fetchWithAuth.mockReset(); });
+  beforeEach(() => {
+    fetchWithAuth.mockReset();
+    perms.granted = new Set(['devices:read', 'devices:execute']);
+  });
+
+  it('hides the Live toggle without devices:execute and never calls the live endpoint', async () => {
+    // The live listing dispatches a command to the agent (devices:execute on
+    // the API); a devices:read-only role keeps the recorded samples.
+    perms.granted = new Set(['devices:read']);
+    fetchWithAuth.mockReturnValue(jsonResponse({ sample: { timestamp: '2026-06-13T12:31:40.000Z', agentTimestamp: null, topProcesses: [] } }));
+
+    render(<ProcessDrilldownPanel deviceId="dev-1" at="2026-06-13T12:32:00.000Z" onClose={() => {}} />);
+
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(screen.queryByTestId('process-drilldown-live-toggle')).toBeNull();
+    expect(fetchWithAuth).not.toHaveBeenCalledWith(expect.stringContaining('/system-tools/'));
+  });
 
   it('fetches the nearest sample for the clicked time and renders rows sorted by CPU', async () => {
     fetchWithAuth.mockReturnValue(jsonResponse({

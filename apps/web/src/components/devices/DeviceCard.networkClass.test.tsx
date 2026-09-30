@@ -5,6 +5,10 @@ import DeviceCard from './DeviceCard';
 import type { Device } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
 
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));

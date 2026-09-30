@@ -9,6 +9,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+const perms = vi.hoisted(() => ({ granted: new Set<string>(['remote:access']) }));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => perms.granted.has(`${r}:${a}`) }),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown): Response =>
@@ -53,7 +58,15 @@ const rebootBtn = () => screen.getByRole('button', { name: /^reboot/i });
 describe('DeviceCard action gating (#2488)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    perms.granted = new Set(['remote:access']);
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+  });
+
+  it('hides Remote Terminal without remote:access (the terminal session requires it)', () => {
+    perms.granted = new Set(['devices:read']);
+    openCardMenu('online');
+    expect(runScriptBtn()).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remote terminal/i })).toBeNull();
   });
 
   it('online device: all command actions are enabled', () => {

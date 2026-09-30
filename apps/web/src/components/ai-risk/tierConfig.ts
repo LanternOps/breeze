@@ -378,9 +378,9 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'resolve_device_context', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   // Services & Processes
   { toolName: 'manage_services', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
-  { toolName: 'manage_processes', tier: 1, permission: 'devices.read', category: 'Services & Processes' },
+  { toolName: 'manage_processes', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   { toolName: 'manage_startup_items', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
-  { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.read', category: 'Services & Processes' },
+  { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   // Security & Compliance
   { toolName: 'security_scan', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   // Files, Disk & Registry
@@ -494,7 +494,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   analyze_fleet_metrics: 'devices.read',
   analyze_boot_performance: 'devices.read',
   analyze_disk_usage: 'devices.read',
-  manage_processes: { list: 'devices.read', kill: 'devices.execute' },
+  manage_processes: { list: 'devices.execute', kill: 'devices.execute' },
   // Network
   get_network_changes: 'devices.read',
   get_ip_history: 'devices.read',
@@ -526,7 +526,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Services & startup
   manage_services: 'devices.execute',
   manage_startup_items: 'devices.execute',
-  manage_scheduled_tasks: { list: 'devices.read', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
+  manage_scheduled_tasks: { list: 'devices.execute', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',
