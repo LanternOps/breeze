@@ -117,6 +117,9 @@ var allCommandTypes = []string{
 	// handlers_cis.go init()
 	tools.CmdCisBenchmark, tools.CmdApplyCisRemediation,
 
+	// handlers_timesync.go init()
+	tools.CmdTimeResync, tools.CmdTimeSetTimezone, tools.CmdTimeApplyPolicy,
+
 	// handlers_peripheral.go init()
 	tools.CmdPeripheralPolicySync,
 	// handlers_peripheral_v2.go init()

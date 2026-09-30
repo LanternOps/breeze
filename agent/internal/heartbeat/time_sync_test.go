@@ -8,81 +8,271 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/collectors/timesync"
+	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
-type timeCollectorFake struct {
-	collect           func(context.Context) (*timesync.Snapshot, error)
-	committed         atomic.Uint64
-	commitErr         error
-	committedSnapshot *timesync.Snapshot
+type fakeTimeManager struct {
+	mu       sync.Mutex
+	applied  []any
+	cycles   int
+	commands []string
+	payload  map[string]any
+	result   any
+	err      error
+	cycle    func(context.Context) error
+	// apply overrides Apply's (changed, err) answer when set.
+	apply func(any) (bool, error)
 }
 
-func (f *timeCollectorFake) Collect(ctx context.Context) (*timesync.Snapshot, error) {
-	return f.collect(ctx)
-}
-func (f *timeCollectorFake) Commit(snapshot *timesync.Snapshot) error {
-	if f.commitErr != nil {
-		return f.commitErr
+func (f *fakeTimeManager) Apply(raw any) (bool, error) {
+	f.mu.Lock()
+	f.applied = append(f.applied, raw)
+	fn := f.apply
+	err := f.err
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(raw)
 	}
-	f.committedSnapshot = snapshot
-	f.committed.Store(snapshot.Sequence)
+	return true, err
+}
+func (f *fakeTimeManager) Cycle(ctx context.Context) error {
+	f.mu.Lock()
+	f.cycles++
+	fn := f.cycle
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx)
+	}
 	return nil
 }
-func timeHeartbeat(t *testing.T, f *timeCollectorFake) *Heartbeat {
-	t.Helper()
-	cfg := config.Default()
-	cfg.AgentID = "fixture-agent"
-	cfg.ServerURL = "https://time.example.com"
-	cfg.AuthToken = "fixture-token"
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	return &Heartbeat{config: cfg, timeSyncCol: f, timeSyncContext: ctx, timeSyncCancel: cancel, retryCfg: httputil.DefaultRetryConfig()}
+func (f *fakeTimeManager) Command(_ context.Context, kind string, p map[string]any) (any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commands = append(f.commands, kind)
+	f.payload = p
+	return f.result, f.err
 }
-func TestTimeSyncScheduleAndSingleFlight(t *testing.T) {
-	last := time.Unix(1000, 0)
+func newTimeHeartbeat(f *fakeTimeManager) *Heartbeat {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Heartbeat{config: &config.Config{AgentID: "fixture-agent"}, timeSync: &timeSyncRuntime{
+		manager: f, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
+}
+func TestTimeSettingsDispatchBeforeProbeReturn(t *testing.T) {
+	for _, key := range []string{"time_sync_settings", "timeSyncSettings"} {
+		f := &fakeTimeManager{}
+		h := newTimeHeartbeat(f)
+		// No policy_registry_state_probes or policy_config_state_probes keys.
+		h.applyConfigUpdate(map[string]any{key: map[string]any{"fingerprint": "fixture"}})
+		if !h.timeSync.hasPending || len(h.timeSync.wake) != 1 {
+			t.Fatalf("%s dispatch lost", key)
+		}
+		h.applyConfigUpdate(map[string]any{"unrelated": true})
+		if !h.timeSync.hasPending {
+			t.Fatal("omitted settings cleared policy")
+		}
+		if len(f.applied) != 0 {
+			t.Fatal("heartbeat response blocked on management execution")
+		}
+		h.stopTimeSync()
+	}
+}
+func TestTimeSettingsImmediateCycleAndCancellation(t *testing.T) {
+	entered := make(chan struct{})
+	f := &fakeTimeManager{cycle: func(ctx context.Context) error { close(entered); <-ctx.Done(); return ctx.Err() }}
+	h := newTimeHeartbeat(f)
+	h.startTimeSync()
+	h.applyTimeSyncSettings(map[string]any{"fingerprint": "fixture"})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("settings did not trigger immediate collection")
+	}
+	h.stopTimeSync()
+	done := make(chan struct{})
+	go func() { h.inventoryWg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("time collection not cancelled/tracked")
+	}
+	h.applyTimeSyncSettings(map[string]any{})
+	if len(f.applied) != 1 || h.timeSync.hasPending {
+		t.Fatal("settings accepted after shutdown")
+	}
+}
+func TestTimeCadenceAndNoDuplicateStart(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		id := string(rune(i))
 		d := timeSyncFirstDelay(id)
 		if d < 2*time.Minute || d > 5*time.Minute {
 			t.Fatal(d)
 		}
-		interval := timeSyncInterval(id, last)
-		if interval < 27*time.Minute || interval > 33*time.Minute {
-			t.Fatal(interval)
+		d = timeSyncInterval(id, time.Unix(int64(i), 0))
+		if d < 27*time.Minute || d > 33*time.Minute {
+			t.Fatal(d)
 		}
 	}
-	h := timeHeartbeat(t, &timeCollectorFake{})
-	if h.timeSyncDueLocked(last, false) {
-		t.Fatal("ran before delayed first run")
+	f := &fakeTimeManager{}
+	h := newTimeHeartbeat(f)
+	now := time.Now()
+	h.mu.Lock()
+	h.timeSync.started = true
+	h.timeSync.lastTimeSyncUpdate = now
+	h.timeSyncTickLocked(now.Add(26 * time.Minute))
+	if len(h.timeSync.wake) != 0 {
+		t.Fatal("early tick")
 	}
-	if !h.timeSyncDueLocked(last, true) {
-		t.Fatal("first cycle not claimed")
+	h.timeSyncTickLocked(now.Add(timeSyncInterval(h.config.AgentID, now)))
+	if len(h.timeSync.wake) != 0 {
+		t.Fatal("strict boundary changed")
 	}
-	if h.timeSyncDueLocked(last.Add(time.Hour), false) {
-		t.Fatal("overlapping cycle claimed")
+	h.timeSyncTickLocked(now.Add(34 * time.Minute))
+	if len(h.timeSync.wake) != 1 {
+		t.Fatal("due tick lost")
 	}
-	h.timeSyncRunning = false
-	due := last.Add(timeSyncInterval(h.config.AgentID, last))
-	if h.timeSyncDueLocked(due, false) {
-		t.Fatal("strict gate boundary changed")
+	h.timeSyncTickLocked(now.Add(34 * time.Minute))
+	if len(h.timeSync.wake) != 1 {
+		t.Fatal("duplicate tick")
 	}
-	if !h.timeSyncDueLocked(due.Add(time.Nanosecond), false) {
-		t.Fatal("due cycle missed")
-	}
-	h.timeSyncRunning = false
+	h.mu.Unlock()
 	h.stopTimeSync()
-	if h.timeSyncDueLocked(due.Add(time.Hour), true) {
-		t.Fatal("stopped collector restarted")
+}
+func TestInvalidTimeSettingsStillWakeSnapshot(t *testing.T) {
+	f := &fakeTimeManager{err: errors.New("invalid_settings")}
+	h := newTimeHeartbeat(f)
+	h.applyTimeSyncSettings(map[string]any{"ntp_servers": []string{"bad;host"}})
+	if len(h.timeSync.wake) != 1 {
+		t.Fatal("rejection was not scheduled for reporting")
+	}
+	h.stopTimeSync()
+}
+
+// Apply answers changed=false for a repeated identical delivery, a repeated
+// rejection and a repeated persistence failure. The API re-sends settings on
+// every heartbeat, so none of those may run a cycle (an upload plus a fresh
+// enforcement audit row) per heartbeat; only a change or a due tick may.
+func TestUnchangedTimeSettingsDoNotCycleEveryHeartbeat(t *testing.T) {
+	type answer struct {
+		changed bool
+		err     error
+	}
+	answers := make(chan answer, 1)
+	// Buffered past any regression so a stray cycle or apply never blocks the
+	// worker: a broken dispatcher must red on the count, not hang the suite.
+	applied := make(chan struct{}, 64)
+	entered := make(chan struct{}, 64)
+	f := &fakeTimeManager{
+		apply: func(any) (bool, error) {
+			a := <-answers // A closed channel (teardown) answers unchanged.
+			applied <- struct{}{}
+			return a.changed, a.err
+		},
+		cycle: func(context.Context) error { entered <- struct{}{}; return nil },
+	}
+	h := newTimeHeartbeat(f)
+	defer func() { h.stopTimeSync(); h.inventoryWg.Wait() }()
+	defer close(answers)
+	h.mu.Lock()
+	h.timeSync.lastTimeSyncUpdate = time.Now()
+	h.mu.Unlock()
+	h.startTimeSync()
+	deliver := func(a answer) {
+		t.Helper()
+		answers <- a
+		h.applyTimeSyncSettings(map[string]any{"fingerprint": "fixture"})
+		select {
+		case <-applied:
+		case <-time.After(time.Second):
+			t.Fatal("delivery not applied")
+		}
+	}
+	for i := 0; i < 5; i++ {
+		deliver(answer{false, errors.New("settings still not persisted")})
+		deliver(answer{false, nil})
+	}
+	// The worker is sequential: any cycle caused by an unchanged delivery would
+	// have run before the changed delivery's cycle below.
+	deliver(answer{true, nil})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("changed settings did not cycle")
+	}
+	// A due schedule still reconciles even when the delivery changed nothing.
+	h.mu.Lock()
+	h.timeSync.lastTimeSyncUpdate = time.Now().Add(-time.Hour)
+	h.mu.Unlock()
+	deliver(answer{false, errors.New("settings still not persisted")})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("due cycle suppressed by an unchanged delivery")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cycles != 2 {
+		t.Fatal("unchanged deliveries ran cycles", f.cycles)
 	}
 }
-func TestTimeSyncPUTAndQualifiedCommit(t *testing.T) {
+func TestTimeUploadWireAndCancellation(t *testing.T) {
+	f := &fakeTimeManager{}
+	h := newTimeHeartbeat(f)
+	h.retryCfg.MaxRetries = 0
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	h.client = &http.Client{Transport: hardwareTransport(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if r.Method != "PUT" || r.URL.Path != "/api/v1/agents/fixture-agent/time-status" {
+			t.Error(r.Method, r.URL)
+		}
+		b, e := io.ReadAll(r.Body)
+		if e != nil {
+			t.Error(e)
+		}
+		var body map[string]any
+		if e = json.Unmarshal(b, &body); e != nil {
+			t.Error(e)
+		}
+		if len(body) != 2 || body["sequence"] != float64(3) || !strings.Contains(string(b), `"enforcement"`) {
+			t.Error(string(b))
+		}
+		close(entered)
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	// config.ServerURL is used by serverURL(); no real network request is made.
+	h.config.ServerURL = "https://api.example.com"
+	ctx, cancel := context.WithCancel(h.timeSync.ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- h.sendInventoryData("time-status", timeSyncUpload{ctx: ctx, data: map[string]any{"sequence": 3, "enforcement": nil}}, "time sync")
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("upload not dispatched")
+	}
+	cancel()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("cancelled upload succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upload lost command context")
+	}
+	if calls.Load() != 1 {
+		t.Fatal(calls.Load())
+	}
+	h.stopTimeSync()
+}
+func TestTimeSyncQualifiedTransport(t *testing.T) {
 	cases := []struct {
 		name   string
 		code   int
@@ -109,11 +299,13 @@ func TestTimeSyncPUTAndQualifiedCommit(t *testing.T) {
 			commit bool
 		}{fmt.Sprint(code), code, `{"accepted":true}`, false})
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := &timesync.Snapshot{SchemaVersion: 1, Sequence: 7, CollectedAt: time.Unix(100, 0).UTC()}
-			f := &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) { return snapshot, nil }}
-			h := timeHeartbeat(t, f)
+			h := newTimeHeartbeat(&fakeTimeManager{})
+			defer h.stopTimeSync()
+			h.config.ServerURL = "https://time.example.com"
+			h.config.AuthToken = "fixture-token"
 			h.retryCfg.MaxRetries = 0
 			var calls atomic.Int32
 			h.client = &http.Client{Transport: hardwareTransport(func(r *http.Request) (*http.Response, error) {
@@ -122,126 +314,44 @@ func TestTimeSyncPUTAndQualifiedCommit(t *testing.T) {
 					t.Error(r.Method, r.URL, r.Header)
 				}
 				var sent map[string]json.RawMessage
-				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
-					t.Error(err)
+				if e := json.NewDecoder(r.Body).Decode(&sent); e != nil {
+					t.Error(e)
 				}
-				if string(sent["enforcement"]) != "null" || string(sent["sequence"]) != "7" {
+				if string(sent["sequence"]) != "7" || string(sent["enforcement"]) != "null" {
 					t.Error(sent)
 				}
 				return &http.Response{StatusCode: tc.code, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
 			})}
-			h.timeSyncRunning = true
-			h.dispatchTimeSync()
-			h.inventoryWg.Wait()
-			if calls.Load() != 1 {
-				t.Fatal("unexpected request count", calls.Load())
-			}
-			if tc.commit {
-				if f.committed.Load() != 7 || f.committedSnapshot != snapshot {
-					t.Fatal("qualified delivery did not commit exact snapshot")
-				}
-			} else if f.committed.Load() != 0 {
-				t.Fatal("unqualified delivery committed")
-			}
-			if h.timeSyncRunning {
-				t.Fatal("running gate stranded")
+			e := h.sendInventoryData("time-status", timeSyncUpload{ctx: h.timeSync.ctx, data: map[string]any{"sequence": 7, "enforcement": nil}}, "time sync")
+			if (e == nil) != tc.commit || calls.Load() != 1 {
+				t.Fatal("qualified-success contract", e, calls.Load())
 			}
 		})
 	}
 }
-
-func TestTimeSyncTransportAndCommitFailures(t *testing.T) {
-	for _, phase := range []string{"transport", "commit"} {
-		t.Run(phase, func(t *testing.T) {
-			f := &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) {
-				return &timesync.Snapshot{SchemaVersion: 1, Sequence: 7}, nil
-			}}
-			if phase == "commit" {
-				f.commitErr = errors.New("disk full")
-			}
-			h := timeHeartbeat(t, f)
-			h.retryCfg.MaxRetries = 0
-			h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) {
-				if phase == "transport" {
-					return nil, errors.New("connection lost")
-				}
-				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"accepted":true}`))}, nil
-			})}
-			h.timeSyncRunning = true
-			h.dispatchTimeSync()
-			h.inventoryWg.Wait()
-			if f.committed.Load() != 0 || h.timeSyncRunning {
-				t.Fatal("failure committed or stranded gate")
-			}
-		})
+func TestTimeSyncTransportFailureAndOtherInventory(t *testing.T) {
+	h := newTimeHeartbeat(&fakeTimeManager{})
+	defer h.stopTimeSync()
+	h.config.ServerURL = "https://time.example.com"
+	h.retryCfg.MaxRetries = 0
+	h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) { return nil, errors.New("connection lost") })}
+	if e := h.sendInventoryData("time-status", timeSyncUpload{ctx: h.timeSync.ctx, data: map[string]any{}}, "time sync"); e == nil {
+		t.Fatal("transport failure hidden")
 	}
-}
-
-func TestTimeSyncResponseValidationDoesNotChangeOtherInventory(t *testing.T) {
-	h := timeHeartbeat(t, &timeCollectorFake{})
 	h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
-	if err := h.sendInventoryData("hardware-health", map[string]string{}, "hardware health"); err != nil {
-		t.Fatal(err)
+	if e := h.sendInventoryData("hardware-health", map[string]string{}, "hardware health"); e != nil {
+		t.Fatal(e)
 	}
-}
-
-func TestTimeSyncCollectionAndUploadCancellation(t *testing.T) {
-	for _, phase := range []string{"collect", "upload"} {
-		t.Run(phase, func(t *testing.T) {
-			entered := make(chan struct{})
-			f := &timeCollectorFake{collect: func(ctx context.Context) (*timesync.Snapshot, error) {
-				if phase == "collect" {
-					close(entered)
-					<-ctx.Done()
-					return nil, ctx.Err()
-				}
-				return &timesync.Snapshot{SchemaVersion: 1, Sequence: 1}, nil
-			}}
-			h := timeHeartbeat(t, f)
-			h.client = &http.Client{Transport: hardwareTransport(func(r *http.Request) (*http.Response, error) {
-				close(entered)
-				<-r.Context().Done()
-				return nil, r.Context().Err()
-			})}
-			h.timeSyncRunning = true
-			h.dispatchTimeSync()
-			<-entered
-			h.stopTimeSync()
-			done := make(chan struct{})
-			go func() { h.inventoryWg.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("uncancelled cycle")
-			}
-			if f.committed.Load() != 0 {
-				t.Fatal("cancelled send committed")
-			}
-		})
-	}
-}
-func TestTimeSyncPanicAndNilDoNotSend(t *testing.T) {
-	for _, panicNow := range []bool{false, true} {
-		f := &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) {
-			if panicNow {
-				panic("fixture panic")
-			}
-			return nil, nil
-		}}
-		h := timeHeartbeat(t, f)
-		h.client = &http.Client{Transport: hardwareTransport(func(*http.Request) (*http.Response, error) { t.Error("unexpected send"); return nil, context.Canceled })}
-		h.timeSyncRunning = true
-		h.dispatchTimeSync()
-		h.inventoryWg.Wait()
-		if h.timeSyncRunning || f.committed.Load() != 0 {
-			t.Fatal("guard failed to release gate")
-		}
+	if e := validateTimeSyncResponse(strings.NewReader(strings.Repeat("x", 64*1024+1))); e == nil {
+		t.Fatal("unbounded response")
 	}
 }
 func TestTimeSyncStartupTimerDrains(t *testing.T) {
-	h := timeHeartbeat(t, &timeCollectorFake{collect: func(context.Context) (*timesync.Snapshot, error) { t.Error("timer fired immediately"); return nil, nil }})
+	f := &fakeTimeManager{cycle: func(context.Context) error { t.Error("timer fired immediately"); return nil }}
+	h := newTimeHeartbeat(f)
+	h.startTimeSync()
 	h.startTimeSync()
 	h.stopTimeSync()
 	done := make(chan struct{})
@@ -249,6 +359,78 @@ func TestTimeSyncStartupTimerDrains(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("startup timer not tracked")
+		t.Fatal("startup worker not tracked")
+	}
+	h.startTimeSync()
+	if !h.timeSync.stopping {
+		t.Fatal("stopped runtime restarted")
+	}
+}
+func TestTimeSyncSingleWorkerAndPanicRecovery(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	f := &fakeTimeManager{cycle: func(context.Context) error { close(entered); <-release; panic("fixture panic") }}
+	h := newTimeHeartbeat(f)
+	h.startTimeSync()
+	h.startTimeSync()
+	h.mu.Lock()
+	h.wakeTimeSyncLocked()
+	h.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	h.mu.Lock()
+	h.timeSyncTickLocked(time.Now().Add(time.Hour))
+	queued := len(h.timeSync.wake)
+	h.mu.Unlock()
+	if queued != 0 {
+		t.Fatal("tick queued duplicate while running")
+	}
+	close(release)
+	// Wait for the guarded cycle to return without racing scheduler state.
+	go func() {
+		defer close(finished)
+		deadline := time.NewTimer(time.Second)
+		defer deadline.Stop()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-deadline.C:
+				return
+			case <-ticker.C:
+				h.mu.Lock()
+				running := h.timeSync.running
+				h.mu.Unlock()
+				if !running {
+					return
+				}
+			}
+		}
+	}()
+	<-finished
+	h.mu.Lock()
+	running := h.timeSync.running
+	h.mu.Unlock()
+	h.stopTimeSync()
+	h.inventoryWg.Wait()
+	if running {
+		t.Fatal("panic stranded running state")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cycles != 1 {
+		t.Fatal("duplicate worker", f.cycles)
+	}
+}
+func TestTimeSyncGuardHandlesNilCollection(t *testing.T) {
+	// Manager's nil-snapshot test covers no send/commit; keep the outer guard's
+	// panic-to-error behavior explicit at the heartbeat boundary as well.
+	_, e := collectors.Guard("timesync.management", func() (bool, error) { panic("fixture panic") })
+	if e == nil {
+		t.Fatal("collector guard hid panic")
 	}
 }
