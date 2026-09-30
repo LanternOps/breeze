@@ -279,3 +279,73 @@ describe('org-scope live membership (overseer decision: explicit fail-closed pro
     expect(res.status).toBe(403); // 'No permissions found' — fail closed on null
   });
 });
+
+// Logout ends one sign-in session: its refresh family is durably revoked, and
+// every access token carrying that family as `sid` must stop working at once —
+// without touching the user's other sessions (no epoch bump, no user-wide
+// cutoff). The session state rides the existing user lookup, so the gate adds
+// no extra database round trip to the per-request path.
+function collectSqlValues(node: unknown, out: unknown[] = [], seen = new Set<unknown>()): unknown[] {
+  if (node === null || typeof node !== 'object') {
+    out.push(node);
+    return out;
+  }
+  if (seen.has(node)) return out;
+  seen.add(node);
+  const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(chunks)) {
+    for (const chunk of chunks) collectSqlValues(chunk, out, seen);
+  }
+  const value = (node as { value?: unknown }).value;
+  if (value !== undefined && !Array.isArray(chunks)) collectSqlValues(value, out, seen);
+  return out;
+}
+
+describe('authMiddleware sign-in session gate', () => {
+  const SESSION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserPermissions).mockResolvedValue({ permissions: [], allowedSiteIds: undefined } as never);
+  });
+
+  it('401s an access token whose sign-in session was ended, with a generic body', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const app = appWith({ ...epochPayload, sid: SESSION_ID }, { ...liveUser, sessionEnded: true });
+      const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+      expect(res.status).toBe(401);
+      expect(await res.text()).toBe('Invalid or expired token');
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[authMiddleware] rejected access token',
+        expect.objectContaining({ reason: 'session_ended', userId: 'user-123' })
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('admits the token while its sign-in session is live', async () => {
+    const app = appWith({ ...epochPayload, sid: SESSION_ID }, { ...liveUser, sessionEnded: false });
+    const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+    expect(res.status).toBe(200);
+  });
+
+  it('reads the session state in the one existing user lookup, keyed by the token sid', async () => {
+    const app = appWith({ ...epochPayload, sid: SESSION_ID }, { ...liveUser, sessionEnded: false });
+    const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    const columns = vi.mocked(db.select).mock.calls[0]![0] as unknown as Record<string, unknown>;
+    expect(columns).toHaveProperty('sessionEnded');
+    expect(collectSqlValues(columns.sessionEnded)).toContain(SESSION_ID);
+  });
+
+  it('never binds a non-UUID sid into the uuid comparison', async () => {
+    const app = appWith({ ...epochPayload, sid: 'not-a-uuid' }, { ...liveUser, sessionEnded: false });
+    const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+    expect(res.status).toBe(200);
+    const columns = vi.mocked(db.select).mock.calls[0]![0] as unknown as Record<string, unknown>;
+    expect(collectSqlValues(columns.sessionEnded)).not.toContain('not-a-uuid');
+  });
+});

@@ -24,19 +24,20 @@ function harness(options: {
     | { kind: 'invalid' };
   rollback?: boolean;
   cleanupFailure?: boolean;
+  revokedFamilies?: string[];
 } = {}) {
   const events: string[] = [];
-  const globallyRevoked: string[] = [];
-  const exactlyRevoked: string[] = [];
+  const revoked: string[] = [];
   const users = new Map<string, TerminalLogoutUser>([
     [A, { id: A, status: 'active' as const, authEpoch: 4, mfaEpoch: 9 }],
     [B, { id: B, status: 'active' as const, authEpoch: 6, mfaEpoch: 2 }],
     [C, { id: C, status: 'active' as const, authEpoch: 8, mfaEpoch: 3 }],
   ]);
+  const revokedAt = (id: string) => (options.revokedFamilies?.includes(id) ? new Date('2029-01-01') : null);
   const families = new Map<string, TerminalLogoutFamily>([
-    [FA, { familyId: FA, userId: A, revokedAt: null, absoluteExpiresAt: new Date('2030-01-01'), currentRefreshJtiDigest: 'fa' }],
-    [FB, { familyId: FB, userId: B, revokedAt: null, absoluteExpiresAt: new Date('2030-01-01'), currentRefreshJtiDigest: Object.hasOwn(options, 'refreshDigest') ? options.refreshDigest! : 'digest-current' }],
-    [FC, { familyId: FC, userId: C, revokedAt: null, absoluteExpiresAt: new Date('2030-01-01'), currentRefreshJtiDigest: 'fc' }],
+    [FA, { familyId: FA, userId: A, revokedAt: revokedAt(FA), absoluteExpiresAt: new Date('2030-01-01'), currentRefreshJtiDigest: 'fa' }],
+    [FB, { familyId: FB, userId: B, revokedAt: revokedAt(FB), absoluteExpiresAt: new Date('2030-01-01'), currentRefreshJtiDigest: Object.hasOwn(options, 'refreshDigest') ? options.refreshDigest! : 'digest-current' }],
+    [FC, { familyId: FC, userId: C, revokedAt: revokedAt(FC), absoluteExpiresAt: new Date('2030-01-01'), currentRefreshJtiDigest: 'fc' }],
   ]);
 
   const tx: TerminalLogoutTransaction = {
@@ -52,17 +53,18 @@ function harness(options: {
       events.push(`users:${ids.join(',')}`);
       return new Map(ids.flatMap((id) => users.has(id) ? [[id, users.get(id)!]] : []));
     }),
-    lockFamilies: vi.fn(async (userIds, familyIds) => {
-      events.push(`families:${userIds.join(',')}|${familyIds.join(',')}`);
-      return new Map([...families].filter(([id, family]) =>
-        userIds.includes(family.userId) || familyIds.includes(id)));
+    lockFamilies: vi.fn(async (familyIds: readonly string[]) => {
+      events.push(`families:${familyIds.join(',')}`);
+      return new Map([...families].filter(([id]) => familyIds.includes(id)));
     }),
     classifyRefreshAuthority: vi.fn(async () => {
       events.push('classify-refresh');
       return options.refreshAuthority ?? { kind: 'current' as const, userId: B, familyId: FB };
     }),
-    globallyRevokeUser: vi.fn(async (id) => { globallyRevoked.push(id); }),
-    exactlyRevokeFamily: vi.fn(async (id) => { exactlyRevoked.push(id); }),
+    revokeFamily: vi.fn(async (id: string) => {
+      events.push(`revoke:${id}`);
+      revoked.push(id);
+    }),
     retireWithSuccessor: vi.fn(async () => {
       events.push('retire');
       return { kind: 'browser' as const, value: 'c2' };
@@ -73,7 +75,7 @@ function harness(options: {
     }),
   };
 
-  const cleanup = vi.fn(async () => {
+  const cleanup = vi.fn(async (_input: { familyIds: readonly string[]; refreshJti: string | null }) => {
     events.push('cleanup');
     if (options.cleanupFailure) throw new Error('redis unavailable');
   });
@@ -88,14 +90,14 @@ function harness(options: {
     randomUuid: vi.fn(() => '55555555-5555-4555-8555-555555555555'),
     randomNonce: vi.fn(() => 'ab'.repeat(32)),
   };
-  return { service: createTerminalLogoutService(deps), events, globallyRevoked, exactlyRevoked, cleanup, tx };
+  return { service: createTerminalLogoutService(deps), events, revoked, cleanup, tx };
 }
 
 const access = { userId: A, authEpoch: 4, mfaEpoch: 9, familyId: FA };
 const binding = { kind: 'browser' as const, value: 'c1' };
 
-describe('terminal logout subject classification', () => {
-  it('globally revokes live bearer A and current refresh B, exactly revokes linked C, in lock order', async () => {
+describe('terminal logout ends exactly the presented sign-in session', () => {
+  it('revokes the bearer, refresh-cookie and binding families in lock order and nothing user-wide', async () => {
     const h = harness({
       refresh: { type: 'refresh', sub: B, fam: FB, jti: 'refresh-jti', aep: 6, mep: 2 },
     });
@@ -103,22 +105,31 @@ describe('terminal logout subject classification', () => {
     await expect(h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: 'refresh' }))
       .resolves.toEqual({ replacement: { kind: 'browser', value: 'c2' }, cleanupOk: true });
 
-    expect(h.events.slice(0, 3)).toEqual([
+    expect(h.events.slice(0, 4)).toEqual([
       'transition',
       `users:${A},${B},${C}`,
-      `families:${A},${B},${C}|${FA},${FB},${FC}`,
+      `families:${FA},${FB},${FC}`,
+      'classify-refresh',
     ]);
-    expect(h.events.indexOf('classify-refresh')).toBeGreaterThan(h.events.findIndex((event) =>
-      event.startsWith('families:')));
-    expect(h.globallyRevoked).toEqual([A, B]);
-    expect(h.exactlyRevoked).toEqual([FC]);
+    expect(h.revoked).toEqual([FA, FB, FC]);
+    // The durable transaction exposes no user-wide primitive: ending one
+    // sign-in session must never advance the user's epochs or revoke the
+    // user's other refresh families.
+    expect(Object.keys(h.tx)).not.toContain('globallyRevokeUser');
+    expect(h.cleanup).toHaveBeenCalledWith({ familyIds: [FA, FB, FC], refreshJti: 'refresh-jti' });
     expect(h.events.indexOf('cleanup')).toBeGreaterThan(h.events.indexOf('retire'));
+  });
+
+  it('only locks the named families, never every family the user owns', async () => {
+    const h = harness();
+    await h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: null });
+    expect(h.tx.lockFamilies).toHaveBeenCalledWith([FA, FC]);
   });
 
   it.each([
     ['stale', 'stale-digest'],
     ['legacy', null],
-  ])('revokes a %s refresh token family exactly without granting global authority', async (_kind, digest) => {
+  ])('revokes a %s refresh token family the browser presented', async (_kind, digest) => {
     const h = harness({
       refreshDigest: digest,
       refreshAuthority: { kind: 'legacy_or_stale_family', familyId: FB },
@@ -127,29 +138,53 @@ describe('terminal logout subject classification', () => {
 
     await h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: 'refresh' });
 
-    expect(h.globallyRevoked).toEqual([A]);
-    expect(h.exactlyRevoked).toEqual([FB, FC]);
+    expect(h.revoked).toEqual([FA, FB, FC]);
   });
 
-  it('ignores invalid refresh authority instead of deriving a global subject from it', async () => {
+  it('does not revoke a family named by an unverifiable refresh token', async () => {
     const h = harness({
       refresh: { type: 'access', sub: B, fam: FB, jti: 'forged' },
       refreshAuthority: { kind: 'invalid' },
     });
     await h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: 'invalid' });
-    expect(h.globallyRevoked).toEqual([A]);
-    expect(h.exactlyRevoked).toEqual([FC]);
+    expect(h.revoked).toEqual([FA, FC]);
+    expect(h.cleanup).toHaveBeenCalledWith({ familyIds: [FA, FC], refreshJti: null });
   });
 
-  it('does not turn a stale bearer into authority after acquiring the user lock', async () => {
+  it('does not revoke a family the classifier did not confirm for that refresh subject', async () => {
+    const h = harness({
+      refresh: { type: 'refresh', sub: B, fam: FB, jti: 'refresh-jti', aep: 6, mep: 2 },
+      refreshAuthority: { kind: 'current', userId: C, familyId: FC },
+    });
+    await h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: 'refresh' });
+    expect(h.revoked).toEqual([FA, FC]);
+  });
+
+  it('still ends the bearer session when the bearer epochs went stale after admission', async () => {
     const h = harness();
     await h.service.performOrdinaryTerminalLogout({
       binding,
       access: { ...access, authEpoch: 3 },
       refreshToken: null,
     });
-    expect(h.globallyRevoked).toEqual([]);
-    expect(h.exactlyRevoked).toEqual([FC]);
+    expect(h.revoked).toEqual([FA, FC]);
+  });
+
+  it('never revokes a family that belongs to a different user than the token naming it', async () => {
+    const h = harness();
+    await h.service.performOrdinaryTerminalLogout({
+      binding,
+      access: { ...access, familyId: FB },
+      refreshToken: null,
+    });
+    expect(h.revoked).toEqual([FC]);
+  });
+
+  it('skips families that are already revoked', async () => {
+    const h = harness({ revokedFamilies: [FA] });
+    await h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: null });
+    expect(h.revoked).toEqual([FC]);
+    expect(h.cleanup).toHaveBeenCalledWith({ familyIds: [FC], refreshJti: null });
   });
 });
 
@@ -158,7 +193,7 @@ describe('terminal logout transaction boundaries', () => {
     const h = harness({ cleanupFailure: true });
     await expect(h.service.performOrdinaryTerminalLogout({ binding, access, refreshToken: null }))
       .resolves.toEqual({ replacement: { kind: 'browser', value: 'c2' }, cleanupOk: false });
-    expect(h.globallyRevoked).toEqual([A]);
+    expect(h.revoked).toEqual([FA, FC]);
   });
 
   it('propagates PostgreSQL rollback and never runs post-commit cleanup', async () => {

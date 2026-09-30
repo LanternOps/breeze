@@ -158,7 +158,7 @@ async function fixture() {
 }
 
 describe('guarded auth browser transition races', () => {
-  runDb('ordinary terminal logout atomically revokes A/C and retires C1 with C2', async () => {
+  runDb('ordinary terminal logout atomically revokes the session family and retires C1 with C2', async () => {
     const { user, identity } = await fixture();
     const binding = await freshBrowserBinding();
     const capability = await beginAuthIssuance({ kind: 'browser', value: binding });
@@ -187,7 +187,9 @@ describe('guarded auth browser transition races', () => {
       .where(eq(users.id, user.id)).limit(1);
     expect(transition?.state).toBe('retired');
     expect(family?.revokedAt).toBeInstanceOf(Date);
-    expect(liveUser?.authEpoch).toBe(user.authEpoch + 1);
+    // Logout ends this sign-in session only: the user's epochs (and so every
+    // other session) are untouched.
+    expect(liveUser?.authEpoch).toBe(user.authEpoch);
     expect(result.replacement.kind).toBe('browser');
     expect(result.replacement.value).not.toBe(binding);
   });

@@ -7,8 +7,12 @@ import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
+// Direct module (not the schema barrel): the sign-in session gate below must
+// resolve the real table even where a test replaces the barrel.
+import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
-import { and, eq, inArray, isNull, ne, or, SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AiOriginRef } from '@breeze/shared';
 import type { PartnerTrustState } from '../db/schema/orgs';
@@ -596,6 +600,27 @@ export function withAuthDbAccessContext<T>(auth: AuthContext, fn: () => Promise<
   return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
 }
 
+/**
+ * `true` when the access token's sign-in session has ended: its refresh
+ * family (`sid`) was revoked, or the family belongs to someone else. Evaluated
+ * inside the existing users lookup, so the gate costs one primary-key probe
+ * and no extra round trip.
+ *
+ * A family row that does not exist is not treated as ended: every production
+ * access token is signed in the same transaction that inserts its family
+ * (services/userSession.ts issueUserSession) and family rows are only removed
+ * with their user, whose lookup then fails anyway. A `sid` that is not a UUID
+ * cannot name a family, and is never bound into the uuid comparison.
+ */
+function signInSessionEnded(sid: string | undefined): SQL<boolean> {
+  const familyId = sid && PG_UUID_REGEX.test(sid) ? sid : null;
+  return sql<boolean>`exists (
+    select 1 from ${refreshTokenFamilies}
+    where ${refreshTokenFamilies.familyId} = ${familyId}::uuid
+      and (${refreshTokenFamilies.revokedAt} is not null or ${refreshTokenFamilies.userId} <> ${users.id})
+  )`;
+}
+
 export async function authMiddleware(c: Context, next: Next): Promise<void | Response> {
   // Avoid double-verification when authMiddleware is applied both globally and per-route.
   const existing = c.get('auth') as AuthContext | undefined;
@@ -640,7 +665,8 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         partnerId: users.partnerId,
         isPlatformAdmin: users.isPlatformAdmin,
         authEpoch: users.authEpoch,
-        mfaEpoch: users.mfaEpoch
+        mfaEpoch: users.mfaEpoch,
+        sessionEnded: signInSessionEnded(payload.sid)
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -685,6 +711,20 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
       liveAep: user.authEpoch,
       tokenMep: payload.mep,
       liveMep: user.mfaEpoch
+    });
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
+  // Sign-in session gate. Logout durably revokes the session's refresh family
+  // (services/terminalLogout.ts) and leaves the user's epochs alone, so this is
+  // what ends every OTHER access token of that sign-in (`sid` = family id)
+  // without signing the user out of their other sessions. Postgres, not Redis,
+  // is the authority, so a Redis flush or restore cannot bring it back.
+  if (user.sessionEnded === true) {
+    console.warn('[authMiddleware] rejected access token', {
+      reason: 'session_ended',
+      userId: payload.sub,
+      scope: payload.scope
     });
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }

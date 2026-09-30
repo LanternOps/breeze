@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { inArray, or, sql } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { users } from '../db/schema/users';
 import {
@@ -9,17 +9,13 @@ import {
   type AuthBindingSource,
   type CompleteTerminalLogoutInput,
 } from './authBrowserTransition';
-import {
-  advanceUserEpochs,
-  revokeAllRefreshFamilies,
-  revokeRefreshFamilyById,
-} from './authLifecycle';
+import { revokeRefreshFamilyById } from './authLifecycle';
 import {
   classifyRefreshTokenAuthority,
   type RefreshAuthority,
 } from './refreshTokenFamily';
 import { verifyToken } from './jwt';
-import { revokeAllUserTokens, revokeRefreshTokenJti } from './tokenRevocation';
+import { publishFamilyRevocationSentinel, revokeRefreshTokenJti } from './tokenRevocation';
 
 const TERMINAL_LOGOUT_TTL_SECONDS = 5 * 60;
 
@@ -62,14 +58,17 @@ export type TerminalLogoutTransition = Readonly<{
 
 export interface TerminalLogoutTransaction {
   transition: TerminalLogoutTransition;
+  /**
+   * Locks the subjects' user rows. Logout makes no decision from them; the
+   * lock only keeps the global transition -> users -> families order, because
+   * classifyRefreshAuthority locks a user row after the families are locked.
+   */
   lockUsers(userIds: readonly string[]): Promise<ReadonlyMap<string, TerminalLogoutUser>>;
-  lockFamilies(
-    userIds: readonly string[],
-    familyIds: readonly string[],
-  ): Promise<ReadonlyMap<string, TerminalLogoutFamily>>;
+  /** Locks exactly the named families, never every family a user owns. */
+  lockFamilies(familyIds: readonly string[]): Promise<ReadonlyMap<string, TerminalLogoutFamily>>;
   classifyRefreshAuthority(token: string): Promise<RefreshAuthority>;
-  globallyRevokeUser(userId: string): Promise<void>;
-  exactlyRevokeFamily(familyId: string): Promise<void>;
+  /** Durably revokes one sign-in session (refresh family) inside the transaction. */
+  revokeFamily(familyId: string): Promise<void>;
   retireWithSuccessor(): Promise<AuthBindingSource>;
   markLogoutPending(input: Readonly<{
     logoutId: string;
@@ -98,7 +97,7 @@ export interface TerminalLogoutDependencies {
     binding: AuthBindingSource,
     callback: (tx: TerminalLogoutTransaction) => Promise<T>,
   ): Promise<T>;
-  cleanup(input: Readonly<{ userIds: readonly string[]; refreshJti: string | null }>): Promise<void>;
+  cleanup(input: Readonly<{ familyIds: readonly string[]; refreshJti: string | null }>): Promise<void>;
   randomUuid(): string;
   randomNonce(): string;
 }
@@ -135,33 +134,35 @@ function sortedUnique(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)))].sort();
 }
 
-function liveUser(
-  users: ReadonlyMap<string, TerminalLogoutUser>,
-  identity: Readonly<{ userId: string; authEpoch: number; mfaEpoch: number }>,
-): TerminalLogoutUser | null {
-  const user = users.get(identity.userId);
-  return user
-    && user.status === 'active'
-    && user.authEpoch === identity.authEpoch
-    && user.mfaEpoch === identity.mfaEpoch
-    ? user
-    : null;
-}
-
-function liveFamily(
+/** The family id when it is locked, still live, and (if given) owned by `ownerUserId`. */
+function revocableFamily(
   families: ReadonlyMap<string, TerminalLogoutFamily>,
-  candidate: RefreshCandidate,
-  databaseNow: Date,
-): TerminalLogoutFamily | null {
-  const family = families.get(candidate.familyId);
-  return family
-    && family.userId === candidate.userId
-    && family.revokedAt === null
-    && family.absoluteExpiresAt.getTime() > databaseNow.getTime()
-    ? family
-    : null;
+  familyId: string | null | undefined,
+  ownerUserId?: string,
+): string | null {
+  const family = familyId ? families.get(familyId) : undefined;
+  if (!family || family.revokedAt !== null) return null;
+  if (ownerUserId !== undefined && family.userId !== ownerUserId) return null;
+  return family.familyId;
 }
 
+/**
+ * Ends exactly the sign-in session(s) this browser presents, and nothing
+ * else the user has open:
+ *
+ *   A — the bearer's `sid` (the family every access token of this sign-in
+ *       carries), owned by the bearer user;
+ *   B — the refresh cookie's `fam`, when the durable classifier confirms the
+ *       signed token is that family's current or an earlier rotation;
+ *   C — the family the binding row currently points at.
+ *
+ * Each is a durable `refresh_token_families.revoked_at`. authMiddleware and
+ * /refresh both read that column, so every access and refresh token of the
+ * session stops working even if Redis loses the post-commit markers. The
+ * user's epochs and other families are deliberately untouched: other sign-in
+ * sessions keep working. Revocation only removes authority, so a bearer whose
+ * epochs went stale after admission still ends its own session.
+ */
 async function revokeTerminalSubjects(
   tx: TerminalLogoutTransaction,
   access: TerminalAccessAuthority,
@@ -181,43 +182,30 @@ async function revokeTerminalSubjects(
     refresh?.familyId,
     tx.transition.currentFamilyId,
   ]);
-  const users = await tx.lockUsers(userIds);
-  const families = await tx.lockFamilies(userIds, familyIds);
+  await tx.lockUsers(userIds);
+  const families = await tx.lockFamilies(familyIds);
   const refreshAuthority = refreshToken
     ? await tx.classifyRefreshAuthority(refreshToken)
     : { kind: 'invalid' as const };
 
-  const globalUsers = new Set<string>();
-  if (liveUser(users, access)) globalUsers.add(access.userId);
+  const refreshFamily = refresh && (
+    (refreshAuthority.kind === 'current'
+      && refreshAuthority.userId === refresh.userId
+      && refreshAuthority.familyId === refresh.familyId)
+    || (refreshAuthority.kind === 'legacy_or_stale_family'
+      && refreshAuthority.familyId === refresh.familyId)
+  )
+    ? revocableFamily(families, refresh.familyId, refresh.userId)
+    : null;
 
-  let staleRefreshFamily: string | null = null;
-  if (
-    refresh
-    && refreshAuthority.kind === 'current'
-    && refreshAuthority.userId === refresh.userId
-    && refreshAuthority.familyId === refresh.familyId
-    && liveUser(users, refresh)
-  ) {
-    const family = liveFamily(families, refresh, tx.transition.databaseNow);
-    if (family) globalUsers.add(refresh.userId);
-  } else if (
-    refresh
-    && refreshAuthority.kind === 'legacy_or_stale_family'
-    && refreshAuthority.familyId === refresh.familyId
-    && liveFamily(families, refresh, tx.transition.databaseNow)
-  ) {
-    staleRefreshFamily = refresh.familyId;
-  }
-
-  const globalUserIds = [...globalUsers].sort();
-  for (const userId of globalUserIds) await tx.globallyRevokeUser(userId);
-
-  const exactFamilies = sortedUnique([staleRefreshFamily, tx.transition.currentFamilyId]);
-  for (const familyId of exactFamilies) {
-    const family = families.get(familyId);
-    if (family && !globalUsers.has(family.userId)) await tx.exactlyRevokeFamily(familyId);
-  }
-  return globalUserIds;
+  const targets = sortedUnique([
+    revocableFamily(families, access.familyId, access.userId),
+    refreshFamily,
+    // The binding row names its family itself (bound under this same lock).
+    revocableFamily(families, tx.transition.currentFamilyId),
+  ]);
+  for (const familyId of targets) await tx.revokeFamily(familyId);
+  return targets;
 }
 
 export function createTerminalLogoutService(dependencies: TerminalLogoutDependencies) {
@@ -230,14 +218,14 @@ export function createTerminalLogoutService(dependencies: TerminalLogoutDependen
     const logoutId = mode === 'cf' ? dependencies.randomUuid() : null;
 
     const durable = await dependencies.withLockedTransition(input.binding, async (tx) => {
-      const globalUserIds = await revokeTerminalSubjects(
+      const revokedFamilyIds = await revokeTerminalSubjects(
         tx,
         input.access,
         input.refreshToken,
         refresh,
       );
       if (mode === 'ordinary') {
-        return { globalUserIds, replacement: await tx.retireWithSuccessor() } as const;
+        return { revokedFamilyIds, replacement: await tx.retireWithSuccessor() } as const;
       }
       const issuedAt = Math.floor(tx.transition.databaseNow.getTime() / 1000);
       const expiresAt = issuedAt + TERMINAL_LOGOUT_TTL_SECONDS;
@@ -247,13 +235,13 @@ export function createTerminalLogoutService(dependencies: TerminalLogoutDependen
         nonceDigest,
         expiresAt: new Date(expiresAt * 1000),
       });
-      return { globalUserIds, pending, issuedAt, expiresAt } as const;
+      return { revokedFamilyIds, pending, issuedAt, expiresAt } as const;
     });
 
     let cleanupOk = true;
     try {
       await dependencies.cleanup({
-        userIds: durable.globalUserIds,
+        familyIds: durable.revokedFamilyIds,
         refreshJti: refresh?.jti ?? null,
       });
     } catch {
@@ -317,16 +305,8 @@ const productionDependencies: TerminalLogoutDependencies = {
             .for('update');
           return new Map(rows.map((row) => [row.id, row]));
         },
-        lockFamilies: async (userIds, familyIds) => {
-          if (userIds.length === 0 && familyIds.length === 0) return new Map();
-          const predicate = userIds.length === 0
-            ? inArray(refreshTokenFamilies.familyId, [...familyIds])
-            : familyIds.length === 0
-              ? inArray(refreshTokenFamilies.userId, [...userIds])
-              : or(
-                  inArray(refreshTokenFamilies.userId, [...userIds]),
-                  inArray(refreshTokenFamilies.familyId, [...familyIds]),
-                );
+        lockFamilies: async (familyIds) => {
+          if (familyIds.length === 0) return new Map();
           const rows = await mutation.tx
             .select({
               familyId: refreshTokenFamilies.familyId,
@@ -336,17 +316,13 @@ const productionDependencies: TerminalLogoutDependencies = {
               currentRefreshJtiDigest: refreshTokenFamilies.currentRefreshJtiDigest,
             })
             .from(refreshTokenFamilies)
-            .where(predicate)
+            .where(inArray(refreshTokenFamilies.familyId, [...familyIds]))
             .orderBy(refreshTokenFamilies.familyId)
             .for('update');
           return new Map(rows.map((row) => [row.familyId, row]));
         },
         classifyRefreshAuthority: (token) => classifyRefreshTokenAuthority(mutation.tx, token),
-        globallyRevokeUser: async (userId) => {
-          await advanceUserEpochs(mutation.tx, userId, { auth: true });
-          await revokeAllRefreshFamilies(mutation.tx, userId, 'terminal_logout');
-        },
-        exactlyRevokeFamily: (familyId) =>
+        revokeFamily: (familyId) =>
           revokeRefreshFamilyById(mutation.tx, familyId, 'terminal_logout'),
         retireWithSuccessor: mutation.retireWithSuccessor,
         markLogoutPending: async (input) => ({
@@ -356,13 +332,13 @@ const productionDependencies: TerminalLogoutDependencies = {
       };
       return callback(tx);
     }),
-  cleanup: async ({ userIds, refreshJti }) => {
+  // Redis markers only shorten the hot-path lookups; the committed family rows
+  // are the authority, so a failure here never reopens the session.
+  cleanup: async ({ familyIds, refreshJti }) => {
     const failures: unknown[] = [];
-    for (const userId of userIds) {
-      try {
-        await revokeAllUserTokens(userId);
-      } catch (error) {
-        failures.push(error);
+    for (const familyId of familyIds) {
+      if (!await publishFamilyRevocationSentinel(familyId)) {
+        failures.push(new Error('family sentinel not published'));
       }
     }
     if (refreshJti) {
