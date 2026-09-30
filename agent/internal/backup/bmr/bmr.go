@@ -832,7 +832,9 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 
 	// Apply system state via platform-specific restorer.
 	restorer := newRestorerFunc()
-	if restoreErr := restorer.RestoreSystemState(stagingDir); restoreErr != nil {
+	restoreErr := restorer.RestoreSystemState(stagingDir)
+	warnings = append(warnings, restorerWarnings(restorer)...)
+	if restoreErr != nil {
 		return systemStateResult{
 			manifestFound:        true,
 			warnings:             warnings,
@@ -862,6 +864,16 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		serviceUnitsErr:      serviceUnitsErr,
 		firstArtifactFailure: firstFailure,
 	}
+}
+
+// restorerWarnings returns the non-fatal notes a platform Restorer recorded
+// while applying system state (the Linux restorer's skipped package list
+// entries), for restorers that keep any.
+func restorerWarnings(r Restorer) []string {
+	if w, ok := r.(interface{ Warnings() []string }); ok {
+		return w.Warnings()
+	}
+	return nil
 }
 
 // verifyArtifactIntegrity checks a downloaded system-state artifact against
