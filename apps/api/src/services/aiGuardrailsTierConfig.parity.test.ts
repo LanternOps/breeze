@@ -69,11 +69,11 @@ describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
       .toMatchObject({ tier: 1, permission: 'devices.read' });
   });
 
-  // Live device inspection: listing runs a command on the device, so the
-  // permission the risk page shows must be devices.execute, like the tool map.
   it.each(['manage_processes', 'manage_scheduled_tasks'])(
-    'shows %s list with the devices.execute permission the tool requires',
+    'shows %s list as live inspection: Tier 2 with devices.execute',
     (tool) => {
+      const entries = parsed.filter((entry) => entry.tool === tool && entry.actions.includes('list'));
+      expect(entries.map((entry) => entry.claimedTier)).toEqual([2]);
       expect(RBAC_MAPPINGS[tool]).toHaveProperty('list', 'devices.execute');
       expect(requiredPermissionsForTool(tool, { action: 'list' })).toEqual([
         { resource: 'devices', action: 'execute' },

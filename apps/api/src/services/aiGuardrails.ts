@@ -88,6 +88,12 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
   manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template'],
   manage_services: ['list'],
+  // Live device inspection: listing processes / scheduled tasks runs a live
+  // command on the device (devices:execute, like GET /system-tools/...). Tier 2
+  // read-only, like file_operations:list and manage_services:list: no prompt,
+  // but an audit row, and an MCP key needs ai:write.
+  manage_processes: ['list'],
+  manage_scheduled_tasks: ['list'],
   // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
@@ -95,7 +101,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   file_operations: ['list'],
   // #3088 approval-fatigue fix (2026-08-04): read-only execute_command
   // commandTypes are non-mutating device reads and auto-execute with audit,
-  // consistent with their sibling tools (manage_processes list is Tier 1,
+  // consistent with their sibling tools (manage_processes list,
   // manage_services list and file_operations list are Tier 2). This is an
   // explicit conservative allowlist keyed on commandType (the agent-side
   // handler discriminator — see TOOL_ACTION_INPUT_KEYS above); anything not
@@ -175,6 +181,8 @@ export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
   file_operations: ['list'],
+  manage_processes: ['list'],
+  manage_scheduled_tasks: ['list'],
   manage_services: ['list'],
 };
 
@@ -257,12 +265,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_notification_channels: ['list'],
   manage_patches: ['list', 'compliance', 'device_history'],
   manage_peripheral_policies: ['list', 'get'],
-  // manage_processes:list dispatches a read-only device command (no state
-  // change) — same class as file_operations:list / manage_services:list.
-  manage_processes: ['list'],
+  // manage_processes:list and manage_scheduled_tasks:list are NOT here: they
+  // run a live command on the device, so they sit in TIER2_ACTIONS (+ the
+  // read-only allowlist) with file_operations:list / manage_services:list.
   manage_saved_filters: ['list', 'get'],
-  // manage_scheduled_tasks:list dispatches a read-only device command.
-  manage_scheduled_tasks: ['list'],
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],

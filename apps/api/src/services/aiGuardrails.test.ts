@@ -32,6 +32,10 @@ vi.mock('./aiTools', () => ({
       // file_operations base tier 1; guardrails escalate read/write/delete/mkdir/rename to
       // Tier 3 (SR5-01) and downgrade list to Tier 2 (recon only)
       file_operations: 1,
+      // Mirror the real registry entries (aiToolsScripts.ts registerTool
+      // tier: 1); their list actions resolve to Tier 2 via TIER2_ACTIONS.
+      manage_processes: 1,
+      manage_scheduled_tasks: 1,
       execute_command: 3,
       // Ticketing tools
       manage_tickets: 1,
@@ -187,6 +191,26 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       expect(result.tier).toBe(2);
       expect(result.allowed).toBe(true);
       expect(result.requiresApproval).toBe(false);
+    });
+  });
+
+  // --- Live device inspection: Tier 2 read-only ---
+  // Each of these runs a live command on the device (devices:execute). They
+  // sit at Tier 2 read-only so they auto-execute without a prompt but keep an
+  // audit row, and an MCP key needs ai:write to reach them.
+  describe('Tier 2 read-only — live device inspection', () => {
+    const liveCases: [string, string][] = [
+      ['manage_processes', 'list'],
+      ['manage_scheduled_tasks', 'list'],
+      ['file_operations', 'list'],
+    ];
+
+    it.each(liveCases)('%s:%s → Tier 2, read-only, no approval', (tool, action) => {
+      const result = checkGuardrails(tool, { action });
+      expect(result.tier).toBe(2);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+      expect(result.readOnly).toBe(true);
     });
   });
 

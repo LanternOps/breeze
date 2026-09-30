@@ -124,9 +124,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'search_logs', description: 'Event log search', category: 'Logs & Audit' },
       { name: 'get_log_trends', description: 'Log trend analysis', category: 'Logs & Audit' },
       { name: 'search_agent_logs', description: 'Agent diagnostic log search', category: 'Logs & Audit' },
-      // Services & Processes
-      { name: 'manage_processes (list)', description: 'List running processes with CPU/memory', category: 'Services & Processes' },
-      { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Scripts & Automation
       { name: 'search_script_library', description: 'Search scripts and templates', category: 'Scripts & Automation' },
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
@@ -233,8 +230,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Devices & Hardware
       { name: 'set_device_context', description: 'Set brain device context', category: 'Devices & Hardware' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Devices & Hardware' },
-      // Services & Processes
+      // Services & Processes — live listings run a command on the device
       { name: 'manage_services (list)', description: 'List services on device', category: 'Services & Processes' },
+      { name: 'manage_processes (list)', description: 'List running processes with CPU/memory', category: 'Services & Processes' },
+      { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Network & DNS
       { name: 'acknowledge_network_device', description: 'Acknowledge network device', category: 'Network & DNS' },
       { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
