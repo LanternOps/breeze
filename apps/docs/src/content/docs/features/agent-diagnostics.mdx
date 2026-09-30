@@ -108,9 +108,16 @@ Send the `set_log_level` command to the device:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `level` | string | Required | New shipping level: `debug`, `info`, `warn`, or `error` |
-| `durationMinutes` | int | `60` | Minutes before the level automatically reverts to `warn`. Set to `0` to keep the new level until the agent restarts. |
+| `durationMinutes` | int | `60` | Minutes the override stays in effect, from 1 to 1440 (24 hours). A missing or non-positive value uses the default and larger values are capped at 1440. |
 
-After the specified duration, the agent automatically reverts to `warn`. This prevents accidentally leaving verbose logging enabled and filling storage with debug data.
+The override is always bounded. When it expires, every agent process goes back to its configured `log_shipping_level`, which is `warn` unless you changed it. That keeps verbose logging from being left on by accident and filling storage with debug data. To end an override early, send another `set_log_level` command with the configured level and a short duration.
+
+The agent stores the override, with its expiry time, in `log_shipping_override.json` next to `agent.yaml`. Because of that:
+
+- **It survives a restart.** If the agent service restarts while the override is active, it comes back at the override level rather than at `log_shipping_level`.
+- **It reaches the helper processes.** The desktop helper, the user helper and the backup helper each run their own log shipper. They read the override when they start and check again every 30 seconds. This is what makes the desktop helper's WebRTC and ICE diagnostics ship at `debug`.
+
+The AI `set_agent_log_level` tool waits up to 30 seconds for the agent's result. It reports the level the agent applied, the base level, the expiry time, and whether the override was persisted. If the agent could not write the override file, the tool warns you: the level then applies only to the running agent service, is lost on restart, and does not reach the desktop helper. Agents released before this change behave that way too.
 
 <Aside type="tip">
   Use this when diagnosing a connectivity or update issue on a specific device. Lower the level to `debug`, reproduce the problem, then query the diagnostic logs API filtered to the time window. The level reverts on its own -- no cleanup step needed.
@@ -230,7 +237,7 @@ The agent must be running a version that supports log shipping. Check the agent 
 
 **Log level missing (e.g., no `info` or `debug` logs)**
 
-The agent's `log_shipping_level` controls what gets shipped. The default level is `warn`, so `info` and `debug` logs are not shipped unless the level is explicitly lowered. Use the `set_log_level` WebSocket command to temporarily lower the level — the change auto-reverts to `warn` after 60 minutes by default.
+The agent's `log_shipping_level` controls what gets shipped. The default level is `warn`, so `info` and `debug` logs are not shipped unless the level is explicitly lowered. Use the `set_log_level` WebSocket command to temporarily lower the level. The change survives agent restarts, applies to the helper processes too, and reverts to `log_shipping_level` after 60 minutes by default (24 hours at most).
 
 **Logs stop appearing after a certain date**
 
