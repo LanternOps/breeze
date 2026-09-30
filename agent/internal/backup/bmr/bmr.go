@@ -657,6 +657,10 @@ func deferWindowsSystemState(cfg RecoveryConfig, provider providers.BackupProvid
 			carriesState = true
 		case errors.Is(probeErr, ErrRecoverySessionLost):
 			return systemStateResult{err: fmt.Errorf("bmr: probe system state manifest: %w", probeErr)}
+		case cfg.Integrity.Present() && !errors.Is(probeErr, providers.ErrObjectNotFound):
+			// With an integrity block only a confirmed absence means "no
+			// system state"; any other failure leaves it unknown.
+			return systemStateResult{err: fmt.Errorf("bmr: probe system state manifest: %w", probeErr)}
 		}
 	}
 	if !carriesState {
@@ -678,6 +682,12 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		if errors.Is(dlErr, ErrRecoverySessionLost) {
 			// Not "no state in this snapshot" — the helper can no longer
 			// download anything (#5635).
+			return systemStateResult{err: fmt.Errorf("bmr: download system state manifest: %w", dlErr)}
+		}
+		if cfg.Integrity.Present() && !errors.Is(dlErr, providers.ErrObjectNotFound) {
+			// With an integrity block only a confirmed absence
+			// (ErrObjectNotFound) means "no system state"; any other
+			// failure leaves it unknown and fails the step.
 			return systemStateResult{err: fmt.Errorf("bmr: download system state manifest: %w", dlErr)}
 		}
 		if cfg.ExpectSystemState {

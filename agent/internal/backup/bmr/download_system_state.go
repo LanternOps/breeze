@@ -142,8 +142,9 @@ func systemStateManifestKey(snapshotID string) string {
 //   - fatalErr: the recovery must fail whether or not system state was
 //     expected — an integrity failure, a local I/O failure, or, in attested
 //     mode, a state manifest the attestation does not cover while the
-//     snapshot carries one (expect, or the object exists in storage), or an
-//     attested one that cannot be read.
+//     snapshot carries one (expect, or the object exists in storage), an
+//     attested one that cannot be read, or an unattested one whose absence
+//     storage does not confirm (any failure other than ErrObjectNotFound).
 //
 // Without an attested expectation this is the plain download it always was.
 func fetchSystemStateManifest(ctx context.Context, provider providers.BackupProvider, snapshotID string, expect bool, e *integrity.Expectation) (data []byte, warnings []string, dlErr error, fatalErr error) {
@@ -160,12 +161,18 @@ func fetchSystemStateManifest(ctx context.Context, provider providers.BackupProv
 		if expect {
 			return nil, nil, nil, notAttested
 		}
-		// Only a state manifest that is really absent may pass without an
-		// attested digest; one that exists is refused unparsed.
-		if _, probeErr := downloadToTemp(provider, key); probeErr != nil {
+		// Only a state manifest that is confirmed absent may pass without
+		// an attested digest; one that exists is refused unparsed, and one
+		// whose presence cannot be established fails the step.
+		_, probeErr := downloadToTemp(provider, key)
+		switch {
+		case probeErr == nil:
+			return nil, nil, nil, notAttested
+		case errors.Is(probeErr, providers.ErrObjectNotFound):
 			return nil, nil, probeErr, nil
+		default:
+			return nil, nil, nil, fmt.Errorf("bmr: probe system-state manifest: %w", probeErr)
 		}
-		return nil, nil, nil, notAttested
 	}
 	data, err := downloadToTemp(provider, key)
 	if err != nil {
