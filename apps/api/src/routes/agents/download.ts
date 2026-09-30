@@ -3,7 +3,7 @@ import { statSync, createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { join } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
-import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
+import { isS3Configured, getPresignedUrl, getObjectStream, isS3NotFound } from '../../services/s3Storage';
 import { binaryS3Key, binaryStoreDir, type BinaryStore } from '../../services/binaryStores';
 import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
@@ -102,10 +102,11 @@ async function enforcePublicAgentDownloadRateLimit(
 // ============================================
 // Shared component-binary download handler
 // ============================================
-// The agent/helper/watchdog/backup/user-helper routes below are five
+// The agent/watchdog/backup/recovery-iso/user-helper routes below were
 // near-verbatim copies of the same ~90-line shape: validate os/arch → GitHub
-// redirect (BINARY_SOURCE=github) → S3 presign (404-falls-to-disk,
-// non-404→500) → disk stream. registerComponentDownloadRoute hoists that
+// redirect (BINARY_SOURCE=github) → S3 presigned redirect, or an S3 stream
+// for objectStorageDelivery 'stream' (either way a NotFound falls through to
+// disk and any other fault is a 500) → disk stream. registerComponentDownloadRoute hoists that
 // shape into one place so a future fix (e.g. stream backpressure) lands
 // once. The .pkg and install.sh/uninstall.sh routes have real behavioral
 // differences (macOS-only, different validation/response shape) and are
@@ -138,6 +139,13 @@ interface ComponentDownloadConfig {
    * reads the object syncBinaries() uploaded for that file (#7515).
    */
   store: BinaryStore;
+  /**
+   * How a local-mode S3 copy reaches the caller. 'redirect' (the default) 302s
+   * to a presigned URL so the bytes bypass the API. 'stream' serves them from
+   * this origin: use it for a binary fetched by a client that refuses a
+   * redirect to an object-storage host (#7576).
+   */
+  objectStorageDelivery?: 'redirect' | 'stream';
 }
 
 // breeze-{component}-{os}-{arch}[.exe] — the shape shared by agent, watchdog,
@@ -306,9 +314,46 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
       }
     }
 
+    // Local mode, objectStorageDelivery 'stream': serve the S3 copy from this
+    // origin. Same key, same NotFound-falls-to-disk / fault-is-500 split as the
+    // presign branch below.
+    if (isS3Configured() && config.objectStorageDelivery === 'stream') {
+      const s3Key = binaryS3Key(config.store, filename);
+      let object: Awaited<ReturnType<typeof getObjectStream>>;
+      try {
+        object = await getObjectStream(s3Key);
+      } catch (err) {
+        console.error(`[${config.logTag}] S3 fetch failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      if (object.body) {
+        const body = object.body;
+        // Headers are already sent by the time this fires, so all that is left
+        // is to log it: the client sees a truncated body, and the agent's
+        // signed-manifest size/SHA-256 check rejects it. A client that hangs
+        // up makes the server cancel the web stream, which destroys this one
+        // with an AbortError — that is not an object-storage fault, so it is
+        // not logged as one.
+        body.once('error', (err) => {
+          if (err?.name === 'AbortError') return;
+          console.error(`[${config.logTag}] S3 stream error while serving ${filename}:`, err);
+        });
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Cache-Control': 'no-cache',
+        };
+        if (object.contentLength !== null) {
+          headers['Content-Length'] = String(object.contentLength);
+        }
+        return new Response(Readable.toWeb(body) as ReadableStream, { status: 200, headers });
+      }
+      console.warn(`[${config.logTag}] S3 object missing for ${filename}, falling back to disk`);
+    }
+
     // Local mode: try S3 presigned redirect first (bandwidth offload). The key
     // comes from the file's store, the same one syncBinaries() uploaded it to.
-    if (isS3Configured()) {
+    if (isS3Configured() && config.objectStorageDelivery !== 'stream') {
       try {
         const s3Key = binaryS3Key(config.store, filename);
         const url = await getPresignedUrl(s3Key);
@@ -597,6 +642,17 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
 // /agent-versions/:version/download?component=watchdog, which hands back this
 // same-origin URL so the downloader's host-match guard passes (see
 // buildServerRelativeAgentDownloadUrl + issue #646).
+//
+// objectStorageDelivery 'stream' (#7576): `breeze-agent service install` also
+// fetches this route to stage the watchdog on first install, and that client
+// follows redirects only to GitHub release hosts and the build's own control
+// planes. It refused the 302 to a presigned object-storage URL ("release
+// redirect to untrusted origin"), so hosted installs served from object
+// storage never got a watchdog. Serving the bytes from this origin fixes shipped agents without an
+// agent release and keeps that allowlist narrow. Integrity is unchanged: the
+// agent binds the bytes to the size and SHA-256 in the signed release manifest.
+// The cost is ~9 MB per watchdog fetch through the API instead of object
+// storage. BINARY_SOURCE=github still 302s to GitHub, which the client trusts.
 registerComponentDownloadRoute({
   path: '/download/watchdog/:os/:arch',
   logTag: 'watchdog-download',
@@ -605,6 +661,7 @@ registerComponentDownloadRoute({
   filenameFor: perArchFilename('watchdog'),
   githubUrlFor: getGithubWatchdogUrl,
   store: 'agent',
+  objectStorageDelivery: 'stream',
 });
 
 // ============================================
@@ -614,7 +671,8 @@ registerComponentDownloadRoute({
 // this as a non-fatal post-install step, and /agent-versions/:version/download
 // hands back this same-origin URL for component=backup so any future verified
 // self-heal fetch passes the downloader's host-match guard (see
-// buildServerRelativeAgentDownloadUrl). Mirrors the watchdog route exactly.
+// buildServerRelativeAgentDownloadUrl). Mirrors the watchdog route, except that
+// an object-storage copy is still handed out as a presigned redirect.
 registerComponentDownloadRoute({
   path: '/download/backup/:os/:arch',
   logTag: 'backup-download',
@@ -650,7 +708,7 @@ registerComponentDownloadRoute({
 // fetched by the agent's verified updater (component=user-helper). Without this
 // server-relative route the agent-versions response handed back the canonical
 // github.com asset URL, which the updater's host-equality check rejects (#1878).
-// Mirrors the watchdog route: github redirect / S3 presign / local disk.
+// Same shape as the agent route: github redirect / S3 presign / local disk.
 registerComponentDownloadRoute({
   path: '/download/user-helper/:os/:arch',
   logTag: 'user-helper-download',
