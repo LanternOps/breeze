@@ -55,9 +55,34 @@ export async function getTopologyCaptureStatus(scope: TopologyScope) {
   return { complete: missing.length === 0 && functions[0]?.installed === true, missing };
 }
 
+/** Capture triggers/functions are a DEPLOYMENT-wide precondition, not a
+ * per-site fault: callers (the #7557 bootstrap pass) treat it as "not yet
+ * eligible" and back off globally instead of marking every site failed. */
+export class TopologyCaptureIncompleteError extends Error {
+  constructor(readonly missing: readonly string[] = []) {
+    super('Topology legacy capture is incomplete or disabled');
+    this.name = 'TopologyCaptureIncompleteError';
+  }
+}
+
 export async function requireTopologyCapture(scope: TopologyScope): Promise<void> {
   const status = await getTopologyCaptureStatus(scope);
-  if (!status.complete) throw new Error('Topology legacy capture is incomplete or disabled');
+  if (!status.complete) throw new TopologyCaptureIncompleteError(status.missing);
+}
+
+/** `effective_settings` key the automatic first-snapshot bootstrap (#7557)
+ * writes when importing a site failed for a site-specific reason. It is only
+ * meaningful while no `legacyImport` checkpoint exists: once a retry stages
+ * the import, readiness is the checkpoint's job again. */
+export const LEGACY_IMPORT_BOOTSTRAP_KEY = 'legacyImportBootstrap';
+const bootstrapFailureSchema = z.object({ status: z.literal('failed'), attempts: z.number().int().positive(), failedAt: z.string(), retryAfter: z.number() });
+export type LegacyImportBootstrapFailure = z.infer<typeof bootstrapFailureSchema>;
+
+/** Unlike the checkpoint, a corrupt marker is advisory display state: it reads
+ * as "no failure recorded" rather than throwing on the settings read. */
+export function readLegacyImportBootstrapFailure(settings: Record<string, unknown>): LegacyImportBootstrapFailure | null {
+  const parsed = bootstrapFailureSchema.safeParse(settings[LEGACY_IMPORT_BOOTSTRAP_KEY]);
+  return parsed.success ? parsed.data : null;
 }
 
 /** One statement provides one MVCC snapshot across all five sources. The caller

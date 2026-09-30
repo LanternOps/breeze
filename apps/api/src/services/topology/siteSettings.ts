@@ -10,7 +10,7 @@ import { hasSatisfiedMfa } from '../../middleware/auth';
 import { type TopologyRequestContext, topologyPermissionPairs } from './access';
 import { loadTopologyConfiguration } from './siteConfiguration';
 import { getTopologyCapabilities, topologyInterfaceHealthExposed, topologyPhysicalExposed } from './flags';
-import { readLegacyImportCheckpoint } from './legacyImportState';
+import { readLegacyImportBootstrapFailure, readLegacyImportCheckpoint } from './legacyImportState';
 import { loadTopologyAiFlagsAndReadiness } from './aiToolGate';
 export async function readTopologySiteSettings(
   ctx: TopologyRequestContext,
@@ -31,9 +31,13 @@ export async function readTopologySiteSettings(
       ),
     )
     .limit(1);
-  const ready =
-    readLegacyImportCheckpoint(state?.effectiveSettings ?? {})?.status ===
-    'complete';
+  const effectiveSettings = state?.effectiveSettings ?? {};
+  const checkpoint = readLegacyImportCheckpoint(effectiveSettings);
+  // #7557: with no staged import, a recorded bootstrap failure is reported as
+  // such; a staged (retrying/draining) import is genuinely still preparing.
+  const ready: boolean | 'import_failed' = checkpoint?.status === 'complete'
+    ? true
+    : !checkpoint && readLegacyImportBootstrapFailure(effectiveSettings) ? 'import_failed' : false;
   const can = (capability: 'write' | 'execute' | 'configure') =>
     topologyPermissionPairs(capability).every(([resource, action]) =>
       hasPermission(ctx.permissions, resource, action),

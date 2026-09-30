@@ -23,6 +23,7 @@ export type TopologyFlags = Record<TopologyFlagName, boolean>;
 export type TopologyCapabilityReason =
   | 'materialization_disabled'
   | 'topology_preparing'
+  | 'topology_import_failed'
   | 'ui_disabled'
   | 'collection_unavailable'
   | 'physical_disabled'
@@ -233,17 +234,22 @@ function dependentCapability(
  */
 export function getTopologyCapabilities(
   flags: TopologyFlags,
-  siteGraphReady: boolean,
+  /** `'import_failed'` (#7557): not ready, and the automatic first-snapshot
+   * import recorded a site-specific failure — say so instead of "preparing". */
+  siteGraphReady: boolean | 'import_failed',
   agentCapabilities: TopologyAgentCapabilities,
   aiReady = false,
   aiNotConfigured = false,
 ): TopologyCapabilities {
-  const effectiveUi = flags.ui && flags.materialization && siteGraphReady;
+  const ready = siteGraphReady === true;
+  const effectiveUi = flags.ui && flags.materialization && ready;
   const uiReason: TopologyCapabilityReason = !flags.materialization
     ? 'materialization_disabled'
-    : !siteGraphReady
-      ? 'topology_preparing'
-      : 'ui_disabled';
+    : siteGraphReady === 'import_failed'
+      ? 'topology_import_failed'
+      : !ready
+        ? 'topology_preparing'
+        : 'ui_disabled';
 
   return {
     materialization: capability(flags.materialization, 'materialization_disabled'),
