@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.119.0',
+    date: '2026-09-30',
+    title: 'Physical network topology, Windows time sync monitoring, and multi-org report series',
+    highlights: [
+      'Network topology now maps physical links from switch and UniFi evidence, tracks interface health, adds traceroute and impact views, and can explain a problem with an evidence-backed AI investigation.',
+      'Windows time sync: each device shows its time source and timezone under Info ▸ Time, a fleet Time page exports CSV evidence, and a Time sync policy tab enforces NTP servers and timezone (needs agent 0.119.0).',
+      'Reports: one multi-org report series produces a report for every organization, or the ones you choose. Every run shows its delivery status, and there is a new Backup status report.',
+      'Compliance rules in configuration policies now raise an alert on the first failing check and keep it open until the device is compliant again.',
+      'Live device inspection (processes, services, event logs, files and registry) now needs the Execute permission on devices, so viewer roles keep inventory but no longer run live reads.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.118.0',
     date: '2026-09-27',
     title: 'Network checks move to Monitors, sturdier backups and restores, and a broad hardening pass',
