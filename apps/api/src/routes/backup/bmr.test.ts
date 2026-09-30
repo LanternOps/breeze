@@ -269,6 +269,12 @@ const capturedAuthorizationSubject = {
 };
 const captureRecoveryAuthorizationSubjectMock = vi.fn(async (): Promise<any> => capturedAuthorizationSubject);
 
+const resolveRestoreIntegrityMock = vi.hoisted(() => vi.fn(async (_snapshotDbId: string): Promise<unknown> => null));
+vi.mock('../../services/backupRestoreIntegrity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/backupRestoreIntegrity')>()),
+  resolveRestoreIntegrity: (id: string) => resolveRestoreIntegrityMock(id),
+}));
+
 vi.mock('../../services/recoveryAuthorizationSubject', () => ({
   captureRecoveryAuthorizationSubject: (...args: unknown[]) =>
     captureRecoveryAuthorizationSubjectMock(...(args as [])),
@@ -830,6 +836,42 @@ describe('bmr routes', () => {
       },
     });
     expect(body.authenticatedAt).toBeTruthy();
+    expect(resolveRestoreIntegrityMock).toHaveBeenCalledWith(SNAPSHOT_ID);
+    // No expectation resolved: nothing is added to the shape older clients know.
+    expect(body).not.toHaveProperty('integrity');
+  });
+
+  it('authenticate: the bootstrap carries the snapshot integrity expectation', async () => {
+    resolveRestoreIntegrityMock.mockResolvedValueOnce({ mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' });
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal', targetConfig: null, status: 'active',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+        authenticatedAt: null, completedAt: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
+        timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
+        metadata: { providerType: 's3' }, backupType: 'file', isIncremental: false,
+        hardwareProfile: null, systemStateManifest: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{ configId: null }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]));
+    updateMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const block = { v: 1, mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' };
+    expect(body.integrity).toEqual(block);
+    expect(body.bootstrap.integrity).toEqual(block);
   });
 
   it('authenticate: legacy client (no capabilities) on a referenced snapshot is refused before the status flips', async () => {

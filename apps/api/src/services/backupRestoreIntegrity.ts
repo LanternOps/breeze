@@ -33,6 +33,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
+import { recordRestoreIntegrity, type RestoreIntegrityMetricStatus } from './backupMetrics';
 
 export const RESTORE_INTEGRITY_FORMAT = 1;
 
@@ -270,4 +271,17 @@ export async function resolveRestoreIntegrity(snapshotDbId: string): Promise<Res
     .limit(1);
   if (!row) return null;
   return evaluateRestoreIntegrity(row, joinedAttestation(row.attestation));
+}
+
+/** Metric `type` label for the integrity block in a bare-metal recovery bootstrap. */
+export const RECOVERY_BOOTSTRAP_INTEGRITY_TYPE = 'recovery_bootstrap';
+
+/**
+ * The `integrity` block for a recovery bootstrap (authenticate / exchange
+ * responses), counted; null when the snapshot could not be resolved.
+ */
+export function recoveryBootstrapIntegrity(integrity: RestoreIntegrity | null): Record<string, unknown> | null {
+  const labels = integrityMetricLabels(integrity);
+  recordRestoreIntegrity(RECOVERY_BOOTSTRAP_INTEGRITY_TYPE, labels.status as RestoreIntegrityMetricStatus, labels.reason);
+  return integrity ? integrityPayload(integrity) : null;
 }

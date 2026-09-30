@@ -46,6 +46,7 @@ import {
   toIsoString,
 } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
+import { recoveryBootstrapIntegrity, resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
 import {
   getRecoveryMediaArtifact,
   getRecoveryMediaDownloadTarget,
@@ -1373,6 +1374,9 @@ bmrPublicRoutes.post(
         .where(eq(bareMetalRecoveries.recoveryTokenId, row.id))
         .limit(1);
 
+      // The snapshot's integrity expectation (informational in this release).
+      const integrity = recoveryBootstrapIntegrity(await resolveRestoreIntegrity(snapshot.id));
+
       const authenticatedPayload = buildAuthenticatedBootstrapPayload({
         tokenId: row.id,
         deviceId: row.deviceId,
@@ -1438,6 +1442,7 @@ bmrPublicRoutes.post(
           : null,
         grantedCapabilities: negotiation.granted,
         fileIndex: negotiation.fileIndex,
+        integrity,
       });
 
       return c.json(authenticatedPayload);
