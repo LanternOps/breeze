@@ -26,7 +26,7 @@ import { createOrganization, createPartner } from './db-utils';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
-async function seed(integrity: number, provider: 'local' | 's3' = 'local') {
+async function seed(integrity: number | null, provider: 'local' | 's3' = 'local') {
   const unique = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   const org = await createOrganization({ partnerId: (await createPartner()).id });
   const providerConfig: Record<string, unknown> = provider === 'local'
@@ -125,6 +125,16 @@ runDb('a capable helper with no verified base gets a full run and no base attest
   expect(outcome.baseAttestation).toBeNull();
   const [job] = await withSystemDbAccessContext(() => db.select().from(backupJobs).where(eq(backupJobs.id, f.dispatchJobId)));
   expect(job!.baseSnapshotId).toBeNull();
+});
+
+runDb('a helper that has not reported its integrity protocol is only handed a verified base', async () => {
+  const f = await seed(null);
+  const older = await withSystemDbAccessContext(() => f.snapshot('older', 120, 'verified'));
+  await withSystemDbAccessContext(() => f.snapshot('newest-unattested', 10));
+
+  const outcome = await stamp(f);
+  expect(outcome.baseSnapshotId).toBe(older);
+  expect(outcome.baseAttestation).not.toBeNull();
 });
 
 runDb('an older helper keeps the newest eligible base and gets no base attestation', async () => {

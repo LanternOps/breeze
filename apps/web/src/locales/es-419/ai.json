@@ -41,6 +41,7 @@
     "deniedToast": "Acción denegada",
     "deniedToast_one": "{{count}} acción denegada",
     "deniedToast_other": "{{count}} acciones denegadas",
+    "refusedToast": "Aprobación rechazada. La solicitud fue denegada.",
     "runContextLabel": "Contexto de ejecución:",
     "runContextChosenByAssistant": "elegido por el asistente",
     "runContextScriptDefault": "el valor predeterminado guardado del script",

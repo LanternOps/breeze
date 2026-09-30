@@ -550,6 +550,45 @@ describe('ingest decisioning (#1163)', () => {
     expect(body).toEqual({ id: 'req-refused', status: 'denied', enforcementStatus: 'refused' });
   });
 
+  it('a refused auto-approval publishes elevation.denied with the reason, never elevation.auto_approved', async () => {
+    const refusal = 'Target identity could not be verified on the device; re-request elevation.';
+    pamMocks.evaluatePamBridge.mockResolvedValue({
+      match: 'allowlist',
+      policyId: 'pol-2',
+      auditMatches: [],
+    });
+    lifecycleMocks.createPamDecisionIntent.mockResolvedValueOnce({
+      actuationId: '',
+      elevationRequestId: 'req-refused',
+      requestRevision: 1,
+      generation: 0,
+      desiredState: 'cleanup',
+      refusalReason: refusal,
+    });
+    happyPathInsert([{ id: 'req-refused', status: 'auto_approved' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+
+    expect(pamMocks.publishEvent).toHaveBeenCalledWith(
+      'elevation.denied',
+      'org-1',
+      expect.objectContaining({
+        elevationRequestId: 'req-refused',
+        status: 'denied',
+        enforcementStatus: 'refused',
+        reason: refusal,
+      }),
+      'pam-ingest',
+    );
+    expect(pamMocks.publishEvent).not.toHaveBeenCalledWith(
+      'elevation.auto_approved',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('pam rule auto_deny (real engine) -> denied with rule metadata', async () => {
     const rule = {
       id: 'rule-1',

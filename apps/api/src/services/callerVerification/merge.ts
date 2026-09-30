@@ -17,6 +17,7 @@ import { sql } from 'drizzle-orm';
 import { db, assertInTransaction } from '../../db';
 import { extractRowCount } from '../../db/rowCount';
 import type { CustomMergeExecutor } from '../orgMergeCustomExecutors';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 const SYSTEM_ACTOR = '00000000-0000-0000-0000-000000000000';
 
@@ -34,6 +35,7 @@ export const resolveBindingMerge: CustomMergeExecutor = async (loser, survivor) 
   SELECT org_id, 'system'::actor_type, ${SYSTEM_ACTOR}::uuid, 'caller_verification.binding_conflict',
     'caller_verification', id, 'success'::audit_result,
     jsonb_build_object('loserOrgId', ${loser}::text, 'survivorOrgId', ${survivor}::text) FROM changed`);
+  markRequestAuditWritten();
   return { moved: 0, dropped: 0, notes: [] };
 };
 

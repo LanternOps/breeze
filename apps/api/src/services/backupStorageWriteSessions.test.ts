@@ -103,6 +103,22 @@ describe('decideWriteBrokering', () => {
     }).ok).toBe(true);
   });
 
+  it('waits for a device whose helper has not reported its protocol yet, whatever the destination', () => {
+    const unreported = { ...base.device, backupWriteProtocolVersion: null };
+    expect(decideWriteBrokering({ ...base, device: unreported })).toEqual({ ok: false, reason: 'helper_unreported' });
+    // Not "unsupported": the legacy destination is never chosen for a helper
+    // whose capability is simply not known yet.
+    expect(decideWriteBrokering({ ...base, device: unreported, provider: 'b2' })).toEqual({ ok: false, reason: 'helper_unreported' });
+  });
+
+  it('decides an unreported device by the protocol this heartbeat reports', () => {
+    const unreported = { ...base.device, backupWriteProtocolVersion: null };
+    expect(decideWriteBrokering({ ...base, device: unreported, reportedWriteProtocolVersion: 0 }))
+      .toEqual({ ok: false, reason: 'helper_unsupported' });
+    expect(decideWriteBrokering({ ...base, device: unreported, reportedWriteProtocolVersion: 1 }))
+      .toEqual({ ok: true, baseUrl: 'https://api.breeze.example' });
+  });
+
   it.each([
     ['device_org_mismatch', { device: { ...base.device, orgId: 'org-2' } }],
     ['device_org_mismatch', { device: null }],

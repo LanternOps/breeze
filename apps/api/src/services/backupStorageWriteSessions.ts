@@ -27,7 +27,7 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNull, max, ne, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
   backupConfigs,
   backupJobs,
@@ -37,6 +37,7 @@ import {
   devices,
 } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
+import { effectiveHelperProtocol } from './backupHelperProtocols';
 import { recordStorageSessionMint } from './backupMetrics';
 import { parseBackupObjectKey } from './backupObjectKey';
 import { resolveBackupWriteCommandDestination } from './backupProviderConfig';
@@ -173,6 +174,9 @@ export function writeDeleteDecision(
 }
 
 export type WriteUnbrokeredReason =
+  // The device has not reported its helper yet: never a reason to deliver
+  // the destination — callers wait for the report instead.
+  | 'helper_unreported'
   | 'helper_unsupported'
   | 'provider_not_s3'
   | 'insecure_endpoint'
@@ -182,9 +186,13 @@ export type WriteUnbrokeredReason =
   | 'device_org_mismatch'
   | 'job_not_live';
 
-/** Whether a backup to this destination can be brokered for this device. */
+/**
+ * Whether a backup to this destination can be brokered for this device. A
+ * device that has not reported its helper yet is `helper_unreported` whatever
+ * the destination, so no caller can mistake it for an older helper.
+ */
 export function decideWriteBrokering(input: {
-  device: { orgId: string; backupWriteProtocolVersion: number; agentServerUrl: string | null } | null;
+  device: { orgId: string; backupWriteProtocolVersion: number | null; agentServerUrl: string | null } | null;
   orgId: string;
   provider: string;
   providerConfig: Record<string, unknown>;
@@ -193,9 +201,8 @@ export function decideWriteBrokering(input: {
 }): { ok: true; baseUrl: string } | { ok: false; reason: WriteUnbrokeredReason } {
   const { device } = input;
   if (!device || device.orgId !== input.orgId) return { ok: false, reason: 'device_org_mismatch' };
-  const protocol = typeof input.reportedWriteProtocolVersion === 'number'
-    ? input.reportedWriteProtocolVersion
-    : device.backupWriteProtocolVersion;
+  const protocol = effectiveHelperProtocol(input.reportedWriteProtocolVersion, device.backupWriteProtocolVersion);
+  if (protocol === null) return { ok: false, reason: 'helper_unreported' };
   if (!(protocol >= MIN_BACKUP_WRITE_PROTOCOL_VERSION)) return { ok: false, reason: 'helper_unsupported' };
   if (input.provider !== 's3') return { ok: false, reason: 'provider_not_s3' };
   if (!httpsEndpoint(input.providerConfig)) return { ok: false, reason: 'insecure_endpoint' };
@@ -405,6 +412,35 @@ export type WriteMintResult =
   | { mode: 'unbrokered'; reason: WriteUnbrokeredReason };
 
 /**
+ * The write protocol stored for a device: `undefined` when the device is not
+ * visible, `null` when it has not reported its helper yet. Reads in the
+ * caller's DB context; a caller holding none gets the referenced
+ * organization's context, or — with no usable reference — a system one for
+ * this single-row read.
+ */
+export async function loadStoredBackupWriteProtocol(
+  deviceId: string,
+  orgId: string | null,
+): Promise<number | null | undefined> {
+  const read = async () => {
+    const [row] = await db
+      .select({ protocol: devices.backupWriteProtocolVersion })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    return row ? row.protocol : undefined;
+  };
+  if (hasDbAccessContext()) return read();
+  if (orgId) {
+    return withDbAccessContext(
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'backupStorageWriteProtocol' },
+      read,
+    );
+  }
+  return withSystemDbAccessContext(read);
+}
+
+/**
  * Issues a write session for one backup job, in the caller's DB context (the
  * worker's system context, or the delivery path's context). Reuses the
  * job's current reservation on redelivery; otherwise issues and reserves a
@@ -433,7 +469,7 @@ export async function mintBackupWriteSession(
     reportedWriteProtocolVersion: input.reportedWriteProtocolVersion,
   });
   if (!decision.ok) {
-    recordStorageSessionMint('snapshot_write', 'legacy', decision.reason);
+    recordStorageSessionMint('snapshot_write', decision.reason === 'helper_unreported' ? 'deferred' : 'legacy', decision.reason);
     return { mode: 'unbrokered', reason: decision.reason };
   }
 

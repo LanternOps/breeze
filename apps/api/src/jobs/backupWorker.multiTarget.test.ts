@@ -175,7 +175,8 @@ function wireDb() {
         statusCallsSinceFirstInsert >= cancelAfterInsertOnCheck;
       return selectResult([{ status: cancelled ? 'cancelled' : 'pending' }]);
     }
-    if (keys.length === 1 && keys[0] === 'agentId') return selectResult([{ agentId: 'agent-1' }]);
+    // device -> agent lookup + the helper protocols it reported (an older helper)
+    if (keys[0] === 'agentId') return selectResult([{ agentId: 'agent-1', backupWriteProtocolVersion: 0, backupIntegrityProtocolVersion: 0 }]);
     if (keys.includes('featureLinkId')) {
       return selectResult([{ featureLinkId: 'link-1', backupMode: 'hyperv', modeTargets: {} }]);
     }

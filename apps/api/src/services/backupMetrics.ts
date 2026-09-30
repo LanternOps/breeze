@@ -183,9 +183,11 @@ export function recordStorageSessionMint(
  * How a backup write command reached the device: `brokered` (through a
  * storage session), `legacy_credential` (carrying the storage destination
  * with its credentials), `local` (a local destination path, no credential)
- * or `refused`. Recorded once per command actually handed to the agent.
+ * or `refused`. Recorded once per command actually handed to the agent —
+ * except `deferred`, recorded each time a queued command is held back
+ * because the device has not reported its backup helper yet.
  */
-export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused';
+export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused' | 'deferred';
 
 /**
  * Reasons a backup is still delivered WITH its storage credential that are

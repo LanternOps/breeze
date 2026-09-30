@@ -27,7 +27,9 @@ async function seedOrgDeviceConfig(unique: string) {
   const [partner] = await db.insert(partners).values({ name: `RP ${unique}`, slug: `rp-${unique}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
   const [org] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: partner!.id, name: `RO ${unique}`, slug: `ro-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
   const [site] = await db.insert(sites).values({ orgId: org!.id, name: `RS ${unique}` }).returning({ id: sites.id });
-  const [device] = await db.insert(devices).values({ orgId: org!.id, siteId: site!.id, agentId: `ra-${unique}`, hostname: `rh-${unique}`, osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online' }).returning({ id: devices.id });
+  // A device that has reported an older backup helper (unrestricted base
+  // selection); one that has not reported yet is only handed attested bases.
+  const [device] = await db.insert(devices).values({ orgId: org!.id, siteId: site!.id, agentId: `ra-${unique}`, hostname: `rh-${unique}`, osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online', backupReadProtocolVersion: 0, backupIntegrityProtocolVersion: 0, backupWriteProtocolVersion: 0 }).returning({ id: devices.id });
   const [config] = await db.insert(backupConfigs).values({ orgId: org!.id, name: `RC ${unique}`, type: 'file', provider: 'local', providerConfig: { path: `/tmp/gc-test-${unique}` } }).returning({ id: backupConfigs.id });
   return { orgId: org!.id, deviceId: device!.id, configId: config!.id };
 }

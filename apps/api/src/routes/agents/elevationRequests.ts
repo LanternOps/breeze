@@ -648,6 +648,7 @@ elevationRequestsRoutes.post(
           await tx.insert(elevationAudit).values(auditRows);
 
           let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | 'refused' | null = null;
+          let refusalReason: string | null = null;
           let finalStatus: typeof insertedRow.status = insertedRow.status;
           if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
             const actuation = await createPamDecisionIntent(tx, {
@@ -665,6 +666,7 @@ elevationRequestsRoutes.post(
             });
             if (actuation.refusalReason) {
               enforcementStatus = 'refused';
+              refusalReason = actuation.refusalReason;
               finalStatus = 'denied';
             } else {
               enforcementStatus = actuation.desiredState === 'active'
@@ -672,7 +674,7 @@ elevationRequestsRoutes.post(
                 : 'cleanup_pending';
             }
           }
-          return { ...insertedRow, status: finalStatus, enforcementStatus };
+          return { ...insertedRow, status: finalStatus, enforcementStatus, refusalReason };
         });
 
         writeAuditEvent(c, {
@@ -690,10 +692,12 @@ elevationRequestsRoutes.post(
           },
         });
 
+        // A refused auto-approval (see createPamDecisionIntent) left the row
+        // denied, so it is published as a denial — never as auto_approved.
         const eventType: EventType =
-          decision.kind === 'auto_approved'
+          decision.kind === 'auto_approved' && !row.refusalReason
             ? 'elevation.auto_approved'
-            : decision.kind === 'denied'
+            : decision.kind === 'denied' || row.refusalReason
               ? 'elevation.denied'
               : 'elevation.requested';
         await safePublish(eventType, device.orgId, {
@@ -701,6 +705,7 @@ elevationRequestsRoutes.post(
           deviceId: device.id,
           flowType: 'uac_intercept',
           status: row.status,
+          ...(row.refusalReason ? { enforcementStatus: 'refused', reason: row.refusalReason } : {}),
           subjectUsername: payload.subject_username,
           targetExecutablePath: payload.target_executable_path,
           ...(decision.kind !== 'pending' && decision.source === 'policy'

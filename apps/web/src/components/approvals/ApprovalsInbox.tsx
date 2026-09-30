@@ -752,8 +752,10 @@ export default function ApprovalsInbox() {
       // Critique #7: the row otherwise just vanishes with no confirmation
       // that anything happened. Approve only — a denial's own form already
       // stays open through the click, and the row disappearing IS the
-      // confirmation there.
-      if (decision === 'approve') {
+      // confirmation there. A `refused` approve is not an approval: the
+      // request was denied, and decideIntentApproval has already shown that
+      // as an error with the reason.
+      if (decision === 'approve' && outcome !== 'refused') {
         showToast({
           type: 'success',
           message: t('approveToast', {
@@ -809,6 +811,10 @@ export default function ApprovalsInbox() {
       }
 
       await loadApprovals({ silent: true, withCount: true });
+
+      // The approve was refused (already shown as an error) and the request
+      // denied, so there is nothing to always allow.
+      if (outcome === 'refused') return;
 
       try {
         await runAction({

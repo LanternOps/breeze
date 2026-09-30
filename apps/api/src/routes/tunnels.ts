@@ -43,6 +43,7 @@ import {
   toTerminalSessionRow,
   type TerminalSessionRow,
 } from '../services/remoteDesktopTerminalIntent';
+import { markRequestAuditWritten } from '../services/auditRequestTracking';
 
 export const tunnelRoutes = new Hono();
 
@@ -414,6 +415,7 @@ async function logTunnelAudit(
           ipAddress,
           result: 'success',
         });
+        markRequestAuditWritten();
       })
     );
   } catch (error) {

@@ -55,7 +55,7 @@ const IDENTITY = 's3::storage.example::bucket-a';
 const NOW = new Date('2026-09-26T12:00:00.000Z');
 
 type FakeState = {
-  device: { id: string; orgId: string; backupReadProtocolVersion: number; agentServerUrl: string | null } | null;
+  device: { id: string; orgId: string; backupReadProtocolVersion: number | null; agentServerUrl: string | null } | null;
   snapshots: StorageSnapshotRow[];
   config: { provider: string; providerConfig: Record<string, unknown> } | null;
   indexed: Map<string, string[]>;
@@ -406,6 +406,37 @@ describe('brokered read delivery', () => {
     await expect(deliverBrokeredReadCommand(restorePayload(), ctx({ reportedBackupReadProtocolVersion: 0 }), deps))
       .rejects.toThrow(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
     expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'refused', 'helper_unsupported');
+  });
+
+  it.each(['backup_restore', 'mssql_restore', 'vm_restore_from_backup', 'vm_instant_boot'])(
+    'defers %s, never refusing or sending it as queued, while the device has not reported its helper protocols',
+    async (type) => {
+      const state = makeState();
+      state.device!.backupReadProtocolVersion = null;
+      const deps = makeDeps(state);
+      const payload = type === 'backup_restore' || type === 'mssql_restore'
+        ? restorePayload()
+        : { restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' };
+      await expect(deliverBrokeredReadCommand(payload, ctx({ type }), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
+      expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'deferred', 'helper_unreported');
+      expect(state.sessions.size).toBe(0);
+    },
+  );
+
+  it('decides an unreported device by the protocol this heartbeat reports', async () => {
+    const refusedState = makeState();
+    refusedState.device!.backupReadProtocolVersion = null;
+    const refusedDeps = makeDeps(refusedState);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx({ reportedBackupReadProtocolVersion: 0 }), refusedDeps))
+      .rejects.toThrow(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
+
+    const brokeredState = makeState();
+    brokeredState.device!.backupReadProtocolVersion = null;
+    const out = await deliverBrokeredReadCommand(
+      restorePayload(), ctx({ reportedBackupReadProtocolVersion: 1 }), makeDeps(brokeredState),
+    );
+    expect(out.storageSession).toBeDefined();
+    expect(out).not.toHaveProperty('providerConfig');
   });
 
   it.each(['backup_restore', 'vm_restore_from_backup'])(

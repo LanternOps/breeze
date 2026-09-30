@@ -35,6 +35,7 @@ import { topologyDiagnosticRepository } from './originEligibility';
 import type { DiagnosticPlanningRepository } from './diagnosticTypes';
 import { expectedRevisionSchema, scopedWrite } from './writes';
 import { disarmPolicyRow } from './monitoringPolicyState';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 export { disarmPolicyRow } from './monitoringPolicyState';
 
 type PolicyRow = typeof topologyMonitoringPolicies.$inferSelect;
@@ -326,6 +327,7 @@ export async function armTopologyMonitoringPolicy(
       result: 'success',
       details: { siteId: ctx.scope.siteId, revision: updated.revision.toString(), authorityDigest, contexts: contexts.map((c) => `${c.contextKey}/${c.family}`) },
     });
+    markRequestAuditWritten();
     return topologyPolicyArmView(updated);
   });
 }
@@ -354,6 +356,7 @@ export async function disarmTopologyMonitoringPolicy(
       result: 'success',
       details: { siteId: ctx.scope.siteId, reason },
     });
+    markRequestAuditWritten();
     return topologyPolicyArmView(updated);
   });
 }

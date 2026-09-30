@@ -8,7 +8,7 @@ import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { installPerRouteMaxPayload } from './services/wsMaxPayload';
 import { Hono } from 'hono';
-import type { Context, MiddlewareHandler } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { prettyJSON } from 'hono/pretty-json';
@@ -305,8 +305,9 @@ import {
 import { syncBinaries } from './services/binarySync';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
-import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/schema';
-import { eq, ne, sql } from 'drizzle-orm';
+import { webhookDeliveries } from './db/schema';
+import { resolveFallbackOrgId } from './services/auditFallbackOrg';
+import { ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
   createReadinessEvaluator,
@@ -610,10 +611,6 @@ function sanitizeActionSegment(segment: string): string {
   return segment;
 }
 
-function isLikelyUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
 function buildFallbackAction(method: string, apiPath: string): string {
   const cleaned = apiPath.replace(/^\/api\/v1\//, '/');
   const segments = cleaned
@@ -643,143 +640,6 @@ function fallbackAuditEligible(path: string): boolean {
     return false;
   }
   return path.startsWith('/api/v1/');
-}
-
-async function resolveFallbackOrgId(c: Context, path: string): Promise<string | null> {
-  const auth = c.get('auth') as { orgId?: string | null; accessibleOrgIds?: string[] } | undefined;
-  if (auth?.orgId) {
-    return auth.orgId;
-  }
-
-  if (auth?.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
-    return auth.accessibleOrgIds[0] ?? null;
-  }
-
-  if (path.startsWith('/api/v1/agents/')) {
-    const segments = path.split('/').filter(Boolean);
-    const agentId = segments[3];
-    if (!agentId || agentId === 'enroll') {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.agentId, agentId))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/devices/')) {
-    const segments = path.split('/').filter(Boolean);
-    const entity = segments[3];
-    if (!entity) {
-      return null;
-    }
-
-    if (entity === 'groups') {
-      const groupId = segments[4];
-      if (!groupId || !isLikelyUuid(groupId)) {
-        return null;
-      }
-
-      try {
-        const [group] = await db
-          .select({ orgId: deviceGroups.orgId })
-          .from(deviceGroups)
-          .where(eq(deviceGroups.id, groupId))
-          .limit(1);
-        return group?.orgId ?? null;
-      } catch (err) {
-        console.error('[audit] Failed to resolve orgId from device group:', err);
-        return null;
-      }
-    }
-
-    if (!isLikelyUuid(entity)) {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, entity))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/security/scan/')) {
-    const segments = path.split('/').filter(Boolean);
-    const deviceId = segments[4];
-    if (!deviceId || !isLikelyUuid(deviceId)) {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, deviceId))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/security/threats/')) {
-    const segments = path.split('/').filter(Boolean);
-    const threatId = segments[4];
-    if (!threatId || !isLikelyUuid(threatId)) {
-      return null;
-    }
-
-    try {
-      const [threat] = await db
-        .select({ orgId: devices.orgId })
-        .from(securityThreats)
-        .innerJoin(devices, eq(securityThreats.deviceId, devices.id))
-        .where(eq(securityThreats.id, threatId))
-        .limit(1);
-      return threat?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/system-tools/devices/')) {
-    const segments = path.split('/').filter(Boolean);
-    const deviceId = segments[4];
-    if (!deviceId || !isLikelyUuid(deviceId)) {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, deviceId))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  return null;
 }
 
 // Generic partner status guard — blocks non-active partners.

@@ -380,6 +380,15 @@ export default function AiApprovalDialog({
         setIntentDecideState("unavailable");
         return;
       }
+      // The server refused to apply the approve and denied the request
+      // (already toasted as an error with the reason). Terminal, and never
+      // shown as "approved".
+      if (outcome === "refused") {
+        setIntentError(t("aiApprovalDialog.refusedToast"));
+        setIntentDecideState("unavailable");
+        onIntentDecided?.();
+        return;
+      }
       // Terminal: the parent normally unmounts this card via onIntentDecided,
       // but don't depend on that — settle into a decided state so the button
       // never sits frozen on "Waiting for verification…" if the clear lags.

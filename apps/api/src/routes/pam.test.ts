@@ -225,6 +225,7 @@ import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } fro
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { createPamDecisionIntent, requestPamCleanup } from '../services/pamActuationLifecycle';
+import { writeAuditEvent } from '../services/auditEvents';
 
 const ORG_ID = '7b41c9a2-0000-4000-8000-000000000001';
 const REQ_ID = '7b41c9a2-0000-4000-8000-000000000002';
@@ -618,6 +619,88 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(body.status).toBe('denied');
     expect(body.enforcementStatus).toBe('refused');
     expect(body.reason).toBe('Target identity could not be verified on the device; re-request elevation.');
+  });
+
+  it('records a refused approve as refused: audit result denied with the reason, elevation.denied published, never elevation.approved', async () => {
+    const refusal = 'Target identity could not be verified on the device; re-request elevation.';
+    rigTransaction({ row: activeRow, casWins: true });
+    lifecycleMocks.createPamDecisionIntent.mockResolvedValueOnce({
+      actuationId: '',
+      elevationRequestId: REQ_ID,
+      requestRevision: 1,
+      generation: 0,
+      desiredState: 'cleanup',
+      refusalReason: refusal,
+    });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30, reason: 'ok by me' }),
+    });
+    expect(res.status).toBe(200);
+
+    // The approver asked to approve, so the action stays `approve` — but the
+    // outcome is recorded as refused, never as a successful approval.
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'pam.elevation_request.approve',
+        resourceId: REQ_ID,
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'ok by me',
+          enforcement_status: 'refused',
+          refusal_reason: refusal,
+        }),
+      }),
+    );
+    // No grant window was opened, so none is recorded.
+    const details = vi.mocked(writeAuditEvent).mock.calls[0]![1].details as Record<string, unknown>;
+    expect(details.duration_minutes).toBeUndefined();
+
+    // Subscribers (webhooks, automations, the /pam UI) hear a denial.
+    expect(busMocks.publishEvent).toHaveBeenCalledTimes(1);
+    expect(busMocks.publishEvent).toHaveBeenCalledWith(
+      'elevation.denied',
+      ORG_ID,
+      expect.objectContaining({
+        elevationRequestId: REQ_ID,
+        status: 'denied',
+        enforcementStatus: 'refused',
+        reason: refusal,
+      }),
+      'pam-admin',
+    );
+    expect(busMocks.publishEvent).not.toHaveBeenCalledWith(
+      'elevation.approved',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('records a plain approve with result success and duration', async () => {
+    rigTransaction({ row: activeRow, casWins: true });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', durationMinutes: 30 }),
+    });
+    expect(res.status).toBe(200);
+
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'pam.elevation_request.approve',
+        result: 'success',
+        details: expect.objectContaining({ duration_minutes: 30 }),
+      }),
+    );
+    const details = vi.mocked(writeAuditEvent).mock.calls[0]![1].details as Record<string, unknown>;
+    expect(details).not.toHaveProperty('refusal_reason');
   });
 
   it('returns 403 step_up_required when an enforcing policy rejects the approve (Phase 4)', async () => {
