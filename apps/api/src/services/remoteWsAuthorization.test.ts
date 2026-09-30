@@ -172,6 +172,7 @@ function installAuthorizationRows(input: {
   organizationDeletedAt?: Date | null;
   partnerStatus?: string;
   partnerDeletedAt?: Date | null;
+  signInEnded?: boolean;
 }): void {
   const sessionType = input.kind === 'terminal'
     ? 'terminal'
@@ -210,6 +211,7 @@ function installAuthorizationRows(input: {
           trustState: 'trusted',
           probationEnrollments: 0,
         },
+        signInEnded: input.signInEnded ?? false,
       }]
     : [];
   const orgRows = input.orgMembership === false
@@ -482,6 +484,31 @@ describe.each(['terminal', 'desktop', 'tunnel'] as const)(
     });
   },
 );
+
+describe('sign-in session logout', () => {
+  it.each(['terminal', 'desktop', 'tunnel'] as const)(
+    'denies a %s session whose opening sign-in was logged out, before any side effect',
+    async (kind) => {
+      installAuthorizationRows({ kind, signInEnded: true });
+
+      expect(await authorizeConsumedRemoteWsTicket(consumed(kind))).toEqual({
+        ok: false,
+        status: 403,
+        reason: 'credential_revoked',
+      });
+      expect(mocks.rateLimiter).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads the sign-in state in the session lookup itself', async () => {
+    installAuthorizationRows({ kind: 'desktop' });
+    await authorizeConsumedRemoteWsTicket(consumed('desktop'));
+    const sessionColumns = mocks.select.mock.calls
+      .map((call: unknown[]) => call[0] as Record<string, unknown> | undefined)
+      .find((columns) => columns && 'session' in columns);
+    expect(sessionColumns).toHaveProperty('signInEnded');
+  });
+});
 
 describe('credential-change revocation (password reset/change, MFA factor change)', () => {
   it('denies a live session whose underlying session predates the revocation', async () => {

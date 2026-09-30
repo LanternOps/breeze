@@ -265,3 +265,26 @@ describe('desktop revocation-lease epoch baseline', () => {
     },
   );
 });
+
+// Logout ends only the sign-in session it came from; a remote session records
+// that sign-in (refresh family) so the live authority can end it with it.
+it('records the opening sign-in session on a remote session', async () => {
+  mocks.partnerTrustMode.mockReturnValue('off');
+  mocks.select.mockReturnValue(epochSelect([{ permissionsEpoch: 3 }]));
+  const { values } = insertReturning({ id: 'session-1', status: 'pending' });
+  await createRemoteSession('remote', {
+    ...remoteInput,
+    authSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  });
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({
+    authSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  }));
+});
+
+it('leaves a remote session unbound when there is no sign-in session', async () => {
+  mocks.partnerTrustMode.mockReturnValue('off');
+  mocks.select.mockReturnValue(epochSelect([{ permissionsEpoch: 3 }]));
+  const { values } = insertReturning({ id: 'session-1', status: 'pending' });
+  await createRemoteSession('remote', { ...remoteInput, authSessionId: null });
+  expect(values.mock.calls[0]![0]).not.toHaveProperty('authSessionId');
+});

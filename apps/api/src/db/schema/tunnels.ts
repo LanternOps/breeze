@@ -35,6 +35,9 @@ export const tunnelSessions = pgTable('tunnel_sessions', {
   // no activity yet. Drives the server-computed idleSeconds the client polls
   // instead of comparing a server timestamp against the browser clock.
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+  // refresh_token_families.family_id of the sign-in that opened this tunnel;
+  // see remote_sessions.auth_session_id. NULL = not bound to a sign-in.
+  authSessionId: uuid('auth_session_id'),
 });
 
 export const tunnelAllowlistSourceEnum = pgEnum('tunnel_allowlist_source', ['manual', 'discovery', 'policy']);

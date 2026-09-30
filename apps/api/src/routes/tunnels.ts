@@ -31,6 +31,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
+import { authSignInSessionId } from '../services/signInSession';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { createRemoteSession, RemoteSessionDeniedError } from '../services/remoteSessionCreate';
 import { evaluateCapability, partnerIdForDevice, trustDenyBody, unresolvedPartnerDecision } from '../services/partnerTrust';
@@ -516,6 +517,7 @@ tunnelRoutes.post(
         scheme,
         skipTlsVerify,
         sourceIp: sourceIp,
+        authSessionId: authSignInSessionId(auth),
       });
     } catch (e) {
       if (e instanceof RemoteSessionDeniedError) {
@@ -733,6 +735,7 @@ tunnelRoutes.post(
         scheme: body.scheme,
         skipTlsVerify,
         sourceIp,
+        authSessionId: authSignInSessionId(auth),
       });
     } catch (e) {
       if (e instanceof RemoteSessionDeniedError) {
@@ -1638,6 +1641,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
       .select({
         tunnelUserId: tunnelSessions.userId,
         tunnelOrgId: tunnelSessions.orgId,
+        tunnelAuthSessionId: tunnelSessions.authSessionId,
         deviceId: tunnelSessions.deviceId,
         tunnelType: tunnelSessions.type,
         tunnelStatus: tunnelSessions.status,
@@ -1704,6 +1708,8 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
         orgId: bound.tunnelOrgId,
         userId: bound.tunnelUserId,
         type: 'desktop',
+        // A handoff stays bound to the sign-in that opened the tunnel.
+        authSessionId: bound.tunnelAuthSessionId,
       });
       return { session: created as typeof remoteSessions.$inferSelect, stragglers: swept };
     }));
@@ -1776,6 +1782,7 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
       .select({
         userId: remoteSessions.userId,
         orgId: remoteSessions.orgId,
+        authSessionId: remoteSessions.authSessionId,
         deviceId: remoteSessions.deviceId,
         deviceStatus: devices.status,
         agentId: devices.agentId,
@@ -1823,6 +1830,8 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     targetHost: '127.0.0.1',
     targetPort: 5900,
     sourceIp: getClientIp(c),
+    // A handoff stays bound to the sign-in that opened the desktop session.
+    authSessionId: bound.authSessionId,
   })).catch((e: unknown) => {
     if (e instanceof RemoteSessionDeniedError) return e;
     throw e;

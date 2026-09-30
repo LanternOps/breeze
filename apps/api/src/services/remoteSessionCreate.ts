@@ -22,6 +22,12 @@ type RemoteSessionInput = {
   orgId: string;
   userId: string;
   type: 'desktop' | 'terminal' | 'file_transfer';
+  /**
+   * Refresh-family id of the sign-in that opened the session (the access
+   * token's `sid`, or the parent session's value for a handoff). Logout of
+   * that sign-in ends the session. Omit when there is no sign-in (API key).
+   */
+  authSessionId?: string | null;
 };
 
 export class RemoteSessionDeniedError extends Error {
@@ -146,6 +152,7 @@ export async function createRemoteSession(
         status: 'pending',
         iceCandidates: [],
         ...(permissionsEpochSnapshot === null ? {} : { permissionsEpochSnapshot }),
+        ...(remote.authSessionId ? { authSessionId: remote.authSessionId } : {}),
       })
       .returning();
     return created!;

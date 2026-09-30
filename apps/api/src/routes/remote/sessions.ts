@@ -14,6 +14,7 @@ import {
   partners
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
+import { authSignInSessionId } from '../../services/signInSession';
 import { sendCommandToAgent } from '../agentWs';
 import { dispatchCommandToAgent } from '../../services/agentCommandRelay';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
@@ -355,6 +356,7 @@ sessionRoutes.post(
         orgId: device.orgId,
         userId: auth.user.id,
         type: data.type,
+        authSessionId: authSignInSessionId(auth),
       }) as typeof remoteSessions.$inferSelect;
     } catch (e) {
       if (e instanceof RemoteSessionDeniedError) {

@@ -326,6 +326,26 @@ function auditCalls(insertMock: any): any[] {
   return calls;
 }
 
+// The non-audit values() args — i.e. the session rows the route inserted.
+function sessionInserts(insertMock: any): any[] {
+  const rows: any[] = [];
+  const seen = new Set<any>();
+  for (const result of insertMock.mock.results) {
+    const chain = result.value;
+    if (!chain?.values?.mock || seen.has(chain)) continue;
+    seen.add(chain);
+    for (const call of chain.values.mock.calls) {
+      const arg = call[0];
+      if (arg && typeof arg === 'object' && !('action' in arg)) rows.push(arg);
+    }
+  }
+  return rows;
+}
+
+// Refresh-family id of the sign-in that opened the parent session; a handoff
+// must stay bound to it so logging out of that sign-in still ends the session.
+const PARENT_SIGN_IN_SESSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
 describe('POST /tunnels (VNC)', () => {
   let app: Hono;
 
@@ -3109,6 +3129,7 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
     vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
       tunnelUserId: USER_ID,
       tunnelOrgId: ORG_ID,
+      tunnelAuthSessionId: PARENT_SIGN_IN_SESSION,
       deviceId: DEVICE_ID,
       tunnelType: 'vnc',
       tunnelStatus: 'pending',
@@ -3159,6 +3180,10 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       result: 'success',
     }));
     expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID, type: 'desktop' }));
+    expect(sessionInserts(insertMock)).toContainEqual(expect.objectContaining({
+      id: descendantSessionId,
+      authSessionId: PARENT_SIGN_IN_SESSION,
+    }));
   });
 
   it('POST /vnc-viewer/downgrade-to-vnc writes a tunnel.open audit row for the newly created tunnel', async () => {
@@ -3177,6 +3202,7 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
     vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
       userId: USER_ID,
       orgId: ORG_ID,
+      authSessionId: PARENT_SIGN_IN_SESSION,
       deviceId: DEVICE_ID,
       deviceStatus: 'online',
       agentId: 'agent-abc',
@@ -3206,6 +3232,10 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       result: 'success',
     }));
     expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID, type: 'vnc', via: 'downgrade_vnc' }));
+    expect(sessionInserts(insertMock)).toContainEqual(expect.objectContaining({
+      id: descendantSessionId,
+      authSessionId: PARENT_SIGN_IN_SESSION,
+    }));
   });
 });
 

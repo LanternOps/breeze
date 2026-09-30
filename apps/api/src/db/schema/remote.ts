@@ -50,6 +50,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   // Redis holds only the lease TTL, so a renew after a Redis flush re-derives
   // the baseline from here. NULL on rows predating the revocation lease.
   permissionsEpochSnapshot: bigint('permissions_epoch_snapshot', { mode: 'number' }),
+  // refresh_token_families.family_id of the sign-in that opened this session.
+  // Logout revokes that family, and the remote live authority
+  // (services/remoteWsAuthorization.ts) then refuses the session. NULL = not
+  // bound to a sign-in (pre-existing rows, API-key callers). No FK on purpose.
+  authSessionId: uuid('auth_session_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   // W06 (#3900): one user's ended sessions for a day window; partial so the

@@ -1,4 +1,5 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   devices,
@@ -32,6 +33,9 @@ import type {
   RemoteWsKind,
 } from './remoteWsOwnership';
 import { tightenStatementTimeout } from '../db/lockTimeout';
+// Direct module (not the schema barrel) so suites that replace the barrel still
+// build the real sign-in check.
+import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { isViewerFailureDiagnosticRow } from './viewerFailureDiagnostics';
 
 const ACTIVE_SESSION_STATES = ['pending', 'connecting', 'active'];
@@ -232,6 +236,19 @@ function partnerCanAccessOrg(
   return false;
 }
 
+/**
+ * `true` when the session records the sign-in that opened it and that sign-in
+ * has since been logged out (its refresh family revoked). Rides the session
+ * lookup as a column; a NULL binding never matches.
+ */
+function signInSessionEnded(authSessionId: PgColumn): SQL<boolean> {
+  return sql<boolean>`exists (
+    select 1 from ${refreshTokenFamilies}
+    where ${refreshTokenFamilies.familyId} = ${authSessionId}
+      and ${refreshTokenFamilies.revokedAt} is not null
+  )`;
+}
+
 async function resolveRemoteWsLiveAuthority(
   consumed: Pick<ConsumedRemoteWsTicketContext, 'sessionId' | 'sessionType' | 'userId'>,
   bypassPolicyCache: boolean,
@@ -249,7 +266,11 @@ async function resolveRemoteWsLiveAuthority(
     if (!user || user.status !== 'active') return { denied: 'user_inactive' as const };
 
     const sessionRows = consumed.sessionType === 'tunnel'
-      ? await db.select({ session: tunnelSessions, device: devices }).from(tunnelSessions)
+      ? await db.select({
+          session: tunnelSessions,
+          device: devices,
+          signInEnded: signInSessionEnded(tunnelSessions.authSessionId),
+        }).from(tunnelSessions)
           .innerJoin(devices, and(eq(tunnelSessions.deviceId, devices.id), eq(tunnelSessions.orgId, devices.orgId)))
           .where(eq(tunnelSessions.id, consumed.sessionId)).limit(1)
       : await db.select({
@@ -260,6 +281,7 @@ async function resolveRemoteWsLiveAuthority(
             trustState: partners.trustState,
             probationEnrollments: partners.probationEnrollments,
           },
+          signInEnded: signInSessionEnded(remoteSessions.authSessionId),
         }).from(remoteSessions)
           .innerJoin(devices, and(eq(remoteSessions.deviceId, devices.id), eq(remoteSessions.orgId, devices.orgId)))
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
@@ -298,6 +320,12 @@ async function resolveRemoteWsLiveAuthority(
     // second as the revocation — even strictly before it — is denied rather
     // than misread as "created after."
     if (await isTimestampRevoked(user.id, joined.session.createdAt.getTime())) {
+      return { denied: 'credential_revoked' as const };
+    }
+    // The sign-in that opened this session was logged out. Logout revokes only
+    // that sign-in's refresh family (no user-wide cutoff), so this durable
+    // check is what ends the remote sessions it opened — and only those.
+    if (joined.signInEnded === true) {
       return { denied: 'credential_revoked' as const };
     }
 

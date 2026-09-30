@@ -120,6 +120,9 @@ vi.mock('../../db/schema', () => ({
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (c: any, next: any) => {
     const restrict = c.req.header('x-restrict-site');
+    // x-test-sign-in-session seeds the access token's `sid` (the sign-in's
+    // refresh family) for the session-binding test.
+    const sid = c.req.header('x-test-sign-in-session');
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -127,6 +130,7 @@ vi.mock('../../middleware/auth', () => ({
       orgId: 'org-111',
       accessibleOrgIds: ['org-111'],
       canAccessOrg: (id: string) => id === 'org-111',
+      token: sid ? { sid } : null,
     });
     // The production parent router runs requirePermission(REMOTE_ACCESS)
     // before these child routes. Seed its resulting live permission context
@@ -975,6 +979,34 @@ describe('remote sessions — site-scope enforcement', () => {
       // every pending/connecting/active session of this device+type across
       // the whole org, including sessions owned by other users.
       expect(conditionContainsEquality(condition, 'remoteSessions.userId', 'user-1')).toBe(true);
+    });
+
+    it('records the caller\'s sign-in session on the new session so logging out of it ends the session', async () => {
+      getDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_IN_ALLOWED,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE,
+        agentId: 'agent-1',
+        hostname: 'host-1',
+        osType: 'linux',
+        status: 'online',
+      });
+      rigCreateSession([]);
+      const signInSession = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+      const res = await app.request('/remote/sessions', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          'x-test-sign-in-session': signInSession,
+        },
+        body: JSON.stringify({ deviceId: DEVICE_IN_ALLOWED, type: 'desktop' }),
+      });
+
+      expect(res.status).toBe(201);
+      const valuesMock = (db as any).insert.mock.results[0].value.values as ReturnType<typeof vi.fn>;
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ authSessionId: signInSession }));
     });
 
     it('refuses a device parked in a holding org with 403 before sweeping or inserting', async () => {

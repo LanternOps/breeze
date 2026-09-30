@@ -18,6 +18,7 @@ import { db } from '../db';
 import { devices, remoteSessions } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { authSignInSessionId } from './signInSession';
 import type { AiTool } from './aiTools';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { getToolTimeout } from './toolTimeouts';
@@ -452,6 +453,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
           orgId: access.device.orgId,
           userId: auth.user.id,
           type: sessionType as 'terminal' | 'file_transfer',
+          authSessionId: authSignInSessionId(auth),
         });
       } catch (e) {
         if (e instanceof RemoteSessionDeniedError) {
