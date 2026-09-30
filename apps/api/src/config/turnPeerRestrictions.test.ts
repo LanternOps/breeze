@@ -60,8 +60,8 @@ function confSource(name: string, text: string): Source {
 
 function composeSource(file: string): Source {
   const block = coturnBlock(file);
-  // List items may be YAML-quoted (a bare `--denied-peer-ip=::` would parse as
-  // a mapping because of the trailing colon), so unquote them.
+  // List items may be YAML-quoted (a value ending in `:` must be, or it parses
+  // as a mapping), so unquote them.
   const lines = block
     .split('\n')
     .map((l) => l.trim().replace(/^(#\s*)?- '(.*)'$/, '$1- $2'));
@@ -112,13 +112,41 @@ function denyRanges(src: Source) {
     });
 }
 
-function isDenied(src: Source, ip: string): boolean {
-  const { family, value } = ipToBigInt(ip);
-  return denyRanges(src).some((r) => r.family === family && r.lo <= value && value <= r.hi);
+type Addr = { family: 4 | 6; value: bigint };
+
+/**
+ * coturn's own `addr_less_eq`: addresses of different families compare by
+ * family number (AF_INET < AF_INET6), so an IPv4 address sorts below every
+ * IPv6 address.
+ */
+function coturnLessEq(a: Addr, b: Addr): boolean {
+  if (a.family !== b.family) return a.family < b.family;
+  return a.value <= b.value;
 }
 
+/**
+ * coturn's own `ioa_addr_in_range`: an all-zero bound (`0.0.0.0` or `::`) is
+ * treated as "no bound". A lone `::` entry therefore matches every peer, and an
+ * IPv6 range starting at `::` matches every IPv4 peer. Modelling this exactly
+ * is what lets the public-peer checks below catch such an entry.
+ */
+function coturnInRange(r: { family: 4 | 6; lo: bigint; hi: bigint }, ip: Addr): boolean {
+  const lo: Addr = { family: r.family, value: r.lo };
+  const hi: Addr = { family: r.family, value: r.hi };
+  if (r.lo !== 0n && !coturnLessEq(lo, ip)) return false;
+  return r.hi === 0n || coturnLessEq(ip, hi);
+}
+
+function isDenied(src: Source, ip: string): boolean {
+  const addr = ipToBigInt(ip);
+  return denyRanges(src).some((r) => coturnInRange(r, addr));
+}
+
+// The unspecified addresses (`0.0.0.0`, `::`) need no entry: coturn refuses a
+// zero peer address on its own. Listing `::` would match every peer (see
+// coturnInRange), so the configs must not.
 const MUST_DENY = [
-  '0.0.0.0',
+  '0.0.0.1',
   '10.124.0.4',
   '100.114.219.9', // CGNAT / tailnet
   '127.0.0.1',
@@ -133,9 +161,15 @@ const MUST_DENY = [
   '203.0.113.5',
   '224.0.0.1',
   '255.255.255.255',
-  '::',
   '::1',
   '64:ff9b:1::a00:1',
+  // IPv4-mapped IPv6 (::ffff:0:0/96): 127.0.0.1, 10.124.0.4, 169.254.169.254
+  '::ffff:7f00:1',
+  '::ffff:a7c:4',
+  '::ffff:a9fe:a9fe',
+  // NAT64 well-known prefix (64:ff9b::/96): 127.0.0.1, 169.254.169.254
+  '64:ff9b::7f00:1',
+  '64:ff9b::a9fe:a9fe',
   '2001::1',
   '2002:a00:1::1',
   'fd12:3456::1',
@@ -143,7 +177,7 @@ const MUST_DENY = [
   'ff02::1',
 ];
 
-const MUST_ALLOW = ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111', '2001:4860:4860::8888'];
+const MUST_ALLOW = ['8.8.8.8', '1.1.1.1', '203.0.114.1', '2606:4700:4700::1111', '2001:4860:4860::8888'];
 
 describe.each(SOURCES)('coturn peer restrictions ($name)', (src) => {
   it.each(MUST_DENY)('refuses relaying to %s', (ip) => {
@@ -152,6 +186,15 @@ describe.each(SOURCES)('coturn peer restrictions ($name)', (src) => {
 
   it.each(MUST_ALLOW)('still relays to public peer %s', (ip) => {
     expect(isDenied(src, ip)).toBe(false);
+  });
+
+  it('has no entry with an all-zero bound that coturn reads as unbounded', () => {
+    for (const r of denyRanges(src)) {
+      expect(r.hi, `${src.name}: ${r.spec} has an all-zero upper bound`).not.toBe(0n);
+      if (r.family === 6) {
+        expect(r.lo, `${src.name}: ${r.spec} starts at :: and would match every IPv4 peer`).not.toBe(0n);
+      }
+    }
   });
 
   it('disables TCP relay and multicast peers', () => {
@@ -168,12 +211,12 @@ describe.each(SOURCES)('coturn peer restrictions ($name)', (src) => {
     expect(src.options).not.toContain('verbose');
   });
 
-  it('ships the IPv4-mapped and NAT64 denies commented out, not active', () => {
+  it('denies the IPv4-mapped and NAT64 ranges as active rules', () => {
     const mapped = 'denied-peer-ip=::ffff:0:0-::ffff:ffff:ffff';
     const nat64 = 'denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff';
     for (const line of [mapped, nat64]) {
-      expect(src.commented).toContain(line);
-      expect(src.options).not.toContain(line);
+      expect(src.options).toContain(line);
+      expect(src.commented).not.toContain(line);
     }
   });
 
