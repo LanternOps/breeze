@@ -28,6 +28,21 @@ describe('OrgNotificationSettings: saved channel secrets', () => {
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ slackWebhookUrl: '********' }));
   });
 
+  it('shows the Slack field as unset once a removal has been saved', () => {
+    const onSave = vi.fn();
+    const { rerender } = render(<OrgNotificationSettings notifications={savedNotifications} onSave={onSave} />);
+
+    fireEvent.click(screen.getByTestId('org-notifications-slack-webhook-remove'));
+    save();
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ slackWebhookUrl: '' }));
+
+    rerender(<OrgNotificationSettings notifications={{ ...savedNotifications, slackWebhookUrl: '' }} onSave={onSave} />);
+
+    const input = screen.getByTestId('org-notifications-slack-webhook');
+    expect(input).not.toHaveAttribute('placeholder', i18n.t('settings:savedSecret.removedPlaceholder'));
+    expect(input).not.toHaveAttribute('placeholder', i18n.t('settings:savedSecret.savedPlaceholder'));
+  });
+
   it('sends a typed Slack URL in place of the saved one', () => {
     const onSave = vi.fn();
     render(<OrgNotificationSettings notifications={savedNotifications} onSave={onSave} />);
@@ -60,6 +75,22 @@ describe('OrgNotificationSettings: saved channel secrets', () => {
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       webhooks: ['', '********', 'https://hooks.example.com/new'],
     }));
+  });
+
+  it('picks up the saved list after a save, so a second save does not replay removals by stale position', () => {
+    const onSave = vi.fn();
+    const { rerender } = render(<OrgNotificationSettings notifications={savedNotifications} onSave={onSave} />);
+
+    fireEvent.click(screen.getAllByTestId('org-notifications-webhook-remove')[0]!);
+    save();
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ webhooks: ['', '********'] }));
+
+    // The page re-reads the org after saving: one saved webhook remains.
+    rerender(<OrgNotificationSettings notifications={{ ...savedNotifications, webhooks: ['********'] }} onSave={onSave} />);
+    save();
+
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ webhooks: ['********'] }));
+    expect(screen.getAllByTestId('org-notifications-webhook-saved')).toHaveLength(1);
   });
 
   it('removes a webhook added in this session outright', () => {

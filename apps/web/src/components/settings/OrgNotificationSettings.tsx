@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Bell, Mail, MessageSquare, Plus, Save, Send, Trash2, Webhook } from 'lucide-react';
@@ -86,6 +86,14 @@ export default function OrgNotificationSettings({
   const [webhooks, setWebhooks] = useState(initialData.webhooks || []);
   const [newWebhook, setNewWebhook] = useState('');
   const [preferences, setPreferences] = useState(initialData.preferences || getDefaultPreferences());
+
+  // After a save the page re-reads the org, and the saved secrets come back as
+  // markers at their new positions. Start the secret fields over from what is
+  // stored, or a second save would replay a removal against shifted positions.
+  useEffect(() => {
+    setSlackWebhookUrl(notifications?.slackWebhookUrl || '');
+    setWebhooks(notifications?.webhooks || []);
+  }, [notifications]);
 
   const markDirty = () => {
     onDirty?.();
@@ -276,6 +284,9 @@ export default function OrgNotificationSettings({
               {t('orgNotificationSettings.slack.title')}
             </div>
             <SavedSecretInput
+              // Remount when the stored value changes (e.g. removed by a save)
+              // so the field's "saved" state follows it.
+              key={notifications?.slackWebhookUrl ? 'saved' : 'unset'}
               value={slackWebhookUrl}
               onChange={next => {
                 setSlackWebhookUrl(next);
