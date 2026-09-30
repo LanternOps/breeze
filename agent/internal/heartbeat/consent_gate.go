@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
@@ -101,9 +103,10 @@ var (
 	// start would capture (target = Windows session, "" untargeted).
 	consentOccupancyFn = func(target string) string {
 		sessions, err := listConsentSessionsFn()
-		displays, displayErr := 0, error(nil)
+		var displays []string
+		var displayErr error
 		if runtime.GOOS == "linux" {
-			displays, displayErr = countX11DisplaysFn()
+			displays, displayErr = listX11DisplaysFn()
 		}
 		return classifyConsentOccupancy(runtime.GOOS, sessions, err, target, displays, displayErr)
 	}
@@ -230,7 +233,8 @@ func solicitConsentV2(session *sessionbroker.Session, id string, req ipc.Consent
 			return
 		}
 		if err := session.SendNotify("consent-cancel-"+req.Nonce, ipc.TypeConsentCancel, ipc.ConsentCancel{Nonce: req.Nonce}); err != nil {
-			log.Debug("failed to cancel abandoned consent prompt", "id", id, "error", err.Error())
+			log.Warn("failed to cancel abandoned consent prompt; it stays on screen until its countdown ends",
+				"id", id, "error", err.Error())
 		}
 	}()
 
@@ -331,10 +335,13 @@ func classifyConsentEnvelope(env *ipc.Envelope, nonce string, presented bool) (a
 			}
 			return consentAttempt{outcome: res.Outcome}, true, false
 		case ipc.ConsentOutcomeUnavailable:
-			if presented {
-				return consentAttempt{outcome: consentOutcomeUnknown, detail: "contradictory_reply"}, true, false
+			detail := sanitizeConsentDetail(res.Detail)
+			if presented && detail == "" {
+				// A native helper acknowledges just before asking the OS to
+				// show its dialog; the OS then failed. Not shown after all.
+				detail = "failed_after_presentation"
 			}
-			return consentAttempt{outcome: res.Outcome, detail: sanitizeConsentDetail(res.Detail)}, true, false
+			return consentAttempt{outcome: res.Outcome, detail: detail}, true, false
 		default:
 			return consentAttempt{outcome: consentOutcomeUnknown, detail: "invalid_reply"}, true, false
 		}
@@ -424,6 +431,52 @@ func sameConsentPrincipal(goos string, consent, capture *sessionbroker.Session) 
 	}
 }
 
+// captureDisplayOwnerFn reports who owns the X display the Linux capturer
+// will attach to (x11.SelectX11Target). known=false when that cannot be
+// established (no attachable display, or an owner that resolves to root).
+var captureDisplayOwnerFn = func() (int, bool) {
+	if runtime.GOOS != "linux" {
+		return 0, false
+	}
+	t, err := x11.SelectX11Target()
+	if err != nil || t.OwnerUID <= 0 {
+		return 0, false
+	}
+	return t.OwnerUID, true
+}
+
+// linuxConsentBindingDetail binds a Linux answer to the captured display: the
+// capturer attaches to an X display directly, so the user who answered must
+// own it. When the owner cannot be established the answer is still accepted
+// on a single-user desktop, but refused when more than one graphical user is
+// signed in — there is no telling whose desktop would be shown.
+func linuxConsentBindingDetail(helper *sessionbroker.Session) string {
+	if uid, known := captureDisplayOwnerFn(); known {
+		if uint32(uid) != helper.UID {
+			return "capture_target_changed"
+		}
+		return ""
+	}
+	sessions, err := listConsentSessionsFn()
+	if err != nil {
+		return "capture_target_ambiguous"
+	}
+	owners := map[uint32]bool{}
+	for _, s := range sessions {
+		if !strings.HasPrefix(s.Class, "user") || s.State == "closing" {
+			continue
+		}
+		graphical := s.LogindType == "x11" || s.LogindType == "wayland" || s.LogindType == "mir"
+		if graphical || s.Seat != "" || s.LogindDisplay != "" {
+			owners[s.UID] = true
+		}
+	}
+	if len(owners) > 1 {
+		return "capture_target_ambiguous"
+	}
+	return ""
+}
+
 // consentBindingDetail re-checks, after capture started and before the answer
 // is released, that the grounds the gate proceeded on still hold. It returns a
 // non-empty detail when they do not.
@@ -441,6 +494,9 @@ func (h *Heartbeat) consentBindingDetail(sessionID string, v consentVerdict, tar
 			return "consent_helper_gone"
 		}
 		if !viaHelper {
+			if consentHostOS == "linux" {
+				return linuxConsentBindingDetail(v.helper)
+			}
 			return ""
 		}
 		capture := h.desktopOwnerSession(sessionID)

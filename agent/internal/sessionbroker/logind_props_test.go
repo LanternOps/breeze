@@ -1,6 +1,8 @@
 package sessionbroker
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -16,6 +18,9 @@ func TestApplyLogindSessionProperties(t *testing.T) {
 	}
 	if sess.Display != "x11" || sess.LogindType != "x11" || sess.Seat != "seat0" || sess.Class != "user" {
 		t.Fatalf("unexpected parse %+v", sess)
+	}
+	if sess.LogindDisplay != ":0" {
+		t.Fatalf("Display=:0 must be kept as the logind display: %+v", sess)
 	}
 	if !sess.LockKnown || !sess.Locked {
 		t.Fatalf("LockedHint=yes must read as locked: %+v", sess)
@@ -44,5 +49,51 @@ func TestApplyLogindSessionProperties(t *testing.T) {
 	}
 	if old.LockKnown {
 		t.Fatal("absent LockedHint must leave the lock state unknown")
+	}
+}
+
+// Rows `loginctl list-sessions` prints that cannot be parsed are reported, not
+// silently dropped: a session the detector cannot read may be the one someone
+// is sitting at.
+func TestParseLoginctlListLine(t *testing.T) {
+	tests := []struct {
+		line string
+		ok   bool
+		want DetectedSession
+	}{
+		{"  2 1000 alice seat0 tty2", true, DetectedSession{UID: 1000, Username: "alice", Session: "2", State: "active"}},
+		{"c1 120 gdm seat0 tty1 active no -", true, DetectedSession{UID: 120, Username: "gdm", Session: "c1", State: "active"}},
+		{"7 notanumber bob", false, DetectedSession{}},
+		{"7 1000", false, DetectedSession{}},
+	}
+	for _, tt := range tests {
+		got, ok := parseLoginctlListLine(tt.line)
+		if ok != tt.ok || (ok && got != tt.want) {
+			t.Errorf("parseLoginctlListLine(%q) = (%+v,%v), want (%+v,%v)", tt.line, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+type countedFakeDetector struct {
+	sessions []DetectedSession
+	skipped  int
+}
+
+func (d *countedFakeDetector) ListSessions() ([]DetectedSession, error) { return d.sessions, nil }
+func (d *countedFakeDetector) WatchSessions(context.Context) <-chan SessionEvent {
+	return nil
+}
+func (d *countedFakeDetector) listSessionsCounted() ([]DetectedSession, int, error) {
+	return d.sessions, d.skipped, nil
+}
+
+func TestListSessionsComplete(t *testing.T) {
+	complete := &countedFakeDetector{sessions: []DetectedSession{{Session: "1"}}}
+	if got, err := ListSessionsComplete(complete); err != nil || len(got) != 1 {
+		t.Fatalf("complete listing = (%v,%v)", got, err)
+	}
+	partial := &countedFakeDetector{sessions: []DetectedSession{{Session: "1"}}, skipped: 1}
+	if _, err := ListSessionsComplete(partial); !errors.Is(err, ErrSessionListIncomplete) {
+		t.Fatalf("a listing that skipped a row must report ErrSessionListIncomplete, got %v", err)
 	}
 }

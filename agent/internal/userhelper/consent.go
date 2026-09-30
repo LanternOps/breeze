@@ -1,6 +1,7 @@
 package userhelper
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,12 +57,20 @@ func consentProtocolForAuth(consentUISupported bool) int {
 }
 
 // showConsentDialogFn is the platform dialog seam; tests swap it for a fake.
-// It blocks until the user answers or the countdown expires. presented is
+// It blocks until the user answers, the countdown expires, or ctx is
+// cancelled. presented is
 // called once, immediately before the OS is asked to display the dialog (after
 // every step that can fail without showing anything); the v2 handler turns it
 // into the consent_presented acknowledgement. An implementation that fails
 // before that point returns dialogUnavailable without calling it.
+//
+// ctx is cancelled when the agent withdraws the prompt (consent_cancel); the
+// platform dialog closes itself then.
 var showConsentDialogFn = showConsentDialogOS
+
+// consentDetailCancelled is the v2 unavailable detail for a prompt the agent
+// withdrew before it was answered.
+const consentDetailCancelled = "cancelled"
 
 // handleConsentRequest renders the native consent dialog and replies on the
 // same envelope ID — the wire contract the Tauri assist helper also implements
@@ -103,7 +112,7 @@ func (c *Client) handleConsentRequest(env *ipc.Envelope) {
 	req = sanitizeConsentRequest(req)
 
 	if req.ProtocolVersion < ipc.ConsentProtocolVersion || req.Nonce == "" {
-		outcome := showConsentDialogFn(req, func() {})
+		outcome := showConsentDialogFn(context.Background(), req, func() {})
 		decision, isErr := legacyConsentDecision(outcome, req.OnTimeout)
 		log.Info("consent dialog decided", "sessionId", req.SessionID, "outcome", outcome.wireValue(), "protocol", 1)
 		if isErr {
@@ -133,10 +142,16 @@ func (c *Client) handleConsentRequest(env *ipc.Envelope) {
 		reply(ipc.ConsentOutcomeUnavailable, consentDetailPromptInProgress)
 		return
 	}
-	releaseGuard = func() { c.consentPromptActive.Store(false) }
+	ctx, cancel := context.WithCancel(context.Background())
+	c.setActiveConsent(req.Nonce, cancel)
+	releaseGuard = func() {
+		c.setActiveConsent("", nil)
+		cancel()
+		c.consentPromptActive.Store(false)
+	}
 
 	acked := false
-	outcome := showConsentDialogFn(req, func() {
+	outcome := showConsentDialogFn(ctx, req, func() {
 		if acked {
 			return
 		}
@@ -145,8 +160,42 @@ func (c *Client) handleConsentRequest(env *ipc.Envelope) {
 			log.Warn("failed to send consent presentation ack", "id", env.ID, "error", err)
 		}
 	})
+	// Free the prompt slot before answering, so a request the agent sends
+	// right after reading this result is not refused as "in progress".
+	cancelled := ctx.Err() != nil
+	releaseGuard()
+	releaseGuard = func() {}
+	if cancelled {
+		log.Info("consent dialog withdrawn by the agent", "sessionId", req.SessionID)
+		reply(ipc.ConsentOutcomeUnavailable, consentDetailCancelled)
+		return
+	}
 	log.Info("consent dialog decided", "sessionId", req.SessionID, "outcome", outcome.wireValue(), "protocol", ipc.ConsentProtocolVersion)
 	reply(outcome.wireValue(), "")
+}
+
+// setActiveConsent records (or clears, with nonce "") the v2 prompt on screen
+// and how to take it down.
+func (c *Client) setActiveConsent(nonce string, cancel context.CancelFunc) {
+	c.consentMu.Lock()
+	c.consentNonce, c.consentCancel = nonce, cancel
+	c.consentMu.Unlock()
+}
+
+// handleConsentCancel closes the dialog for the nonce the agent withdrew.
+// A cancel for any other prompt is ignored.
+func (c *Client) handleConsentCancel(env *ipc.Envelope) {
+	var req ipc.ConsentCancel
+	if err := json.Unmarshal(env.Payload, &req); err != nil || req.Nonce == "" {
+		return
+	}
+	c.consentMu.Lock()
+	cancel := c.consentCancel
+	match := c.consentNonce == req.Nonce
+	c.consentMu.Unlock()
+	if match && cancel != nil {
+		cancel()
+	}
 }
 
 // legacyConsentDecision maps a dialog outcome to the v1 wire decision for an

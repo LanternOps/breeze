@@ -105,6 +105,13 @@ func (d *windowsDetector) querySessionLastInput(sessionID uint32) (time.Time, in
 }
 
 func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
+	sessions, _, err := d.listSessionsCounted()
+	return sessions, err
+}
+
+// listSessionsCounted also reports how many sessions it skipped because a
+// field could not be read safely; see ListSessionsComplete.
+func (d *windowsDetector) listSessionsCounted() ([]DetectedSession, int, error) {
 	var sessionInfo *wtsSessionInfo
 	var count uint32
 
@@ -116,11 +123,12 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 		uintptr(unsafe.Pointer(&count)),
 	)
 	if r1 == 0 {
-		return nil, fmt.Errorf("WTSEnumerateSessions: %w", err)
+		return nil, 0, fmt.Errorf("WTSEnumerateSessions: %w", err)
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(sessionInfo)))
 
 	var sessions []DetectedSession
+	skipped := 0
 	size := unsafe.Sizeof(wtsSessionInfo{})
 
 	for i := uint32(0); i < count; i++ {
@@ -165,22 +173,27 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 		var err error
 		session.Session, err = sanitizeDetectedField(session.Session, true)
 		if err != nil {
+			skipped++
 			continue
 		}
 		session.Display, err = sanitizeDetectedField(session.Display, true)
 		if err != nil {
+			skipped++
 			continue
 		}
 		session.State, err = sanitizeDetectedField(session.State, true)
 		if err != nil {
+			skipped++
 			continue
 		}
 		session.Type, err = sanitizeDetectedField(session.Type, true)
 		if err != nil {
+			skipped++
 			continue
 		}
 		session.Username, err = sanitizeDetectedField(session.Username, false)
 		if err != nil {
+			skipped++
 			continue
 		}
 
@@ -190,7 +203,7 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 		}
 	}
 
-	return sessions, nil
+	return sessions, skipped, nil
 }
 
 func (d *windowsDetector) WatchSessions(ctx context.Context) <-chan SessionEvent {

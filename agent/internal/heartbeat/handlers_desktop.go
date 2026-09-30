@@ -747,6 +747,16 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		h.stopWsDesktopStreamExact(sessionID, stream)
 		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
+	if consentGated {
+		// Same post-capture re-check as the WebRTC path: the grounds the gate
+		// proceeded on must still hold before anything is shown or relayed.
+		if detail := h.consentBindingDetail(sessionID, consent, "", false); detail != "" {
+			log.Warn("consent no longer holds for the started stream; stopping it",
+				"sessionId", sessionID, "detail", detail)
+			h.stopWsDesktopStreamExact(sessionID, stream)
+			return consentDeniedResult(sessionID, consentBindingLost(consent, detail), time.Since(start).Milliseconds())
+		}
+	}
 	if prompt != nil {
 		h.afterDesktopStreamStart(sessionID, cmd.ID, prompt)
 	}

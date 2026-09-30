@@ -88,6 +88,32 @@ describe('ConsentWindow', () => {
     expect(api.presented).not.toHaveBeenCalled();
   });
 
+  it('does not run a v2 countdown until the prompt is confirmed on screen', async () => {
+    const { api } = fakeApi(v2Req);
+    vi.mocked(api.isVisible).mockReturnValue(false);
+    render(<ConsentWindow api={api} />);
+    await flush();
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(api.submit).not.toHaveBeenCalled();
+
+    // Once visible, the full countdown runs from the confirmation.
+    vi.mocked(api.isVisible).mockReturnValue(true);
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(api.presented).toHaveBeenCalledWith('nonce-1');
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(api.submit).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(1_500);
+    });
+    expect(api.submit).toHaveBeenCalledWith('sess-1', 'expired', 'nonce-1');
+  });
+
   it('never confirms presentation for a v1 prompt', async () => {
     const { api } = fakeApi(v1Req);
     render(<ConsentWindow api={api} />);
@@ -111,6 +137,9 @@ describe('ConsentWindow', () => {
     const { api } = fakeApi(v2Req);
     render(<ConsentWindow api={api} />);
     await flush();
+    await act(async () => {
+      vi.advanceTimersByTime(20); // painted and confirmed; the countdown starts
+    });
     await act(async () => {
       vi.advanceTimersByTime(3_500);
     });

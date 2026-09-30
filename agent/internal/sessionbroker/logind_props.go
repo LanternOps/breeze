@@ -2,6 +2,7 @@ package sessionbroker
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,8 @@ func applyLogindSessionProperties(sess *DetectedSession, out string, now time.Ti
 			sess.IsRemote = parts[1] == "yes"
 		case "Seat":
 			sess.Seat = parts[1]
+		case "Display":
+			sess.LogindDisplay = parts[1]
 		case "State":
 			sess.State = parts[1]
 		case "Class":
@@ -59,4 +62,24 @@ func applyLogindSessionProperties(sess *DetectedSession, out string, now time.Ti
 		}
 	}
 	return nil
+}
+
+// parseLoginctlListLine parses one `loginctl list-sessions --no-legend` row
+// ("SESSION UID USER [SEAT] [TTY] ..."). ok=false means the row could not be
+// read; callers count it as skipped rather than silently dropping it.
+func parseLoginctlListLine(line string) (DetectedSession, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return DetectedSession{}, false
+	}
+	uid, err := strconv.ParseUint(fields[1], 10, 32)
+	if err != nil {
+		return DetectedSession{}, false
+	}
+	return DetectedSession{
+		UID:      uint32(uid),
+		Username: fields[2],
+		Session:  fields[0],
+		State:    "active",
+	}, true
 }

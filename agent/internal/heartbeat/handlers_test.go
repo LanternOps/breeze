@@ -288,9 +288,9 @@ func TestHandleDesktopStreamStartRefusesSignedInUserWhoCannotBeAsked(t *testing.
 	withConsentSeams(t, occupancyOccupied, true)
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -298,7 +298,8 @@ func TestHandleDesktopStreamStartRefusesSignedInUserWhoCannotBeAsked(t *testing.
 		ID:   "desktop-stream-consent-occupied",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-consent-occupied",
+			"sessionId":       "ws-consent-occupied",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode":                       "consent",
 				"consentUnavailableBehavior": "proceed",

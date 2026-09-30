@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -123,6 +124,17 @@ func TestSolicitConsentV2(t *testing.T) {
 			},
 			wantOutcome: ipc.ConsentOutcomeUnavailable,
 			wantDetail:  "window_failed",
+		},
+		{
+			// A native dialog acknowledges just before asking the OS to show
+			// it; if the OS then fails, the prompt was not shown after all.
+			name: "acknowledged, then the helper says it could not show it",
+			script: func(t *testing.T, c *consentTestHelper, env *ipc.Envelope, req ipc.ConsentRequest) {
+				c.ack(t, env.ID, req.Nonce)
+				c.result(t, env.ID, ipc.ConsentResult{Nonce: req.Nonce, Outcome: ipc.ConsentOutcomeUnavailable})
+			},
+			wantOutcome: ipc.ConsentOutcomeUnavailable,
+			wantDetail:  "failed_after_presentation",
 		},
 		{
 			name:        "no acknowledgement within the presentation budget",
@@ -403,5 +415,77 @@ func TestConsentMarkerFields(t *testing.T) {
 	}
 	if _, ok := m["consentDetail"]; ok {
 		t.Fatalf("empty detail must be omitted: %v", m)
+	}
+}
+
+// Linux captures the X display directly, so a consent answer must come from
+// the user who owns that display. When the owner cannot be established and
+// more than one graphical user is signed in, the answer cannot be bound to
+// the captured desktop and the start is refused.
+func TestLinuxConsentBinding(t *testing.T) {
+	helper := &sessionbroker.Session{UID: 1000, IdentityKey: "1000"}
+	graphical := func(uid uint32) sessionbroker.DetectedSession {
+		return sessionbroker.DetectedSession{UID: uid, Username: "u", Class: "user", LogindType: "x11", State: "active", Seat: "seat0"}
+	}
+	tests := []struct {
+		name     string
+		ownerUID int
+		known    bool
+		sessions []sessionbroker.DetectedSession
+		want     string
+	}{
+		{"display owned by the consenting user", 1000, true, []sessionbroker.DetectedSession{graphical(1000), graphical(1001)}, ""},
+		{"display owned by someone else", 1001, true, []sessionbroker.DetectedSession{graphical(1000), graphical(1001)}, "capture_target_changed"},
+		{"owner unknown, one graphical user", 0, false, []sessionbroker.DetectedSession{graphical(1000)}, ""},
+		{"owner unknown, several graphical users", 0, false, []sessionbroker.DetectedSession{graphical(1000), graphical(1001)}, "capture_target_ambiguous"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withConsentHostOS(t, "linux")
+			origOwner, origList := captureDisplayOwnerFn, listConsentSessionsFn
+			captureDisplayOwnerFn = func() (int, bool) { return tt.ownerUID, tt.known }
+			listConsentSessionsFn = func() ([]sessionbroker.DetectedSession, error) { return tt.sessions, nil }
+			t.Cleanup(func() { captureDisplayOwnerFn, listConsentSessionsFn = origOwner, origList })
+
+			h := &Heartbeat{}
+			for _, reason := range []string{consentReasonUser, consentReasonTimeout} {
+				v := consentVerdict{proceed: true, reason: reason, helper: helper}
+				if got := h.consentBindingDetail("sess-linux", v, "", false); got != tt.want {
+					t.Fatalf("%s: consentBindingDetail = %q, want %q", reason, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// The WS stream path re-checks the grounds the gate proceeded on once capture
+// is up, like the WebRTC path: someone signing in meanwhile refuses the start
+// before any notice or indicator goes up.
+func TestHandleDesktopStreamStartRechecksConsentAfterCapture(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
+	s := newStreamHarness(t)
+	inner := s.h.wsDesktopStart
+	s.h.wsDesktopStart = func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
+		consentOccupancyFn = func(string) string { return occupancyOccupied }
+		return inner(sessionID, displayIndex, config, lease, sendFrame)
+	}
+
+	result := handleDesktopStreamStart(s.h, streamStartCmd("desk-start-recheck", map[string]any{
+		"prompt": map[string]any{
+			"mode":                       "consent",
+			"consentUnavailableBehavior": "proceed",
+			"showIndicator":              true,
+		},
+	}))
+
+	assertConsentDenied(t, result, "no_user")
+	if payload := consentPayloadOf(t, result); payload["consentDetail"] != "user_signed_in" {
+		t.Fatalf("detail = %v, want user_signed_in", payload["consentDetail"])
+	}
+	if s.started.Load() != 1 {
+		t.Fatalf("capture started %d times, want 1", s.started.Load())
+	}
+	if prompt := takeDesktopPromptIfOwnedBy(streamSessionID, "desk-start-recheck"); prompt != nil {
+		t.Fatal("a refused stream must not have put up its notice or indicator")
 	}
 }

@@ -81,6 +81,29 @@ export function consentDeniedMessage(reason: string, detail?: string): string {
         break;
     }
   }
+  if (reason === 'no_user') {
+    // The user answered (or nobody was signed in), but by the time the
+    // capture was up that no longer held for the desktop being captured.
+    switch (detail) {
+      case 'consent_helper_gone':
+        return 'The user on the remote device signed out, or their consent prompt closed, before the session '
+          + 'could start. The session was not started.';
+      case 'capture_target_changed':
+        return 'The session would have shown a different desktop than the one whose user answered the consent '
+          + 'prompt. The session was not started.';
+      case 'capture_target_unknown':
+        return 'The remote device could not confirm which desktop the session would show, so the consent '
+          + 'answer could not be applied. The session was not started.';
+      case 'capture_target_ambiguous':
+        return 'More than one user is signed in to a desktop on the remote device, and it could not tell whose '
+          + 'desktop the session would show. The session was not started.';
+      case 'user_signed_in':
+        return 'Someone signed in on the remote device while the session was starting, so it can no longer '
+          + 'proceed without asking them. The session was not started.';
+      default:
+        break;
+    }
+  }
   switch (reason) {
     case 'user':
       return 'The user on the remote device declined the connection.';
@@ -92,7 +115,7 @@ export function consentDeniedMessage(reason: string, detail?: string): string {
       return 'No one is signed in on the remote device to allow the connection, and policy requires approval.';
     case 'helper_unreachable':
       return 'Someone is signed in on the remote device, but the consent prompt could not be shown to them '
-        + '(Breeze Assist is not responding). The session was not started.';
+        + '(the app that shows it is not responding). The session was not started.';
     default:
       return 'The connection could not be approved on the remote device.';
   }

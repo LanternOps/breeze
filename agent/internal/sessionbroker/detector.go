@@ -2,6 +2,8 @@ package sessionbroker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -64,6 +66,40 @@ type DetectedSession struct {
 	Class             string `json:"-"`
 	LogindType        string `json:"-"`
 	PropertiesUnknown bool   `json:"-"`
+	// LogindDisplay is logind's Display property: the X display (":10")
+	// the session owns, set even for sessions whose Type is not graphical
+	// (xrdp, Xvnc).
+	LogindDisplay string `json:"-"`
+}
+
+// ErrSessionListIncomplete is returned by ListSessionsComplete when the
+// detector had to skip rows it could not parse. The sessions it did read are
+// still returned; callers that need the whole picture treat the list as
+// incomplete.
+var ErrSessionListIncomplete = errors.New("session list is incomplete: some sessions could not be read")
+
+// countedSessionLister is implemented by detectors that can report how many
+// rows they skipped (unparseable or unsafe fields).
+type countedSessionLister interface {
+	listSessionsCounted() ([]DetectedSession, int, error)
+}
+
+// ListSessionsComplete is ListSessions for callers that must not mistake a
+// skipped row for an absent session: it fails with ErrSessionListIncomplete
+// (alongside the sessions it did read) when any row was skipped.
+func ListSessionsComplete(d SessionDetector) ([]DetectedSession, error) {
+	counted, ok := d.(countedSessionLister)
+	if !ok {
+		return d.ListSessions()
+	}
+	sessions, skipped, err := counted.listSessionsCounted()
+	if err != nil {
+		return sessions, err
+	}
+	if skipped > 0 {
+		return sessions, fmt.Errorf("%w (%d skipped)", ErrSessionListIncomplete, skipped)
+	}
+	return sessions, nil
 }
 
 // SessionDetector detects user sessions and monitors login/logout events.

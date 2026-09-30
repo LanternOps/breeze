@@ -18,38 +18,42 @@ const (
 	occupancyUnknown    = "unknown"
 )
 
-// Test seams: the session list and the count of local X11 display sockets.
+// Test seams: the session list and the local X11 displays.
 var (
+	// listConsentSessionsFn fails with sessionbroker.ErrSessionListIncomplete
+	// when the detector skipped a row: an unreadable session may be the one
+	// someone is sitting at.
 	listConsentSessionsFn = func() ([]sessionbroker.DetectedSession, error) {
-		return sessionbroker.NewSessionDetector().ListSessions()
+		return sessionbroker.ListSessionsComplete(sessionbroker.NewSessionDetector())
 	}
-	countX11DisplaysFn = countX11Displays
+	listX11DisplaysFn = listX11Displays
 )
 
-// countX11Displays counts X server sockets. The Linux capturer finds X
-// displays on its own, including ones no logind session accounts for, so a
-// display nobody can be matched to is a desktop someone may be looking at.
-func countX11Displays() (int, error) {
+// listX11Displays lists X server sockets as display names (":0", ":10"). The
+// Linux capturer finds X displays on its own, including ones no logind
+// session accounts for, so a display nobody can be matched to is a desktop
+// someone may be looking at.
+func listX11Displays() ([]string, error) {
 	entries, err := os.ReadDir("/tmp/.X11-unix")
 	if os.IsNotExist(err) {
-		return 0, nil
+		return nil, nil
 	}
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var displays []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "X") {
-			n++
+		if n, ok := strings.CutPrefix(e.Name(), "X"); ok && n != "" {
+			displays = append(displays, ":"+n)
 		}
 	}
-	return n, nil
+	return displays, nil
 }
 
 // classifyConsentOccupancy decides whether anyone is signed in to the session
 // the start would capture. target is the Windows session being captured ("" =
 // untargeted); x11Displays/x11Err are Linux-only.
-func classifyConsentOccupancy(goos string, sessions []sessionbroker.DetectedSession, listErr error, target string, x11Displays int, x11Err error) string {
+func classifyConsentOccupancy(goos string, sessions []sessionbroker.DetectedSession, listErr error, target string, x11Displays []string, x11Err error) string {
 	if listErr != nil || len(sessions) >= sessionbroker.MaxDetectedSessions {
 		return occupancyUnknown
 	}
@@ -124,9 +128,9 @@ var linuxNonUserClasses = map[string]bool{
 	"lock-screen":      true, // the locked user's own session is listed separately
 }
 
-func classifyLinuxOccupancy(sessions []sessionbroker.DetectedSession, x11Displays int, x11Err error) string {
+func classifyLinuxOccupancy(sessions []sessionbroker.DetectedSession, x11Displays []string, x11Err error) string {
 	unknown := false
-	greeter := false
+	greeterDisplays := map[string]bool{}
 	for _, s := range sessions {
 		if s.PropertiesUnknown {
 			unknown = true
@@ -139,14 +143,18 @@ func classifyLinuxOccupancy(sessions []sessionbroker.DetectedSession, x11Display
 				continue // lingering processes after logout, no desktop
 			}
 			graphical := s.LogindType == "x11" || s.LogindType == "wayland" || s.LogindType == "mir"
-			if graphical || s.Seat != "" {
-				// A graphical session (local or remote), or anyone at a
-				// physical seat (a tty login may be running startx).
+			if graphical || s.Seat != "" || s.LogindDisplay != "" {
+				// A graphical session (local or remote), anyone at a
+				// physical seat (a tty login may be running startx), or a
+				// session that owns an X display (xrdp, Xvnc).
 				return occupancyOccupied
 			}
-			// A remote tty (ssh) has no desktop to capture.
+			// A remote tty (ssh) has no desktop of its own. If it runs an
+			// X server anyway, that display is caught below.
 		case s.Class == "greeter":
-			greeter = true
+			if s.LogindDisplay != "" {
+				greeterDisplays[s.LogindDisplay] = true
+			}
 		case linuxNonUserClasses[s.Class]:
 		default:
 			// Missing or unfamiliar class: cannot tell what it is.
@@ -156,8 +164,12 @@ func classifyLinuxOccupancy(sessions []sessionbroker.DetectedSession, x11Display
 	if unknown || x11Err != nil {
 		return occupancyUnknown
 	}
-	if x11Displays > 0 && !greeter {
-		return occupancyUnknown
+	// Every X display must be a login screen: any other one may be a
+	// desktop no session accounts for.
+	for _, d := range x11Displays {
+		if !greeterDisplays[d] {
+			return occupancyUnknown
+		}
 	}
 	return occupancyUnoccupied
 }

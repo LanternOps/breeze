@@ -87,7 +87,14 @@ func decideConsent(att consentAttempt, unavailableBehavior string, occupancy fun
 }
 
 func decideUnshown(v consentVerdict, proceedAllowed bool, occupancy func() string) consentVerdict {
-	v.occupancy = occupancy()
+	if v.helper != nil {
+		// A consent helper runs inside a signed-in user's session, so
+		// having one connected is proof someone is there, whatever the
+		// session detector reports.
+		v.occupancy = occupancyOccupied
+	} else {
+		v.occupancy = occupancy()
+	}
 	if v.occupancy == occupancyUnoccupied {
 		v.proceed, v.reason = proceedAllowed, consentReasonNoUserSession
 		return v

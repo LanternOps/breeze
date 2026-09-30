@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -24,39 +23,34 @@ func NewSessionDetector() SessionDetector {
 }
 
 func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
+	sessions, _, err := d.listSessionsCounted()
+	return sessions, err
+}
+
+// listSessionsCounted also reports how many rows it skipped (unparseable
+// list rows, unsafe field values); see ListSessionsComplete.
+func (d *linuxDetector) listSessionsCounted() ([]DetectedSession, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
 	if err != nil {
-		return nil, fmt.Errorf("loginctl list-sessions: %w", err)
+		return nil, 0, fmt.Errorf("loginctl list-sessions: %w", err)
 	}
 
 	var sessions []DetectedSession
+	skipped := 0
 	scanner := newDetectorScanner(string(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		sess, ok := parseLoginctlListLine(line)
+		if !ok {
+			skipped++
 			continue
 		}
-
-		sessionID := fields[0]
-		uid, err := strconv.ParseUint(fields[1], 10, 32)
-		if err != nil {
-			continue // skip sessions with unparseable UID
-		}
-		username := fields[2]
-
-		// Get session details
-		sess := DetectedSession{
-			UID:      uint32(uid),
-			Username: username,
-			Session:  sessionID,
-			State:    "active",
-		}
+		sessionID := sess.Session
 
 		// Query session properties. A failed query leaves State/Display/Seat
 		// at their defaults; flag it so callers never read those defaults as
@@ -68,11 +62,12 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 		if propErr != nil {
 			sess.PropertiesUnknown = true
 		} else if err := applyLogindSessionProperties(&sess, string(propOut), time.Now()); err != nil {
-			return nil, err
+			return nil, skipped, err
 		}
 
 		sess, err = sanitizeDetectedSession(sess)
 		if err != nil {
+			skipped++
 			continue
 		}
 
@@ -82,10 +77,10 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("parse loginctl list-sessions output: %w", err)
+		return nil, skipped, fmt.Errorf("parse loginctl list-sessions output: %w", err)
 	}
 
-	return sessions, nil
+	return sessions, skipped, nil
 }
 
 func (d *linuxDetector) WatchSessions(ctx context.Context) <-chan SessionEvent {

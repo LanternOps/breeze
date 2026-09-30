@@ -59,6 +59,9 @@ type Client struct {
 	// consentPromptActive is set while a v2 consent dialog is on screen, so
 	// a second prompt is refused instead of stacked (handleConsentRequest).
 	consentPromptActive atomic.Bool
+	consentMu           sync.Mutex
+	consentNonce        string             // v2 prompt on screen, "" when none
+	consentCancel       context.CancelFunc // closes that prompt's dialog
 	agentID             string
 	scopes              []string
 	stopChan            chan struct{}
@@ -464,6 +467,9 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeConsentRequest:
 			safeGo("consent_request", func() { c.handleConsentRequest(env) })
+
+		case ipc.TypeConsentCancel:
+			c.handleConsentCancel(env)
 
 		case ipc.TypeBannerShow:
 			safeGo("banner_show", func() { c.handleBannerShowEnvelope(env) })

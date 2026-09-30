@@ -4,6 +4,7 @@ package userhelper
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -17,7 +18,7 @@ import (
 // between auth and this call), the result is unavailable — never a user
 // denial or an expiry (classifyZenityExit).
 // zenity exit codes: 0=OK(Allow), 1=Cancel(Deny), 5=timeout.
-func showConsentDialogOS(req ipc.ConsentRequest, presented func()) dialogOutcome {
+func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 	title, body := buildConsentDialogText(req)
 	args := []string{
 		"--question",
@@ -30,7 +31,7 @@ func showConsentDialogOS(req ipc.ConsentRequest, presented func()) dialogOutcome
 		args = append(args, fmt.Sprintf("--timeout=%d", (req.TimeoutMs+999)/1000))
 	}
 	var stderr bytes.Buffer
-	cmd := exec.Command("zenity", args...)
+	cmd := exec.CommandContext(ctx, "zenity", args...)
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		log.Warn("zenity consent dialog could not start", "error", err.Error())

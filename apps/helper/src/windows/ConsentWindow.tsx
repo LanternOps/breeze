@@ -39,6 +39,7 @@ export const tauriConsentApi: ConsentWindowApi = {
 
 export function ConsentWindow({ api = tauriConsentApi }: { api?: ConsentWindowApi }) {
   const [req, setReq] = useState<ConsentRequest | null>(null);
+  const [presentedNonce, setPresentedNonce] = useState<string | null>(null);
   const acked = useRef<string | null>(null);
   const decided = useRef<string | null>(null);
 
@@ -48,10 +49,10 @@ export function ConsentWindow({ api = tauriConsentApi }: { api?: ConsentWindowAp
     api.listen((next) => setReq(next)).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
-    }).catch(() => {});
+    }).catch((err) => console.warn('[consent] failed to listen for consent requests', err));
     api.getRequest().then((current) => {
       if (!cancelled && current) setReq((prev) => prev ?? current);
-    }).catch(() => {});
+    }).catch((err) => console.warn('[consent] failed to read the pending consent request', err));
     return () => {
       cancelled = true;
       unlisten?.();
@@ -67,7 +68,8 @@ export function ConsentWindow({ api = tauriConsentApi }: { api?: ConsentWindowAp
       if (done || acked.current === nonce || !api.isVisible()) return;
       done = true;
       acked.current = nonce;
-      api.presented(nonce).catch(() => {});
+      setPresentedNonce(nonce);
+      api.presented(nonce).catch((err) => console.warn('[consent] failed to confirm the prompt is on screen', err));
     };
     requestAnimationFrame(tryAck);
     document.addEventListener('visibilitychange', tryAck);
@@ -82,16 +84,20 @@ export function ConsentWindow({ api = tauriConsentApi }: { api?: ConsentWindowAp
     const key = req.nonce ?? req.sessionId;
     if (decided.current === key) return;
     decided.current = key;
+    const logSubmitFailure = (err: unknown) => console.warn('[consent] failed to report the answer', err);
     if (reason === 'user') {
-      api.submit(req.sessionId, allow ? 'allow' : 'deny', req.nonce ?? null).catch(() => {});
+      api.submit(req.sessionId, allow ? 'allow' : 'deny', req.nonce ?? null).catch(logSubmitFailure);
     } else if (req.nonce) {
       // v2: say the countdown ran out. The agent decides what that means.
-      api.submit(req.sessionId, 'expired', req.nonce).catch(() => {});
+      api.submit(req.sessionId, 'expired', req.nonce).catch(logSubmitFailure);
     }
     // v1 timeout: submit nothing — the older agent runs its own timeout.
-    api.close().catch(() => {});
+    api.close().catch((err) => console.warn('[consent] failed to close the consent window', err));
   }, [req, api]);
 
   if (!req) return null;
-  return <ConsentDialog req={req} onDecision={handleDecision} />;
+  // v2: the countdown runs from the moment the prompt is confirmed on
+  // screen, the same moment the agent starts waiting for the answer.
+  const countdownRunning = !req.nonce || presentedNonce === req.nonce;
+  return <ConsentDialog req={req} onDecision={handleDecision} countdownRunning={countdownRunning} />;
 }

@@ -63,6 +63,26 @@ describe('consentDeniedMessage', () => {
     expect(consentDeniedMessage('helper_unreachable', 'no_helper')).toMatch(/no way to show/);
   });
 
+  it('does not name Breeze Assist for a prompt that could not be shown (native dialogs show it too)', () => {
+    for (const detail of [undefined, 'no_presentation', 'failed_after_presentation', 'helper_error']) {
+      const msg = consentDeniedMessage('helper_unreachable', detail);
+      expect(msg).toMatch(/could not be shown/);
+      expect(msg).not.toMatch(/Assist/);
+    }
+  });
+
+  it.each([
+    ['consent_helper_gone', /signed out|no longer/i],
+    ['capture_target_changed', /different|another/i],
+    ['capture_target_unknown', /could not confirm/i],
+    ['capture_target_ambiguous', /more than one/i],
+    ['user_signed_in', /signed in/i],
+  ])('explains a consent that no longer held once capture started (%s)', (detail, pattern) => {
+    const msg = consentDeniedMessage('no_user', detail);
+    expect(msg).toMatch(pattern);
+    expect(msg).toMatch(/not started/);
+  });
+
   it('says another request is waiting when the prompt was refused because one is already on screen', () => {
     expect(consentDeniedMessage('helper_unreachable', 'prompt_in_progress')).toMatch(/already waiting/);
     // Any other detail keeps the reason's message.

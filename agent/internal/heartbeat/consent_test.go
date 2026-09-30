@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 // decideConsent is the consent gate's decision matrix. Only a click is a user
@@ -35,6 +36,9 @@ func TestDecideConsent(t *testing.T) {
 		{"expired, unknown behavior fails closed", consentAttempt{outcome: ipc.ConsentOutcomePresentedExpired}, "", nil, visible, false, "timeout", "", ""},
 		{"not shown, nobody signed in, proceed", consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "no_helper"}, "proceed", occ(occupancyUnoccupied), visible, true, "no_user_session", occupancyUnoccupied, "no_helper"},
 		{"not shown, nobody signed in, block", consentAttempt{outcome: ipc.ConsentOutcomeUnavailable}, "block", occ(occupancyUnoccupied), visible, false, "no_user_session", occupancyUnoccupied, ""},
+		// A connected consent helper lives in a signed-in user's session, so
+		// the session is occupied whatever the detector says.
+		{"not shown by a connected helper is occupied, whatever the detector says", consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "no_presentation", helper: &sessionbroker.Session{}}, "proceed", func() string { return occupancyUnoccupied }, visible, false, "helper_unreachable", occupancyOccupied, "no_presentation"},
 		{"not shown, someone signed in, proceed ignored", consentAttempt{outcome: ipc.ConsentOutcomeUnavailable}, "proceed", occ(occupancyOccupied), visible, false, "helper_unreachable", occupancyOccupied, ""},
 		{"not shown, cannot tell who is signed in, proceed ignored", consentAttempt{outcome: ipc.ConsentOutcomeUnavailable}, "proceed", occ(occupancyUnknown), visible, false, "helper_unreachable", occupancyUnknown, ""},
 		{"shown but no valid answer", consentAttempt{outcome: consentOutcomeUnknown}, "proceed", nil, visible, false, "no_user", "", ""},

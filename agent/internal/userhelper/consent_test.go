@@ -1,6 +1,7 @@
 package userhelper
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -229,13 +230,13 @@ func TestShowConsentDialogFnInjectable(t *testing.T) {
 	orig := showConsentDialogFn
 	defer func() { showConsentDialogFn = orig }()
 	called := false
-	showConsentDialogFn = func(req ipc.ConsentRequest, presented func()) dialogOutcome {
+	showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 		called = true
 		presented()
 		return dialogAllowed
 	}
 	acked := false
-	if got := showConsentDialogFn(ipc.ConsentRequest{}, func() { acked = true }); !called || !acked || got != dialogAllowed {
+	if got := showConsentDialogFn(context.Background(), ipc.ConsentRequest{}, func() { acked = true }); !called || !acked || got != dialogAllowed {
 		t.Fatal("injection seam broken")
 	}
 }
@@ -276,7 +277,7 @@ func TestHandleConsentRequest_RepliesSameEnvelopeId(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := showConsentDialogFn
 			defer func() { showConsentDialogFn = orig }()
-			showConsentDialogFn = func(req ipc.ConsentRequest, presented func()) dialogOutcome {
+			showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 				presented()
 				return tt.outcome
 			}
@@ -323,7 +324,9 @@ func TestHandleConsentRequest_RepliesSameEnvelopeId(t *testing.T) {
 func TestHandleConsentRequest_LegacyUnavailableIsAnErrorReply(t *testing.T) {
 	orig := showConsentDialogFn
 	defer func() { showConsentDialogFn = orig }()
-	showConsentDialogFn = func(req ipc.ConsentRequest, presented func()) dialogOutcome { return dialogUnavailable }
+	showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
+		return dialogUnavailable
+	}
 
 	client, peer, cleanup := createClientPipe(t)
 	defer cleanup()
@@ -372,7 +375,7 @@ func TestHandleConsentRequest_V2AcknowledgesThenReportsOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := showConsentDialogFn
 			defer func() { showConsentDialogFn = orig }()
-			showConsentDialogFn = func(req ipc.ConsentRequest, presented func()) dialogOutcome {
+			showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 				if tt.present {
 					presented()
 				}
@@ -424,7 +427,7 @@ func TestHandleConsentRequest_V2RefusesAConcurrentPrompt(t *testing.T) {
 	defer func() { showConsentDialogFn = orig }()
 	release := make(chan struct{})
 	showing := make(chan struct{})
-	showConsentDialogFn = func(req ipc.ConsentRequest, presented func()) dialogOutcome {
+	showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 		presented()
 		close(showing)
 		<-release
@@ -494,7 +497,7 @@ func TestHandleConsentRequest_BadPayloadFailsClosed(t *testing.T) {
 func TestHandleConsentRequest_PanicFailsClosed(t *testing.T) {
 	for _, v2 := range []bool{false, true} {
 		orig := showConsentDialogFn
-		showConsentDialogFn = func(req ipc.ConsentRequest, presented func()) dialogOutcome {
+		showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 			panic("simulated Win32 syscall crash")
 		}
 
@@ -535,5 +538,45 @@ func TestHandleConsentRequest_PanicFailsClosed(t *testing.T) {
 		}
 		cleanup()
 		showConsentDialogFn = orig
+	}
+}
+
+// The agent cancels a prompt it stopped waiting for; the helper takes the
+// dialog down (the platform dialog observes ctx) instead of leaving it up
+// until its countdown ends, and reports it as not answered.
+func TestHandleConsentCancelClosesTheActiveDialog(t *testing.T) {
+	orig := showConsentDialogFn
+	defer func() { showConsentDialogFn = orig }()
+	showing := make(chan struct{})
+	showConsentDialogFn = func(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
+		presented()
+		close(showing)
+		<-ctx.Done()
+		return dialogUnavailable
+	}
+
+	client, peer, cleanup := createClientPipe(t)
+	defer cleanup()
+
+	go client.handleConsentRequest(&ipc.Envelope{ID: "consent-cancel-me", Payload: consentRequestPayloadV2(t, "s", "n-cancel")})
+	recvConsentEnvelopes(t, peer, 1) // ack
+	<-showing
+
+	// A cancel for another prompt is ignored.
+	other, _ := json.Marshal(ipc.ConsentCancel{Nonce: "someone-else"})
+	client.handleConsentCancel(&ipc.Envelope{ID: "c1", Type: ipc.TypeConsentCancel, Payload: other})
+	time.Sleep(100 * time.Millisecond)
+
+	mine, _ := json.Marshal(ipc.ConsentCancel{Nonce: "n-cancel"})
+	client.handleConsentCancel(&ipc.Envelope{ID: "c2", Type: ipc.TypeConsentCancel, Payload: mine})
+
+	final := recvConsentEnvelopes(t, peer, 1)[0]
+	var res ipc.ConsentResult
+	_ = json.Unmarshal(final.Payload, &res)
+	if final.ID != "consent-cancel-me" || res.Outcome != ipc.ConsentOutcomeUnavailable || res.Detail != "cancelled" {
+		t.Fatalf("cancelled prompt result = %s %+v, want unavailable/cancelled", final.ID, res)
+	}
+	if client.consentPromptActive.Load() {
+		t.Fatal("a cancelled prompt must release the in-progress guard")
 	}
 }
