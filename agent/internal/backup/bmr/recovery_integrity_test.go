@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
@@ -37,6 +38,9 @@ type fixtureFile struct {
 	content  []byte
 	noSum    bool
 	volatile bool
+	mode     uint32
+	modTime  time.Time
+	owner    *backup.FileOwner
 }
 
 func newRecoveryFixture(t *testing.T, snapshotID string, files []fixtureFile) *recoveryFixture {
@@ -60,6 +64,7 @@ func newRecoveryFixture(t *testing.T, snapshotID string, files []fixtureFile) *r
 		entries = append(entries, backup.SnapshotFile{
 			SourcePath: f.source, BackupPath: key, Size: int64(len(f.content)),
 			Checksum: sum, Volatile: f.volatile,
+			Mode: f.mode, ModTime: f.modTime, Owner: f.owner,
 		})
 		fx.targets[f.source] = filepath.Join(fx.targetRoot, filepath.FromSlash(strings.TrimPrefix(f.source, "/")))
 		fx.backupPaths[f.source] = key

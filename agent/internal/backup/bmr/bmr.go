@@ -1074,6 +1074,11 @@ func restoreFiles(
 		}
 	}
 
+	var stager *attestedStager
+	if cfg.Integrity.Attested() {
+		stager = newAttestedStager(provider, cfg.Integrity)
+	}
+
 	breakerTripped := false
 	var sessionLostErr error
 	for _, file := range manifest.Files {
@@ -1161,11 +1166,13 @@ func restoreFiles(
 			continue
 		}
 
-		if cfg.Integrity.Attested() {
-			// Attested: stage beside the target, check the staged bytes
-			// exactly against the (attested) manifest entry, and only then
-			// rename onto targetPath — a file that fails is never installed.
-			stageWarnings, stageErr := stageAndPublishFile(ctx, provider, file, targetPath, cfg.Integrity)
+		if stager != nil {
+			// Attested: stage beside the target in a private file this
+			// helper creates, check the staged bytes exactly against the
+			// (attested) manifest entry, give it the target's ownership and
+			// permissions, and only then rename onto targetPath — a file
+			// that fails is never installed (see attestedStager).
+			stageWarnings, stageFidelity, stageErr := stager.restore(ctx, file, targetPath)
 			for _, w := range stageWarnings {
 				if len(warnings) < maxRecoveryWarnings {
 					warnings = append(warnings, w)
@@ -1188,10 +1195,12 @@ func restoreFiles(
 				continue
 			}
 			consecutiveFailures = 0
+			for _, msg := range append(stageFidelity, applyPublishedAttributes(targetPath, file)...) {
+				addFidelityFailure("%s for %s", msg, origPath)
+			}
 			if ctx != nil && ctx.Err() != nil {
 				return filesRestored, bytesRestored, warnings, failedFiles, nil
 			}
-			applyRestoredFileMetadata(targetPath, origPath, file, addFidelityFailure)
 			filesRestored++
 			bytesRestored += file.Size
 			continue
@@ -1318,29 +1327,6 @@ func applyRestoredFileMetadata(targetPath, origPath string, file manifestFile, a
 		slog.Warn("bmr: failed to reapply windows file attributes on restore",
 			"target", targetPath, "winAttrs", file.WinAttrs, "error", winErr.Error())
 	}
-}
-
-// stageAndPublishFile restores one attested manifest entry: the object is
-// downloaded into a staging file beside targetPath, checked exactly against
-// the entry (integrity.StageAndPublish) and only then renamed onto
-// targetPath. A failed check leaves targetPath as it was.
-//
-// When the publish itself fails for a reason other than the check (an
-// existing read-only target on Windows refuses to be replaced), the
-// read-only bit is cleared and the whole stage-check-publish runs once more
-// — the same single retry the unattested path makes for its direct
-// download (D19b).
-func stageAndPublishFile(ctx context.Context, provider providers.BackupProvider, file manifestFile, targetPath string, e *integrity.Expectation) ([]string, error) {
-	want := integrity.Stored{Size: file.Size, SHA256: file.Checksum, Volatile: file.Volatile}
-	_, warnings, err := integrity.StageAndPublish(ctx, provider, file.BackupPath, targetPath, want, e)
-	if err == nil || integrity.FailureCode(err) != "" || errors.Is(err, ErrRecoverySessionLost) {
-		return warnings, err
-	}
-	if restored, clearErr := clearReadOnly(targetPath); clearErr == nil && restored {
-		slog.Debug("bmr: cleared read-only attribute on restore target before retrying", "target", targetPath)
-		_, warnings, err = integrity.StageAndPublish(ctx, provider, file.BackupPath, targetPath, want, e)
-	}
-	return warnings, err
 }
 
 // ensureNoSymlinkAncestor walks every path component strictly below base up
