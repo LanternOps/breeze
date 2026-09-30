@@ -297,3 +297,83 @@ func TestRestore_UnreadableSecurityDescriptorIsQuarantined(t *testing.T) {
 		})
 	}
 }
+
+// TestRestore_QuarantinedDirectoryIsRestrictedBeforeItsChildren: a directory
+// whose recorded descriptor is restricted gets the restrictive descriptor
+// before anything is restored beneath it, so children restored without a
+// descriptor of their own inherit the restriction, not the target's ACL.
+func TestRestore_QuarantinedDirectoryIsRestrictedBeforeItsChildren(t *testing.T) {
+	files := []sdTestFile{
+		{name: "child.txt", content: "c", sourcePath: "/original/top/qdir/child.txt"}, // no descriptor
+		{name: "known.txt", content: "k", sourcePath: "/original/top/known.txt", sdIndex: 1},
+	}
+	extra := []SnapshotFile{
+		{SourcePath: "/original/top/qdir", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 2},
+	}
+	provider, snapshotID := setupRestoreTestSnapshotWithSDEntries(t, files, extra, encSDs("known", "foreign-dacl"))
+	target := t.TempDir()
+	f := &fakeSDPlatform{applies: map[string]int{}}
+	installFakeSDPlatform(t, f, nil)
+	childRel, _ := restoreRelativePath("/original/top/qdir/child.txt")
+	childPresentAtRestrict := true
+	restoreSDPlatform.quarantine = func() (*securefs.SecurityApplier, error) {
+		return &securefs.SecurityApplier{Apply: func(uintptr) error {
+			f.applies["quarantine"]++
+			_, err := os.Stat(filepath.Join(target, childRel))
+			childPresentAtRestrict = err == nil
+			return nil
+		}}, nil
+	}
+
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FilesFailed != 0 || f.applies["quarantine"] != 1 {
+		t.Fatalf("result = %+v applies = %v, want the directory restricted once", result, f.applies)
+	}
+	if childPresentAtRestrict {
+		t.Fatal("the directory was restricted after its child was restored")
+	}
+	if !slices.Contains(result.SecurityDescriptorQuarantinedPaths, "/original/top/qdir") || result.SecurityDescriptorQuarantined != 1 {
+		t.Fatalf("quarantined = %d %v", result.SecurityDescriptorQuarantined, result.SecurityDescriptorQuarantinedPaths)
+	}
+	if b, err := os.ReadFile(filepath.Join(target, childRel)); err != nil || string(b) != "c" {
+		t.Fatalf("child not restored: %q %v", b, err)
+	}
+}
+
+// When the directory cannot be restricted, nothing is restored beneath it:
+// its children would otherwise land with the target's inherited ACL.
+func TestRestore_UnrestrictableDirectoryBlocksItsChildren(t *testing.T) {
+	files := []sdTestFile{
+		{name: "child.txt", content: "c", sourcePath: "/original/top/qdir/child.txt"},
+		{name: "known.txt", content: "k", sourcePath: "/original/top/known.txt", sdIndex: 1},
+	}
+	extra := []SnapshotFile{
+		{SourcePath: "/original/top/qdir", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755), SDIndex: 2},
+		{SourcePath: "/original/top/qdir/sub", Kind: KindDir, ModeBits: uint32(os.ModeDir | 0o755)},
+	}
+	provider, snapshotID := setupRestoreTestSnapshotWithSDEntries(t, files, extra, encSDs("known", "foreign-dacl"))
+	target := t.TempDir()
+	f := &fakeSDPlatform{applies: map[string]int{}, quarantineFails: true}
+	installFakeSDPlatform(t, f, nil)
+
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/original/top/qdir", "/original/top/qdir/child.txt", "/original/top/qdir/sub"} {
+		if !slices.Contains(result.FailedFiles, p) {
+			t.Errorf("FailedFiles %v missing %q", result.FailedFiles, p)
+		}
+	}
+	childRel, _ := restoreRelativePath("/original/top/qdir/child.txt")
+	if _, err := os.Stat(filepath.Join(target, childRel)); !os.IsNotExist(err) {
+		t.Fatalf("child restored beneath a directory that could not be restricted (%v)", err)
+	}
+	knownRel, _ := restoreRelativePath("/original/top/known.txt")
+	if _, err := os.Stat(filepath.Join(target, knownRel)); err != nil {
+		t.Fatalf("unrelated file not restored: %v", err)
+	}
+}

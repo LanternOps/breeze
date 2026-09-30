@@ -188,9 +188,8 @@ func (rs *restoreSecurity) entryPlan(e SnapshotFile) sdPlan {
 }
 
 // plan decides how sd is applied to an entry. The captured descriptor is
-// validated first (restoreSecurityApplier); an invalid one returns its error
-// exactly as before (a fidelity warning; the entry keeps the target's
-// inherited ACL). A valid one is applied as captured only when every
+// validated first (restoreSecurityApplier); an invalid one returns its error,
+// and entryPlan restricts the entry instead. A valid one is applied as captured only when every
 // principal it names is recognised here (judgeDescriptor); otherwise the
 // entry gets the restrictive quarantine descriptor, or — when only the SACL
 // names an unrecognised principal — the descriptor without its SACL.

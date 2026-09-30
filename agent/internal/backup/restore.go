@@ -191,6 +191,22 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		result.Warnings = append(result.Warnings, "ownership/special mode bits not applied: restore is not running as root")
 	}
 
+	// Directories whose recorded descriptor is to be restricted are created
+	// and restricted BEFORE anything is restored beneath them, so an entry
+	// restored there without a descriptor of its own inherits the
+	// restriction rather than the target's ACL. A directory that cannot be
+	// restricted blocks everything beneath it. Plans are computed once per
+	// directory here and reused by the directory pass below.
+	dirPlans, preRestricted, blockedDirs := restrictDirectoriesFirst(targetBase, dirs, secDescs, applyOwnership, result)
+	blockedBeneath := func(relative string) string {
+		for _, b := range blockedDirs {
+			if strings.HasPrefix(relative, b+string(filepath.Separator)) {
+				return b
+			}
+		}
+		return ""
+	}
+
 	// 3. Create or reuse a deterministic staging directory so partial restores
 	// can resume on a subsequent attempt.
 	stagingDir, err := restoreStagingDir(cfg, workRoot)
@@ -240,6 +256,12 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			continue
 		}
 		targetPath := filepath.Join(targetBase, relativeTarget)
+		if blocked := blockedBeneath(relativeTarget); blocked != "" {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, displayPath)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("not restored %s: its directory could not be restricted", displayPath))
+			continue
+		}
 
 		// Skip already-completed files (resume). In attested mode the file
 		// on disk must still hold exactly the attested bytes: a size match
@@ -352,10 +374,11 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 	var dirSecurity []dirSD
 	var dirAttrs []pendingDirAttrs
-	for _, entry := range append(links, dirs...) {
+	for j, entry := range append(links, dirs...) {
 		if checkCancelled() {
 			return result, nil
 		}
+		dirIndex := j - len(links) // index into dirs; negative for a link
 		displayPath := restoreSourcePath(entry)
 		relativeEntry, relErr := restoreRelativePath(displayPath)
 		if relErr != nil {
@@ -366,6 +389,12 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			}
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
+			continue
+		}
+		if blockErr, blocked := blockedDirErr(blockedDirs, relativeEntry, dirIndex, dirPlans); blocked {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, displayPath)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("not restored %s: %s", displayPath, blockErr))
 			continue
 		}
 		// securefs walks to the entry's parent with directory descriptors and
@@ -418,7 +447,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 					if entry.WinAttrs != 0 {
 						dirAttrs = append(dirAttrs, pendingDirAttrs{relative: relativeEntry, display: displayPath, attrs: entry.WinAttrs})
 					}
-					if plan := secDescs.entryPlan(entry); plan.applier != nil {
+					if plan := dirPlans[dirIndex]; plan.applier != nil && !preRestricted[dirIndex] {
 						dirSecurity = append(dirSecurity, dirSD{relative: relativeEntry, display: displayPath, plan: plan})
 					}
 				}
@@ -1062,4 +1091,71 @@ func RestoreContentlessEntry(targetPath string, entry SnapshotFile, applyOwnersh
 		}
 	}
 	return nil
+}
+
+// restrictDirectoriesFirst computes every directory's descriptor plan once
+// and, for each directory to be restricted, creates it and applies the
+// restrictive descriptor now, shallowest first, before any entry beneath it
+// is restored. It returns the plans (by index into dirs), which directories
+// were restricted here, and the relative paths of directories that could not
+// be restricted (reported failed; nothing beneath them is restored).
+func restrictDirectoriesFirst(targetBase string, dirs []SnapshotFile, secDescs *restoreSecurity, applyOwnership bool, result *RestoreResult) (map[int]sdPlan, map[int]bool, []string) {
+	plans := make(map[int]sdPlan, len(dirs))
+	restricted := make(map[int]bool)
+	var blocked []string
+	var order []int
+	for i, d := range dirs {
+		plans[i] = secDescs.entryPlan(d)
+		if plans[i].verdict == sdQuarantine && plans[i].applier != nil {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return strings.Count(restoreSourcePath(dirs[order[a]]), "/")+strings.Count(restoreSourcePath(dirs[order[a]]), `\`) <
+			strings.Count(restoreSourcePath(dirs[order[b]]), "/")+strings.Count(restoreSourcePath(dirs[order[b]]), `\`)
+	})
+	for _, i := range order {
+		d := dirs[i]
+		display := restoreSourcePath(d)
+		rel, err := restoreRelativePath(display)
+		if err != nil {
+			continue // the directory pass reports it
+		}
+		if d.Placeholder {
+			if info, statErr := securefs.StatFile(targetBase, rel); statErr == nil && info.IsDir() {
+				continue // an existing placeholder directory is left untouched
+			}
+		}
+		mode := os.FileMode(d.ModeBits)
+		if !applyOwnership {
+			mode &^= os.ModeSetuid
+		}
+		err = securefs.InstallDir(targetBase, rel, mode, d.ModeBits != 0, entryOwner(d, applyOwnership), d.ModTime)
+		if err == nil {
+			err = securefs.ApplyDirSecurity(targetBase, rel, *plans[i].applier)
+		}
+		if err != nil {
+			blocked = append(blocked, rel)
+			plans[i] = sdPlan{verdict: sdQuarantine, reason: fmt.Sprintf("its directory could not be restricted: %v", err)}
+			continue
+		}
+		restricted[i] = true
+		secDescs.record(result, display, plans[i])
+	}
+	return plans, restricted, blocked
+}
+
+// blockedDirErr reports whether an entry of the link/directory pass must not
+// be restored: it is itself a directory that could not be restricted, or it
+// lies beneath one.
+func blockedDirErr(blocked []string, relative string, dirIndex int, plans map[int]sdPlan) (string, bool) {
+	for _, b := range blocked {
+		if relative == b && dirIndex >= 0 {
+			return plans[dirIndex].reason, true
+		}
+		if strings.HasPrefix(relative, b+string(filepath.Separator)) {
+			return "its directory could not be restricted", true
+		}
+	}
+	return "", false
 }
