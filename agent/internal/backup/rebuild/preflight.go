@@ -128,7 +128,7 @@ func preflight(ctx context.Context, r *run) error {
 	r.result.Plan = plan
 	r.progress(PhasePreflight, "plan ready", 1, 3)
 
-	man, err := fetchManifest(ctx, r.opts.Provider, r.opts.SnapshotID)
+	man, err := fetchManifest(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.Integrity)
 	if err != nil {
 		return err
 	}

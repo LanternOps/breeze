@@ -464,3 +464,53 @@ func TestRecoveryRequests_CarryIntegrityProtocolVersion(t *testing.T) {
 		})
 	}
 }
+
+func TestWidenScopeFromManifestVerified(t *testing.T) {
+	snapshotID := "gen-2"
+	manifestData, _ := json.Marshal(backup.Snapshot{ID: snapshotID, Files: []backup.SnapshotFile{
+		{SourcePath: "/a", BackupPath: "snapshots/gen-1/files/a.gz", Size: 1},
+	}})
+	manifestKey := path.Join("snapshots", snapshotID, "manifest.json")
+	fi := &FileIndexInfo{Status: "complete", ManifestSHA256: integrity.DigestBytes(manifestData), ExternalCount: 1, OriginSnapshotIDs: []string{"gen-1"}}
+	bs := &BootstrapResponse{Snapshot: &AuthenticatedSnapshot{SnapshotID: snapshotID, FileIndex: fi}}
+	cases := []struct {
+		name     string
+		e        *integrity.Expectation
+		wantErr  error
+		wantWide bool
+	}{
+		{name: "attested and matching", e: attestedExpectation(t, snapshotID, manifestData), wantWide: true},
+		{name: "manifest bytes differ from attestation", e: attestedExpectation(t, snapshotID, bytes.Repeat([]byte("m"), len(manifestData))), wantErr: integrity.ErrIntegrityMismatch},
+		{name: "absent", wantWide: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &scopedTestProvider{membership: true, nonScopedProvider: nonScopedProvider{files: map[string][]byte{manifestKey: manifestData}}}
+			err := WidenScopeFromManifestVerified(context.Background(), provider, bs, tc.e)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("WidenScopeFromManifestVerified: %v", err)
+			}
+			if got := provider.Admits("snapshots/gen-1/files/a.gz"); got != tc.wantWide {
+				t.Fatalf("scope widened = %v, want %v", got, tc.wantWide)
+			}
+		})
+	}
+}
+
+func TestWidenScopeFromManifest_UsesBootstrapIntegrity(t *testing.T) {
+	snapshotID := "snap-w"
+	manifestData := []byte(`{"id":"snap-w","files":[]}`)
+	manifestKey := path.Join("snapshots", snapshotID, "manifest.json")
+	other := bytes.Repeat([]byte("m"), len(manifestData))
+	raw := fmt.Sprintf(`{"v":1,"mode":"attested","trust":"server_verified","snapshotId":%q,"objects":[{"role":"manifest","key":%q,"sha256":%q,"size":%d}]}`,
+		snapshotID, manifestKey, integrity.DigestBytes(other), len(other))
+	bs := &BootstrapResponse{Snapshot: &AuthenticatedSnapshot{SnapshotID: snapshotID, Integrity: json.RawMessage(raw)}}
+	provider := &nonScopedProvider{files: map[string][]byte{manifestKey: manifestData}}
+	if err := WidenScopeFromManifest(context.Background(), provider, bs); !errors.Is(err, integrity.ErrIntegrityMismatch) {
+		t.Fatalf("err = %v, want ErrIntegrityMismatch", err)
+	}
+}

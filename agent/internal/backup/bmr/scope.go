@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -138,27 +139,54 @@ func ApplyManifestScope(provider providers.BackupProvider, ownSnapshotID string,
 // manifest fetch happens later, independently, inside preflight.
 // bs.Snapshot must be non-nil (callers already require this for every
 // other field they read off it).
+//
+// The integrity expectation is the bootstrap's own (BootstrapIntegrity);
+// see WidenScopeFromManifestVerified.
 func WidenScopeFromManifest(ctx context.Context, provider providers.BackupProvider, bs *BootstrapResponse) error {
+	e, err := BootstrapIntegrity(bs)
+	if err != nil {
+		return err
+	}
+	return WidenScopeFromManifestVerified(ctx, provider, bs, e)
+}
+
+// WidenScopeFromManifestVerified is WidenScopeFromManifest under an
+// explicit integrity expectation (a device command's resolved with the
+// bootstrap's, see ResolveIntegrity). In attested mode the manifest bytes
+// must match the attestation before they are parsed, and ApplyManifestScope
+// still compares the same digest with the server's file index.
+func WidenScopeFromManifestVerified(ctx context.Context, provider providers.BackupProvider, bs *BootstrapResponse, e *integrity.Expectation) error {
 	if bs == nil || bs.Snapshot == nil {
 		return fmt.Errorf("bmr: WidenScopeFromManifest: bootstrap missing snapshot")
 	}
 	snapshotID := bs.Snapshot.SnapshotID
-
-	tmp, err := os.CreateTemp("", "bmr-scope-manifest-*.json")
-	if err != nil {
-		return fmt.Errorf("bmr: create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	defer func() { _ = os.Remove(tmpPath) }()
-
 	manifestKey := "snapshots/" + snapshotID + "/manifest.json"
-	if err := provider.Download(manifestKey, tmpPath); err != nil {
-		return fmt.Errorf("bmr: download manifest for scope check: %w", err)
+
+	if err := e.CheckSnapshot(snapshotID); err != nil {
+		return err
 	}
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return fmt.Errorf("bmr: read manifest for scope check: %w", err)
+	var data []byte
+	if e.Attested() {
+		verified, _, err := integrity.FetchControlObject(ctx, provider, e, integrity.RoleManifest, manifestKey, "")
+		if err != nil {
+			return fmt.Errorf("bmr: manifest integrity check: %w", err)
+		}
+		data = verified
+	} else {
+		tmp, err := os.CreateTemp("", "bmr-scope-manifest-*.json")
+		if err != nil {
+			return fmt.Errorf("bmr: create temp file: %w", err)
+		}
+		tmpPath := tmp.Name()
+		_ = tmp.Close()
+		defer func() { _ = os.Remove(tmpPath) }()
+
+		if err := provider.Download(manifestKey, tmpPath); err != nil {
+			return fmt.Errorf("bmr: download manifest for scope check: %w", err)
+		}
+		if data, err = os.ReadFile(tmpPath); err != nil {
+			return fmt.Errorf("bmr: read manifest for scope check: %w", err)
+		}
 	}
 	sum := sha256.Sum256(data)
 	sha := hex.EncodeToString(sum[:])
