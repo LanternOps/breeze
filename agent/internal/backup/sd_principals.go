@@ -25,13 +25,32 @@ type knownDomains struct {
 
 // wellKnownExact are fixed principals with the same meaning on every Windows
 // machine: LocalSystem, LocalService, NetworkService, Everyone, Authenticated
-// Users.
+// Users, the logon-type groups (Network, Interactive, Service, Batch,
+// Dialup, Anonymous, Principal Self, Restricted, Terminal Server User,
+// Remote Interactive, This Organization, IUSR, Write Restricted, Local
+// account, Local account and administrator, Other Organization).
 var wellKnownExact = map[string]bool{
-	"S-1-5-18": true,
-	"S-1-5-19": true,
-	"S-1-5-20": true,
-	"S-1-1-0":  true,
-	"S-1-5-11": true,
+	"S-1-5-18":   true,
+	"S-1-5-19":   true,
+	"S-1-5-20":   true,
+	"S-1-1-0":    true,
+	"S-1-5-11":   true,
+	"S-1-5-1":    true,
+	"S-1-5-2":    true,
+	"S-1-5-3":    true,
+	"S-1-5-4":    true,
+	"S-1-5-6":    true,
+	"S-1-5-7":    true,
+	"S-1-5-10":   true,
+	"S-1-5-12":   true,
+	"S-1-5-13":   true,
+	"S-1-5-14":   true,
+	"S-1-5-15":   true,
+	"S-1-5-17":   true,
+	"S-1-5-33":   true,
+	"S-1-5-113":  true,
+	"S-1-5-114":  true,
+	"S-1-5-1000": true,
 }
 
 // wellKnownPrefixes are machine-independent SID families. exactly means one
@@ -44,8 +63,16 @@ var wellKnownPrefixes = []struct {
 }{
 	{"S-1-5-32", true}, // BUILTIN\Administrators, Users, …
 	{"S-1-3", true},    // CREATOR OWNER, CREATOR GROUP, OWNER RIGHTS, …
+	{"S-1-2", true},    // LOCAL, CONSOLE LOGON
+	{"S-1-5-64", true}, // NTLM / SChannel / Digest authentication
 	{"S-1-5-80", false},
+	{"S-1-5-82", false}, // IIS application pool identities (named)
+	{"S-1-5-83", false}, // Hyper-V virtual machine accounts
+	{"S-1-5-84", false}, // user-mode driver framework host
+	{"S-1-5-90", false}, // window manager
+	{"S-1-5-96", false}, // font driver host
 	{"S-1-15-2", false},
+	{"S-1-15-3", false}, // capabilities
 }
 
 // sidAllowed reports whether sid names a principal the restore target
