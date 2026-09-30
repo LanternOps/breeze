@@ -196,9 +196,10 @@ export async function deliverBackupWriteCommand(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
 ): Promise<Record<string, unknown>> {
-  if (payload.provider === 'local' && !hasInlineDestination(payload)) {
-    // A local destination is a path the device reaches itself. The resolver
-    // refuses if the referenced configuration is no longer local.
+  if (payload.provider === 'local') {
+    // A local destination is a path the device reaches itself, referenced or
+    // (queued by an earlier version) inline. The resolver refuses a reference
+    // whose configuration is no longer local.
     return materializeBackupStorageCredentials(payload, ctx);
   }
 

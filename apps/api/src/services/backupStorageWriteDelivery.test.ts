@@ -140,6 +140,26 @@ describe('deliverBackupWriteCommand (delivery refresher for mssql_backup / hyper
     expect(m.materialize).not.toHaveBeenCalled();
   });
 
+  it('delivers a local destination queued with its path inline (a path, not a credential)', async () => {
+    const { providerConfigRef: _r, ...rest } = queued({ provider: 'local' });
+    const inline = { ...rest, providerConfig: { path: '/backups' } };
+    const out = await deliverBackupWriteCommand(inline, CTX);
+    expect(out).toMatchObject({ materialized: true });
+    expect(m.materialize).toHaveBeenCalledWith(inline, CTX);
+    expect(m.mint).not.toHaveBeenCalled();
+  });
+
+  it('never delivers a backup_run row carrying an S3 destination', async () => {
+    const { providerConfigRef: _r, ...rest } = queued();
+    const err = await deliverBackupWriteCommand(
+      { ...rest, providerConfig: S3 },
+      { ...CTX, type: 'backup_run' },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(m.materialize).not.toHaveBeenCalled();
+    expect(m.mint).not.toHaveBeenCalled();
+  });
+
   it('delivers a local destination through the destination refresher (a path, not a credential)', async () => {
     const out = await deliverBackupWriteCommand(queued({ provider: 'local' }), CTX);
     expect(out).toMatchObject({ materialized: true });

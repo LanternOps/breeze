@@ -24,6 +24,7 @@ import { resolveBackupProviderConfig, resolveBackupWriteCommandDestination } fro
 import { CommandTypes } from './commandTypes';
 import { CommandDeliveryRefusedError, type DeliveryRefreshContext } from './commandDeliveryRefusal';
 import { BACKUP_READ_CREDENTIAL_COMMAND_TYPES } from './backupReadHelperGate';
+import { BACKUP_WRITE_GATED_COMMAND_TYPES } from './backupWriteHelperGate';
 import { recordBackupWriteDispatch } from './backupMetrics';
 
 export const PROVIDER_CONFIG_REF_FIELD = 'providerConfigRef';
@@ -48,7 +49,9 @@ export const BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES: readonly string[] = [
 ];
 
 const READ_TYPES = new Set(BACKUP_READ_CREDENTIAL_COMMAND_TYPES);
-const WRITE_TYPES = new Set(BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES);
+// Every backup-writing type, including backup_run (never queued by this
+// server, but a row that exists is held to the same rule).
+const WRITE_TYPES = new Set(BACKUP_WRITE_GATED_COMMAND_TYPES);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -140,10 +143,13 @@ async function inReferencedOrg<T>(orgId: string, fn: () => Promise<T>): Promise<
  * a write: S3 reads and writes are served through storage sessions instead,
  * and are refused here.
  *
- * A payload with no reference is returned untouched. That covers rows queued
- * before references existed (their inline destination is still delivered, and
- * is erased when the row goes terminal) and rows whose inline destination was
- * sealed at persistence (opened later by `decryptCommandForDelivery`).
+ * A payload with no reference is returned untouched — except a backup write
+ * carrying an inline destination that is not local, which is refused (S3
+ * writes use storage sessions only). That covers rows queued before
+ * references existed and rows whose inline destination was sealed at
+ * persistence (opened later by `decryptCommandForDelivery`); an inline S3
+ * destination for a read is refused by the storage-session refresher before
+ * it gets here.
  *
  * Refuses (CommandDeliveryRefusedError) when the command can never be
  * delivered as queued; any other error is transient and propagates so the row

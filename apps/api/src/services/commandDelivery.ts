@@ -1,4 +1,4 @@
-import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredentials';
+import { BACKUP_WRITE_GATED_COMMAND_TYPES } from './backupWriteHelperGate';
 import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
 import { hasDbAccessContext, withDbTransaction } from '../db';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
@@ -108,11 +108,12 @@ for (const type of BROKERED_READ_COMMAND_TYPES) {
 for (const type of RECOVERY_INTEGRITY_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverRecoveryCommandIntegrity);
 }
-// Backup WRITES queued as commands (on-demand MSSQL / Hyper-V): a helper that
-// reports brokered writes gets a write-scoped storage session; any other
-// delivery resolves the destination reference as before
-// (services/backupStorageWriteDelivery.ts).
-for (const type of BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES) {
+// Backup WRITES queued as commands (on-demand MSSQL / Hyper-V; backup_run is
+// never queued by this server, but a row that exists anyway takes the same
+// path): a backup to S3 storage is delivered only with a write-scoped storage
+// session and otherwise refused; a local destination — a path, not a
+// credential — is resolved as before (services/backupStorageWriteDelivery.ts).
+for (const type of BACKUP_WRITE_GATED_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBackupWriteCommand);
 }
 

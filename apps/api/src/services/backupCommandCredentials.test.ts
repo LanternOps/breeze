@@ -246,6 +246,17 @@ describe('materializeBackupStorageCredentials', () => {
       ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
     });
 
+    it('passes an inline local write destination through (a path, not a credential)', async () => {
+      const inline = { jobId: 'job-1', provider: 'local', providerConfig: LOCAL_CONFIG };
+      expect(await materializeBackupStorageCredentials(inline, ctx('mssql_backup'))).toBe(inline);
+    });
+
+    it('never passes an inline S3 destination through for a backup_run row', async () => {
+      await expect(
+        materializeBackupStorageCredentials({ jobId: 'job-1', provider: 's3', providerConfig: S3_CONFIG }, ctx('backup_run')),
+      ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    });
+
     it('resolves a local write destination at delivery', async () => {
       resolveWriteMock.mockResolvedValue({
         ok: true,

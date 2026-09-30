@@ -465,7 +465,10 @@ describe('storage-destination delivery refreshers', () => {
     ]) {
       expect(deliveryRefreshers[type], type).toBe(deliverBrokeredReadCommand);
     }
-    for (const type of ['mssql_backup', 'hyperv_backup']) {
+    // backup_run is never queued as a command row by this server; a row that
+    // exists anyway goes through the same refresher, so it can never be
+    // delivered with a storage destination.
+    for (const type of ['backup_run', 'mssql_backup', 'hyperv_backup']) {
       expect(deliveryRefreshers[type], type).toBe(deliverBackupWriteCommand);
     }
   });
