@@ -278,4 +278,54 @@ describe('backups started before a new device reports its backup helper', () => 
     expectNoDestination(delivered!.payload);
     expect(delivered!.payload.storageSession).toMatchObject({ scope: 'snapshot_write' });
   });
+
+  // The agent reports explicit nulls when its probe of the installed helper
+  // got no answer (not installed yet, timed out, crashed).
+  describe('a heartbeat that reports the helper as unknown', () => {
+    const UNKNOWN = { backupReadProtocolVersion: null, backupIntegrityProtocolVersion: null, backupWriteProtocolVersion: null };
+
+    it('keeps the last report, and a backup still goes out brokered', async () => {
+      const t = await seedNewDevice();
+      await heartbeat(t, HELPER_REPORTS_BROKERED);
+      await heartbeat(t, UNKNOWN);
+      expect(await helperProtocols(t.deviceId)).toEqual({ read: 1, integrity: 1, write: 1 });
+
+      const jobId = await runNow(t);
+      await expect(__testOnly.processDispatchBackup({
+        type: 'dispatch-backup', jobId, configId: t.configId, orgId: t.orgId, deviceId: t.deviceId,
+      })).resolves.toEqual({ dispatched: true });
+      expect(waits.calls).toEqual([]);
+      expect(relay.frames).toHaveLength(1);
+      expectNoDestination(relay.frames[0]!.payload);
+      expect(relay.frames[0]!.payload.storageSession).toMatchObject({ scope: 'snapshot_write' });
+    });
+
+    it('before any report the device stays unreported and the backup waits', async () => {
+      const t = await seedNewDevice();
+      await heartbeat(t, UNKNOWN);
+      expect(await helperProtocols(t.deviceId)).toEqual({ read: null, integrity: null, write: null });
+
+      const jobId = await runNow(t);
+      await expect(__testOnly.processDispatchBackup({
+        type: 'dispatch-backup', jobId, configId: t.configId, orgId: t.orgId, deviceId: t.deviceId,
+      })).resolves.toEqual({ dispatched: false });
+      expect(relay.frames).toEqual([]);
+      expect(waits.calls).toHaveLength(1);
+      expect(await jobStatus(jobId)).toBe('pending');
+    });
+
+    it('after an older-helper report (0) the device waits for a real report instead of being served as an older helper', async () => {
+      const t = await seedNewDevice();
+      await heartbeat(t, {});
+      expect(await helperProtocols(t.deviceId)).toEqual({ read: 0, integrity: 0, write: 0 });
+      await heartbeat(t, UNKNOWN);
+      expect(await helperProtocols(t.deviceId)).toEqual({ read: null, integrity: null, write: null });
+
+      const jobId = await runNow(t);
+      await expect(__testOnly.processDispatchBackup({
+        type: 'dispatch-backup', jobId, configId: t.configId, orgId: t.orgId, deviceId: t.deviceId,
+      })).resolves.toEqual({ dispatched: false });
+      expect(relay.frames).toEqual([]);
+    });
+  });
 });

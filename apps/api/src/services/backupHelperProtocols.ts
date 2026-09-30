@@ -4,10 +4,18 @@
  * `breeze-backup --protocol-info`, never inferred from the agent version).
  *
  * Only versions this server implements are recorded; absent, malformed or a
- * future version reads as 0. Non-sticky: every heartbeat rewrites the stored
- * column, so a helper downgrade is reflected on the next beat and a drop is
- * audited (routes/agents/heartbeat.ts). Until a device's first heartbeat the
- * stored columns are NULL (not reported yet), which is never read as 0.
+ * future version reads as 0. Non-sticky: every heartbeat that carries a value
+ * rewrites the stored column, so a helper downgrade is reflected on the next
+ * beat and a drop is audited (routes/agents/heartbeat.ts). Until a device's
+ * first heartbeat the stored columns are NULL (not reported yet), which is
+ * never read as 0.
+ *
+ * Three wire states per field:
+ *   - a number: the helper answered (0 included).
+ *   - absent: an agent older than the unknown report; read as 0, as before.
+ *   - explicit null: the agent's probe of its helper got no answer (helper not
+ *     installed yet, timed out, crashed). Unknown, not a drop: see
+ *     backupHelperProtocolColumnWrite.
  *
  * Leaf module: imported by heartbeat and delivery code.
  */
@@ -29,6 +37,43 @@ export function normalizeBackupIntegrityProtocolVersion(value: unknown): BackupI
 
 export function normalizeBackupWriteProtocolVersion(value: unknown): BackupWriteProtocolVersion {
   return value === BACKUP_WRITE_PROTOCOL.BROKERED_WRITES ? 1 : 0;
+}
+
+/**
+ * The column value to write for one helper protocol a heartbeat reported, or
+ * `undefined` to leave the stored value as it is.
+ *
+ * A number, or an absent field from an older agent, is normalized and
+ * written as always. An explicit null (the agent could not get an answer from
+ * its helper) is never written as 0 and is never a regression:
+ *   - a stored positive version is kept. It only ever selects the brokered
+ *     path (storage sessions, attested incremental bases), so a stale value
+ *     fails at the helper rather than widening what is sent. A real downgrade
+ *     is reported as a number once the helper answers, and is audited then.
+ *   - a stored 0 or NULL becomes NULL (not reported yet). A 0 may be the
+ *     report of an older agent or helper that has since been replaced, so the
+ *     backup worker and delivery wait for a real report instead of serving
+ *     the device as an older helper.
+ */
+export function backupHelperProtocolColumnWrite<T extends number>(
+  reported: unknown,
+  stored: number | null | undefined,
+  normalize: (value: unknown) => T,
+): T | null | undefined {
+  if (reported !== null) return normalize(reported);
+  return typeof stored === 'number' && stored > 0 ? undefined : null;
+}
+
+/**
+ * The helper protocol a heartbeat hands to its own claim-time delivery:
+ * `undefined` when it reported unknown (explicit null), so delivery decides on
+ * the stored column (kept or NULL, see backupHelperProtocolColumnWrite).
+ */
+export function backupHelperProtocolForDelivery<T extends number>(
+  reported: unknown,
+  normalize: (value: unknown) => T,
+): T | undefined {
+  return reported === null ? undefined : normalize(reported);
 }
 
 /**

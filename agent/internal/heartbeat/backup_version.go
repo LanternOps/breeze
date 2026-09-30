@@ -435,12 +435,22 @@ func (h *Heartbeat) readInstalledBackupProtocols() (backupipc.ProtocolInfo, back
 }
 
 // parseBackupProtocols decodes --protocol-info output. ok is false for
-// anything that is not a JSON object with integer versions, or whose read
-// version is negative (the field every helper with the flag reports). A
-// negative integrity or write version reads as 0; an absent one is 0.
+// anything that is not a JSON object carrying an integer read version (the
+// field every helper with the flag prints), or whose read version is
+// negative: an answer overrides what the server last stored, so output that
+// merely decodes to zeros is not one. A negative integrity or write version
+// reads as 0; an absent one (a helper that predates the field) is 0.
 func parseBackupProtocols(out string) (backupipc.ProtocolInfo, bool) {
+	trimmed := []byte(strings.TrimSpace(out))
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
+		return backupipc.ProtocolInfo{}, false
+	}
+	if raw, present := fields["backupReadProtocolVersion"]; !present || string(raw) == "null" {
+		return backupipc.ProtocolInfo{}, false
+	}
 	var info backupipc.ProtocolInfo
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &info); err != nil {
+	if err := json.Unmarshal(trimmed, &info); err != nil {
 		return backupipc.ProtocolInfo{}, false
 	}
 	if info.BackupReadProtocolVersion < 0 {

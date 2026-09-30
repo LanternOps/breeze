@@ -22,7 +22,14 @@ func TestParseBackupProtocols(t *testing.T) {
 		{"all three", `{"backupReadProtocolVersion":1,"backupIntegrityProtocolVersion":2,"backupWriteProtocolVersion":1}`, backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, true},
 		{"future versions pass through", `{"backupReadProtocolVersion":3,"backupIntegrityProtocolVersion":7}`, backupipc.ProtocolInfo{BackupReadProtocolVersion: 3, BackupIntegrityProtocolVersion: 7}, true},
 		{"explicit zeros", `{"backupReadProtocolVersion":0,"backupIntegrityProtocolVersion":0,"backupWriteProtocolVersion":0}`, backupipc.ProtocolInfo{}, true},
-		{"keys absent", `{"other":1}`, backupipc.ProtocolInfo{}, true},
+		// A known answer overrides what the server last stored (and a lower
+		// one is audited as a drop), so only an object that carries the read
+		// field every helper with the flag prints counts as an answer.
+		{"keys absent", `{"other":1}`, backupipc.ProtocolInfo{}, false},
+		{"empty object", `{}`, backupipc.ProtocolInfo{}, false},
+		{"json null", "null\n", backupipc.ProtocolInfo{}, false},
+		{"read field null", `{"backupReadProtocolVersion":null}`, backupipc.ProtocolInfo{}, false},
+		{"array", `[1]`, backupipc.ProtocolInfo{}, false},
 		{"negative integrity and write read as 0", `{"backupReadProtocolVersion":1,"backupIntegrityProtocolVersion":-1,"backupWriteProtocolVersion":-3}`, backupipc.ProtocolInfo{BackupReadProtocolVersion: 1}, true},
 		{"negative read fails the probe", `{"backupReadProtocolVersion":-1,"backupIntegrityProtocolVersion":1}`, backupipc.ProtocolInfo{}, false},
 		{"not json", "Error: unknown flag: --protocol-info\n", backupipc.ProtocolInfo{}, false},
