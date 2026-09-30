@@ -79,6 +79,11 @@ var (
 	sha256Pattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
+// updateAgentHint ends the error for a block this helper is too old to read:
+// the restore is refused rather than run without the checks the server
+// asked for.
+const updateAgentHint = "this device's backup component is older than the server's integrity checks: update the Breeze agent on this device, then try again"
+
 // maxObjectSize mirrors the attestation's size bound (Number.MAX_SAFE_INTEGER).
 const maxObjectSize = 1<<53 - 1
 
@@ -131,7 +136,7 @@ func Parse(raw json.RawMessage) (*Expectation, error) {
 		return nil, fmt.Errorf("%w: decode: %v", ErrInvalidExpectation, err)
 	}
 	if e.V != ExpectationVersion {
-		return nil, fmt.Errorf("%w: unsupported version %d", ErrInvalidExpectation, e.V)
+		return nil, fmt.Errorf("%w: unsupported version %d; %s", ErrInvalidExpectation, e.V, updateAgentHint)
 	}
 	if !snapshotIDPattern.MatchString(e.SnapshotID) {
 		return nil, fmt.Errorf("%w: snapshot id %q is not a valid snapshot id", ErrInvalidExpectation, e.SnapshotID)
@@ -141,7 +146,7 @@ func Parse(raw json.RawMessage) (*Expectation, error) {
 		return &e, nil
 	case ModeAttested:
 	default:
-		return nil, fmt.Errorf("%w: unknown mode %q", ErrInvalidExpectation, e.Mode)
+		return nil, fmt.Errorf("%w: unknown mode %q; %s", ErrInvalidExpectation, e.Mode, updateAgentHint)
 	}
 	if e.Trust != TrustServerVerified && e.Trust != TrustProducerOnly {
 		return nil, fmt.Errorf("%w: unknown trust %q", ErrInvalidExpectation, e.Trust)

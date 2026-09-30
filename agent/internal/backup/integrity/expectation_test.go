@@ -136,3 +136,17 @@ func TestControlObjectKey(t *testing.T) {
 		t.Fatal("unknown role must fail")
 	}
 }
+
+// A block from a newer server fails the command and tells the operator how to
+// fix it.
+func TestParseNewerFormatAsksForAnAgentUpdate(t *testing.T) {
+	for _, raw := range []string{
+		`{"v":9,"mode":"attested","snapshotId":"s"}`,
+		`{"v":1,"mode":"something_new","snapshotId":"s"}`,
+	} {
+		_, err := Parse(json.RawMessage(raw))
+		if err == nil || !strings.Contains(err.Error(), "update the Breeze agent") {
+			t.Fatalf("Parse(%s) = %v, want a message asking to update the agent", raw, err)
+		}
+	}
+}
