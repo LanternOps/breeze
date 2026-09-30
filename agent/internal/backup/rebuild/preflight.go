@@ -180,7 +180,10 @@ func preflightVerify(ctx context.Context, r *run) error {
 	// "files only" warning below — that warning is exactly how a
 	// system_image restore once reported completed/validated while
 	// applying no OS state. Nothing has been written yet at this point.
-	if _, warnings, err := bmr.DownloadSystemState(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.ExpectSystemState, staging); err != nil {
+	// Options.Integrity (attested): the state manifest must match its
+	// attested digest and every artifact must carry a matching checksum —
+	// any failure is the refusal below, before anything is written.
+	if _, warnings, err := bmr.DownloadSystemStateVerified(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.ExpectSystemState, staging, r.opts.Integrity); err != nil {
 		switch {
 		case r.opts.ExpectSystemState && (errors.Is(err, bmr.ErrNoSystemState) || errors.Is(err, providers.ErrObjectNotFound)):
 			return &RefusalError{Reason: "system state expected but system-state/manifest.json is missing from the snapshot"}

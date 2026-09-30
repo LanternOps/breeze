@@ -610,18 +610,14 @@ func deepestExistingAncestor(p string) string {
 }
 
 func applySystemState(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
-	// Download system state manifest from the snapshot.
-	stateManifestKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, "manifest.json")
-
-	tmpFile, tmpErr := os.CreateTemp("", "bmr-state-manifest-*.json")
-	if tmpErr != nil {
-		return systemStateResult{err: fmt.Errorf("bmr: create temp: %w", tmpErr)}
+	// Download system state manifest from the snapshot. In attested mode
+	// its bytes are checked against the attestation before any are parsed
+	// (fetchSystemStateManifest); otherwise it is the plain download.
+	data, manifestWarnings, dlErr, fatalErr := fetchSystemStateManifest(ctx, provider, cfg.SnapshotID, cfg.ExpectSystemState, cfg.Integrity)
+	if fatalErr != nil {
+		return systemStateResult{err: fatalErr}
 	}
-	tmpPath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer os.Remove(tmpPath)
-
-	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
+	if dlErr != nil {
 		if errors.Is(dlErr, ErrRecoverySessionLost) {
 			// Not "no state in this snapshot" — the helper can no longer
 			// download anything (#5635).
@@ -640,17 +636,12 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		return systemStateResult{warnings: []string{"no system state found in snapshot, skipping state restore"}}
 	}
 
-	data, readErr := os.ReadFile(tmpPath)
-	if readErr != nil {
-		return systemStateResult{err: fmt.Errorf("bmr: read state manifest: %w", readErr)}
-	}
-
 	var stateManifest systemstate.SystemStateManifest
 	if err := json.Unmarshal(data, &stateManifest); err != nil {
 		return systemStateResult{err: fmt.Errorf("bmr: decode state manifest: %w", err)}
 	}
 
-	var warnings []string
+	warnings := manifestWarnings
 
 	// Required-step enforcement: independently re-derive the producer's own
 	// gate (systemstate.missingRequired) instead of trusting that the
@@ -763,7 +754,7 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			}
 			continue
 		}
-		if verifyErr := verifyArtifactIntegrity(localPath, artifact); verifyErr != nil {
+		if verifyErr := checkStagedArtifact(localPath, artifact, cfg.Integrity); verifyErr != nil {
 			recordFailure(fmt.Sprintf("artifact %s failed verification, discarding: %s", artifact.Name, verifyErr.Error()))
 			_ = os.Remove(localPath)
 			continue
