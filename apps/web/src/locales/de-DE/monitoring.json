@@ -554,6 +554,22 @@
         "too_many_responses": "mehr als zehn Reaktionen wären erforderlich",
         "auto_resolve_conditions": "benutzerdefinierte Auflösungsbedingungen können nicht beibehalten werden",
         "target_unconvertible": "das Reaktionsziel kann nicht konvertiert werden",
+        "already_managed": "wird bereits von einem Monitor verwaltet",
+        "no_org": "Prüfung gehört zu keiner Organisation",
+        "asset_missing": "das verknüpfte erkannte Asset existiert nicht mehr",
+        "condition_invalid": "Prüfungseinstellungen ergeben keine gültige Monitorbedingung",
+        "no_active_rules": "Prüfung hat keine aktive Alarmregel",
+        "multiple_network_rules": "Prüfung hat mehr als eine aktive Alarmregel",
+        "network_predicate_unsupported": "Alarmbedingung hat keine Entsprechung bei Monitoren",
+        "network_threshold_out_of_range": "Fehlerschwelle liegt außerhalb des zulässigen Bereichs (höchstens 100 aufeinanderfolgende Fehler)",
+        "site_binding_unrepresentable": "standortgebundene Prüfung ist mit keinem erkannten Asset verknüpft",
+        "config_override_unrepresentable": "benutzerdefiniertes Ziel oder Zeitlimit kann nicht übernommen werden",
+        "built_in": "integrierte Systemregel; sie alarmiert weiterhin selbstständig",
+        "no_rules": "Vorlage hat keine zu konvertierenden Regeln",
+        "target_or_owner": "Ziel oder Besitzer einer Regel weicht von ihrer Vorlage ab",
+        "blocked": "Konvertierung ist blockiert",
+        "disabled_response_automation": "Reaktionsautomatisierung ist deaktiviert",
+        "alert_workflow_kept": "Alarm-Workflow bleibt unverändert",
         "unknown": "Konvertierung abgelehnt; Quelle prüfen"
       }
     }

@@ -554,6 +554,22 @@
         "too_many_responses": "seriam necessárias mais de dez respostas",
         "auto_resolve_conditions": "não é possível preservar as condições de resolução personalizadas",
         "target_unconvertible": "o destino da resposta não pode ser convertido",
+        "already_managed": "já é gerenciada por um monitor",
+        "no_org": "a verificação não pertence a nenhuma organização",
+        "asset_missing": "o ativo descoberto vinculado não existe mais",
+        "condition_invalid": "as configurações da verificação não formam uma condição de monitor válida",
+        "no_active_rules": "a verificação não tem nenhuma regra de alerta ativa",
+        "multiple_network_rules": "a verificação tem mais de uma regra de alerta ativa",
+        "network_predicate_unsupported": "a condição de alerta não tem equivalente nos monitores",
+        "network_threshold_out_of_range": "o limite de falhas está fora do intervalo (no máximo 100 falhas consecutivas)",
+        "site_binding_unrepresentable": "a verificação vinculada a um site não está associada a nenhum ativo descoberto",
+        "config_override_unrepresentable": "o destino ou o tempo limite personalizado não pode ser preservado",
+        "built_in": "regra de sistema integrada; continua alertando por conta própria",
+        "no_rules": "o modelo não tem regras para converter",
+        "target_or_owner": "o destino ou o proprietário de uma regra difere do seu modelo",
+        "blocked": "a conversão está bloqueada",
+        "disabled_response_automation": "a automação de resposta está desativada",
+        "alert_workflow_kept": "o fluxo de alertas é mantido como está",
         "unknown": "conversão recusada; revise a origem"
       }
     }

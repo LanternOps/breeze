@@ -3,9 +3,10 @@ import { db } from '../../db';
 import { alertRules, alertTemplates } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
+import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import type { DbExecutor } from './monitorCompiler';
 import { mapStandaloneRule } from './conversion/mapping';
-import { previewTemplateGroup, convertTemplateGroup } from './conversion/convert';
+import { previewTemplateGroup, convertTemplateGroup, withCallerContext } from './conversion/convert';
 
 /** Convert the entire shared template atomically, retaining the legacy route envelope. */
 
@@ -17,7 +18,10 @@ export type ConversionFailure =
   // #7206: a built-in system anchor rule (systemManagedRules.ts). It keeps
   // alerting on its own; there is nothing to convert.
   | { kind: 'system_managed' }
-  | { kind: 'partner_wide_denied'; message: string };
+  | { kind: 'partner_wide_denied'; message: string }
+  // The group converter requires full governance (no site/device ceiling);
+  // refused here so it is a readable 403, not a ConversionError mid-transaction.
+  | { kind: 'governance_denied' };
 
 export interface ConversionSuccess {
   monitorId: string;
@@ -59,6 +63,42 @@ export function assignmentForRule(rule: typeof alertRules.$inferSelect): { level
 }
 
 export async function convertRuleToMonitor(ruleId: string, auth: AuthContext, executor: DbExecutor = db): Promise<ConversionResult> {
+  // The route is self-managed (SELF_MANAGED_DB_CONTEXT_ROUTES): nothing is
+  // ambient, and a contextless read is DENIED by RLS rather than bypassing it.
+  // The pre-reads take a short caller-scoped context that closes before the
+  // template-group preview and convert each open their own serializable
+  // transaction — never nested inside it (#1105 / D30).
+  const checked = await withCallerContext(auth, () => checkRuleConvertible(ruleId, auth, executor));
+  if (!checked.ok) return checked;
+  const { rule, template } = checked;
+
+  // Confirmation binds every member and target, including siblings the selected
+  // rule's route did not name. The group writer repeats authorization and hash
+  // checks under its transaction locks before creating a single ledger entry.
+  const preview = await previewTemplateGroup(template.id, auth, executor);
+  // A behavior delta would make convertTemplateGroup refuse (equivalence_delta)
+  // inside its transaction; the admin path lists the same group as
+  // unconvertible:equivalence_delta.
+  if (preview.blockedBy || preview.equivalence?.deltas.length) return { ok: false, failure: { kind: 'not_convertible' } };
+  const converted = await convertTemplateGroup(template.id, preview.previewHash, auth, executor);
+  const primary = converted.outputs.find((output) => output.sourceRuleId === rule.id && output.role === 'primary');
+  if (!primary?.monitorId || !primary.policyId) throw new Error('Converted group missing primary rule output');
+  return { ok: true, data: {
+    monitorId: primary.monitorId,
+    configPolicyId: primary.policyId,
+    ruleName: rule.name,
+    ruleOrgId: rule.orgId,
+    conversionId: converted.conversionId,
+    convertedRuleIds: converted.convertedRuleIds,
+  } };
+}
+
+type ConvertibleRule =
+  | { ok: true; rule: typeof alertRules.$inferSelect; template: typeof alertTemplates.$inferSelect }
+  | { ok: false; failure: ConversionFailure };
+
+/** Visibility, ownership and mappability of the rule and its template — reads only. */
+async function checkRuleConvertible(ruleId: string, auth: AuthContext, executor: DbExecutor): Promise<ConvertibleRule> {
   const [rule] = await executor.select().from(alertRules).where(eq(alertRules.id, ruleId)).limit(1);
   if (!rule || rule.retiredAt) return { ok: false, failure: { kind: 'rule_not_found' } };
 
@@ -75,6 +115,7 @@ export async function convertRuleToMonitor(ruleId: string, auth: AuthContext, ex
   if (rule.orgId === null && !canManagePartnerWidePolicies(auth)) {
     return { ok: false, failure: { kind: 'partner_wide_denied', message: PARTNER_WIDE_WRITE_DENIED_MESSAGE } };
   }
+  if (!canMutateOrgWideGovernance(auth)) return { ok: false, failure: { kind: 'governance_denied' } };
 
   const [template] = await executor
     .select()
@@ -97,21 +138,5 @@ export async function convertRuleToMonitor(ruleId: string, auth: AuthContext, ex
   if (!assignmentForRule(rule) || !mapStandaloneRule(rule, template).ok) {
     return { ok: false, failure: { kind: 'not_convertible' } };
   }
-
-  // Confirmation binds every member and target, including siblings the selected
-  // rule's route did not name. The group writer repeats authorization and hash
-  // checks under its transaction locks before creating a single ledger entry.
-  const preview = await previewTemplateGroup(template.id, auth, executor);
-  if (preview.blockedBy) return { ok: false, failure: { kind: 'not_convertible' } };
-  const converted = await convertTemplateGroup(template.id, preview.previewHash, auth, executor);
-  const primary = converted.outputs.find((output) => output.sourceRuleId === rule.id && output.role === 'primary');
-  if (!primary?.monitorId || !primary.policyId) throw new Error('Converted group missing primary rule output');
-  return { ok: true, data: {
-    monitorId: primary.monitorId,
-    configPolicyId: primary.policyId,
-    ruleName: rule.name,
-    ruleOrgId: rule.orgId,
-    conversionId: converted.conversionId,
-    convertedRuleIds: converted.convertedRuleIds,
-  } };
+  return { ok: true, rule, template };
 }

@@ -65,7 +65,9 @@
 #     Dockerfile/package.json also set `api`. test-web carries a contract
 #     test that reads apps/api/src/services/accounting/types.ts directly
 #     (accountingProviders.test.ts, since the web cannot import API code), so
-#     that one file also sets `web`. `ci-area-gating.test.mjs` scans
+#     that one file also sets `web`; so does apps/api/src/services/monitors/**
+#     (unconvertibleReasonCoverage.test.ts reads its conversion reason codes).
+#     `ci-area-gating.test.mjs` scans
 #     the sources for such references and fails when one has no rule here.
 # Docs paths set no area. apps/mobile/** sets none either: mobile is gated by
 # its own `mobile-native-changes` filter and test-mobile rides `app`.
@@ -186,6 +188,10 @@ while IFS= read -r path; do
     apps/web/*|apps/portal/*|apps/viewer/src/*) api=true ;;
     apps/api/src/routes/portal/*) portal=true ;;
     apps/api/src/services/accounting/types.ts) web=true ;;
+    # unconvertibleReasonCoverage.test.ts reads every `unconvertible:<code>`
+    # the conversion services can return, so a new API reason is caught on
+    # the PR that adds it, not on some later web PR.
+    apps/api/src/services/monitors/*) web=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;

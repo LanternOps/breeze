@@ -26,13 +26,11 @@ import { authorizePreview, conversionDeviceColumns, ownerAxisInputs, previewFres
 import { missingConversionPrerequisites } from './prerequisites';
 import { EQUIVALENCE_JOB_THRESHOLD, type ConversionPreviewItem, type PolicyConversionPreview, type PolicyConversionPreviewPending, type PolicyConversionPreviewFailed, type ConversionSourceTable, type PartnerConversionPreview } from './types';
 import { notHoldingOrgCondition } from '../../unassignedPool/selectorPredicate';
+import { ConversionError } from './errors';
 
-export class ConversionError extends Error {
-  constructor(readonly code: 'policy_not_found' | 'partner_wide_denied' | 'prerequisite_missing' | 'blocked' | 'preview_stale' | 'equivalence_delta' | 'source_not_found' | 'already_converted' | 'invalid_reason' | 'conversion_not_found' | 'conversion_revert_unavailable', message: string, readonly details?: unknown) {
-    super(message);
-    this.name = 'ConversionError';
-  }
-}
+// Defined in a dependency-free module so a route can map it without loading
+// the converter graph; re-exported here for every existing importer.
+export { ConversionError };
 
 async function compatibleEscalation(id: string, owner: PolicySources['policy'], executor: DbExecutor): Promise<boolean> {
   const [policy] = await executor.select().from(escalationPolicies).where(eq(escalationPolicies.id, id)).limit(1);
@@ -125,7 +123,7 @@ async function buildPolicyPreviewInTx(policyId: string, auth: AuthContext, tx: D
  * branch defers the throw rather than making the call work under an ambient
  * context; no production worker takes it.
  */
-async function withCallerContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+export async function withCallerContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()) return fn();
   return withDbAccessContext(dbAccessContextFromAuth(auth), fn);
 }

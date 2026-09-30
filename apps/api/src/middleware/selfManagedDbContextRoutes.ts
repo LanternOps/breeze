@@ -68,6 +68,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/convert\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/retire\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/[^/]+\/revert\/?$/ },
+  // Per-rule "Convert to monitor" (#5289): convertRuleToMonitor runs the same
+  // template-group preview + convert, each in its own serializable
+  // inCallerTransaction. Under the ambient request transaction every call was
+  // refused by assertIsolationNotNested (a 500); its pre-reads take their own
+  // short caller-scoped context instead (ruleConversionService.ts).
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/convert-from-rule\/[^/]+\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
