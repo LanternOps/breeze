@@ -63,6 +63,7 @@ func TestVMRestoreRelativePath(t *testing.T) {
 		original string
 		want     string
 		wantErr  bool
+		wantCode string // substring the error must carry
 	}{
 		{name: "vss shadow source with original path", source: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\brzlab\markers\m1.txt`, original: `C:\brzlab\markers\m1.txt`, want: "brzlab/markers/m1.txt"},
 		{name: "vss shadow source, two-digit shadow id", source: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy12\Users\labadmin\Documents\q3.xlsx`, original: `C:\Users\labadmin\Documents\q3.xlsx`, want: "Users/labadmin/Documents/q3.xlsx"},
@@ -91,6 +92,18 @@ func TestVMRestoreRelativePath(t *testing.T) {
 		{name: "nul byte", source: "C:\\a\x00b.txt", wantErr: true},
 		{name: "trailing dot name", source: `C:\a\name.`, wantErr: true},
 		{name: "trailing space directory", source: `C:\a \b.txt`, wantErr: true},
+
+		{name: "device name file", source: `C:\a\CON`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "device name with extension", source: `C:\a\nul.txt`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "device name directory", source: `C:\a\com1\b.txt`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "superscript printer port", source: "C:\\a\\LPT\u00b9.log", wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "console input device", source: `C:\CONIN$`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "short name directory", source: `C:\PROGRA~1\app\x.dll`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "short name file", source: `C:\data\REPORT~2.TXT`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "short name in original path", source: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\ok.txt`, original: `C:\DOCUME~1\ok.txt`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "name starting with a device name", source: `C:\a\console.log`, want: "a/console.log"},
+		{name: "tilde not followed by a digit", source: `C:\a\~$budget.xlsx`, want: "a/~$budget.xlsx"},
+		{name: "four-digit port name", source: `C:\a\COM10.txt`, want: "a/COM10.txt"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,6 +111,9 @@ func TestVMRestoreRelativePath(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %q", got)
+				}
+				if tt.wantCode != "" && !strings.Contains(err.Error(), tt.wantCode) {
+					t.Fatalf("error %q does not carry %q", err, tt.wantCode)
 				}
 				return
 			}

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +57,50 @@ func TestHypervRestorePlanOmitsEntriesWithoutBackupPath(t *testing.T) {
 	}
 	if len(provider.downloads) != 2 || provider.downloads[0] != "snapshots/snap-1/files/a" || provider.downloads[1] != "" {
 		t.Fatalf("downloads = %q", provider.downloads)
+	}
+}
+
+// Export paths are names Windows must store literally: a reserved device name
+// or an 8.3 short-name form is refused before anything is downloaded.
+func TestRestoreHypervSnapshotFilesRefusesInvalidWindowsNames(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{name: "device name file", path: "vm/Virtual Hard Disks/CON.vhdx", wantErr: true},
+		{name: "device name directory", path: "vm/aux/cfg.vmcx", wantErr: true},
+		{name: "port device name", path: "vm/COM3", wantErr: true},
+		{name: "superscript port device name", path: "vm/LPT².vmcx", wantErr: true},
+		{name: "console output device", path: "vm/CONOUT$", wantErr: true},
+		{name: "short name directory", path: "VIRTUA~1/disk.vhdx", wantErr: true},
+		{name: "short name file", path: "vm/DISK~1.VHD", wantErr: true},
+		{name: "trailing dot", path: "vm/disk.vhdx.", wantErr: true},
+		{name: "stream separator", path: "vm/disk.vhdx:alt", wantErr: true},
+		{name: "ordinary export file", path: "vm/Virtual Hard Disks/console-disk.vhdx"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &planRecordingProvider{}
+			manifest := &hypervSnapshotManifest{
+				ID: "snap-1",
+				Files: []hypervSnapshotManifestFile{
+					{SourcePath: "vm/Virtual Machines/cfg.vmcx", BackupPath: "snapshots/snap-1/files/a"},
+					{SourcePath: tt.path, BackupPath: "snapshots/snap-1/files/b"},
+				},
+			}
+			_, err := restoreHypervSnapshotFiles(provider, manifest, t.TempDir(), nil)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("restore: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "invalid_windows_name") {
+				t.Fatalf("err = %v, want invalid_windows_name", err)
+			}
+			if len(provider.downloads) != 0 || len(provider.plans) != 0 {
+				t.Fatalf("an export with a refused name was fetched: plans %q downloads %q", provider.plans, provider.downloads)
+			}
+		})
 	}
 }

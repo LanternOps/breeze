@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/mssql"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 var (
@@ -590,6 +591,13 @@ func restoreHypervSnapshotFiles(provider providers.BackupProvider, manifest *hyp
 	// still fails at its own Download below, as before.
 	keys := make([]string, 0, len(manifest.Files))
 	for _, file := range manifest.Files {
+		// Export files land on NTFS under their recorded names; a name
+		// Windows would store differently (a device name, an 8.3 short-name
+		// form, a stream separator, a trailing dot or space) is refused
+		// before anything is fetched.
+		if err := securefs.ValidateWindowsComponents(file.SourcePath); err != nil {
+			return nil, fmt.Errorf("invalid export path %q: %w", file.SourcePath, err)
+		}
 		if file.BackupPath != "" {
 			keys = append(keys, file.BackupPath)
 		}
