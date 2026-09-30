@@ -195,6 +195,7 @@ vi.mock('../../middleware/auth', () => ({
 import { authMiddleware } from '../../middleware/auth';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';
+import { BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupWriteHelperGate';
 
 describe('hyperv routes', () => {
   let app: Hono;
@@ -507,6 +508,27 @@ describe('hyperv routes', () => {
       backupType: 'application',
       storageIdentity: 's3::storage.example.com:9443::Backups',
     }));
+  });
+
+  it('answers 409 and fails the job with the update message when the helper cannot write through a storage session', async () => {
+    insertMock.mockReturnValueOnce(chainMock([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    
+    queueDestinationConfigSelect();
+    executeCommandMock.mockResolvedValueOnce({ status: 'failed', error: BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE });
+
+    const res = await app.request('/backup/hyperv/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, vmName: 'Accounting VM', consistencyType: 'application' }),
+    });
+
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE, reason: 'helper_update_required' });
+    expect(markBackupJobFailedIfInFlightMock).toHaveBeenCalledWith(
+      '44444444-4444-4444-8444-444444444444',
+      BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE,
+    );
   });
 
   // D20b item A: a resolved config id whose backup_configs row has since

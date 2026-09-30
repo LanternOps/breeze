@@ -294,7 +294,7 @@ const backupStorageSessionMintsTotal = new Counter({
 
 const backupWriteUnexpectedLegacyTotal = new Counter({
   name: 'breeze_backup_write_dispatch_unexpected_legacy_total',
-  help: 'Backup write deliveries that carried the storage destination for a reason other than an older helper or a non-S3 destination, by command type and reason',
+  help: 'Backup write deliveries that carried the storage destination (none are expected: backups to S3 storage use write sessions only), by command type and reason',
   labelNames: ['command_type', 'reason'] as const,
   registers: [register]
 });

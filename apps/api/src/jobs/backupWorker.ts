@@ -47,8 +47,9 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { recordBackupWriteDispatch } from '../services/backupMetrics';
-import { brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
+import { backupWriteRefusalMessage, brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
 import { BACKUP_HELPER_UNREPORTED_MESSAGE, backupHelperProtocolsUnreported } from '../services/backupHelperProtocols';
+import { backupWriteHelperRefusal } from '../services/backupWriteHelperGate';
 import { captureException } from '../services/sentry';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -859,7 +860,22 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
-  return { status: 'ok', config, agentId, helperProtocolsUnreported: backupHelperProtocolsUnreported(device) };
+  // A backup to S3 storage is written only through a write-scoped storage
+  // session. A device whose helper has REPORTED that it cannot use one is
+  // refused before anything is built; one that has not reported yet is held
+  // below until it does. Every target this worker builds (backup_run,
+  // mssql_backup, hyperv_backup) writes to this same destination.
+  const writeRefusal = backupWriteHelperRefusal(
+    'backup_run',
+    { provider: config.provider },
+    device!.backupWriteProtocolVersion,
+  );
+  if (writeRefusal) {
+    await markJobFailed(data.jobId, writeRefusal);
+    return { status: 'done', result: { dispatched: false } };
+  }
+
+  return { status: 'ok', config, agentId, helperProtocolsUnreported: backupHelperProtocolsUnreported(device!) };
 }
 
 /**
@@ -883,7 +899,13 @@ export const BACKUP_CAPABILITY_WAIT_MAX_MS = 10 * 60 * 1000;
  * operator can act on. Should the re-queue itself be lost, the stale reaper
  * still fails the pending job (BACKUP_PENDING_TIMEOUT_MS).
  */
-async function holdForHelperReport(data: DispatchBackupJobData): Promise<{ dispatched: boolean }> {
+async function holdForHelperReport(
+  data: DispatchBackupJobData,
+  onExhausted: { message: string; log: string } = {
+    message: BACKUP_HELPER_UNREPORTED_MESSAGE,
+    log: 'did not report its backup helper in time',
+  },
+): Promise<{ dispatched: boolean }> {
   const now = Date.now();
   const since = data.capabilityWaitSince ?? new Date(now).toISOString();
   const attempt = (data.capabilityWaitAttempt ?? 0) + 1;
@@ -892,8 +914,8 @@ async function holdForHelperReport(data: DispatchBackupJobData): Promise<{ dispa
     || !Number.isFinite(sinceMs)
     || now - sinceMs >= BACKUP_CAPABILITY_WAIT_MAX_MS;
   if (exhausted) {
-    console.warn(`[BackupWorker] Device ${data.deviceId} did not report its backup helper in time; failing job ${data.jobId}`);
-    await runWithSystemDbAccess(() => markJobFailed(data.jobId, BACKUP_HELPER_UNREPORTED_MESSAGE));
+    console.warn(`[BackupWorker] Device ${data.deviceId} ${onExhausted.log}; failing job ${data.jobId}`);
+    await runWithSystemDbAccess(() => markJobFailed(data.jobId, onExhausted.message));
     return { dispatched: false };
   }
   try {
@@ -913,12 +935,26 @@ async function holdForHelperReport(data: DispatchBackupJobData): Promise<{ dispa
   return { dispatched: false };
 }
 
+/**
+ * Issuing a write session failed for a transient reason (database or Redis)
+ * while building the dispatch. Thrown out of Phase 3 so its whole system
+ * transaction — child job rows, dispatch pins, sessions already issued for
+ * earlier targets — rolls back; the dispatch is then tried again later, like
+ * a device that has not reported its helper yet.
+ */
+class TransientWriteSessionError extends Error {
+  constructor() {
+    super('A write session could not be issued for a backup target');
+    this.name = 'TransientWriteSessionError';
+  }
+}
+
 interface PreparedBackupTarget {
   commandJobId: string;
   command: AgentCommand;
   commandType: string;
   /** How the storage destination travels with this target (write-dispatch telemetry). */
-  writeDelivery?: { mode: 'brokered' | 'legacy' | 'local'; reason: string };
+  writeDelivery: { mode: 'brokered' | 'local'; reason: string };
 }
 
 type BackupDispatchPrepare =
@@ -1512,11 +1548,14 @@ async function prepareBackupDispatchTargets(
       providerConfig: destination.providerConfig,
     });
 
-    const legacyPayload: Record<string, unknown> = {
+    // The storage destination itself goes into a payload only when it is a
+    // local path. For S3 it is used here, in memory, for identity stamping
+    // and for issuing the write session — never sent.
+    const targetPayload: Record<string, unknown> = {
       jobId: commandJobId,
       configId: data.configId,
       provider: destination.provider,
-      providerConfig: destination.providerConfig,
+      ...(destination.provider === 'local' ? { providerConfig: destination.providerConfig } : {}),
       storageEncryption: destination.storageEncryption,
       ...target.payload,
       // Payload fields stay file/system_image-only (spec §3.1) even though
@@ -1535,9 +1574,10 @@ async function prepareBackupDispatchTargets(
           }
         : {}),
     };
-    // A helper that reports brokered writes gets a write-scoped storage
-    // session (server-issued snapshot id, base manifest from the dispatch pin
-    // only) instead of the destination; any other target is sent as before.
+    // A backup to S3 storage carries a write-scoped storage session
+    // (server-issued snapshot id, base manifest from the dispatch pin only);
+    // a target for which none can be issued is refused, never sent the
+    // destination instead.
     const delivery = await brokerWorkerBackupPayload({
       orgId: data.orgId,
       jobId: commandJobId,
@@ -1546,22 +1586,28 @@ async function prepareBackupDispatchTargets(
       commandType: target.commandType,
       provider: destination.provider,
       providerConfig: destination.providerConfig,
-      payload: legacyPayload,
+      payload: targetPayload,
       baseSnapshotId: target.commandType === 'backup_run' ? dispatchPin.baseSnapshotId : null,
     });
-    if (delivery.mode === 'held') {
-      // The device's helper report was withdrawn (a re-enrollment) after the
-      // Phase 1 check: nothing is sent for this target, and its row is failed
-      // rather than left in flight.
+    if (delivery.mode === 'retry') throw new TransientWriteSessionError();
+    if (delivery.mode === 'held' || delivery.mode === 'refused') {
+      // Nothing is sent for this target, and its row is failed rather than
+      // left in flight: either the device's helper report was withdrawn (a
+      // re-enrollment) after the Phase 1 check, or a write session could not
+      // be issued — the storage destination is never sent instead.
+      const detail = delivery.mode === 'held' ? BACKUP_HELPER_UNREPORTED_MESSAGE : delivery.message;
       if (commandJobId === data.jobId) {
-        parentFailureDetail = BACKUP_HELPER_UNREPORTED_MESSAGE;
+        parentFailureDetail = detail;
       } else {
         await db
           .update(backupJobs)
-          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: BACKUP_HELPER_UNREPORTED_MESSAGE })
+          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: detail })
           .where(eq(backupJobs.id, commandJobId));
       }
-      preFailedTargets.push(`${target.commandType} (device has not reported its backup helper)`);
+      recordBackupWriteDispatch(target.commandType, 'refused', delivery.reason);
+      preFailedTargets.push(delivery.mode === 'held'
+        ? `${target.commandType} (device has not reported its backup helper)`
+        : `${target.commandType} (${delivery.reason})`);
       continue;
     }
 
@@ -1710,7 +1756,17 @@ async function processDispatchBackup(
   // Phase 3 — resolve targets, build every command payload and record its
   // dispatch expectation: another short system DB context, then it CLOSES
   // before any target is actually sent.
-  const prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  let prepare: BackupDispatchPrepare;
+  try {
+    prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  } catch (err) {
+    if (!(err instanceof TransientWriteSessionError)) throw err;
+    // Nothing was committed and nothing was sent: try the dispatch again.
+    return holdForHelperReport(data, {
+      message: backupWriteRefusalMessage('mint_failed'),
+      log: 'could not be issued a write session in time',
+    });
+  }
   if (prepare.status === 'done') return prepare.result;
   const { prepared, preFailedTargets, backupMode, targetCount, parentFailureDetail: preparedParentFailure } = prepare;
 
@@ -1783,16 +1839,13 @@ async function processDispatchBackup(
       if (outcome.status === 'sent') {
         sendState.set(target.commandJobId, 'sent');
         sentCount++;
-        // A brokered target carried a write session; otherwise the command
-        // carried its storage destination inline (a local one is a path,
-        // not a credential).
-        if (target.writeDelivery?.mode === 'brokered') {
-          recordBackupWriteDispatch(target.commandType, 'brokered', 'ok');
-        } else if (target.command.payload?.provider === 'local') {
-          recordBackupWriteDispatch(target.commandType, 'local', 'no_credential');
-        } else {
-          recordBackupWriteDispatch(target.commandType, 'legacy_credential', target.writeDelivery?.reason ?? 'inline_provider_config');
-        }
+        // A target carries either a write session or a local path (not a
+        // credential); nothing else is ever prepared.
+        recordBackupWriteDispatch(
+          target.commandType,
+          target.writeDelivery.mode,
+          target.writeDelivery.mode === 'brokered' ? 'ok' : 'no_credential',
+        );
         continue;
       }
 

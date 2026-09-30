@@ -38,6 +38,9 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
+  // Old storage key check / operator confirmation: both mutations surface
+  // their outcome through runAction from birth.
+  'src/components/configurationPolicies/featureTabs/StorageKeyRevocationCard.tsx',
   // Per-rule legacy convert (POST /monitor-definitions/convert-from-rule).
   'src/components/monitoring/LegacyRulesTable.tsx',
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
@@ -868,7 +871,8 @@ describe('no silent mutations in targeted set', () => {
     // devices/UnassignedDevicesPage.tsx (parked-device assignment).
     // Multi-org report series W03 adds reports/series/seriesApi.ts: 202 → 203.
     // Multi-org report series W04 adds reports/series/CombineDialog.tsx: 203 → 204.
-    expect(absoluteFiles.length).toBe(204);
+    // Backup storage key revocation card (StorageKeyRevocationCard.tsx): 204 → 205.
+    expect(absoluteFiles.length).toBe(205);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

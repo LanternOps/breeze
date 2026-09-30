@@ -24,6 +24,9 @@
  *     older than the orphan window).
  *  5. A delete marker left behind by a call that never finished is cleared
  *     once the (time-bounded) storage delete can no longer be running.
+ *  6. The sealed connection settings of storage keys replaced more than 30
+ *     days ago are erased (services/backupStorageCredentialHistory.ts): after
+ *     that the old key can only be confirmed as disabled, not checked.
  * Publication (rule 3) and abandonment (rule 4) also wait for any in-flight
  * delete.
  *
@@ -75,6 +78,12 @@ export type JanitorDeps = {
    * (rule 3), after the publication has committed. Absent = nobody is told.
    */
   onPublished?(snapshotDbIds: string[]): Promise<unknown>;
+  /**
+   * Rule 6: erases the sealed connection settings of storage keys replaced
+   * more than 30 days ago (services/backupStorageCredentialHistory.ts).
+   * Absent = skipped. Returns how many were erased.
+   */
+  eraseExpiredSealedSettings?(now: Date): Promise<number>;
 };
 
 const defaultDeps: JanitorDeps = {
@@ -87,9 +96,21 @@ const defaultDeps: JanitorDeps = {
     const { enqueueVerificationForPublishedSnapshots } = await import('./backupSnapshotAttestationWorker');
     return enqueueVerificationForPublishedSnapshots(snapshotDbIds);
   },
+  eraseExpiredSealedSettings: async (now) => {
+    const { eraseExpiredSealedSettings } = await import('../services/backupStorageCredentialHistory');
+    return eraseExpiredSealedSettings(now);
+  },
 };
 
-export type JanitorSummary = { abortedUploads: number; settledDeletes: number; sweptPrefixes: number; published: number; abandoned: number; failures: number };
+export type JanitorSummary = {
+  abortedUploads: number;
+  settledDeletes: number;
+  sweptPrefixes: number;
+  published: number;
+  abandoned: number;
+  erasedSealedSettings: number;
+  failures: number;
+};
 
 /**
  * The destination a session or reservation was issued for, by configuration
@@ -319,12 +340,22 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
 }
 
 export async function runBackupWriteSessionJanitor(deps: JanitorDeps = defaultDeps): Promise<JanitorSummary> {
-  const summary: JanitorSummary = { abortedUploads: 0, settledDeletes: 0, sweptPrefixes: 0, published: 0, abandoned: 0, failures: 0 };
+  const summary: JanitorSummary = {
+    abortedUploads: 0, settledDeletes: 0, sweptPrefixes: 0, published: 0, abandoned: 0, erasedSealedSettings: 0, failures: 0,
+  };
   await abortRecordedUploads(deps, summary);
   await settleStuckDeletes(deps, summary);
   await abandonEndedReservations(deps, summary);
   await publishSealed(deps, summary);
   await sweepFinishedPrefixes(deps, summary);
+  if (deps.eraseExpiredSealedSettings) {
+    try {
+      summary.erasedSealedSettings = await deps.eraseExpiredSealedSettings(deps.now());
+    } catch (err) {
+      summary.failures += 1;
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
   return summary;
 }
 

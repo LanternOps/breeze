@@ -388,6 +388,44 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(queueCommandMock).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a backup to S3 storage to a device whose backup helper predates brokered writes, writing no row', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1, backupWriteProtocolVersion: 0 });
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'hyperv_backup',
+      payload: { jobId: 'job-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res).toMatchObject({ ok: false, code: 'backup_helper_update_required' });
+    expect(res.ok ? '' : res.error).toMatch(/^Update the Breeze agent on this device, then try again\. Backups now require/);
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(claimMock).not.toHaveBeenCalled();
+  });
+
+  it('queues a backup to S3 storage for a device that has not reported its helper yet', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: null, backupWriteProtocolVersion: null });
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'mssql_backup',
+      payload: { jobId: 'job-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res.ok).toBe(true);
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues a backup to S3 storage to a helper that reports brokered writes', async () => {
+    selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1, backupWriteProtocolVersion: 1 });
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({
+      deviceId: DEVICE,
+      type: 'mssql_backup',
+      payload: { jobId: 'job-1', provider: 's3', providerConfigRef: { configId: 'c', orgId: ORG } },
+    });
+    expect(res.ok).toBe(true);
+  });
+
   it('queues a local-destination read to any helper', async () => {
     selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 0 });
     claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });

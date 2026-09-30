@@ -76,7 +76,12 @@ const writeDeliveryMock = vi.hoisted(() => ({
     payload: input.payload,
   })),
 }));
-vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+vi.mock('../services/backupStorageWriteDelivery', () => ({
+  brokerWorkerBackupPayload: writeDeliveryMock.broker,
+  backupWriteRefusalMessage: (reason: string) => (reason === 'mint_failed'
+    ? 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.'
+    : reason),
+}));
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
@@ -808,6 +813,13 @@ describe('processResults — malformed payload path rendering (#3260)', () => {
 describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () => {
   const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
   const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+  const S3_CONFIG_ROW = {
+    id: 'config-1',
+    provider: 's3',
+    providerConfig: { endpoint: 'https://storage.example.com', bucket: 'backups', region: 'us-east-1', accessKey: 'AK', secretKey: 'SK' },
+    encryption: false,
+  };
+  let configRow: Record<string, unknown> = CONFIG_ROW;
   const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
   let helperProtocols: { backupWriteProtocolVersion: number | null; backupIntegrityProtocolVersion: number | null } = REPORTED_OLD_HELPER;
   let jobStatusRows: Array<{ status: string }> = [];
@@ -820,7 +832,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       const keys = cols ? Object.keys(cols) : [];
       let rows: unknown[];
       if (keys.length === 0) {
-        rows = [CONFIG_ROW]; // config load: db.select() with no arg
+        rows = [configRow]; // config load: db.select() with no arg
       } else if (keys.length === 1 && keys[0] === 'status') {
         rows = jobStatusRows; // job status reads: never cancelled by default
       } else if (keys.length === 1 && keys[0] === 'orgId') {
@@ -875,6 +887,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
     vi.clearAllMocks();
     updateLog.length = 0;
     helperProtocols = REPORTED_OLD_HELPER;
+    configRow = CONFIG_ROW;
     jobStatusRows = [];
     wireSelects();
     wireUpdates();
@@ -994,6 +1007,99 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       expect(recordDispatchedExpectationMock).not.toHaveBeenCalled();
       expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
       expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === BACKUP_HELPER_UNREPORTED_MESSAGE)).toBe(true);
+    });
+  });
+
+  describe('backups to S3 storage require a helper that writes through a storage session', () => {
+    const UPDATE_REQUIRED =
+      'Update the Breeze agent on this device, then try again. Backups now require secure storage access, '
+      + 'and the backup component on this device has not reported support for it.';
+    const CAPABLE_HELPER = { backupWriteProtocolVersion: 1, backupIntegrityProtocolVersion: 1 };
+
+    it('fails the job with the update message and builds nothing for an older helper', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = REPORTED_OLD_HELPER;
+
+      const result = await __testOnly.processDispatchBackup(DATA as any);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(writeDeliveryMock.broker).not.toHaveBeenCalled();
+      expect(recordDispatchedExpectationMock).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(enqueueCapabilityWaitMock).not.toHaveBeenCalled();
+      expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === UPDATE_REQUIRED)).toBe(true);
+    });
+
+    it('still waits for a device that has not reported its helper yet', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = UNREPORTED_HELPER;
+
+      await __testOnly.processDispatchBackup(DATA as any);
+
+      expect(enqueueCapabilityWaitMock).toHaveBeenCalledTimes(1);
+      expect(updateLog.some((u) => u.payload.errorLog === UPDATE_REQUIRED)).toBe(false);
+    });
+
+    it('sends a brokered payload with no storage destination to a capable helper', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      writeDeliveryMock.broker.mockImplementationOnce((async (input: { payload: Record<string, unknown> }) => {
+        const { providerConfig: _omit, ...rest } = input.payload;
+        return { mode: 'brokered', reason: 'ok', payload: { ...rest, storageSession: { version: 1, scope: 'snapshot_write' } } };
+      }) as never);
+
+      const result = await __testOnly.processDispatchBackup(DATA as any);
+
+      expect(result).toEqual({ dispatched: true });
+      const [, command] = agentRelayMock.dispatchCommandToAgent.mock.calls[0] as unknown as [string, { payload: Record<string, unknown> }];
+      expect(command.payload.providerConfig).toBeUndefined();
+      expect(command.payload.storageSession).toBeDefined();
+    });
+
+    it('tries the whole dispatch again later, sending nothing and failing nothing, when issuing a session fails transiently', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      writeDeliveryMock.broker.mockResolvedValueOnce({ mode: 'retry', reason: 'mint_failed' } as never);
+
+      const result = await __testOnly.processDispatchBackup(DATA as any);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(enqueueCapabilityWaitMock).toHaveBeenCalledTimes(1);
+      expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+    });
+
+    it('fails the job once transient session failures outlast the retry window', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      jobStatusRows = [{ status: 'pending' }];
+      writeDeliveryMock.broker.mockResolvedValueOnce({ mode: 'retry', reason: 'mint_failed' } as never);
+
+      await __testOnly.processDispatchBackup({
+        ...DATA, capabilityWaitAttempt: 5, capabilityWaitSince: new Date(Date.now() - 11 * 60_000).toISOString(),
+      } as any);
+
+      expect(enqueueCapabilityWaitMock).not.toHaveBeenCalled();
+      expect(updateLog.some((u) => u.payload.status === 'failed'
+        && u.payload.errorLog === 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.')).toBe(true);
+    });
+
+    it('fails a target and never sends it when a write session cannot be issued', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      writeDeliveryMock.broker.mockResolvedValueOnce({
+        mode: 'refused',
+        reason: 'insecure_endpoint',
+        message: 'Backups to S3 storage require the storage endpoint to use HTTPS.',
+      } as never);
+
+      const result = await __testOnly.processDispatchBackup(DATA as any);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(recordDispatchedExpectationMock).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(updateLog.some((u) => u.payload.status === 'failed'
+        && u.payload.errorLog === 'Backups to S3 storage require the storage endpoint to use HTTPS.')).toBe(true);
     });
   });
 

@@ -77,6 +77,16 @@ export type McpExemptReason =
    */
   | 'human_only_legal_evidence'
   /**
+   * Evidence that a replaced backup storage key no longer works
+   * (backup/storageCredentials.ts): checking the old key against the storage
+   * provider, and a user's confirmation that they disabled it. Each records
+   * whether a key that devices may have received is still usable, which the
+   * operator acts on and which is reported as closure evidence. Deliberately
+   * not agent-reachable: an agent that could record a confirmation could mark
+   * a still-working key as disabled. The routes are MFA- and governance-gated.
+   */
+  | 'human_only_revocation_evidence'
+  /**
    * Rolling back an agent to a prior release. A standing spec exclusion
    * (docs/superpowers/specs/ai-mcp/2026-09-23-ai-full-control-design.md,
    * W05 gap triage): reverting fleet software is an operator decision, not
@@ -267,6 +277,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/providerCustomers.ts': { exempt: 'vendor_console_admin', note: 'maps a discovered Cove customer onto a Breeze org' },
   'backup/providerDevices.ts': { exempt: 'vendor_console_admin', note: 'lists provider device rows and links one to a Breeze device' },
   'backup/providers.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the Cove console credential' },
+  'backup/storageCredentials.ts': { exempt: 'human_only_revocation_evidence', note: 'lists storage keys used before brokered backup writes, checks a replaced key, records a user confirmation' },
   'backup/reconcile.ts': { gap: '#6794' },
   'backup/resilienceAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'backup/restore.ts': { tools: ['restore_snapshot'] },

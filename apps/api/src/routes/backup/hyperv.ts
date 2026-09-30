@@ -41,6 +41,7 @@ import { parseAgentJsonStdout } from '../../services/agentCommandStdout';
 import { applyBackupStartedAck, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
+import { isBackupWriteHelperUpdateRequiredError } from '../../services/backupWriteHelperGate';
 
 const deviceIdParamSchema = z.object({
   deviceId: z.string().guid(),
@@ -394,6 +395,14 @@ hypervRoutes.post(
       },
       { userId: auth?.user?.id, timeoutMs: 600000, expectedOrgId: orgId } // 10 min for large VMs
     );
+
+    // Refused before a command row existed: the device's backup helper cannot
+    // write through a storage session. The job fails with the same message the
+    // operator sees, and the answer is a conflict the operator can act on.
+    if (result.status === 'failed' && isBackupWriteHelperUpdateRequiredError(result.error)) {
+      await withAuthDbAccessContext(auth, () => markBackupJobFailedIfInFlight(backupJob.id, result.error!));
+      return c.json({ error: result.error, reason: 'helper_update_required' }, 409);
+    }
 
     // Phase 3 — record the reply, each write in a short context of its own.
     let snapshotDbId: string | null = null;

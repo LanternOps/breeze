@@ -13,6 +13,7 @@ import { deliverByFor, resolveOfflinePolicy, type OfflinePolicy } from './comman
 import { queueCommand, type CommandPayload, type QueuedCommand } from './commandQueue';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
+import { backupWriteHelperRefusal } from './backupWriteHelperGate';
 import { captureException } from './sentry';
 import {
   isParkedDeliverableCommandType,
@@ -227,12 +228,13 @@ async function prepareDeviceCommand(
 
   const payload = input.payload ?? {};
 
-  // A storage read to a helper that cannot use a storage session could only
-  // be served by sending it the storage destination, which is never done for
-  // a read. Refused here, before a row exists, so the caller can say so; the
-  // delivery refresher enforces the same rule against the helper's reported
-  // capability at the moment of delivery.
-  const helperRefusal = backupReadHelperRefusal(input.type, payload, device.backupReadProtocolVersion);
+  // A storage read or a backup to S3 storage for a helper that cannot use a
+  // storage session could only be served by sending it the storage
+  // destination, which is never done. Refused here, before a row exists, so
+  // the caller can say so; the delivery refreshers enforce the same rules
+  // against the helper's reported capability at the moment of delivery.
+  const helperRefusal = backupReadHelperRefusal(input.type, payload, device.backupReadProtocolVersion)
+    ?? backupWriteHelperRefusal(input.type, payload, device.backupWriteProtocolVersion);
   if (helperRefusal) {
     return { ok: false, code: 'backup_helper_update_required', error: helperRefusal };
   }

@@ -11,6 +11,9 @@ vi.mock('./backupSnapshotAttestationWorker', () => ({
   enqueueVerificationForPublishedSnapshots: enqueuePublishedMock,
 }));
 
+const eraseSealedMock = vi.hoisted(() => vi.fn(async (_now: Date) => 3));
+vi.mock('../services/backupStorageCredentialHistory', () => ({ eraseExpiredSealedSettings: eraseSealedMock }));
+
 import { __testOnly } from './backupWriteSessionJanitor';
 import { RESERVATION_CLEANUP_EVERY_MS } from '../services/backupSnapshotIdReservations';
 
@@ -24,5 +27,11 @@ describe('backupWriteSessionJanitor default deps', () => {
     expect(onPublished).toBeTypeOf('function');
     await onPublished!(['snap-db-1', 'snap-db-2']);
     expect(enqueuePublishedMock).toHaveBeenCalledWith(['snap-db-1', 'snap-db-2']);
+  });
+
+  it('erases the sealed settings of storage keys replaced more than 30 days ago', async () => {
+    const now = new Date('2026-12-01T00:00:00Z');
+    expect(await __testOnly.defaultDeps.eraseExpiredSealedSettings!(now)).toBe(3);
+    expect(eraseSealedMock).toHaveBeenCalledWith(now);
   });
 });

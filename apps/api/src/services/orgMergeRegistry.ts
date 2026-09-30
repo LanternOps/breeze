@@ -758,6 +758,8 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_snapshot_id_reservations",
   "backup_snapshot_retirements",
   "backup_snapshots",
+  // Storage key history (and its revocation evidence) moves with the org.
+  "backup_storage_credential_history",
   // Multipart uploads of write sessions travel with their session.
   "backup_storage_session_uploads",
   // Short-lived storage sessions travel with their device and snapshot.

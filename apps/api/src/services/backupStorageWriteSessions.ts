@@ -86,7 +86,7 @@ import {
 } from './backupStorageSessions';
 
 export { urlExpiresIn };
-import { CommandTypes } from './commandTypes';
+import { BACKUP_WRITE_GATED_COMMAND_TYPES, MIN_BACKUP_WRITE_PROTOCOL_VERSION } from './backupWriteHelperGate';
 
 // ── Contract constants ──────────────────────────────────────────────────────
 
@@ -104,13 +104,9 @@ export const STORAGE_WRITE_LIST_MAX_KEYS = 1000;
 export const STORAGE_WRITE_DELETE_MAX_KEYS = 1000;
 /** The helper's publish lease object; the only key deletable after sealing. */
 export const UPLOAD_LEASE_OBJECT = 'upload.lease';
-/** Backup commands whose storage writes may be brokered. */
-export const BROKERED_WRITE_COMMAND_TYPES: readonly string[] = [
-  CommandTypes.BACKUP_RUN,
-  CommandTypes.MSSQL_BACKUP,
-  CommandTypes.HYPERV_BACKUP,
-];
-export const MIN_BACKUP_WRITE_PROTOCOL_VERSION = 1;
+/** Backup commands whose storage writes may be brokered (the gated write types). */
+export const BROKERED_WRITE_COMMAND_TYPES: readonly string[] = BACKUP_WRITE_GATED_COMMAND_TYPES;
+export { MIN_BACKUP_WRITE_PROTOCOL_VERSION };
 
 /**
  * How long an upload may still be running after the URL it started with has

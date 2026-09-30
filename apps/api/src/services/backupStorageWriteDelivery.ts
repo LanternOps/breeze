@@ -8,16 +8,18 @@
  *   - on-demand MSSQL / Hyper-V backups: a queued command whose destination
  *     reference is resolved at delivery (`deliverBackupWriteCommand`, the
  *     delivery refresher for those types).
- * Either way, when the device's helper reports brokered writes and the
- * destination is S3 over https, the payload carries `storageSession` (with
- * the server-issued snapshot id) and NO `providerConfig`. Otherwise the
- * payload is delivered exactly as before — this release only adds the
- * brokered path for helpers that ask for it.
+ * A backup to S3 storage is delivered ONLY with `storageSession` (carrying
+ * the server-issued snapshot id) and never with `providerConfig`. When no
+ * write session can be issued — the helper does not report brokered writes,
+ * the endpoint is not https, the server origin is not usable, the job has
+ * ended — the backup is refused with a reason the operator can act on; the
+ * storage destination is never sent instead. Only a LOCAL destination, which
+ * is a path and not a credential, is delivered as a destination.
  *
  * A device that has not reported its helper yet (a new or re-enrolled
- * install before its first heartbeat) is neither: nothing is delivered until
- * the report arrives. The worker holds the whole dispatch (jobs/backupWorker.ts)
- * and the refresher defers the queued command, so the next heartbeat — which
+ * install before its first heartbeat) gets nothing until the report arrives.
+ * The worker holds the whole dispatch (jobs/backupWorker.ts) and the
+ * refresher defers the queued command, so the next heartbeat — which
  * carries the report — decides.
  */
 import { hasDbAccessContext, withDbAccessContext } from '../db';
@@ -26,7 +28,12 @@ import { BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE } from './backupHelperProtoco
 import { recordBackupWriteDispatch } from './backupMetrics';
 import { resolveBackupWriteCommandDestination } from './backupProviderConfig';
 import { loadStoredBackupWriteProtocol, mintBackupWriteSession } from './backupStorageWriteSessions';
-import { CommandDeliveryDeferredError, type DeliveryRefreshContext } from './commandDeliveryRefusal';
+import { BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupWriteHelperGate';
+import {
+  CommandDeliveryDeferredError,
+  CommandDeliveryRefusedError,
+  type DeliveryRefreshContext,
+} from './commandDeliveryRefusal';
 import { captureException } from './sentry';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -36,6 +43,44 @@ function withoutDestination(payload: Record<string, unknown>): Record<string, un
   const out = { ...payload };
   for (const field of DESTINATION_FIELDS) delete out[field];
   return out;
+}
+
+function hasInlineDestination(payload: Record<string, unknown>): boolean {
+  return 'providerConfig' in payload || 'providerConfigEnvelope' in payload;
+}
+
+/**
+ * Why a backup was not delivered, for the backup job / command result it ends
+ * up on. Operator-facing; never names a credential or a key.
+ */
+const WRITE_REFUSAL_MESSAGES: Record<string, string> = {
+  helper_unsupported: BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE,
+  provider_not_s3:
+    'This backup destination uses a storage provider that backups no longer support. '
+    + 'Change the backup destination to S3-compatible storage or a local path.',
+  insecure_endpoint:
+    'Backups to S3 storage require the storage endpoint to use HTTPS. Change the backup destination endpoint to HTTPS.',
+  server_origin_mismatch:
+    'This device connects to Breeze at an address the server is not configured to serve, so a secure storage session '
+    + 'cannot be issued. Set PUBLIC_API_URL to the address agents use.',
+  server_origin_unavailable:
+    'The server address agents use is not configured, so a secure storage session cannot be issued. Set PUBLIC_API_URL.',
+  insecure_server_origin:
+    'Backups to S3 storage require agents to reach Breeze over HTTPS. Serve the agent API over HTTPS.',
+  device_org_mismatch: 'The target device no longer belongs to the organization that owns this backup destination.',
+  job_not_live: 'This backup job has already finished or been cancelled.',
+  inline_destination:
+    'This backup was queued by an earlier version of Breeze and can no longer be delivered. Start it again.',
+  no_reference: 'This backup command carries no usable backup destination reference. Start it again.',
+  no_job: 'This backup command is not linked to a backup job. Start it again.',
+  provider_changed: 'The backup destination changed provider after this backup was queued. Start it again.',
+  encryption_plan_changed:
+    'The backup destination encryption settings changed after this backup was queued. Start it again.',
+  mint_failed: 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.',
+};
+
+export function backupWriteRefusalMessage(reason: string): string {
+  return WRITE_REFUSAL_MESSAGES[reason] ?? 'This backup cannot be written securely.';
 }
 
 function samePlan(a: unknown, b: unknown): boolean {
@@ -52,21 +97,33 @@ function baseManifestKeyFor(baseSnapshotId: string | null | undefined): string |
 
 export type WorkerWriteDelivery =
   | {
-    mode: 'brokered' | 'legacy' | 'local';
+    mode: 'brokered' | 'local';
     reason: string;
     payload: Record<string, unknown>;
   }
+  // No write session could be issued: nothing is sent, the target fails
+  // with `message`.
+  | { mode: 'refused'; reason: string; message: string }
+  // Issuing the session failed for a transient reason (database or Redis):
+  // nothing is sent and the whole dispatch is tried again later.
+  | { mode: 'retry'; reason: 'mint_failed' }
   // The device has not reported its helper: there is nothing to send.
   | { mode: 'held'; reason: 'helper_unreported' };
+
+function refused(reason: string): Extract<WorkerWriteDelivery, { mode: 'refused' }> {
+  return { mode: 'refused', reason, message: backupWriteRefusalMessage(reason) };
+}
 
 /**
  * For the backup worker (system context, before the send): the payload to
  * send for one target. `baseSnapshotId` is the server's own dispatch pin —
- * the only base a write session may read. A minting failure keeps today's
- * payload (logged), never fails the backup. A device that has not reported
- * its helper gets no payload at all (`held`); the worker checks for that
- * before it gets here, so it only happens when a re-enrollment lands in
- * between.
+ * the only base a write session may read. A backup to S3 storage is sent
+ * only with a write session; when none can be issued the target is refused
+ * and nothing is sent, except that a minting failure (database or Redis,
+ * logged) asks the worker to try the dispatch again (`retry`). A
+ * device that has not reported its helper gets no payload at all (`held`);
+ * the worker checks for that before it gets here, so it only happens when a
+ * re-enrollment lands in between.
  */
 export async function brokerWorkerBackupPayload(input: {
   orgId: string;
@@ -80,6 +137,7 @@ export async function brokerWorkerBackupPayload(input: {
   baseSnapshotId: string | null;
 }): Promise<WorkerWriteDelivery> {
   if (input.provider === 'local') return { mode: 'local', reason: 'no_credential', payload: input.payload };
+  if (input.provider !== 's3') return refused('provider_not_s3');
   try {
     const minted = await mintBackupWriteSession({
       orgId: input.orgId,
@@ -92,7 +150,7 @@ export async function brokerWorkerBackupPayload(input: {
     });
     if (minted.mode !== 'brokered') {
       if (minted.reason === 'helper_unreported') return { mode: 'held', reason: 'helper_unreported' };
-      return { mode: 'legacy', reason: minted.reason, payload: input.payload };
+      return refused(minted.reason);
     }
     return {
       mode: 'brokered',
@@ -100,12 +158,12 @@ export async function brokerWorkerBackupPayload(input: {
       payload: { ...withoutDestination(input.payload), provider: 's3', storageSession: minted.envelope },
     };
   } catch (err) {
-    console.error('[backupStorageWriteDelivery] could not issue a write session; delivering the backup as before', {
+    console.error('[backupStorageWriteDelivery] could not issue a write session; the backup will be tried again', {
       jobId: input.jobId,
       error: err instanceof Error ? err.message : String(err),
     });
     captureException(err instanceof Error ? err : new Error(String(err)));
-    return { mode: 'legacy', reason: 'mint_failed', payload: input.payload };
+    return { mode: 'retry', reason: 'mint_failed' };
   }
 }
 
@@ -114,28 +172,43 @@ function deferUntilHelperReported(ctx: DeliveryRefreshContext): never {
   throw new CommandDeliveryDeferredError(BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE);
 }
 
+function refuseDelivery(ctx: DeliveryRefreshContext, reason: string, message = backupWriteRefusalMessage(reason)): never {
+  recordBackupWriteDispatch(ctx.type, 'refused', reason);
+  throw new CommandDeliveryRefusedError(message);
+}
+
 /**
- * Delivery refresher for queued MSSQL / Hyper-V backup commands. Brokers the
- * write when it can; otherwise resolves the destination reference exactly as
- * before (materializeBackupStorageCredentials), which also owns every
- * refusal (device moved, configuration gone, plan changed).
+ * Delivery refresher for queued MSSQL / Hyper-V backup commands. A backup to
+ * S3 storage is delivered only with a write session; anything that cannot be
+ * brokered is refused (CommandDeliveryRefusedError) with its reason — the
+ * storage destination is never resolved into the frame. A LOCAL destination
+ * is resolved by the destination refresher (materializeBackupStorageCredentials),
+ * which also owns its refusals (device moved, configuration gone, plan
+ * changed).
  *
  * Before any of that, a device that has not reported its helper yet is
  * DEFERRED (CommandDeliveryDeferredError): the row goes back to pending and
- * the next heartbeat, which carries the report, delivers it. Only a local
- * destination — a path, not a credential — is delivered as before.
+ * the next heartbeat, which carries the report, delivers it. A failure to
+ * issue the session is transient: the error propagates and the row is
+ * released for a later attempt.
  */
 export async function deliverBackupWriteCommand(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
 ): Promise<Record<string, unknown>> {
+  if (payload.provider === 'local') {
+    // A local destination is a path the device reaches itself, referenced or
+    // (queued by an earlier version) inline. The resolver refuses a reference
+    // whose configuration is no longer local.
+    return materializeBackupStorageCredentials(payload, ctx);
+  }
+
   const ref = payload[PROVIDER_CONFIG_REF_FIELD] as Record<string, unknown> | undefined;
   const refOrg = ref && typeof ref === 'object' ? ref.orgId : undefined;
   const refConfig = ref && typeof ref === 'object' ? ref.configId : undefined;
   const jobId = [payload.jobId, payload.backupJobId].find((v): v is string => typeof v === 'string' && UUID_PATTERN.test(v));
   if (
-    payload.provider !== 'local'
-    && typeof ctx.reportedBackupWriteProtocolVersion !== 'number'
+    typeof ctx.reportedBackupWriteProtocolVersion !== 'number'
     && (await loadStoredBackupWriteProtocol(
       ctx.deviceId,
       typeof refOrg === 'string' && UUID_PATTERN.test(refOrg) ? refOrg : null,
@@ -143,19 +216,27 @@ export async function deliverBackupWriteCommand(
   ) {
     deferUntilHelperReported(ctx);
   }
-  if (payload.provider !== 's3') return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'provider_not_s3' });
+  // Queued before destination references existed: its only way to be
+  // delivered is its inline destination, which is never sent for a backup.
+  if (hasInlineDestination(payload)) refuseDelivery(ctx, 'inline_destination');
+  if (payload.provider !== 's3') refuseDelivery(ctx, 'provider_not_s3');
   if (typeof refOrg !== 'string' || !UUID_PATTERN.test(refOrg) || typeof refConfig !== 'string' || !UUID_PATTERN.test(refConfig)) {
-    return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'no_reference' });
+    refuseDelivery(ctx, 'no_reference');
   }
-  if (!jobId) return materializeBackupStorageCredentials(payload, ctx, { legacyReason: 'no_job' });
+  if (!jobId) refuseDelivery(ctx, 'no_job');
 
-  type Outcome = { payload: Record<string, unknown> } | { legacyReason: string } | { deferred: true };
+  type Outcome =
+    | { payload: Record<string, unknown> }
+    | { refused: string; message?: string }
+    | { deferred: true };
   const run = async (): Promise<Outcome> => {
     const destination = await resolveBackupWriteCommandDestination(refConfig, refOrg);
-    if (!destination.ok) return { legacyReason: 'destination_unavailable' };
-    if (destination.destination.provider !== 's3') return { legacyReason: 'provider_not_s3' };
+    if (!destination.ok) {
+      return { refused: 'destination_unavailable', message: `The backup destination can no longer be used: ${destination.message}` };
+    }
+    if (destination.destination.provider !== 's3') return { refused: 'provider_changed' };
     if (!samePlan(payload.storageEncryption, destination.destination.storageEncryption)) {
-      return { legacyReason: 'encryption_plan_changed' };
+      return { refused: 'encryption_plan_changed' };
     }
     const minted = await mintBackupWriteSession({
       orgId: refOrg,
@@ -169,7 +250,7 @@ export async function deliverBackupWriteCommand(
     });
     // A re-enrollment between the check above and this mint.
     if (minted.mode !== 'brokered' && minted.reason === 'helper_unreported') return { deferred: true };
-    if (minted.mode !== 'brokered') return { legacyReason: minted.reason };
+    if (minted.mode !== 'brokered') return { refused: minted.reason };
     recordBackupWriteDispatch(ctx.type, 'brokered', 'ok');
     return {
       payload: {
@@ -183,9 +264,8 @@ export async function deliverBackupWriteCommand(
 
   // Join the delivery path's own context; only a caller holding none (the
   // direct push) gets a fresh organization-scoped one. The mint writes in a
-  // savepoint, so a failure leaves the delivery transaction usable: it is
-  // logged and the backup is delivered as before, counted with its reason —
-  // the same fallback the backup worker takes.
+  // savepoint, so a failure leaves the delivery transaction usable; it is
+  // logged and rethrown, which releases the row for a later attempt.
   let outcome: Outcome;
   try {
     outcome = hasDbAccessContext()
@@ -195,15 +275,14 @@ export async function deliverBackupWriteCommand(
         run,
       );
   } catch (err) {
-    console.error('[backupStorageWriteDelivery] could not issue a write session; delivering the backup as before', {
+    console.error('[backupStorageWriteDelivery] could not issue a write session; the backup will be delivered later', {
       commandId: ctx.commandId,
       error: err instanceof Error ? err.message : String(err),
     });
     captureException(err instanceof Error ? err : new Error(String(err)));
-    outcome = { legacyReason: 'mint_failed' };
+    throw err;
   }
   if ('payload' in outcome) return outcome.payload;
-  // Thrown here, outside the catch above, so it can never become a fallback.
   if ('deferred' in outcome) deferUntilHelperReported(ctx);
-  return materializeBackupStorageCredentials(payload, ctx, { legacyReason: outcome.legacyReason });
+  return refuseDelivery(ctx, outcome.refused, outcome.message);
 }

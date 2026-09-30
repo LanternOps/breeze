@@ -564,24 +564,30 @@ describe('delivering a queued database backup', () => {
       instance: 'MSSQLSERVER',
       database: 'db1',
     };
+    const executedAt = new Date();
     await getTestDb().execute(sql`
       INSERT INTO device_commands (id, device_id, type, status, payload, executed_at)
-      VALUES (${commandId}, ${t.deviceId}, 'mssql_backup', 'sent', ${JSON.stringify(payload)}::jsonb, now())
+      VALUES (${commandId}, ${t.deviceId}, 'mssql_backup', 'sent', ${JSON.stringify(payload)}::jsonb, ${executedAt.toISOString()})
     `);
-    const [out] = await runOutsideDbContext(() =>
+    const delivered = await runOutsideDbContext(() =>
       withDbAccessContext(orgContext(t.orgId), () =>
         prepareClaimedCommandsForDelivery(
-          [{ id: commandId, type: 'mssql_backup', deviceId: t.deviceId, payload, executedAt: new Date() }],
+          [{ id: commandId, type: 'mssql_backup', deviceId: t.deviceId, payload, executedAt }],
           { reportedBackupWriteProtocolVersion: reported },
         ),
       ),
     );
-    return (out as unknown as { payload: Record<string, unknown> }).payload;
+    return { commandId, delivered };
+  }
+
+  async function deliverOne(t: WriteTenant, reported: number) {
+    const { delivered } = await deliver(t, reported);
+    return (delivered[0] as unknown as { payload: Record<string, unknown> }).payload;
   }
 
   runDb('a helper reporting brokered writes gets a write session and no storage destination', async () => {
     const t = await seedWriteTenant({ jobStatus: 'pending' });
-    const payload = await deliver(t, 1);
+    const payload = await deliverOne(t, 1);
     expect(payload).not.toHaveProperty('providerConfig');
     expect(payload).not.toHaveProperty('providerConfigRef');
     expect(payload.storageSession).toMatchObject({ scope: 'snapshot_write', baseUrl: 'https://api.breeze.example' });
@@ -589,10 +595,15 @@ describe('delivering a queued database backup', () => {
     expect(await reservationRow(id)).toMatchObject({ org_id: t.orgId, current_job_id: t.jobId, state: 'reserved' });
   });
 
-  runDb('any other helper is delivered exactly as before', async () => {
+  runDb('an older helper is refused: nothing is delivered and the command ends with the update message', async () => {
     const t = await seedWriteTenant({ jobStatus: 'pending', writeProtocol: 0 });
-    const payload = await deliver(t, 0);
-    expect(payload.providerConfig).toMatchObject({ bucket: WRITE_DESTINATION.bucket });
-    expect(payload).not.toHaveProperty('storageSession');
+    const { commandId, delivered } = await deliver(t, 0);
+    expect(delivered).toEqual([]);
+    const [row] = (await getTestDb().execute(sql`
+      SELECT status, payload, result FROM device_commands WHERE id = ${commandId}
+    `)) as unknown as Array<{ status: string; payload: Record<string, unknown>; result: Record<string, unknown> | null }>;
+    expect(row!.status).not.toBe('sent');
+    expect(JSON.stringify(row)).not.toContain(WRITE_DESTINATION.secretKey);
+    expect(JSON.stringify(row!.result)).toMatch(/Update the Breeze agent on this device, then try again\. Backups now require/);
   });
 });

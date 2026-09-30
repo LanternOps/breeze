@@ -188,5 +188,6 @@ export * from './callerVerification';
 export * from './hardwareAlertRetirementOutbox';
 export * from './backupSnapshotIdReservations';
 export * from './backupStorageSessions';
+export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
 export * from './devicePoolAssignmentEvents';

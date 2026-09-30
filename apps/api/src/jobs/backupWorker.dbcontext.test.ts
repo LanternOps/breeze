@@ -135,7 +135,12 @@ const writeDeliveryMock = vi.hoisted(() => ({
     payload: input.payload,
   })),
 }));
-vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+vi.mock('../services/backupStorageWriteDelivery', () => ({
+  brokerWorkerBackupPayload: writeDeliveryMock.broker,
+  backupWriteRefusalMessage: (reason: string) => (reason === 'mint_failed'
+    ? 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.'
+    : reason),
+}));
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,

@@ -193,12 +193,12 @@ export function recordStorageSessionMint(
 export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused' | 'deferred';
 
 /**
- * Reasons a backup is still delivered WITH its storage credential that are
- * expected until every helper reports brokered writes. Any other reason (a
- * failed session issue, a server-origin or job problem, a missing reference)
- * is also counted by `onUnexpectedLegacyWrite`, so it can be alerted on.
+ * Backups to S3 storage are delivered only through write sessions, so no
+ * write is expected to carry its storage credential any more: every
+ * `legacy_credential` count is also counted by `onUnexpectedLegacyWrite`, so
+ * it can be alerted on.
  */
-const EXPECTED_LEGACY_WRITE_REASONS = new Set(['helper_unsupported', 'provider_not_s3']);
+const EXPECTED_LEGACY_WRITE_REASONS = new Set<string>();
 
 export function recordBackupWriteDispatch(
   commandType: string,

@@ -1925,7 +1925,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     configId: uuid.optional(),
     name: z.string().min(1).max(200).optional(),
     type: z.enum(['file', 'system_image', 'database', 'application']).optional(),
-    provider: z.enum(['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local']).optional(),
+    provider: z.enum(['s3', 'local']).optional(),
     providerConfig: z.record(z.string(), z.unknown()).optional(),
     schedule: z.record(z.string(), z.unknown()).optional(),
     retention: z.record(z.string(), z.unknown()).optional(),

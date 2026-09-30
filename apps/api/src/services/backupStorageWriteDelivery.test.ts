@@ -25,7 +25,8 @@ vi.mock('../db', () => ({
 }));
 
 import { brokerWorkerBackupPayload, deliverBackupWriteCommand } from './backupStorageWriteDelivery';
-import { CommandDeliveryDeferredError } from './commandDeliveryRefusal';
+import { CommandDeliveryDeferredError, CommandDeliveryRefusedError } from './commandDeliveryRefusal';
+import { BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupWriteHelperGate';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const CONFIG = '22222222-2222-4222-8222-222222222222';
@@ -77,31 +78,92 @@ describe('deliverBackupWriteCommand (delivery refresher for mssql_backup / hyper
     expect(m.mint).toHaveBeenCalledWith(expect.objectContaining({ jobId: JOB }));
   });
 
+  it('refuses an older helper with the update message, never resolving the destination into the frame', async () => {
+    m.mint.mockResolvedValue({ mode: 'unbrokered', reason: 'helper_unsupported' });
+    const err = await deliverBackupWriteCommand(queued(), CTX).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+    expect((err as Error).message).toBe(BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE);
+    expect(m.materialize).not.toHaveBeenCalled();
+    expect(m.dispatch).toHaveBeenCalledWith('mssql_backup', 'refused', 'helper_unsupported');
+    expect(m.dispatch).not.toHaveBeenCalledWith('mssql_backup', 'legacy_credential', expect.anything());
+  });
+
   it.each([
-    ['an incapable helper', () => m.mint.mockResolvedValue({ mode: 'unbrokered', reason: 'helper_unsupported' })],
-    ['a local destination', () => m.resolveDestination.mockResolvedValue({ ok: true, destination: { provider: 'local', providerConfig: { path: '/x' }, storageEncryption: PLAN } })],
-    ['a changed encryption plan', () => m.resolveDestination.mockResolvedValue({ ok: true, destination: { provider: 's3', providerConfig: S3, storageEncryption: { required: true, mode: 's3-sse-s3', keyReference: null } } })],
-  ])('falls back to today\'s delivery for %s', async (_name, arrange) => {
+    ['insecure_endpoint', /storage endpoint to use HTTPS/],
+    ['server_origin_mismatch', /PUBLIC_API_URL/],
+    ['server_origin_unavailable', /PUBLIC_API_URL/],
+    ['insecure_server_origin', /over HTTPS/],
+    ['device_org_mismatch', /no longer belongs/],
+    ['job_not_live', /already finished/],
+  ])('refuses when no write session can be issued (%s)', async (reason, message) => {
+    m.mint.mockResolvedValue({ mode: 'unbrokered', reason });
+    const err = await deliverBackupWriteCommand(queued(), CTX).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+    expect((err as Error).message).toMatch(message);
+    expect(m.materialize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the destination is no longer S3', () => m.resolveDestination.mockResolvedValue({ ok: true, destination: { provider: 'local', providerConfig: { path: '/x' }, storageEncryption: PLAN } }), /changed provider/],
+    ['the encryption plan changed', () => m.resolveDestination.mockResolvedValue({ ok: true, destination: { provider: 's3', providerConfig: S3, storageEncryption: { required: true, mode: 's3-sse-s3', keyReference: null } } }), /encryption settings changed/],
+    ['the destination is gone', () => m.resolveDestination.mockResolvedValue({ ok: false, reason: 'config_not_found', message: 'Backup destination configuration not found for this snapshot' }), /can no longer be used/],
+  ])('refuses when %s', async (_name, arrange, message) => {
     arrange();
-    const out = await deliverBackupWriteCommand(queued(), CTX);
-    expect(out).toMatchObject({ materialized: true });
-    expect(out).not.toHaveProperty('storageSession');
+    const err = await deliverBackupWriteCommand(queued(), CTX).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+    expect((err as Error).message).toMatch(message);
+    expect(m.mint).not.toHaveBeenCalled();
+    expect(m.materialize).not.toHaveBeenCalled();
   });
 
-  it('falls back as before, with a counted reason, when issuing the session fails', async () => {
+  it('releases the command for a later attempt (not a refusal, not a fallback) when issuing the session fails', async () => {
     m.mint.mockRejectedValueOnce(new Error('db unavailable'));
-    const out = await deliverBackupWriteCommand(queued(), CTX);
-    expect(out).toMatchObject({ materialized: true });
-    expect(m.materialize).toHaveBeenCalledWith(expect.anything(), CTX, { legacyReason: 'mint_failed' });
+    const err = await deliverBackupWriteCommand(queued(), CTX).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(err).not.toBeInstanceOf(CommandDeliveryDeferredError);
+    expect(m.materialize).not.toHaveBeenCalled();
   });
 
-  it('hands the reason a delivery was not brokered to the destination refresher', async () => {
-    m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unsupported' });
-    await deliverBackupWriteCommand(queued(), CTX);
-    expect(m.materialize).toHaveBeenCalledWith(expect.anything(), CTX, { legacyReason: 'helper_unsupported' });
-    const { jobId: _j, ...noJob } = queued();
-    await deliverBackupWriteCommand(noJob, CTX);
-    expect(m.materialize).toHaveBeenLastCalledWith(expect.anything(), CTX, { legacyReason: 'no_job' });
+  it.each([
+    ['another provider', queued({ provider: 'b2' }), /no longer support/],
+    ['a command without a job id', (() => { const { jobId: _j, ...p } = queued(); return p; })(), /not linked to a backup job/],
+    ['a command without a reference', (() => { const { providerConfigRef: _p, ...p } = queued(); return p; })(), /Start it again/],
+    ['a malformed reference', queued({ providerConfigRef: { configId: 'x', orgId: ORG } }), /Start it again/],
+    ['a destination carried inline', (() => { const { providerConfigRef: _p, ...p } = queued(); return { ...p, providerConfig: S3 }; })(), /earlier version of Breeze/],
+    ['a sealed inline destination', (() => { const { providerConfigRef: _p, ...p } = queued(); return { ...p, providerConfigEnvelope: 'enc' }; })(), /earlier version of Breeze/],
+  ])('refuses %s, never minting and never delivering a destination', async (_name, payload, message) => {
+    const err = await deliverBackupWriteCommand(payload, CTX).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+    expect((err as Error).message).toMatch(message);
+    expect(m.mint).not.toHaveBeenCalled();
+    expect(m.materialize).not.toHaveBeenCalled();
+  });
+
+  it('delivers a local destination queued with its path inline (a path, not a credential)', async () => {
+    const { providerConfigRef: _r, ...rest } = queued({ provider: 'local' });
+    const inline = { ...rest, providerConfig: { path: '/backups' } };
+    const out = await deliverBackupWriteCommand(inline, CTX);
+    expect(out).toMatchObject({ materialized: true });
+    expect(m.materialize).toHaveBeenCalledWith(inline, CTX);
+    expect(m.mint).not.toHaveBeenCalled();
+  });
+
+  it('never delivers a backup_run row carrying an S3 destination', async () => {
+    const { providerConfigRef: _r, ...rest } = queued();
+    const err = await deliverBackupWriteCommand(
+      { ...rest, providerConfig: S3 },
+      { ...CTX, type: 'backup_run' },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+    expect(m.materialize).not.toHaveBeenCalled();
+    expect(m.mint).not.toHaveBeenCalled();
+  });
+
+  it('delivers a local destination through the destination refresher (a path, not a credential)', async () => {
+    const out = await deliverBackupWriteCommand(queued({ provider: 'local' }), CTX);
+    expect(out).toMatchObject({ materialized: true });
+    expect(m.mint).not.toHaveBeenCalled();
   });
 
   describe('a device that has not reported its helper protocols yet', () => {
@@ -145,22 +207,14 @@ describe('deliverBackupWriteCommand (delivery refresher for mssql_backup / hyper
       expect(m.mint).toHaveBeenCalled();
     });
 
-    it('delivers as before once the device has reported an older helper', async () => {
+    it('refuses once the device has reported an older helper', async () => {
       m.storedWriteProtocol.mockResolvedValueOnce(0);
       m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unsupported' });
-      const out = await deliverBackupWriteCommand(queued(), NO_REPORT);
-      expect(out).toMatchObject({ materialized: true });
+      await expect(deliverBackupWriteCommand(queued(), NO_REPORT)).rejects.toThrow(BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE);
+      expect(m.materialize).not.toHaveBeenCalled();
     });
   });
 
-  it('falls back without a job id or a reference, never minting', async () => {
-    const { jobId: _j, ...noJob } = queued();
-    await deliverBackupWriteCommand(noJob, CTX);
-    const { providerConfigRef: _r, ...noRef } = queued();
-    await deliverBackupWriteCommand(noRef, CTX);
-    expect(m.mint).not.toHaveBeenCalled();
-    expect(m.materialize).toHaveBeenCalledTimes(2);
-  });
 });
 
 describe('brokerWorkerBackupPayload (scheduled backups)', () => {
@@ -172,25 +226,44 @@ describe('brokerWorkerBackupPayload (scheduled backups)', () => {
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: 'snapshot-base',
     });
     expect(out.mode).toBe('brokered');
-    if (out.mode === 'held') throw new Error('expected a payload');
+    if (out.mode !== 'brokered') throw new Error('expected a payload');
     expect(out.payload).not.toHaveProperty('providerConfig');
     expect(out.payload).toMatchObject({ storageSession: ENVELOPE, provider: 's3', paths: ['/data'], storageEncryption: PLAN });
     expect(m.mint).toHaveBeenCalledWith(expect.objectContaining({ baseManifestKey: 'snapshots/snapshot-base/manifest.json' }));
   });
 
-  it('keeps today\'s payload when the helper cannot broker, or minting fails', async () => {
+  it('refuses, with no payload at all, when the helper or the destination cannot be brokered', async () => {
     m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unsupported' });
     const a = await brokerWorkerBackupPayload({
       orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
     });
-    expect(a).toEqual({ mode: 'legacy', reason: 'helper_unsupported', payload });
-    m.mint.mockRejectedValueOnce(new Error('db down'));
+    expect(a).toEqual({ mode: 'refused', reason: 'helper_unsupported', message: BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE });
+    m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'insecure_endpoint' });
     const b = await brokerWorkerBackupPayload({
       orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
     });
-    expect(b).toEqual({ mode: 'legacy', reason: 'mint_failed', payload });
+    expect(b).toMatchObject({ mode: 'refused', reason: 'insecure_endpoint' });
+    for (const out of [a, b]) expect(out).not.toHaveProperty('payload');
+  });
+
+  it('asks the worker to try again, with no payload, when issuing the session fails (a transient failure)', async () => {
+    m.mint.mockRejectedValueOnce(new Error('db down'));
+    const out = await brokerWorkerBackupPayload({
+      orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
+      provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
+    });
+    expect(out).toEqual({ mode: 'retry', reason: 'mint_failed' });
+  });
+
+  it('refuses any provider other than S3 or local', async () => {
+    const out = await brokerWorkerBackupPayload({
+      orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
+      provider: 'azure_blob', providerConfig: { accountKey: 'k' }, payload, baseSnapshotId: null,
+    });
+    expect(out).toMatchObject({ mode: 'refused', reason: 'provider_not_s3' });
+    expect(m.mint).not.toHaveBeenCalled();
   });
 
   it('holds a backup, with no payload at all, for a device that has not reported its helper protocols', async () => {
