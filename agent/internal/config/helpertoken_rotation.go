@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -30,6 +31,17 @@ const helperTokenRotationMarkerName = "helper_token_rotation_owed"
 // attempted before the next restart would forget it.
 var helperTokenRotationOwedInProcess atomic.Bool
 
+// helperTokenRotationClearedInProcess records that a rotation was promoted in
+// this process but its marker could not be removed. The debt is settled, so
+// the leftover marker must not start a rotation at every backoff step for the
+// rest of the run. The next start sees the marker again and rotates once more.
+var helperTokenRotationClearedInProcess atomic.Bool
+
+// legacyHelperTokenLine matches a non-empty helper_auth_token entry in YAML
+// text (optionally quoted key), but not pending_helper_auth_token, a comment,
+// or an empty value. Used only when agent.yaml does not parse.
+var legacyHelperTokenLine = regexp.MustCompile(`(?m)^[ \t]*["']?helper_auth_token["']?[ \t]*:[ \t]*(?:"[^"\n]+"|'[^'\n]+'|[^\s#"'])`)
+
 func helperTokenRotationMarkerPathFor(cfgFile string) string {
 	if cfgFile != "" {
 		return filepath.Join(filepath.Dir(cfgFile), helperTokenRotationMarkerName)
@@ -43,6 +55,9 @@ func HelperTokenRotationOwed() bool {
 	if helperTokenRotationOwedInProcess.Load() {
 		return true
 	}
+	if helperTokenRotationClearedInProcess.Load() {
+		return false
+	}
 	persistMu.Lock()
 	path := helperTokenRotationMarkerPathFor(viper.ConfigFileUsed())
 	persistMu.Unlock()
@@ -55,6 +70,8 @@ func HelperTokenRotationOwed() bool {
 // debt survives a crash, or a failed scrub, between finding the token and
 // removing it.
 func recordHelperTokenRotationOwed(cfgPath string) {
+	// A newly found token is a new debt, whatever an earlier promotion settled.
+	helperTokenRotationClearedInProcess.Store(false)
 	marker := helperTokenRotationMarkerPathFor(cfgPath)
 	if _, err := os.Stat(marker); err == nil {
 		return
@@ -73,16 +90,17 @@ func recordHelperTokenRotationOwed(cfgPath string) {
 
 // clearHelperTokenRotationOwed removes the marker beside the active config once
 // a rotation has been promoted. Failure is logged, never returned: the
-// promotion already succeeded, and a leftover marker only costs further
-// rotations at the owed-rotation backoff (at most one every six hours) until a
-// later promotion manages to remove it.
+// promotion already succeeded. A marker that cannot be removed is ignored for
+// the rest of this process (helperTokenRotationClearedInProcess); after a
+// restart it costs one more rotation.
 func clearHelperTokenRotationOwed() {
 	helperTokenRotationOwedInProcess.Store(false)
 	persistMu.Lock()
 	marker := helperTokenRotationMarkerPathFor(viper.ConfigFileUsed())
 	persistMu.Unlock()
 	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("failed to clear helper token rotation marker after a promoted rotation", "path", marker, "error", err.Error())
+		helperTokenRotationClearedInProcess.Store(true)
+		log.Error("failed to clear helper token rotation marker after a promoted rotation; ignoring it until the agent restarts", "path", marker, "error", err.Error())
 	}
 }
 

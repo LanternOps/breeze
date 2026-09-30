@@ -152,3 +152,32 @@ func TestHandleHelperSessionAuthenticatedPushesOnlyToAssist(t *testing.T) {
 		t.Fatal("authenticated watchdog session received a frame; helper token must never reach watchdog")
 	}
 }
+
+// The connect-time push applies the same console-session gate as the rotation
+// push: an assist session outside the active console session that
+// authenticates gets no token, while the console session's does.
+func TestHandleHelperSessionAuthenticatedWithholdsTokenFromNonConsoleAssist(t *testing.T) {
+	const secret = "brz_secret"
+
+	consoleAssist := newHelperTokenSession(t, "assist-console-auth", []string{ipc.ScopeAssist})
+	consoleAssist.session.WinSessionID = "1"
+	otherAssist := newHelperTokenSession(t, "assist-rdp-auth", []string{ipc.ScopeAssist})
+	otherAssist.session.WinSessionID = "3"
+
+	broker := newTestBrokerWithSessions(t, consoleAssist.session, otherAssist.session)
+	broker.SetConsoleSessionIDFunc(func() string { return "1" })
+	broker.SetGOOSForTest("windows")
+
+	h := &Heartbeat{sessionBroker: broker}
+	h.setHelperToken(secret)
+
+	h.handleHelperSessionAuthenticated(otherAssist.session)
+	if _, gotFrame := awaitHelperToken(t, otherAssist.client); gotFrame {
+		t.Fatal("non-console assist session received a frame on authenticate; the helper token must stay in the console session")
+	}
+
+	h.handleHelperSessionAuthenticated(consoleAssist.session)
+	if token, _ := awaitHelperToken(t, consoleAssist.client); token != secret {
+		t.Fatalf("console assist session: expected helper token %q on authenticate, got %q", secret, token)
+	}
+}

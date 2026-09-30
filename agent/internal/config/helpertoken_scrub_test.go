@@ -131,8 +131,20 @@ func TestPromotePendingCredentialsSucceedsWhenMarkerCannotBeCleared(t *testing.T
 	if err := StagePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper"); err != nil {
 		t.Fatalf("StagePendingCredentials: %v", err)
 	}
+	if !HelperTokenRotationOwed() {
+		t.Fatal("precondition: the undeletable marker makes a rotation owed")
+	}
+	t.Cleanup(resetHelperTokenRotationStateForTest)
 	if err := PromotePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper"); err != nil {
 		t.Fatalf("PromotePendingCredentials must not fail on marker cleanup: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("precondition: the marker was supposed to survive the cleanup: %v", err)
+	}
+	// The rotation has been promoted; a marker that could not be removed must
+	// not start another rotation every backoff step for the rest of the run.
+	if HelperTokenRotationOwed() {
+		t.Fatal("rotation still owed after a verified promotion whose marker could not be removed")
 	}
 }
 
@@ -251,5 +263,93 @@ func TestRotationOwedSurvivesAnUnwritableMarker(t *testing.T) {
 	}
 	if HelperTokenRotationOwed() {
 		t.Fatal("rotation still owed after a verified promotion")
+	}
+}
+
+// An agent started with --config elsewhere reads and rewrites that file, so the
+// startup pass must scrub it (and clear its scratch files) as well as the
+// default agent.yaml.
+func TestFixConfigPermissionsScrubsActiveNonDefaultConfig(t *testing.T) {
+	defer viper.Reset()
+	t.Cleanup(resetHelperTokenRotationStateForTest)
+	scratch := []string{"agent.yaml.tmp", "agent.yaml.partial", "secrets.yaml.tmp", "secrets.yaml.partial"}
+	seedScratch := func(dir string) {
+		t.Helper()
+		for _, name := range scratch {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("helper_auth_token: brz_old\n"), 0o600); err != nil {
+				t.Fatalf("seed %s: %v", name, err)
+			}
+		}
+	}
+
+	defaultDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(defaultDir, "agent.yaml"), []byte("agent_id: agent-default\n"), 0o644); err != nil {
+		t.Fatalf("write default agent.yaml: %v", err)
+	}
+	seedScratch(defaultDir)
+	prevDir := fixConfigPermissionsDir
+	fixConfigPermissionsDir = func() string { return defaultDir }
+	t.Cleanup(func() { fixConfigPermissionsDir = prevDir })
+
+	activeDir, activeCfg := writeLegacyAgentYAML(t)
+	seedScratch(activeDir)
+	viper.Reset()
+	viper.SetConfigFile(activeCfg)
+
+	FixConfigPermissions()
+
+	data, err := os.ReadFile(activeCfg)
+	if err != nil {
+		t.Fatalf("read active agent.yaml: %v", err)
+	}
+	if strings.Contains(string(data), "helper_auth_token") {
+		t.Fatalf("active --config agent.yaml still carries the helper token:\n%s", data)
+	}
+	if _, err := os.Stat(helperTokenRotationMarkerPathFor(activeCfg)); err != nil {
+		t.Fatalf("no rotation marker beside the active config: %v", err)
+	}
+	creds, err := readPersistedCredentialsAt(activeCfg)
+	if err != nil || creds == nil || creds.HelperAuthToken != "brz_helper_legacy" {
+		t.Fatalf("active secrets.yaml helper token = %+v (err %v), want brz_helper_legacy", creds, err)
+	}
+	for _, dir := range []string{defaultDir, activeDir} {
+		for _, name := range scratch {
+			if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+				t.Errorf("%s still present in %s (err %v)", name, dir, err)
+			}
+		}
+	}
+}
+
+// When agent.yaml does not parse, only a real helper_auth_token entry makes a
+// rotation owed — not the staged pending_ key, a comment, or an empty value.
+func TestUnparsableAgentYAMLOwesRotationOnlyForARealHelperToken(t *testing.T) {
+	const broken = "server_url: [unclosed\n"
+	tests := []struct {
+		name     string
+		body     string
+		wantOwed bool
+	}{
+		{name: "helper token entry", body: "helper_auth_token: brz_helper_legacy\n", wantOwed: true},
+		{name: "quoted helper token entry", body: "  \"helper_auth_token\": 'brz_helper_legacy'\n", wantOwed: true},
+		{name: "pending key only", body: "pending_helper_auth_token: brz_new_helper\n"},
+		{name: "comment only", body: "# helper_auth_token: brz_helper_legacy\n"},
+		{name: "empty value", body: "helper_auth_token: \"\"\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(resetHelperTokenRotationStateForTest)
+			cfgPath := filepath.Join(t.TempDir(), "agent.yaml")
+			if err := os.WriteFile(cfgPath, []byte("agent_id: agent-1\n"+tt.body+broken), 0o644); err != nil {
+				t.Fatalf("write agent.yaml: %v", err)
+			}
+			if err := migrateInlineSecretsToSecretFile(cfgPath); err == nil {
+				t.Fatal("precondition: agent.yaml was supposed to fail to parse")
+			}
+			_, statErr := os.Stat(helperTokenRotationMarkerPathFor(cfgPath))
+			if got := statErr == nil || helperTokenRotationOwedInProcess.Load(); got != tt.wantOwed {
+				t.Fatalf("rotation owed = %v, want %v", got, tt.wantOwed)
+			}
+		})
 	}
 }

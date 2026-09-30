@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	mathrand "math/rand"
@@ -1204,7 +1203,7 @@ func GetDataDir() string {
 // Safe to call on every startup — it is a no-op if permissions are already
 // correct or the paths don't exist yet.
 func FixConfigPermissions() {
-	dir := configDir()
+	dir := fixConfigPermissionsDir()
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		if err := enforceConfigDirPermissions(dir); err != nil {
 			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
@@ -1235,6 +1234,10 @@ func FixConfigPermissions() {
 	reapplyHelperTokenFilePermissionsFor(cfgPath)
 }
 
+// fixConfigPermissionsDir is the default config directory FixConfigPermissions
+// works on; a package var so tests can point it at a temp directory.
+var fixConfigPermissionsDir = configDir
+
 // fixAgentYAMLPermissions is the path-parameterized core of
 // FixConfigPermissions' agent.yaml handling (split out so it can be tested
 // against a temp directory instead of the real, OS-specific config
@@ -1249,7 +1252,7 @@ func FixConfigPermissions() {
 // secrets.yaml until a later, successful migration can loosen it.
 func fixAgentYAMLPermissions(cfgPath string) {
 	if err := migrateInlineSecretsToSecretFile(cfgPath); err != nil {
-		log.Warn("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
+		log.Error("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
 	}
 	hasInline, err := agentYAMLHasInlineSecrets(cfgPath)
 	if err != nil {
@@ -1257,7 +1260,9 @@ func fixAgentYAMLPermissions(cfgPath string) {
 		hasInline = true
 	}
 	if hasInline {
-		log.Warn("agent.yaml still contains inline secret material after migration; leaving it locked down instead of widening its permissions", "path", cfgPath)
+		// Error, not Warn: until a later migration succeeds, the Helper cannot
+		// read agent.yaml at all (no server URL or agent id for Breeze Assist).
+		log.Error("agent.yaml still contains inline secret material after migration; leaving it locked down instead of widening its permissions", "path", cfgPath)
 		if err := enforceSecretFilePermissions(cfgPath); err != nil {
 			log.Warn("Failed to lock down config file permissions", "path", cfgPath, "error", err.Error())
 		}
@@ -1319,7 +1324,7 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 
 	var cfgValues map[string]any
 	if err := yaml.Unmarshal(data, &cfgValues); err != nil {
-		if bytes.Contains(data, []byte(secretKeyHelperAuthToken)) {
+		if legacyHelperTokenLine.Match(data) {
 			recordHelperTokenRotationOwed(cfgPath)
 		}
 		return err

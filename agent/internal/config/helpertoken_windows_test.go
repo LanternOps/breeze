@@ -79,4 +79,28 @@ func TestWindowsHelperTokenRotationMarkerIsPrivate(t *testing.T) {
 			t.Fatalf("rotation marker DACL grants %s: %s", sid, sddl)
 		}
 	}
+	control, _, err := sd.Control()
+	if err != nil {
+		t.Fatalf("Control: %v", err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		t.Fatalf("rotation marker DACL is not protected (inherits from its directory): %s", sddl)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		t.Fatalf("rotation marker has no DACL (err %v): %s", err, sddl)
+	}
+	if dacl.AceCount != 2 {
+		t.Fatalf("rotation marker DACL has %d ACEs, want exactly SYSTEM and Administrators: %s", dacl.AceCount, sddl)
+	}
+	marker := helperTokenRotationMarkerPathFor(cfgPath)
+	for _, w := range []windows.WELL_KNOWN_SID_TYPE{windows.WinLocalSystemSid, windows.WinBuiltinAdministratorsSid} {
+		sid, err := windows.CreateWellKnownSid(w)
+		if err != nil {
+			t.Fatalf("CreateWellKnownSid(%d): %v", w, err)
+		}
+		if !daclGrantsSID(t, marker, sid) {
+			t.Fatalf("rotation marker DACL does not grant %s: %s", sid.String(), sddl)
+		}
+	}
 }
