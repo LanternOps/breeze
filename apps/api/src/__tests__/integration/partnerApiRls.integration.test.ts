@@ -34,7 +34,12 @@ import {
 import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
 import { partnerTicketRoutes } from '../../routes/partnerApi/tickets';
-import { partnerAlertFeedEnvelopeSchema, partnerTicketFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
+import { partnerDeviceStatusRoutes } from '../../routes/partnerApi/deviceStatus';
+import {
+  partnerAlertFeedEnvelopeSchema,
+  partnerDeviceStatusEnvelopeSchema,
+  partnerTicketFeedEnvelopeSchema,
+} from '../../routes/partnerApi/schemas';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import {
   decodePartnerExportCursor,
@@ -86,6 +91,7 @@ const ALL_SCOPES = [
   'custom-fields:read',
   'alerts:read',
   'tickets:read',
+  'device-status:read',
 ] as const;
 
 const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
@@ -104,6 +110,7 @@ const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
   'custom-field-values': 4,
   alerts: 2,
   tickets: 2,
+  'device-status': 2,
 };
 
 interface ExportRecord {
@@ -300,6 +307,69 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(response.status, await response.clone().text()).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'partner_provisioning_site_mismatch' });
   });
+  /**
+   * #7577 — the device-status feed is live state behind its own opt-in scope.
+   * Proves, as breeze_app through the real auth middleware: devices:read alone
+   * is refused; partner A sees exactly its own devices' current status,
+   * last-seen and agent version (a heartbeat-style write is visible on the next
+   * read, no watermark involved); partner B's org, site and devices never leak.
+   */
+  runDb('device-status feed is opt-in, live and never crosses partners', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const app = actualPartnerApiApp([]);
+
+    const devicesOnlyKey = await issueKey(partnerA.partner.id, partnerA.user.id, ['devices:read']);
+    const refused = await app.request('/device-status', { headers: apiHeaders(devicesOnlyKey) });
+    expect(refused.status).toBe(403);
+
+    const keyA = await issueKey(partnerA.partner.id, partnerA.user.id, ['device-status:read']);
+    const lastSeenAt = new Date('2026-09-30T08:00:00.000Z');
+    const [heartbeatDevice] = partnerA.devices;
+    await getTestDb().update(devices)
+      .set({ status: 'online', lastSeenAt, agentVersion: '9.9.9' })
+      .where(eq(devices.id, heartbeatDevice!.id));
+
+    const envelope = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyA, '/device-status'),
+    );
+    expect(envelope.hasMore).toBe(false);
+    expect(new Set(envelope.data.map((row) => row.deviceId))).toEqual(
+      new Set(partnerA.devices.map((device) => device.id)),
+    );
+    for (const row of envelope.data) {
+      const seeded = partnerA.devices.find((device) => device.id === row.deviceId)!;
+      expect(row.orgId).toBe(seeded.orgId);
+    }
+    expect(envelope.data.find((row) => row.deviceId === heartbeatDevice!.id)).toMatchObject({
+      status: 'online', lastSeenAt: lastSeenAt.toISOString(), agentVersion: '9.9.9',
+    });
+    const foreignDeviceIds = new Set(partnerB.devices.map((device) => device.id));
+    expect(envelope.data.some((row) => foreignDeviceIds.has(row.deviceId))).toBe(false);
+
+    const online = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyA, '/device-status?status=online'),
+    );
+    expect(online.data.map((row) => row.deviceId)).toEqual([heartbeatDevice!.id]);
+
+    const foreignOrg = await app.request(`/device-status?orgId=${partnerB.orgs[0]!.id}`, {
+      headers: apiHeaders(keyA),
+    });
+    expect(foreignOrg.status).toBe(404);
+
+    const foreignSite = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyA, `/device-status?siteId=${partnerB.sites[0]!.id}`),
+    );
+    expect(foreignSite.data).toEqual([]);
+
+    // Partner B's own key sees only B's devices.
+    const keyB = await issueKey(partnerB.partner.id, partnerB.user.id, ['device-status:read']);
+    const envelopeB = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyB, '/device-status'),
+    );
+    expect(new Set(envelopeB.data.map((row) => row.deviceId))).toEqual(foreignDeviceIds);
+  });
+
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
     const [partnerA, partnerB] = await seedInterleavedPartners();
@@ -1203,6 +1273,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerProvisioningRoutes);
   app.route('/', partnerAlertRoutes);
   app.route('/', partnerTicketRoutes);
+  app.route('/', partnerDeviceStatusRoutes);
   return app;
 }
 
@@ -1223,16 +1294,23 @@ async function walkResource(app: Hono, rawKey: string, resource: PartnerExportRe
       expect(feed.mode).toBe('full');
       expect(feed.checkpoint === null).toBe(feed.hasMore);
       expect(envelope).not.toHaveProperty('snapshotAt');
+    } else if (resource === 'device-status') {
+      // Live state (#7577): no snapshot/watermark contract at all.
+      partnerDeviceStatusEnvelopeSchema.parse(envelope);
+      expect(envelope).not.toHaveProperty('snapshotAt');
     } else {
       expect(envelope.snapshotAt).toEqual(expect.any(String));
       snapshots.add(envelope.snapshotAt);
     }
-    records.push(...envelope.data);
+    records.push(...(resource === 'device-status'
+      // The status DTO keys the device as deviceId; normalize for the shared tuple checks.
+      ? envelope.data.map((record) => ({ ...record, id: String(record.deviceId) }))
+      : envelope.data));
     cursor = envelope.nextCursor;
     pages += 1;
     expect(pages).toBeLessThan(20);
   } while (cursor);
-  expect(snapshots.size).toBe(resource === 'alerts' || resource === 'tickets' ? 0 : 1);
+  expect(snapshots.size).toBe(resource === 'alerts' || resource === 'tickets' || resource === 'device-status' ? 0 : 1);
   return { records, pages };
 }
 

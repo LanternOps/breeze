@@ -133,6 +133,16 @@ describe('partner partner-service-principal scopes', () => {
     expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('tickets:write');
   });
 
+  it('accepts device-status:read as an explicit opt-in that never joins the default delegation', () => {
+    expect(validatePartnerServicePrincipalScopes(['devices:read', 'device-status:read'])).toEqual({
+      ok: true,
+      scopes: ['devices:read', 'device-status:read'],
+    });
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('device-status:read');
+    // Not implied by devices:read: holding devices:read alone does not satisfy it.
+    expect(hasPartnerServicePrincipalScope(['devices:read'], 'device-status:read')).toBe(false);
+  });
+
   it('never includes a write scope in the default delegation', () => {
     // Provisioning writes (#3243) are opt-in at principal creation only.
     for (const scope of DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES) {
