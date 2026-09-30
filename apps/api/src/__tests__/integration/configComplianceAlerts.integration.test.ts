@@ -378,10 +378,83 @@ describe('configuration-policy compliance → alerts (#6669)', () => {
     const { delivered } = await evaluateAndDeliver(device.id);
     expect(await openAlertCount(device.id)).toBe(1);
 
+    // The race: an evaluation found the device compliant and persisted that,
+    // then the rule was deleted before its policy.compliant was handled.
+    await withSystemDbAccessContext(() => db
+      .update(automationPolicyCompliance)
+      .set({ status: 'compliant' })
+      .where(eq(automationPolicyCompliance.deviceId, device.id)));
     await withSystemDbAccessContext(() => db
       .delete(configPolicyComplianceRules)
       .where(eq(configPolicyComplianceRules.id, seeded.ruleId)));
     await deliver({ ...delivered[0]!, type: 'policy.compliant' });
     expect(await openAlertCount(device.id)).toBe(0);
+  });
+
+  runDb('a violation evaluated just before a save still raises, against the rule that replaced it', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    const seeded = await seedCompliancePolicy({ orgId: org!.id, partnerId: null }, 'warn', { level: 'organization', targetId: org!.id });
+
+    // Evaluated and committed; the scan has not published yet.
+    publishedEvents.length = 0;
+    await withSystemDbAccessContext(() => evaluateDeviceComplianceFromConfigPolicy(device.id));
+    const heldViolation = publishedEvents.find((e) => e.type === 'policy.violation');
+    expect(heldViolation).toBeDefined();
+
+    // A save lands first: same rule, new id.
+    const newRuleId = await withSystemDbAccessContext(async () => {
+      const [old] = await db.select().from(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.id, seeded.ruleId));
+      await db.delete(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.id, seeded.ruleId));
+      const [created] = await db.insert(configPolicyComplianceRules).values({
+        featureLinkId: old!.featureLinkId,
+        name: old!.name,
+        rules: old!.rules,
+        enforcementLevel: old!.enforcementLevel,
+      }).returning();
+      return created!.id;
+    });
+
+    await deliver(heldViolation!);
+    const rows = await alertsForDevice(device.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('active');
+    expect(rows[0]!.context).toMatchObject({ configPolicyComplianceRuleId: newRuleId });
+  });
+
+  runDb('a late compliant event for a rule id replaced by a save does not clear the rule that is failing now', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    const seeded = await seedCompliancePolicy({ orgId: org!.id, partnerId: null }, 'warn', { level: 'organization', targetId: org!.id });
+
+    // Compliant under the original id; its event is held back.
+    await installApp(device.id);
+    const early = await evaluateAndDeliver(device.id);
+    const lateCompliant = early.delivered.find((e) => e.type === 'policy.compliant');
+    expect(lateCompliant).toBeDefined();
+
+    // Save the rule set: same rule, new id (updateFeatureLink deletes and re-inserts).
+    await withSystemDbAccessContext(async () => {
+      const [old] = await db.select().from(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.id, seeded.ruleId));
+      await db.delete(configPolicyComplianceRules).where(eq(configPolicyComplianceRules.id, seeded.ruleId));
+      await db.insert(configPolicyComplianceRules).values({
+        featureLinkId: old!.featureLinkId,
+        name: old!.name,
+        rules: old!.rules,
+        enforcementLevel: old!.enforcementLevel,
+      });
+    });
+
+    // The app goes away and the rule, under its new id, fails.
+    await withSystemDbAccessContext(() => db.delete(deviceSoftware).where(eq(deviceSoftware.deviceId, device.id)));
+    await evaluateAndDeliver(device.id);
+    expect(await openAlertCount(device.id)).toBe(1);
+
+    await deliver(lateCompliant!);
+    expect(await openAlertCount(device.id)).toBe(1);
   });
 });

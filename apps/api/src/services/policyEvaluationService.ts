@@ -99,6 +99,32 @@ export type DeferredRemediationEnqueues = Array<{ runId: string; deviceId: strin
 /** What an evaluation hands back under `deferEnqueue`; run it after commit. */
 export type RemediationAfterCommit = { afterCommit?: () => Promise<void> };
 
+/**
+ * A configuration-policy compliance event whose publish waits for the caller's
+ * transaction to commit (`scanAndEvaluateConfigPolicyCompliance` under
+ * `deferEnqueue`). publishEvent delivers the policy-alert-bridge on its own
+ * connection, and the bridge acts on the persisted automation_policy_compliance
+ * row. Published inside the scan's transaction, it could not see that row: the
+ * first failing check logged "no persisted compliance row … not alerting", and
+ * every later check was judged on the previous evaluation's status.
+ */
+export type DeferredComplianceEvent = {
+  type: 'policy.evaluated' | 'policy.violation' | 'policy.compliant';
+  orgId: string;
+  payload: Record<string, unknown>;
+};
+
+/** Publishes in order. Never rejects: one failed publish is logged and the rest still go out. */
+async function publishComplianceEvents(events: DeferredComplianceEvent[]): Promise<void> {
+  for (const event of events) {
+    try {
+      await publishEvent(event.type, event.orgId, event.payload, 'config-policy-compliance');
+    } catch (error) {
+      console.error(`[ConfigPolicyCompliance] Failed to publish ${event.type}:`, error);
+    }
+  }
+}
+
 /** Enqueue now, or record the run for the caller's `afterCommit` (#7347). */
 async function enqueueRemediationRun(
   runId: string,
@@ -1696,6 +1722,8 @@ type EvaluateConfigPolicyComplianceOptions = {
   ruleIds?: string[];
   /** #7347 — collects remediation runs for the caller's `afterCommit` (see `EvaluatePolicyOptions.deferEnqueue`). */
   deferred?: DeferredRemediationEnqueues;
+  /** Collects the policy.* events for the caller's `afterCommit` instead of publishing them (see `DeferredComplianceEvent`). */
+  deferredEvents?: DeferredComplianceEvent[];
 };
 
 export function __isComplianceCheckDue(
@@ -1948,28 +1976,28 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
       remediationTriggered,
     });
 
-    // Publish events for config policy compliance
-    try {
-      const eventPayload = {
-        configPolicyComplianceRuleId: complianceRule.id,
-        configPolicyComplianceRuleName: complianceRule.name,
-        configPolicyId: complianceRule.featureLinkId,
-        deviceId: device.id,
-        hostname: device.hostname,
-        status,
-        enforcementLevel: complianceRule.enforcementLevel,
-        evaluatedAt: new Date().toISOString(),
-      };
-
-      await publishEvent('policy.evaluated', deviceOrgId, eventPayload, 'config-policy-compliance');
-
-      if (status === 'non_compliant') {
-        await publishEvent('policy.violation', deviceOrgId, eventPayload, 'config-policy-compliance');
-      } else {
-        await publishEvent('policy.compliant', deviceOrgId, eventPayload, 'config-policy-compliance');
-      }
-    } catch (error) {
-      console.error('[ConfigPolicyCompliance] Failed to publish event:', error);
+    const eventPayload = {
+      configPolicyComplianceRuleId: complianceRule.id,
+      configPolicyComplianceRuleName: complianceRule.name,
+      configPolicyId: complianceRule.featureLinkId,
+      deviceId: device.id,
+      hostname: device.hostname,
+      status,
+      enforcementLevel: complianceRule.enforcementLevel,
+      evaluatedAt: checkedAt.toISOString(),
+    };
+    const events: DeferredComplianceEvent[] = [
+      { type: 'policy.evaluated', orgId: deviceOrgId, payload: eventPayload },
+      {
+        type: status === 'non_compliant' ? 'policy.violation' : 'policy.compliant',
+        orgId: deviceOrgId,
+        payload: eventPayload,
+      },
+    ];
+    if (options.deferredEvents) {
+      options.deferredEvents.push(...events);
+    } else {
+      await publishComplianceEvents(events);
     }
   }
 
@@ -2173,6 +2201,13 @@ async function resolveDevicesForAssignmentTarget(
 /**
  * Background worker function: scans all due config-policy compliance checks
  * and evaluates them for their target devices.
+ *
+ * `deferEnqueue` is for a caller that holds the transaction open after this
+ * returns (policyEvaluationWorker). It defers everything that another
+ * connection reads: the remediation enqueues (#7347, see
+ * `EvaluatePolicyOptions.deferEnqueue`) and the policy.* events
+ * (`DeferredComplianceEvent`). The result's `afterCommit` sends them, and the
+ * caller runs it once the transaction has committed.
  */
 export async function scanAndEvaluateConfigPolicyCompliance(
   options: { deferEnqueue?: boolean } = {}
@@ -2181,8 +2216,8 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   devicesEvaluated: number;
   results: ConfigPolicyEvaluationResult[];
 } & RemediationAfterCommit> {
-  // #7347 — see `EvaluatePolicyOptions.deferEnqueue`.
   const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
+  const deferredEvents: DeferredComplianceEvent[] | undefined = options.deferEnqueue ? [] : undefined;
   const dueChecks = await scanDueComplianceChecks();
   if (dueChecks.length === 0) {
     return { rulesScanned: 0, devicesEvaluated: 0, results: [] };
@@ -2242,18 +2277,49 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   for (const deviceId of allDeviceIds) {
     try {
       const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
-      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds, deferred });
+      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds, deferred, deferredEvents });
       allResults.push(...deviceResults);
     } catch (error) {
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
     }
   }
 
+  const afterCommit = deferred && deferredEvents
+    ? configComplianceAfterCommit(deferred, deferredEvents)
+    : undefined;
   return {
     rulesScanned: dueChecks.length,
     devicesEvaluated: allDeviceIds.length,
     results: allResults,
-    ...(deferred ? { afterCommit: remediationAfterCommit(deferred) } : {}),
+    ...(afterCommit ? { afterCommit } : {}),
+  };
+}
+
+/**
+ * The compliance scan's continuation: remediation enqueues first, then the
+ * policy.* events in evaluation order. Like `remediationAfterCommit` it never
+ * rejects, so a failure cannot fail the job and make a retry re-evaluate
+ * work that has already committed.
+ */
+function configComplianceAfterCommit(
+  deferred: DeferredRemediationEnqueues,
+  deferredEvents: DeferredComplianceEvent[],
+): (() => Promise<void>) | undefined {
+  const enqueueRemediation = remediationAfterCommit(deferred);
+  if (!enqueueRemediation && deferredEvents.length === 0) return undefined;
+  return async () => {
+    if (enqueueRemediation) {
+      // remediationAfterCommit guards each run, but not its module load. A
+      // throw there must not cost the events their only chance to publish:
+      // the scan has committed, so no retry would re-evaluate these checks.
+      try {
+        await enqueueRemediation();
+      } catch (error) {
+        console.error('[ConfigPolicyCompliance] Remediation enqueue failed after commit:', error);
+        captureException(error);
+      }
+    }
+    await publishComplianceEvents(deferredEvents);
   };
 }
 
@@ -2263,5 +2329,6 @@ export async function scanAndEvaluateConfigPolicyCompliance(
 export const __triggerRemediationAutomation = triggerRemediationAutomation;
 export const __triggerConfigPolicyRemediation = triggerConfigPolicyRemediation;
 export const __remediationAfterCommit = remediationAfterCommit;
+export const __configComplianceAfterCommit = configComplianceAfterCommit;
 export const __resolveTargetDevices = resolveTargetDevices;
 export const __resolveDevicesForAssignmentTarget = resolveDevicesForAssignmentTarget;
