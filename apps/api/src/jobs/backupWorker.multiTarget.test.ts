@@ -84,7 +84,12 @@ const writeDeliveryMock = vi.hoisted(() => ({
     ? { mode: 'local', reason: 'no_credential', payload: input.payload }
     : { mode: 'refused', reason: 'insecure_endpoint', message: 'Backups to S3 storage require the storage endpoint to use HTTPS.' })),
 }));
-vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+vi.mock('../services/backupStorageWriteDelivery', () => ({
+  brokerWorkerBackupPayload: writeDeliveryMock.broker,
+  backupWriteRefusalMessage: (reason: string) => (reason === 'mint_failed'
+    ? 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.'
+    : reason),
+}));
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,

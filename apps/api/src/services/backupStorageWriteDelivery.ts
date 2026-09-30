@@ -104,6 +104,9 @@ export type WorkerWriteDelivery =
   // No write session could be issued: nothing is sent, the target fails
   // with `message`.
   | { mode: 'refused'; reason: string; message: string }
+  // Issuing the session failed for a transient reason (database or Redis):
+  // nothing is sent and the whole dispatch is tried again later.
+  | { mode: 'retry'; reason: 'mint_failed' }
   // The device has not reported its helper: there is nothing to send.
   | { mode: 'held'; reason: 'helper_unreported' };
 
@@ -115,8 +118,9 @@ function refused(reason: string): Extract<WorkerWriteDelivery, { mode: 'refused'
  * For the backup worker (system context, before the send): the payload to
  * send for one target. `baseSnapshotId` is the server's own dispatch pin —
  * the only base a write session may read. A backup to S3 storage is sent
- * only with a write session; when none can be issued (including a minting
- * failure, which is logged) the target is refused and nothing is sent. A
+ * only with a write session; when none can be issued the target is refused
+ * and nothing is sent, except that a minting failure (database or Redis,
+ * logged) asks the worker to try the dispatch again (`retry`). A
  * device that has not reported its helper gets no payload at all (`held`);
  * the worker checks for that before it gets here, so it only happens when a
  * re-enrollment lands in between.
@@ -154,12 +158,12 @@ export async function brokerWorkerBackupPayload(input: {
       payload: { ...withoutDestination(input.payload), provider: 's3', storageSession: minted.envelope },
     };
   } catch (err) {
-    console.error('[backupStorageWriteDelivery] could not issue a write session; the backup target is not sent', {
+    console.error('[backupStorageWriteDelivery] could not issue a write session; the backup will be tried again', {
       jobId: input.jobId,
       error: err instanceof Error ? err.message : String(err),
     });
     captureException(err instanceof Error ? err : new Error(String(err)));
-    return refused('mint_failed');
+    return { mode: 'retry', reason: 'mint_failed' };
   }
 }
 

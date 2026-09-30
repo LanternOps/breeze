@@ -47,7 +47,7 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { recordBackupWriteDispatch } from '../services/backupMetrics';
-import { brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
+import { backupWriteRefusalMessage, brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
 import { BACKUP_HELPER_UNREPORTED_MESSAGE, backupHelperProtocolsUnreported } from '../services/backupHelperProtocols';
 import { backupWriteHelperRefusal } from '../services/backupWriteHelperGate';
 import { captureException } from '../services/sentry';
@@ -899,7 +899,13 @@ export const BACKUP_CAPABILITY_WAIT_MAX_MS = 10 * 60 * 1000;
  * operator can act on. Should the re-queue itself be lost, the stale reaper
  * still fails the pending job (BACKUP_PENDING_TIMEOUT_MS).
  */
-async function holdForHelperReport(data: DispatchBackupJobData): Promise<{ dispatched: boolean }> {
+async function holdForHelperReport(
+  data: DispatchBackupJobData,
+  onExhausted: { message: string; log: string } = {
+    message: BACKUP_HELPER_UNREPORTED_MESSAGE,
+    log: 'did not report its backup helper in time',
+  },
+): Promise<{ dispatched: boolean }> {
   const now = Date.now();
   const since = data.capabilityWaitSince ?? new Date(now).toISOString();
   const attempt = (data.capabilityWaitAttempt ?? 0) + 1;
@@ -908,8 +914,8 @@ async function holdForHelperReport(data: DispatchBackupJobData): Promise<{ dispa
     || !Number.isFinite(sinceMs)
     || now - sinceMs >= BACKUP_CAPABILITY_WAIT_MAX_MS;
   if (exhausted) {
-    console.warn(`[BackupWorker] Device ${data.deviceId} did not report its backup helper in time; failing job ${data.jobId}`);
-    await runWithSystemDbAccess(() => markJobFailed(data.jobId, BACKUP_HELPER_UNREPORTED_MESSAGE));
+    console.warn(`[BackupWorker] Device ${data.deviceId} ${onExhausted.log}; failing job ${data.jobId}`);
+    await runWithSystemDbAccess(() => markJobFailed(data.jobId, onExhausted.message));
     return { dispatched: false };
   }
   try {
@@ -927,6 +933,20 @@ async function holdForHelperReport(data: DispatchBackupJobData): Promise<{ dispa
     console.log(`[BackupWorker] Job ${data.jobId} waits for device ${data.deviceId} to report its backup helper`);
   }
   return { dispatched: false };
+}
+
+/**
+ * Issuing a write session failed for a transient reason (database or Redis)
+ * while building the dispatch. Thrown out of Phase 3 so its whole system
+ * transaction — child job rows, dispatch pins, sessions already issued for
+ * earlier targets — rolls back; the dispatch is then tried again later, like
+ * a device that has not reported its helper yet.
+ */
+class TransientWriteSessionError extends Error {
+  constructor() {
+    super('A write session could not be issued for a backup target');
+    this.name = 'TransientWriteSessionError';
+  }
 }
 
 interface PreparedBackupTarget {
@@ -1569,6 +1589,7 @@ async function prepareBackupDispatchTargets(
       payload: targetPayload,
       baseSnapshotId: target.commandType === 'backup_run' ? dispatchPin.baseSnapshotId : null,
     });
+    if (delivery.mode === 'retry') throw new TransientWriteSessionError();
     if (delivery.mode === 'held' || delivery.mode === 'refused') {
       // Nothing is sent for this target, and its row is failed rather than
       // left in flight: either the device's helper report was withdrawn (a
@@ -1735,7 +1756,17 @@ async function processDispatchBackup(
   // Phase 3 — resolve targets, build every command payload and record its
   // dispatch expectation: another short system DB context, then it CLOSES
   // before any target is actually sent.
-  const prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  let prepare: BackupDispatchPrepare;
+  try {
+    prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  } catch (err) {
+    if (!(err instanceof TransientWriteSessionError)) throw err;
+    // Nothing was committed and nothing was sent: try the dispatch again.
+    return holdForHelperReport(data, {
+      message: backupWriteRefusalMessage('mint_failed'),
+      log: 'could not be issued a write session in time',
+    });
+  }
   if (prepare.status === 'done') return prepare.result;
   const { prepared, preFailedTargets, backupMode, targetCount, parentFailureDetail: preparedParentFailure } = prepare;
 

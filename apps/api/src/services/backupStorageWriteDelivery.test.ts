@@ -212,7 +212,7 @@ describe('brokerWorkerBackupPayload (scheduled backups)', () => {
     expect(m.mint).toHaveBeenCalledWith(expect.objectContaining({ baseManifestKey: 'snapshots/snapshot-base/manifest.json' }));
   });
 
-  it('refuses, with no payload at all, when the helper cannot broker or minting fails', async () => {
+  it('refuses, with no payload at all, when the helper or the destination cannot be brokered', async () => {
     m.mint.mockResolvedValueOnce({ mode: 'unbrokered', reason: 'helper_unsupported' });
     const a = await brokerWorkerBackupPayload({
       orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
@@ -225,13 +225,16 @@ describe('brokerWorkerBackupPayload (scheduled backups)', () => {
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
     });
     expect(b).toMatchObject({ mode: 'refused', reason: 'insecure_endpoint' });
+    for (const out of [a, b]) expect(out).not.toHaveProperty('payload');
+  });
+
+  it('asks the worker to try again, with no payload, when issuing the session fails (a transient failure)', async () => {
     m.mint.mockRejectedValueOnce(new Error('db down'));
-    const c = await brokerWorkerBackupPayload({
+    const out = await brokerWorkerBackupPayload({
       orgId: ORG, jobId: JOB, deviceId: DEVICE, configId: CONFIG, commandType: 'backup_run',
       provider: 's3', providerConfig: S3, payload, baseSnapshotId: null,
     });
-    expect(c).toMatchObject({ mode: 'refused', reason: 'mint_failed' });
-    for (const out of [a, b, c]) expect(out).not.toHaveProperty('payload');
+    expect(out).toEqual({ mode: 'retry', reason: 'mint_failed' });
   });
 
   it('refuses any provider other than S3 or local', async () => {

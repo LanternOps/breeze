@@ -76,7 +76,12 @@ const writeDeliveryMock = vi.hoisted(() => ({
     payload: input.payload,
   })),
 }));
-vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+vi.mock('../services/backupStorageWriteDelivery', () => ({
+  brokerWorkerBackupPayload: writeDeliveryMock.broker,
+  backupWriteRefusalMessage: (reason: string) => (reason === 'mint_failed'
+    ? 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.'
+    : reason),
+}));
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
@@ -1049,6 +1054,34 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       const [, command] = agentRelayMock.dispatchCommandToAgent.mock.calls[0] as unknown as [string, { payload: Record<string, unknown> }];
       expect(command.payload.providerConfig).toBeUndefined();
       expect(command.payload.storageSession).toBeDefined();
+    });
+
+    it('tries the whole dispatch again later, sending nothing and failing nothing, when issuing a session fails transiently', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      writeDeliveryMock.broker.mockResolvedValueOnce({ mode: 'retry', reason: 'mint_failed' } as never);
+
+      const result = await __testOnly.processDispatchBackup(DATA as any);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(enqueueCapabilityWaitMock).toHaveBeenCalledTimes(1);
+      expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+    });
+
+    it('fails the job once transient session failures outlast the retry window', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      jobStatusRows = [{ status: 'pending' }];
+      writeDeliveryMock.broker.mockResolvedValueOnce({ mode: 'retry', reason: 'mint_failed' } as never);
+
+      await __testOnly.processDispatchBackup({
+        ...DATA, capabilityWaitAttempt: 5, capabilityWaitSince: new Date(Date.now() - 11 * 60_000).toISOString(),
+      } as any);
+
+      expect(enqueueCapabilityWaitMock).not.toHaveBeenCalled();
+      expect(updateLog.some((u) => u.payload.status === 'failed'
+        && u.payload.errorLog === 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.')).toBe(true);
     });
 
     it('fails a target and never sends it when a write session cannot be issued', async () => {
