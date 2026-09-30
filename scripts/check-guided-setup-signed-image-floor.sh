@@ -206,6 +206,8 @@ expect_gate_refused "preselected 'latest'" "${status}" "${output}" "not an exact
 # match, so refused up front rather than failing later on a missing tag.
 status=0; output="$(run_main preset-inexact "" "0.118" -y)" || status=$?
 expect_gate_refused "preselected '0.118'" "${status}" "${output}" "not an exact release version"
+output="$(run_main preset-inexact-allowed "" "0.118" -y "${OVERRIDE_FLAG}")" || true
+expect_gate_passed "preselected '0.118' with ${OVERRIDE_FLAG}" "${output}"
 output="$(run_main preset-latest-allowed "" "latest" -y "${OVERRIDE_FLAG}")" || true
 expect_gate_passed "preselected 'latest' with ${OVERRIDE_FLAG}" "${output}"
 echo "  OK  a version that is not an exact release is refused unless ${OVERRIDE_FLAG}"
@@ -239,7 +241,21 @@ fi
 output="$(printf '%s\n' "${BELOW}" | run_main interactive-allowed "" "" "${OVERRIDE_FLAG}")" || true
 grep -q "Selected Breeze version: ${BELOW}" <<< "${output}" \
   || fail "interactive ${BELOW} with ${OVERRIDE_FLAG}: expected it to be selected; got:\n${output}"
-echo "  OK  the interactive prompt refuses a below-floor answer unless ${OVERRIDE_FLAG}"
+# A refused default (here an old BREEZE_VERSION read from .env while the
+# lookup fails) is dropped: the second bare Enter meets an empty default
+# ("BREEZE_VERSION is required."), not the same refusal again.
+refused_default_dir="${TMP_DIR}/main-interactive-refused-default"
+mkdir -p "${refused_default_dir}"
+printf 'BREEZE_VERSION=0.105.1\n' > "${refused_default_dir}/.env"
+output="$(printf '\n\n%s\n' "${AT_FLOOR}" | run_main interactive-refused-default "" "")" || true
+refusals="$(grep -c "Breeze 0.105.1 is older than" <<< "${output}" || true)"
+[[ "${refusals}" -eq 1 ]] \
+  || fail "interactive: a refused default must not be offered again (refused ${refusals} times); got:\n${output}"
+grep -q "BREEZE_VERSION is required" <<< "${output}" \
+  || fail "interactive: expected an empty default after the refusal; got:\n${output}"
+grep -q "Selected Breeze version: ${AT_FLOOR}" <<< "${output}" \
+  || fail "interactive: expected ${AT_FLOOR} to be selected after the refused default; got:\n${output}"
+echo "  OK  the interactive prompt refuses a below-floor answer unless ${OVERRIDE_FLAG}, and drops a refused default"
 
 # --- 5. the image-ref step refuses on its own (defense in depth) ------------
 run_image_refs() {
@@ -271,6 +287,18 @@ fi
 status=0; output="$(run_image_refs "${AT_FLOOR}")" || status=$?
 [[ "${status}" -eq 0 ]] && grep -q "SIGNED-REFS-RESOLVED" <<< "${output}" \
   || fail "configure_release_image_refs must resolve signed refs at the floor; got status ${status}:\n${output}"
+# An inexact version numerically past the floor has no inventory either: with
+# the override it takes the same unverified path as an old release.
+status=0; output="$(run_image_refs "0.118")" || status=$?
+[[ "${status}" -ne 0 ]] && grep -q "not an exact release version" <<< "${output}" \
+  || fail "configure_release_image_refs must refuse '0.118' without ${OVERRIDE_FLAG}; got status ${status}:\n${output}"
+status=0; output="$(run_image_refs "0.118" "${OVERRIDE_FLAG}")" || status=$?
+[[ "${status}" -eq 0 ]] || fail "configure_release_image_refs must allow '0.118' with ${OVERRIDE_FLAG}; got status ${status}:\n${output}"
+if grep -q "SIGNED-REFS-RESOLVED" <<< "${output}"; then
+  fail "configure_release_image_refs must not try to resolve signed refs for an inexact version:\n${output}"
+fi
+run_prepare_templates "0.118" "false" \
+  || fail "prepare_templates must not require the verifier template for an inexact version (reachable only with ${OVERRIDE_FLAG})"
 echo "  OK  the image-ref step refuses below the floor on its own, warns with the override, and verifies at ${AT_FLOOR}+"
 
 printf 'guided setup signed image inventory floor guard passed\n'

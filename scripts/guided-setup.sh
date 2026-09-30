@@ -25,9 +25,10 @@ UPGRADE_MODE="false"
 UPGRADE_TARGET_VERSION=""
 ALLOW_DOWNGRADE="false"
 UPGRADE_STAGED_ENV=""
-# --allow-unverified-release: install a release older than
-# SIGNED_IMAGE_INVENTORY_MIN_VERSION anyway, from unverified image tags.
-# Fresh installs only. See require_verifiable_release.
+# --allow-unverified-release: install a version setup cannot verify anyway (a
+# release older than SIGNED_IMAGE_INVENTORY_MIN_VERSION, or a tag that is not
+# an exact release), from its unverified image tags. Fresh installs only. See
+# require_verifiable_release.
 ALLOW_UNVERIFIED_RELEASE="false"
 
 MIN_CPU_CORES="${BREEZE_SETUP_MIN_CPU_CORES:-2}"
@@ -106,11 +107,12 @@ Options:
                        BREEZE_VERSION. Migrations are forward-only; restore the
                        matching database backup before running an older release.
   --allow-unverified-release
-                       Install a release older than 0.112.0. Release signatures
-                       only cover the server container images from 0.112.0 on, so
-                       setup refuses older releases (and versions that are not an
-                       exact release) by default. With this flag it warns and uses
-                       the release's unverified image tags. Not valid with --upgrade.
+                       Install a version setup cannot verify: a release older than
+                       0.112.0 (release signatures only cover the server container
+                       images from 0.112.0 on), or a tag that is not an exact
+                       release, such as a locally built image. Refused by default;
+                       with this flag setup warns and uses the unverified image
+                       tags. Not valid with --upgrade.
   --work-dir DIR       Directory that should contain docker-compose.yml and .env.
                        Defaults to the current directory.
   --env-file FILE      Environment file to create/update. Defaults to WORK_DIR/.env.
@@ -131,7 +133,9 @@ Environment overrides:
   BREEZE_SETUP_GITHUB_REPO   GitHub repo for latest release lookup.
   BREEZE_SETUP_VERSION       Preselect the Breeze version/tag; skips the GitHub
                              release lookup and the GHCR image check (for pinned,
-                             air-gapped, or locally built images).
+                             air-gapped, or locally built images). Anything other
+                             than an exact release, 0.112.0 or later, also needs
+                             --allow-unverified-release.
   BREEZE_SETUP_SECRET_MODE   Secret workflow: auto or manual.
   BREEZE_SETUP_STORAGE_MODE  Storage mode: docker or local.
   BREEZE_SETUP_DRY_RUN       Exercise prompts without Docker/systemd changes: true or false.
@@ -658,9 +662,11 @@ prepare_templates() {
   local need_download="false"
   # Below SIGNED_IMAGE_INVENTORY_MIN_VERSION the selected release's tag tree
   # never contains scripts/release/verify-release-images.sh (template
-  # downloads are pinned to that tag), so it is neither required nor fetched.
+  # downloads are pinned to that tag), so it is neither required nor fetched;
+  # neither is it for a tag that is not an exact release. Both are reachable
+  # only with --allow-unverified-release.
   local want_verifier="false"
-  if release_has_signed_image_inventory "${SELECTED_BREEZE_VERSION}"; then
+  if release_is_verifiable "${SELECTED_BREEZE_VERSION}"; then
     want_verifier="true"
   fi
   if [[ -n "${REMOTE_BASE}" ]]; then
@@ -3542,14 +3548,20 @@ unverifiable_release_reason() {
     printf 'Breeze %s is older than %s. Release signatures only cover the server container images from %s on, so setup cannot verify the images %s would run.' \
       "${version}" "${floor}" "${floor}" "${version}"
   else
-    printf "'%s' is not an exact release version (for example %s). Release signatures only cover the server container images of exact releases from %s on, so setup cannot verify the images it names." \
+    printf "'%s' is not an exact release version (MAJOR.MINOR.PATCH, for example %s). Release signatures only cover the server container images of exact releases from %s on, so setup cannot verify the images it names." \
       "${version}" "${floor}" "${floor}"
   fi
 }
 
 unverifiable_release_choices() {
-  printf 'Choose %s or later, or rerun with --allow-unverified-release to install it from unverified image tags.' \
-    "${SIGNED_IMAGE_INVENTORY_MIN_VERSION}"
+  local version="${1#v}" floor="${SIGNED_IMAGE_INVENTORY_MIN_VERSION}"
+  if is_exact_release_version "${version}"; then
+    printf 'Choose %s or later, or rerun with --allow-unverified-release to install %s from its unverified image tags.' \
+      "${floor}" "${version}"
+  else
+    printf "Enter an exact release version, %s or later, or rerun with --allow-unverified-release to use the '%s' image tags unverified." \
+      "${floor}" "${version}"
+  fi
 }
 
 # Refuses a release whose images setup cannot verify, unless the operator
@@ -3561,16 +3573,16 @@ require_verifiable_release() {
   if release_is_verifiable "${version}" || [[ "${ALLOW_UNVERIFIED_RELEASE}" == "true" ]]; then
     return 0
   fi
-  fail "$(unverifiable_release_reason "${version}") $(unverifiable_release_choices)"
+  fail "$(unverifiable_release_reason "${version}") $(unverifiable_release_choices "${version}")"
 }
 
 # Pins the four first-party image refs to the selected release's verified
-# digests. A release below SIGNED_IMAGE_INVENTORY_MIN_VERSION has no signed
-# image inventory, so it is refused here as well as at selection unless
-# --allow-unverified-release was given; then its refs keep tracking the
-# unverified release tag.
+# digests. A release below SIGNED_IMAGE_INVENTORY_MIN_VERSION, or a tag that
+# is not an exact release, has no signed image inventory, so it is refused
+# here as well as at selection unless --allow-unverified-release was given;
+# then its refs keep tracking the unverified tag.
 configure_release_image_refs() {
-  if release_has_signed_image_inventory "${SELECTED_BREEZE_VERSION}"; then
+  if release_is_verifiable "${SELECTED_BREEZE_VERSION}"; then
     configure_signed_release_image_refs
     return
   fi
@@ -3827,7 +3839,7 @@ select_breeze_version() {
       answer="${answer#v}"
       if ! release_is_verifiable "${answer}" && [[ "${ALLOW_UNVERIFIED_RELEASE}" != "true" ]]; then
         warn "$(unverifiable_release_reason "${answer}")"
-        warn "$(unverifiable_release_choices)"
+        warn "$(unverifiable_release_choices "${answer}")"
         # Stop offering a refused default (e.g. an old BREEZE_VERSION from .env).
         if [[ "${answer}" == "${default_value#v}" ]]; then
           default_value=""
