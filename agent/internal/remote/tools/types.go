@@ -70,6 +70,11 @@ const (
 	// sends this.
 	CmdHomebrewBootstrap = "homebrew_bootstrap"
 
+	// Time synchronization management (Windows).
+	CmdTimeResync      = "time_resync"
+	CmdTimeSetTimezone = "time_set_timezone"
+	CmdTimeApplyPolicy = "time_apply_policy"
+
 	// Boot performance
 	CmdCollectBootPerformance    = "collect_boot_performance"
 	CmdManageStartupItem         = "manage_startup_item"
