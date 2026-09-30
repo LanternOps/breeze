@@ -77,6 +77,7 @@ import {
   classifyConsentDenyAction,
   isUnsolicitedConsentReason,
   consentMarkerAuditDetails,
+  consentMarkerIsCoherent,
   UNSOLICITED_CONSENT_REASONS,
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
@@ -3277,6 +3278,13 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               `[AgentWs] Dropping malformed ${isTerm ? 'term-' : 'desk-'}command_result from agent ${agentId}: ` +
               `${fastPathParse.error.issues[0]?.message ?? 'invalid shape'}`
             );
+            // A start result this server cannot read would otherwise leave
+            // its session `connecting` until the viewer gives up. When the
+            // command id still names the start, fail that start with a reason
+            // (same ownership predicates as any other start result).
+            if (!isTerm && message.commandId.startsWith('desk-start-')) {
+              await failUnreadableDesktopStart(message.commandId, authenticatedAgent.deviceId, runWithAgentDbAccess);
+            }
             return;
           }
           const fastMsg = fastPathParse.data;
@@ -3506,7 +3514,17 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                   // need no marker. Older agents send 'user' for every
                   // consent-mode start; that path is unchanged.
                   const consentReason = fastResult.consentReason;
-                  const consentPredicate = consentReason === 'user'
+                  // A version 2 marker must be backed by its own outcome (a
+                  // `user` grant by `granted`, `timeout` by
+                  // `presented_expired`); an incoherent one is not entitled
+                  // to activate a consent-mode start.
+                  const coherent = consentMarkerIsCoherent(fastResult);
+                  if (!coherent) {
+                    console.warn(`[AgentWs] Session ${sessionId}: consentReason=${String(consentReason)} is not backed by consentOutcome=${String(fastResult.consentOutcome)}; not activating a consent-mode start`);
+                  }
+                  const consentPredicate = !coherent
+                    ? [ne(remoteSessions.desktopPromptMode, 'consent')]
+                    : consentReason === 'user'
                     ? []
                     : isUnsolicitedConsentReason(consentReason)
                       ? [or(
@@ -3546,7 +3564,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     // marker alongside the answer. Emit a dedicated
                     // `session_consent_granted` audit so the grant is recorded
                     // independently of activation.
-                    if (fastResult.consentReason === 'user' && updated.promptMode === 'consent') {
+                    if (coherent && fastResult.consentReason === 'user' && updated.promptMode === 'consent') {
                       await logSessionAudit(
                         'session_consent_granted',
                         authenticatedAgent.deviceId,
@@ -3565,7 +3583,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                         undefined,
                         'agent',
                       );
-                    } else if (isUnsolicitedConsentReason(consentReason) && updated.promptMode === 'consent') {
+                    } else if (coherent && isUnsolicitedConsentReason(consentReason) && updated.promptMode === 'consent') {
                       // #6819: nobody was asked, or nobody answered, and the
                       // policy fallback let the session proceed. Audit it as a
                       // bypass carrying the true reason — never as a grant.
@@ -4211,6 +4229,45 @@ export const desktopCommandResultSchema = z.object({
     stopReason: z.string().max(300).optional(),
   }).strict().optional(),
 }).passthrough();
+
+const UNREADABLE_DESKTOP_START_MESSAGE =
+  'The remote device\'s answer to this session start could not be read, so the session was not started. '
+  + 'Make sure the agent and server are on matching releases, then try again.';
+
+/**
+ * Fail the desktop start named by a `desk-start-*` command id whose result
+ * did not match the result schema. Only a start that is still `connecting`,
+ * owned by the reporting device and dispatched under exactly this command id
+ * is touched — the same predicates every other start result uses.
+ */
+async function failUnreadableDesktopStart(
+  commandId: string,
+  deviceId: string,
+  runWithAgentDbAccess: <T>(label: string, fn: () => Promise<T>) => Promise<T>,
+): Promise<void> {
+  const startCommand = parseDesktopStartCommandId(commandId);
+  if (!startCommand) return;
+  try {
+    await runWithAgentDbAccess('agentWs.desktop.unreadableStart', async () => {
+      const result = await commitDesktopTerminalIntent({
+        sessionId: startCommand.sessionId,
+        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date() },
+        phase: 'confirmed',
+        where: [
+          eq(remoteSessions.deviceId, deviceId),
+          eq(remoteSessions.status, 'connecting'),
+          eq(remoteSessions.desktopStartCommandId, commandId),
+        ],
+      });
+      if (result.ok) {
+        await revokeViewerSession(startCommand.sessionId);
+        console.warn(`[AgentWs] Session ${startCommand.sessionId} failed: its start result could not be read`);
+      }
+    });
+  } catch (err) {
+    console.error('[AgentWs] Failed to fail a desktop start with an unreadable result:', err);
+  }
+}
 
 // Short-lived local cache for the owner-device lookup below — bounds DB load
 // from a burst of trailing frames for the SAME just-closed/unknown session

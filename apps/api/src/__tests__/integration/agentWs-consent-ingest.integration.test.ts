@@ -365,8 +365,10 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
       consentProtocol: 2,
     });
 
-    expect(await readSessionStatus(sessionId)).toMatchObject({ status: 'connecting', webrtcAnswer: null });
-    expect(await auditActionsFor(sessionId)).toEqual([]);
+    // Not a result this server accepts: the start fails instead of activating.
+    expect(await readSessionStatus(sessionId)).toMatchObject({ status: 'failed', webrtcAnswer: null });
+    expect(await auditActionsFor(sessionId)).not.toContain('session_consent_bypassed');
+    expect(await auditActionsFor(sessionId)).not.toContain('session_consent_granted');
   });
 
   runDb('v2 grant and v2 presented-and-expired bypass carry the structured outcome in the audit', async () => {
@@ -403,6 +405,70 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     expect(await consentAuditFor(expired, 'session_consent_bypassed')).toMatchObject({
       details: expect.objectContaining({ reason: 'timeout', consentOutcome: 'presented_expired', consentProtocol: 2 }),
     });
+  });
+
+  // A version 2 marker must be backed by its own outcome: a `user` start
+  // needs `granted`, a `timeout` start needs `presented_expired`.
+  for (const [consentReason, consentOutcome, behavior] of [
+    ['user', 'unknown', 'block'],
+    ['timeout', 'unavailable', 'proceed'],
+  ] as const) {
+    runDb(`v2 answer + consentReason=${consentReason} with outcome ${consentOutcome} does not activate`, async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const dev = await insertDevice(env.organization.id, env.site.id);
+      const sessionId = await insertSession({
+        deviceId: dev.id,
+        orgId: env.organization.id,
+        userId: env.user.id,
+        consentUnavailableBehavior: behavior,
+      });
+
+      await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+        sessionId,
+        answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n',
+        consentReason,
+        consentOutcome,
+        consentProtocol: 2,
+      });
+
+      expect(await readSessionStatus(sessionId)).toMatchObject({ status: 'connecting', webrtcAnswer: null });
+      expect(await auditActionsFor(sessionId)).toEqual([]);
+    });
+  }
+
+  // A start result the server cannot read (it fails the result schema) used to
+  // be dropped, leaving the session `connecting` until the viewer gave up. When
+  // its command id still names the start, the session is failed with a reason.
+  runDb('an unreadable desk-start result fails its session with a clear message', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      answer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n',
+      consentReason: 'user',
+      somethingThisServerDoesNotKnow: true,
+    });
+
+    const row = await readSessionStatus(sessionId);
+    expect(row.status).toBe('failed');
+    expect(row.webrtcAnswer).toBeNull();
+    expect(row.errorMessage).toMatch(/could not be read/);
+  });
+
+  runDb('an unreadable desk-start result for another device\'s session changes nothing', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const owner = await insertDevice(env.organization.id, env.site.id);
+    const other = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: owner.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(other.agentId, other.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      somethingThisServerDoesNotKnow: true,
+    });
+
+    expect(await readSessionStatus(sessionId)).toMatchObject({ status: 'connecting', errorMessage: null });
   });
 
   // Device-ownership guard: a session owned by device A cannot be denied by

@@ -415,6 +415,25 @@ export function consentMarkerAuditDetails(result: Record<string, unknown>): {
   return details;
 }
 
+/**
+ * Whether a desk-start result's consent marker is backed by its own outcome.
+ * A version 2 agent (`consentProtocol: 2`) reports what happened to the prompt
+ * alongside the reason, so a start may activate only when the two agree: a
+ * `user` grant needs `granted`, `timeout` needs `presented_expired` (the prompt
+ * was confirmed on screen), and `no_user_session` needs `unavailable`. Version
+ * 1 markers carry no outcome and are left to the existing rules.
+ */
+export function consentMarkerIsCoherent(result: Record<string, unknown>): boolean {
+  if (result.consentProtocol !== 2 || result.consentReason === undefined) return true;
+  const required: Record<string, string> = {
+    user: 'granted',
+    timeout: 'presented_expired',
+    no_user_session: 'unavailable',
+  };
+  const want = required[String(result.consentReason)];
+  return want !== undefined && result.consentOutcome === want;
+}
+
 export function isUnsolicitedConsentReason(reason: unknown): reason is UnsolicitedConsentReason {
   return (UNSOLICITED_CONSENT_REASONS as readonly unknown[]).includes(reason);
 }

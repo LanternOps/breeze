@@ -73,6 +73,7 @@ import {
   buildTechnicianDisplay,
   classifyConsentDenyAction,
   consentMarkerAuditDetails,
+  consentMarkerIsCoherent,
   isUnsolicitedConsentReason,
   createDesktopStartCommandId,
   generateTurnCredentials,
@@ -238,6 +239,34 @@ describe('consentMarkerAuditDetails', () => {
 
   it('ignores non-string values', () => {
     expect(consentMarkerAuditDetails({ consentProtocol: 2, consentOutcome: 1, consentOccupancy: null })).toEqual({ consentProtocol: 2 });
+  });
+});
+
+describe('consentMarkerIsCoherent', () => {
+  // A version 2 agent says what happened to the prompt; a start may only be
+  // activated on a reason its own outcome backs up.
+  it.each([
+    ['user', 'granted', true],
+    ['user', 'unknown', false],
+    ['user', 'presented_expired', false],
+    ['user', undefined, false],
+    ['timeout', 'presented_expired', true],
+    ['timeout', 'unavailable', false],
+    ['timeout', undefined, false],
+    ['no_user_session', 'unavailable', true],
+    ['no_user_session', 'granted', false],
+  ])('v2 %s with outcome %s → %s', (consentReason, consentOutcome, want) => {
+    expect(consentMarkerIsCoherent({ consentProtocol: 2, consentReason, consentOutcome })).toBe(want);
+  });
+
+  it('leaves version 1 markers alone (they carry no outcome)', () => {
+    for (const consentReason of ['user', 'timeout', 'helper_absent', undefined]) {
+      expect(consentMarkerIsCoherent({ consentReason })).toBe(true);
+    }
+  });
+
+  it('has nothing to check on a start without a consent reason', () => {
+    expect(consentMarkerIsCoherent({ consentProtocol: 2 })).toBe(true);
   });
 });
 
