@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -120,15 +121,7 @@ func newRebuildCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				opts.Provider, opts.Identity, opts.Marker, opts.SnapshotID = tokenOpts.Provider, tokenOpts.Identity, tokenOpts.Marker, tokenOpts.SnapshotID
-				// #5412: in token mode the server's word stands. An explicit
-				// "true" may strengthen it, "false" never weakens it.
-				opts.ExpectSystemState = tokenOpts.ExpectSystemState
-				if !expectStateAuto && expectState {
-					opts.ExpectSystemState = true
-				} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
-				}
+				opts = tokenModeRebuildOptions(tokenOpts, opts, expectState, expectStateAuto, cmd.ErrOrStderr())
 				report = tokenReport
 			} else {
 				provider, err := providerFromConfigFile(providerConfig)
@@ -203,6 +196,39 @@ const progressPostTimeout = 2 * time.Minute
 // and NEVER fails the rebuild: a lost console update is recoverable, a
 // completed recovery discarded because of one would not be — errors go to
 // stderr (the helper's log) and the run continues.
+// tokenModeRebuildOptions builds the engine options for token mode: it starts
+// from the options the server's bootstrap produced (snapshot, provider,
+// identity, marker, layout, integrity expectation, …) and lays only the
+// command-line owned fields of cli on top, so no bootstrap field can be
+// dropped on the way to the engine.
+//
+// #5412: the server's ExpectSystemState stands. An explicit "true" may
+// strengthen it, "false" never weakens it.
+func tokenModeRebuildOptions(fromToken, cli rebuild.Options, expectState, expectStateAuto bool, stderr io.Writer) rebuild.Options {
+	opts := fromToken
+	opts.Target = cli.Target
+	opts.StateDir = cli.StateDir
+	opts.StagingRoot = cli.StagingRoot
+	opts.DryRun = cli.DryRun
+	opts.ForceReprovision = cli.ForceReprovision
+	opts.AllowPartialRestore = cli.AllowPartialRestore
+	opts.RegenerateInitramfs = cli.RegenerateInitramfs
+	opts.SkipBoot = cli.SkipBoot
+	opts.System = cli.System
+	opts.Progress = cli.Progress
+	opts.WinSystem = cli.WinSystem
+	opts.WorkRoot = cli.WorkRoot
+	opts.DriverDirs = cli.DriverDirs
+	opts.ForceDisk = cli.ForceDisk
+	opts.AllowDomainController = cli.AllowDomainController
+	if !expectStateAuto && expectState {
+		opts.ExpectSystemState = true
+	} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
+		_, _ = fmt.Fprintln(stderr, "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
+	}
+	return opts
+}
+
 func buildTokenModeOptions(ctx context.Context, server, token string, target rebuild.Target, identityOverride string) (rebuild.Options, func(bmr.ProgressUpdate), error) {
 	return buildTokenModeOptionsWithIntegrity(ctx, server, token, target, identityOverride, nil)
 }
