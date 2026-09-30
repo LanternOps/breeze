@@ -52,7 +52,7 @@ func fetchVMRestoreManifest(ctx context.Context, snapshotID string, provider pro
 		}
 		tmpPath := tmpFile.Name()
 		_ = tmpFile.Close()
-		defer os.Remove(tmpPath)
+		defer func() { _ = os.Remove(tmpPath) }()
 
 		if err := provider.Download(manifestKey, tmpPath); err != nil {
 			return nil, nil, fmt.Errorf("download manifest: %w", err)

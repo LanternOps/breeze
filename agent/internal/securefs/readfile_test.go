@@ -20,7 +20,7 @@ func TestOpenFileReadsARegularFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	got, _ := io.ReadAll(f)
 	if string(got) != "content" {
 		t.Fatalf("got %q", got)

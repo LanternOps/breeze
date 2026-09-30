@@ -46,7 +46,7 @@ func readAppSnapshotManifest(ctx context.Context, provider providers.BackupProvi
 	}
 	tempPath := tempFile.Name()
 	_ = tempFile.Close()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 
 	if err := provider.Download(manifestKey, tempPath); err != nil {
 		return nil, nil, err

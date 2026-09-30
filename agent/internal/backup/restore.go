@@ -540,7 +540,7 @@ func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProv
 		}
 		return nil, nil, fmt.Errorf("download manifest: %w", err)
 	}
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	data, err := os.ReadFile(tmpPath)
 	if err != nil {

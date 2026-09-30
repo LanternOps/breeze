@@ -295,7 +295,7 @@ func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.Back
 		}
 		return nil, nil, manifestDownloadError(runCtx, opts, dlErr), nil
 	}
-	defer os.Remove(tempManifestPath)
+	defer func() { _ = os.Remove(tempManifestPath) }()
 	if err := ctx.Err(); err != nil {
 		return nil, nil, "", err
 	}
