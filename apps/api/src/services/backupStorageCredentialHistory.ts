@@ -8,7 +8,7 @@
  * they are disabled with the storage provider, so each one stays listed until
  * there is evidence:
  *   - probe_denied: the API tried the old key (ListObjectsV2, one key at most)
- *     and storage refused it;
+ *     and storage answered that the key id no longer exists;
  *   - provider_admin_confirmed: an administrator of the storage provider
  *     confirmed it (recorded by platform operators);
  *   - operator_attested: a user confirmed they disabled it (weaker evidence).
@@ -136,19 +136,27 @@ export function openSealedConnection(rowId: string, sealed: string): S3Connectio
 
 export type ProbeResult = { outcome: 'denied' | 'live' | 'inconclusive'; code: string | null };
 
-const DENIED_CODES = new Set(['InvalidAccessKeyId', 'SignatureDoesNotMatch', 'AccessDenied']);
+/** The only storage answer that proves a key disabled: its key id no longer exists. */
+export const KEY_GONE_CODE = 'InvalidAccessKeyId';
+/**
+ * Refusals that do NOT prove a key disabled: the key was refused for listing
+ * (no list permission, or a signature problem), but it may still upload.
+ */
+export const REFUSED_FOR_LISTING_CODES: readonly string[] = ['AccessDenied', 'SignatureDoesNotMatch'];
+const KNOWN_CODES = new Set([KEY_GONE_CODE, ...REFUSED_FOR_LISTING_CODES]);
 
 /**
- * Only an explicit refusal of the key by storage counts as denied. Anything
- * else — network errors, timeouts, a missing bucket, a server error, an
- * endpoint this server will not connect to — is inconclusive and never
- * records the key as disabled.
+ * Only a key id that no longer exists counts as denied. Everything else —
+ * a refusal for listing, network errors, timeouts, a missing bucket, a server
+ * error, an endpoint this server will not connect to — is inconclusive and
+ * never records the key as disabled. The code is kept either way.
  */
 export function classifyProbeError(err: unknown): { outcome: 'denied' | 'inconclusive'; code: string } {
   const e = (err && typeof err === 'object' ? err : {}) as { name?: unknown; Code?: unknown; code?: unknown };
   const candidates = [e.Code, e.name, e.code].filter((v): v is string => typeof v === 'string');
-  const denied = candidates.find((c) => DENIED_CODES.has(c));
-  if (denied) return { outcome: 'denied', code: denied };
+  const known = candidates.find((c) => KNOWN_CODES.has(c));
+  if (known === KEY_GONE_CODE) return { outcome: 'denied', code: known };
+  if (known) return { outcome: 'inconclusive', code: known };
   const code = candidates.find((c) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(c) && c !== 'Error') ?? 'unknown';
   return { outcome: 'inconclusive', code };
 }
@@ -417,11 +425,12 @@ export type CheckResult =
 
 /**
  * Checks a replaced key. Reads the row in the caller's organization (`inOrg`),
- * tries the old key with no DB context held, then records the outcome. A
- * refused key is recorded as disabled (probe_denied, with the storage error
- * code) and its sealed settings erased; when storage says the key id itself
- * no longer exists, the organization's other replaced rows with the same
- * fingerprint are recorded too, since it is the same key on the same storage.
+ * tries the old key with no DB context held, then records the outcome. Only
+ * a key id that storage says no longer exists is recorded as disabled
+ * (probe_denied), with its sealed settings erased — and so are the
+ * organization's other replaced rows with the same fingerprint, since it is
+ * the same key on the same storage. A key refused for listing may still
+ * upload: that, like any other answer, is inconclusive (code kept).
  */
 export async function checkReplacedCredential(input: {
   historyId: string;
@@ -458,8 +467,10 @@ export async function checkReplacedCredential(input: {
   const result = await probe(connection);
   const at = now();
 
-  if (result.outcome === 'denied') {
-    const code = result.code ?? 'denied';
+  // Only a key id that no longer exists is evidence, whatever the probe
+  // called its answer.
+  if (result.outcome === 'denied' && result.code === KEY_GONE_CODE) {
+    const code = result.code;
     await input.inOrg(() => db.update(backupStorageCredentialHistory)
       .set({
         revokedAt: at,
@@ -469,36 +480,35 @@ export async function checkReplacedCredential(input: {
         sealedPreviousSecret: null,
         lastProbeAt: at,
         lastProbeOutcome: null,
+        lastProbeCode: null,
         updatedAt: at,
       })
       .where(and(eq(backupStorageCredentialHistory.id, loaded.id), isNull(backupStorageCredentialHistory.revokedAt))));
-    if (code === 'InvalidAccessKeyId') {
-      // Storage says the key id no longer exists: the organization's other
-      // replaced destinations using the same key on the same storage are
-      // recorded too. Never another organization's — the fingerprint names a
-      // key id and a storage location, not who can reach it — and never a
-      // destination still using the key.
-      await input.inOrg(() => db.update(backupStorageCredentialHistory)
-        .set({
-          revokedAt: at,
-          revocationEvidence: 'probe_denied',
-          evidenceDetail: `${code} (checked through another destination using the same key)`,
-          sealedPreviousSecret: null,
-          updatedAt: at,
-        })
-        .where(and(
-          eq(backupStorageCredentialHistory.orgId, input.orgId),
-          eq(backupStorageCredentialHistory.accessKeyFingerprint, loaded.fingerprint),
-          isNull(backupStorageCredentialHistory.revokedAt),
-          isNotNull(backupStorageCredentialHistory.supersededAt),
-        )));
-    }
+    // Storage says the key id no longer exists: the organization's other
+    // replaced destinations using the same key on the same storage are
+    // recorded too. Never another organization's — the fingerprint names a
+    // key id and a storage location, not who can reach it — and never a
+    // destination still using the key.
+    await input.inOrg(() => db.update(backupStorageCredentialHistory)
+      .set({
+        revokedAt: at,
+        revocationEvidence: 'probe_denied',
+        evidenceDetail: `${code} (checked through another destination using the same key)`,
+        sealedPreviousSecret: null,
+        updatedAt: at,
+      })
+      .where(and(
+        eq(backupStorageCredentialHistory.orgId, input.orgId),
+        eq(backupStorageCredentialHistory.accessKeyFingerprint, loaded.fingerprint),
+        isNull(backupStorageCredentialHistory.revokedAt),
+        isNotNull(backupStorageCredentialHistory.supersededAt),
+      )));
     return { status: 'revoked', code };
   }
 
   const outcome = result.outcome === 'live' ? 'still_live' : 'inconclusive';
   await input.inOrg(() => db.update(backupStorageCredentialHistory)
-    .set({ lastProbeAt: at, lastProbeOutcome: outcome, updatedAt: at })
+    .set({ lastProbeAt: at, lastProbeOutcome: outcome, lastProbeCode: result.code, updatedAt: at })
     .where(eq(backupStorageCredentialHistory.id, loaded.id)));
   return outcome === 'still_live' ? { status: 'still_live' } : { status: 'inconclusive', code: result.code };
 }
@@ -552,6 +562,7 @@ export type OutstandingCredential = {
   canCheck: boolean;
   lastProbeAt: Date | null;
   lastProbeOutcome: string | null;
+  lastProbeCode: string | null;
 };
 
 /** Keys that were in use before enforcement and have no evidence of being disabled, in the caller's context. */
@@ -567,6 +578,7 @@ export async function listOutstandingCredentials(orgId: string): Promise<Outstan
       sealed: backupStorageCredentialHistory.sealedPreviousSecret,
       lastProbeAt: backupStorageCredentialHistory.lastProbeAt,
       lastProbeOutcome: backupStorageCredentialHistory.lastProbeOutcome,
+      lastProbeCode: backupStorageCredentialHistory.lastProbeCode,
     })
     .from(backupStorageCredentialHistory)
     .leftJoin(backupConfigs, eq(backupConfigs.id, backupStorageCredentialHistory.configId))
@@ -586,6 +598,7 @@ export async function listOutstandingCredentials(orgId: string): Promise<Outstan
     canCheck: r.supersededAt !== null && r.sealed !== null,
     lastProbeAt: r.lastProbeAt,
     lastProbeOutcome: r.lastProbeOutcome,
+    lastProbeCode: r.lastProbeCode,
   }));
 }
 

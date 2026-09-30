@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "Önceki anahtar artık çalışmıyor. Devre dışı olarak kaydedildi.",
             "stillLive": "Önceki anahtar hâlâ çalışıyor. Depolama sağlayıcınızda devre dışı bırakın, ardından yeniden kontrol edin.",
-            "inconclusive": "Önceki anahtarı kontrol etmek için depolama sağlayıcısına ulaşılamadı. Daha sonra yeniden deneyin."
+            "inconclusive": "Önceki anahtarı kontrol etmek için depolama sağlayıcısına ulaşılamadı. Daha sonra yeniden deneyin.",
+            "refusedForListing": "Önceki anahtar listeleme için reddedildi, ancak yüklemeler için hâlâ çalışıyor olabilir. Depolama sağlayıcınızda devre dışı bırakın ve yeniden kontrol edin ya da devre dışı bıraktığınızı onaylayın."
           }
         }
       },

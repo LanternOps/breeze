@@ -37,6 +37,8 @@ export const backupStorageCredentialHistory = pgTable(
     lastProbeAt: timestamp('last_probe_at', { withTimezone: true }),
     /** still_live | inconclusive */
     lastProbeOutcome: text('last_probe_outcome'),
+    /** The storage error code the most recent inconclusive check returned. */
+    lastProbeCode: text('last_probe_code'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

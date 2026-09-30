@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "La clave anterior ya no funciona. Quedó registrada como desactivada.",
             "stillLive": "La clave anterior todavía funciona. Desactívela con su proveedor de almacenamiento y vuelva a verificar.",
-            "inconclusive": "No se pudo contactar al proveedor de almacenamiento para verificar la clave anterior. Inténtelo más tarde."
+            "inconclusive": "No se pudo contactar al proveedor de almacenamiento para verificar la clave anterior. Inténtelo más tarde.",
+            "refusedForListing": "La clave anterior fue rechazada para listar, pero es posible que todavía funcione para cargas. Desactívela con su proveedor de almacenamiento y vuelva a verificar, o confirme que la desactivó."
           }
         }
       },

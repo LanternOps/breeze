@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "A chave anterior não funciona mais. Ela está registrada como desativada.",
             "stillLive": "A chave anterior ainda funciona. Desative-a no seu provedor de armazenamento e verifique novamente.",
-            "inconclusive": "Não foi possível contatar o provedor de armazenamento para verificar a chave anterior. Tente novamente mais tarde."
+            "inconclusive": "Não foi possível contatar o provedor de armazenamento para verificar a chave anterior. Tente novamente mais tarde.",
+            "refusedForListing": "A chave anterior foi recusada para listagem, mas talvez ainda funcione para envios. Desative-a no seu provedor de armazenamento e verifique novamente, ou confirme que a desativou."
           }
         }
       },

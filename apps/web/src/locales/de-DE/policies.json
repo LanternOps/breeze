@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "Der vorherige Schlüssel funktioniert nicht mehr. Er ist als deaktiviert gespeichert.",
             "stillLive": "Der vorherige Schlüssel funktioniert noch. Deaktivieren Sie ihn bei Ihrem Speicheranbieter und prüfen Sie erneut.",
-            "inconclusive": "Der Speicheranbieter war nicht erreichbar, um den vorherigen Schlüssel zu prüfen. Versuchen Sie es später erneut."
+            "inconclusive": "Der Speicheranbieter war nicht erreichbar, um den vorherigen Schlüssel zu prüfen. Versuchen Sie es später erneut.",
+            "refusedForListing": "Der vorherige Schlüssel wurde für das Auflisten abgelehnt, funktioniert aber möglicherweise noch für Uploads. Deaktivieren Sie ihn bei Ihrem Speicheranbieter und prüfen Sie erneut, oder bestätigen Sie, dass Sie ihn deaktiviert haben."
           }
         }
       },

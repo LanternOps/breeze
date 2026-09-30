@@ -19,6 +19,7 @@ vi.mock('../../services/backupStorageCredentialHistory', () => ({
   listOutstandingCredentials: m.list,
   checkReplacedCredential: m.check,
   attestCredentialDisabled: m.attest,
+  REFUSED_FOR_LISTING_CODES: ['AccessDenied', 'SignatureDoesNotMatch'],
 }));
 vi.mock('../../services/rate-limit', () => ({ rateLimiter: m.rateLimiter }));
 vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => ({})) }));
@@ -71,6 +72,7 @@ describe('GET /backup/storage-credentials', () => {
       canCheck: true,
       lastProbeAt: null,
       lastProbeOutcome: null,
+      lastProbeCode: null,
     }]);
     const res = await app().request('/backup/storage-credentials');
     expect(res.status).toBe(200);
@@ -87,6 +89,7 @@ describe('GET /backup/storage-credentials', () => {
       canCheck: true,
       lastCheckedAt: null,
       lastCheckOutcome: null,
+      lastCheckCode: null,
     }]);
   });
 
@@ -122,6 +125,19 @@ describe('POST /backup/storage-credentials/:id/check', () => {
     const body = await (await check()).json();
     expect(body.message).toBe('The previous key still works. Disable it with your storage provider, then check again.');
   });
+
+  it.each(['AccessDenied', 'SignatureDoesNotMatch'])(
+    'says a key refused with %s may still work for uploads, and returns the code',
+    async (code) => {
+      m.check.mockResolvedValue({ status: 'inconclusive', code });
+      const body = await (await check()).json();
+      expect(body).toMatchObject({ outcome: 'inconclusive', code });
+      expect(body.message).toBe(
+        'The previous key was refused for listing, but it may still work for uploads. '
+          + 'Disable it with your storage provider, then check again, or confirm that you disabled it.',
+      );
+    },
+  );
 
   it('runs the check in the caller\'s own organization context', async () => {
     m.check.mockImplementation(async (input: { inOrg: (fn: () => Promise<unknown>) => Promise<unknown> }) => {

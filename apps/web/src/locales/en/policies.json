@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "The previous key no longer works. It is recorded as disabled.",
             "stillLive": "The previous key still works. Disable it with your storage provider, then check again.",
-            "inconclusive": "The storage provider could not be reached to check the previous key. Try again later."
+            "inconclusive": "The storage provider could not be reached to check the previous key. Try again later.",
+            "refusedForListing": "The previous key was refused for listing, but it may still work for uploads. Disable it with your storage provider, then check again, or confirm that you disabled it."
           }
         }
       },

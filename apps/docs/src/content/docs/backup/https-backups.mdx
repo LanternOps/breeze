@@ -31,6 +31,8 @@ A device that has just enrolled and has not yet reported its agent version waits
 
 <Aside type="caution" title="Check before you upgrade">
 Update every device that backs up to S3 storage to the v0.119.0 agent or later, and move `http://` storage endpoints and `http://` agent API addresses to HTTPS, **before** you upgrade the server to a release that includes this change. After that upgrade, backups from older agents and to `http://` endpoints are refused. There is no setting that turns the old path back on.
+
+If you run the API and background workers as separate services (see [Worker split](/deploy/worker-split/)), upgrade them together: the storage key list assumes every service runs the same version from the upgrade on.
 </Aside>
 
 The steps for moving the agent API and MinIO to HTTPS are the same as for restores: see [HTTPS for Restores](/backup/https-restores/#moving-the-agent-api-to-https).
@@ -46,11 +48,12 @@ Open **Configuration Policies**, choose a policy with a **Backup** feature, and 
 
 2. **Replace the key on the destination.** Edit the destination in Breeze, enter the new access key and secret key, and save. The old key moves to **Replaced** on the card. Run **Test connection**, then a backup and a restore, to confirm the new key works.
 
-3. **Disable the old key** with your storage provider. Deleting it is best: a deleted key can be checked conclusively.
+3. **Disable the old key** with your storage provider. Deleting it is best: only a key that no longer exists can be checked conclusively.
 
 4. **Check the old key.** Select **Check old key** on the card. Breeze tries to list one object with the old key:
-   - If storage refuses it, the key is recorded as disabled and leaves the card.
+   - If storage answers that the key no longer exists, the key is recorded as disabled and leaves the card.
    - If it still works, the card says so. Disable it with your provider, then check again.
+   - If storage refuses the key for listing (access denied, or a signature error), nothing is recorded: a key without permission to list may still be able to upload. Delete the key with your provider and check again, or confirm that you disabled it.
    - If the storage provider cannot be reached, nothing is recorded. Try again later.
 </Steps>
 

@@ -37,9 +37,14 @@
 --                           probe_denied (storage refused the old key),
 --                           provider_admin_confirmed, or operator_attested
 --                           (a user confirmed it; weaker evidence).
---   last_probe_at / last_probe_outcome
+--   last_probe_at / last_probe_outcome / last_probe_code
 --                           the most recent check of the old key that did not
---                           prove it disabled (still_live / inconclusive).
+--                           prove it disabled (still_live / inconclusive) and
+--                           the storage error code it returned. Only a key id
+--                           that no longer exists (InvalidAccessKeyId) proves
+--                           a key disabled; a key refused for listing
+--                           (AccessDenied, SignatureDoesNotMatch) may still
+--                           upload, so it is inconclusive.
 --
 -- TENANCY: shape 1 (direct org_id), no device_id. config_id is ON DELETE SET
 -- NULL so the history outlives its destination; verified_by_user_id likewise.
@@ -68,6 +73,7 @@ CREATE TABLE IF NOT EXISTS backup_storage_credential_history (
   verified_by_user_id     uuid NULL REFERENCES users (id) ON DELETE SET NULL,
   last_probe_at           timestamptz NULL,
   last_probe_outcome      text NULL,
+  last_probe_code         text NULL,
   created_at              timestamptz NOT NULL DEFAULT now(),
   updated_at              timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT backup_storage_credential_history_fingerprint_chk

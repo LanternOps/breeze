@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "La chiave precedente non funziona più. È registrata come disattivata.",
             "stillLive": "La chiave precedente funziona ancora. Disattivala presso il tuo provider di archiviazione, poi verifica di nuovo.",
-            "inconclusive": "Impossibile contattare il provider di archiviazione per verificare la chiave precedente. Riprova più tardi."
+            "inconclusive": "Impossibile contattare il provider di archiviazione per verificare la chiave precedente. Riprova più tardi.",
+            "refusedForListing": "La chiave precedente è stata rifiutata per l’elenco, ma potrebbe funzionare ancora per i caricamenti. Disattivala presso il tuo provider di archiviazione, poi verifica di nuovo, oppure conferma di averla disattivata."
           }
         }
       },

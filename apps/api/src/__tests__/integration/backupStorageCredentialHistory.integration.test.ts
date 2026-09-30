@@ -6,9 +6,10 @@
  *    configured afterwards are recorded with broadcast_until NULL;
  *  - replacing a key (or deleting the destination) supersedes its row and
  *    keeps the old connection settings sealed on it;
- *  - checking an old key: a refusal records probe_denied and erases the
- *    sealed settings; a key that still works, or a check that cannot tell,
- *    records nothing; a key id that no longer exists is recorded for every
+ *  - checking an old key: only a key id that no longer exists records
+ *    probe_denied and erases the sealed settings; a key refused for listing
+ *    (it may still upload), a key that still works, or a check that cannot
+ *    tell records no evidence (the storage error code is kept); a key id that no longer exists is recorded for every
  *    other replaced destination of the same organization using it — never
  *    for another organization's, and never for a destination still using it;
  *  - the first-start recording re-reads each destination under a row lock, so
@@ -63,6 +64,7 @@ type Row = Record<string, unknown> & {
   evidence_detail: string | null;
   verified_by_user_id: string | null;
   last_probe_outcome: string | null;
+  last_probe_code: string | null;
 };
 
 async function historyFor(configId: string): Promise<Row[]> {
@@ -184,7 +186,7 @@ describe('storage key history', () => {
     expect(await historyFor(t.configId)).toHaveLength(1);
   });
 
-  runDb('a refused old key is recorded as disabled and its sealed settings are erased', async () => {
+  runDb('an old key whose key id no longer exists is recorded as disabled and its sealed settings are erased', async () => {
     const t = await seedWriteTenant();
     const user = await createUser({ partnerId: t.partnerId, orgId: t.orgId });
     await baselineCredentialHistory();
@@ -194,14 +196,14 @@ describe('storage key history', () => {
     const seen: S3Connection[] = [];
     const res = await checkReplacedCredential({
       historyId: old.id, orgId: t.orgId, inOrg: inOrg(t.orgId), userId: user.id,
-      probe: async (c) => { seen.push(c); return { outcome: 'denied', code: 'SignatureDoesNotMatch' }; },
+      probe: async (c) => { seen.push(c); return { outcome: 'denied', code: 'InvalidAccessKeyId' }; },
     });
 
-    expect(res).toEqual({ status: 'revoked', code: 'SignatureDoesNotMatch' });
+    expect(res).toEqual({ status: 'revoked', code: 'InvalidAccessKeyId' });
     expect(seen[0]).toMatchObject({ accessKey: WRITE_DESTINATION.accessKey });
     const after = await historyRow(old.id);
     expect(after).toMatchObject({
-      revocation_evidence: 'probe_denied', evidence_detail: 'SignatureDoesNotMatch', verified_by_user_id: user.id,
+      revocation_evidence: 'probe_denied', evidence_detail: 'InvalidAccessKeyId', verified_by_user_id: user.id,
       sealed_previous_secret: null,
     });
     expect(after.revoked_at).not.toBeNull();
@@ -224,7 +226,7 @@ describe('storage key history', () => {
       probe: async () => ({ outcome: 'inconclusive', code: 'ECONNREFUSED' }),
     })).toEqual({ status: 'inconclusive', code: 'ECONNREFUSED' });
     const after = await historyRow(old.id);
-    expect(after).toMatchObject({ revoked_at: null, last_probe_outcome: 'inconclusive' });
+    expect(after).toMatchObject({ revoked_at: null, last_probe_outcome: 'inconclusive', last_probe_code: 'ECONNREFUSED' });
     expect(after.sealed_previous_secret).not.toBeNull();
   });
 
@@ -293,20 +295,28 @@ describe('storage key history', () => {
     ));
   });
 
-  runDb('a key refused for another reason is recorded only for the destination checked', async () => {
-    const a = await seedWriteTenant();
-    const b = await seedWriteTenant();
-    await baselineCredentialHistory();
-    await replaceKeys(a, { ...WRITE_DESTINATION, ...NEW_KEYS });
-    await replaceKeys(b, { ...WRITE_DESTINATION, ...NEW_KEYS });
-    const [aOld] = (await historyFor(a.configId)) as [Row];
-    const [bOld] = (await historyFor(b.configId)) as [Row];
+  it.each(['AccessDenied', 'SignatureDoesNotMatch'])(
+    'a key refused with %s is not recorded as disabled: it may still upload (the code is kept)',
+    async (code) => {
+      if (!process.env.DATABASE_URL) return;
+      const t = await seedWriteTenant();
+      await baselineCredentialHistory();
+      await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS });
+      const [old] = (await historyFor(t.configId)) as [Row];
 
-    await checkReplacedCredential({ historyId: aOld.id, orgId: a.orgId, inOrg: inOrg(a.orgId), userId: null, probe: refused('AccessDenied') });
+      // Even a probe that calls it a refusal is not taken as evidence.
+      const res = await checkReplacedCredential({
+        historyId: old.id, orgId: t.orgId, inOrg: inOrg(t.orgId), userId: null, probe: refused(code),
+      });
 
-    expect((await historyRow(aOld.id)).revocation_evidence).toBe('probe_denied');
-    expect((await historyRow(bOld.id)).revoked_at).toBeNull();
-  });
+      expect(res).toEqual({ status: 'inconclusive', code });
+      const after = await historyRow(old.id);
+      expect(after).toMatchObject({
+        revoked_at: null, revocation_evidence: null, last_probe_outcome: 'inconclusive', last_probe_code: code,
+      });
+      expect(after.sealed_previous_secret).not.toBeNull();
+    },
+  );
 
   runDb('an operator confirmation is recorded as weaker evidence', async () => {
     const t = await seedWriteTenant();

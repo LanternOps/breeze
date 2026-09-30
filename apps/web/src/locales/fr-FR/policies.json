@@ -553,7 +553,8 @@
           "outcome": {
             "revoked": "L’ancienne clé ne fonctionne plus. Elle est enregistrée comme désactivée.",
             "stillLive": "L’ancienne clé fonctionne encore. Désactivez-la auprès de votre fournisseur de stockage, puis vérifiez à nouveau.",
-            "inconclusive": "Le fournisseur de stockage n’a pas pu être joint pour vérifier l’ancienne clé. Réessayez plus tard."
+            "inconclusive": "Le fournisseur de stockage n’a pas pu être joint pour vérifier l’ancienne clé. Réessayez plus tard.",
+            "refusedForListing": "L’ancienne clé a été refusée pour le listage, mais elle fonctionne peut-être encore pour les envois. Désactivez-la auprès de votre fournisseur de stockage, puis vérifiez à nouveau, ou confirmez que vous l’avez désactivée."
           }
         }
       },

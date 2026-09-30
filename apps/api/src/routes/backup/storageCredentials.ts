@@ -16,6 +16,7 @@ import { zValidator } from '../../lib/validation';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
+  REFUSED_FOR_LISTING_CODES,
   attestCredentialDisabled,
   checkReplacedCredential,
   listOutstandingCredentials,
@@ -42,6 +43,9 @@ const CHECK_MESSAGES = {
   revoked: 'The previous key no longer works. It is recorded as disabled.',
   still_live: 'The previous key still works. Disable it with your storage provider, then check again.',
   inconclusive: 'The storage provider could not be reached to check the previous key. Try again later.',
+  refused_for_listing:
+    'The previous key was refused for listing, but it may still work for uploads. '
+    + 'Disable it with your storage provider, then check again, or confirm that you disabled it.',
 } as const;
 
 const NOT_CHECKABLE_MESSAGES = {
@@ -78,6 +82,7 @@ storageCredentialRoutes.get(
         canCheck: r.canCheck,
         lastCheckedAt: r.lastProbeAt ? r.lastProbeAt.toISOString() : null,
         lastCheckOutcome: r.lastProbeOutcome,
+        lastCheckCode: r.lastProbeCode,
       })),
     });
   },
@@ -127,7 +132,11 @@ storageCredentialRoutes.post(
       resourceId: id,
       details: { outcome: result.status },
     });
-    return c.json({ outcome: result.status, message: CHECK_MESSAGES[result.status] });
+    const code = result.status === 'revoked' || result.status === 'inconclusive' ? result.code : null;
+    const message = result.status === 'inconclusive' && code !== null && REFUSED_FOR_LISTING_CODES.includes(code)
+      ? CHECK_MESSAGES.refused_for_listing
+      : CHECK_MESSAGES[result.status];
+    return c.json({ outcome: result.status, code, message });
   },
 );
 

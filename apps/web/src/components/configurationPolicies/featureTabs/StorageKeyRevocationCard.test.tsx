@@ -28,6 +28,7 @@ const REPLACED = {
   canCheck: true,
   lastCheckedAt: null,
   lastCheckOutcome: null,
+  lastCheckCode: null,
 };
 const IN_USE = { ...REPLACED, id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', configName: 'Archive', replacedAt: null, canCheck: false };
 
@@ -66,6 +67,21 @@ describe('StorageKeyRevocationCard', () => {
     ));
     expect(await screen.findByText('The previous key still works. Disable it with your storage provider, then check again.'))
       .toBeInTheDocument();
+  });
+
+  it('says a key refused for listing may still work for uploads, and keeps both ways to close it', async () => {
+    m.fetchWithAuth
+      .mockResolvedValueOnce(json({ data: [REPLACED] }))
+      .mockResolvedValueOnce(json({ outcome: 'inconclusive', code: 'AccessDenied', message: 'server text' }))
+      .mockResolvedValueOnce(json({ data: [{ ...REPLACED, lastCheckOutcome: 'inconclusive', lastCheckCode: 'AccessDenied', lastCheckedAt: '2026-12-03T00:00:00.000Z' }] }));
+    render(<StorageKeyRevocationCard />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check old key' }));
+    const text = 'The previous key was refused for listing, but it may still work for uploads. '
+      + 'Disable it with your storage provider, then check again, or confirm that you disabled it.';
+    await waitFor(() => expect(m.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: text })));
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check old key' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'I disabled this key' })).toBeInTheDocument();
   });
 
   it('surfaces a failed check (runAction toasts it)', async () => {

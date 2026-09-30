@@ -112,9 +112,16 @@ function awsError(name: string, httpStatusCode = 403): Error {
 }
 
 describe('classifyProbeError', () => {
-  it.each(['InvalidAccessKeyId', 'SignatureDoesNotMatch', 'AccessDenied'])('reads %s as the key being refused', (code) => {
-    expect(classifyProbeError(awsError(code))).toEqual({ outcome: 'denied', code });
+  it('reads only a key id that no longer exists as the key being disabled', () => {
+    expect(classifyProbeError(awsError('InvalidAccessKeyId'))).toEqual({ outcome: 'denied', code: 'InvalidAccessKeyId' });
   });
+
+  it.each(['AccessDenied', 'SignatureDoesNotMatch'])(
+    'reads %s as inconclusive, keeping the code: a key refused for listing may still upload',
+    (code) => {
+      expect(classifyProbeError(awsError(code))).toEqual({ outcome: 'inconclusive', code });
+    },
+  );
 
   it.each([
     ['a network error', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })],
@@ -138,7 +145,7 @@ describe('probeS3Credential', () => {
     expect(command.input).toMatchObject({ Bucket: 'backups', MaxKeys: 1 });
   });
 
-  it('reports a refused key as denied', async () => {
+  it('reports a key id that no longer exists as denied', async () => {
     const send = vi.fn(async () => { throw awsError('InvalidAccessKeyId'); });
     const res = await probeS3Credential(CONNECTION, {
       buildClient: (() => ({ bucket: 'backups', client: { send, destroy: vi.fn() } })) as never,

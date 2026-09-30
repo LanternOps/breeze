@@ -26,24 +26,33 @@ export type StorageKeyNeedingAction = {
   canCheck: boolean;
   lastCheckedAt: string | null;
   lastCheckOutcome: "still_live" | "inconclusive" | null;
+  /** Storage error code of the most recent inconclusive check. */
+  lastCheckCode: string | null;
 };
 
 type CheckOutcome = "revoked" | "still_live" | "inconclusive";
+type CheckResult = { outcome: CheckOutcome; code: string | null };
+
+/** Storage refused the old key for listing; it may still work for uploads. */
+const REFUSED_FOR_LISTING_CODES = new Set(["AccessDenied", "SignatureDoesNotMatch"]);
 
 
 
 export default function StorageKeyRevocationCard() {
   const { t } = useTranslation("policies");
-  const outcomeMessage = (outcome: CheckOutcome): string => {
+  const outcomeMessage = ({ outcome, code }: CheckResult): string => {
     if (outcome === "revoked") return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.revoked");
     if (outcome === "still_live") return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.stillLive");
+    if (code !== null && REFUSED_FOR_LISTING_CODES.has(code)) {
+      return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.refusedForListing");
+    }
     return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.inconclusive");
   };
   const [rows, setRows] = useState<StorageKeyNeedingAction[]>([]);
   const [loadFailed, setLoadFailed] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
-  const [outcomes, setOutcomes] = useState<Record<string, CheckOutcome>>({});
+  const [outcomes, setOutcomes] = useState<Record<string, CheckResult>>({});
 
   const load = useCallback(async () => {
     try {
@@ -69,16 +78,19 @@ export default function StorageKeyRevocationCard() {
   const check = async (row: StorageKeyNeedingAction) => {
     setBusyId(row.id);
     try {
-      const result = await runAction<{ outcome: CheckOutcome }>({
+      const result = await runAction<CheckResult>({
         request: () => fetchWithAuth(`/backup/storage-credentials/${row.id}/check`, { method: "POST" }),
-        parseSuccess: (value) => value as { outcome: CheckOutcome },
+        parseSuccess: (value) => {
+          const body = value as { outcome: CheckOutcome; code?: string | null };
+          return { outcome: body.outcome, code: body.code ?? null };
+        },
         errorFallback: t("configurationPolicies.featureTabs.backupTab.storageKeys.checkFailed"),
         onUnauthorized,
       });
-      setOutcomes((prev) => ({ ...prev, [row.id]: result.outcome }));
+      setOutcomes((prev) => ({ ...prev, [row.id]: result }));
       showToast({
         type: result.outcome === "revoked" ? "success" : "warning",
-        message: outcomeMessage(result.outcome),
+        message: outcomeMessage(result),
       });
       await load();
     } catch (err) {
@@ -142,7 +154,8 @@ export default function StorageKeyRevocationCard() {
       </div>
       <ul className="space-y-2">
         {rows.map((row) => {
-          const outcome = outcomes[row.id] ?? row.lastCheckOutcome;
+          const outcome: CheckResult | null = outcomes[row.id]
+            ?? (row.lastCheckOutcome ? { outcome: row.lastCheckOutcome, code: row.lastCheckCode } : null);
           const busy = busyId === row.id;
           return (
             <li
@@ -163,7 +176,7 @@ export default function StorageKeyRevocationCard() {
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t("configurationPolicies.featureTabs.backupTab.storageKeys.replacedOn", { date: formatDateTime(row.replacedAt) })}
                   </p>
-                  {outcome === "still_live" || outcome === "inconclusive" ? (
+                  {outcome && outcome.outcome !== "revoked" ? (
                     <p className="mt-1 text-xs text-amber-700">{outcomeMessage(outcome)}</p>
                   ) : null}
                   {!row.canCheck ? <p className="mt-1 text-xs text-muted-foreground">{t("configurationPolicies.featureTabs.backupTab.storageKeys.cannotCheck")}</p> : null}
