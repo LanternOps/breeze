@@ -240,6 +240,7 @@ func (h *Heartbeat) invalidateBackupVersionCache() {
 	h.backupProtocolValue = backupipc.ProtocolInfo{}
 	h.backupProtocolRetryAt = time.Time{}
 	h.backupProtocolFailures = 0
+	h.backupProtocolGen++
 }
 
 // parseBackupVersion extracts the version from `breeze-backup --version`
@@ -293,6 +294,7 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 		h.backupVersionMu.Unlock()
 		return backupipc.ProtocolInfo{}, false
 	}
+	gen := h.backupProtocolGen
 	h.backupVersionMu.Unlock()
 
 	read := h.backupProtocolReader
@@ -303,6 +305,13 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 	v = nonNegativeProtocols(v)
 
 	h.backupVersionMu.Lock()
+	if gen != h.backupProtocolGen {
+		// A helper install swapped the binary while this probe ran: the
+		// answer describes the old binary. Report unknown for this beat and
+		// leave the cache clear so the next call probes the new one.
+		h.backupVersionMu.Unlock()
+		return backupipc.ProtocolInfo{}, false
+	}
 	known := outcome == backupProbeOK
 	var state string
 	switch outcome {

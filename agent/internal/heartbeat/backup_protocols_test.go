@@ -204,6 +204,26 @@ func TestBackupProtocols_FailedProbeRetriesWithShortBackoff(t *testing.T) {
 	}
 }
 
+// A probe that was running while a helper install swapped the binary answers
+// for the OLD binary; that answer must not be cached over the new one.
+func TestBackupProtocols_AnswerRacingAHelperSwapIsNotCached(t *testing.T) {
+	calls := 0
+	var h *Heartbeat
+	h = &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+		calls++
+		if calls == 1 {
+			h.invalidateBackupVersionCache() // install lands mid-probe
+			return backupipc.ProtocolInfo{}, backupProbeOK
+		}
+		return backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, backupProbeOK
+	}}
+	_, _ = h.backupProtocols()
+	want := backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}
+	if got, known := h.backupProtocols(); !known || got != want || calls != 2 {
+		t.Fatalf("protocols = (%+v, known %v) after %d probes, want the swapped-in helper re-probed", got, known, calls)
+	}
+}
+
 func TestBackupProtocols_NotInstalledAndUnresolvedAreNeverCached(t *testing.T) {
 	for _, outcome := range []backupProbeOutcome{backupProbeNotInstalled, backupProbeUnresolved} {
 		calls := 0

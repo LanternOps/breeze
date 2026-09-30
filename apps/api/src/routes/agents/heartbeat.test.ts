@@ -5282,6 +5282,12 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
         expect(updateArg.backupWriteProtocolVersion).toBeNull();
         expect(await regressionAudits()).toEqual([]);
         expect(regressed).not.toHaveBeenCalled();
+        // The move to "not reported yet" is still visible per device.
+        const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+        expect(changes.filter((ch) => String(ch.field).startsWith('backup'))).toEqual([
+          { field: 'backupIntegrityProtocolVersion', before: 0, after: null },
+          { field: 'backupWriteProtocolVersion', before: 0, after: null },
+        ]);
       });
 
       it('a helper that answers 0 is still a real drop and is audited', async () => {

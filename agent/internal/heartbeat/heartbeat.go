@@ -871,6 +871,9 @@ type Heartbeat struct {
 	// backoff after a probe that ran but got no answer; see backupProtocols.
 	backupProtocolRetryAt  time.Time
 	backupProtocolFailures int
+	// backupProtocolGen is bumped by invalidateBackupVersionCache; a probe
+	// that started before a helper swap does not cache its answer.
+	backupProtocolGen uint64
 	// backupProtocolLogState is the last reported/unknown state logged, so
 	// the log fires once per state change rather than once per heartbeat.
 	// Not cleared by invalidateBackupVersionCache.

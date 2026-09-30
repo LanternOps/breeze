@@ -1406,8 +1406,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // not a drop and is not audited again.
     for (const [capability, field] of BACKUP_HELPER_CAPABILITY_FIELDS) {
       // An unknown report (explicit null) is never a drop: the column was
-      // kept or left unreported above.
-      if (data[field] === null) continue;
+      // kept, or a stored 0 moved to "not reported yet", which is recorded
+      // as a state change (backups for the device now wait for a report).
+      if (data[field] === null) {
+        const stored = device[field] ?? null;
+        if (field in deviceUpdates && deviceUpdates[field] === null && stored !== null) {
+          changes.push({ field, before: stored, after: null });
+        }
+        continue;
+      }
       const before = Number(device[field] ?? 0);
       const after = Number(deviceUpdates[field] ?? 0);
       if (!(after < before)) continue;
