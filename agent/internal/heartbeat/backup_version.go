@@ -241,6 +241,7 @@ func (h *Heartbeat) invalidateBackupVersionCache() {
 	h.backupProtocolRetryAt = time.Time{}
 	h.backupProtocolFailures = 0
 	h.backupProtocolGen++
+	h.backupProtocolLogState = ""
 }
 
 // parseBackupVersion extracts the version from `breeze-backup --version`
@@ -258,14 +259,24 @@ func parseBackupVersion(out string) string {
 
 // backupProtocolRetryBase and backupProtocolRetryMax bound how soon a probe
 // that ran but got no answer (timeout, crash, unreadable output) is retried:
-// 1, 2, 4, 8, then every 10 minutes. The first retries land well inside the
-// server's wait for a device's first report, and even the cap stays far
-// below the version probe's 30-minute cooldown. Each failed attempt costs at
-// most one probe timeout of heartbeat time.
+// 1, 2, 4, then every 5 minutes. The server holds a backup for a device with
+// no report for up to 10 minutes, so even at the cap at least one probe lands
+// inside that window. Each failed attempt costs at most one probe timeout of
+// heartbeat time.
 const (
 	backupProtocolRetryBase = time.Minute
-	backupProtocolRetryMax  = 10 * time.Minute
+	backupProtocolRetryMax  = 5 * time.Minute
 )
+
+// backupProtocolProbe is one --protocol-info probe: the versions, the
+// outcome, and for the log the helper path and the error when there was no
+// answer.
+type backupProtocolProbe struct {
+	info    backupipc.ProtocolInfo
+	outcome backupProbeOutcome
+	path    string
+	err     string
+}
 
 // backupProtocols returns the storage protocol versions the INSTALLED
 // breeze-backup helper implements (brokered reads, snapshot integrity,
@@ -276,13 +287,15 @@ const (
 //     predates the flag answers 0 for everything; one that predates a single
 //     field answers 0 for it). Cached until invalidateBackupVersionCache runs
 //     after a helper install.
-//   - unknown (probe failed, helper not installed yet, path unresolved): the
-//     versions are zero-valued and must not be reported as 0. A failed exec
-//     is retried with a short backoff (backupProtocolRetryBase up to
-//     backupProtocolRetryMax); a missing or unresolved helper costs no exec
-//     and is looked at again on every call.
+//   - unknown (probe failed, helper not installed yet, path unresolved, or a
+//     negative version): the versions are zero-valued and must not be
+//     reported as 0. A failed exec is retried with a short backoff
+//     (backupProtocolRetryBase up to backupProtocolRetryMax); a missing or
+//     unresolved helper costs no exec and is looked at again on every call.
 //
-// State changes (known, or unknown with its reason) are logged once each.
+// State changes are logged once each: known (with the versions), unknown with
+// its reason (with the helper path and error), again when failures reach the
+// retry cap, and again for a new helper's first answer after a swap.
 func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 	h.backupVersionMu.Lock()
 	if h.backupProtocolRead {
@@ -301,8 +314,10 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 	if read == nil {
 		read = h.readInstalledBackupProtocols
 	}
-	v, outcome := read()
-	v = nonNegativeProtocols(v)
+	probe := read()
+	if probe.outcome == backupProbeOK && !validProtocols(probe.info) {
+		probe = backupProtocolProbe{outcome: backupProbeFailed, path: probe.path, err: "helper reported a negative protocol version"}
+	}
 
 	h.backupVersionMu.Lock()
 	if gen != h.backupProtocolGen {
@@ -312,10 +327,12 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 		h.backupVersionMu.Unlock()
 		return backupipc.ProtocolInfo{}, false
 	}
-	known := outcome == backupProbeOK
+	known := probe.outcome == backupProbeOK
+	v := backupipc.ProtocolInfo{}
 	var state string
-	switch outcome {
+	switch probe.outcome {
 	case backupProbeOK:
+		v = probe.info
 		h.backupProtocolValue = v
 		h.backupProtocolRead = true
 		h.backupProtocolRetryAt = time.Time{}
@@ -323,14 +340,15 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 		state = "known"
 	case backupProbeFailed:
 		h.backupProtocolFailures++
-		h.backupProtocolRetryAt = time.Now().Add(backupProtocolRetryDelay(h.backupProtocolFailures))
-		v = backupipc.ProtocolInfo{}
+		delay := backupProtocolRetryDelay(h.backupProtocolFailures)
+		h.backupProtocolRetryAt = time.Now().Add(delay)
 		state = "unknown:probe_failed"
+		if delay >= backupProtocolRetryMax {
+			state = "unknown:probe_failed_persistent"
+		}
 	case backupProbeNotInstalled:
-		v = backupipc.ProtocolInfo{}
 		state = "unknown:not_installed"
 	default: // backupProbeUnresolved
-		v = backupipc.ProtocolInfo{}
 		state = "unknown:path_unresolved"
 	}
 	changed := state != h.backupProtocolLogState
@@ -340,7 +358,7 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 
 	if changed {
 		if logState != nil {
-			logState(state)
+			logState(state, probe)
 		} else if known {
 			log.Info("backup helper reported its storage protocols",
 				"read", v.BackupReadProtocolVersion,
@@ -348,7 +366,9 @@ func (h *Heartbeat) backupProtocols() (backupipc.ProtocolInfo, bool) {
 				"write", v.BackupWriteProtocolVersion)
 		} else {
 			log.Warn("backup helper protocols unknown; heartbeat reports them as unknown and retries",
-				"reason", strings.TrimPrefix(state, "unknown:"))
+				"reason", strings.TrimPrefix(state, "unknown:"),
+				"path", probe.path,
+				"error", probe.err)
 		}
 	}
 	return v, known
@@ -384,18 +404,10 @@ func (p *HeartbeatPayload) setBackupProtocols(v backupipc.ProtocolInfo, known bo
 	p.BackupWriteProtocolVersion = &write
 }
 
-// nonNegativeProtocols reads any negative version as 0.
-func nonNegativeProtocols(v backupipc.ProtocolInfo) backupipc.ProtocolInfo {
-	if v.BackupReadProtocolVersion < 0 {
-		v.BackupReadProtocolVersion = 0
-	}
-	if v.BackupIntegrityProtocolVersion < 0 {
-		v.BackupIntegrityProtocolVersion = 0
-	}
-	if v.BackupWriteProtocolVersion < 0 {
-		v.BackupWriteProtocolVersion = 0
-	}
-	return v
+// validProtocols reports whether every version is non-negative. The same
+// rule holds for all three fields: a negative version is not an answer.
+func validProtocols(v backupipc.ProtocolInfo) bool {
+	return v.BackupReadProtocolVersion >= 0 && v.BackupIntegrityProtocolVersion >= 0 && v.BackupWriteProtocolVersion >= 0
 }
 
 // unknownFlagMarker is what cobra prints to stderr when a helper is run with a
@@ -411,13 +423,13 @@ const unknownFlagMarker = "unknown flag: --" + backupipc.ProtocolInfoFlag
 //     crashed or exited non-zero for another reason, or its output does not
 //     parse. No answer; reported as unknown.
 //   - backupProbeNotInstalled / backupProbeUnresolved: no helper to ask yet.
-func (h *Heartbeat) readInstalledBackupProtocols() (backupipc.ProtocolInfo, backupProbeOutcome) {
+func (h *Heartbeat) readInstalledBackupProtocols() backupProtocolProbe {
 	path, err := h.resolveBackupBinaryPath()
 	if err != nil {
-		return backupipc.ProtocolInfo{}, backupProbeUnresolved
+		return backupProtocolProbe{outcome: backupProbeUnresolved, err: err.Error()}
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
-		return backupipc.ProtocolInfo{}, backupProbeNotInstalled
+		return backupProtocolProbe{outcome: backupProbeNotInstalled, path: path, err: statErr.Error()}
 	}
 	timeout := h.backupProtocolTimeout
 	if timeout <= 0 {
@@ -430,40 +442,49 @@ func (h *Heartbeat) readInstalledBackupProtocols() (backupipc.ProtocolInfo, back
 		var exitErr *exec.ExitError
 		if ctx.Err() == nil && errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), unknownFlagMarker) {
 			log.Debug("backup helper predates --protocol-info; reporting every protocol as 0", "path", path)
-			return backupipc.ProtocolInfo{}, backupProbeOK
+			return backupProtocolProbe{outcome: backupProbeOK, path: path}
 		}
-		log.Debug("backup helper did not report protocol info", "path", path, "error", err.Error())
-		return backupipc.ProtocolInfo{}, backupProbeFailed
+		msg := err.Error()
+		if ctx.Err() != nil {
+			msg = "timed out after " + timeout.String() + ": " + msg
+		}
+		return backupProtocolProbe{outcome: backupProbeFailed, path: path, err: msg}
 	}
 	v, ok := parseBackupProtocols(string(out))
 	if !ok {
-		log.Debug("backup helper protocol info unparseable", "path", path)
-		return backupipc.ProtocolInfo{}, backupProbeFailed
+		return backupProtocolProbe{outcome: backupProbeFailed, path: path, err: "unreadable --protocol-info output"}
 	}
-	return v, backupProbeOK
+	return backupProtocolProbe{info: v, outcome: backupProbeOK, path: path}
 }
 
 // parseBackupProtocols decodes --protocol-info output. ok is false for
 // anything that is not a JSON object carrying an integer read version (the
-// field every helper with the flag prints), or whose read version is
-// negative: an answer overrides what the server last stored, so output that
-// merely decodes to zeros is not one. A negative integrity or write version
-// reads as 0; an absent one (a helper that predates the field) is 0.
+// field every helper with the flag prints): an answer overrides what the
+// server last stored, so output that merely decodes to zeros is not one. Every
+// field follows the same rule: a present field must be a non-negative
+// integer, and a negative or null one makes the whole output unreadable
+// (unknown). An absent integrity or write field (a helper that predates it)
+// is 0.
 func parseBackupProtocols(out string) (backupipc.ProtocolInfo, bool) {
 	trimmed := []byte(strings.TrimSpace(out))
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
 		return backupipc.ProtocolInfo{}, false
 	}
-	if raw, present := fields["backupReadProtocolVersion"]; !present || string(raw) == "null" {
+	if _, present := fields["backupReadProtocolVersion"]; !present {
 		return backupipc.ProtocolInfo{}, false
+	}
+	for _, key := range []string{"backupReadProtocolVersion", "backupIntegrityProtocolVersion", "backupWriteProtocolVersion"} {
+		if raw, present := fields[key]; present && string(raw) == "null" {
+			return backupipc.ProtocolInfo{}, false
+		}
 	}
 	var info backupipc.ProtocolInfo
 	if err := json.Unmarshal(trimmed, &info); err != nil {
 		return backupipc.ProtocolInfo{}, false
 	}
-	if info.BackupReadProtocolVersion < 0 {
+	if !validProtocols(info) {
 		return backupipc.ProtocolInfo{}, false
 	}
-	return nonNegativeProtocols(info), true
+	return info, true
 }

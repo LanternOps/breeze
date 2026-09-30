@@ -864,7 +864,7 @@ type Heartbeat struct {
 	// (readInstalledBackupProtocols); nil in production. The cache fields
 	// below are guarded by backupVersionMu and cleared by
 	// invalidateBackupVersionCache, exactly like the version cache.
-	backupProtocolReader func() (backupipc.ProtocolInfo, backupProbeOutcome)
+	backupProtocolReader func() backupProtocolProbe
 	backupProtocolValue  backupipc.ProtocolInfo
 	backupProtocolRead   bool
 	// backupProtocolRetryAt and backupProtocolFailures drive the short
@@ -876,12 +876,13 @@ type Heartbeat struct {
 	backupProtocolGen uint64
 	// backupProtocolLogState is the last reported/unknown state logged, so
 	// the log fires once per state change rather than once per heartbeat.
-	// Not cleared by invalidateBackupVersionCache.
+	// Cleared by invalidateBackupVersionCache so a new helper's first answer
+	// is always logged.
 	backupProtocolLogState string
 	// backupProtocolStateLogger and backupProtocolTimeout are test seams (nil
 	// / zero in production: log via the package logger, and
 	// backupVersionReadTimeout).
-	backupProtocolStateLogger func(state string)
+	backupProtocolStateLogger func(state string, probe backupProtocolProbe)
 	backupProtocolTimeout     time.Duration
 
 	// backupHelperDownloader is an optional test seam: when non-nil,

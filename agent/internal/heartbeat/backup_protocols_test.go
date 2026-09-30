@@ -30,7 +30,12 @@ func TestParseBackupProtocols(t *testing.T) {
 		{"json null", "null\n", backupipc.ProtocolInfo{}, false},
 		{"read field null", `{"backupReadProtocolVersion":null}`, backupipc.ProtocolInfo{}, false},
 		{"array", `[1]`, backupipc.ProtocolInfo{}, false},
-		{"negative integrity and write read as 0", `{"backupReadProtocolVersion":1,"backupIntegrityProtocolVersion":-1,"backupWriteProtocolVersion":-3}`, backupipc.ProtocolInfo{BackupReadProtocolVersion: 1}, true},
+		// Every field is held to the same rule: present means a non-negative
+		// integer. A negative or null value is not an answer (unknown).
+		{"negative integrity", `{"backupReadProtocolVersion":1,"backupIntegrityProtocolVersion":-1,"backupWriteProtocolVersion":1}`, backupipc.ProtocolInfo{}, false},
+		{"negative write", `{"backupReadProtocolVersion":1,"backupIntegrityProtocolVersion":1,"backupWriteProtocolVersion":-3}`, backupipc.ProtocolInfo{}, false},
+		{"null integrity", `{"backupReadProtocolVersion":1,"backupIntegrityProtocolVersion":null}`, backupipc.ProtocolInfo{}, false},
+		{"null write", `{"backupReadProtocolVersion":1,"backupWriteProtocolVersion":null}`, backupipc.ProtocolInfo{}, false},
 		{"negative read fails the probe", `{"backupReadProtocolVersion":-1,"backupIntegrityProtocolVersion":1}`, backupipc.ProtocolInfo{}, false},
 		{"not json", "Error: unknown flag: --protocol-info\n", backupipc.ProtocolInfo{}, false},
 		{"wrong type", `{"backupReadProtocolVersion":"1"}`, backupipc.ProtocolInfo{}, false},
@@ -48,9 +53,9 @@ func TestParseBackupProtocols(t *testing.T) {
 
 func TestBackupProtocols_ReportsAllThreeFromOneProbe(t *testing.T) {
 	calls := 0
-	h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+	h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 		calls++
-		return backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, backupProbeOK
+		return backupProtocolProbe{info: backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, outcome: backupProbeOK}
 	}}
 	want := backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}
 	if got, known := h.backupProtocols(); !known || got != want {
@@ -62,21 +67,33 @@ func TestBackupProtocols_ReportsAllThreeFromOneProbe(t *testing.T) {
 	}
 }
 
-func TestBackupProtocols_NegativeValuesReadAsZero(t *testing.T) {
-	h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
-		return backupipc.ProtocolInfo{BackupReadProtocolVersion: -1, BackupIntegrityProtocolVersion: -2, BackupWriteProtocolVersion: -3}, backupProbeOK
-	}}
-	if got, known := h.backupProtocols(); !known || got != (backupipc.ProtocolInfo{}) {
-		t.Fatalf("protocols = (%+v, known %v), want a known all-0 answer", got, known)
+func TestBackupProtocols_NegativeValuesAreUnknown(t *testing.T) {
+	for _, info := range []backupipc.ProtocolInfo{
+		{BackupReadProtocolVersion: -1, BackupIntegrityProtocolVersion: 1, BackupWriteProtocolVersion: 1},
+		{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: -2, BackupWriteProtocolVersion: 1},
+		{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 1, BackupWriteProtocolVersion: -3},
+	} {
+		h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
+			return backupProtocolProbe{info: info, outcome: backupProbeOK}
+		}}
+		if got, known := h.backupProtocols(); known || got != (backupipc.ProtocolInfo{}) {
+			t.Fatalf("%+v: protocols = (%+v, known %v), want unknown", info, got, known)
+		}
+		h.backupVersionMu.Lock()
+		retryAt := h.backupProtocolRetryAt
+		h.backupVersionMu.Unlock()
+		if retryAt.IsZero() {
+			t.Fatalf("%+v: want a failed-probe retry scheduled", info)
+		}
 	}
 }
 
 func TestBackupProtocols_CachesSuccessAndInvalidatesOnInstall(t *testing.T) {
 	calls := 0
 	info := backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}
-	h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+	h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 		calls++
-		return info, backupProbeOK
+		return backupProtocolProbe{info: info, outcome: backupProbeOK}
 	}}
 	if got, known := h.backupProtocols(); !known || got != info {
 		t.Fatalf("protocols = (%+v, known %v), want %+v", got, known, info)
@@ -101,9 +118,9 @@ func TestBackupProtocols_CachesSuccessAndInvalidatesOnInstall(t *testing.T) {
 // any other answer. It is never confused with a probe that got no answer.
 func TestBackupProtocols_RealZeroIsKnown(t *testing.T) {
 	calls := 0
-	h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+	h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 		calls++
-		return backupipc.ProtocolInfo{}, backupProbeOK
+		return backupProtocolProbe{info: backupipc.ProtocolInfo{}, outcome: backupProbeOK}
 	}}
 	if got, known := h.backupProtocols(); !known || got != (backupipc.ProtocolInfo{}) {
 		t.Fatalf("protocols = (%+v, known %v), want a known all-0 answer", got, known)
@@ -125,9 +142,9 @@ func TestBackupProtocols_ProbeWithoutAnAnswerIsUnknown(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+			h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 				// Whatever the reader returned alongside a non-answer is ignored.
-				return backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupWriteProtocolVersion: 1}, tc.outcome
+				return backupProtocolProbe{info: backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupWriteProtocolVersion: 1}, outcome: tc.outcome}
 			}}
 			if got, known := h.backupProtocols(); known || got != (backupipc.ProtocolInfo{}) {
 				t.Fatalf("protocols = (%+v, known %v), want unknown", got, known)
@@ -139,9 +156,9 @@ func TestBackupProtocols_ProbeWithoutAnAnswerIsUnknown(t *testing.T) {
 func TestBackupProtocols_FailedProbeRetriesWithShortBackoff(t *testing.T) {
 	calls := 0
 	outcome := backupProbeFailed
-	h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+	h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 		calls++
-		return backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, outcome
+		return backupProtocolProbe{info: backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, outcome: outcome}
 	}}
 	if _, known := h.backupProtocols(); known {
 		t.Fatal("a failed probe must report unknown")
@@ -173,8 +190,10 @@ func TestBackupProtocols_FailedProbeRetriesWithShortBackoff(t *testing.T) {
 	if cappedDelay <= firstDelay || cappedDelay > backupProtocolRetryMax {
 		t.Fatalf("retry delay after repeated failures = %v, want > %v and <= %v", cappedDelay, firstDelay, backupProtocolRetryMax)
 	}
-	if backupProtocolRetryMax >= backupVersionProbeCooldown {
-		t.Fatalf("retry cap %v must stay below the version-probe cooldown %v", backupProtocolRetryMax, backupVersionProbeCooldown)
+	// The server holds a backup for a device with no report for up to 10
+	// minutes; the cap guarantees at least one probe inside that window.
+	if backupProtocolRetryMax > 5*time.Minute {
+		t.Fatalf("retry cap %v must be at most 5 minutes", backupProtocolRetryMax)
 	}
 
 	// Recovery: the next due probe answers and is reported and cached.
@@ -206,16 +225,53 @@ func TestBackupProtocols_FailedProbeRetriesWithShortBackoff(t *testing.T) {
 
 // A probe that was running while a helper install swapped the binary answers
 // for the OLD binary; that answer must not be cached over the new one.
+// A helper swap after a run of failures probes the new helper on the very
+// next call, and a failure of the new helper backs off from the start.
+func TestBackupProtocols_HelperSwapAfterFailuresProbesImmediately(t *testing.T) {
+	calls := 0
+	h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
+		calls++
+		return backupProtocolProbe{outcome: backupProbeFailed, path: "/opt/breeze/breeze-backup", err: "exit status 2"}
+	}}
+	for i := 0; i < 6; i++ {
+		h.backupVersionMu.Lock()
+		h.backupProtocolRetryAt = time.Now().Add(-time.Second)
+		h.backupVersionMu.Unlock()
+		_, _ = h.backupProtocols()
+	}
+	if calls != 6 {
+		t.Fatalf("probe calls = %d, want 6 failed probes", calls)
+	}
+	h.backupVersionMu.Lock()
+	before := time.Until(h.backupProtocolRetryAt)
+	h.backupVersionMu.Unlock()
+	if before <= backupProtocolRetryBase {
+		t.Fatalf("delay after 6 failures = %v, want it backed off past %v", before, backupProtocolRetryBase)
+	}
+
+	h.invalidateBackupVersionCache()
+	_, _ = h.backupProtocols()
+	if calls != 7 {
+		t.Fatalf("probe calls = %d, want the swapped-in helper probed immediately", calls)
+	}
+	h.backupVersionMu.Lock()
+	after := time.Until(h.backupProtocolRetryAt)
+	h.backupVersionMu.Unlock()
+	if after <= 0 || after > backupProtocolRetryBase {
+		t.Fatalf("delay after the swapped-in helper failed = %v, want (0, %v]", after, backupProtocolRetryBase)
+	}
+}
+
 func TestBackupProtocols_AnswerRacingAHelperSwapIsNotCached(t *testing.T) {
 	calls := 0
 	var h *Heartbeat
-	h = &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+	h = &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 		calls++
 		if calls == 1 {
 			h.invalidateBackupVersionCache() // install lands mid-probe
-			return backupipc.ProtocolInfo{}, backupProbeOK
+			return backupProtocolProbe{info: backupipc.ProtocolInfo{}, outcome: backupProbeOK}
 		}
-		return backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, backupProbeOK
+		return backupProtocolProbe{info: backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}, outcome: backupProbeOK}
 	}}
 	_, _ = h.backupProtocols()
 	want := backupipc.ProtocolInfo{BackupReadProtocolVersion: 1, BackupIntegrityProtocolVersion: 2, BackupWriteProtocolVersion: 1}
@@ -227,9 +283,9 @@ func TestBackupProtocols_AnswerRacingAHelperSwapIsNotCached(t *testing.T) {
 func TestBackupProtocols_NotInstalledAndUnresolvedAreNeverCached(t *testing.T) {
 	for _, outcome := range []backupProbeOutcome{backupProbeNotInstalled, backupProbeUnresolved} {
 		calls := 0
-		h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
+		h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
 			calls++
-			return backupipc.ProtocolInfo{}, outcome
+			return backupProtocolProbe{info: backupipc.ProtocolInfo{}, outcome: outcome}
 		}}
 		_, _ = h.backupProtocols()
 		_, _ = h.backupProtocols()
@@ -239,21 +295,27 @@ func TestBackupProtocols_NotInstalledAndUnresolvedAreNeverCached(t *testing.T) {
 	}
 }
 
-// The probe-failure log fires once per change of state, not once per beat.
+// The probe-state log fires once per state change, not once per beat: again
+// when the retry backoff reaches its cap, and again for the first answer after
+// a helper swap (a new helper's versions are always logged).
 func TestBackupProtocols_LogsOncePerStateChange(t *testing.T) {
 	outcome := backupProbeFailed
-	h := &Heartbeat{backupProtocolReader: func() (backupipc.ProtocolInfo, backupProbeOutcome) {
-		return backupipc.ProtocolInfo{BackupWriteProtocolVersion: 1}, outcome
+	h := &Heartbeat{backupProtocolReader: func() backupProtocolProbe {
+		return backupProtocolProbe{info: backupipc.ProtocolInfo{BackupWriteProtocolVersion: 1}, outcome: outcome, path: "/opt/breeze/breeze-backup", err: "signal: killed"}
 	}}
 	var logged []string
-	h.backupProtocolStateLogger = func(state string) { logged = append(logged, state) }
+	var details []backupProtocolProbe
+	h.backupProtocolStateLogger = func(state string, probe backupProtocolProbe) {
+		logged = append(logged, state)
+		details = append(details, probe)
+	}
 
 	due := func() {
 		h.backupVersionMu.Lock()
 		h.backupProtocolRetryAt = time.Time{}
 		h.backupVersionMu.Unlock()
 	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 8; i++ {
 		due()
 		_, _ = h.backupProtocols()
 	}
@@ -267,11 +329,20 @@ func TestBackupProtocols_LogsOncePerStateChange(t *testing.T) {
 		due()
 		_, _ = h.backupProtocols()
 	}
+	h.invalidateBackupVersionCache()
+	_, _ = h.backupProtocols()
 	outcome = backupProbeFailed
 	h.invalidateBackupVersionCache()
 	_, _ = h.backupProtocols()
 
-	want := []string{"unknown:probe_failed", "unknown:not_installed", "known", "unknown:probe_failed"}
+	want := []string{
+		"unknown:probe_failed",
+		"unknown:probe_failed_persistent",
+		"unknown:not_installed",
+		"known",
+		"known",
+		"unknown:probe_failed",
+	}
 	if len(logged) != len(want) {
 		t.Fatalf("logged states = %v, want %v", logged, want)
 	}
@@ -279,6 +350,10 @@ func TestBackupProtocols_LogsOncePerStateChange(t *testing.T) {
 		if logged[i] != want[i] {
 			t.Fatalf("logged states = %v, want %v", logged, want)
 		}
+	}
+	// A failed probe's log carries the helper path and the error.
+	if details[0].path != "/opt/breeze/breeze-backup" || details[0].err != "signal: killed" {
+		t.Fatalf("probe_failed log detail = %+v, want path and error", details[0])
 	}
 }
 
@@ -333,8 +408,13 @@ func TestBackupProtocols_ExecsInstalledHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		h = &Heartbeat{backupBinaryPath: path}
+		var detail backupProtocolProbe
+		h.backupProtocolStateLogger = func(_ string, probe backupProtocolProbe) { detail = probe }
 		if got, known := h.backupProtocols(); known || got != (backupipc.ProtocolInfo{}) {
 			t.Fatalf("%s: protocols = (%+v, known %v), want unknown", tc.name, got, known)
+		}
+		if detail.path != path || detail.err == "" {
+			t.Fatalf("%s: logged probe detail = %+v, want the helper path and an error", tc.name, detail)
 		}
 	}
 
