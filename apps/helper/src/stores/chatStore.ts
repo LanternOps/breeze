@@ -510,8 +510,9 @@ const HELPER_TOKEN_UNAVAILABLE_MESSAGE =
 // After the initial wait gives up, keep checking in the background: the token
 // can still arrive (an Assist that started while the agent was restarting sits
 // in the IPC reconnect backoff), and the window is hidden rather than
-// re-created, so nothing else would call initialize again. Only reads the
-// in-memory token state; restarting a rejected IPC client is left to Retry.
+// re-created, so nothing else would call initialize again. While waiting it
+// only calls helper_token_ready and never restarts the IPC client; that
+// happens on Retry and in the single initialize run once a token is ready.
 const LATE_TOKEN_POLL_INTERVAL_MS = 5_000;
 let lateTokenPoll: ReturnType<typeof setInterval> | null = null;
 

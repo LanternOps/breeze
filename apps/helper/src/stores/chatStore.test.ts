@@ -369,7 +369,7 @@ describe('initialize — helper token availability', () => {
   // the agent was restarting sits in the IPC reconnect backoff). The window is
   // only hidden, never re-created, so nothing would call initialize again:
   // the error state must clear itself once the token shows up — without
-  // hammering the broker with IPC restarts, which only Retry performs.
+  // restarting the IPC client on every background check.
   it('recovers from the error state on its own when the token arrives late', async () => {
     vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
     let ready = false;
