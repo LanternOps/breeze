@@ -6,6 +6,7 @@ import { db } from '../../db';
 import { deviceRecoveryKeys } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { getSecurityPostureTrend } from '../../services/securityPosture';
+import { siteAllowlistOf } from '../../services/aiToolsSiteScope';
 import {
   trendsQuerySchema,
   firewallQuerySchema,
@@ -45,6 +46,7 @@ complianceRoutes.get(
 
     const dataPoints = await getSecurityPostureTrend({
       orgIds,
+      siteIds: siteAllowlistOf(auth),
       days
     });
 
