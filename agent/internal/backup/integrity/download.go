@@ -49,14 +49,29 @@ func (l laterSources) DownloadContext(ctx context.Context, key, dest string) err
 	return l.skipper.DownloadSkipping(ctx, key, dest, 1)
 }
 
-// primaryBehindVault returns the view of p that skips its first source, or
-// false when p serves from one source only.
-func primaryBehindVault(p providers.BackupProvider) (providers.BackupProvider, bool) {
-	skipper, ok := p.(providers.SourceSkipper)
-	if !ok || skipper.SourceCount() < 2 {
-		return nil, false
+// firstSource is a provider view of a SourceSkipper that reads from its
+// first source only: the vault copy.
+type firstSource struct {
+	providers.BackupProvider
+	skipper providers.SourceSkipper
+}
+
+func (f firstSource) Download(key, dest string) error {
+	return f.skipper.DownloadOnly(context.Background(), key, dest, 0)
+}
+
+func (f firstSource) DownloadContext(ctx context.Context, key, dest string) error {
+	return f.skipper.DownloadOnly(ctx, key, dest, 0)
+}
+
+// splitVaultAndPrimary returns p's first source and the sources behind it,
+// or false when p serves from one source only.
+func splitVaultAndPrimary(p providers.BackupProvider) (vault, primary providers.BackupProvider, ok bool) {
+	skipper, isSkipper := p.(providers.SourceSkipper)
+	if !isSkipper || skipper.SourceCount() < 2 {
+		return nil, nil, false
 	}
-	return laterSources{BackupProvider: p, skipper: skipper}, true
+	return firstSource{BackupProvider: p, skipper: skipper}, laterSources{BackupProvider: p, skipper: skipper}, true
 }
 
 // DownloadChecked downloads key into dest and runs CheckStoredBytes on it.
@@ -85,15 +100,26 @@ func downloadAndCheck(ctx context.Context, dl Downloader, p providers.BackupProv
 	if dl == nil {
 		dl = DefaultDownloader
 	}
-	if err := dl(ctx, p, key, dest); err != nil {
-		return CheckResult{}, nil, err
-	}
-	res, err := check(dest)
-	if err == nil || !e.Present() || !Retryable(err) {
+	vault, primary, split := splitVaultAndPrimary(p)
+	if !e.Present() || !split {
+		if err := dl(ctx, p, key, dest); err != nil {
+			return CheckResult{}, nil, err
+		}
+		res, err := check(dest)
 		return res, nil, err
 	}
-	primary, ok := primaryBehindVault(p)
-	if !ok {
+	// With an expectation, read the vault copy on its own first, so a copy
+	// that fails its check is known to be the vault's; a vault that lacks the
+	// object is an ordinary fallback to primary storage.
+	if vaultErr := dl(ctx, vault, key, dest); vaultErr != nil {
+		if err := dl(ctx, primary, key, dest); err != nil {
+			return CheckResult{}, nil, fmt.Errorf("%w (vault copy: %v)", err, vaultErr)
+		}
+		res, err := check(dest)
+		return res, nil, err
+	}
+	res, err := check(dest)
+	if err == nil || !Retryable(err) {
 		return res, nil, err
 	}
 	if dlErr := dl(ctx, primary, key, dest); dlErr != nil {
@@ -198,6 +224,10 @@ func StageAndPublish(ctx context.Context, p providers.BackupProvider, key, final
 		_ = os.Remove(staging)
 		return CheckResult{}, nil, err
 	}
+	if err := syncFile(staging); err != nil {
+		_ = os.Remove(staging)
+		return CheckResult{}, nil, fmt.Errorf("flush restored object: %w", err)
+	}
 	if err := os.Rename(staging, finalPath); err != nil {
 		_ = os.Remove(staging)
 		return CheckResult{}, nil, fmt.Errorf("publish restored object: %w", err)
@@ -213,4 +243,19 @@ func StagingPath(dir string) (string, error) {
 		return "", fmt.Errorf("staging name: %w", err)
 	}
 	return filepath.Join(dir, StagingPrefix+hex.EncodeToString(b[:])), nil
+}
+
+// syncFile flushes a staged file to stable storage before it is renamed into
+// place, so a crash never leaves a published name over unwritten bytes.
+func syncFile(p string) error {
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }

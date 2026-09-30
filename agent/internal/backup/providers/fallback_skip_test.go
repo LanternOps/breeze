@@ -69,3 +69,22 @@ func TestFallbackSourceCount(t *testing.T) {
 		t.Fatalf("SourceCount = %d", f.SourceCount())
 	}
 }
+
+func TestFallbackDownloadOnlyReadsOneSource(t *testing.T) {
+	vault := &contentProvider{objects: map[string]string{}}
+	primary := &contentProvider{objects: map[string]string{"k": "primary bytes"}}
+	f := NewFallbackProvider(vault, primary)
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := f.DownloadOnly(context.Background(), "k", dest, 0); err == nil {
+		t.Fatal("source 0 lacks the object; DownloadOnly must not fall through")
+	}
+	if len(primary.downloads) != 0 {
+		t.Fatal("primary was read")
+	}
+	if err := f.DownloadOnly(context.Background(), "k", dest, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.DownloadOnly(context.Background(), "k", dest, 2); err == nil {
+		t.Fatal("out-of-range source must fail")
+	}
+}

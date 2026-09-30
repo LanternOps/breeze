@@ -93,6 +93,24 @@ func (f *FallbackProvider) DownloadContext(ctx context.Context, remotePath, loca
 // SourceCount is the number of sources a download may be served from.
 func (f *FallbackProvider) SourceCount() int { return len(f.providers) }
 
+// DownloadOnly implements SourceSkipper: download from source idx alone.
+func (f *FallbackProvider) DownloadOnly(ctx context.Context, remotePath, localPath string, idx int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if idx < 0 || idx >= len(f.providers) {
+		return fmt.Errorf("fallback provider has %d sources, no source %d", len(f.providers), idx)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p := f.providers[idx]
+	if d, ok := p.(ContextDownloader); ok {
+		return d.DownloadContext(ctx, remotePath, localPath)
+	}
+	return p.Download(remotePath, localPath)
+}
+
 // DownloadSkipping implements SourceSkipper: DownloadContext over every
 // source after the first skip. A restore that finds a vault copy which does
 // not match the snapshot's checks calls it with skip = 1 to read the same

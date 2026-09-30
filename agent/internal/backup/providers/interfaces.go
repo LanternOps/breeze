@@ -25,6 +25,7 @@ type ContextDownloader interface {
 // can read the same object from the next one.
 type SourceSkipper interface {
 	DownloadSkipping(ctx context.Context, remotePath, localPath string, skip int) error
+	DownloadOnly(ctx context.Context, remotePath, localPath string, idx int) error
 	SourceCount() int
 }
 

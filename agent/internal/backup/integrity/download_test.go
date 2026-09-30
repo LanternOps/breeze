@@ -253,3 +253,44 @@ func TestCheckControlObjectFile(t *testing.T) {
 		t.Fatal("absent expectation checks nothing")
 	}
 }
+
+func TestCheckControlObjectFileRefusesAnotherKey(t *testing.T) {
+	manifest := `{"id":"snap-1","files":[]}`
+	attested := mustParse(t, attestedJSON("snap-1", manifest))
+	if err := CheckControlObjectFile(attested, RoleManifest, "snapshots/snap-1/other.json", writeTemp(t, manifest)); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("err = %v, want a key mismatch", err)
+	}
+}
+
+func TestZeroSizeControlObjectIsChecked(t *testing.T) {
+	e := mustParse(t, `{"v":1,"mode":"attested","trust":"server_verified","snapshotId":"snap-1","objects":[{"role":"manifest","key":"snapshots/snap-1/manifest.json","sha256":"`+sum("")+`","size":0}]}`)
+	if err := CheckControlObjectFile(e, RoleManifest, manifestKey, writeTemp(t, "")); err != nil {
+		t.Fatalf("empty object: %v", err)
+	}
+	if err := CheckControlObjectFile(e, RoleManifest, manifestKey, writeTemp(t, "x")); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("non-empty object against a zero-size attestation: %v", err)
+	}
+}
+
+// A vault that lacks an object is an ordinary fallback: the copy read from
+// primary storage is checked, and no vault warning is added.
+func TestDownloadCheckedVaultMissingIsNotAVaultDifference(t *testing.T) {
+	body := "file bytes"
+	want := Stored{Size: int64(len(body)), SHA256: sum(body)}
+	attested := mustParse(t, attestedJSON("snap-1", "m"))
+	vault := &memProvider{objects: map[string]string{}}
+	for _, primaryBody := range []string{body, "FILE BYTES"} {
+		primary := &memProvider{objects: map[string]string{"k": primaryBody}}
+		dest := filepath.Join(t.TempDir(), "dest")
+		_, warnings, err := DownloadChecked(context.Background(), providers.NewFallbackProvider(vault, primary), "k", dest, want, attested)
+		if len(warnings) != 0 {
+			t.Fatalf("warnings = %v, want none: the vault copy was never read", warnings)
+		}
+		if (err == nil) != (primaryBody == body) {
+			t.Fatalf("primary %q: err = %v", primaryBody, err)
+		}
+		if primaryBody != body && len(primary.downloads) != 1 {
+			t.Fatalf("primary read %d times, want once", len(primary.downloads))
+		}
+	}
+}

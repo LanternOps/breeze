@@ -150,3 +150,37 @@ func TestParseNewerFormatAsksForAnAgentUpdate(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEdgeCases(t *testing.T) {
+	good := sum("m")
+	obj := func(sha string, size string) string {
+		return `{"v":1,"mode":"attested","trust":"server_verified","snapshotId":"s","objects":[{"role":"manifest","key":"snapshots/s/manifest.json","sha256":"` + sha + `","size":` + size + `}]}`
+	}
+	cases := []struct {
+		name       string
+		raw        string
+		ok         bool
+		updateHint bool
+	}{
+		{name: "uppercase digest", raw: obj(strings.ToUpper(good), "1")},
+		{name: "size at the bound", raw: obj(good, "9007199254740991"), ok: true},
+		{name: "size past the bound", raw: obj(good, "9007199254740992")},
+		{name: "size zero", raw: obj(sum(""), "0"), ok: true},
+		{name: "attested with no objects", raw: `{"v":1,"mode":"attested","trust":"server_verified","snapshotId":"s","objects":[]}`},
+		{name: "missing version is malformed", raw: `{"mode":"unattested","snapshotId":"s"}`},
+		{name: "unknown trust asks for an update", raw: `{"v":1,"mode":"attested","trust":"future_trust","snapshotId":"s","objects":[]}`, updateHint: true},
+		{name: "unknown role asks for an update", raw: `{"v":1,"mode":"attested","trust":"server_verified","snapshotId":"s","objects":[{"role":"future_role","key":"k","sha256":"` + good + `","size":1}]}`, updateHint: true},
+		{name: "unknown version asks for an update", raw: `{"v":2,"mode":"unattested","snapshotId":"s"}`, updateHint: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(json.RawMessage(tc.raw))
+			if (err == nil) != tc.ok {
+				t.Fatalf("err = %v, want ok=%v", err, tc.ok)
+			}
+			if err != nil && strings.Contains(err.Error(), "update the Breeze agent") != tc.updateHint {
+				t.Fatalf("err = %v, update hint wanted: %v", err, tc.updateHint)
+			}
+		})
+	}
+}

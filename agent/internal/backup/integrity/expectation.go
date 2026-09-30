@@ -135,6 +135,9 @@ func Parse(raw json.RawMessage) (*Expectation, error) {
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil, fmt.Errorf("%w: decode: %v", ErrInvalidExpectation, err)
 	}
+	if e.V == 0 {
+		return nil, fmt.Errorf("%w: missing version", ErrInvalidExpectation)
+	}
 	if e.V != ExpectationVersion {
 		return nil, fmt.Errorf("%w: unsupported version %d; %s", ErrInvalidExpectation, e.V, updateAgentHint)
 	}
@@ -149,13 +152,19 @@ func Parse(raw json.RawMessage) (*Expectation, error) {
 		return nil, fmt.Errorf("%w: unknown mode %q; %s", ErrInvalidExpectation, e.Mode, updateAgentHint)
 	}
 	if e.Trust != TrustServerVerified && e.Trust != TrustProducerOnly {
-		return nil, fmt.Errorf("%w: unknown trust %q", ErrInvalidExpectation, e.Trust)
+		if e.Trust == "" {
+			return nil, fmt.Errorf("%w: attested expectation has no trust", ErrInvalidExpectation)
+		}
+		return nil, fmt.Errorf("%w: unknown trust %q; %s", ErrInvalidExpectation, e.Trust, updateAgentHint)
 	}
 	seen := make(map[string]bool, len(e.Objects))
 	for _, o := range e.Objects {
 		want, err := ControlObjectKey(e.SnapshotID, o.Role)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidExpectation, err)
+			if o.Role == "" {
+				return nil, fmt.Errorf("%w: control object has no role", ErrInvalidExpectation)
+			}
+			return nil, fmt.Errorf("%w: %v; %s", ErrInvalidExpectation, err, updateAgentHint)
 		}
 		if seen[o.Role] {
 			return nil, fmt.Errorf("%w: duplicate control object role %q", ErrInvalidExpectation, o.Role)
