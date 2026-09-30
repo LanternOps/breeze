@@ -798,6 +798,48 @@ describe('watchdog object-storage copies are served on the control-plane origin,
     expect(getPresignedUrl).not.toHaveBeenCalled();
   });
 
+  function failingBody(err: Error): Readable {
+    let sent = false;
+    return new Readable({
+      read() {
+        if (!sent) {
+          sent = true;
+          this.push(WATCHDOG_BYTES);
+          return;
+        }
+        this.destroy(err);
+      },
+    });
+  }
+
+  it('logs an object-storage fault that breaks the stream mid-body', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({
+      body: failingBody(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })),
+      contentLength: WATCHDOG_BYTES.length * 2,
+    });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+    expect(res.status).toBe(200);
+    await expect(res.arrayBuffer()).rejects.toThrow();
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('[watchdog-download] S3 stream error'),
+      expect.anything(),
+    );
+  });
+
+  it('does not report a client hang-up (AbortError) as an object-storage fault', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({
+      body: failingBody(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })),
+      contentLength: WATCHDOG_BYTES.length * 2,
+    });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+    await res.arrayBuffer().catch(() => undefined);
+
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['agent', '/download/linux/amd64'],
     ['user-helper', '/download/user-helper/windows/amd64'],

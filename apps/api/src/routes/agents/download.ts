@@ -102,10 +102,11 @@ async function enforcePublicAgentDownloadRateLimit(
 // ============================================
 // Shared component-binary download handler
 // ============================================
-// The agent/helper/watchdog/backup/user-helper routes below are five
+// The agent/watchdog/backup/recovery-iso/user-helper routes below were
 // near-verbatim copies of the same ~90-line shape: validate os/arch → GitHub
-// redirect (BINARY_SOURCE=github) → S3 presign, or S3 stream for routes with
-// objectStorageDelivery 'stream' (404-falls-to-disk, non-404→500) → disk stream. registerComponentDownloadRoute hoists that
+// redirect (BINARY_SOURCE=github) → S3 presigned redirect, or an S3 stream
+// for objectStorageDelivery 'stream' (either way a NotFound falls through to
+// disk and any other fault is a 500) → disk stream. registerComponentDownloadRoute hoists that
 // shape into one place so a future fix (e.g. stream backpressure) lands
 // once. The .pkg and install.sh/uninstall.sh routes have real behavioral
 // differences (macOS-only, different validation/response shape) and are
@@ -329,8 +330,12 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
         const body = object.body;
         // Headers are already sent by the time this fires, so all that is left
         // is to log it: the client sees a truncated body, and the agent's
-        // signed-manifest size/SHA-256 check rejects it.
+        // signed-manifest size/SHA-256 check rejects it. A client that hangs
+        // up makes the server cancel the web stream, which destroys this one
+        // with an AbortError — that is not an object-storage fault, so it is
+        // not logged as one.
         body.once('error', (err) => {
+          if (err?.name === 'AbortError') return;
           console.error(`[${config.logTag}] S3 stream error while serving ${filename}:`, err);
         });
         const headers: Record<string, string> = {
@@ -642,8 +647,8 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
 // fetches this route to stage the watchdog on first install, and that client
 // follows redirects only to GitHub release hosts and the build's own control
 // planes. It refused the 302 to a presigned object-storage URL ("release
-// redirect to untrusted origin"), so hosted Windows installs never got a
-// watchdog. Serving the bytes from this origin fixes shipped agents without an
+// redirect to untrusted origin"), so hosted installs served from object
+// storage never got a watchdog. Serving the bytes from this origin fixes shipped agents without an
 // agent release and keeps that allowlist narrow. Integrity is unchanged: the
 // agent binds the bytes to the size and SHA-256 in the signed release manifest.
 // The cost is ~9 MB per watchdog fetch through the API instead of object
@@ -666,7 +671,8 @@ registerComponentDownloadRoute({
 // this as a non-fatal post-install step, and /agent-versions/:version/download
 // hands back this same-origin URL for component=backup so any future verified
 // self-heal fetch passes the downloader's host-match guard (see
-// buildServerRelativeAgentDownloadUrl). Mirrors the watchdog route exactly.
+// buildServerRelativeAgentDownloadUrl). Mirrors the watchdog route, except that
+// an object-storage copy is still handed out as a presigned redirect.
 registerComponentDownloadRoute({
   path: '/download/backup/:os/:arch',
   logTag: 'backup-download',
@@ -702,7 +708,7 @@ registerComponentDownloadRoute({
 // fetched by the agent's verified updater (component=user-helper). Without this
 // server-relative route the agent-versions response handed back the canonical
 // github.com asset URL, which the updater's host-equality check rejects (#1878).
-// Mirrors the watchdog route: github redirect / S3 presign / local disk.
+// Same shape as the agent route: github redirect / S3 presign / local disk.
 registerComponentDownloadRoute({
   path: '/download/user-helper/:os/:arch',
   logTag: 'user-helper-download',
