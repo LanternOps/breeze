@@ -919,7 +919,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           configId: { type: 'string', description: 'Backup config UUID (required for get/update)' },
           name: { type: 'string', description: 'Config name (required for create)' },
           type: { type: 'string', enum: ['file', 'system_image', 'database', 'application'], description: 'Backup type (required for create)' },
-          provider: { type: 'string', enum: ['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local'], description: 'Storage provider (required for create)' },
+          provider: { type: 'string', enum: ['s3', 'local'], description: 'Storage provider (required for create)' },
           providerConfig: { type: 'object', description: 'Provider settings. S3: { bucket, region, accessKey, secretKey, endpoint? }. Local: { path }' },
           schedule: { type: 'object', description: 'Schedule config: { frequency: "daily"|"weekly"|"monthly", time: "02:00", dayOfWeek?, dayOfMonth? }' },
           retention: { type: 'object', description: 'Retention config: { days: 30, versions: 5 }' },
@@ -988,7 +988,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const orgId = resolvedConfigOrg.orgId;
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.type) return JSON.stringify({ error: 'type is required (file, system_image, database, application)' });
-        if (!input.provider) return JSON.stringify({ error: 'provider is required (s3, azure_blob, google_cloud, backblaze, local)' });
+        if (!input.provider) return JSON.stringify({ error: 'provider is required (s3 or local)' });
         if (!input.providerConfig) return JSON.stringify({ error: 'providerConfig is required (provider-specific settings)' });
 
         let providerConfig = input.providerConfig as Record<string, unknown>;
