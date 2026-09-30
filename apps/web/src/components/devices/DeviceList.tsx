@@ -833,6 +833,8 @@ export default function DeviceList({
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
+  // UX gate; the terminal session (routes/remote) requires remote.access.
+  const canRemoteTerminal = can("remote", "access");
   // Use provided timezone or browser default
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -3259,27 +3261,29 @@ export default function DeviceList({
                                   className="z-50 w-48 rounded-md border bg-card shadow-lg"
                                 >
                                   {/* Live session — needs a connected agent. */}
-                                  <button
-                                    type="button"
-                                    disabled={device.status !== "online"}
-                                    title={notOnlineTitle(
-                                      device.status,
-                                      t,
-                                    )}
-                                    aria-describedby={
-                                      device.status !== "online"
-                                        ? `device-${device.id}-action-gate-hint`
-                                        : undefined
-                                    }
-                                    onClick={() => {
-                                      onAction?.("terminal", device);
-                                      setRowMenuOpenId(null);
-                                    }}
-                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <Terminal className="h-4 w-4" />
-                                    {t("deviceList.remoteTerminal")}{" "}
-                                  </button>
+                                  {canRemoteTerminal && (
+                                    <button
+                                      type="button"
+                                      disabled={device.status !== "online"}
+                                      title={notOnlineTitle(
+                                        device.status,
+                                        t,
+                                      )}
+                                      aria-describedby={
+                                        device.status !== "online"
+                                          ? `device-${device.id}-action-gate-hint`
+                                          : undefined
+                                      }
+                                      onClick={() => {
+                                        onAction?.("terminal", device);
+                                        setRowMenuOpenId(null);
+                                      }}
+                                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      <Terminal className="h-4 w-4" />
+                                      {t("deviceList.remoteTerminal")}{" "}
+                                    </button>
+                                  )}
                                   {/* Queued command — an offline device runs it
                                       on reconnect, so only a decommissioned
                                       (agent-less) device is refused. */}

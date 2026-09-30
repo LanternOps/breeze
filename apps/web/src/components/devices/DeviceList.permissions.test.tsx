@@ -52,3 +52,23 @@ describe('DeviceList — Wake is gated on devices:execute (#7215)', () => {
     expect(screen.getByRole('button', { name: /^wake$/i })).toBeTruthy();
   });
 });
+
+describe('DeviceList — Remote terminal is gated on remote:access', () => {
+  beforeEach(() => granted.clear());
+  const online: Device = { ...offline, status: 'online' };
+
+  it('hides Remote terminal from the row menu without remote:access', () => {
+    granted.add('devices:read');
+    render(<DeviceList devices={[online]} pageSize={50} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
+    expect(screen.getByRole('button', { name: /run script/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /remote terminal/i })).toBeNull();
+  });
+
+  it('shows Remote terminal in the row menu with remote:access', () => {
+    granted.add('remote:access');
+    render(<DeviceList devices={[online]} pageSize={50} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
+    expect(screen.getByRole('button', { name: /remote terminal/i })).toBeTruthy();
+  });
+});
