@@ -37,6 +37,11 @@ function emitDeviceEvent(event: DeviceEvent): void {
 }
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// ScriptPickerModal (rendered closed by the page) reads permissions for its
+// live session list.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));

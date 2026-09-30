@@ -349,7 +349,7 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
   // TIER2_ACTIONS), so the ORIGINAL scenario ("a benign read succeeds under
   // ai:read alone") is no longer true for this tool at all — every action on
   // it now requires ai:write. Re-pointed at a tool that IS genuinely tier 1
-  // with no escalation on this action: `manage_patches` action:'list' (a
+  // with no per-action tier raise here: `manage_patches` action:'list' (a
   // cached read; `manage_processes` list moved to Tier 2 because it runs a
   // live command on the device — see the next test).
   it('ai:read key calling a benign read action on a genuinely tier-1 tool still succeeds', async () => {

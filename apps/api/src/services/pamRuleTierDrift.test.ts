@@ -37,6 +37,15 @@ describe('reachableRiskTiersForTool', () => {
   it('returns null for a tool the registry does not know', () => {
     expect(reachableRiskTiersForTool('definitely_not_a_registered_tool')).toBeNull();
   });
+
+  it('includes the tier a live-read input flag reaches (LIVE_READ_INPUT_FLAGS)', () => {
+    // These tools pick the live path with a boolean input, not an action, so
+    // an action-only probe never sees their Tier 2. A Helper refresh reaches
+    // PAM at Tier 2; a rule matching it must not be refused as unmatchable.
+    expect(reachableRiskTiersForTool('analyze_disk_usage')).toEqual([1, 2]);
+    expect(reachableRiskTiersForTool('analyze_boot_performance')).toEqual([1, 2]);
+    expect(describePamRuleTierDrift({ matchToolName: 'analyze_disk_usage', matchRiskTier: 2 })).toBeNull();
+  });
 });
 
 describe('reachableRiskTiersForAnyTool', () => {
