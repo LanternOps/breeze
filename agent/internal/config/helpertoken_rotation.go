@@ -73,8 +73,9 @@ func recordHelperTokenRotationOwed(cfgPath string) {
 
 // clearHelperTokenRotationOwed removes the marker beside the active config once
 // a rotation has been promoted. Failure is logged, never returned: the
-// promotion already succeeded, and a leftover marker costs at most one
-// redundant rotation.
+// promotion already succeeded, and a leftover marker only costs further
+// rotations at the owed-rotation backoff (at most one every six hours) until a
+// later promotion manages to remove it.
 func clearHelperTokenRotationOwed() {
 	helperTokenRotationOwedInProcess.Store(false)
 	persistMu.Lock()

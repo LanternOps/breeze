@@ -156,7 +156,11 @@ func TestHeartbeatResponseStartsOwedHelperTokenRotation(t *testing.T) {
 		seedLegacyHelperTokenInAgentYAML(t, cfgPath)
 
 		h.processHeartbeatResponse(&HeartbeatResponse{})
-		waitIdle(h)
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if _, confirm := srv.counts(); confirm > 0 && !h.tokenRotating.Load() {
+				break
+			}
+		}
 
 		if rotate, _ := srv.counts(); rotate != 1 {
 			t.Fatalf("rotate calls = %d, want 1", rotate)
@@ -303,9 +307,14 @@ func TestUpgradeFromAgentYAMLHelperTokenKeepsAssistTokenValid(t *testing.T) {
 
 	// 4. First successful heartbeat starts the owed two-phase rotation.
 	h.processHeartbeatResponse(&HeartbeatResponse{})
-	time.Sleep(100 * time.Millisecond)
-	for deadline := time.Now().Add(5 * time.Second); h.tokenRotating.Load() && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond)
+	// Wait on the outcome, not a fixed sleep: the rotation runs in a goroutine.
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		mu.Lock()
+		done := confirmCalls > 0
+		mu.Unlock()
+		if done && !h.tokenRotating.Load() {
+			break
+		}
 	}
 
 	mu.Lock()
@@ -350,7 +359,11 @@ func TestUpgradeFromAgentYAMLHelperTokenKeepsAssistTokenValid(t *testing.T) {
 		t.Fatalf("user-readable helper token = %q, want %q", hc.HelperAuthToken, wantFile)
 	}
 
-	// 6. No further rotation once the debt is settled.
+	// 6. No further rotation once the debt is settled — even with the retry
+	//    backoff out of the way, so only the cleared debt can hold it back.
+	h.owedRotationMu.Lock()
+	h.owedRotationNextAttempt = time.Time{}
+	h.owedRotationMu.Unlock()
 	h.processHeartbeatResponse(&HeartbeatResponse{})
 	time.Sleep(100 * time.Millisecond)
 	mu.Lock()
