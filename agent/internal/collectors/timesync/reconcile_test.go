@@ -662,3 +662,107 @@ func TestReconcileReservationPersistsBeforeAnyWrite(t *testing.T) {
 		t.Fatal("result save", saves[1].state)
 	}
 }
+func TestReconcilePartialApplyReportsReadBackState(t *testing.T) {
+	wantBefore := map[string]any{"type": "NoSync", "ntpServer": "old.example,0x8", "specialPollIntervalSeconds": 900, "serviceStartType": "manual"}
+	for _, tc := range []struct {
+		name      string
+		setup     func(*fakeTimeSystem)
+		wantAfter map[string]any
+		wantErr   string
+	}{
+		// Manual lands and Poll fails: After is the re-read host (new peers, old
+		// poll), neither the pre-apply state nor the intended settings.
+		{"poll_fails", func(f *fakeTimeSystem) { f.fail = "poll" },
+			map[string]any{"type": "NTP", "ntpServer": "time.cloudflare.com,0x9 pool.ntp.org,0x9", "specialPollIntervalSeconds": 900, "serviceStartType": "auto"},
+			"poll failed"},
+		// Every write lands but the final read-back fails: After is unknown, never
+		// Before, which would claim the writes changed nothing.
+		{"readback_fails", func(f *fakeTimeSystem) {
+			f.beforeRead = func(f *fakeTimeSystem) {
+				if n := len(f.calls); n > 0 && f.calls[n-1] == "resync" {
+					f.fail = "read"
+				}
+			}
+		}, map[string]any{"type": nil, "ntpServer": nil, "specialPollIntervalSeconds": nil, "serviceStartType": nil}, "read failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			f := newFakeTimeSystem("workgroup")
+			tc.setup(f)
+			r := fakeReconciler(f, &now)
+			if e := r.Run(context.Background(), true); e != nil {
+				t.Fatal(e)
+			}
+			got := r.State.Report.NTP
+			if got.Outcome != "failed" || got.Reason != "exec_failed" || got.Error == nil || !strings.Contains(*got.Error, tc.wantErr) {
+				t.Fatalf("%+v", got)
+			}
+			if !reflect.DeepEqual(got.Before, wantBefore) {
+				t.Fatalf("before=%v want %v", got.Before, wantBefore)
+			}
+			if !reflect.DeepEqual(got.After, tc.wantAfter) {
+				t.Fatalf("after=%v want %v", got.After, tc.wantAfter)
+			}
+		})
+	}
+}
+func TestReconcileAnySingleNTPFieldDriftApplies(t *testing.T) {
+	compliant := func(f *fakeTimeSystem) {
+		f.obs.Config.Type = managementPtr("NTP")
+		f.obs.Config.NTPServer = managementPtr("pool.ntp.org,0x9 time.cloudflare.com,0x9")
+		f.obs.Config.SpecialPollIntervalSeconds = managementPtr(3600)
+		f.obs.Config.ServiceStartType = "auto"
+		f.obs.Config.ServiceState = "running"
+	}
+	for _, tc := range []struct {
+		field string
+		drift func(*fakeTimeSystem)
+	}{
+		{"none", func(*fakeTimeSystem) {}},
+		{"type", func(f *fakeTimeSystem) { f.obs.Config.Type = managementPtr("NT5DS") }},
+		{"peers", func(f *fakeTimeSystem) { f.obs.Config.NTPServer = managementPtr("pool.ntp.org,0x9") }},
+		{"peers_missing", func(f *fakeTimeSystem) { f.obs.Config.NTPServer = nil }},
+		{"poll", func(f *fakeTimeSystem) { f.obs.Config.SpecialPollIntervalSeconds = managementPtr(900) }},
+		{"poll_missing", func(f *fakeTimeSystem) { f.obs.Config.SpecialPollIntervalSeconds = nil }},
+		{"start_type", func(f *fakeTimeSystem) { f.obs.Config.ServiceStartType = "manual" }},
+		{"service_state", func(f *fakeTimeSystem) { f.obs.Config.ServiceState = "stopped" }},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			now := time.Now()
+			f := newFakeTimeSystem("workgroup")
+			compliant(f)
+			tc.drift(f)
+			r := fakeReconciler(f, &now)
+			if e := r.Run(context.Background(), false); e != nil {
+				t.Fatal(e)
+			}
+			got := r.State.Report.NTP
+			if tc.field == "none" {
+				if got.Reason != "already_compliant" || len(f.calls) != 0 {
+					t.Fatal(got, f.calls)
+				}
+				return
+			}
+			if got.Outcome != "ok" || got.Reason != "applied" || !slices.Contains(f.calls, "poll") {
+				t.Fatalf("%s drift not enforced: %+v calls=%v", tc.field, got, f.calls)
+			}
+			if got.After["specialPollIntervalSeconds"] != 3600 {
+				t.Fatal(got.After)
+			}
+		})
+	}
+}
+func TestNewResultFingerprintClampBoundary(t *testing.T) {
+	// The API caps EnforcementResult.fingerprint at 80; a longer echo would get the
+	// whole snapshot rejected, so it is dropped, and anything within the cap kept.
+	for _, tc := range []struct {
+		n    int
+		want bool
+	}{{71, true}, {80, true}, {81, false}, {200, false}} {
+		fp := strings.Repeat("f", tc.n)
+		got := newResult(Settings{Fingerprint: fp}, time.Now(), "skipped", "invalid_settings", nil, nil, errors.New("bad")).Fingerprint
+		if (got == fp) != tc.want || (!tc.want && got != "") {
+			t.Fatalf("len=%d got %q", tc.n, got)
+		}
+	}
+}

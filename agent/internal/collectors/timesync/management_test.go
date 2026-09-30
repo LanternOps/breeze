@@ -898,3 +898,31 @@ func TestManagementTimezoneAutoUpdateMapping(t *testing.T) {
 		}
 	}
 }
+func TestManagementChangedSettingsUnderSameFingerprintRejected(t *testing.T) {
+	dir := t.TempDir()
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, dir, f, func(context.Context, any) error { return nil })
+	valid := settingsFixture()
+	if _, e := m.Apply(rawSettings(t, valid)); e != nil {
+		t.Fatal(e)
+	}
+	changed := valid
+	changed.NTPServers = []string{"time.windows.com"}
+	applied, e := m.Apply(rawSettings(t, changed))
+	if e == nil || !strings.Contains(e.Error(), "settings changed without a new fingerprint") || !applied {
+		t.Fatal("same-fingerprint change not rejected", applied, e)
+	}
+	if got := m.state.Report.NTP; got == nil || got.Reason != "invalid_settings" || got.Fingerprint != valid.Fingerprint {
+		t.Fatal(got)
+	}
+	// The last valid settings stay in force, in memory and on disk.
+	n := managementFixture(t, dir, f, func(context.Context, any) error { return nil })
+	for _, s := range []*Settings{m.state.Settings, n.state.Settings} {
+		if s == nil || fmt.Sprint(s.NTPServers) != fmt.Sprint(valid.NTPServers) {
+			t.Fatal("rejected settings replaced the last valid ones", s)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Fatal(f.calls)
+	}
+}
