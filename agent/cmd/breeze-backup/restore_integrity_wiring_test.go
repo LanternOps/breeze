@@ -110,3 +110,25 @@ func TestRestoreCommandsReadTheIntegrityBlock(t *testing.T) {
 		})
 	}
 }
+
+// The integrity block is read before any storage session is opened: a block
+// this helper cannot read fails the command without touching storage.
+func TestRestoreCommandsReadTheIntegrityBlockBeforeStorage(t *testing.T) {
+	payload := json.RawMessage(`{"snapshotId":"snap-1","targetPath":"/tmp/x","storageSession":{"id":"not-a-usable-session"},"integrity":{"v":9,"mode":"attested","snapshotId":"snap-1"}}`)
+	for name, run := range map[string]func() backupipc.BackupCommandResult{
+		"backup_restore": func() backupipc.BackupCommandResult {
+			return execBackupRestoreWithProgress(context.Background(), "c1", payload, nil, nil, nil)
+		},
+		"backup_verify": func() backupipc.BackupCommandResult {
+			return execBackupVerifyContext(context.Background(), "c2", payload, nil, nil, nil)
+		},
+		"backup_test_restore": func() backupipc.BackupCommandResult {
+			return execBackupTestRestoreContext(context.Background(), "c3", payload, nil, nil, nil)
+		},
+	} {
+		res := run()
+		if res.Success || !strings.Contains(res.Stderr, "update the Breeze agent") {
+			t.Fatalf("%s: %+v, want the integrity refusal before any storage session", name, res)
+		}
+	}
+}

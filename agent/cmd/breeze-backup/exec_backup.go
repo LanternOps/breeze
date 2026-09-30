@@ -543,6 +543,11 @@ func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager, vault
 }
 
 func execBackupRestoreWithProgress(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+	// The integrity block is read before storage is touched.
+	expectation, err := integrity.FromPayload(payload)
+	if err != nil {
+		return fail(err.Error())
+	}
 	restoreProvider, releaseProvider, err := restoreProviderForCommand(ctx, payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -560,11 +565,6 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid restore payload: " + err.Error())
-	}
-
-	expectation, err := integrity.FromPayload(payload)
-	if err != nil {
-		return fail(err.Error())
 	}
 
 	cfg := backup.RestoreConfig{
@@ -626,6 +626,10 @@ func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultS
 // counts and a `partial`/`failed` status — the API reads the verification
 // body only from a completed command. conn may be nil.
 func execBackupVerifyContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+	expectation, err := integrity.FromPayload(payload)
+	if err != nil {
+		return fail(err.Error())
+	}
 	restoreProvider, releaseProvider, err := restoreProviderForCommand(ctx, payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -641,9 +645,7 @@ func execBackupVerifyContext(ctx context.Context, commandID string, payload json
 		return fail("invalid verify payload: " + err.Error())
 	}
 	opts := verifyOptions(conn, commandID, "verifying")
-	if opts.Integrity, err = integrity.FromPayload(payload); err != nil {
-		return fail(err.Error())
-	}
+	opts.Integrity = expectation
 	result, err := backup.VerifyIntegrityWithOptions(ctx, restoreProvider, p.SnapshotID, opts)
 	return marshalResult(result, err)
 }
@@ -655,6 +657,10 @@ func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, v
 // execBackupTestRestoreContext runs a backup_test_restore; see
 // execBackupVerifyContext for the budget and progress behaviour.
 func execBackupTestRestoreContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+	expectation, err := integrity.FromPayload(payload)
+	if err != nil {
+		return fail(err.Error())
+	}
 	restoreProvider, releaseProvider, err := restoreProviderForCommand(ctx, payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -670,9 +676,7 @@ func execBackupTestRestoreContext(ctx context.Context, commandID string, payload
 		return fail("invalid test restore payload: " + err.Error())
 	}
 	opts := verifyOptions(conn, commandID, "test_restore")
-	if opts.Integrity, err = integrity.FromPayload(payload); err != nil {
-		return fail(err.Error())
-	}
+	opts.Integrity = expectation
 	result, err := backup.TestRestoreWithOptions(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), opts)
 	return marshalResult(result, err)
 }
