@@ -1092,5 +1092,18 @@
       "error": "Não foi possível carregar o status do backup externo",
       "alsoCheck": "Verifique também as conexões de backup de terceiros em Integrações."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "O estado do sistema é aplicado por uma reconstrução bare-metal",
+    "systemStateRequiresRebuildBody": "Esta recuperação do Windows restaurou apenas arquivos. Para aplicar o estado do sistema do snapshot, execute uma reconstrução bare-metal deste snapshot (Restaurar como VM, mecanismo de reconstrução).",
+    "unattestedSnapshot": "Snapshot sem atestação: os arquivos não foram verificados em relação a uma atestação de snapshot.",
+    "resultCode": "Código de resultado: {{code}}",
+    "restrictedDescriptors_one": "{{count}} item restaurado com uma lista de acesso restritiva",
+    "restrictedDescriptors_other": "{{count}} itens restaurados com uma lista de acesso restritiva",
+    "restrictedDescriptorsBody": "As permissões registradas citavam contas que esta máquina não reconhece ou não puderam ser lidas; por isso, somente SYSTEM e Administradores podem acessá-los (proprietário: Administradores). Revise e reatribua as permissões conforme necessário.",
+    "restrictedDescriptorsShowPaths_one": "Mostrar {{count}} caminho",
+    "restrictedDescriptorsShowPaths_other": "Mostrar {{count}} caminhos",
+    "restrictedDescriptorsUnlisted_one": "Mais {{count}} item não está listado.",
+    "restrictedDescriptorsUnlisted_other": "Mais {{count}} itens não estão listados."
   }
 }

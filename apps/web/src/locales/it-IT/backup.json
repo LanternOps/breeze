@@ -1092,5 +1092,18 @@
       "error": "Impossibile caricare lo stato del backup esterno",
       "alsoCheck": "Controlla anche le connessioni di backup di terze parti in Integrazioni."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "Lo stato del sistema viene applicato da una ricostruzione bare-metal",
+    "systemStateRequiresRebuildBody": "Questo ripristino Windows ha ripristinato solo i file. Per applicare lo stato del sistema dello snapshot, esegui una ricostruzione bare-metal di questo snapshot (Ripristina come VM, motore di ricostruzione).",
+    "unattestedSnapshot": "Snapshot non attestato: i file non sono stati verificati rispetto a un'attestazione dello snapshot.",
+    "resultCode": "Codice risultato: {{code}}",
+    "restrictedDescriptors_one": "{{count}} elemento ripristinato con un elenco di accesso restrittivo",
+    "restrictedDescriptors_other": "{{count}} elementi ripristinati con un elenco di accesso restrittivo",
+    "restrictedDescriptorsBody": "Le autorizzazioni registrate indicavano account che questo computer non riconosce oppure non è stato possibile leggerle, quindi solo SYSTEM e Administrators possono accedervi (proprietario: Administrators). Verifica e riassegna le autorizzazioni se necessario.",
+    "restrictedDescriptorsShowPaths_one": "Mostra {{count}} percorso",
+    "restrictedDescriptorsShowPaths_other": "Mostra {{count}} percorsi",
+    "restrictedDescriptorsUnlisted_one": "Altro {{count}} elemento non è elencato.",
+    "restrictedDescriptorsUnlisted_other": "Altri {{count}} elementi non sono elencati."
   }
 }

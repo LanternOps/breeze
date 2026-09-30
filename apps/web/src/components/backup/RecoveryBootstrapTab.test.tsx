@@ -368,6 +368,100 @@ describe('RecoveryBootstrapTab', () => {
     expect(screen.queryByText('402653184')).toBeNull();
   });
 
+  const renderWithLinkedResult = async (result: Record<string, unknown>, status = 'completed') => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({
+          data: [{ id: 'snapshot-1', label: 'Nightly Snapshot', timestamp: '2026-03-28T10:00:00Z', size: 2147483648 }],
+        });
+      }
+      if (url === '/backup/bmr/tokens?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/media?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/boot-media?limit=100' && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/backup/bmr/tokens' && method === 'POST') {
+        return makeJsonResponse({
+          id: 'token-1',
+          token: 'brz_rec_123',
+          deviceId: 'device-1',
+          snapshotId: 'snapshot-1',
+          restoreType: 'bare_metal',
+          status: 'used',
+          sessionStatus: 'completed',
+          createdAt: '2026-03-31T10:00:00Z',
+          expiresAt: '2026-04-01T10:00:00Z',
+          restoreJobId: 'restore-9',
+          linkedRestoreJob: {
+            id: 'restore-9',
+            status,
+            completedAt: '2026-03-31T10:20:00Z',
+            restoredFiles: 12,
+            restoredSize: 1024,
+            result,
+          },
+          bootstrap: {
+            version: 1,
+            minHelperVersion: '0.5.0',
+            serverUrl: window.location.origin,
+            releaseUrl: 'https://github.com/lanternops/breeze/releases/latest',
+            commandTemplate: `breeze-backup bmr-recover --token <recovery-token> --server "${window.location.origin}"`,
+            prerequisites: ['Boot into a recovery environment.'],
+          },
+        }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+    render(<RecoveryBootstrapTab />);
+    await screen.findByText('Manual recovery environment');
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+    await screen.findByText('Linked restore job / result');
+  };
+
+  it('shows files-only Windows recovery as an informational note, not a failure', async () => {
+    await renderWithLinkedResult({
+      status: 'completed',
+      code: 'system_state_requires_rebuild',
+      warnings: ['system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only'],
+    });
+
+    const note = await screen.findByTestId('restore-result-system-state-note');
+    expect(note.textContent).toContain('System state is applied by a bare-metal rebuild');
+    expect(screen.queryByTestId('recovery-restore-failure-reason')).toBeNull();
+  });
+
+  it('shows an unattested-snapshot warning as a warning, not a failure', async () => {
+    await renderWithLinkedResult({
+      status: 'completed',
+      warnings: ['restored from an unattested snapshot: files were not checked against a snapshot attestation'],
+    });
+
+    const warning = await screen.findByTestId('restore-result-unattested-warning');
+    expect(warning.textContent).toMatch(/not checked against a snapshot attestation/i);
+    expect(screen.queryByTestId('recovery-restore-failure-reason')).toBeNull();
+  });
+
+  it('shows an integrity result code on a failed recovery', async () => {
+    await renderWithLinkedResult(
+      { status: 'failed', code: 'integrity_mismatch', error: 'snapshot manifest failed its integrity check' },
+      'failed',
+    );
+
+    expect((await screen.findByTestId('recovery-restore-failure-reason')).textContent).toContain(
+      'snapshot manifest failed its integrity check',
+    );
+    expect(screen.getByTestId('restore-result-code').textContent).toContain('integrity_mismatch');
+    expect(screen.queryByTestId('restore-result-system-state-note')).toBeNull();
+  });
+
+  it('renders none of the result notes for a result without the new fields', async () => {
+    await renderWithLinkedResult({ status: 'completed', filesRestored: 12 });
+    expect(screen.queryByTestId('restore-result-system-state-note')).toBeNull();
+    expect(screen.queryByTestId('restore-result-unattested-warning')).toBeNull();
+    expect(screen.queryByTestId('restore-result-code')).toBeNull();
+    expect(screen.queryByTestId('recovery-restore-failure-reason')).toBeNull();
+  });
+
   // DBT-7: the API refuses `POST /backup/bmr/tokens` with 409
   // `{"error":"snapshot_not_bare_metal_restorable","reasons":[...]}` when the
   // snapshot wasn't assessed as bare-metal restorable. The raw machine code

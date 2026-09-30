@@ -25,4 +25,34 @@ describe('restoreFailureReason', () => {
     expect(restoreFailureReason({ error: '   ', warnings: [] })).toBeNull();
     expect(restoreFailureReason({ error: 42, warnings: 'not-an-array' })).toBeNull();
   });
+
+  it('never presents a warning on a completed recovery as its failure reason', () => {
+    expect(
+      restoreFailureReason({
+        status: 'completed',
+        warnings: ['restored from an unattested snapshot: files were not checked against a snapshot attestation'],
+      }),
+    ).toBeNull();
+  });
+
+  it('skips informational warnings when looking for a failure reason', () => {
+    expect(
+      restoreFailureReason({
+        status: 'partial',
+        code: 'system_state_requires_rebuild',
+        warnings: [
+          'system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only',
+          'unattested snapshot: files were not checked against a snapshot attestation',
+          'vault copy differs from backup; restored from primary storage: snapshots/s1/manifest.json',
+          'C:\\Data\\x.bin: access denied',
+        ],
+      }),
+    ).toBe('C:\\Data\\x.bin: access denied');
+    expect(
+      restoreFailureReason({
+        status: 'failed',
+        warnings: ['system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only'],
+      }),
+    ).toBeNull();
+  });
 });

@@ -1092,5 +1092,18 @@
       "error": "Dış yedekleme durumu yüklenemedi",
       "alsoCheck": "Üçüncü taraf yedekleme bağlantılarını Entegrasyonlar bölümünde de kontrol edin."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "Sistem durumu bir bare-metal yeniden oluşturma ile uygulanır",
+    "systemStateRequiresRebuildBody": "Bu Windows kurtarması yalnızca dosyaları geri yükledi. Anlık görüntünün sistem durumunu uygulamak için bu anlık görüntünün bare-metal yeniden oluşturmasını çalıştırın (VM olarak geri yükle, yeniden oluşturma motoru).",
+    "unattestedSnapshot": "Onaylanmamış anlık görüntü: dosyalar bir anlık görüntü onayına göre denetlenmedi.",
+    "resultCode": "Sonuç kodu: {{code}}",
+    "restrictedDescriptors_one": "{{count}} öğe kısıtlayıcı bir erişim listesiyle geri yüklendi",
+    "restrictedDescriptors_other": "{{count}} öğe kısıtlayıcı bir erişim listesiyle geri yüklendi",
+    "restrictedDescriptorsBody": "Kayıtlı izinleri bu makinenin tanımadığı hesapları içeriyordu veya okunamadı; bu nedenle yalnızca SYSTEM ve Administrators erişebilir (sahip: Administrators). İzinleri gözden geçirip gerektiği şekilde yeniden atayın.",
+    "restrictedDescriptorsShowPaths_one": "{{count}} yolu göster",
+    "restrictedDescriptorsShowPaths_other": "{{count}} yolu göster",
+    "restrictedDescriptorsUnlisted_one": "{{count}} öğe daha listelenmedi.",
+    "restrictedDescriptorsUnlisted_other": "{{count}} öğe daha listelenmedi."
   }
 }

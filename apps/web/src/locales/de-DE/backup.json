@@ -1092,5 +1092,18 @@
       "error": "Externer Sicherungsstatus konnte nicht geladen werden",
       "alsoCheck": "Prüfen Sie auch die Verbindungen zu externen Backup-Produkten unter \"Integrationen\"."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "Der Systemstatus wird durch einen Bare-Metal-Neuaufbau angewendet",
+    "systemStateRequiresRebuildBody": "Diese Windows-Wiederherstellung hat nur Dateien wiederhergestellt. Um den Systemstatus des Snapshots anzuwenden, führen Sie einen Bare-Metal-Neuaufbau dieses Snapshots aus (Als VM wiederherstellen, Rebuild-Engine).",
+    "unattestedSnapshot": "Nicht attestierter Snapshot: Dateien wurden nicht gegen eine Snapshot-Attestierung geprüft.",
+    "resultCode": "Ergebniscode: {{code}}",
+    "restrictedDescriptors_one": "{{count}} Element mit einer restriktiven Zugriffsliste wiederhergestellt",
+    "restrictedDescriptors_other": "{{count}} Elemente mit einer restriktiven Zugriffsliste wiederhergestellt",
+    "restrictedDescriptorsBody": "Ihre gespeicherten Berechtigungen nannten Konten, die dieser Computer nicht kennt, oder konnten nicht gelesen werden. Daher können nur SYSTEM und Administratoren darauf zugreifen (Besitzer: Administratoren). Prüfen und vergeben Sie die Berechtigungen bei Bedarf neu.",
+    "restrictedDescriptorsShowPaths_one": "{{count}} Pfad anzeigen",
+    "restrictedDescriptorsShowPaths_other": "{{count}} Pfade anzeigen",
+    "restrictedDescriptorsUnlisted_one": "{{count}} weiteres Element ist nicht aufgeführt.",
+    "restrictedDescriptorsUnlisted_other": "{{count}} weitere Elemente sind nicht aufgeführt."
   }
 }

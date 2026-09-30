@@ -20,6 +20,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
 import { formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
+import RestoreResultNotices, { isAdvisoryRestoreWarning } from './RestoreResultNotices';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 
@@ -441,16 +442,22 @@ function renderJson(value: unknown): string {
 // the API persists into the restore job's result jsonb
 // (routes/backup/bmr.ts). Older recoveries — and any run whose failure was
 // only ever recorded as a warning — fall back to the first warning, so a
-// failed recovery is never presented with no reason at all (#5479).
+// failed recovery is never presented with no reason at all (#5479). A
+// completed recovery has no failure reason, and advisory warnings (files-only
+// Windows recovery, unattested snapshot, vault fallback) are never one; those
+// are shown by RestoreResultNotices instead.
 // Returns null when there is genuinely nothing to show.
 export function restoreFailureReason(result: Record<string, unknown> | null | undefined): string | null {
   if (!result) return null;
   const error = result.error;
   if (typeof error === 'string' && error.trim() !== '') return error.trim();
+  if (result.status === 'completed') return null;
   const warnings = result.warnings;
   if (Array.isArray(warnings)) {
     for (const warning of warnings) {
-      if (typeof warning === 'string' && warning.trim() !== '') return warning.trim();
+      if (typeof warning !== 'string' || warning.trim() === '') continue;
+      if (isAdvisoryRestoreWarning(warning)) continue;
+      return warning.trim();
     }
   }
   return null;
@@ -1471,6 +1478,7 @@ export default function RecoveryBootstrapTab() {
                       {restoreFailureReason(selectedToken.restoreResult)}
                     </p>
                   ) : null}
+                  <RestoreResultNotices result={selectedToken.restoreResult} />
                   {selectedToken.restoreJobId || selectedToken.restoreResult || selectedToken.linkedRestoreJob?.status ? (
                     <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       <DetailLine label="Restore job ID" value={selectedToken.restoreJobId ?? '-'} />
