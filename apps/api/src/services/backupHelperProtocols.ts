@@ -110,12 +110,15 @@ export function backupHelperProtocolsUnreported(device: {
  * never delivered). Operator-facing.
  */
 export const BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE =
-  'Waiting for the device to report which backup features its Breeze agent supports.';
+  'Waiting for the backup component on this device to report which storage features it supports.';
 
 /**
  * A backup job that waited for that report and did not get it in time.
- * Operator-facing; leads with what happened, then what to do.
+ * Operator-facing; leads with what happened, then what to do. The device may
+ * be online and heartbeating while its backup component cannot be asked (the
+ * agent reports it as unknown), so this does not send the operator to check
+ * connectivity.
  */
 export const BACKUP_HELPER_UNREPORTED_MESSAGE =
-  'This device has not yet reported which backup features its Breeze agent supports, so the backup was not started. '
-  + 'Check that the agent is running and online, then run the backup again.';
+  "The backup was not started because the backup component on this device hasn't reported which storage features it supports yet. "
+  + 'If the device is online, update or reinstall the Breeze agent, then run the backup again.';

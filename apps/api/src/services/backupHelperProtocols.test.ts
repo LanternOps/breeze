@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKUP_INTEGRITY_PROTOCOL,
+  BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE,
+  BACKUP_HELPER_UNREPORTED_MESSAGE,
   BACKUP_WRITE_PROTOCOL,
   backupHelperProtocolColumnWrite,
   backupHelperProtocolForDelivery,
@@ -56,5 +58,23 @@ describe('backup helper protocol reported as unknown', () => {
     expect(backupHelperProtocolForDelivery(1, normalizeBackupWriteProtocolVersion)).toBe(1);
     expect(backupHelperProtocolForDelivery(0, normalizeBackupWriteProtocolVersion)).toBe(0);
     expect(backupHelperProtocolForDelivery(undefined, normalizeBackupWriteProtocolVersion)).toBe(0);
+  });
+});
+
+// Operator-facing. A device can be online and heartbeating while its backup
+// component cannot be asked (the probe keeps failing), so neither message may
+// tell the operator to check that the agent is online.
+describe('backup helper unreported messages', () => {
+  it('the failure names the backup component and points at updating or reinstalling the agent', () => {
+    expect(BACKUP_HELPER_UNREPORTED_MESSAGE).toBe(
+      "The backup was not started because the backup component on this device hasn't reported which storage features it supports yet. "
+      + 'If the device is online, update or reinstall the Breeze agent, then run the backup again.',
+    );
+  });
+
+  it('the deferral names the backup component', () => {
+    expect(BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE).toBe(
+      'Waiting for the backup component on this device to report which storage features it supports.',
+    );
   });
 });
