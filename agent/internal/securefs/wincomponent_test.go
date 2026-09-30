@@ -16,6 +16,9 @@ func TestValidWindowsComponent(t *testing.T) {
 		name string
 		in   string
 		ok   bool
+		// restoredOnly: accepted as a base directory component, refused
+		// as a name taken from a manifest.
+		restoredOnly bool
 	}{
 		{name: "plain file", in: "normal.txt", ok: true},
 		{name: "single letter", in: "C", ok: true},
@@ -36,12 +39,36 @@ func TestValidWindowsComponent(t *testing.T) {
 		{name: "only dots", in: "...", ok: false},
 		{name: "trailing dot then space", in: "name. ", ok: false},
 		{name: "empty", in: "", ok: false},
+		{name: "device name", in: "CON", ok: true, restoredOnly: true},
+		{name: "device name lower case", in: "nul", ok: true, restoredOnly: true},
+		{name: "device name with extension", in: "aux.txt", ok: true, restoredOnly: true},
+		{name: "device name with inner space before the extension", in: "PRN .log", ok: true, restoredOnly: true},
+		{name: "numbered port", in: "COM1", ok: true, restoredOnly: true},
+		{name: "numbered printer port", in: "lpt9.dat", ok: true, restoredOnly: true},
+		{name: "superscript port", in: "COM\u00b9", ok: true, restoredOnly: true},
+		{name: "superscript printer port", in: "lpt\u00b3.txt", ok: true, restoredOnly: true},
+		{name: "console input", in: "CONIN$", ok: true, restoredOnly: true},
+		{name: "console output", in: "conout$.x", ok: true, restoredOnly: true},
+		{name: "port zero is a name", in: "COM0", ok: true},
+		{name: "device name as a prefix", in: "CONFIG.sys", ok: true},
+		{name: "device name after a dot", in: "x.con", ok: true},
+		{name: "short name", in: "PROGRA~1", ok: true, restoredOnly: true},
+		{name: "short name with extension", in: "REPORT~12.TXT", ok: true, restoredOnly: true},
+		{name: "tilde without digit", in: "~$doc.docx", ok: true},
+		{name: "tilde at the end", in: "backup~", ok: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validWindowsComponent(tt.in)
 			if (err == nil) != tt.ok {
 				t.Fatalf("validWindowsComponent(%q) error = %v, want ok=%v", tt.in, err, tt.ok)
+			}
+			restoredErr := validRestoredWindowsComponent(tt.in)
+			if (restoredErr == nil) != (tt.ok && !tt.restoredOnly) {
+				t.Fatalf("validRestoredWindowsComponent(%q) error = %v, want ok=%v", tt.in, restoredErr, tt.ok && !tt.restoredOnly)
+			}
+			if restoredErr != nil && !errors.Is(restoredErr, ErrInvalidWindowsName) {
+				t.Fatalf("validRestoredWindowsComponent(%q) error %v does not wrap ErrInvalidWindowsName", tt.in, restoredErr)
 			}
 			if err != nil && !errors.Is(err, ErrInvalidWindowsName) {
 				t.Fatalf("validWindowsComponent(%q) error %v does not wrap ErrInvalidWindowsName", tt.in, err)
@@ -63,6 +90,8 @@ func TestValidateWindowsComponents(t *testing.T) {
 		{name: "stream on a directory", in: `one\dir:ads\file.txt`, ok: false},
 		{name: "trailing dot on a directory", in: "one/dir./file.txt", ok: false},
 		{name: "trailing space on the leaf", in: "one/file.txt ", ok: false},
+		{name: "device name directory", in: `one\NUL\file.txt`, ok: false},
+		{name: "short name directory", in: `PROGRA~1\app\x.dll`, ok: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
