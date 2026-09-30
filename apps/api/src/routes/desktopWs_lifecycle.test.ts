@@ -181,15 +181,15 @@ import {
 
 /**
  * Play the agent accepting the relay's published desktop_stream_start (the
- * relay forwards nothing and sends no 'connected' before that). A no-op when
- * the open never published a start.
+ * relay forwards nothing and sends no "connected" before that). Throws when the
+ * open published no start: call it only where one is expected.
  */
 function acceptPublishedStart(): void {
   const calls = vi.mocked(sendCommandToAgent).mock.calls.filter(
     ([, cmd]) => (cmd as { type?: string }).type === 'desktop_stream_start',
   );
   const last = calls.at(-1);
-  if (!last) return;
+  if (!last) throw new Error("acceptPublishedStart: the open published no desktop_stream_start");
   const [agentId, cmd] = last as unknown as [string, { id: string; payload: { sessionId: string } }];
   settleDesktopStreamStart(cmd.payload.sessionId, agentId, cmd.id, { outcome: 'accepted' });
 }

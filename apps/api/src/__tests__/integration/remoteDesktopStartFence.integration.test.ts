@@ -25,7 +25,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import './setup';
 import { getTestDb } from './setup';
@@ -101,6 +101,7 @@ import {
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
 } from '../../services/remoteDesktopStartIntent';
+import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 
 const OFFER = 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n';
 const LEASE = { lease: { sessionId: 'x', token: 't', expiresAt: new Date().toISOString() } };
@@ -404,6 +405,35 @@ describe('SEC-038 W02 — desktop start-intent generation fence', () => {
       commitDesktopStreamStartIntent(streamStart('22222222-2222-4222-8222-222222222222'))
     );
     expect(afterTerminal).toEqual({ ok: false, reason: 'terminal' });
+  });
+
+  // A WebSocket-fallback start waits in 'connecting' for the agent's answer —
+  // through a consent prompt of up to about a minute and a half. The stale
+  // cutoff for a connecting row runs from the start attempt, not from when
+  // the session row was created, so that wait is never expired as stale.
+  it('does not expire a WS-fallback start waiting on its answer as stale, however old the session row', async () => {
+    const { sessionId } = await seed('pending');
+    await getTestDb().execute(sql`
+      UPDATE remote_sessions SET created_at = now() - interval '10 minutes' WHERE id = ${sessionId}::uuid
+    `);
+    const { sessionId: plainOld } = await seed('connecting');
+    await getTestDb().execute(sql`
+      UPDATE remote_sessions SET created_at = now() - interval '10 minutes' WHERE id = ${plainOld}::uuid
+    `);
+
+    const started = await withSystemDbAccessContext(() => commitDesktopStreamStartIntent({
+      sessionId,
+      startCommandId: `desk-start-${sessionId}-33333333-3333-4333-8333-333333333333`,
+      promptMode: 'consent',
+      consentUnavailableBehavior: 'block',
+    }));
+    expect(started.ok).toBe(true);
+
+    const stale = await getTestDb()
+      .select({ id: remoteSessions.id })
+      .from(remoteSessions)
+      .where(and(inArray(remoteSessions.id, [sessionId, plainOld]), remoteSessionStaleCondition(new Date())));
+    expect(stale.map((r) => r.id)).toEqual([plainOld]);
   });
 
   it('refuses a start intent on a session that no longer exists', async () => {

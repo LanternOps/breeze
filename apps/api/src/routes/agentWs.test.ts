@@ -6705,6 +6705,98 @@ describe('WebSocket desktop fallback start results', () => {
     expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'denied', reason: 'user' });
   });
 
+  function rigRefusedActivation(row: Record<string, unknown> | null) {
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+    vi.mocked(db.select).mockReturnValue(selectOwnedCommandResult(row ? [row] : []) as any);
+  }
+
+  function streamAcceptedResult(extra: Record<string, unknown> = {}) {
+    return {
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, screenWidth: 1280, screenHeight: 720, ...extra },
+      }),
+    } as any;
+  }
+
+  // An agent build that does not fence this path can start capturing for a
+  // session that has already ended (its stop overtook the start). Nothing else
+  // would ever stop that capture, so the refused activation stops it.
+  it('stops the capture when an accepted start arrives for a session that has ended', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    rigRefusedActivation({ status: 'disconnected', terminationPhase: 'confirmed', desktopStartCommandId: COMMAND });
+    ws.send.mockClear();
+
+    await handlers.onMessage(streamAcceptedResult(), ws as any);
+
+    const sent = ws.send.mock.calls.map((c: any[]) => JSON.parse(c[0])).filter((m: any) => m.type === 'desktop_stream_stop');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual({ sessionId: SESSION });
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'refused' });
+  });
+
+  it('does not stop the capture when the session is live under a newer start', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    rigRefusedActivation({ status: 'connecting', terminationPhase: 'none', desktopStartCommandId: `${COMMAND}-newer` });
+    ws.send.mockClear();
+
+    await handlers.onMessage(streamAcceptedResult(), ws as any);
+
+    const sent = ws.send.mock.calls.map((c: any[]) => JSON.parse(c[0])).filter((m: any) => m.type === 'desktop_stream_stop');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('still tells the relay the start was declined when recording the denial fails', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockImplementation(() => { throw new Error('db down'); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, event: 'consent_denied', reason: 'user' },
+      }),
+    } as any, ws as any);
+
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'denied', reason: 'user' });
+    err.mockRestore();
+  });
+
+  it('closes the relay when the agent reports the stream stopped on its own', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: SESSION, orgId: DEVICE.orgId, userId: 'u', deviceId: DEVICE.deviceId, type: 'desktop',
+            status: 'disconnected', terminationPhase: 'confirmed', terminalGeneration: 3n,
+          }]),
+        }),
+      }),
+    } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: `desk-disconnect-${SESSION}`,
+        status: 'completed',
+        result: { sessionId: SESSION, event: 'peer_disconnected', stopReason: 'revoked' },
+      }),
+    } as any, ws as any);
+
+    expect(closeDesktopRelayForStop).toHaveBeenCalledWith(SESSION);
+  });
+
   it('closes any local desktop relay for the session the moment stop_desktop is sent', async () => {
     vi.mocked(partnerTrustMode).mockReturnValue('off');
     await connectedAgent('agent-stop-relay', DEVICE);

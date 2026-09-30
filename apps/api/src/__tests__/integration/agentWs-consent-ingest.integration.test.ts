@@ -37,6 +37,8 @@ import { getTestDb } from './setup';
 import { setupTestEnvironment } from './db-utils';
 import { createAgentWsHandlers } from '../../routes/agentWs';
 import { devices, remoteSessions, auditLogs } from '../../db/schema';
+import { withSystemDbAccessContext } from '../../db';
+import { commitDesktopTerminalIntent } from '../../services/remoteDesktopTerminalIntent';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 // Combined validation exercises live credential admission before consent sinks.
@@ -784,7 +786,9 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
 
     const row = await readSessionStatus(sessionId);
     expect(row.status).toBe('active');
-    expect(row.startedAt).not.toBeNull();
+    // startedAt belongs to the start commit (commitDesktopStreamStartIntent),
+    // which this fixture skips; activation does not move it.
+    expect(row.startedAt).toBeNull();
     expect(row.webrtcAnswer).toBeNull();
     expect(await consentAuditFor(sessionId, 'session_consent_granted')).toMatchObject({
       actorType: 'agent',
@@ -856,5 +860,30 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
 
     expect((await readSessionStatus(sessionId)).status).toBe('denied');
     expect(await auditActionsFor(sessionId)).toContain('session_consent_denied');
+  });
+
+  // The relay closes right after a denial and runs its durable finalization,
+  // which writes 'failed' through the terminal-intent contract. That write
+  // only matches a live row, so the recorded denial survives it.
+  runDb('a consent denial survives the relay close that follows it', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      event: 'consent_denied',
+      reason: 'user',
+    });
+    const closed = await withSystemDbAccessContext(() => commitDesktopTerminalIntent({
+      sessionId,
+      write: { status: 'failed', endedAt: new Date(), errorMessage: 'setup_failed' },
+      phase: 'confirmed',
+    }));
+
+    expect(closed.ok).toBe(false);
+    const row = await readSessionStatus(sessionId);
+    expect(row.status).toBe('denied');
+    expect(row.errorMessage).toBe('The user on the remote device declined the connection.');
   });
 });

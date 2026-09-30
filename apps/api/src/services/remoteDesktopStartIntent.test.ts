@@ -169,9 +169,11 @@ describe('remoteDesktopStartIntent', () => {
       webrtcOffer: null,
       webrtcAnswer: null,
     });
-    // Activation (status 'active', startedAt) belongs to the agent's accepted
-    // result, never to the start decision.
-    expect(written).not.toHaveProperty('startedAt');
+    // Activation belongs to the agent's accepted result, never to the start
+    // decision. startedAt marks this start attempt: the stale-session cutoff
+    // for a connecting row and the lease hard deadline are measured from it,
+    // so a start waiting on its consent prompt is not expired as stale.
+    expect(written.startedAt).toBeInstanceOf(Date);
   });
 
   it('returns the committed generation as a bigint and formats it as a decimal string', async () => {

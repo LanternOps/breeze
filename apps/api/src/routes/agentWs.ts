@@ -4,7 +4,7 @@ import type Redis from 'ioredis';
 import { z } from 'zod';
 import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
-import { eq, and, or, ne, notInArray, sql, type SQL } from 'drizzle-orm';
+import { eq, and, or, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
@@ -89,6 +89,10 @@ import {
 } from './remote/helpers';
 import { consentDeniedMessage } from './remote/consentTiming';
 import { CONSENT_OCCUPANCIES, CONSENT_OUTCOMES } from './remote/consentGate';
+import {
+  activateDesktopStreamStart,
+  type DesktopStreamStartActivation,
+} from '../services/desktopStreamStartActivation';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { nextAgentUpdateAttempt } from '@breeze/shared';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
@@ -3380,6 +3384,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
                   }
                 });
+                // A WebSocket-fallback stream this agent stopped on its own
+                // (its lease lapsed or was revoked): end the local relay now
+                // so the viewer is told instead of left on a frozen frame.
+                if (isDesktopSessionOwnedByAgent(sessionId, agentId)) {
+                  closeDesktopRelayForStop(sessionId);
+                }
               } catch (err) {
                 console.error(`[AgentWs] Failed to update session disconnect:`, err);
               }
@@ -3650,43 +3660,29 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               : null;
             const sessionId = resolveConsentMarkerSessionId(expectedSessionId, resultSessionId);
             if (sessionId) {
-              let activated = false;
+              let activation: DesktopStreamStartActivation | null = null;
               try {
-                await runWithAgentDbAccess('agentWs.desktop.streamAccepted', async () => {
+                activation = await runWithAgentDbAccess('agentWs.desktop.streamAccepted', async () => {
                   const consentReason = fastResult.consentReason;
-                  const [updated] = await db
-                    .update(remoteSessions)
-                    .set({ status: 'active', startedAt: new Date() })
-                    .where(
-                      and(
-                        eq(remoteSessions.id, sessionId),
-                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'connecting'),
-                        eq(remoteSessions.desktopStartCommandId, fastCommandId),
-                        ...desktopConsentActivationPredicate(consentReason),
-                      )
-                    )
-                    .returning({
-                      id: remoteSessions.id,
-                      orgId: remoteSessions.orgId,
-                      userId: remoteSessions.userId,
-                      type: remoteSessions.type,
-                      promptMode: remoteSessions.desktopPromptMode,
-                      consentUnavailableBehavior: remoteSessions.desktopConsentUnavailableBehavior,
-                    });
-                  if (!updated) {
-                    console.warn(`[AgentWs] Stream start for session ${sessionId} not activated (consentReason=${String(consentReason)}; not the connecting start, not owned by agent ${agentId}, or no consent marker it is entitled to)`);
-                    return;
+                  const outcome = await activateDesktopStreamStart({
+                    sessionId,
+                    deviceId: authenticatedAgent.deviceId,
+                    startCommandId: fastCommandId,
+                    consentReason,
+                  });
+                  if (!outcome.activated) {
+                    console.warn(`[AgentWs] Stream start for session ${sessionId} not activated (consentReason=${String(consentReason)}, terminal=${outcome.terminal}; not the connecting start, not owned by agent ${agentId}, or no consent marker it is entitled to)`);
+                    return outcome;
                   }
-                  activated = true;
                   console.log(`[AgentWs] Stream start accepted for session ${sessionId}`);
                   await auditDesktopConsentActivation({
                     sessionId,
                     deviceId: authenticatedAgent.deviceId,
                     startCommandId: fastCommandId,
                     consentReason,
-                    updated,
+                    updated: outcome.row,
                   });
+                  return outcome;
                 });
               } catch (err) {
                 console.error(`[AgentWs] Failed to activate stream start:`, err);
@@ -3695,8 +3691,20 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 sessionId,
                 agentId,
                 fastCommandId,
-                activated ? { outcome: 'accepted' } : { outcome: 'refused' },
+                activation?.activated ? { outcome: 'accepted' } : { outcome: 'refused' },
               );
+              if (activation && !activation.activated && activation.terminal) {
+                // The session has ended, yet the agent reports a running
+                // capture for it: an agent build that does not fence this
+                // path started after the stop meant to cancel it. Nothing else
+                // would stop that capture. Not sent when the session is live
+                // under a newer start — that stream must keep running.
+                sendCommandToAgent(agentId, {
+                  id: `desk-stream-stop-${sessionId}`,
+                  type: 'desktop_stream_stop',
+                  payload: { sessionId },
+                });
+              }
             }
           }
 
@@ -4260,27 +4268,6 @@ export const terminalCommandResultSchema = z.object({
     stopped: z.boolean().optional(),
   }).strict().optional(),
 }).passthrough();
-
-/**
- * The consent predicate a desktop start's activation must satisfy, keyed on
- * the agent's consentReason marker. A consent-mode generation may become
- * active only when the exact agent result carries a marker it is entitled to:
- * 'user' (the end user allowed), or (#6819) an unsolicited-consent reason
- * (helper_absent / timeout) when THIS start shipped
- * consentUnavailableBehavior='proceed'. A NULL/'block' binding fails closed.
- * Notify/off generations need no marker. Mirrors the WebRTC answer path's
- * inline predicate; used by the WebSocket fallback's stream-start path.
- */
-function desktopConsentActivationPredicate(consentReason: unknown): SQL[] {
-  if (consentReason === 'user') return [];
-  if (isUnsolicitedConsentReason(consentReason)) {
-    return [or(
-      ne(remoteSessions.desktopPromptMode, 'consent'),
-      eq(remoteSessions.desktopConsentUnavailableBehavior, 'proceed'),
-    )!];
-  }
-  return [ne(remoteSessions.desktopPromptMode, 'consent')];
-}
 
 /**
  * Audit a consent-mode activation of a WebSocket-fallback stream start, exactly

@@ -664,11 +664,19 @@ export function closeDesktopSessionLifecycle(
 
 function reportRetainedDesktopCleanup(
   sessionId: string,
-  trigger: 'pong_timeout' | 'revoked' | 'revocation_check_failed' | 'lease_renewal',
+  trigger:
+    | 'pong_timeout'
+    | 'revoked'
+    | 'revocation_check_failed'
+    | 'lease_renewal'
+    | 'start_not_streaming'
+    | 'stop_requested',
+  error?: unknown,
 ): void {
   console.error('[DesktopWs] cleanup retained for durable recovery', {
     sessionId: sessionId.slice(0, 12),
     trigger,
+    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
   });
 }
 
@@ -1591,8 +1599,8 @@ function failDesktopStreamStart(
       reason: 'setup_failed',
       terminalStatus: 'failed',
       notifyAgent: true,
-    }).catch(() => {
-      reportRetainedDesktopCleanup(sessionId, 'revoked');
+    }).catch((error) => {
+      reportRetainedDesktopCleanup(sessionId, 'start_not_streaming', error);
     });
   });
   try {
@@ -1709,8 +1717,17 @@ export function closeDesktopRelayForStop(sessionId: string): void {
       reason: 'revoked',
       terminalStatus: 'disconnected',
       notifyAgent: true,
-    }).catch(() => {
-      reportRetainedDesktopCleanup(sessionId, 'revoked');
+    }).catch((error) => {
+      reportRetainedDesktopCleanup(sessionId, 'stop_requested', error);
+      // The close could not even begin (for example, shared-lease
+      // coordination is unavailable), so nothing detached the viewer: close
+      // it here. Forwarding already stopped above; the retained cleanup
+      // retries the durable part.
+      try {
+        ws.close(4003, 'Session ended');
+      } catch {
+        // Already closed.
+      }
     });
   });
 }

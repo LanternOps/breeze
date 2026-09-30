@@ -280,6 +280,12 @@ export async function commitDesktopStreamStartIntent(
       desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
       desktopStartGeneration: sql`${remoteSessions.desktopStartGeneration} + 1`,
       status: 'connecting',
+      // The start attempt's clock. The stale-session cutoff for a connecting
+      // row (remoteSessionStaleness.ts) runs from it, so a start waiting on
+      // its consent prompt is not expired just because the session row was
+      // created earlier; the lease hard deadline is measured from it too, as
+      // it was when this path activated the row at commit time.
+      startedAt: new Date(),
     })
     .where(and(
       eq(remoteSessions.id, input.sessionId),

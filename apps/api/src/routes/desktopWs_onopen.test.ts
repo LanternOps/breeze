@@ -1070,6 +1070,44 @@ describe('desktopWs', () => {
       await vi.waitFor(() => expect(finalizeDesktopSessionOnceMock).toHaveBeenCalled());
     });
 
+    it('still closes the viewer socket when the durable close cannot even begin, and logs why', async () => {
+      const sharedLeases = __createDesktopSharedLeasesForTest();
+      sharedLeases.beginClose = vi.fn(async () => { throw new Error('redis down'); });
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket', sharedLeases);
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      acceptStart();
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      closeDesktopRelayForStop(SESSION_ID);
+
+      await vi.waitFor(() => expect(ws.close).toHaveBeenCalledWith(4003, 'Session ended'));
+      await vi.waitFor(() => expect(err).toHaveBeenCalledWith(
+        '[DesktopWs] cleanup retained for durable recovery',
+        expect.objectContaining({ trigger: 'stop_requested', error: 'redis down' }),
+      ));
+      err.mockRestore();
+    });
+
+    it('logs a refused start\'s cleanup failure under its own reason', async () => {
+      const sharedLeases = __createDesktopSharedLeasesForTest();
+      sharedLeases.beginClose = vi.fn(async () => { throw new Error('redis down'); });
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket', sharedLeases);
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, publishedStart().id, { outcome: 'refused' });
+
+      await vi.waitFor(() => expect(err).toHaveBeenCalledWith(
+        '[DesktopWs] cleanup retained for durable recovery',
+        expect.objectContaining({ trigger: 'start_not_streaming', error: 'redis down' }),
+      ));
+      err.mockRestore();
+    });
+
     it('refuses an agent without the start fence with the agent-update message and publishes nothing', async () => {
       setupSuccessfulValidation();
       vi.mocked(prepareRevocationLeaseForStart).mockResolvedValueOnce({ ok: false, reason: 'agent_upgrade_required' });

@@ -70,7 +70,7 @@ The MFA check evaluates the role's *actual, effective* MFA policy, not just its 
 
 If any of those checks fails, the session ends within about half a minute: the agent stops capture and input, the viewer shows **Session ended: access revoked**, and the session record is marked disconnected. Removing a technician's membership or changing their role now ends their live sessions immediately as well, rather than only blocking the next one.
 
-The WebSocket (JPEG) fallback keeps the same lease: the agent renews it over the same connection and stops capturing when it is revoked or lapses, exactly as on WebRTC. Ending a session (**End**, or any server-side teardown) stops a WebSocket-fallback session at once — frames and input stop immediately rather than at the relay's next half-minute check.
+With agents from this release on, the WebSocket (JPEG) fallback keeps the same lease: the agent renews it over the same connection and stops capturing when it is revoked or lapses, exactly as on WebRTC. Older agents do not hold a lease on this transport; for them the server re-checks the session about every 30 seconds and stops relaying frames and input when it no longer passes. With any agent version, ending a session (**End**, or any server-side teardown) stops relaying a WebSocket-fallback session at once, rather than at the relay's next half-minute check.
 
 If the server is briefly unreachable, the session is **not** dropped — the agent tolerates about 90 seconds of failed renewals before ending the session on its own. That way a short API or network hiccup does not disconnect anyone, while a device that genuinely cannot reach Breeze cannot hold a remote-control session open indefinitely.
 
