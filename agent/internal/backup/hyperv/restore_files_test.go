@@ -143,7 +143,7 @@ func TestRestoreManifestFiles_PlacesVSSSnapshotUnderRoot(t *testing.T) {
 		files = append(files, vssEntry(1, orig, key, data))
 	}
 
-	tally := restoreManifestFiles(context.Background(), files, store, root, nil)
+	tally := restoreManifestFiles(context.Background(), files, store, root, t.TempDir(), nil)
 
 	if err := tally.err(); err != nil {
 		t.Fatalf("unexpected failure: %v (warnings %v)", err, tally.Warnings)
@@ -230,7 +230,7 @@ func TestRestoreManifestFiles_OutcomeRules(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			store := &fakeObjectStore{objects: map[string][]byte{"k1": good, "k2": good}, errs: tt.errs}
-			tally := restoreManifestFiles(context.Background(), tt.files, store, root, nil)
+			tally := restoreManifestFiles(context.Background(), tt.files, store, root, t.TempDir(), nil)
 			if tally.Restored != tt.wantRestored || tally.Failed != tt.wantFailed {
 				t.Fatalf("tally = %+v, want restored %d failed %d", tally, tt.wantRestored, tt.wantFailed)
 			}
@@ -256,7 +256,7 @@ func TestRestoreManifestFiles_NeverWritesOutsideRoot(t *testing.T) {
 		{SourcePath: "../outside2.txt", BackupPath: "k", Size: 1},
 		{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\..\outside3.txt`, BackupPath: "k", Size: 1},
 	}
-	tally := restoreManifestFiles(context.Background(), files, store, root, nil)
+	tally := restoreManifestFiles(context.Background(), files, store, root, t.TempDir(), nil)
 	if tally.Failed != 3 || tally.err() == nil {
 		t.Fatalf("tally = %+v, want all 3 refused and a failed outcome", tally)
 	}
@@ -274,7 +274,7 @@ func TestRestoreManifestFiles_BoundsReportedFiles(t *testing.T) {
 	for i := 0; i < maxReportedFiles+50; i++ {
 		files = append(files, vmRestoreManifFile{SourcePath: `C:\..\x`, BackupPath: "k", Size: 1})
 	}
-	tally := restoreManifestFiles(context.Background(), files, &fakeObjectStore{}, t.TempDir(), nil)
+	tally := restoreManifestFiles(context.Background(), files, &fakeObjectStore{}, t.TempDir(), t.TempDir(), nil)
 	if tally.Failed != maxReportedFiles+50 {
 		t.Fatalf("failed = %d", tally.Failed)
 	}
@@ -403,7 +403,7 @@ func TestRestoreManifestFiles_PlansOnlyPlaceableFiles(t *testing.T) {
 		vssEntry(1, `C:\a\3.txt`, "k3", data),
 		{SourcePath: `C:\a\nokey.txt`},
 	}
-	restoreManifestFiles(context.Background(), files, store, t.TempDir(), nil)
+	restoreManifestFiles(context.Background(), files, store, t.TempDir(), t.TempDir(), nil)
 	if len(store.plans) != 1 || strings.Join(store.plans[0], ",") != "k1,k3" {
 		t.Fatalf("plans = %v, want one plan [k1 k3]", store.plans)
 	}

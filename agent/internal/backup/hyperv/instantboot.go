@@ -180,6 +180,16 @@ func InstantBoot(
 	}
 	targetRoot := driveLetter + `:\`
 
+	// Restrict the new volume's root to SYSTEM and Administrators before
+	// anything is written to it; its default permissions are put back after
+	// the boot configuration step.
+	rootGuard, err := protectVolumeRoot(driveLetter)
+	if err != nil {
+		dismountVHDX(baseVHDX)
+		result.Error = err.Error()
+		return result, fmt.Errorf("instantboot: protect volume root: %w", err)
+	}
+
 	// 6. Download ONLY boot-critical files.
 	progress("restoring_boot_files", 4, 8)
 	if ctx.Err() != nil {
@@ -189,7 +199,7 @@ func InstantBoot(
 	}
 	slog.Info("instantboot: restoring boot-critical files", "count", len(bootFiles))
 
-	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot, cfg.Integrity)
+	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot, workDir, cfg.Integrity)
 	result.Warnings = appendBoundedWarnings(result.Warnings, bootTally.Warnings...)
 	if bootTally.Failed > 0 {
 		// A VM missing boot-critical files is not booted, and nothing is left
@@ -211,6 +221,12 @@ func InstantBoot(
 	if bootErr := configureBootLoader(driveLetter); bootErr != nil {
 		slog.Warn("instantboot: boot config failed, VM may not boot automatically",
 			"error", bootErr.Error())
+	}
+
+	if err := rootGuard.restoreDefaults(); err != nil {
+		dismountVHDX(baseVHDX)
+		result.Error = err.Error()
+		return result, fmt.Errorf("instantboot: %w", err)
 	}
 
 	// 8. Dismount base VHDX.

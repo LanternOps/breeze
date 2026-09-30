@@ -142,15 +142,22 @@ func TestRestoreManifestFiles_Integrity(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
+			workDir := t.TempDir()
 			store := &destRecorder{fakeObjectStore: &fakeObjectStore{objects: map[string][]byte{"k1": tc.stored}}, dests: map[string]string{}}
-			tally := restoreManifestFiles(context.Background(), []vmRestoreManifFile{tc.file}, store, root, tc.expect(t))
+			tally := restoreManifestFiles(context.Background(), []vmRestoreManifFile{tc.file}, store, root, workDir, tc.expect(t))
 
+			// Objects are staged in a private directory under the work
+			// directory, never on the volume being restored, and placed
+			// only after the check.
 			target := filepath.Join(root, "data", "1.bin")
-			if dest := store.dests["k1"]; filepath.Dir(dest) != filepath.Dir(target) || !strings.HasPrefix(filepath.Base(dest), integrity.StagingPrefix) {
-				t.Fatalf("object downloaded to %q, want a staging file beside %q", dest, target)
+			if dest := store.dests["k1"]; !underRoot(workDir, dest) || !strings.HasPrefix(filepath.Base(filepath.Dir(dest)), integrity.StagingPrefix) {
+				t.Fatalf("object downloaded to %q, want a staging file in a private directory under %q", dest, workDir)
 			}
 			if left := findStaging(t, root); len(left) != 0 {
-				t.Fatalf("staging files left: %v", left)
+				t.Fatalf("staging files left on the volume: %v", left)
+			}
+			if left, _ := os.ReadDir(workDir); len(left) != 0 {
+				t.Fatalf("staging left in the work directory: %v", left)
 			}
 			if !tc.wantRestored {
 				if tally.Failed != 1 || tally.Restored != 0 || tally.err() == nil {

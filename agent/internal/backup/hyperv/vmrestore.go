@@ -33,8 +33,10 @@ type VMRestoreFromBackupConfig struct {
 // Steps:
 //  1. Download snapshot manifest
 //  2. Create a dynamic VHDX
-//  3. Mount, partition (GPT), and format (NTFS)
-//  4. Restore snapshot files to the mounted volume
+//  3. Mount, partition (GPT), and format (NTFS); restrict the new volume's
+//     root to SYSTEM and Administrators (protectVolumeRoot)
+//  4. Restore snapshot files to the mounted volume through securefs, then
+//     put the volume root's default permissions back
 //  5. Dismount the VHDX
 //  6. Create and configure the VM
 //
@@ -165,6 +167,15 @@ func RestoreAsVM(
 	targetRoot := driveLetter + `:\`
 	slog.Info("vmrestore: VHDX mounted", "drive", targetRoot)
 
+	// Restrict the new volume's root to SYSTEM and Administrators before
+	// anything is written to it; its default permissions are put back once
+	// every file is in place.
+	rootGuard, err := protectVolumeRoot(driveLetter)
+	if err != nil {
+		result.Error = err.Error()
+		return result, fmt.Errorf("vmrestore: protect volume root: %w", err)
+	}
+
 	// 4. Restore snapshot files to the mounted volume.
 	progress("restoring_files", 4, 6)
 	if ctx.Err() != nil {
@@ -173,7 +184,7 @@ func RestoreAsVM(
 	}
 	slog.Info("vmrestore: restoring files to volume", "target", targetRoot, "files", len(manifest.Files))
 
-	tally := restoreManifestFiles(ctx, manifest.Files, provider, targetRoot, cfg.Integrity)
+	tally := restoreManifestFiles(ctx, manifest.Files, provider, targetRoot, restoreDir, cfg.Integrity)
 	result.FilesRestored = tally.Restored
 	result.FilesFailed = tally.Failed
 	result.BytesRestored = tally.Bytes
@@ -187,6 +198,11 @@ func RestoreAsVM(
 		return result, fmt.Errorf("vmrestore: %w", err)
 	}
 	slog.Info("vmrestore: files restored", "restored", tally.Restored, "bytes", tally.Bytes)
+
+	if err := rootGuard.restoreDefaults(); err != nil {
+		result.Error = err.Error()
+		return result, fmt.Errorf("vmrestore: %w", err)
+	}
 
 	// 5. Dismount VHDX.
 	progress("dismounting_vhdx", 5, 6)
