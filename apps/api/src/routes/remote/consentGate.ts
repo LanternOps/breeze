@@ -8,23 +8,52 @@
  */
 
 /**
- * The only consent/notification prompt protocol version this server speaks.
- * An agent reporting exactly this value (`devices.consentPromptProtocolVersion`,
- * from the heartbeat `securityCapabilities` handshake) parses the `prompt`
- * block on a desktop-stream-start command and gates capture on it. Anything
- * else — omitted, an old pre-consent-gate build, a downgrade, or a future
- * version this server does not recognize — is capability 0: the agent
- * silently drops the unfamiliar `prompt` key (Go's JSON unmarshal into a
- * known struct drops unknown fields) and streams unconditionally, so a
- * dispatch site that resolved a policy requiring consent or notification
- * must refuse to start on such an agent rather than send a prompt block it
- * will not honor.
+ * The consent/notification prompt protocol versions this server speaks. An
+ * agent reporting one of these (`devices.consentPromptProtocolVersion`, from
+ * the heartbeat `securityCapabilities` handshake) parses the `prompt` block on
+ * a desktop start command and gates capture on it. Anything else — omitted, an
+ * old pre-consent-gate build, a downgrade, or a future version this server
+ * does not recognize — is capability 0: the agent silently drops the
+ * unfamiliar `prompt` key (Go's JSON unmarshal into a known struct drops
+ * unknown fields) and streams unconditionally, so a dispatch site that
+ * resolved a policy requiring consent or notification must refuse to start on
+ * such an agent rather than send a prompt block it will not honor.
+ *
+ * Version 2 (`CONSENT_OUTCOME_PROTOCOL_VERSION`) gates capture exactly like
+ * version 1 and additionally reports, on every consent-mode start, whether the
+ * prompt was shown and answered (`consentOutcome`) and whether anyone is
+ * signed in to the captured session (`consentOccupancy`). A version 2 agent
+ * never reports `helper_absent`: it says `no_user_session` (nobody to ask) or
+ * `helper_unreachable` (someone is signed in but could not be asked — always
+ * refused on the agent).
  */
 export const CONSENT_PROMPT_PROTOCOL_VERSION = 1;
+export const CONSENT_OUTCOME_PROTOCOL_VERSION = 2;
+export const CONSENT_PROMPT_PROTOCOL_VERSIONS: readonly number[] = [
+  CONSENT_PROMPT_PROTOCOL_VERSION,
+  CONSENT_OUTCOME_PROTOCOL_VERSION,
+];
 
 export function isConsentPromptCapable(consentPromptProtocolVersion: number): boolean {
-  return consentPromptProtocolVersion === CONSENT_PROMPT_PROTOCOL_VERSION;
+  return CONSENT_PROMPT_PROTOCOL_VERSIONS.includes(consentPromptProtocolVersion);
 }
+
+/**
+ * The structured consent outcome a version 2 agent attaches to a consent-mode
+ * start result (agent/internal/heartbeat/consent_gate.go):
+ *   - `granted` / `denied`: the signed-in user clicked Allow / Deny.
+ *   - `presented_expired`: the prompt was confirmed on screen and its
+ *     countdown ran out with no answer.
+ *   - `unavailable`: the prompt could not be shown (no consent-capable helper,
+ *     the helper said it could not show it, or it never confirmed showing it).
+ *   - `unknown`: the prompt was shown but no valid answer came back.
+ */
+export const CONSENT_OUTCOMES = ['granted', 'denied', 'presented_expired', 'unavailable', 'unknown'] as const;
+export type ConsentOutcome = typeof CONSENT_OUTCOMES[number];
+
+/** Whether anyone is signed in to the captured session, as the agent saw it. */
+export const CONSENT_OCCUPANCIES = ['occupied', 'unoccupied', 'unknown'] as const;
+export type ConsentOccupancy = typeof CONSENT_OCCUPANCIES[number];
 
 export const REMOTE_PROMPT_POLICY_UNAVAILABLE_CODE = 'REMOTE_PROMPT_POLICY_UNAVAILABLE';
 export const REMOTE_PROMPT_POLICY_UNAVAILABLE_MESSAGE =
