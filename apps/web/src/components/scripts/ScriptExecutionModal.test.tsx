@@ -729,6 +729,26 @@ describe('ScriptExecutionModal device-org pinning (#7479)', () => {
     }
   });
 
+  it('pins the status-filter probe request to the orgId too', async () => {
+    render(
+      <ScriptExecutionModal script={baseScript} isOpen onClose={vi.fn()} onExecute={vi.fn()} orgId="org-b" />
+    );
+    // Empty picker + default 'online' filter + single-OS script => unfiltered probe (status omitted).
+    await waitFor(() => {
+      const urls = fetchWithAuthMock.mock.calls.map((c) => new URL(String(c[0]), 'http://x'));
+      expect(urls.some((u) => !u.searchParams.has('status'))).toBe(true);
+    });
+    for (const call of fetchWithAuthMock.mock.calls) {
+      expect(new URL(String(call[0]), 'http://x').searchParams.get('orgId')).toBe('org-b');
+    }
+  });
+
+  it('does not show the blocked reason while device options are still loading', () => {
+    fetchWithAuthMock.mockImplementation(() => new Promise(() => {}));
+    renderPinned();
+    expect(screen.queryByTestId('script-execute-blocked-reason')).toBeNull();
+  });
+
   it('explains why Execute is disabled when a selected device cannot be resolved', async () => {
     renderPinned();
     const reason = await screen.findByTestId('script-execute-blocked-reason');

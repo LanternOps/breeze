@@ -85,7 +85,7 @@ export default function ScriptExecutionModal({
 
   const { preview: filterPreview } = useFilterPreview(
     showAdvancedFilter ? advancedFilter : null,
-    { enabled: showAdvancedFilter }
+    { enabled: showAdvancedFilter, orgId }
   );
   const advancedFilterIds = useMemo(() => {
     if (!showAdvancedFilter || !filterPreview) return null;
@@ -187,6 +187,7 @@ export default function ScriptExecutionModal({
     status: undefined,
     siteId: siteFilter === 'all' ? undefined : siteFilter,
     osType: script.osTypes.length === 1 ? script.osTypes[0] : undefined,
+    orgId,
     enabled: probeEnabled,
     limit: 1,
   });
@@ -632,7 +633,7 @@ export default function ScriptExecutionModal({
         <div className="flex items-center justify-between border-t px-6 py-4">
           <div className="text-sm text-muted-foreground">
             <p>{t('scriptExecutionModal.selectedCount', { count: selectedDeviceIds.size })}</p>
-            {selectedDeviceIds.size > 0 && !deviceOptions.canSubmit && (
+            {selectedDeviceIds.size > 0 && deviceOptions.state === 'truncated' && (
               <p data-testid="script-execute-blocked-reason" role="alert" className="mt-0.5 text-destructive">
                 {t('scriptExecutionModal.executeBlocked')}
               </p>
