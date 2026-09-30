@@ -183,11 +183,17 @@ func execMSSQLRestore(payload json.RawMessage, mgr *backup.BackupManager) backup
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid MSSQL restore payload: " + err.Error())
 	}
+	expect, err := mssqlCommandIntegrity(payload, p.SnapshotID, p.BackupFile)
+	if err != nil {
+		return fail("MSSQL restore: " + err.Error())
+	}
 	var provider providers.BackupProvider
 	if mgr != nil {
 		provider = mgr.GetProvider()
 	}
-	artifactPath, cleanup, err := resolveMSSQLBackupArtifact(p.Instance, provider, p.SnapshotID, p.BackupFile)
+	// With an expectation the file is checked before this returns: the
+	// runner below is handed only a verified, published path.
+	artifactPath, cleanup, warnings, err := resolveMSSQLBackupArtifact(p.Instance, provider, p.SnapshotID, p.BackupFile, expect)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -195,6 +201,9 @@ func execMSSQLRestore(payload json.RawMessage, mgr *backup.BackupManager) backup
 		defer cleanup()
 	}
 	result, err := runMSSQLRestore(p.Instance, artifactPath, p.TargetDB, p.NoRecovery)
+	if result != nil {
+		result.Warnings = append(result.Warnings, withUnattestedWarning(warnings, expect)...)
+	}
 	return marshalResult(result, err)
 }
 
@@ -207,11 +216,17 @@ func execMSSQLVerify(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid MSSQL verify payload: " + err.Error())
 	}
+	// Verify resolves the backup file exactly like restore, so with an
+	// expectation it also only ever verifies bytes that passed the checks.
+	expect, err := mssqlCommandIntegrity(payload, p.SnapshotID, p.BackupFile)
+	if err != nil {
+		return fail("MSSQL verify: " + err.Error())
+	}
 	var provider providers.BackupProvider
 	if mgr != nil {
 		provider = mgr.GetProvider()
 	}
-	artifactPath, cleanup, err := resolveMSSQLBackupArtifact(p.Instance, provider, p.SnapshotID, p.BackupFile)
+	artifactPath, cleanup, warnings, err := resolveMSSQLBackupArtifact(p.Instance, provider, p.SnapshotID, p.BackupFile, expect)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -219,6 +234,9 @@ func execMSSQLVerify(payload json.RawMessage, mgr *backup.BackupManager) backupi
 		defer cleanup()
 	}
 	result, err := runMSSQLVerify(p.Instance, artifactPath)
+	if result != nil {
+		result.Warnings = append(result.Warnings, withUnattestedWarning(warnings, expect)...)
+	}
 	return marshalResult(result, err)
 }
 
@@ -680,40 +698,30 @@ func attestProviderBackedSnapshot(snapshotID, jobID, agentID string, manifest ba
 	return env, ""
 }
 
-func downloadMssqlSnapshotManifest(provider providers.BackupProvider, snapshotID string) (*backup.Snapshot, error) {
+// downloadMssqlSnapshotManifest reads the snapshot's manifest; with an
+// attested expectation its bytes are checked against the attestation before
+// they are parsed.
+func downloadMssqlSnapshotManifest(provider providers.BackupProvider, snapshotID string, expect *integrity.Expectation) (*backup.Snapshot, []string, error) {
 	if provider == nil {
-		return nil, fmt.Errorf("backup provider is required")
+		return nil, nil, fmt.Errorf("backup provider is required")
 	}
 	if snapshotID == "" {
-		return nil, fmt.Errorf("snapshotId is required")
+		return nil, nil, fmt.Errorf("snapshotId is required")
 	}
 
-	tempFile, err := os.CreateTemp("", "mssql-manifest-*.json")
+	data, warnings, err := readAppSnapshotManifest(context.Background(), provider, snapshotID, "mssql-manifest-*.json", expect)
 	if err != nil {
-		return nil, err
-	}
-	tempPath := tempFile.Name()
-	_ = tempFile.Close()
-	defer os.Remove(tempPath)
-
-	manifestKey := path.Join("snapshots", snapshotID, "manifest.json")
-	if err := provider.Download(manifestKey, tempPath); err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(tempPath)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var snapshot backup.Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if snapshot.ID == "" {
 		snapshot.ID = snapshotID
 	}
-	return &snapshot, nil
+	return &snapshot, warnings, nil
 }
 
 // removeMssqlBackupFile deletes the local .bak/.trn file once execMSSQLBackup
@@ -775,55 +783,85 @@ func newMssqlSnapshotID(instance, database string) string {
 	return fmt.Sprintf("mssql-%s-%d-%x", slug, time.Now().Unix(), random)
 }
 
+// mssqlCommandIntegrity reads an MSSQL restore/verify command's integrity
+// block. The snapshot it must name is snapshotID or, for a payload that
+// names its backup file by snapshot path, that path's snapshot.
+func mssqlCommandIntegrity(payload json.RawMessage, snapshotID, backupFile string) (*integrity.Expectation, error) {
+	if snapshotID == "" {
+		snapshotID = mssqlSnapshotIDFromArtifactPath(path.Clean(filepath.ToSlash(strings.TrimSpace(backupFile))))
+	}
+	return appRestoreIntegrity(payload, snapshotID)
+}
+
+// errMSSQLArtifactNotFromSnapshot: with an integrity expectation, the backup
+// file must be read from the snapshot's manifest, never from a local path or
+// a raw storage key.
+var errMSSQLArtifactNotFromSnapshot = fmt.Errorf("an integrity-checked MSSQL restore must read its backup file from the snapshot")
+
 // resolveMSSQLBackupArtifact locates the local file RESTORE / RESTORE
 // VERIFYONLY should read: either an already-local path the caller supplied
 // directly, or a remote artifact downloaded via downloadMSSQLArtifact —
 // see that function's doc comment for why the download destination isn't a
-// process-local staging directory (D23b).
-func resolveMSSQLBackupArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string) (string, func(), error) {
+// process-local staging directory (D23b). With an expectation the artifact
+// comes from the snapshot's (checked) manifest and is checked against its
+// entry before its path is returned. It returns the checks' warnings.
+func resolveMSSQLBackupArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string, expect *integrity.Expectation) (string, func(), []string, error) {
 	if isBrokeredProvider(provider) {
-		return resolveBrokeredMSSQLArtifact(instance, provider, snapshotID, backupFile)
+		return resolveBrokeredMSSQLArtifact(instance, provider, snapshotID, backupFile, expect)
 	}
 	if snapshotID != "" {
-		return stageMSSQLSnapshotArtifact(instance, provider, snapshotID)
+		return stageMSSQLSnapshotArtifact(instance, provider, snapshotID, expect)
 	}
 
 	trimmed := strings.TrimSpace(backupFile)
 	if trimmed == "" {
-		return "", nil, fmt.Errorf("backup file path is required")
+		return "", nil, nil, fmt.Errorf("backup file path is required")
 	}
-	if filepath.IsAbs(trimmed) {
+	if filepath.IsAbs(trimmed) && !expect.Present() {
 		if _, err := os.Stat(trimmed); err == nil {
-			return trimmed, nil, nil
+			return trimmed, nil, nil, nil
 		}
 	}
 
 	if provider == nil {
-		return "", nil, fmt.Errorf("backup provider is required")
+		return "", nil, nil, fmt.Errorf("backup provider is required")
 	}
 
 	cleaned := path.Clean(filepath.ToSlash(trimmed))
 	if snapshotIDFromPath := mssqlSnapshotIDFromArtifactPath(cleaned); snapshotIDFromPath != "" {
-		return stageMSSQLSnapshotArtifact(instance, provider, snapshotIDFromPath)
+		return stageMSSQLSnapshotArtifact(instance, provider, snapshotIDFromPath, expect)
+	}
+	if expect.Present() {
+		return "", nil, nil, errMSSQLArtifactNotFromSnapshot
 	}
 
-	return downloadMSSQLArtifact(instance, provider, cleaned, filepath.Base(cleaned))
+	return downloadMSSQLArtifact(instance, provider, cleaned, filepath.Base(cleaned), integrity.Stored{}, nil)
 }
 
-func stageMSSQLSnapshotArtifact(instance string, provider providers.BackupProvider, snapshotID string) (string, func(), error) {
+func stageMSSQLSnapshotArtifact(instance string, provider providers.BackupProvider, snapshotID string, expect *integrity.Expectation) (string, func(), []string, error) {
 	if provider == nil {
-		return "", nil, fmt.Errorf("backup provider is required")
+		return "", nil, nil, fmt.Errorf("backup provider is required")
 	}
-	manifest, err := downloadMssqlSnapshotManifest(provider, snapshotID)
+	manifest, warnings, err := downloadMssqlSnapshotManifest(provider, snapshotID, expect)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if len(manifest.Files) == 0 {
-		return "", nil, fmt.Errorf("snapshot %s has no backup files", snapshotID)
+		return "", nil, nil, fmt.Errorf("snapshot %s has no backup files", snapshotID)
 	}
 
 	file := manifest.Files[0]
-	return downloadMSSQLArtifact(instance, provider, file.BackupPath, filepath.Base(file.BackupPath))
+	artifact, cleanup, fileWarnings, err := downloadMSSQLArtifact(instance, provider, file.BackupPath, filepath.Base(file.BackupPath), mssqlStored(file), expect)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return artifact, cleanup, append(warnings, fileWarnings...), nil
+}
+
+// mssqlStored is what a manifest entry says about a stored backup file. A
+// database backup file is never volatile: any difference fails the check.
+func mssqlStored(file backup.SnapshotFile) integrity.Stored {
+	return integrity.Stored{Size: file.Size, SHA256: file.Checksum}
 }
 
 // downloadMSSQLArtifact downloads a remote backup artifact into the same
@@ -838,20 +876,33 @@ func stageMSSQLSnapshotArtifact(instance string, provider providers.BackupProvid
 // directory: the resolved directory is either SQL Server's own default
 // backup directory or a shared Breeze staging directory, either of which
 // other concurrent jobs may also be using.
-func downloadMSSQLArtifact(instance string, provider providers.BackupProvider, remotePath, filename string) (string, func(), error) {
+//
+// With an expectation the file is staged in that same directory under a
+// private name, checked against want (integrity.CheckStoredBytes: exact size
+// and SHA-256 when attested) and renamed to filename only when it passes; a
+// file that fails is removed and never reaches its final name. Without one
+// it is downloaded straight to its final name, as before.
+func downloadMSSQLArtifact(instance string, provider providers.BackupProvider, remotePath, filename string, want integrity.Stored, expect *integrity.Expectation) (string, func(), []string, error) {
 	targetDir, err := resolveMSSQLRestoreTargetDir(instance)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve restore target directory: %w", err)
+		return "", nil, nil, fmt.Errorf("resolve restore target directory: %w", err)
 	}
 	localPath := filepath.Join(targetDir, filename)
-	if err := provider.Download(remotePath, localPath); err != nil {
+	var warnings []string
+	if expect.Present() {
+		_, w, err := integrity.StageAndPublish(context.Background(), provider, remotePath, localPath, want, expect)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("backup file %s: %w", filename, err)
+		}
+		warnings = w
+	} else if err := provider.Download(remotePath, localPath); err != nil {
 		removeMssqlBackupFile(localPath)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	return localPath, func() {
 		removeMssqlBackupFile(localPath)
-	}, nil
+	}, warnings, nil
 }
 
 func mssqlSnapshotIDFromArtifactPath(artifactPath string) string {
