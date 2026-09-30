@@ -535,7 +535,27 @@
         "profilesLoadFailed": "Impossible de charger les profils de sauvegarde.",
         "profilesLoadFailedHint": "Rechargez la page pour réessayer. L'enregistrement est désactivé jusqu'au chargement de la liste, afin de ne pas écraser un lien de profil existant.",
         "destinationsLoadFailed": "Impossible de charger les destinations de sauvegarde.",
-        "destinationsLoadRetry": "Réessayer"
+        "destinationsLoadRetry": "Réessayer",
+        "storageKeys": {
+          "title": "Remplacez et désactivez les clés de stockage utilisées avant le {{date}}",
+          "body": "Les sauvegardes accèdent désormais au stockage via des sessions de courte durée : les appareils n’ont plus besoin de clé de stockage. Les clés reçues par les appareils avant le {{date}} restent valides jusqu’à ce que vous les désactiviez auprès de votre fournisseur de stockage. Remplacez chaque clé sur sa destination, désactivez l’ancienne clé auprès de votre fournisseur, puis vérifiez-la ici.",
+          "deletedDestination": "Destination supprimée",
+          "inUse": "Toujours utilisée par cette destination. Remplacez d’abord la clé sur la destination.",
+          "replacedOn": "Remplacée le {{date}}",
+          "checkOldKey": "Vérifier l’ancienne clé",
+          "checkFailed": "Impossible de vérifier l’ancienne clé.",
+          "cannotCheck": "Cette clé ne peut plus être vérifiée automatiquement. Désactivez-la auprès de votre fournisseur de stockage, puis confirmez que vous l’avez fait.",
+          "confirmDisabled": "J’ai désactivé cette clé",
+          "confirmPrompt": "Confirmez que vous avez désactivé cette clé auprès de votre fournisseur de stockage. Votre confirmation est enregistrée ; elle constitue une preuve moins solide qu’une vérification montrant que la clé ne fonctionne plus.",
+          "confirmed": "Enregistrée comme désactivée sur votre confirmation.",
+          "confirmFailed": "Impossible d’enregistrer votre confirmation.",
+          "loadFailed": "Impossible de charger les clés de stockage qui nécessitent votre attention.",
+          "outcome": {
+            "revoked": "L’ancienne clé ne fonctionne plus. Elle est enregistrée comme désactivée.",
+            "stillLive": "L’ancienne clé fonctionne encore. Désactivez-la auprès de votre fournisseur de stockage, puis vérifiez à nouveau.",
+            "inconclusive": "Le fournisseur de stockage n’a pas pu être joint pour vérifier l’ancienne clé. Réessayez plus tard."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Logiciels requis",

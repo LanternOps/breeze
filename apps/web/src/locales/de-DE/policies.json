@@ -535,7 +535,27 @@
         "profilesLoadFailed": "Sicherungsprofile konnten nicht geladen werden.",
         "profilesLoadFailedHint": "Laden Sie die Seite neu, um es erneut zu versuchen. Das Speichern ist deaktiviert, bis die Liste geladen ist, damit eine bestehende Profilverknüpfung nicht überschrieben wird.",
         "destinationsLoadFailed": "Sicherungsziele konnten nicht geladen werden.",
-        "destinationsLoadRetry": "Erneut versuchen"
+        "destinationsLoadRetry": "Erneut versuchen",
+        "storageKeys": {
+          "title": "Speicherschlüssel ersetzen und deaktivieren, die vor dem {{date}} verwendet wurden",
+          "body": "Sicherungen erreichen den Speicher jetzt über kurzlebige Sitzungen, daher benötigen Geräte keinen Speicherschlüssel mehr. Schlüssel, die Geräte vor dem {{date}} erhalten haben, funktionieren weiter, bis Sie sie bei Ihrem Speicheranbieter deaktivieren. Ersetzen Sie jeden Schlüssel an seinem Ziel, deaktivieren Sie den alten Schlüssel bei Ihrem Anbieter und prüfen Sie ihn dann hier.",
+          "deletedDestination": "Gelöschtes Ziel",
+          "inUse": "Wird von diesem Ziel noch verwendet. Ersetzen Sie zuerst den Schlüssel am Ziel.",
+          "replacedOn": "Ersetzt am {{date}}",
+          "checkOldKey": "Alten Schlüssel prüfen",
+          "checkFailed": "Der alte Schlüssel konnte nicht geprüft werden.",
+          "cannotCheck": "Dieser Schlüssel kann nicht mehr automatisch geprüft werden. Deaktivieren Sie ihn bei Ihrem Speicheranbieter und bestätigen Sie es anschließend.",
+          "confirmDisabled": "Ich habe diesen Schlüssel deaktiviert",
+          "confirmPrompt": "Bestätigen Sie, dass Sie diesen Schlüssel bei Ihrem Speicheranbieter deaktiviert haben. Ihre Bestätigung wird gespeichert und ist ein schwächerer Nachweis als eine Prüfung, die zeigt, dass der Schlüssel nicht mehr funktioniert.",
+          "confirmed": "Auf Ihre Bestätigung hin als deaktiviert gespeichert.",
+          "confirmFailed": "Ihre Bestätigung konnte nicht gespeichert werden.",
+          "loadFailed": "Die Speicherschlüssel, die Aufmerksamkeit erfordern, konnten nicht geladen werden.",
+          "outcome": {
+            "revoked": "Der vorherige Schlüssel funktioniert nicht mehr. Er ist als deaktiviert gespeichert.",
+            "stillLive": "Der vorherige Schlüssel funktioniert noch. Deaktivieren Sie ihn bei Ihrem Speicheranbieter und prüfen Sie erneut.",
+            "inconclusive": "Der Speicheranbieter war nicht erreichbar, um den vorherigen Schlüssel zu prüfen. Versuchen Sie es später erneut."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Erforderliche Software",

@@ -1012,6 +1012,16 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         }).returning();
         const config = rows[0];
         if (!config) return JSON.stringify({ error: 'Failed to create backup config' });
+        // A key configured from now on has never been sent to a device.
+        // Loaded on use: the history module pulls in storage code this tool
+        // registry does not otherwise need.
+        const { recordCredentialChange } = await import('./backupStorageCredentialHistory');
+        await recordCredentialChange({
+          orgId,
+          configId: config.id,
+          previous: null,
+          next: { provider: config.provider, providerConfig: config.providerConfig },
+        });
 
         return JSON.stringify({
           success: true,
@@ -1088,6 +1098,19 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
 
         await db.update(backupConfigs).set(updates).where(eq(backupConfigs.id, existing.id));
+        if (updates.provider !== undefined || updates.providerConfig !== undefined) {
+          // A replaced key stays listed until there is evidence it was disabled.
+          const { recordCredentialChange } = await import('./backupStorageCredentialHistory');
+          await recordCredentialChange({
+            orgId: existing.orgId,
+            configId: existing.id,
+            previous: { provider: existing.provider, providerConfig: existing.providerConfig },
+            next: {
+              provider: (updates.provider as string | undefined) ?? existing.provider,
+              providerConfig: updates.providerConfig ?? existing.providerConfig,
+            },
+          });
+        }
         return JSON.stringify({ success: true, message: `Backup config "${existing.name}" updated` });
       }
 

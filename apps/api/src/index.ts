@@ -178,6 +178,7 @@ import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
+import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -1847,6 +1848,25 @@ async function bootstrap(): Promise<void> {
     .catch((err) => {
       console.error('[startup] Sealing stored settings secrets failed:', err);
       captureException(err, undefined, { area: 'settings_secret_backfill' });
+    });
+
+  // Storage keys that S3 backup destinations used before backups were written
+  // only through storage sessions are recorded once, so each stays listed
+  // until there is evidence it was disabled. Detached after serve() like the
+  // sweep above; idempotent (a destination whose current key is recorded is
+  // skipped) and never logs a key.
+  void baselineCredentialHistory()
+    .then((result) => {
+      if (result.recorded > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Backup storage key history: ${result.recorded} recorded, ${result.failed} failed `
+          + `(${result.scanned} S3 destination(s) scanned)`,
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Recording backup storage key history failed:', err instanceof Error ? err.name : 'unknown');
+      captureException(err, undefined, { area: 'backup_storage_key_history' });
     });
 
   // W05d — convert whatever legacy alerting the W05c release left unconverted,

@@ -535,7 +535,27 @@
         "profilesLoadFailed": "Não foi possível carregar os perfis de backup.",
         "profilesLoadFailedHint": "Recarregue a página para tentar novamente. O salvamento fica desativado até a lista carregar, para não sobrescrever um vínculo de perfil existente.",
         "destinationsLoadFailed": "Não foi possível carregar os destinos de backup.",
-        "destinationsLoadRetry": "Tentar novamente"
+        "destinationsLoadRetry": "Tentar novamente",
+        "storageKeys": {
+          "title": "Substitua e desative as chaves de armazenamento usadas antes de {{date}}",
+          "body": "Os backups agora chegam ao armazenamento por meio de sessões de curta duração, então os dispositivos não precisam mais de uma chave de armazenamento. As chaves que os dispositivos receberam antes de {{date}} continuam funcionando até que você as desative no seu provedor de armazenamento. Substitua cada chave no respectivo destino, desative a chave antiga no seu provedor e depois verifique-a aqui.",
+          "deletedDestination": "Destino excluído",
+          "inUse": "Ainda usada por este destino. Substitua a chave no destino primeiro.",
+          "replacedOn": "Substituída em {{date}}",
+          "checkOldKey": "Verificar chave antiga",
+          "checkFailed": "Não foi possível verificar a chave antiga.",
+          "cannotCheck": "Esta chave não pode mais ser verificada automaticamente. Desative-a no seu provedor de armazenamento e depois confirme que fez isso.",
+          "confirmDisabled": "Desativei esta chave",
+          "confirmPrompt": "Confirme que você desativou esta chave no seu provedor de armazenamento. Sua confirmação fica registrada e é uma evidência mais fraca do que uma verificação mostrando que a chave não funciona mais.",
+          "confirmed": "Registrada como desativada com base na sua confirmação.",
+          "confirmFailed": "Não foi possível registrar sua confirmação.",
+          "loadFailed": "Não foi possível carregar as chaves de armazenamento que precisam de atenção.",
+          "outcome": {
+            "revoked": "A chave anterior não funciona mais. Ela está registrada como desativada.",
+            "stillLive": "A chave anterior ainda funciona. Desative-a no seu provedor de armazenamento e verifique novamente.",
+            "inconclusive": "Não foi possível contatar o provedor de armazenamento para verificar a chave anterior. Tente novamente mais tarde."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Software obrigatório",

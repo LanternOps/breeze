@@ -535,7 +535,27 @@
         "profilesLoadFailed": "Yedek profiller yüklenemedi.",
         "profilesLoadFailedHint": "Tekrar denemek için sayfayı yeniden yükleyin. Liste yüklenene kadar kaydetme devre dışı bırakılır, böylece mevcut profil bağlantısının üzerine yazılmaz.",
         "destinationsLoadFailed": "Yedekleme hedefleri yüklenemedi.",
-        "destinationsLoadRetry": "Tekrar deneyin"
+        "destinationsLoadRetry": "Tekrar deneyin",
+        "storageKeys": {
+          "title": "{{date}} tarihinden önce kullanılan depolama anahtarlarını değiştirin ve devre dışı bırakın",
+          "body": "Yedeklemeler artık depolamaya kısa ömürlü oturumlar üzerinden ulaşıyor; bu nedenle cihazların artık bir depolama anahtarına ihtiyacı yok. Cihazların {{date}} tarihinden önce aldığı anahtarlar, depolama sağlayıcınızda devre dışı bırakılana kadar çalışmaya devam eder. Her anahtarı hedefinde değiştirin, eski anahtarı sağlayıcınızda devre dışı bırakın ve ardından burada kontrol edin.",
+          "deletedDestination": "Silinmiş hedef",
+          "inUse": "Bu hedef tarafından hâlâ kullanılıyor. Önce hedefteki anahtarı değiştirin.",
+          "replacedOn": "{{date}} tarihinde değiştirildi",
+          "checkOldKey": "Eski anahtarı kontrol et",
+          "checkFailed": "Eski anahtar kontrol edilemedi.",
+          "cannotCheck": "Bu anahtar artık otomatik olarak kontrol edilemez. Depolama sağlayıcınızda devre dışı bırakın, ardından bunu yaptığınızı onaylayın.",
+          "confirmDisabled": "Bu anahtarı devre dışı bıraktım",
+          "confirmPrompt": "Bu anahtarı depolama sağlayıcınızda devre dışı bıraktığınızı onaylayın. Onayınız kaydedilir ve anahtarın artık çalışmadığını gösteren bir kontrolden daha zayıf bir kanıttır.",
+          "confirmed": "Onayınıza dayanarak devre dışı olarak kaydedildi.",
+          "confirmFailed": "Onayınız kaydedilemedi.",
+          "loadFailed": "İlgilenilmesi gereken depolama anahtarları yüklenemedi.",
+          "outcome": {
+            "revoked": "Önceki anahtar artık çalışmıyor. Devre dışı olarak kaydedildi.",
+            "stillLive": "Önceki anahtar hâlâ çalışıyor. Depolama sağlayıcınızda devre dışı bırakın, ardından yeniden kontrol edin.",
+            "inconclusive": "Önceki anahtarı kontrol etmek için depolama sağlayıcısına ulaşılamadı. Daha sonra yeniden deneyin."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Gerekli Yazılım",

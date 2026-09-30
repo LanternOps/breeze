@@ -23,12 +23,19 @@ const updateMock = vi.fn(() => chainMock([]));
 const checkBackupProviderCapabilitiesMock = vi.fn();
 const s3SendMock = vi.fn();
 const s3ClientCtorMock = vi.fn();
+const deleteMock = vi.fn(() => chainMock([]));
+const recordCredentialChangeMock = vi.fn(async () => undefined);
+
+vi.mock('../../services/backupStorageCredentialHistory', () => ({
+  recordCredentialChange: (...args: unknown[]) => recordCredentialChangeMock(...(args as [])),
+}));
 
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
+    delete: (...args: unknown[]) => deleteMock(...(args as [])),
     // Default-destination demote + promote run in one transaction so a failed
     // write can't leave the org with no default. The tx routes through the same
     // insert/update mocks, so assertions below see every statement.
@@ -147,6 +154,10 @@ describe('backup config routes', () => {
     selectMock.mockImplementation(() => chainMock([]));
     insertMock.mockImplementation(() => chainMock([]));
     updateMock.mockImplementation(() => chainMock([]));
+    deleteMock.mockReset();
+    deleteMock.mockImplementation(() => chainMock([]));
+    recordCredentialChangeMock.mockReset();
+    recordCredentialChangeMock.mockImplementation(async () => undefined);
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', configsRoutes);
@@ -443,6 +454,90 @@ describe('backup config routes', () => {
       enabled: true,
       status: 'enforced',
       mode: 's3-sse-kms',
+    });
+  });
+
+  describe('storage key history', () => {
+    it('records the key of a new S3 destination', async () => {
+      insertMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Primary S3',
+          provider: 's3',
+          details: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
+        }),
+      });
+      expect(res.status).toBe(201);
+      expect(recordCredentialChangeMock).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        configId: CONFIG_ID,
+        previous: null,
+        next: { provider: 's3', providerConfig: makeConfig().providerConfig },
+      });
+    });
+
+    it('records a changed destination with its settings before and after', async () => {
+      const before = makeConfig();
+      const after = makeConfig({ providerConfig: { bucket: 'backups', region: 'us-east-1', accessKey: 'key2', secretKey: 'secret2' } });
+      selectMock.mockReturnValueOnce(chainMock([before]));
+      updateMock.mockReturnValueOnce(chainMock([after]));
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ details: { bucket: 'backups', region: 'us-east-1', accessKey: 'key2', secretKey: 'secret2' } }),
+      });
+      expect(res.status).toBe(200);
+      expect(recordCredentialChangeMock).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        configId: CONFIG_ID,
+        previous: { provider: 's3', providerConfig: before.providerConfig },
+        next: { provider: 's3', providerConfig: after.providerConfig },
+      });
+    });
+
+    it('records nothing for a change that does not touch the destination settings', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({ name: 'Renamed' })]));
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(200);
+      expect(recordCredentialChangeMock).not.toHaveBeenCalled();
+    });
+
+    it('records a deleted destination before deleting it, so its key stays listed', async () => {
+      const existing = makeConfig();
+      const order: string[] = [];
+      selectMock.mockReturnValueOnce(chainMock([existing]));
+      recordCredentialChangeMock.mockImplementationOnce(async () => { order.push('record'); });
+      deleteMock.mockImplementationOnce(() => { order.push('delete'); return chainMock([existing]); });
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(res.status).toBe(200);
+      expect(recordCredentialChangeMock).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        configId: CONFIG_ID,
+        previous: { provider: 's3', providerConfig: existing.providerConfig },
+        next: null,
+      });
+      expect(order).toEqual(['record', 'delete']);
+    });
+
+    it('answers 404 for a destination that does not exist, recording nothing', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(res.status).toBe(404);
+      expect(recordCredentialChangeMock).not.toHaveBeenCalled();
+      expect(deleteMock).not.toHaveBeenCalled();
     });
   });
 

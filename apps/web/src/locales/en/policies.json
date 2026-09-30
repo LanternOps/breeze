@@ -535,7 +535,27 @@
         "profilesLoadFailed": "Couldn't load backup profiles.",
         "profilesLoadFailedHint": "Reload the page to try again. Saving is disabled until the list loads, so an existing profile link isn't overwritten.",
         "destinationsLoadFailed": "Couldn't load backup destinations.",
-        "destinationsLoadRetry": "Try again"
+        "destinationsLoadRetry": "Try again",
+        "storageKeys": {
+          "title": "Replace and disable the storage keys used before {{date}}",
+          "body": "Backups now reach storage through short-lived sessions, so devices no longer need a storage key. Keys that devices received before {{date}} keep working until you disable them with your storage provider. Replace each key on its destination, disable the old key with your provider, then check it here.",
+          "deletedDestination": "Deleted destination",
+          "inUse": "Still used by this destination. Replace the key on the destination first.",
+          "replacedOn": "Replaced {{date}}",
+          "checkOldKey": "Check old key",
+          "checkFailed": "Could not check the old key.",
+          "cannotCheck": "This key can no longer be checked automatically. Disable it with your storage provider, then confirm that you did.",
+          "confirmDisabled": "I disabled this key",
+          "confirmPrompt": "Confirm that you disabled this key with your storage provider. Your confirmation is recorded, and it is weaker evidence than a check showing the key no longer works.",
+          "confirmed": "Recorded as disabled on your confirmation.",
+          "confirmFailed": "Could not record your confirmation.",
+          "loadFailed": "Could not load the storage keys that need attention.",
+          "outcome": {
+            "revoked": "The previous key no longer works. It is recorded as disabled.",
+            "stillLive": "The previous key still works. Disable it with your storage provider, then check again.",
+            "inconclusive": "The storage provider could not be reached to check the previous key. Try again later."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Required Software",

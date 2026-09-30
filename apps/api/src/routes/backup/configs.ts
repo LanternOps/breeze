@@ -13,6 +13,7 @@ import { db } from '../../db';
 import { backupConfigs, backupSnapshots } from '../../db/schema';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { recordCredentialChange } from '../../services/backupStorageCredentialHistory';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
@@ -275,6 +276,13 @@ configsRoutes.post(
     if (!row) {
       return c.json({ error: 'Failed to create config' }, 500);
     }
+    // A key configured from now on has never been sent to a device.
+    await recordCredentialChange({
+      orgId,
+      configId: row.id,
+      previous: null,
+      next: { provider: row.provider, providerConfig: row.providerConfig },
+    });
 
     writeRouteAudit(c, {
       orgId,
@@ -492,6 +500,15 @@ configsRoutes.patch(
     if (!row) {
       return c.json({ error: 'Config not found' }, 404);
     }
+    if (payload.details !== undefined) {
+      // A replaced key stays listed until there is evidence it was disabled.
+      await recordCredentialChange({
+        orgId,
+        configId: row.id,
+        previous: { provider: current.provider, providerConfig: current.providerConfig },
+        next: { provider: row.provider, providerConfig: row.providerConfig },
+      });
+    }
 
     const warnings: string[] = [];
     const priorIdentity = normalizeStorageIdentity(current.provider, (current.providerConfig ?? {}) as Record<string, unknown>);
@@ -539,6 +556,22 @@ configsRoutes.delete(
   }
 
   const { id: configId } = c.req.valid('param');
+  const [existing] = await db
+    .select()
+    .from(backupConfigs)
+    .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+    .limit(1);
+  if (!existing) {
+    return c.json({ error: 'Config not found' }, 404);
+  }
+  // The destination's key stays listed (with its settings sealed, so it can
+  // still be checked) until there is evidence it was disabled.
+  await recordCredentialChange({
+    orgId,
+    configId: existing.id,
+    previous: { provider: existing.provider, providerConfig: existing.providerConfig },
+    next: null,
+  });
   const [deleted] = await db
     .delete(backupConfigs)
     .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))

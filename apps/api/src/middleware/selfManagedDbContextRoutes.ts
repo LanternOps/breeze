@@ -314,6 +314,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // withAuthDbAccessContext block and dispatch strictly after it commits.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/mssql\/backup\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/backup\/hyperv\/backup\/?$/ },
+  // Checking a replaced storage key (routes/backup/storageCredentials.ts)
+  // calls the storage provider with that key, against a TENANT-CONTROLLED
+  // endpoint. The handler reads and records in short withAuthDbAccessContext
+  // blocks and makes the storage call with no context held.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/storage-credentials\/[^/]+\/check\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection
