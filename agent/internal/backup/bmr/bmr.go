@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -117,15 +118,28 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		"deviceId", cfg.DeviceID,
 	)
 
+	// An expectation issued for another snapshot is refused before any
+	// download. Outside attested mode the result says, once, that nothing
+	// was checked against a snapshot attestation.
+	if err := cfg.Integrity.CheckSnapshot(cfg.SnapshotID); err != nil {
+		result.Error = fmt.Sprintf("snapshot integrity expectation refused: %s", err.Error())
+		return result, err
+	}
+	if w := cfg.Integrity.UnattestedWarning(); w != "" {
+		result.Warnings = append(result.Warnings, w)
+	}
+
 	// 1. Download snapshot manifest.
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	manifest, manifestSHA256, err := downloadManifest(cfg.SnapshotID, provider)
+	manifest, manifestSHA256, manifestWarnings, err := downloadManifest(ctx, cfg.SnapshotID, provider, cfg.Integrity)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to download manifest: %s", err.Error())
+		result.Code = integrity.FailureCode(err)
 		return result, err
 	}
+	result.Warnings = append(result.Warnings, manifestWarnings...)
 
 	// Refuse before any target write when this manifest references objects
 	// under an older snapshot's prefix that the provider is not authorized
@@ -310,6 +324,13 @@ type manifestFile struct {
 	OriginalPath string `json:"originalPath,omitempty"`
 	BackupPath   string `json:"backupPath"`
 	Size         int64  `json:"size"`
+	// Checksum and Volatile mirror backup.SnapshotFile's identically-tagged
+	// fields: the SHA-256 of the bytes stored at BackupPath, and whether the
+	// source kept changing while it was uploaded. An attested recovery
+	// requires Checksum and checks it exactly — Volatile never waives it,
+	// since the digest is of the stored bytes (integrity.CheckStoredBytes).
+	Checksum string `json:"checksum,omitempty"`
+	Volatile bool   `json:"volatile,omitempty"`
 	// Mode and ModTime mirror backup.SnapshotFile's identically-tagged
 	// fields (agent/internal/backup/snapshot.go) — bmr's manifestFile is a
 	// deliberately independent JSON-shaped mirror (see snapshotManifest's
@@ -373,8 +394,31 @@ func restoreSourcePath(file manifestFile) string {
 // (hex-encoded) — the hash is needed by the scope check (see scope.go,
 // ApplyManifestScope) to verify the manifest we just read matches the one
 // the server's file index was hydrated from.
-func downloadManifest(snapshotID string, provider providers.BackupProvider) (*snapshotManifest, string, error) {
+//
+// In attested mode the bytes must first match the attested manifest object
+// (size and SHA-256) — nothing is parsed before that — and the scope check
+// still compares the same digest with the file index afterwards. Without an
+// attested expectation the download is exactly the one it has always been.
+func downloadManifest(ctx context.Context, snapshotID string, provider providers.BackupProvider, e *integrity.Expectation) (*snapshotManifest, string, []string, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
+	if e.Attested() {
+		data, warnings, err := integrity.FetchControlObject(ctx, provider, e, integrity.RoleManifest, manifestKey, "")
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("bmr: manifest integrity check: %w", err)
+		}
+		var manifest snapshotManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return nil, "", nil, fmt.Errorf("bmr: decode manifest: %w", err)
+		}
+		return &manifest, integrity.DigestBytes(data), warnings, nil
+	}
+	m, sum, err := downloadManifestUnchecked(manifestKey, provider)
+	return m, sum, nil, err
+}
+
+// downloadManifestUnchecked is the manifest download used when the server
+// sent no attested expectation.
+func downloadManifestUnchecked(manifestKey string, provider providers.BackupProvider) (*snapshotManifest, string, error) {
 
 	tmpFile, err := os.CreateTemp("", "bmr-manifest-*.json")
 	if err != nil {
@@ -1029,6 +1073,42 @@ func restoreFiles(
 			continue
 		}
 
+		if cfg.Integrity.Attested() {
+			// Attested: stage beside the target, check the staged bytes
+			// exactly against the (attested) manifest entry, and only then
+			// rename onto targetPath — a file that fails is never installed.
+			stageWarnings, stageErr := stageAndPublishFile(ctx, provider, file, targetPath, cfg.Integrity)
+			for _, w := range stageWarnings {
+				if len(warnings) < maxRecoveryWarnings {
+					warnings = append(warnings, w)
+				}
+			}
+			if stageErr != nil {
+				if code := integrity.FailureCode(stageErr); code != "" {
+					addFailure("restore failed for %s: %s (%s)", origPath, stageErr.Error(), code)
+				} else {
+					addFailure("restore failed for %s: %s", origPath, stageErr.Error())
+				}
+				if errors.Is(stageErr, ErrRecoverySessionLost) {
+					sessionLostErr = stageErr
+					break
+				}
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+			consecutiveFailures = 0
+			if ctx != nil && ctx.Err() != nil {
+				return filesRestored, bytesRestored, warnings, failedFiles, nil
+			}
+			applyRestoredFileMetadata(targetPath, origPath, file, addFidelityFailure)
+			filesRestored++
+			bytesRestored += file.Size
+			continue
+		}
+
 		dlErr := provider.Download(file.BackupPath, targetPath)
 		if dlErr != nil && !errors.Is(dlErr, ErrRecoverySessionLost) {
 			// D19b: a destination that already exists with the owner-write
@@ -1067,35 +1147,7 @@ func restoreFiles(
 			return filesRestored, bytesRestored, warnings, failedFiles, nil
 		}
 
-		// Reapply the manifest's captured mode + mtime, best-effort — exactly
-		// like restore.go's post-restore fidelity step (~:241). A
-		// chmod/chtimes failure must not fail an otherwise-good restore, but
-		// IS surfaced in warnings so the caller knows fidelity was partial.
-		// Mode==0 / a zero ModTime means "unknown" (pre-fidelity manifest) →
-		// leave the OS default (O20).
-		if file.Mode != 0 {
-			if chmodErr := chmodFile(targetPath, os.FileMode(file.Mode).Perm()); chmodErr != nil {
-				addFidelityFailure("could not reapply mode %o to %s: %s", os.FileMode(file.Mode).Perm(), origPath, chmodErr.Error())
-				slog.Warn("bmr: failed to reapply file mode on restore",
-					"target", targetPath, "mode", file.Mode, "error", chmodErr.Error())
-			}
-		}
-		if !file.ModTime.IsZero() {
-			if chtimesErr := chtimesFile(targetPath, file.ModTime, file.ModTime); chtimesErr != nil {
-				addFidelityFailure("could not reapply mtime to %s: %s", origPath, chtimesErr.Error())
-				slog.Warn("bmr: failed to reapply mtime on restore",
-					"target", targetPath, "error", chtimesErr.Error())
-			}
-		}
-		// Windows attributes last (#5407): FILE_ATTRIBUTE_READONLY would make
-		// the chmod/chtimes above fail, so they have to have run already.
-		// WinAttrs==0 (non-Windows backup, or a pre-#5407 manifest) is a
-		// no-op, keeping every existing BMR restore byte-identical.
-		if winErr := applyWinAttrsFile(targetPath, file.WinAttrs); winErr != nil {
-			addFidelityFailure("could not reapply windows attributes to %s: %s", origPath, winErr.Error())
-			slog.Warn("bmr: failed to reapply windows file attributes on restore",
-				"target", targetPath, "winAttrs", file.WinAttrs, "error", winErr.Error())
-		}
+		applyRestoredFileMetadata(targetPath, origPath, file, addFidelityFailure)
 
 		filesRestored++
 		bytesRestored += file.Size
@@ -1146,6 +1198,61 @@ func restoreFiles(
 			fmt.Errorf("bmr: %d of %d files failed to restore", len(manifest.Files)-filesRestored, len(manifest.Files))
 	}
 	return filesRestored, bytesRestored, warnings, failedFiles, nil
+}
+
+// applyRestoredFileMetadata reapplies the manifest's captured mode + mtime
+// and Windows attributes to a restored file, best-effort — exactly like
+// restore.go's post-restore fidelity step. A chmod/chtimes failure must not
+// fail an otherwise-good restore, but IS surfaced (addFidelityFailure) so
+// the caller knows fidelity was partial. Mode==0 / a zero ModTime means
+// "unknown" (pre-fidelity manifest) → leave the OS default (O20).
+func applyRestoredFileMetadata(targetPath, origPath string, file manifestFile, addFidelityFailure func(format string, args ...any)) {
+	if file.Mode != 0 {
+		if chmodErr := chmodFile(targetPath, os.FileMode(file.Mode).Perm()); chmodErr != nil {
+			addFidelityFailure("could not reapply mode %o to %s: %s", os.FileMode(file.Mode).Perm(), origPath, chmodErr.Error())
+			slog.Warn("bmr: failed to reapply file mode on restore",
+				"target", targetPath, "mode", file.Mode, "error", chmodErr.Error())
+		}
+	}
+	if !file.ModTime.IsZero() {
+		if chtimesErr := chtimesFile(targetPath, file.ModTime, file.ModTime); chtimesErr != nil {
+			addFidelityFailure("could not reapply mtime to %s: %s", origPath, chtimesErr.Error())
+			slog.Warn("bmr: failed to reapply mtime on restore",
+				"target", targetPath, "error", chtimesErr.Error())
+		}
+	}
+	// Windows attributes last (#5407): FILE_ATTRIBUTE_READONLY would make
+	// the chmod/chtimes above fail, so they have to have run already.
+	// WinAttrs==0 (non-Windows backup, or a pre-#5407 manifest) is a
+	// no-op, keeping every existing BMR restore byte-identical.
+	if winErr := applyWinAttrsFile(targetPath, file.WinAttrs); winErr != nil {
+		addFidelityFailure("could not reapply windows attributes to %s: %s", origPath, winErr.Error())
+		slog.Warn("bmr: failed to reapply windows file attributes on restore",
+			"target", targetPath, "winAttrs", file.WinAttrs, "error", winErr.Error())
+	}
+}
+
+// stageAndPublishFile restores one attested manifest entry: the object is
+// downloaded into a staging file beside targetPath, checked exactly against
+// the entry (integrity.StageAndPublish) and only then renamed onto
+// targetPath. A failed check leaves targetPath as it was.
+//
+// When the publish itself fails for a reason other than the check (an
+// existing read-only target on Windows refuses to be replaced), the
+// read-only bit is cleared and the whole stage-check-publish runs once more
+// — the same single retry the unattested path makes for its direct
+// download (D19b).
+func stageAndPublishFile(ctx context.Context, provider providers.BackupProvider, file manifestFile, targetPath string, e *integrity.Expectation) ([]string, error) {
+	want := integrity.Stored{Size: file.Size, SHA256: file.Checksum, Volatile: file.Volatile}
+	_, warnings, err := integrity.StageAndPublish(ctx, provider, file.BackupPath, targetPath, want, e)
+	if err == nil || integrity.FailureCode(err) != "" || errors.Is(err, ErrRecoverySessionLost) {
+		return warnings, err
+	}
+	if restored, clearErr := clearReadOnly(targetPath); clearErr == nil && restored {
+		slog.Debug("bmr: cleared read-only attribute on restore target before retrying", "target", targetPath)
+		_, warnings, err = integrity.StageAndPublish(ctx, provider, file.BackupPath, targetPath, want, e)
+	}
+	return warnings, err
 }
 
 // ensureNoSymlinkAncestor walks every path component strictly below base up

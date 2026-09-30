@@ -762,6 +762,14 @@ func execBMRRecover(ctx context.Context, payload json.RawMessage, _ *backup.Back
 	if cfg.RecoveryToken == "" || cfg.ServerURL == "" {
 		return fail("bmr recovery requires recoveryToken and serverUrl")
 	}
+	// The payload's `integrity` block; the recovery resolves it with the
+	// bootstrap's (bmr.ResolveIntegrity). A block this helper cannot read
+	// fails the command before anything is contacted or written.
+	expectation, err := integrity.FromPayload(payload)
+	if err != nil {
+		return fail("bmr recovery: " + err.Error())
+	}
+	cfg.Integrity = expectation
 	result, err := runBMRRecovery(ctx, cfg)
 	return marshalResult(result, err)
 }
