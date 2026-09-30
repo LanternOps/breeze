@@ -582,7 +582,9 @@ describe('deviceLifecycle (integration)', () => {
 
     // Restore cancels the device_remove row (and clears its deadline)...
     const restored = await withSystemDbAccessContext(() =>
-      db.transaction((tx) => restoreRemovedDevice(tx, device.id)),
+      db.transaction((tx) =>
+        restoreRemovedDevice(tx, device.id, { orgId: tenant.orgId, siteId: tenant.siteId }),
+      ),
     );
     expect(restored.uninstallAlreadyDispatched).toBe(false);
     expect(await deviceStatus(device.id)).toBe('offline');
@@ -673,7 +675,9 @@ describe('deviceLifecycle (integration)', () => {
     // Restore commits first. Before #2787 the permanent-delete route had
     // already read `status = 'decommissioned'` outside its transaction and
     // never re-checked, so this device was purged anyway.
-    await withSystemDbAccessContext(() => db.transaction((tx) => restoreRemovedDevice(tx, device.id)));
+    await withSystemDbAccessContext(() => db.transaction((tx) =>
+      restoreRemovedDevice(tx, device.id, { orgId: tenant.orgId, siteId: tenant.siteId }),
+    ));
 
     await expect(
       withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id))),

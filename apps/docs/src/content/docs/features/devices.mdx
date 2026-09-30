@@ -119,7 +119,7 @@ Once a device is removed, its detail page shows a badge next to the **Removed** 
 
 A removed device's **Actions** menu offers two choices in place of Remove:
 
-- **Restore** -- returns the device to the active fleet and cancels any still-pending agent uninstall.
+- **Restore** -- returns the device to the active fleet and cancels any still-pending agent uninstall. A restored device counts toward the partner's device limit again, so Restore is refused with **Device limit reached** when the partner is already at its limit, the same as enrolling a new device. Quick Support devices and devices waiting in the holding area never count, so restoring one of those is not limited.
 - **Delete permanently** -- deletes the device record and every record that references it (open tickets are kept but detached from the device). This cannot be undone.
 
 From v0.118.0, **Delete permanently** (and the automatic purge below) is refused while the device has a backup snapshot under legal hold or inside its immutability window. Release the hold, or wait for the window to end, then try again.

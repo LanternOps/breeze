@@ -2235,12 +2235,35 @@ coreRoutes.post(
     // must not be wedged by a race that lasts seconds — but reports
     // `uninstallAlreadyDispatched: true` so the caller can tell the user
     // plainly the machine may already be gone and will need a reinstall.
+    //
+    // Restore also admits the device against the partner device limit, the
+    // same admission enrollment and provisioning use, so it runs in a SYSTEM
+    // context: the partner row and the partner-wide count are invisible under
+    // the caller's tenant RLS. Authorization is unchanged and happened above,
+    // in the tenant context; the service refuses (STATE_CHANGED) if the locked
+    // row is no longer in the org and site that check approved.
+    // `runOutsideDbContext` wraps `withSystemDbAccessContext` for the reason
+    // given on the permanent-delete route below.
     let result: Awaited<ReturnType<typeof restoreRemovedDevice>>;
     try {
-      result = await db.transaction((tx) => restoreRemovedDevice(tx, deviceId));
+      result = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(
+          () => db.transaction((tx) =>
+            restoreRemovedDevice(tx, deviceId, { orgId: device.orgId, siteId: device.siteId }),
+          ),
+          'devices.restore',
+        ),
+      );
     } catch (err) {
       if (err instanceof DeviceLifecycleError) {
-        return c.json({ error: err.message, code: err.code }, err.status);
+        return c.json({ error: err.message, code: err.code, ...err.details }, err.status);
+      }
+      // 55P03: the partner-row and devices-row waits are both bounded (3s).
+      // Transient and retryable, the same answer permanent delete gives.
+      if (pgErrorCode(err) === '55P03') {
+        return c.json({
+          error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
+        }, 409);
       }
       throw err;
     }

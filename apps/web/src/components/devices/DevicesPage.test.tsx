@@ -59,7 +59,6 @@ vi.mock('../../services/deviceActions', () => ({
   bulkEnterMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   bulkDecommissionDevices: vi.fn(),
-  restoreDevice: vi.fn(),
   permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
   sendBulkWakeCommand: vi.fn(),
@@ -347,6 +346,13 @@ function rawDevice(id: string, hostname: string) {
 
 function jsonResponse(payload: unknown) {
   return { ok: true, json: async () => payload } as unknown as Response;
+}
+
+/** Device ids the page POSTed to the single-device restore route. */
+function restoreCalls(): string[] {
+  return vi.mocked(fetchWithAuth).mock.calls
+    .filter(([url, init]) => /^\/devices\/[^/]+\/restore$/.test(String(url)) && init?.method === 'POST')
+    .map(([url]) => String(url).split('/')[2]!);
 }
 
 // The page opens on Agent (#5874). Suites that exercise network rows in the
@@ -2045,14 +2051,45 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
   // ungated — pinned here so a future "confirm every lifecycle action" sweep has
   // to argue with a test rather than quietly change the answer.
   it('restore stays ungated — it is the recovery path, not a destructive one', async () => {
-    const { restoreDevice } = await import('../../services/deviceActions');
-    vi.mocked(restoreDevice).mockResolvedValue(undefined as never);
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-restore-${DEV_1}`));
+
+    await waitFor(() => expect(restoreCalls()).toEqual([DEV_1]));
+    expect(screen.queryByTestId('confirm-device-action')).toBeNull();
+  });
+
+  // The API refuses a restore once the partner is at its device limit, with the
+  // enrollment refusal body. The operator has to see that reason, not a generic
+  // failure — and the device must not be reported as restored.
+  it('shows the device-limit refusal when a restore is refused', async () => {
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url === `/devices/${DEV_1}/restore`) {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({
+            error: 'Device limit reached',
+            code: 'DEVICE_LIMIT_REACHED',
+            currentDevices: 25,
+            maxDevices: 25,
+          }),
+        } as unknown as Response;
+      }
+      return jsonResponse({ data: [] });
+    });
 
     render(<DevicesPage />);
     fireEvent.click(await screen.findByTestId(`row-restore-${DEV_1}`));
 
-    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
-    expect(screen.queryByTestId('confirm-device-action')).toBeNull();
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Device limit reached' }),
+      ),
+    );
+    expect(vi.mocked(showToast)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
   });
 });
 
@@ -2698,6 +2735,28 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
     );
   });
 
+  it('names the device-limit refusal when a bulk restore stops at the limit', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [{ deviceId: DEV_1, uninstallAlreadyDispatched: false }],
+      failed: [{ deviceId: DEV_2, code: 'DEVICE_LIMIT_REACHED', message: 'Device limit reached' }],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: '1 device(s) restored; 1 failed',
+          detail: 'Device limit reached',
+        }),
+      ),
+    );
+  });
+
   it('reports a partial bulk-restore failure as an error, not a success', async () => {
     const { bulkRestoreDevices } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
@@ -2941,15 +3000,12 @@ describe('DevicesPage — post-mutation refresh re-resolves the advanced filter 
   const filterIds = () => screen.getByTestId('device-list').getAttribute('data-filter-ids');
 
   it('single Restore drops the restored device from the resolved id set', async () => {
-    const { restoreDevice } = await import('../../services/deviceActions');
-    vi.mocked(restoreDevice).mockResolvedValue({ success: true } as never);
-
     const state = await removedFilterFleet();
     await renderAndSettle(state);
 
     fireEvent.click(screen.getByTestId(`row-restore-${DEV_1}`));
 
-    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
+    await waitFor(() => expect(restoreCalls()).toEqual([DEV_1]));
     await waitFor(() => expect(state.previewCalls).toBe(2));
     await waitFor(() => expect(filterIds()).toBe(DEV_3));
   });

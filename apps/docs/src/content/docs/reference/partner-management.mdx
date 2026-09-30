@@ -246,7 +246,7 @@ curl -X POST https://breeze.example.com/api/v1/orgs/partners \
 | `type` | `enum` | `msp`, `enterprise`, or `internal`. Default: `msp` |
 | `plan` | `enum` | `free`, `starter`, `community`, `pro`, `enterprise`, or `unlimited`. Default: `free` |
 | `maxOrganizations` | `integer` | Optional cap on organization count |
-| `maxDevices` | `integer` | Optional cap on total devices across all organizations |
+| `maxDevices` | `integer` | Optional cap on total devices across all organizations. Once it is reached, enrollment, provisioning and restoring a removed device are refused with `403 DEVICE_LIMIT_REACHED`, and assigning a holding-area device with `409 PARTNER_DEVICE_LIMIT_REACHED`. Removed, Quick Support and holding-area devices do not count |
 | `settings` | `jsonb` | Partner-level settings (timezone, business hours, contact info) |
 | `serviceManagementMode` | `enum` | `native`, `external`, or `off`. Default: `native`. See [Service Management mode](#service-management-mode) |
 | `serviceManagementPsaConnectionId` | `uuid` | The partner-wide PSA connection bound to `external` mode. Required when the mode is `external`, and must be null otherwise |

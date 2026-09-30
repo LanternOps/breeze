@@ -22,6 +22,20 @@ vi.mock('./deviceUninstallDrain', async (orig) => {
   };
 });
 
+vi.mock('./partnerDeviceCapacity', async (orig) => {
+  const actual = await orig<typeof import('./partnerDeviceCapacity')>();
+  return {
+    ...actual,
+    deviceTakesLicensedSlot: vi.fn(async () => true),
+    admitPartnerDeviceCapacity: vi.fn(async () => ({
+      allowed: true,
+      partnerId: 'partner-1',
+      maxDevices: 10,
+      activeCount: 3,
+    })),
+  };
+});
+
 import {
   restoreRemovedDevice,
   purgeRemovedDevice,
@@ -31,11 +45,32 @@ import {
 import { deleteDeviceCascade } from './deviceDeletion';
 import { dissolveLinkGroupIfBelowMinimum } from './deviceLinkGroups';
 import { releaseDeviceRemoveReason } from './deviceUninstallDrain';
+import {
+  admitPartnerDeviceCapacity,
+  deviceTakesLicensedSlot,
+  PartnerDeviceCapacityError,
+} from './partnerDeviceCapacity';
 
 const DEV = '11111111-1111-4111-8111-111111111111';
+const ORG = '22222222-2222-4222-8222-222222222222';
+const SITE = '33333333-3333-4333-8333-333333333333';
+const PARTNER = '44444444-4444-4444-8444-444444444444';
+/** Where the caller's tenant-scoped read found the device. */
+const AUTHORIZED = { orgId: ORG, siteId: SITE };
+/** The devices row as the lock sees it, still where the caller authorized it. */
+const REMOVED_ROW = {
+  id: DEV,
+  status: 'decommissioned',
+  org_id: ORG,
+  site_id: SITE,
+  is_ephemeral: false,
+  link_group_id: null,
+};
 
 interface Script {
   lockRow?: Record<string, unknown> | null;
+  /** The unlocked restore pre-read (device + owning partner). Defaults to lockRow. */
+  targetRow?: Record<string, unknown> | null;
   pendingUninstall?: boolean;
   protectedBackupSnapshot?: boolean;
   updatedRow?: Record<string, unknown>;
@@ -63,6 +98,13 @@ function makeTx(script: Script) {
       if (text.includes('FOR UPDATE')) {
         calls.push('lock');
         return script.lockRow ? [script.lockRow] : [];
+      }
+      if (text.includes('partner_id')) {
+        calls.push('read-target');
+        const target = script.targetRow === undefined
+          ? (script.lockRow ? { ...script.lockRow, partner_id: PARTNER } : null)
+          : script.targetRow;
+        return target ? [target] : [];
       }
       if (text.includes('self_uninstall')) {
         calls.push('pending-check');
@@ -106,16 +148,23 @@ beforeEach(() => {
   });
   vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
   vi.mocked(deleteDeviceCascade).mockResolvedValue({ removedTopologyAlerts: 0 });
+  vi.mocked(deviceTakesLicensedSlot).mockResolvedValue(true);
+  vi.mocked(admitPartnerDeviceCapacity).mockResolvedValue({
+    allowed: true,
+    partnerId: PARTNER,
+    maxDevices: 10,
+    activeCount: 3,
+  });
 });
 
 describe('restoreRemovedDevice', () => {
   it('locks the devices row BEFORE releasing the uninstall reason (lock order)', async () => {
-    const { tx, calls } = makeTx({ lockRow: { id: DEV, status: 'decommissioned' } });
+    const { tx, calls } = makeTx({ lockRow: REMOVED_ROW });
     vi.mocked(releaseDeviceRemoveReason).mockImplementation(async () => {
       calls.push('release');
       return { cancelled: 1, retainedOtherOwner: 0, alreadyDispatched: 0 };
     });
-    await restoreRemovedDevice(tx, DEV);
+    await restoreRemovedDevice(tx, DEV, AUTHORIZED);
     // Guard every operand against -1 before comparing indices: a missing
     // statement indexes to -1, which compares "less than" everything and would
     // let the ordering assertions pass vacuously.
@@ -127,8 +176,8 @@ describe('restoreRemovedDevice', () => {
   });
 
   it('bounds the wait for the devices row lock instead of blocking forever', async () => {
-    const { tx, calls, statements } = makeTx({ lockRow: { id: DEV, status: 'decommissioned' } });
-    await restoreRemovedDevice(tx, DEV);
+    const { tx, calls, statements } = makeTx({ lockRow: REMOVED_ROW });
+    await restoreRemovedDevice(tx, DEV, AUTHORIZED);
     // Both statements must actually have been issued. Without this, dropping
     // tightenLockTimeout entirely would make indexOf return -1, which is
     // "less than" the lock's index — the ordering assertion below would pass
@@ -144,16 +193,19 @@ describe('restoreRemovedDevice', () => {
   });
 
   it('throws NOT_FOUND when the lock returns no row', async () => {
-    const { tx } = makeTx({ lockRow: null });
-    await expect(restoreRemovedDevice(tx, DEV)).rejects.toMatchObject({
+    const { tx } = makeTx({ lockRow: null, targetRow: { ...REMOVED_ROW, partner_id: PARTNER } });
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({
       code: 'NOT_FOUND',
       status: 404,
     });
   });
 
   it('throws NOT_REMOVED when the locked row is no longer decommissioned', async () => {
-    const { tx } = makeTx({ lockRow: { id: DEV, status: 'online' } });
-    await expect(restoreRemovedDevice(tx, DEV)).rejects.toMatchObject({
+    const { tx } = makeTx({
+      lockRow: { ...REMOVED_ROW, status: 'online' },
+      targetRow: { ...REMOVED_ROW, partner_id: PARTNER },
+    });
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({
       code: 'NOT_REMOVED',
       status: 409,
     });
@@ -165,9 +217,9 @@ describe('restoreRemovedDevice', () => {
   // stamp behind on a restored device would make the retention job eligible to
   // permanently delete a device the operator deliberately brought back.
   it('clears decommissioned_at in the same write that flips the status back', async () => {
-    const { tx, setPayloads } = makeTx({ lockRow: { id: DEV, status: 'decommissioned' } });
+    const { tx, setPayloads } = makeTx({ lockRow: REMOVED_ROW });
 
-    await restoreRemovedDevice(tx, DEV);
+    await restoreRemovedDevice(tx, DEV, AUTHORIZED);
 
     expect(setPayloads).toHaveLength(1);
     expect(setPayloads[0]).toEqual({
@@ -178,15 +230,122 @@ describe('restoreRemovedDevice', () => {
   });
 
   it('reports uninstallAlreadyDispatched from the release result', async () => {
-    const { tx } = makeTx({ lockRow: { id: DEV, status: 'decommissioned' } });
+    const { tx } = makeTx({ lockRow: REMOVED_ROW });
     vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
       cancelled: 0,
       retainedOtherOwner: 0,
       alreadyDispatched: 1,
     });
-    const r = await restoreRemovedDevice(tx, DEV);
+    const r = await restoreRemovedDevice(tx, DEV, AUTHORIZED);
     expect(r.uninstallAlreadyDispatched).toBe(true);
     expect(r.device).toMatchObject({ id: DEV, status: 'offline' });
+  });
+});
+
+describe('restoreRemovedDevice — partner device limit', () => {
+  it('refuses at the limit with the enrollment refusal, before touching the device', async () => {
+    const { tx, calls } = makeTx({ lockRow: REMOVED_ROW });
+    vi.mocked(admitPartnerDeviceCapacity).mockResolvedValueOnce({
+      allowed: false,
+      partnerId: PARTNER,
+      maxDevices: 5,
+      activeCount: 5,
+    });
+
+    const err = await restoreRemovedDevice(tx, DEV, AUTHORIZED).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(DeviceLifecycleError);
+    expect(err).toMatchObject({
+      code: 'DEVICE_LIMIT_REACHED',
+      message: 'Device limit reached',
+      status: 403,
+      details: { currentDevices: 5, maxDevices: 5 },
+    });
+    expect(admitPartnerDeviceCapacity).toHaveBeenCalledWith(tx, {
+      orgId: ORG,
+      expectedPartnerId: PARTNER,
+    });
+    expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
+    expect(calls).not.toContain('update');
+  });
+
+  it('admits on the partner row BEFORE locking the devices row (enrollment lock order)', async () => {
+    const { tx, calls } = makeTx({ lockRow: REMOVED_ROW });
+    vi.mocked(admitPartnerDeviceCapacity).mockImplementationOnce(async () => {
+      calls.push('admit');
+      return { allowed: true, partnerId: PARTNER, maxDevices: 5, activeCount: 4 };
+    });
+
+    await restoreRemovedDevice(tx, DEV, AUTHORIZED);
+
+    for (const step of ['admit', 'lock', 'update']) {
+      expect(calls.indexOf(step), `${step} was never recorded`).toBeGreaterThanOrEqual(0);
+    }
+    expect(calls.indexOf('admit')).toBeLessThan(calls.indexOf('lock'));
+  });
+
+  it('skips admission for a device that takes no licensed slot (ephemeral or parked)', async () => {
+    const { tx, calls } = makeTx({ lockRow: REMOVED_ROW });
+    vi.mocked(deviceTakesLicensedSlot).mockResolvedValueOnce(false);
+    vi.mocked(admitPartnerDeviceCapacity).mockResolvedValue({
+      allowed: false,
+      partnerId: PARTNER,
+      maxDevices: 5,
+      activeCount: 5,
+    });
+
+    await restoreRemovedDevice(tx, DEV, AUTHORIZED);
+
+    expect(deviceTakesLicensedSlot).toHaveBeenCalledWith(tx, DEV);
+    expect(admitPartnerDeviceCapacity).not.toHaveBeenCalled();
+    expect(calls).toContain('update');
+  });
+
+  it('answers NOT_REMOVED, not a limit refusal, for a device that is already active', async () => {
+    const { tx } = makeTx({ lockRow: { ...REMOVED_ROW, status: 'online' } });
+
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({
+      code: 'NOT_REMOVED',
+    });
+    expect(admitPartnerDeviceCapacity).not.toHaveBeenCalled();
+  });
+
+  it('throws NOT_FOUND without admitting when the device does not exist', async () => {
+    const { tx } = makeTx({ lockRow: null });
+
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    expect(admitPartnerDeviceCapacity).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['moved to another org before the pre-read', { targetRow: { ...REMOVED_ROW, org_id: 'other-org', partner_id: PARTNER } }],
+    ['moved to another org before the lock', { lockRow: { ...REMOVED_ROW, org_id: 'other-org' }, targetRow: { ...REMOVED_ROW, partner_id: PARTNER } }],
+    ['moved to another site before the lock', { lockRow: { ...REMOVED_ROW, site_id: 'other-site' }, targetRow: { ...REMOVED_ROW, partner_id: PARTNER } }],
+    ['changed its licensed standing before the lock', { lockRow: { ...REMOVED_ROW, is_ephemeral: true }, targetRow: { ...REMOVED_ROW, partner_id: PARTNER } }],
+  ])('refuses with STATE_CHANGED when the device %s', async (_name, script) => {
+    const { tx, calls } = makeTx({ lockRow: REMOVED_ROW, ...script });
+
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({
+      code: 'STATE_CHANGED',
+      status: 409,
+    });
+    expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
+    expect(calls).not.toContain('update');
+  });
+
+  it('maps a changed org-to-partner mapping during admission to STATE_CHANGED', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED_ROW });
+    vi.mocked(admitPartnerDeviceCapacity).mockRejectedValueOnce(
+      new PartnerDeviceCapacityError('ORG_PARTNER_CHANGED', 'Organization partner changed during device admission'),
+    );
+
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({
+      code: 'STATE_CHANGED',
+      status: 409,
+    });
+    expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
   });
 });
 

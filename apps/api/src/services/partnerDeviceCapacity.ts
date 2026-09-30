@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, ne, sql, type SQL } from 'drizzle-orm';
 import type { db } from '../db';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { devices, organizations, partners } from '../db/schema';
@@ -106,6 +106,48 @@ export async function previewPartnerDeviceCapacity(
   return decideCapacity(tx, input, partner.maxDevices);
 }
 
+/**
+ * Whether a device would take a licensed slot once it is active again, by the
+ * same rule the admission count uses. A path that brings an existing device
+ * back into service (restoring a decommissioned device) admits only when this
+ * is true: restoring an ephemeral or parked device adds nothing to the count.
+ * Unlocked, and deliberately independent of which partner owns the org, so a
+ * concurrent org move cannot turn "admit" into "skip"; the caller pins the
+ * device row itself before acting on the answer.
+ */
+export async function deviceTakesLicensedSlot(
+  tx: PartnerDeviceCapacityTx,
+  deviceId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), ...licensedDeviceConditions(tx)))
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * The devices that take a licensed slot while they are not decommissioned:
+ * non-ephemeral devices outside a holding org, counted per partner. Devices
+ * parked in the partner's holding org never consume licensed capacity (their
+ * number is bounded separately, per partner); a parked device starts counting
+ * when it is assigned, which calls this admission.
+ */
+function licensedDeviceConditions(tx: PartnerDeviceCapacityTx, partnerId?: string): SQL[] {
+  const licensedOrgIds = tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(
+      ...(partnerId ? [eq(organizations.partnerId, partnerId)] : []),
+      ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
+    ));
+  return [
+    sql`${devices.orgId} IN (${licensedOrgIds})`,
+    eq(devices.isEphemeral, false),
+  ];
+}
+
 async function decideCapacity(
   tx: PartnerDeviceCapacityTx,
   input: { expectedPartnerId: string; excludeDeviceId?: string },
@@ -115,23 +157,13 @@ async function decideCapacity(
     return { allowed: true, partnerId: input.expectedPartnerId, maxDevices: null, activeCount: null };
   }
 
-  // Devices parked in the partner's holding org never consume licensed
-  // capacity (their number is bounded separately, per partner); a parked
-  // device starts counting when it is assigned, which calls this admission.
-  const partnerOrgIds = tx
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(and(
-      eq(organizations.partnerId, input.expectedPartnerId),
-      ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
-    ));
+  const licensed = licensedDeviceConditions(tx, input.expectedPartnerId);
   const [countResult] = await tx
     .select({ count: sql<number>`count(*)` })
     .from(devices)
     .where(and(
-      sql`${devices.orgId} IN (${partnerOrgIds})`,
+      ...licensed,
       ne(devices.status, 'decommissioned'),
-      eq(devices.isEphemeral, false),
       ...(input.excludeDeviceId ? [ne(devices.id, input.excludeDeviceId)] : []),
     ));
   const activeCount = Number(countResult?.count ?? 0);

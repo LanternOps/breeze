@@ -18,7 +18,7 @@
  */
 import { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { zValidator } from '../../lib/validation';
 import { runBulkIsolated } from '../../lib/bulkOps';
 import {
@@ -57,6 +57,7 @@ type BulkFailCode =
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
   | 'BACKUP_PROTECTED'
+  | 'DEVICE_LIMIT_REACHED'
   | 'ERROR';
 
 interface BulkFailed {
@@ -72,7 +73,9 @@ interface BulkFailed {
  * device (cancel the queued uninstall, flip the status), so 500 of them finish
  * inside a normal request while a purge of the same 500 would not.
  *
- * Each device runs in its OWN short RLS transaction via `runBulkIsolated`. This
+ * Each device runs in its OWN short RLS transaction via `runBulkIsolated`, and
+ * its restore write in its own short system-scoped transaction after that
+ * check (partner device-limit admission; see the per-item comment). This
  * route is listed in `selfManagedDbContextRoutes`, so there is no ambient
  * request transaction to hold across the loop — holding one would pin a single
  * pooled connection, plus every `devices`/`device_commands` row lock it takes,
@@ -114,7 +117,18 @@ bulkLifecycleRoutes.post(
       }
 
       try {
-        const result = await db.transaction((tx) => restoreRemovedDevice(tx, deviceId));
+        // A system-scoped transaction of its own, after the tenant-scoped
+        // check above: restore admits the device against the partner device
+        // limit, which reads the partner row and a partner-wide count that
+        // tenant RLS hides (see POST /devices/:id/restore).
+        const result = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(
+            () => db.transaction((tx) =>
+              restoreRemovedDevice(tx, deviceId, { orgId: device.orgId, siteId: device.siteId }),
+            ),
+            'devices.bulkRestore',
+          ),
+        );
         succeeded.push({
           deviceId,
           uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
