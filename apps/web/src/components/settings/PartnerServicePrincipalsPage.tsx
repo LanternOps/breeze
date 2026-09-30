@@ -14,7 +14,9 @@ const READ_SCOPES = [
 const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:write', 'contracts:write'] as const;
 // Opt-in read scopes: offered, never pre-selected (alerts:read exposes alert
 // titles/messages across every org the principal reaches).
-const OPT_IN_READ_SCOPES = ['alerts:read'] as const;
+// device-status:read (#7577) exposes live online/last-seen/agent-version state
+// and is not implied by devices:read.
+const OPT_IN_READ_SCOPES = ['alerts:read', 'device-status:read'] as const;
 const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES] as const;
 
 type PrincipalKey = {

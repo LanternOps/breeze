@@ -54,6 +54,9 @@ export const RESOURCE_CLASSIFICATION: Record<PartnerExportResource, ResourceClas
       message: 'customer-authored',
     },
   },
+  // Live device state (#7577): an enum, ids, a timestamp and the agent's
+  // self-reported version string. Nothing a person types.
+  'device-status': { default: 'machine-observed' },
 };
 
 export function normalizeClassificationPath(path: string): string {

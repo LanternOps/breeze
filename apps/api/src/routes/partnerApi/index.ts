@@ -8,6 +8,7 @@ import { partnerConfigurationRoutes } from './configuration';
 import { partnerProvisioningRoutes } from './provisioning';
 import { partnerContractRoutes } from './contracts';
 import { partnerAlertRoutes } from './alerts';
+import { partnerDeviceStatusRoutes } from './deviceStatus';
 import { partnerExportAuditMiddleware } from './audit';
 
 export const partnerApiRoutes = new Hono();
@@ -29,3 +30,6 @@ partnerApiRoutes.route('/', partnerProvisioningRoutes);
 partnerApiRoutes.route('/', partnerContractRoutes);
 // alerts:read (opt-in scope). Read-only latest-state feed; see alerts.ts.
 partnerApiRoutes.route('/', partnerAlertRoutes);
+// device-status:read (opt-in scope, #7577). Live state, outside the
+// material-change export and its watermark; see deviceStatus.ts.
+partnerApiRoutes.route('/', partnerDeviceStatusRoutes);

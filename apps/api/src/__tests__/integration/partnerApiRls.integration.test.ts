@@ -32,7 +32,11 @@ import {
 } from '../../db/schema';
 import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
-import { partnerAlertFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
+import { partnerDeviceStatusRoutes } from '../../routes/partnerApi/deviceStatus';
+import {
+  partnerAlertFeedEnvelopeSchema,
+  partnerDeviceStatusEnvelopeSchema,
+} from '../../routes/partnerApi/schemas';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import {
   decodePartnerExportCursor,
@@ -83,6 +87,7 @@ const ALL_SCOPES = [
   'backup-configuration:read',
   'custom-fields:read',
   'alerts:read',
+  'device-status:read',
 ] as const;
 
 const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
@@ -100,6 +105,7 @@ const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
   'custom-fields': 4,
   'custom-field-values': 4,
   alerts: 2,
+  'device-status': 2,
 };
 
 interface ExportRecord {
@@ -296,6 +302,119 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(response.status, await response.clone().text()).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'partner_provisioning_site_mismatch' });
   });
+  /**
+   * #7577 — the device-status feed is live state behind its own opt-in scope.
+   * Proves, as breeze_app through the real auth middleware: devices:read alone
+   * is refused; partner A sees exactly its own devices' current status,
+   * last-seen and agent version (a heartbeat-style write is visible on the next
+   * read, no watermark involved); partner B's org, site and devices never leak.
+   */
+  runDb('device-status feed is opt-in, live and never crosses partners', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const app = actualPartnerApiApp([]);
+
+    const devicesOnlyKey = await issueKey(partnerA.partner.id, partnerA.user.id, ['devices:read']);
+    const refused = await app.request('/device-status', { headers: apiHeaders(devicesOnlyKey) });
+    expect(refused.status).toBe(403);
+
+    // Rows the principal must never see even though RLS alone would not hide
+    // them from its own partner: a device in a suspended org of partner A
+    // (outside accessibleOrgIds) and an ephemeral Quick Support device.
+    const suspendedOrg = await createOrganization({
+      partnerId: partnerA.partner.id, name: 'A-suspended-org', status: 'suspended',
+    });
+    const suspendedSite = await createSite({ orgId: suspendedOrg.id, name: 'A-suspended-site' });
+    const hiddenSeeds = [
+      { orgId: suspendedOrg.id, siteId: suspendedSite.id, isEphemeral: false, label: 'suspended' },
+      { orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, isEphemeral: true, label: 'ephemeral' },
+    ];
+    const hiddenDeviceIds = new Set<string>();
+    for (const seed of hiddenSeeds) {
+      const [hidden] = await getTestDb().insert(devices).values({
+        orgId: seed.orgId,
+        siteId: seed.siteId,
+        agentId: `a-${seed.label}-${crypto.randomUUID()}`.slice(0, 64),
+        hostname: `A-${seed.label}-device`,
+        osType: 'linux',
+        osVersion: 'Ubuntu 24.04',
+        architecture: 'amd64',
+        agentVersion: '1.0.0',
+        isEphemeral: seed.isEphemeral,
+      }).returning();
+      if (!hidden) throw new Error(`${seed.label} device seed failed`);
+      hiddenDeviceIds.add(hidden.id);
+    }
+
+    const keyA = await issueKey(partnerA.partner.id, partnerA.user.id, ['device-status:read']);
+    const lastSeenAt = new Date('2026-09-30T08:00:00.000Z');
+    const [heartbeatDevice] = partnerA.devices;
+    await getTestDb().update(devices)
+      .set({ status: 'online', lastSeenAt, agentVersion: '9.9.9' })
+      .where(eq(devices.id, heartbeatDevice!.id));
+
+    const envelope = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyA, '/device-status'),
+    );
+    expect(envelope.hasMore).toBe(false);
+    expect(new Set(envelope.data.map((row) => row.deviceId))).toEqual(
+      new Set(partnerA.devices.map((device) => device.id)),
+    );
+    for (const row of envelope.data) {
+      const seeded = partnerA.devices.find((device) => device.id === row.deviceId)!;
+      expect(row.orgId).toBe(seeded.orgId);
+    }
+    expect(envelope.data.find((row) => row.deviceId === heartbeatDevice!.id)).toMatchObject({
+      status: 'online', lastSeenAt: lastSeenAt.toISOString(), agentVersion: '9.9.9',
+    });
+    const foreignDeviceIds = new Set(partnerB.devices.map((device) => device.id));
+    expect(envelope.data.some((row) => foreignDeviceIds.has(row.deviceId))).toBe(false);
+
+    const online = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyA, '/device-status?status=online'),
+    );
+    expect(online.data.map((row) => row.deviceId)).toEqual([heartbeatDevice!.id]);
+
+    expect(envelope.data.some((row) => hiddenDeviceIds.has(row.deviceId))).toBe(false);
+    // Ascending device id order, across pages too.
+    const ids = envelope.data.map((row) => row.deviceId);
+    expect(ids).toEqual([...ids].sort());
+    const pagedIds: string[] = [];
+    let pageCursor: string | null = null;
+    do {
+      const pageQuery = new URLSearchParams({ limit: '1' });
+      if (pageCursor) pageQuery.set('cursor', pageCursor);
+      const page = partnerDeviceStatusEnvelopeSchema.parse(
+        await getEnvelope(app, keyA, `/device-status?${pageQuery}`),
+      );
+      pagedIds.push(...page.data.map((row) => row.deviceId));
+      pageCursor = page.nextCursor;
+    } while (pageCursor);
+    expect(pagedIds).toEqual(ids);
+
+    const suspended = await app.request(`/device-status?orgId=${suspendedOrg.id}`, {
+      headers: apiHeaders(keyA),
+    });
+    expect(suspended.status).toBe(404);
+
+    const foreignOrg = await app.request(`/device-status?orgId=${partnerB.orgs[0]!.id}`, {
+      headers: apiHeaders(keyA),
+    });
+    expect(foreignOrg.status).toBe(404);
+
+    const foreignSite = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyA, `/device-status?siteId=${partnerB.sites[0]!.id}`),
+    );
+    expect(foreignSite.data).toEqual([]);
+
+    // Partner B's own key sees only B's devices.
+    const keyB = await issueKey(partnerB.partner.id, partnerB.user.id, ['device-status:read']);
+    const envelopeB = partnerDeviceStatusEnvelopeSchema.parse(
+      await getEnvelope(app, keyB, '/device-status'),
+    );
+    expect(new Set(envelopeB.data.map((row) => row.deviceId))).toEqual(foreignDeviceIds);
+  });
+
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
     const [partnerA, partnerB] = await seedInterleavedPartners();
@@ -1188,6 +1307,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerConfigurationRoutes);
   app.route('/', partnerProvisioningRoutes);
   app.route('/', partnerAlertRoutes);
+  app.route('/', partnerDeviceStatusRoutes);
   return app;
 }
 
@@ -1208,16 +1328,23 @@ async function walkResource(app: Hono, rawKey: string, resource: PartnerExportRe
       expect(feed.mode).toBe('full');
       expect(feed.checkpoint === null).toBe(feed.hasMore);
       expect(envelope).not.toHaveProperty('snapshotAt');
+    } else if (resource === 'device-status') {
+      // Live state (#7577): no snapshot/watermark contract at all.
+      partnerDeviceStatusEnvelopeSchema.parse(envelope);
+      expect(envelope).not.toHaveProperty('snapshotAt');
     } else {
       expect(envelope.snapshotAt).toEqual(expect.any(String));
       snapshots.add(envelope.snapshotAt);
     }
-    records.push(...envelope.data);
+    records.push(...(resource === 'device-status'
+      // The status DTO keys the device as deviceId; normalize for the shared tuple checks.
+      ? envelope.data.map((record) => ({ ...record, id: String(record.deviceId) }))
+      : envelope.data));
     cursor = envelope.nextCursor;
     pages += 1;
     expect(pages).toBeLessThan(20);
   } while (cursor);
-  expect(snapshots.size).toBe(resource === 'alerts' ? 0 : 1);
+  expect(snapshots.size).toBe(resource === 'alerts' || resource === 'device-status' ? 0 : 1);
   return { records, pages };
 }
 

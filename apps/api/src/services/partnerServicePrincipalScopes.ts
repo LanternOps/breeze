@@ -26,8 +26,12 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
 // Opt-in read scopes: grantable, but deliberately NOT in any default scope set.
 // alerts:read exposes operational alert titles/messages across every org the
 // principal can reach, so it must be requested explicitly.
+// device-status:read (#7577) exposes live heartbeat state (online/offline,
+// last-seen time, agent version). It is a separate grant, NOT implied by
+// devices:read: the material-change export never carries liveness.
 export const PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES = Object.freeze([
   'alerts:read',
+  'device-status:read',
 ] as const);
 
 export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([

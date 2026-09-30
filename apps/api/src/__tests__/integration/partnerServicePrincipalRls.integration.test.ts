@@ -223,6 +223,18 @@ describe('partner-service-principal database contract', () => {
     expect(cause?.constraint_name).toBe('partner_service_principals_scopes_check');
   });
 
+  runDb('accepts the opt-in device-status:read scope in PostgreSQL (#7577)', async () => {
+    const { partnerA, userA } = await seedTwoPartners();
+    const [principal] = await (getTestDb() as any).insert(partnerServicePrincipals).values({
+      partnerId: partnerA.id,
+      name: `device-status-${randomUUID()}`,
+      scopes: ['devices:read', 'device-status:read'],
+      createdBy: userA.id,
+      updatedBy: userA.id,
+    }).returning();
+    expect(principal?.scopes).toEqual(['devices:read', 'device-status:read']);
+  });
+
   runDb('rejects unknown principal and key status values', async () => {
     const { partnerA, userA } = await seedTwoPartners();
     const principalStatusCause = await captureCause(() =>
