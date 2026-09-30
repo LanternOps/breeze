@@ -9,6 +9,7 @@ import { asList } from '@/lib/asList';
 import { deviceScriptsHref } from '@/lib/deviceScriptsLink';
 import { RunContextSelect, RunContextChip, type RunContextChoice, type RunContextValue } from '../common/RunContext';
 import { fetchLiveSessions, type LiveSession } from '@/services/deviceActions';
+import { usePermissions } from '@/lib/permissions';
 import { OutputSection, CustomFieldWriteSummarySection } from './ExecutionDetails';
 import type { ScriptCustomFieldWriteResult } from './ExecutionHistory';
 import type { OSType } from './ScriptList';
@@ -295,9 +296,13 @@ export default function ScriptTestRunner({
   const pinnedDevice = compatibleDevices.find(d => d.id === selectedDeviceId);
   const showSessionTarget =
     runAs === 'user' && !!selectedDeviceId && pinnedDevice?.helperLifecycleMode === 'on-demand';
+  // Listing a device's live sessions needs devices.execute or remote.access on
+  // the API; without either the picker offers "any active session" alone.
+  const { can } = usePermissions();
+  const canListLiveSessions = can('devices', 'execute') || can('remote', 'access');
 
   useEffect(() => {
-    if (!showSessionTarget || !selectedDeviceId) {
+    if (!showSessionTarget || !selectedDeviceId || !canListLiveSessions) {
       setLiveSessions([]);
       return;
     }
@@ -314,7 +319,7 @@ export default function ScriptTestRunner({
       }
     })();
     return () => { cancelled = true; };
-  }, [showSessionTarget, selectedDeviceId]);
+  }, [showSessionTarget, selectedDeviceId, canListLiveSessions]);
 
   // A session id pinned against a device (or context) that no longer supports
   // one must not ride along on the next POST — the API refuses the pair.

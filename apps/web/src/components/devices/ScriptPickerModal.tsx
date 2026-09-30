@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
+import { usePermissions } from '../../lib/permissions';
 import { hasSecretParameters, runtimeParameters, secretsBlockedForRun, type ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
@@ -110,11 +111,15 @@ export default function ScriptPickerModal({
     setLiveSessions([]);
   }, [isOpen]);
 
-  // Fetch live sessions only once the dropdown is actually shown.
+  // Fetch live sessions only once the dropdown is actually shown, and only for
+  // a caller the API lets list them (devices.execute or remote.access). Without
+  // either, the dropdown offers "any active session" alone.
+  const { can } = usePermissions();
+  const canListLiveSessions = can('devices', 'execute') || can('remote', 'access');
   useEffect(() => {
-    if (!showSessionTarget || !deviceId) return;
+    if (!showSessionTarget || !deviceId || !canListLiveSessions) return;
     fetchLiveSessions(deviceId).then(setLiveSessions).catch(() => setLiveSessions([]));
-  }, [showSessionTarget, deviceId]);
+  }, [showSessionTarget, deviceId, canListLiveSessions]);
 
   async function fetchScripts() {
     try {

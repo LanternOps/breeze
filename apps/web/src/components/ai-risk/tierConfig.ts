@@ -72,7 +72,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_fleet_health', description: 'Fleet health overview and aggregates', category: 'Devices & Hardware' },
       { name: 'get_fleet_findings', description: 'Deduplicated fleet hygiene findings', category: 'Devices & Hardware' },
       { name: 'analyze_fleet_metrics', description: 'Fleet-wide metric aggregation from rollups', category: 'Devices & Hardware' },
-      { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
+      { name: 'analyze_boot_performance', description: 'Boot performance analysis from stored boot history', category: 'Devices & Hardware' },
       { name: 'get_device_context', description: 'Brain device context lookup', category: 'Devices & Hardware' },
       // Network & DNS
       { name: 'list_network_assets', description: 'List network assets', category: 'Network & DNS' },
@@ -114,9 +114,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
-      { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
+      { name: 'analyze_disk_usage', description: 'Filesystem analysis from the latest stored scan', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
-      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
@@ -230,6 +229,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Devices & Hardware
       { name: 'set_device_context', description: 'Set brain device context', category: 'Devices & Hardware' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Devices & Hardware' },
+      // Live device reads — each runs a command on the device (devices.execute)
+      { name: 'analyze_boot_performance (triggerCollection)', description: 'Collect fresh boot metrics from the device', category: 'Devices & Hardware' },
       // Services & Processes — live listings run a command on the device
       { name: 'manage_services (list)', description: 'List services on device', category: 'Services & Processes' },
       { name: 'manage_processes (list)', description: 'List running processes with CPU/memory', category: 'Services & Processes' },
@@ -242,6 +243,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
       // Files, Disk & Registry
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
+      { name: 'analyze_disk_usage (refresh)', description: 'Run a fresh filesystem scan on the device', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry values on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'detect_log_correlations', description: 'Log correlation detection', category: 'Logs & Audit' },
@@ -491,8 +494,9 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_fleet_health: 'devices.read',
   get_fleet_findings: 'devices.read',
   analyze_fleet_metrics: 'devices.read',
-  analyze_boot_performance: 'devices.read',
-  analyze_disk_usage: 'devices.read',
+  // Stored data needs read; the live-read input flag needs execute.
+  analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
+  analyze_disk_usage: { stored: 'devices.read', refresh: 'devices.execute' },
   manage_processes: { list: 'devices.execute', kill: 'devices.execute' },
   // Network
   get_network_changes: 'devices.read',
@@ -531,7 +535,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_security_posture: 'devices.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
-  system_cleanup: { list: 'devices.read', run: 'devices.execute', status: 'devices.read' },
+  system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

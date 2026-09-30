@@ -187,6 +187,8 @@ You can use these events to trigger automations -- for example, sending a Slack 
 | `GET` | `/devices/:id/sessions/history` | Paginated session history for the device (`limit`, `daysBack` query params) |
 | `GET` | `/devices/:id/sessions/experience` | Aggregate login/idle/duration metrics for the device over a date range (`daysBack` query param) |
 
+The stored-data routes require `devices.read`. `/sessions/live` asks the device for its sessions in real time, so it also requires an execute-level permission: `devices.execute` or `remote.access` (the remote desktop session picker on RDS hosts uses it).
+
 ### PUT /agents/:id/sessions
 
 Submits the current session list and any queued login/logout/lock/unlock events for a device. This endpoint is called by the agent during each heartbeat cycle.

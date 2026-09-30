@@ -199,6 +199,45 @@ describe('live device inspection requires devices:execute, like every /system-to
   });
 });
 
+describe('live device reads outside /system-tools require devices:execute, like their routes', () => {
+  // Each input below dispatches a live command to the agent, the same command
+  // its REST route sends, and each of those routes requires DEVICES_EXECUTE:
+  //   system_cleanup list          → POST /devices/:id/filesystem/system-cleanup/list
+  //   analyze_disk_usage refresh   → POST /devices/:id/filesystem/scan
+  //   analyze_boot_performance
+  //     triggerCollection          → POST /devices/:id/collect-boot-metrics
+  const LIVE: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['system_cleanup', { action: 'list' }],
+    ['analyze_disk_usage', { refresh: true }],
+    ['analyze_boot_performance', { triggerCollection: true }],
+  ];
+  // The same tools reading stored data: the matching GET routes are devices:read.
+  const STORED: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['system_cleanup', { action: 'status' }],
+    ['analyze_disk_usage', {}],
+    ['analyze_disk_usage', { refresh: false }],
+    ['analyze_boot_performance', {}],
+    ['analyze_boot_performance', { triggerCollection: false }],
+  ];
+
+  it.each(LIVE)('%s %j is denied to the seeded viewer roles', (tool, input) => {
+    expect(allows(grantsOf('Org Viewer'), tool, input)).toBe(false);
+    expect(allows(grantsOf('Partner Viewer'), tool, input)).toBe(false);
+    expect(allows(parseGrants(['devices:read', 'devices:write']), tool, input)).toBe(false);
+  });
+
+  it.each(LIVE)('%s %j is allowed to the seeded technician roles', (tool, input) => {
+    expect(allows(ORG_TECHNICIAN, tool, input)).toBe(true);
+    expect(allows(grantsOf('Partner Technician'), tool, input)).toBe(true);
+    expect(allows(parseGrants(['devices:execute']), tool, input)).toBe(true);
+  });
+
+  it.each(STORED)('%s %j stays readable by the seeded viewer roles', (tool, input) => {
+    expect(allows(grantsOf('Org Viewer'), tool, input)).toBe(true);
+    expect(allows(grantsOf('Partner Viewer'), tool, input)).toBe(true);
+  });
+});
+
 // These four tools require the same permission as the HTTP route they mirror.
 // Each pair below is asserted in BOTH directions: the previous tool grant
 // alone is refused, and the route's grant is allowed.

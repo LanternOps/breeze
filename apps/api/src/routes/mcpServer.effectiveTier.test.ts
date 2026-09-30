@@ -254,6 +254,8 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
         : name === 'security_scan' || name === 'registry_operations'
           ? 2
           : name === 'manage_processes' || name === 'manage_patches'
+            || name === 'system_cleanup' || name === 'analyze_disk_usage'
+            || name === 'analyze_boot_performance'
             ? 1
             : undefined,
     );
@@ -367,6 +369,33 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(body.error?.code).toBe(-32603);
     expect(body.error?.message).toContain('requires ai:write');
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // The other live device reads: listing the native cleaners, a fresh disk
+  // scan and a boot-metrics collection each run a command on the device.
+  it.each([
+    ['system_cleanup', { action: 'list', deviceId: 'dev-1' }],
+    ['analyze_disk_usage', { deviceId: 'dev-1', refresh: true }],
+    ['analyze_boot_performance', { deviceId: 'dev-1', triggerCollection: true }],
+  ] as const)('ai:read key calling %s %j (live read, tier 2) is denied (requires ai:write)', async (tool, args) => {
+    const res = await callTool(['ai:read'], tool, { ...args });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('requires ai:write');
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // Their stored-data reads stay tier 1.
+  it.each([
+    ['analyze_disk_usage', { deviceId: 'dev-1' }],
+    ['analyze_boot_performance', { deviceId: 'dev-1' }],
+  ] as const)('ai:read key calling %s %j (stored data, tier 1) still succeeds', async (tool, args) => {
+    const res = await callTool(['ai:read'], tool, { ...args });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    expect(body.result?.content?.[0]?.text).toContain('ok');
   });
 
   // Review finding #5: pins the NEW, correct behavior for

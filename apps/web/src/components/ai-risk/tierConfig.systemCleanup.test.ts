@@ -22,8 +22,11 @@ function toolEntries(tier: number): string[] {
 }
 
 describe('tierConfig lists system_cleanup', () => {
-  it('shows list and status as auto-executing and run as approval-gated', () => {
-    expect(toolEntries(1)).toContain('system_cleanup (list)');
+  it('shows status as a Tier 1 read, list as a Tier 2 live read and run as approval-gated', () => {
+    // list asks the device for its cleaner catalog (a live command); status
+    // reads the stored run.
+    expect(toolEntries(2)).toContain('system_cleanup (list)');
+    expect(toolEntries(1)).not.toContain('system_cleanup (list)');
     expect(toolEntries(1)).toContain('system_cleanup (status)');
     expect(toolEntries(3)).toContain('system_cleanup (run)');
   });
@@ -41,7 +44,7 @@ describe('tierConfig lists system_cleanup', () => {
   });
 
   it('maps RBAC per action', () => {
-    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.read', run: 'devices.execute', status: 'devices.read' });
+    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', status: 'devices.read' });
   });
 });
 

@@ -122,7 +122,9 @@ let toolTableRows = 0;
         const example = rawExample.trim();
         if (!example) continue;
         // `tool` or `tool` (action/action) — backticks around the tool only.
-        const m = /^`([a-z0-9_]+)`(?:\s+\(([a-z0-9_/]+)\))?$/.exec(example);
+        // A live-read flag (`analyze_disk_usage` (refresh)) is camelCase;
+        // parseToolLabel accepts uppercase only for that flag.
+        const m = /^`([a-z0-9_]+)`(?:\s+\(([a-zA-Z0-9_/]+)\))?$/.exec(example);
         const label = m
           ? parseToolLabel(m[2] ? `${m[1]} (${m[2]})` : m[1]!)
           : null;
