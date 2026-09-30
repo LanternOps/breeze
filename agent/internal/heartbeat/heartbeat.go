@@ -253,6 +253,13 @@ type SecurityCapabilities struct {
 	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
 	// against an agent reporting 0, same shape as the revocation-lease gate.
 	DesktopFenceProtocolVersion int `json:"desktopFenceProtocolVersion,omitempty"`
+	// DesktopWsFenceProtocolVersion declares that the WebSocket desktop
+	// fallback (desktop_stream_start) honours the same start fence, revocation
+	// lease and stop tombstone as start_desktop. Builds that only report
+	// DesktopFenceProtocolVersion ignore the generation on that path. The API
+	// accepts it without acting on it yet, so it can later require it there
+	// without another agent release.
+	DesktopWsFenceProtocolVersion int `json:"desktopWsFenceProtocolVersion,omitempty"`
 	// ConsentPromptProtocolVersion declares that this build parses the
 	// `prompt` block on a desktop-stream-start command (parseDesktopPrompt,
 	// handlers_desktop.go) and gates capture on it: a consent dialog or
@@ -7943,6 +7950,7 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
 		DesktopFenceProtocolVersion:     1,
+		DesktopWsFenceProtocolVersion:   1,
 		ConsentPromptProtocolVersion:    1,
 	}
 }

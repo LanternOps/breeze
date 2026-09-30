@@ -294,3 +294,31 @@ describe('submitEventLogsSchema — server-side message length cap (#2642)', () 
     expect(parsed.success).toBe(false);
   });
 });
+
+describe('heartbeatSchema — WebSocket desktop start-fence capability', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.120.0' };
+
+  it('declares the key, so a later gate can read it', () => {
+    const parsed = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: { desktopFenceProtocolVersion: 1, desktopWsFenceProtocolVersion: 1 },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.securityCapabilities?.desktopWsFenceProtocolVersion).toBe(1);
+      expect(parsed.data.securityCapabilities?.desktopFenceProtocolVersion).toBe(1);
+    }
+  });
+
+  it('drops a malformed value alone without rejecting the beat or the other capabilities', () => {
+    const parsed = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: { desktopFenceProtocolVersion: 1, desktopWsFenceProtocolVersion: 'yes' },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.securityCapabilities?.desktopWsFenceProtocolVersion).toBeUndefined();
+      expect(parsed.data.securityCapabilities?.desktopFenceProtocolVersion).toBe(1);
+    }
+  });
+});

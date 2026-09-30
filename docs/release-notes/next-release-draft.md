@@ -44,4 +44,6 @@ Last release: **v0.119.0** (2026-09-30).
   fence and the session lease, refuses an Allow that arrives after the session
   was stopped, shows the notify notice and on-screen indicator, and `stop_desktop`
   also stops it. Agents v0.114.0–v0.119.x keep working on this transport with
-  the server-side handshake above.
+  the server-side handshake above. Updated agents advertise this with a new
+  heartbeat capability, `securityCapabilities.desktopWsFenceProtocolVersion: 1`;
+  the server accepts it but does not record or require it yet.
