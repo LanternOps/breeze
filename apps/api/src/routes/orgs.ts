@@ -2957,7 +2957,8 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     }
     // `removedDeviceCount` (#7471): decommissioned rows keep their site FK and
     // block site deletion, so surface them next to the active count — the
-    // DELETE guard (409 SITE_HAS_DEVICES) and this list report the same rows.
+    // DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
+    // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
     const removedCounts = await db
       .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
       .from(devices)
@@ -3250,7 +3251,7 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     const { removedDevices, otherDevices } = removed.blocked;
     const parts: string[] = [];
     if (otherDevices > 0) {
-      parts.push(`${otherDevices} device${otherDevices === 1 ? '' : 's'} still assigned to it (move or remove them first)`);
+      parts.push(`${otherDevices} device${otherDevices === 1 ? '' : 's'} still assigned to it (move or remove them first; this includes Quick Support sessions the list hides)`);
     }
     if (removedDevices > 0) {
       parts.push(`${removedDevices} removed device${removedDevices === 1 ? '' : 's'} that must be permanently deleted first (Devices → show removed → Delete permanently)`);

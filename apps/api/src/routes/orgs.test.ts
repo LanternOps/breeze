@@ -5953,6 +5953,7 @@ describe('org routes', () => {
     describe.each([
       { name: 'only removed devices', row: { removed: 2, other: 0 }, msg: /2 removed devices.*permanently deleted/ },
       { name: 'only active devices', row: { removed: 0, other: 1 }, msg: /1 device still assigned/ },
+      { name: 'removed and active devices', row: { removed: 3, other: 2 }, msg: /2 devices still assigned.* and 3 removed devices/ },
     ])('site still referenced by devices ($name)', ({ row, msg }) => {
       it('returns 409 SITE_HAS_DEVICES and never deletes the site', async () => {
         setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
@@ -5964,9 +5965,10 @@ describe('org routes', () => {
           })
         } as any);
         const txDelete = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+        const txSelect = vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([row])) })) }));
         vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
           ...siteDeleteTxOver(db),
-          select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([row])) })) })),
+          select: txSelect,
           delete: txDelete,
         }));
 
@@ -5978,7 +5980,36 @@ describe('org routes', () => {
         expect(body.error).toMatch(msg);
         expect(body.removedDeviceCount).toBe(row.removed);
         expect(txDelete).not.toHaveBeenCalled();
+        // The removed/other split must hinge on status = 'decommissioned' (the
+        // mocked schema renders columns blank, so assert on operator + params).
+        const projection = (txSelect.mock.calls[0] as unknown as [Record<string, SQL>])[0];
+        const removedSql = new PgDialect().sqlToQuery(projection.removed!);
+        const otherSql = new PgDialect().sqlToQuery(projection.other!);
+        expect(removedSql.sql).toMatch(/filter \(where .* = 'decommissioned'\)/);
+        expect(otherSql.sql).toMatch(/filter \(where .* <> 'decommissioned'\)/);
+        expect(removedSql.params).toContainEqual({ __column: 'devices.status' });
+        expect(otherSql.params).toContainEqual({ __column: 'devices.status' });
       });
+    });
+
+    it('deletes when the guard reports zero devices (explicit zero row)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: '11111111-1111-1111-1111-111111111111' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+        ...siteDeleteTxOver(db),
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([{ removed: 0, other: 0 }])) })) })),
+        delete: vi.fn(() => ({ where: vi.fn(() => Object.assign(Promise.resolve(), { returning: vi.fn(() => Promise.resolve([])) })) })),
+      }));
+
+      const res = await app.request('/orgs/sites/site-1', { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
     });
   });
 
