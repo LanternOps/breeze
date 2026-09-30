@@ -1490,6 +1490,112 @@ describe('analytics routes', () => {
       });
     });
 
+    describe('device aggregates (executive summary, OS distribution)', () => {
+      const SITE_PREDICATE = JSON.stringify({
+        type: 'inArray',
+        left: 'devices.siteId',
+        right: [SITE_ALLOWED]
+      });
+      const whereOf = (callIndex: number) =>
+        JSON.stringify(
+          (vi.mocked(db.select).mock.results[callIndex]!.value as any).where.mock.calls[0]?.[0]
+        );
+
+      it('narrows the status counts and the enrollment trend to the caller\'s sites', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce([{ status: 'online', count: 1 }]);
+        mockSelectOnce([{ week: '2026-02-01T00:00:00.000Z', count: 1 }]);
+
+        const res = await app.request('/analytics/executive-summary', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data.devices).toEqual({ total: 1, online: 1, offline: 0, pending: 0 });
+        expect(db.select).toHaveBeenCalledTimes(2);
+        expect(whereOf(0)).toContain(SITE_PREDICATE);
+        expect(whereOf(1)).toContain(SITE_PREDICATE);
+        // Enrollment history still counts devices that were later
+        // decommissioned; only the site (and org) narrowing is added.
+        expect(whereOf(1)).not.toContain('decommissioned');
+      });
+
+      it('narrows the OS distribution to the caller\'s sites', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce([{ osType: 'windows', osVersion: '11', count: 1 }]);
+
+        const res = await app.request('/analytics/os-distribution', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual([{ name: 'windows 11', value: 1 }]);
+        expect(db.select).toHaveBeenCalledTimes(1);
+        expect(whereOf(0)).toContain(SITE_PREDICATE);
+      });
+
+      it.each([
+        ['an empty site list', []],
+        ['a malformed (null) site list', null]
+      ])('returns zeroed aggregates without querying for %s', async (_label, allowedSiteIds) => {
+        currentPermissions = { allowedSiteIds } as unknown as { allowedSiteIds?: string[] };
+
+        const summary = await app.request('/analytics/executive-summary?periodType=weekly', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(summary.status).toBe(200);
+        expect((await summary.json()).data).toEqual({
+          periodType: 'weekly',
+          devices: { total: 0, online: 0, offline: 0, pending: 0 },
+          totalDevices: 0,
+          onlineDevices: 0,
+          offlineDevices: 0,
+          pendingDevices: 0,
+          trendData: [],
+          trendLabel: 'Weekly enrollments',
+          highlights: [],
+          metrics: []
+        });
+
+        const os = await app.request('/analytics/os-distribution', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(os.status).toBe(200);
+        expect(await os.json()).toEqual([]);
+
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
+      it('adds no site predicate for an unrestricted caller', async () => {
+        currentPermissions = undefined;
+        mockSelectOnce([{ status: 'online', count: 2 }]);
+        mockSelectOnce([]);
+        mockSelectOnce([{ osType: 'linux', osVersion: 'Ubuntu', count: 2 }]);
+
+        const summary = await app.request('/analytics/executive-summary', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(summary.status).toBe(200);
+        expect((await summary.json()).data.totalDevices).toBe(2);
+
+        const os = await app.request('/analytics/os-distribution', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(os.status).toBe(200);
+        expect(await os.json()).toEqual([{ name: 'linux Ubuntu', value: 2 }]);
+
+        expect(db.select).toHaveBeenCalledTimes(3);
+        for (const index of [0, 1, 2]) {
+          expect(whereOf(index)).not.toContain('devices.siteId');
+        }
+      });
+    });
   });
 });
 
