@@ -210,7 +210,9 @@ vi.mock('../services/remoteAccessPolicy', () => ({
 
 vi.mock('./desktopWs', () => ({
   handleDesktopFrame: vi.fn(),
-  isDesktopSessionOwnedByAgent: vi.fn(() => true)
+  isDesktopSessionOwnedByAgent: vi.fn(() => true),
+  settleDesktopStreamStart: vi.fn(),
+  closeDesktopRelayForStop: vi.fn(),
 }));
 
 vi.mock('./tunnelWs', () => ({
@@ -441,7 +443,7 @@ import {
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { createAuditLogAsync } from '../services/auditService';
 import { registerTunnelOwnership } from './tunnelWs';
-import { handleDesktopFrame } from './desktopWs';
+import { handleDesktopFrame, settleDesktopStreamStart, closeDesktopRelayForStop } from './desktopWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
@@ -6593,5 +6595,129 @@ describe('command_progress frames (#3578)', () => {
 
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('command_progress'))).toBe(true);
     warnSpy.mockRestore();
+  });
+});
+
+// The WebSocket desktop fallback's start is bound to a one-off command identity
+// and stays `connecting` until the agent's result for that exact command
+// arrives. Its success result carries the captured screen size instead of an
+// SDP answer; its denial and failure reuse the WebRTC finalizers. Every outcome
+// is handed to the relay, which forwards nothing before an accepted result.
+describe('WebSocket desktop fallback start results', () => {
+  const SESSION = '12121212-1212-4121-8121-121212121212';
+  const COMMAND = `desk-start-${SESSION}-34343434-3434-4343-8343-343434343434`;
+  const AGENT = 'agent-stream';
+  const DEVICE = { deviceId: 'device-stream', orgId: 'org-stream', partnerId: 'partner-stream' };
+
+  beforeEach(() => {
+    vi.mocked(settleDesktopStreamStart).mockClear();
+    vi.mocked(closeDesktopRelayForStop).mockClear();
+  });
+
+  it('accepts the screen-size result shape, activates the exact connecting start and settles the relay as accepted', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: SESSION, orgId: DEVICE.orgId, userId: 'user-1', type: 'desktop',
+          promptMode: 'off', consentUnavailableBehavior: null,
+        }]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, screenWidth: 1920, screenHeight: 1080 },
+      }),
+    } as any, ws as any);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written).toMatchObject({ status: 'active' });
+    expect(written).not.toHaveProperty('webrtcAnswer');
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'accepted' });
+  });
+
+  it('settles the relay as refused when the start is no longer the connecting one (nothing activated)', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, screenWidth: 1280, screenHeight: 720, consentReason: 'helper_absent' },
+      }),
+    } as any, ws as any);
+
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'refused' });
+  });
+
+  it('hands a failed start to the relay with the redacted agent error', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'failed',
+        error: 'start_desktop refused by the desktop start fence (terminal)',
+      }),
+    } as any, ws as any);
+
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, {
+      outcome: 'failed',
+      error: 'start_desktop refused by the desktop start fence (terminal)',
+    });
+  });
+
+  it('hands a consent denial to the relay with the reason', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, event: 'consent_denied', reason: 'user' },
+      }),
+    } as any, ws as any);
+
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'denied', reason: 'user' });
+  });
+
+  it('closes any local desktop relay for the session the moment stop_desktop is sent', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+    await connectedAgent('agent-stop-relay', DEVICE);
+
+    expect(sendCommandToAgent('agent-stop-relay', {
+      id: `desk-stop-${SESSION}-9`,
+      type: 'stop_desktop',
+      payload: { sessionId: SESSION, terminalGeneration: '9' },
+    })).toBe(true);
+    expect(closeDesktopRelayForStop).toHaveBeenCalledWith(SESSION);
+
+    vi.mocked(closeDesktopRelayForStop).mockClear();
+    sendCommandToAgent('agent-stop-relay', { id: 'c-script', type: 'script', payload: { sessionId: SESSION } });
+    expect(closeDesktopRelayForStop).not.toHaveBeenCalled();
   });
 });

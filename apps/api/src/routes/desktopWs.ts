@@ -87,7 +87,7 @@ import {
   type LiveRemoteSessionAuthorizationResult,
 } from '../services/remoteWsAuthorization';
 import { isViewerFailureDiagnosticRow } from '../services/viewerFailureDiagnostics';
-import { viewerAnswerTimeoutMs } from './remote/consentTiming';
+import { consentDeniedMessage, viewerAnswerTimeoutMs } from './remote/consentTiming';
 import {
   assertRemoteWsUpgradeRuntimeReady,
   getRemoteWsUpgradeConnection,
@@ -178,6 +178,16 @@ interface DesktopSession extends RemoteConnectionLease {
   intentAcknowledged: boolean;
   finalizationInput?: DesktopSessionFinalizationInput;
   persistedIntent?: PersistedDesktopFinalizationIntent;
+  // WebSocket-fallback start handshake. The start is bound to a one-off
+  // command identity; nothing is forwarded to or from the viewer until the
+  // agent's result for exactly that command accepted it
+  // (settleDesktopStreamStart).
+  streamStartCommandId?: string;
+  streamAccepted?: boolean;
+  /** Latest frame seen before the accept, delivered on accept. */
+  pendingFrame?: ArrayBuffer;
+  streamStartDeadline?: ReturnType<typeof setTimeout>;
+  connectedDevice?: { hostname: string; osType: string };
 }
 
 // E2: desktop input event token bucket (60 events/sec/session).
@@ -193,6 +203,10 @@ const desktopFrameCallbacks = new Map<string, DesktopFrameCallback>();
 // Server-side ping/pong constants for stale connection detection
 const PING_INTERVAL_MS = 30_000;
 const PONG_TIMEOUT_MS = 10_000;
+// Margin past the viewer's answer budget (viewerAnswerTimeoutMs) before an
+// unanswered stream start is abandoned: covers the agent's start-fence resync
+// (bounded at 4 s) and capture setup.
+const STREAM_START_MARGIN_MS = 10_000;
 const DESKTOP_CLEANUP_RETRY_MS = 1_000;
 
 // E1: Redis-backed sliding window rate limiter for user WS upgrades.
@@ -484,6 +498,7 @@ function detachExactDesktopSession(
   if (session.detachComplete) return;
   if (session.pingInterval) clearInterval(session.pingInterval);
   if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+  if (session.streamStartDeadline) clearTimeout(session.streamStartDeadline);
   const current = activeDesktopSessions.get(sessionId);
   if (current !== session || !exactDesktopIdentity(current, session)) return;
   unregisterDesktopFrameCallback(sessionId);
@@ -530,8 +545,10 @@ export function closeDesktopSessionLifecycle(
   // No callback can forward after observing closing/deadline zero.
   session.state = 'closing';
   session.safeForwardingUntilMonotonicMs = 0;
+  session.pendingFrame = undefined;
   if (session.pingInterval) clearInterval(session.pingInterval);
   if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+  if (session.streamStartDeadline) clearTimeout(session.streamStartDeadline);
   const endedAt = new Date();
   const finalizationInput: DesktopSessionFinalizationInput =
     session.finalizationInput ?? Object.freeze({
@@ -912,6 +929,13 @@ function createDesktopWsHandlers(
                 ws,
               )
             ) {
+              if (!sess.streamAccepted) {
+                // Not accepted yet: hold only the latest frame. Unchanged
+                // frames are not re-sent by the agent, so dropping it would
+                // leave a still desktop blank after the accept.
+                sess.pendingFrame = buf;
+                return;
+              }
               sess.frameBytes += data.byteLength;
               ws.send(buf);
             }
@@ -997,8 +1021,19 @@ function createDesktopWsHandlers(
         // commit the WebRTC paths use (SEC-038 W02). A prior owner may have made
         // the row terminal after validation but before this exact lease was
         // bound, and the generation orders this start against that decision.
+        const streamStartCommandId = createDesktopStartCommandId(sessionId);
+        const streamPromptMode = streamPrompt?.mode === 'consent' || streamPrompt?.mode === 'notify'
+          ? streamPrompt.mode
+          : 'off';
         const streamIntent = await withSystemDbAccessContext(() =>
-          commitDesktopStreamStartIntent(sessionId)
+          commitDesktopStreamStartIntent({
+            sessionId,
+            startCommandId: streamStartCommandId,
+            promptMode: streamPromptMode,
+            // #6819: bound so an unsolicited-consent acceptance can be checked
+            // against what this start allowed.
+            consentUnavailableBehavior: boundConsentUnavailableBehavior(streamPrompt),
+          })
         );
         // A denial is told to the viewer, with the reason, exactly as the lease
         // and re-read failures below are. Dropping the socket without a frame
@@ -1066,7 +1101,7 @@ function createDesktopWsHandlers(
 
         // Send desktop_stream_start command to agent
         const startCommand = {
-          id: `desk-start-${sessionId}`,
+          id: streamStartCommandId,
           type: 'desktop_stream_start',
           payload: {
             sessionId,
@@ -1115,6 +1150,9 @@ function createDesktopWsHandlers(
           });
           return;
         }
+        boundSession.streamStartCommandId = streamStartCommandId;
+        boundSession.streamAccepted = false;
+        boundSession.connectedDevice = { hostname: device.hostname, osType: device.osType };
         const sent = sendCommandToAgent(device.agentId, startCommand);
         if (!sent) {
           ws.send(JSON.stringify({
@@ -1151,15 +1189,20 @@ function createDesktopWsHandlers(
           return;
         }
 
-        // Send connected message to viewer
-        ws.send(JSON.stringify({
-          type: 'connected',
-          sessionId,
-          device: {
-            hostname: device.hostname,
-            osType: device.osType
-          }
-        }));
+        // The viewer is told 'connected' only when the agent accepts this
+        // exact start (settleDesktopStreamStart) — after its consent prompt,
+        // where one applies. Bound the wait: an answer that never comes (the
+        // agent went away, or answered on another instance) must not leave the
+        // viewer waiting forever.
+        boundSession.streamStartDeadline = setTimeout(() => {
+          const current = activeDesktopSessions.get(sessionId);
+          if (!current || current !== boundSession || current.streamAccepted) return;
+          failDesktopStreamStart(sessionId, current, {
+            code: 'START_TIMEOUT',
+            message: 'The remote device did not start the desktop stream in time. Please try again.',
+            closeReason: 'Start timed out',
+          });
+        }, viewerAnswerTimeoutMs(streamPromptMode) + STREAM_START_MARGIN_MS);
 
         // Start server-side ping/pong for stale connection detection
         pingInterval = setInterval(() => {
@@ -1395,6 +1438,11 @@ function createDesktopWsHandlers(
         }
         const message = parsed.data;
 
+        // Nothing reaches the agent before it accepted this start.
+        if ((message.type === 'input' || message.type === 'config') && !desktopSession.streamAccepted) {
+          return;
+        }
+
         switch (message.type) {
           case 'input': {
             // E2: token-bucket rate limit (60 events/sec). On breach, drop
@@ -1497,6 +1545,163 @@ function createDesktopWsHandlers(
       });
     }
   };
+}
+
+export type DesktopStreamStartSettlement =
+  | { outcome: 'accepted' }
+  | { outcome: 'denied'; reason: string }
+  | { outcome: 'failed'; error: string }
+  | { outcome: 'refused' };
+
+function desktopConnectionIdentity(session: DesktopSession): RemoteConnectionIdentity {
+  return {
+    connectionId: session.connectionId,
+    generation: session.generation,
+    instanceId: session.instanceId,
+    leaseToken: session.leaseToken,
+  };
+}
+
+/**
+ * End a WebSocket-fallback relay whose start will not stream: stop forwarding
+ * at once, tell the viewer why, then run the durable close (stream stop to the
+ * agent, session finalization).
+ */
+function failDesktopStreamStart(
+  sessionId: string,
+  session: DesktopSession,
+  failure: { code: string; message: string; closeReason: string },
+): void {
+  const ws = session.userWs;
+  if (!ws) return;
+  session.continuationAuthorized = false;
+  session.pendingFrame = undefined;
+  if (session.streamStartDeadline) clearTimeout(session.streamStartDeadline);
+  try {
+    ws.send(JSON.stringify({ type: 'error', code: failure.code, message: failure.message }));
+  } catch {
+    // The socket may already be closing; the durable close below still runs.
+  }
+  void closeDesktopSessionLifecycle(sessionId, {
+    expectedWs: ws,
+    connection: desktopConnectionIdentity(session),
+    reason: 'setup_failed',
+    terminalStatus: 'failed',
+    notifyAgent: true,
+  }).catch(() => {
+    reportRetainedDesktopCleanup(sessionId, 'revoked');
+  });
+  try {
+    ws.close(4003, failure.closeReason);
+  } catch {
+    // Already closed.
+  }
+}
+
+/**
+ * The agent's answer to a WebSocket-fallback start, handed over by the agent
+ * socket (routes/agentWs.ts) after the session row was updated. Acts only on
+ * the relay that published exactly this start, for exactly this agent; any
+ * other answer — a WebRTC start, a superseded relay, another agent — is
+ * ignored.
+ */
+export function settleDesktopStreamStart(
+  sessionId: string,
+  agentId: string,
+  commandId: string,
+  settlement: DesktopStreamStartSettlement,
+): void {
+  const session = activeDesktopSessions.get(sessionId);
+  if (
+    !session
+    || session.agentId !== agentId
+    || !session.streamStartCommandId
+    || session.streamStartCommandId !== commandId
+    || session.detachComplete
+    || session.state === 'closing'
+    || !session.userWs
+  ) {
+    return;
+  }
+  const ws = session.userWs;
+
+  if (settlement.outcome === 'accepted') {
+    if (session.streamAccepted || !session.continuationAuthorized) return;
+    if (session.streamStartDeadline) clearTimeout(session.streamStartDeadline);
+    session.streamStartDeadline = undefined;
+    session.streamAccepted = true;
+    try {
+      ws.send(JSON.stringify({
+        type: 'connected',
+        sessionId,
+        device: session.connectedDevice ?? { hostname: '', osType: '' },
+      }));
+      const pending = session.pendingFrame;
+      session.pendingFrame = undefined;
+      if (pending && ownsSafeRemoteConnection(activeDesktopSessions, sessionId, desktopConnectionIdentity(session), ws)) {
+        session.frameBytes += pending.byteLength;
+        ws.send(pending);
+      }
+    } catch (error) {
+      console.error(`[DesktopWs] Failed to notify viewer of accepted start for session ${sessionId}:`, error);
+    }
+    return;
+  }
+
+  if (settlement.outcome === 'denied') {
+    failDesktopStreamStart(sessionId, session, {
+      code: 'CONSENT_DENIED',
+      message: consentDeniedMessage(settlement.reason),
+      closeReason: 'Consent denied',
+    });
+    return;
+  }
+  if (settlement.outcome === 'failed') {
+    failDesktopStreamStart(sessionId, session, {
+      code: 'AGENT_START_FAILED',
+      message: `The remote device could not start the desktop stream: ${settlement.error}`,
+      closeReason: 'Start failed',
+    });
+    return;
+  }
+  failDesktopStreamStart(sessionId, session, {
+    code: 'START_REFUSED',
+    message: 'This desktop session could not be started. Please try again.',
+    closeReason: 'Start refused',
+  });
+}
+
+/**
+ * A stop_desktop for this session is being sent to its agent (End, teardown,
+ * revocation — see sendCommandToAgent). Cut a local WebSocket-fallback relay
+ * now rather than at its next revalidation tick: forwarding stops before this
+ * returns, then the durable close runs. No-op when there is no such relay.
+ */
+export function closeDesktopRelayForStop(sessionId: string): void {
+  const session = activeDesktopSessions.get(sessionId);
+  if (!session || session.detachComplete || session.state === 'closing' || !session.userWs) return;
+  const ws = session.userWs;
+  session.continuationAuthorized = false;
+  session.pendingFrame = undefined;
+  if (session.streamStartDeadline) clearTimeout(session.streamStartDeadline);
+  try {
+    ws.send(JSON.stringify({
+      type: 'error',
+      code: 'SESSION_ENDED',
+      message: 'This remote session was ended.',
+    }));
+  } catch {
+    // The durable close below still runs.
+  }
+  void closeDesktopSessionLifecycle(sessionId, {
+    expectedWs: ws,
+    connection: desktopConnectionIdentity(session),
+    reason: 'revoked',
+    terminalStatus: 'disconnected',
+    notifyAgent: true,
+  }).catch(() => {
+    reportRetainedDesktopCleanup(sessionId, 'revoked');
+  });
 }
 
 /**
@@ -2021,6 +2226,7 @@ export function __resetDesktopWsForTest(): void {
     if (session.pingInterval) clearInterval(session.pingInterval);
     if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
     if (session.cleanupRetryTimeout) clearTimeout(session.cleanupRetryTimeout);
+    if (session.streamStartDeadline) clearTimeout(session.streamStartDeadline);
   }
   activeDesktopSessions.clear();
   desktopFrameCallbacks.clear();

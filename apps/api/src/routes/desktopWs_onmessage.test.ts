@@ -83,6 +83,7 @@ vi.mock('../services/rate-limit', () => ({
 }));
 
 vi.mock('./remote/helpers', () => ({
+  createDesktopStartCommandId: vi.fn((id: string) => `desk-start-${id}-${crypto.randomUUID()}`),
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
   buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
@@ -129,7 +130,23 @@ import {
   isDesktopSessionOwnedByAgent,
   getActiveDesktopSessionCount,
   __resetDesktopWsForTest,
+  settleDesktopStreamStart,
 } from './desktopWs';
+
+/**
+ * Play the agent accepting the relay's published desktop_stream_start (the
+ * relay forwards nothing and sends no 'connected' before that). A no-op when
+ * the open never published a start.
+ */
+function acceptPublishedStart(): void {
+  const calls = vi.mocked(sendCommandToAgent).mock.calls.filter(
+    ([, cmd]) => (cmd as { type?: string }).type === 'desktop_stream_start',
+  );
+  const last = calls.at(-1);
+  if (!last) return;
+  const [agentId, cmd] = last as [string, { id: string; payload: { sessionId: string } }];
+  settleDesktopStreamStart(cmd.payload.sessionId, agentId, cmd.id, { outcome: 'accepted' });
+}
 
 // -------------------------------------------------------------------
 // Helpers
@@ -335,6 +352,8 @@ describe('desktopWs', () => {
       ws = wsMock();
 
       await handlers.onOpen({}, ws);
+
+      acceptPublishedStart();
       ws.send.mockClear();
       vi.mocked(sendCommandToAgent).mockClear();
     });

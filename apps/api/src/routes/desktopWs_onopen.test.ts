@@ -116,6 +116,7 @@ vi.mock('../services/rate-limit', () => ({
 }));
 
 vi.mock('./remote/helpers', () => ({
+  createDesktopStartCommandId: vi.fn((id: string) => `desk-start-${id}-${crypto.randomUUID()}`),
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
   // Default: no consent/notify policy configured — matches the pre-existing
@@ -167,9 +168,12 @@ import {
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
   getActiveDesktopSessionCount,
+  settleDesktopStreamStart,
+  closeDesktopRelayForStop,
   __createDesktopSharedLeasesForTest,
   __resetDesktopWsForTest,
 } from './desktopWs';
+import { prepareRevocationLeaseForStart } from '../services/remoteRevocationLease';
 
 // -------------------------------------------------------------------
 // Helpers
@@ -353,6 +357,30 @@ function setupSuccessfulValidation(options: {
   vi.mocked(db.update).mockReturnValue(mockUpdateNoReturn() as any);
 
   return { userId };
+}
+
+/** The desktop_stream_start command the relay published for SESSION_ID. */
+function publishedStart(): { id: string; payload: Record<string, unknown> } {
+  const call = vi.mocked(sendCommandToAgent).mock.calls.find(
+    ([, cmd]) => (cmd as { type?: string }).type === 'desktop_stream_start',
+  );
+  if (!call) throw new Error('no desktop_stream_start was published');
+  return call[1] as { id: string; payload: Record<string, unknown> };
+}
+
+/** Play the agent's accepted result for the published start. */
+function acceptStart(): string {
+  const { id } = publishedStart();
+  settleDesktopStreamStart(SESSION_ID, AGENT_ID, id, { outcome: 'accepted' });
+  return id;
+}
+
+function sentText(ws: ReturnType<typeof wsMock>): string[] {
+  return ws.send.mock.calls.map((c: any[]) => c[0]).filter((v: unknown): v is string => typeof v === 'string');
+}
+
+function sentBinaryCount(ws: ReturnType<typeof wsMock>): number {
+  return ws.send.mock.calls.filter((c: any[]) => c[0] instanceof ArrayBuffer).length;
 }
 
 /**
@@ -632,8 +660,9 @@ describe('desktopWs', () => {
       const ws = wsMock();
 
       await handlers.onOpen({}, ws);
+      acceptStart();
 
-      // Should send 'connected' message
+      // Should send 'connected' message once the agent accepted the start
       const sentCalls = ws.send.mock.calls.map((c: any[]) => c[0]);
       const connectedMsg = sentCalls.find(
         (s: any) => typeof s === 'string' && s.includes('"connected"')
@@ -883,6 +912,161 @@ describe('desktopWs', () => {
       );
       expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"connected"'));
       vi.useRealTimers();
+    });
+  });
+
+  // The WebSocket fallback's start is a handshake, like WebRTC's: the agent
+  // answers the exact start it was sent (after its consent prompt, where one
+  // applies), and the relay forwards nothing — no frames, no input — until
+  // that answer accepted it. A denial or failure is told to the viewer.
+  describe('WebSocket fallback start handshake', () => {
+    it('binds the start to a one-off command identity and forwards nothing before the agent accepts', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      const start = publishedStart();
+      expect(start.id).toMatch(
+        new RegExp(`^desk-start-${SESSION_ID}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`),
+      );
+      expect(sentText(ws).some((m) => m.includes('"connected"'))).toBe(false);
+
+      handleDesktopFrame(SESSION_ID, new Uint8Array([1, 2, 3]));
+      handleDesktopFrame(SESSION_ID, new Uint8Array([4, 5, 6, 7]));
+      expect(sentBinaryCount(ws)).toBe(0);
+
+      vi.mocked(sendCommandToAgent).mockClear();
+      await handlers.onMessage({ data: JSON.stringify({ type: 'input', event: { type: 'mouse_move', x: 1, y: 1 } }) } as any, ws);
+      expect(sendCommandToAgent).not.toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_input' }),
+      );
+
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, start.id, { outcome: 'accepted' });
+      expect(sentText(ws).some((m) => m.includes('"connected"'))).toBe(true);
+      // The latest frame captured before the accept is delivered, so a still
+      // desktop (unchanged frames are not re-sent) is not left blank.
+      const binaries = ws.send.mock.calls.filter((c: any[]) => c[0] instanceof ArrayBuffer);
+      expect(binaries).toHaveLength(1);
+      expect(new Uint8Array(binaries[0]![0] as ArrayBuffer)).toEqual(new Uint8Array([4, 5, 6, 7]));
+
+      handleDesktopFrame(SESSION_ID, new Uint8Array([8]));
+      expect(sentBinaryCount(ws)).toBe(2);
+      await handlers.onMessage({ data: JSON.stringify({ type: 'input', event: { type: 'mouse_move', x: 2, y: 2 } }) } as any, ws);
+      expect(sendCommandToAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_input' }),
+      );
+    });
+
+    it('ignores an answer for a different start or from a different agent', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      const start = publishedStart();
+
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, `${start.id}-other`, { outcome: 'accepted' });
+      settleDesktopStreamStart(SESSION_ID, 'another-agent', start.id, { outcome: 'accepted' });
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, `desk-start-${SESSION_ID}-00000000-0000-4000-8000-000000000000`, { outcome: 'denied', reason: 'user' });
+
+      expect(sentText(ws).some((m) => m.includes('"connected"'))).toBe(false);
+      expect(ws.close).not.toHaveBeenCalled();
+    });
+
+    it('tells the viewer the end user declined, and closes the relay', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, publishedStart().id, { outcome: 'denied', reason: 'user' });
+      await vi.waitFor(() => expect(finalizeDesktopSessionOnceMock).toHaveBeenCalled());
+
+      const error = sentText(ws).map((m) => JSON.parse(m)).find((m) => m.type === 'error');
+      expect(error).toMatchObject({
+        code: 'CONSENT_DENIED',
+        message: 'The user on the remote device declined the connection.',
+      });
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Consent denied');
+      handleDesktopFrame(SESSION_ID, new Uint8Array([1]));
+      expect(sentBinaryCount(ws)).toBe(0);
+    });
+
+    it('tells the viewer why the agent could not start, and closes the relay', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, publishedStart().id, {
+        outcome: 'failed',
+        error: 'failed to create screen capturer',
+      });
+      await vi.waitFor(() => expect(finalizeDesktopSessionOnceMock).toHaveBeenCalled());
+
+      const error = sentText(ws).map((m) => JSON.parse(m)).find((m) => m.type === 'error');
+      expect(error).toMatchObject({ code: 'AGENT_START_FAILED' });
+      expect(error.message).toContain('failed to create screen capturer');
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Start failed');
+    });
+
+    it('closes the relay when the agent never answers within the start budget', async () => {
+      vi.useFakeTimers();
+      try {
+        setupSuccessfulValidation();
+        const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+        const ws = wsMock();
+        await handlers.onOpen({}, ws);
+
+        // No prompt: 15 s answer budget + margin. Nothing before it...
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(sentText(ws).some((m) => m.includes('START_TIMEOUT'))).toBe(false);
+        // ...and a refusal after it.
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(sentText(ws).some((m) => m.includes('"START_TIMEOUT"'))).toBe(true);
+        expect(ws.close).toHaveBeenCalledWith(4003, 'Start timed out');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops forwarding the moment the session is stopped, and tells the viewer', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      acceptStart();
+      handleDesktopFrame(SESSION_ID, new Uint8Array([1]));
+      expect(sentBinaryCount(ws)).toBe(1);
+
+      closeDesktopRelayForStop(SESSION_ID);
+
+      // Synchronous: no frame after the stop, even before cleanup completes.
+      handleDesktopFrame(SESSION_ID, new Uint8Array([2]));
+      expect(sentBinaryCount(ws)).toBe(1);
+      const error = sentText(ws).map((m) => JSON.parse(m)).find((m) => m.type === 'error');
+      expect(error).toMatchObject({ code: 'SESSION_ENDED' });
+      await vi.waitFor(() => expect(finalizeDesktopSessionOnceMock).toHaveBeenCalled());
+      // Unknown session: a no-op.
+      expect(() => closeDesktopRelayForStop('no-such-session')).not.toThrow();
+    });
+
+    it('refuses an agent without the start fence with the agent-update message and publishes nothing', async () => {
+      setupSuccessfulValidation();
+      vi.mocked(prepareRevocationLeaseForStart).mockResolvedValueOnce({ ok: false, reason: 'agent_upgrade_required' });
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      const error = sentText(ws).map((m) => JSON.parse(m)).find((m) => m.type === 'error');
+      expect(error).toMatchObject({ code: 'AGENT_UPGRADE_REQUIRED', message: 'agent update required' });
+      expect(sendCommandToAgent).not.toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_stream_start' }),
+      );
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Agent update required');
     });
   });
 

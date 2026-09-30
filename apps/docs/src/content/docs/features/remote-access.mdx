@@ -70,10 +70,12 @@ The MFA check evaluates the role's *actual, effective* MFA policy, not just its 
 
 If any of those checks fails, the session ends within about half a minute: the agent stops capture and input, the viewer shows **Session ended: access revoked**, and the session record is marked disconnected. Removing a technician's membership or changing their role now ends their live sessions immediately as well, rather than only blocking the next one.
 
+The WebSocket (JPEG) fallback keeps the same lease: the agent renews it over the same connection and stops capturing when it is revoked or lapses, exactly as on WebRTC. Ending a session (**End**, or any server-side teardown) stops a WebSocket-fallback session at once — frames and input stop immediately rather than at the relay's next half-minute check.
+
 If the server is briefly unreachable, the session is **not** dropped — the agent tolerates about 90 seconds of failed renewals before ending the session on its own. That way a short API or network hiccup does not disconnect anyone, while a device that genuinely cannot reach Breeze cannot hold a remote-control session open indefinitely.
 
 <Aside type="caution">
-  **Agent update required.** Only agents that support session leases can start a remote desktop session. If you click **Connect → Desktop** and see *"Remote desktop needs an agent update on this device"*, the agent has not yet reported lease support — agents update themselves automatically, so this normally clears within one heartbeat interval (about a minute). If you pin agent versions in a self-hosted deployment, update the pinned build before your technicians will be able to start desktop sessions again. Remote Terminal, the Files tab, and every other remote tool are unaffected.
+  **Agent update required.** Only agents that support session leases and the session start fence (v0.114.0 and later) can start a remote desktop session. If you click **Connect → Desktop** and see *"Remote desktop needs an agent update on this device"*, the agent has not yet reported lease support — agents update themselves automatically, so this normally clears within one heartbeat interval (about a minute). If you pin agent versions in a self-hosted deployment, update the pinned build before your technicians will be able to start desktop sessions again. Remote Terminal, the Files tab, and every other remote tool are unaffected.
 </Aside>
 
 ### Session time limits
@@ -190,6 +192,8 @@ The consent dialog asks the user to allow or deny the remote session, with **Den
 </Aside>
 
 Every consent outcome is audit logged — granted, denied, or bypassed (with the reason, for example no user logged in).
+
+The same prompt, notice and indicator apply when the viewer falls back to the WebSocket (JPEG) transport. The technician's view stays on *connecting* until the agent reports that the stream started, so in Consent mode nothing is shown or sent before the user allows it; a denial or an unanswered prompt ends the session with the reason, just as on WebRTC.
 
 ### GPU-Accelerated Streaming
 

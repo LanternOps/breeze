@@ -120,6 +120,7 @@ async function insertDevice(orgId: string, siteId: string): Promise<string> {
     agentVersion: '0.0.0-test',
     status: 'online',
     revocationLeaseProtocolVersion: 1,
+    desktopFenceProtocolVersion: 1,
     enrolledAt: new Date(),
   }).returning({ id: devices.id });
   if (!row) throw new Error('insertDevice: no row returned');
@@ -384,14 +385,23 @@ describe('SEC-038 W02 — desktop start-intent generation fence', () => {
 
   it('refuses the WS-fallback start intent on a terminal session and bumps otherwise', async () => {
     const { sessionId } = await seed('pending');
+    const streamStart = (commandSuffix: string) => ({
+      sessionId,
+      startCommandId: `desk-start-${sessionId}-${commandSuffix}`,
+      promptMode: 'off' as const,
+      consentUnavailableBehavior: null,
+    });
 
-    const live = await withSystemDbAccessContext(() => commitDesktopStreamStartIntent(sessionId));
+    const live = await withSystemDbAccessContext(() =>
+      commitDesktopStreamStartIntent(streamStart('11111111-1111-4111-8111-111111111111'))
+    );
     expect(live).toMatchObject({ ok: true, generation: 1n });
-    expect((await readFence(sessionId)).status).toBe('active');
+    // Connecting until the agent accepts this exact start; never active here.
+    expect((await readFence(sessionId)).status).toBe('connecting');
 
     await commitTerminalIntentDirectly(sessionId);
     const afterTerminal = await withSystemDbAccessContext(() =>
-      commitDesktopStreamStartIntent(sessionId)
+      commitDesktopStreamStartIntent(streamStart('22222222-2222-4222-8222-222222222222'))
     );
     expect(afterTerminal).toEqual({ ok: false, reason: 'terminal' });
   });
