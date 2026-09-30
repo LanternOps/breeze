@@ -31,6 +31,10 @@ Beyond querying your fleet and running scripts, the Breeze AI assistant can look
 
 ## Screen capture & analysis
 
+<Aside type="caution" title="Consent-mode devices">
+  On a device whose remote access policy prompt mode is **Consent**, `take_screenshot`, `analyze_screen` and `computer_control` are refused, because a one-shot capture cannot ask the signed-in user first. The AI is told to use the remote desktop viewer instead. Each refusal is audited as `screen_access_consent_blocked`. The device diagnose action is refused the same way. If Breeze cannot read the policy, the request fails with `REMOTE_PROMPT_POLICY_UNAVAILABLE` (503); save the remote access policy again. Devices set to Notify or Off are not affected.
+</Aside>
+
 ### take_screenshot
 
 Captures a screenshot of the device screen and returns the image for visual analysis. The device must be online.

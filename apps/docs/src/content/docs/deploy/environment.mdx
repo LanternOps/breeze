@@ -231,6 +231,7 @@ Push notifications to the Android app go through Firebase Cloud Messaging.
 | `GITHUB_REPO` | — | | **Deprecated** alias for `BINARY_GITHUB_REPOSITORY`, kept so a deployment that set it before the release-source unification does not silently revert to the official repo on upgrade. It is honoured only when `BINARY_GITHUB_REPOSITORY` is unset, logs a deprecation warning, and counts as an override for the production key requirement below. Migrate to `BINARY_GITHUB_REPOSITORY`. |
 | `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
 | `BINARY_VERSION` | — | | Release tag used for both the download redirect **and** boot-time GitHub sync (falls back to `BREEZE_VERSION`, then `latest`). Point it at the newest release that is actually **published** on GitHub — a pin to a tag with no published release registers no agent binaries at all, and does not fall back to `latest`. |
+| `BREEZE_BINARIES_VERSION` | set inside the image | | The agent binaries release this server image is paired with. The release pipeline bakes it into the image, and it differs from the server version only on a server-only release. **Never set it in `.env` or a Compose `environment:` block**: an empty value there overrides the baked one. `/health` reports it as `binariesVersion`. |
 | `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. When `BINARY_GITHUB_REPOSITORY` points at your own signing repository, this **must** be your own manifest key (the workflow run summary prints it). The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
 | `AGENT_AUTO_PROMOTE` | `true` | | Controls whether a newly registered/synced agent release immediately becomes the fleet upgrade target. `true` (default): syncing a release promotes it to the fleet at once. Boot-time sync is pinned to the release matching your own `BREEZE_VERSION` (or `BINARY_VERSION`), so a newly published GitHub release does not move your fleet until you upgrade your server images. `false`: new binaries stay downloadable but the fleet only advances when you explicitly promote a version (platform admin + MFA) — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout). |
 
@@ -287,6 +288,7 @@ From v0.118.0 each user may request 30 TURN credentials per 10 minutes. Tune it 
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
+| `BREEZE_BUILTIN_MONITORS_AUTOSEED` | `true` | At boot, adds the built-in monitors each partner does not have yet: CPU, memory, disk, patch compliance, hardware health and, from v0.119.0, time sync. They are created partner-wide and **not attached** to any configuration policy, so nothing alerts until you attach them. A built-in monitor a partner deleted is not re-created. Set `false` to skip the boot-time provisioning. |
 
 ### Background retention sweeps
 
@@ -343,6 +345,8 @@ Device history charts, capacity trends, AI performance tools and anomaly detecti
 | `METRIC_ROLLUP_PARTITION_MONTHS_AHEAD` | `3` | `1` | How many months of partitions to create in advance. |
 | `METRIC_ROLLUP_DELETE_BATCH_SIZE` | `5000` | `100` | Batch size for the one remaining row delete, on `metric_rollups_default`. That partition only holds rows written for a month that had no partition, and is normally empty. |
 
+`METRIC_ROLLUP_MAX_DELETE_BATCHES` is no longer read (v0.119.0); remove it from `.env`. `METRIC_ROLLUP_5M_RETENTION_DAYS` and the other variables above are not mapped in the shipped Compose files: add any you set to the `api` service `environment:` block (and `worker`, if split) as well as `.env`.
+
 Values below the minimum are raised to the minimum. Retention runs at whole-month granularity: a month is dropped once all of it is older than the window. With the 90-day default, you keep between 90 and about 120 days of 5-minute data. Disk use for `metric_rollups` levels off once each window has filled.
 
 #### Upgrading an existing install
@@ -354,6 +358,20 @@ Before this change, each month was one partition that held all three resolutions
 - To reclaim space sooner, lower `METRIC_ROLLUP_5M_RETENTION_DAYS`, down to the minimum of 30, and restart. The next maintenance run compacts every older month.
 
 Each compaction runs in its own transaction and only blocks writes to the month being rewritten; reads continue throughout. The final switch takes a short exclusive lock on `metric_rollups`, `devices` and `organizations`, waits at most 5 seconds for it, and only changes catalog entries. If it cannot get the lock in time it rolls back, and the next nightly run retries it. A failed step fails the `metric-rollup-maintenance` job with the month named, so it shows up in job monitoring.
+
+### Anomaly episode tuning
+
+Anomaly detection groups anomalous 5-minute buckets on a device into **episodes** (see [ML Insights](/features/ml-insights/)). The defaults suit most fleets. None of these are mapped in the shipped Compose files, so add any you set to the `api` service `environment:` block (and `worker`, if split) as well as `.env`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` | `2` | v0.119.0+. Distinct anomalous buckets a new episode needs. A single anomalous bucket that settles on its own closes without opening an episode. |
+| `METRIC_ANOMALY_EPISODE_GAP_MINUTES` | `30` | Largest gap between two anomalous buckets that still counts as one episode. |
+| `METRIC_ANOMALY_EPISODE_CLEAN_BUCKETS` | `6` | Clean 5-minute buckets, per metric in the episode, needed before it resolves on its own. |
+| `METRIC_ANOMALY_EPISODE_EXPIRE_HOURS` | `24` | An episode with no clean data for this long after its last anomalous bucket expires. |
+| `METRIC_ANOMALY_EPISODE_RECURRENCE_DAYS` | `7` | Window used to count how often the same anomaly recurred. |
+| `METRIC_ANOMALY_EPISODE_SNOOZE_DAYS` | `7` | How long dismissing an episode silences the same anomaly on that device. |
+| `METRIC_ANOMALY_EPISODE_ASSEMBLY_LOOKBACK_HOURS` | `24` | How far back each assembly run looks for anomalies not yet in an episode. |
 
 ### Audit-chain verification
 
@@ -674,6 +692,7 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `TOOL_SOURCES_ENABLED` | `false` | Enables external tool sources for AI Agents. Off by default; even when enabled, any tier-3 (destructive) external tool call still goes through the normal action-intent approval flow — this flag does not bypass approval. |
 | `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS` | `false` | Self-hosted only — refused when `IS_HOSTED=true`. Allows a tool source URL to resolve to a private, link-local, or loopback address. Leave off unless you specifically need a tool source on your internal network. |
 | `CALLER_VERIFICATION_ENABLED` | `false` | v0.116.0+. Backend-only in this release — there is no reachable UI yet. Must be the exact literal `true` to enable; every `/caller-verification` route answers `404` until then, and any other truthy-looking value (`1`, `yes`, `on`) is refused at boot rather than treated as enabled. Leave unset unless you are specifically testing this feature ahead of its UI. |
+| `PRE_ASSIGNMENT_ENROLLMENT_ENABLED` | `false` | v0.119.0+. Platform switch for the **Unassigned Devices** holding area, where devices enrolled with a partner deploy key wait to be assigned to an organization. The feature ships dark: leave it unset. Enrollment into the holding area also needs the partner's own deploy-key enrollment switch. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS` | `168` (7 days) | How long a queued **standard** action may wait for its device before it expires undelivered. Covers scripts, patch installs, patch scans, software installs, and automation actions. |
 | `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS` | `24` | Deadline for **self-superseding** queued work — inventory refreshes, log-level changes, agent auto-update and rollback, browser-policy application, and the audit, security, reliability, hardware and encryption-key collections. The next run of any of these replaces the last, so a week-old copy would be stale by the time it landed. |
 | `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |

@@ -594,6 +594,10 @@ This list is exposed to external AI clients through the [MCP Server](/features/m
 
 ## Troubleshooting
 
+**AI chat or the script builder says "AI isn't configured"**
+
+The server has no usable model provider. AI chat and the script builder answer `503` with `ai_not_configured` and show "AI isn't configured on this server". An administrator needs to add a provider key on the server, or the partner needs to configure its own key. See [Bring your own LLM key](/features/bring-your-own-llm-key/).
+
 **Tier 3 action pending but never executing**
 
 Tier 3 actions require manual approval. Open **Security → AI Risk → Approval History** and approve or reject the pending request.

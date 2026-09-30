@@ -232,6 +232,10 @@ You can see and cancel a still-waiting install from the device's own page (**Que
 
 Scheduled patch jobs are reliable across restarts. If a job's scheduled run is ever lost before it reaches the queue — for example during a service restart — Breeze automatically detects the stranded job after its scheduled time and re-runs it, so no scheduled patch cycle is silently skipped.
 
+#### Jobs tab
+
+The **Jobs** tab on the Patch Management page lists every patch job, including jobs created by policies, update rings, the AI assistant (`manage_patches` install) or the API. Each row shows status, device counts, who created it and when it was scheduled, started and completed. Select a row to open its details, which list the per-device results (hostname, patch and outcome). The tab is read-only. Viewing it requires device read access.
+
 ### Monitoring Jobs
 
 ```bash

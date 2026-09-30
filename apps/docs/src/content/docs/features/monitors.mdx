@@ -23,6 +23,11 @@ enable policy-based alert evaluation. An enabled network-check definition does
 provision an active probe before attachment. Definitions retain their organization or partner ownership; incompatible
 attachments are refused rather than widening access.
 
+At boot, Breeze also adds the built-in monitors (CPU, memory, disk, patch compliance,
+hardware health and time sync) to each partner that doesn't have them yet. They are
+partner-wide and not attached to any policy, so nothing alerts until you attach them.
+Self-hosters can opt out with `BREEZE_BUILTIN_MONITORS_AUTOSEED=false`.
+
 ## Conditions
 
 The kind picker includes resource thresholds, offline state, event logs,

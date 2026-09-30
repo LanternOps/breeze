@@ -100,6 +100,10 @@ From v0.118.0 (with the 0.118 agent), a restore as new VM that cannot place ever
 
 A restore as new VM copies the snapshot's files onto the new disk and leaves the restored Windows installation as it was: no drivers are added to it on the Hyper-V host. The VM is Generation 2, which needs a Windows 8 / Windows Server 2012 or later guest, and those already include the Hyper-V storage and network drivers. Install any other drivers from inside the running VM.
 
+<Aside type="caution" title="Known issue: restored VM does not boot yet">
+  Restore as new VM and instant boot create a Generation 2 VM without an EFI system partition, so the restored operating system does not boot yet. Instant boot can also report success when its boot-file step fails. Tracked in [issue #7493](https://github.com/LanternOps/breeze/issues/7493). To get a bootable VM today, use the **Rebuild engine** option in [Restore as VM](/backup/bare-metal-recovery/#restore-as-vm).
+</Aside>
+
 ### Instant Boot
 
 For fast recovery validation, use **Instant Boot** to boot a VM directly from a snapshot without fully restoring it. This lets you verify that the backup is usable without waiting for a full import. Instant boot status is tracked on the Hyper-V tab.

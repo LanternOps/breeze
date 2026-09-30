@@ -95,6 +95,12 @@ Click the **Edit** action on any configuration to reopen the wizard. Changes are
 
 ---
 
+## HTTPS and Storage Sessions
+
+Restores and verification from S3 or S3-compatible storage need an HTTPS storage endpoint, an HTTPS agent API and the v0.118 agent or later. There is no fallback in v0.119 and later. From v0.119, backups from the 0.119 helper to S3 over HTTPS also upload through short-lived signed links, so the device never holds your storage keys. See [HTTPS for Restores](/backup/https-restores/) and [How backups reach storage](/backup/restoring/#how-backups-reach-storage).
+
+---
+
 ## Deleting a Configuration
 
 Click **Delete** on a configuration to remove it. Configurations that are actively referenced by a backup policy should have the policy reassigned first.

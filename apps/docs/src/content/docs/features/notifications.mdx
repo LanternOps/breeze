@@ -202,6 +202,14 @@ The Pushover sender delivers alert notifications to a user's phone via the [Push
 
 **Security:** The `token` and `user` values are encrypted at rest, the same as PagerDuty credentials.
 
+### Secrets in settings
+
+Notification secrets in partner and organization settings (the Slack webhook URL, extra webhook URLs, and the partner Pushover application token and default user key) are stored encrypted and returned masked as `********`. Log-forwarding credentials in the same settings work the same way.
+
+- Sending `********` back, or leaving the field out, keeps the stored value. Typing a new value replaces it. An empty string clears it.
+- The extra webhook list is masked per entry (`********:<key>`). An integration that reads settings and saves them again must send each marker back unchanged. If the list changed since it was read, the save is refused with a "reload and save again" error.
+- Changing a log-forwarding or Elasticsearch endpoint to a different origin needs the secret typed in again. In the org Event Logs editor, leaving the key blank keeps the stored key.
+
 ### In-App
 
 In-app notifications are created directly in the `user_notifications` database table and appear in each user's notification center within the Breeze dashboard.

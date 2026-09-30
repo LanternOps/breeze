@@ -189,7 +189,14 @@ The consent dialog asks the user to allow or deny the remote session, with **Den
   **Upgrade behavior:** Because the default prompt mode is **Notify**, devices with the Breeze Helper installed begin showing a start notice for remote sessions after upgrade. To restore silent behavior, set the **Remote Access** feature on a Configuration Policy to prompt mode **Off**.
 </Aside>
 
-Every consent outcome is audit logged — granted, denied, or bypassed (with the reason, for example no user logged in).
+Every consent outcome is audit logged. Outcomes are granted, denied, blocked because the user did not answer (`session_consent_blocked_unanswered`), blocked because the prompt could not be shown (`session_consent_blocked_unavailable`), or bypassed when the session proceeded without an answer. Before v0.119, the two blocked outcomes were logged as `session_consent_denied` and `session_consent_bypassed`. Older audit entries keep those names.
+
+**Consent mode only allows paths that can ask.** On a device whose policy is **Consent**:
+
+- **VNC Relay is refused.** VNC tunnels, the viewer's fallback to VNC, and VNC connect codes cannot ask the user, so they are blocked. An open VNC relay is closed if the policy changes to Consent. Use WebRTC remote desktop instead.
+- **The agent must support the consent prompt.** If the device's agent is too old, the session does not start. Update the agent.
+- **Unreadable policy blocks the start.** If Breeze cannot read the prompt settings, it refuses the session instead of assuming Notify. Save the remote access policy again.
+- **AI and diagnostic screenshots are refused.** The AI screenshot, screen-analysis and computer-control tools, and the device diagnose action, cannot ask the user, so they are refused. Each refusal is audited as `screen_access_consent_blocked`. Use a remote desktop session instead.
 
 ### GPU-Accelerated Streaming
 
@@ -653,6 +660,9 @@ On macOS with `isService=true` the desktop-helper writes the same lines locally 
 
 **Session limit hit (429).**
 The organisation or user limit on concurrent sessions has been reached. Call `DELETE /remote/sessions/stale` to free capacity, or navigate to the Active Sessions list and close sessions that are no longer needed.
+
+**Session refused on a Consent-mode device (409 or 503).**
+`CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE` means the request used VNC, which cannot show the consent prompt. Use WebRTC remote desktop. `CONSENT_UPGRADE_REQUIRED` means the device's agent does not support the consent prompt; update it. `REMOTE_PROMPT_POLICY_UNAVAILABLE` (503) means Breeze could not read the prompt settings; save the remote access policy again and retry.
 
 **Terminal garbled after resize.**
 This was a race condition in older builds where the browser sent a PTY resize message before the server `connected` acknowledgement was received. Current builds wait for the `connected` message before sending any data, including resize events. Update the agent to a current release.

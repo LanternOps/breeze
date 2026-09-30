@@ -116,7 +116,9 @@ Compliance rules support three enforcement levels:
 | `warn` | Raise a **medium** alert for each non-compliant device. It is delivered like any other alert and resolves itself once the device is compliant again. |
 | `enforce` | Raise a **high** alert and auto-remediate using the linked remediation script. Without a script it behaves like `warn` at high severity. |
 
-Compliance alerts always belong to the device's organization, including for partner-wide policies. Changing a rule to `monitor` resolves the alerts it already raised at its next evaluation.
+Compliance alerts always belong to the device's organization, including for partner-wide policies. Changing a rule to `monitor` resolves the alerts it already raised at its next evaluation. The alert is raised on the first failing check and stays open until the device is compliant. It also closes on its own, with the reason "Rule no longer applies", when its rule stops applying to the device: the rule set is renamed or removed, the compliance feature is removed, or the policy is deleted, deactivated, unassigned or replaced by another policy. Built-in compliance alerts never auto-resolve on their own conditions.
+
+Rule set names must be unique within one policy's compliance settings. Saving two rule sets with the same name is refused (API error `DUPLICATE_COMPLIANCE_RULE_SET_NAME`, HTTP 400).
 
 ## Creating a policy
 

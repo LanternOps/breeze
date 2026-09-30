@@ -26,11 +26,11 @@ macOS gates access to the screen, input events, and protected files behind per-a
 
 macOS ties Full Disk Access for a bare (non-bundle) binary to its file path, not just its code-signing identity, so which path the agent runs from decides where you grant FDA.
 
-From agent 0.118.3:
+From agent 0.119.0:
 
 - The agent and watchdog **stay in `/usr/local/bin`** when `/usr/local/bin` and every directory above it are owned by root and not writable by group or other -- the stock macOS state. Nothing moves, and existing Full Disk Access and other privacy grants keep working.
 - The agent **moves to `/Library/Breeze/bin`** only when `/usr/local/bin` is unsafe for a root daemon: the binary or a directory above it is not owned by root, or is group- or world-writable. The known case is Homebrew on Intel Macs, which hands `/usr/local/bin` to an admin user. Only in this case do you need to re-grant Full Disk Access, for `/Library/Breeze/bin/breeze-agent`. The agent logs a warning when it moves.
-- Agents 0.118.0 through 0.118.2 moved **every** install, safe or not, which is why fleets on those versions saw Full Disk Access break widely. 0.118.3 does not move an install back to `/usr/local/bin` once it has moved -- a re-grant you already made for `/Library/Breeze/bin` keeps holding. Move any Mac still on 0.118.0-0.118.2 to 0.118.3 or later; do not promote those versions to Macs you cannot touch.
+- Agents 0.118.0 through 0.118.2 moved **every** install, safe or not, which is why fleets on those versions saw Full Disk Access break widely. 0.119.0 does not move an install back to `/usr/local/bin` once it has moved -- a re-grant you already made for `/Library/Breeze/bin` keeps holding. Move any Mac still on 0.118.0-0.118.2 to 0.119.0 or later; do not promote those versions to Macs you cannot touch.
 - The `.pkg` installer (used for installs and for macOS agent updates) always installs to wherever the existing install lives, so it never moves an install back and forth on its own. `breeze-agent service install` (manual CLI install) and the dev install script install to `/Library/Breeze/bin` directly.
 - The desktop helper is never moved -- it always stays at `/usr/local/bin/breeze-desktop-helper`.
 
@@ -45,7 +45,7 @@ If the Mac is enrolled in an MDM (Jamf, Mosyle, Kandji, Intune, etc.), deploy a 
 The profile identifies each binary by its installed path plus a code-signing requirement, so the grant only applies to a genuine, Developer ID-signed Breeze binary at that path.
 
 <Aside type="caution" title="Cover both agent paths">
-  From agent 0.118.3, most Macs keep running the agent from `/usr/local/bin/breeze-agent`; only Macs where that directory is unsafe for a root daemon (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)) move to `/Library/Breeze/bin/breeze-agent`. A path-based PPPC grant for one path does not cover the other, so list both `/usr/local/bin/breeze-agent` and `/Library/Breeze/bin/breeze-agent`, each with the same code requirement, as the sample profile below does. That way the profile grants the permission wherever a given Mac's agent runs, with no need to know in advance which path applies. The desktop helper is never moved -- it always stays at `/usr/local/bin/breeze-desktop-helper`.
+  From agent 0.119.0, most Macs keep running the agent from `/usr/local/bin/breeze-agent`; only Macs where that directory is unsafe for a root daemon (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)) move to `/Library/Breeze/bin/breeze-agent`. A path-based PPPC grant for one path does not cover the other, so list both `/usr/local/bin/breeze-agent` and `/Library/Breeze/bin/breeze-agent`, each with the same code requirement, as the sample profile below does. That way the profile grants the permission wherever a given Mac's agent runs, with no need to know in advance which path applies. The desktop helper is never moved -- it always stays at `/usr/local/bin/breeze-desktop-helper`.
 </Aside>
 
 <Aside type="caution">
