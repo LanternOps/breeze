@@ -160,6 +160,30 @@ function expectNoDestination(payload: Record<string, unknown>) {
   expect(wire).not.toContain(WRITE_DESTINATION.secretKey);
 }
 
+/** A queued S3 database backup command: the kind a heartbeat claims and delivers. */
+async function queueDatabaseBackup(t: Seeded): Promise<string> {
+  const [job] = await getTestDb()
+    .insert(backupJobs)
+    .values({ orgId: t.orgId, configId: t.configId, deviceId: t.deviceId, status: 'pending', type: 'manual' })
+    .returning({ id: backupJobs.id });
+  const commandId = randomUUID();
+  await getTestDb().insert(deviceCommands).values({
+    id: commandId,
+    deviceId: t.deviceId,
+    type: 'mssql_backup',
+    status: 'pending',
+    targetRole: 'agent',
+    payload: {
+      jobId: job!.id,
+      configId: t.configId,
+      ...backupWriteCredentialPayload(t.configId, t.orgId, { provider: 's3', storageEncryption: { required: false, mode: 'disabled' } }),
+      instance: 'MSSQLSERVER',
+      database: 'db1',
+    },
+  });
+  return commandId;
+}
+
 describe('backups started before a new device reports its backup helper', () => {
   const previousOrigin = process.env.PUBLIC_API_URL;
   beforeAll(() => { process.env.PUBLIC_API_URL = 'https://api.breeze.example'; });
@@ -312,6 +336,52 @@ describe('backups started before a new device reports its backup helper', () => 
       expect(relay.frames).toEqual([]);
       expect(waits.calls).toHaveLength(1);
       expect(await jobStatus(jobId)).toBe('pending');
+    });
+
+    it('a queued S3 backup the unknown heartbeat claims is deferred while the device has no report', async () => {
+      const t = await seedNewDevice();
+      const commandId = await queueDatabaseBackup(t);
+
+      const beat = await heartbeat(t, UNKNOWN);
+      const commands = (beat.commands ?? []) as Array<{ id: string }>;
+      expect(commands.find((c) => c.id === commandId)).toBeUndefined();
+      const [row] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, commandId));
+      expect(row!.status).toBe('pending');
+      expect(row!.result).toMatchObject({ deliveryDeferred: BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE });
+      expect(JSON.stringify(row!.payload)).not.toContain(WRITE_DESTINATION.secretKey);
+    });
+
+    it('a queued S3 backup the unknown heartbeat claims goes out brokered on the last known report', async () => {
+      const t = await seedNewDevice();
+      await heartbeat(t, HELPER_REPORTS_BROKERED);
+      const commandId = await queueDatabaseBackup(t);
+
+      const beat = await heartbeat(t, UNKNOWN);
+      const commands = beat.commands as Array<{ id: string; type: string; payload: Record<string, unknown> }>;
+      const delivered = commands.find((c) => c.id === commandId);
+      expect(delivered?.type).toBe('mssql_backup');
+      expectNoDestination(delivered!.payload);
+      expect(delivered!.payload.storageSession).toMatchObject({ scope: 'snapshot_write' });
+    });
+
+    it('an unknown report from a helper older than brokered writes holds instead of keeping the last known report', async () => {
+      const t = await seedNewDevice();
+      await heartbeat(t, HELPER_REPORTS_BROKERED);
+      const commandId = await queueDatabaseBackup(t);
+
+      // The helper was replaced by a release that predates brokered writes
+      // and snapshot integrity, and its protocol probe gets no answer.
+      await heartbeat(t, { ...UNKNOWN, backupVersion: '0.118.2' });
+      expect(await helperProtocols(t.deviceId)).toEqual({ read: 1, integrity: null, write: null });
+      const [row] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, commandId));
+      expect(row!.status).toBe('pending');
+      expect(row!.result).toMatchObject({ deliveryDeferred: BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE });
+
+      const jobId = await runNow(t);
+      await expect(__testOnly.processDispatchBackup({
+        type: 'dispatch-backup', jobId, configId: t.configId, orgId: t.orgId, deviceId: t.deviceId,
+      })).resolves.toEqual({ dispatched: false });
+      expect(relay.frames).toEqual([]);
     });
 
     it('after an older-helper report (0) the device waits for a real report instead of being served as an older helper', async () => {

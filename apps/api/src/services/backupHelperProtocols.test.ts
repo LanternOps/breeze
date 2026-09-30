@@ -4,8 +4,10 @@ import {
   BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE,
   BACKUP_HELPER_UNREPORTED_MESSAGE,
   BACKUP_WRITE_PROTOCOL,
+  BACKUP_HELPER_PROTOCOL_MIN_VERSION,
   backupHelperProtocolColumnWrite,
   backupHelperProtocolForDelivery,
+  backupHelperVersionPredates,
   normalizeBackupIntegrityProtocolVersion,
   normalizeBackupWriteProtocolVersion,
 } from './backupHelperProtocols';
@@ -76,5 +78,42 @@ describe('backup helper unreported messages', () => {
     expect(BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE).toBe(
       'Waiting for the backup component on this device to report which storage features it supports.',
     );
+  });
+});
+
+// A last known positive version is kept for an unknown report only while
+// nothing in the same heartbeat says the installed helper is too old for it:
+// a helper release that predates a protocol does not fail a brokered payload,
+// it runs it against its own configured destination.
+describe('unknown report from a helper older than the stored protocol', () => {
+  it('names the first helper release of each protocol', () => {
+    expect(BACKUP_HELPER_PROTOCOL_MIN_VERSION).toEqual({
+      backupReadProtocolVersion: '0.118.0',
+      backupIntegrityProtocolVersion: '0.119.0',
+      backupWriteProtocolVersion: '0.119.0',
+    });
+  });
+
+  it.each([
+    { version: '0.118.2', min: '0.119.0', expected: true },
+    { version: 'v0.118.2', min: '0.119.0', expected: true },
+    { version: '0.119.0-rc.1', min: '0.119.0', expected: true },
+    { version: '0.119.0', min: '0.119.0', expected: false },
+    { version: '0.120.3', min: '0.119.0', expected: false },
+    { version: '0.118.0', min: '0.118.0', expected: false },
+    { version: undefined, min: '0.119.0', expected: false },
+    { version: '', min: '0.119.0', expected: false },
+    { version: 'dev-abc123', min: '0.119.0', expected: false },
+  ])('helper $version predates $min: $expected', ({ version, min, expected }) => {
+    expect(backupHelperVersionPredates(version, min)).toBe(expected);
+  });
+
+  it('a stored positive becomes unreported when the helper predates it', () => {
+    expect(backupHelperProtocolColumnWrite(null, 1, normalizeBackupWriteProtocolVersion, { helperPredatesProtocol: true })).toBeNull();
+    expect(backupHelperProtocolColumnWrite(null, 1, normalizeBackupWriteProtocolVersion, { helperPredatesProtocol: false })).toBeUndefined();
+  });
+
+  it('a numeric report is written as always, whatever the helper version', () => {
+    expect(backupHelperProtocolColumnWrite(1, 1, normalizeBackupWriteProtocolVersion, { helperPredatesProtocol: true })).toBe(1);
   });
 });

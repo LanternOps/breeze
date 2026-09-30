@@ -22,8 +22,10 @@ import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
 import {
+  BACKUP_HELPER_PROTOCOL_MIN_VERSION,
   backupHelperProtocolColumnWrite,
   backupHelperProtocolForDelivery,
+  backupHelperVersionPredates,
   normalizeBackupIntegrityProtocolVersion,
   normalizeBackupWriteProtocolVersion,
 } from '../../services/backupHelperProtocols';
@@ -999,14 +1001,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // downgrade (or an agent that stops reporting them) reads as 0 on the next
   // beat, so restore commands stop receiving storage sessions. An explicit
   // null (the agent's probe of its helper got no answer) keeps a positive
-  // last-known value and otherwise leaves the device unreported; it is never
-  // written as 0 (services/backupHelperProtocols.ts).
+  // last-known value unless this beat's helper version predates that
+  // protocol, and otherwise leaves the device unreported; it is never written
+  // as 0 (services/backupHelperProtocols.ts).
   for (const [field, normalize] of [
     ['backupReadProtocolVersion', normalizeBackupReadProtocolVersion],
     ['backupIntegrityProtocolVersion', normalizeBackupIntegrityProtocolVersion],
     ['backupWriteProtocolVersion', normalizeBackupWriteProtocolVersion],
   ] as const) {
-    const value = backupHelperProtocolColumnWrite(data[field], device[field], normalize);
+    const value = backupHelperProtocolColumnWrite(data[field], device[field], normalize, {
+      helperPredatesProtocol: backupHelperVersionPredates(data.backupVersion, BACKUP_HELPER_PROTOCOL_MIN_VERSION[field]),
+    });
     if (value !== undefined) deviceUpdates[field] = value;
   }
 

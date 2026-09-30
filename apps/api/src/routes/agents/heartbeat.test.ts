@@ -5290,6 +5290,33 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
         ]);
       });
 
+      it('an unknown report from a helper older than a stored protocol leaves that protocol unreported', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN, backupVersion: '0.118.2' });
+        expect(resp.status).toBe(200);
+
+        const updateArg = update();
+        // 0.118 implements brokered reads, not snapshot integrity or brokered writes.
+        expect(Object.hasOwn(updateArg, 'backupReadProtocolVersion')).toBe(false);
+        expect(updateArg.backupIntegrityProtocolVersion).toBeNull();
+        expect(updateArg.backupWriteProtocolVersion).toBeNull();
+        expect(await regressionAudits()).toEqual([]);
+        const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+        expect(changes.filter((ch) => String(ch.field).startsWith('backup') && ch.field !== 'backupVersion')).toEqual([
+          { field: 'backupIntegrityProtocolVersion', before: 2, after: null },
+          { field: 'backupWriteProtocolVersion', before: 1, after: null },
+        ]);
+      });
+
+      it('an unknown report from a current helper keeps the stored protocols', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN, backupVersion: '0.120.0' });
+        expect(resp.status).toBe(200);
+        const updateArg = update();
+        expect(Object.hasOwn(updateArg, 'backupIntegrityProtocolVersion')).toBe(false);
+        expect(Object.hasOwn(updateArg, 'backupWriteProtocolVersion')).toBe(false);
+      });
+
       it('a helper that answers 0 is still a real drop and is audited', async () => {
         const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

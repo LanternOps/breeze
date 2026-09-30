@@ -17,8 +17,11 @@
  *     installed yet, timed out, crashed). Unknown, not a drop: see
  *     backupHelperProtocolColumnWrite.
  *
- * Leaf module: imported by heartbeat and delivery code.
+ * Near-leaf module (its only import is the version comparison in
+ * agentEditionCompat): imported by heartbeat and delivery code.
  */
+
+import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
 
 /** Snapshot integrity protocol: 1 = produces snapshot attestations, 2 = also checks them at every restore. */
 export const BACKUP_INTEGRITY_PROTOCOL = { PRODUCES_ATTESTATION: 1, ENFORCES_ON_RESTORE: 2 } as const;
@@ -40,16 +43,44 @@ export function normalizeBackupWriteProtocolVersion(value: unknown): BackupWrite
 }
 
 /**
+ * First breeze-backup helper release implementing each protocol's version 1,
+ * by heartbeat field. A helper older than this does not implement it.
+ */
+export const BACKUP_HELPER_PROTOCOL_MIN_VERSION = {
+  backupReadProtocolVersion: '0.118.0',
+  backupIntegrityProtocolVersion: '0.119.0',
+  backupWriteProtocolVersion: '0.119.0',
+} as const;
+
+/**
+ * True only when `version` (the helper version a heartbeat reported) is a
+ * parseable release older than `minVersion`; a prerelease of `minVersion`
+ * counts as older. Missing or unparseable versions (e.g. dev builds) are not
+ * evidence either way and return false.
+ */
+export function backupHelperVersionPredates(version: unknown, minVersion: string): boolean {
+  if (typeof version !== 'string' || !version) return false;
+  if (!parseComparableVersion(version)) return false;
+  return compareAgentVersions(version, minVersion) < 0;
+}
+
+/**
  * The column value to write for one helper protocol a heartbeat reported, or
  * `undefined` to leave the stored value as it is.
  *
  * A number, or an absent field from an older agent, is normalized and
  * written as always. An explicit null (the agent could not get an answer from
  * its helper) is never written as 0 and is never a regression:
- *   - a stored positive version is kept. It only ever selects the brokered
- *     path (storage sessions, attested incremental bases), so a stale value
- *     fails at the helper rather than widening what is sent. A real downgrade
- *     is reported as a number once the helper answers, and is audited then.
+ *   - a stored positive version is kept, so a transient probe failure on a
+ *     current helper does not hold its backups. A stale positive is NOT
+ *     harmless: a helper release that predates the protocol does not fail a
+ *     brokered payload, it runs it against the destination in its own agent
+ *     configuration. So the positive is kept only while nothing in the same
+ *     heartbeat says the helper is older than the protocol
+ *     (`helperPredatesProtocol`, from the helper version the heartbeat
+ *     reported); otherwise it becomes NULL and the device waits for a real
+ *     report. A downgrade the probe does answer is written as a number and
+ *     audited as a regression.
  *   - a stored 0 or NULL becomes NULL (not reported yet). A 0 may be the
  *     report of an older agent or helper that has since been replaced, so the
  *     backup worker and delivery wait for a real report instead of serving
@@ -59,8 +90,10 @@ export function backupHelperProtocolColumnWrite<T extends number>(
   reported: unknown,
   stored: number | null | undefined,
   normalize: (value: unknown) => T,
+  options: { helperPredatesProtocol?: boolean } = {},
 ): T | null | undefined {
   if (reported !== null) return normalize(reported);
+  if (options.helperPredatesProtocol) return null;
   return typeof stored === 'number' && stored > 0 ? undefined : null;
 }
 
