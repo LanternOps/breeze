@@ -165,7 +165,8 @@ const namespaceDuplicateBaselines = {
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical pt-BR cognate.
-    'topology.json': 1,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 2,
     // +1 (#2262 softwareGroupTable devices-affected rework): cves_one/cves_other
     // ('{{count}} CVE'/'{{count}} CVEs') keep the acronym untranslated, same as
     // the existing CVEs-namespace duplicates above.
@@ -312,7 +313,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
-    'topology.json': 0,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 1,
     // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
     'vulnerabilities.json': 17,
   },
@@ -486,7 +488,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-FR cognates.
-    'topology.json': 4,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 5,
     // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
     // (fr-FR's old table.cves was "CVE", not a duplicate of English "CVEs", so
     // both new plural forms are net-new duplicates here).
@@ -658,7 +661,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-CA cognates.
-    'topology.json': 4,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 5,
     // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
     // (fr-CA's old table.cves was "CVE", not a duplicate of English "CVEs", so
     // both new plural forms are net-new duplicates here).
@@ -828,7 +832,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
     // ('Hostname'/'Port') are identical de-DE cognates.
-    'topology.json': 4,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 5,
     // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
     'vulnerabilities.json': 21,
   },
@@ -954,7 +959,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
     'toolSources.json': 1,
-    'topology.json': 0,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 1,
     // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated (cves_other
     // is 'CVE' too, since Italian does not inflect the acronym).
     'vulnerabilities.json': 18,
@@ -1059,7 +1065,8 @@ const namespaceDuplicateBaselines = {
     'tickets.json': 12,
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical tr-TR cognate.
-    'topology.json': 1,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 2,
     // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated.
     'vulnerabilities.json': 12,
   },

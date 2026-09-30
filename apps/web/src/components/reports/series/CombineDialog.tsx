@@ -76,7 +76,7 @@ export default function CombineDialog({ open, groups, timezone, onClose, onChang
       const max = bodyField(body, 'max');
       if (typeof max === 'number') return t('reports.seriesCombine.ccTooMany', { max });
     }
-    return seriesFriendlyError(code) ?? (ERROR_TOKEN.test(code) ? t('reports.seriesCombine.failed') : undefined);
+    return seriesFriendlyError(code, body) ?? (ERROR_TOKEN.test(code) ? t('reports.seriesCombine.failed') : undefined);
   };
   const canConfirm = !busy && name.trim().length > 0 && unresolved.length === 0;
   const typeLabel = t(/* i18n-dynamic */ `reports.reportsList.reportTypes.${group.type}`);

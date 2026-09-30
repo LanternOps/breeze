@@ -4,6 +4,7 @@ import { Inbox, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePreAssignmentGate } from '../../stores/featuresStore';
 import { navigateTo } from '../../lib/navigation';
+import AccessDenied from '../shared/AccessDenied';
 import AssignParkedDeviceDialog, { type ParkedDeviceSummary } from './AssignParkedDeviceDialog';
 import { useHashState } from '../../lib/useHashState';
 import '../../lib/i18n';
@@ -62,12 +63,20 @@ function UnassignedDevicesContent() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useHashState<string | null>(null, parseHashDeviceId);
   const [bulkOpen, setBulkOpen] = useState(false);
+  // A 403 is a permission state, not a transient failure: show AccessDenied
+  // instead of the page chrome and a raw server error.
+  const [accessDenied, setAccessDenied] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
       const response = await fetchWithAuth('/pre-assignment/devices');
+      if (response.status === 403) {
+        setAccessDenied(true);
+        return;
+      }
+      setAccessDenied(false);
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(typeof body?.error === 'string' ? body.error : t('unassignedDevices.loadFailed'));
@@ -102,6 +111,10 @@ function UnassignedDevicesContent() {
   const completed = () => { setSelected(new Set()); void load(); };
 
   const formatDate = (value: string | null) => (value ? new Date(value).toLocaleString() : t('unassignedDevices.never'));
+
+  if (accessDenied) {
+    return <AccessDenied testId="unassigned-devices-denied" />;
+  }
 
   return (
     <div className="space-y-4" data-testid="unassigned-devices-page">

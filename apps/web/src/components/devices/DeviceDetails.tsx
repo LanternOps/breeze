@@ -72,6 +72,7 @@ import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
+import { usePageItemName } from "../layout/usePageItemName";
 import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs, type OverflowTab } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
@@ -343,6 +344,7 @@ export default function DeviceDetails({
   onAction,
 }: DeviceDetailsProps) {
   const { t } = useTranslation("devices");
+  usePageItemName(device.displayName || device.hostname);
   // Enabled `device.detail.tabs` contributions, deterministically ordered.
   // Never throws — a registry failure or zero enabled contributions simply
   // appends no extension tabs (see useExtensionSlotDescriptors).
@@ -414,6 +416,10 @@ export default function DeviceDetails({
   // closing a ticket) is reflected on the next navigation without a reload;
   // the previous counts are kept meanwhile so the row does not flicker.
   const [tabCounts, setTabCounts] = useState<DeviceTabCounts | null>(null);
+  // Bumped by a tab that mutates a counted signal in place (resolving an
+  // anomaly) so the badge refreshes without waiting for a tab switch.
+  const [tabCountsNonce, setTabCountsNonce] = useState(0);
+  const refreshTabCounts = useCallback(() => setTabCountsNonce((n) => n + 1), []);
   // Sweep E1: the API count is device-scoped and does not know whether
   // anomaly detection is on for the org — going through
   // isMlFeatureEnabledForOrg on the tab-counts route would open a second
@@ -439,7 +445,7 @@ export default function DeviceDetails({
     return () => {
       cancelled = true;
     };
-  }, [device.id, activeTab]);
+  }, [device.id, activeTab, tabCountsNonce]);
 
   // Curated layout: only `primary` tabs sit in the row; everything else is
   // grouped inside "More" under these section headers. A `promoteOnCount`
@@ -812,15 +818,16 @@ export default function DeviceDetails({
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="min-w-0 flex-1 space-y-6">
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
-                User/Idle) — divided on ≥sm. Stats are content-sized (flex, not
-                an equal-width grid) with non-wrapping labels and values so e.g.
+                User/Idle) — side by side on ≥xl (stacked and wrapping below,
+                since the Activity rail narrows this card at lg). Stats are
+                content-sized (flex, not an equal-width grid) with non-wrapping labels and values so e.g.
                 "14d 13h 24m" stays on one line; the username (arbitrary
                 length) truncates first, and the "Logged-in User" label
                 itself is also allowed to truncate as a last resort under
                 extreme width constraints (#7153) — both blocks get min-w-0
                 so the Health block can't starve the Activity block. */}
-            <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 sm:flex-row sm:gap-6">
-              <div className="flex min-w-0 flex-1 gap-x-6">
+            <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 xl:flex-row xl:gap-6">
+              <div className="flex min-w-0 flex-1 flex-wrap gap-x-6 gap-y-3">
                 <div className="shrink-0">
                   <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
                     <Cpu className="h-3.5 w-3.5" />
@@ -856,10 +863,10 @@ export default function DeviceDetails({
                 </div>
               </div>
               <div
-                className="hidden w-px self-stretch bg-border sm:block"
+                className="hidden w-px self-stretch bg-border xl:block"
                 aria-hidden="true"
               />
-              <div className="flex min-w-0 flex-1 gap-x-6">
+              <div className="flex min-w-0 flex-1 flex-wrap gap-x-6 gap-y-3">
                 <div className="shrink-0">
                   <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
                     <Clock className="h-3.5 w-3.5" />
@@ -869,7 +876,7 @@ export default function DeviceDetails({
                     {formatLastSeen(device.lastSeen, effectiveTimezone)}
                   </p>
                 </div>
-                <div className="min-w-0 flex-1">
+                <div className="min-w-[9rem] flex-1">
                   <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                     <User className="h-3.5 w-3.5 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">
@@ -1006,6 +1013,7 @@ export default function DeviceDetails({
         <DeviceAnomaliesPanel
           deviceId={device.id}
           focusedAnomalyId={focusedAnomalyId}
+          onChanged={refreshTabCounts}
         />
       )}
 
@@ -1026,7 +1034,7 @@ export default function DeviceDetails({
       {activeTab === "performance" && (
         <div className="space-y-6">
           <DevicePerformanceGraphs deviceId={device.id} />
-          <DeviceAnomaliesPanel deviceId={device.id} compact />
+          <DeviceAnomaliesPanel deviceId={device.id} compact onChanged={refreshTabCounts} />
         </div>
       )}
 

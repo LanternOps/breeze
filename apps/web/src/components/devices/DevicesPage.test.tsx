@@ -217,7 +217,7 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null };
+type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; lastLogAt?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null };
 vi.mock('./DeviceList', () => ({
   default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
     <div
@@ -228,6 +228,7 @@ vi.mock('./DeviceList', () => ({
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
+      data-last-log-ats={devices.map(d => d.lastLogAt ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
       data-wan-ips={devices.map(d => d.wanIp ?? '').join(',')}
       data-lan-ips={devices.map(d => d.lanIp ?? '').join(',')}
@@ -393,6 +394,18 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     const list = await screen.findByTestId('device-list');
     expect(list.getAttribute('data-hostnames')).toContain('host-alpha');
     expect(list.getAttribute('data-display-names')).toContain('Reception Laptop');
+  });
+
+  it('carries lastLogAt through the row transform so the Logs silent pill uses real log recency', async () => {
+    const lastLogAt = new Date(Date.now() - 60_000).toISOString();
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), lastLogAt }],
+    } as never);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-last-log-ats')).toBe(lastLogAt);
   });
 
   it('grid view renders only the devices matching the advanced filter (not the raw list)', async () => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Clock, Loader2, ShieldCheck } from 'lucide-react';
+import { BACKUP_HIGH_READINESS_THRESHOLD, BACKUP_LOW_READINESS_THRESHOLD } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
@@ -56,8 +57,8 @@ type FleetHealth = {
 };
 
 function readinessColor(score: number): string {
-  if (score >= 85) return 'text-success';
-  if (score >= 70) return 'text-warning';
+  if (score >= BACKUP_HIGH_READINESS_THRESHOLD) return 'text-success';
+  if (score >= BACKUP_LOW_READINESS_THRESHOLD) return 'text-warning';
   return 'text-destructive';
 }
 
@@ -160,10 +161,15 @@ export default function BackupVerificationOverview() {
   const avgReadiness = health?.readiness?.averageScore ?? 0;
   // No scored device: an average of 0 is "no data", not a failing score (#7213).
   const hasReadinessData = devices.length > 0;
-  const highReadiness = devices.filter((device) => device.readinessScore >= 85).length;
+  const highReadiness = devices.filter((device) => device.readinessScore >= BACKUP_HIGH_READINESS_THRESHOLD).length;
   const lowReadiness = health?.readiness?.lowReadinessCount ?? 0;
   const recentFailures = health?.escalations?.verificationFailures ?? failures.length;
-  const lowDevices = devices.filter((d) => d.readinessScore < 85).sort((a, b) => a.readinessScore - b.readinessScore);
+  // Same band the API counts for the Low Readiness tile, so the tile and this
+  // table always agree. A device with no restore test tops out at 80 (#7328):
+  // not high, but not low either, so it does not belong here.
+  const lowDevices = devices
+    .filter((d) => d.readinessScore < BACKUP_LOW_READINESS_THRESHOLD)
+    .sort((a, b) => a.readinessScore - b.readinessScore);
 
   return (
     <div className="space-y-6">
@@ -256,9 +262,9 @@ export default function BackupVerificationOverview() {
       </div>
 
       {/* Low readiness devices table */}
-      <div className="rounded-lg border bg-card p-5 shadow-xs">
+      <div data-testid="low-readiness-devices" className="rounded-lg border bg-card p-5 shadow-xs">
         <h3 className="text-base font-semibold text-foreground">{t('backupVerificationOverview.lowReadinessDevices')}</h3>
-        <p className="text-sm text-muted-foreground">{t('backupVerificationOverview.devicesScoringBelowThe85PointReadinessThreshold')}</p>
+        <p className="text-sm text-muted-foreground">{t('backupVerificationOverview.lowReadinessDevicesDescription', { threshold: BACKUP_LOW_READINESS_THRESHOLD })}</p>
         {lowDevices.length === 0 ? (
           <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
             {hasReadinessData

@@ -42,4 +42,13 @@ describe('restoreModeFromTargetConfig', () => {
     expect(restoreModeFromTargetConfig({ commandType: 'backup_restore' })).toBeNull();
     expect(restoreModeFromTargetConfig(null)).toBeNull();
   });
+
+  it('classifies a rebuild-engine job (targetConfig.mode rebuild_vhdx) as rebuild, not a plain full restore', () => {
+    expect(restoreModeFromTargetConfig({
+      mode: 'rebuild_vhdx',
+      engine: 'rebuild',
+      outputPath: 'C:\\Rebuild\\srv-01.vhdx',
+      recoveryId: 'rec-1',
+    })).toBe('rebuild');
+  });
 });

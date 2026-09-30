@@ -1,8 +1,9 @@
 import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ReportBuilder from './ReportBuilder';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 // Issue #7154: at 1024px the outer `lg:grid-cols-[minmax(0,1fr)_420px]` split
 // (ReportBuilder.tsx) leaves the form column only ~230px wide, but several
@@ -209,5 +210,61 @@ describe('ReportBuilder responsive layout (#7154)', () => {
     const description = card?.querySelector('span:last-child');
     expect(description?.className).toMatch(/\bw-full\b/);
     expect(description?.className).toMatch(/\btruncate\b/);
+  });
+});
+
+// Pre-release sweep (v0.118.2 -> main), measured in a browser: at 390px `main`
+// scrolled sideways (535 vs 390) on /reports/new, /reports/builder and the
+// edit page because the live-preview column (a one-column grid item without
+// min-w-0) grew to its table's min-content; at 1024px the preview table was
+// clipped with no scroll, and a contact's email and the Add recipient row ran
+// past the delivery card.
+describe('ReportBuilder preview and recipients overflow (pre-release sweep)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.includes('/contacts')) {
+        return makeJsonResponse({ data: [{ id: 'contact-1', name: 'Dana Default', email: 'dana.primary@default.example.com' }] });
+      }
+      if (url.endsWith('/recipients')) return makeJsonResponse({ data: [] });
+      return makeJsonResponse({
+        data: { rows: [{ hostname: 'atlas-01', osType: 'windows', osVersion: '11', status: 'online', lastSeenAt: '2026-09-29T18:28:51.233Z' }] },
+      });
+    });
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null });
+  });
+
+  it('lets the live-preview column shrink below its table width', async () => {
+    render(<ReportBuilder mode="builder" />);
+    expect((await screen.findByTestId('report-builder-live-preview')).className).toMatch(/\bmin-w-0\b/);
+  });
+
+  it('scrolls the preview table sideways instead of clipping its last columns', async () => {
+    render(<ReportBuilder mode="builder" />);
+    const cell = await screen.findByText('atlas-01');
+    const wrapper = cell.closest('table')?.parentElement as HTMLElement;
+    expect(wrapper.className).toMatch(/\boverflow-x-auto\b/);
+    expect(wrapper.className).not.toMatch(/\boverflow-hidden\b/);
+  });
+
+  it('wraps a long contact email inside its card', async () => {
+    render(<ReportBuilder mode="edit" reportId="report-1" reportOrgId="org-1" defaultValues={{ schedule: 'monthly' }} />);
+    const contact = await screen.findByTestId('report-recipient-contact-contact-1');
+    const label = contact.querySelector('span') as HTMLElement;
+    expect(label.className).toMatch(/\bmin-w-0\b/);
+    expect(label.className).toMatch(/\bbreak-all\b/);
+  });
+
+  it('stacks the email input and Add recipient in the 1024-1279px squeeze window', async () => {
+    render(<ReportBuilder mode="builder" />);
+    const add = await screen.findByRole('button', { name: /add recipient/i });
+    const row = add.parentElement as HTMLElement;
+    expect(row.className).toMatch(/\bsm:flex-row\b/);
+    expect(row.className).toMatch(/\blg:flex-col\b/);
+    expect(row.className).toMatch(/\bxl:flex-row\b/);
   });
 });

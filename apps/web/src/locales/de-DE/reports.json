@@ -406,6 +406,7 @@
       },
       "loading": "Berichte werden geladen...",
       "never": "Niemals",
+      "notGeneratedYet": "Noch nicht erstellt",
       "success": {
         "generated": "Bericht „{{name}}“ erstellt."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden",
         "businessEmailOnly": "Geschäftsberichte werden nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
         "partnerOwnedEmailOnly": "Dieser Bericht umfasst alle Organisationen und wird daher nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "oneTimeNotEmailed": "Einmalige Berichte werden nicht per E-Mail versendet. Wählen Sie einen wiederkehrenden Zeitplan, um diesen Bericht an Kontakte zu senden.",
         "emailAddresses": "E-Mail-Adressen"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Jeden Tag"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Einmalig"
+        },
         "daily": {
           "label": "Täglich"
         },
@@ -1361,10 +1366,17 @@
         "seriesTypeUnsupported": "Dieser Berichtstyp kann nicht als ein Bericht pro Organisation gesendet werden.",
         "seriesConfigOrgSpecific": "Entfernen Sie die Standort-, Geräte- und Gruppenfilter: Ein Multi-Organisations-Bericht umfasst ganze Organisationen.",
         "seriesManaged": "Dieser Bericht gehört zu einem Multi-Organisations-Bericht. Bearbeiten Sie den Multi-Organisations-Bericht oder koppeln Sie diese Kopie zuerst ab.",
-        "seriesOwnerIneligible": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Er benötigt Zugriff auf jede Organisation und jeden Standort.",
+        "seriesOwnerIneligible": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligiblePermission": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Seine Rolle gewährt nicht die Berechtigung zum Exportieren von Berichten (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Er benötigt Zugriff auf jede Organisation.",
+        "seriesOwnerIneligibleInactive": "Das Konto dieses Benutzers ist nicht aktiv, daher kann er keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligibleMembership": "Dieser Benutzer ist kein Mitglied Ihres Partners mehr und kann daher keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligibleNotPartner": "Dieser Benutzer gehört nicht zu Ihrem Partner und kann daher keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligibleTenantInactive": "Ihr Partnerkonto ist nicht aktiv, daher kann ein Multi-Organisations-Bericht keinen neuen Besitzer erhalten.",
         "seriesNotFound": "Dieser Multi-Organisations-Bericht existiert nicht mehr.",
         "seriesWriteDenied": "Nur Partnerbenutzer mit Zugriff auf jede Organisation können Multi-Organisations-Berichte ändern.",
         "seriesTargetOrgInaccessible": "Eine der ausgewählten Organisationen steht Ihnen nicht zur Verfügung.",
+        "seriesTargetOrgHidden": "Quick Support und die Warteorganisation für nicht zugewiesene Geräte können nicht von einem Multi-Organisations-Bericht abgedeckt werden.",
         "reportNotSeriesChild": "Dieser Bericht ist nicht mehr Teil eines Multi-Organisations-Berichts.",
         "recipientModeRequiresSeries": "„Nie senden“ gilt nur für eine Kopie eines Multi-Organisations-Berichts.",
         "recipientsNeedExportAndMfa": "Das Senden von Berichten an Empfänger erfordert die Exportberechtigung und die Multi-Faktor-Anmeldung.",

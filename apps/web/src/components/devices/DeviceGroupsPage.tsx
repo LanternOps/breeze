@@ -1178,6 +1178,9 @@ export default function DeviceGroupsPage() {
                     <div className="flex gap-3">
                       <input
                         type="checkbox"
+                        aria-label={t("deviceGroupsPage.selectGroup", {
+                          name: group.name,
+                        })}
                         checked={isSelected}
                         onChange={(event) =>
                           toggleGroupSelection(group.id, event.target.checked)

@@ -44,6 +44,18 @@ describe('TimesheetPage', () => {
     expect(screen.getByTestId('timesheet-total').textContent).toContain('1h 30m');
   });
 
+  it('renders AccessDenied (not a load error) when the own-sheet GET is 403', async () => {
+    window.location.hash = '#week=2026-06-08';
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) return { ok: false, status: 403, json: async () => ({}) } as Response;
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    expect(await screen.findByTestId('timesheet-denied')).toBeInTheDocument();
+    expect(screen.queryByTestId('timesheet-error')).not.toBeInTheDocument();
+  });
+
   // W06 (#3900) provenance badge. `manual` is the default for every entry ever
   // typed by hand, so badging it would put a chip on nearly every row and say
   // nothing — only a non-manual source is worth surfacing.

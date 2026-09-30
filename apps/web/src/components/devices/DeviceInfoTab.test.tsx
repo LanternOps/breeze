@@ -263,6 +263,16 @@ describe('DeviceInfoTab — logs silent (#7067)', () => {
     expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
   });
 
+  it('formats the logs-silent date without seconds, like the stuck-update notice', async () => {
+    const d = new Date(Date.now() - 7 * 60 * 60_000);
+    d.setSeconds(37, 0);
+    load({ lastLogAt: d.toISOString() });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('logs-silent');
+    expect(notice.textContent).not.toMatch(/\d:\d\d:37/);
+    expect(notice.textContent).toMatch(/\d:\d\d/);
+  });
+
   it('shows the never-shipped variant when the device has no last_log_at but has been enrolled long enough', async () => {
     load({ lastLogAt: null, enrolledAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
     render(<DeviceInfoTab deviceId={deviceId} />);

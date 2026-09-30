@@ -397,7 +397,7 @@
         "fetchReports": "Falha ao buscar relatórios",
         "generateReport": "Falha ao gerar relatório",
         "generic": "Ocorreu um erro",
-        "noCompletedRun": "Ainda não há narrativa concluída para abrir"
+        "noCompletedRun": "Ainda não há execução concluída para abrir"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Carregando relatórios...",
       "never": "Nunca",
+      "notGeneratedYet": "Ainda não gerado",
       "success": {
         "generated": "Relatório \"{{name}}\" gerado."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Não foi possível carregar os destinatários do relatório",
         "businessEmailOnly": "Relatórios de negócios são enviados somente para os endereços de e-mail abaixo. Não é possível adicionar contatos da organização.",
         "partnerOwnedEmailOnly": "Este relatório abrange todas as organizações, por isso é enviado somente para os endereços de e-mail abaixo. Não é possível adicionar contatos da organização.",
+        "oneTimeNotEmailed": "Relatórios únicos não são enviados por e-mail. Escolha um agendamento recorrente para enviar este relatório aos contatos.",
         "emailAddresses": "Endereços de e-mail"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Todos os dias"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Único"
+        },
         "daily": {
           "label": "Diario"
         },
@@ -1361,10 +1366,17 @@
         "seriesTypeUnsupported": "Este tipo de relatório não pode ser enviado como um relatório por organização.",
         "seriesConfigOrgSpecific": "Remova os filtros de site, dispositivo e grupo: um relatório multiorganização abrange organizações inteiras.",
         "seriesManaged": "Este relatório pertence a um relatório multiorganização. Edite o relatório multiorganização ou desvincule esta cópia primeiro.",
-        "seriesOwnerIneligible": "Esse usuário não pode ser proprietário de um relatório multiorganização: ele precisa de acesso a todas as organizações e a todos os sites.",
+        "seriesOwnerIneligible": "Esse usuário não pode ser proprietário de um relatório multiorganização.",
+        "seriesOwnerIneligiblePermission": "Esse usuário não pode ser proprietário de um relatório multiorganização: a função dele não concede a permissão de exportação de relatórios (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Esse usuário não pode ser proprietário de um relatório multiorganização: ele precisa de acesso a todas as organizações.",
+        "seriesOwnerIneligibleInactive": "A conta desse usuário não está ativa, por isso ele não pode ser proprietário de um relatório multiorganização.",
+        "seriesOwnerIneligibleMembership": "Esse usuário não é mais membro do seu parceiro, por isso não pode ser proprietário de um relatório multiorganização.",
+        "seriesOwnerIneligibleNotPartner": "Esse usuário não pertence ao seu parceiro, por isso não pode ser proprietário de um relatório multiorganização.",
+        "seriesOwnerIneligibleTenantInactive": "Sua conta de parceiro não está ativa, por isso um relatório multiorganização não pode receber um novo proprietário.",
         "seriesNotFound": "Este relatório multiorganização não existe mais.",
         "seriesWriteDenied": "Somente usuários do parceiro com acesso a todas as organizações podem alterar relatórios multiorganização.",
         "seriesTargetOrgInaccessible": "Uma das organizações escolhidas não está disponível para você.",
+        "seriesTargetOrgHidden": "O Quick Support e a organização de espera de dispositivos não atribuídos não podem ser cobertos por um relatório multiorganização.",
         "reportNotSeriesChild": "Este relatório não faz mais parte de um relatório multiorganização.",
         "recipientModeRequiresSeries": "\"Nunca enviar\" só se aplica a uma cópia de um relatório multiorganização.",
         "recipientsNeedExportAndMfa": "Enviar relatórios a destinatários exige a permissão de exportação e o login com autenticação multifator.",

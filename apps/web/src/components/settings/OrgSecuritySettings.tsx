@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Lock, Save, ShieldCheck, ShieldOff, Timer, Fingerprint } from 'lucide-react';
-import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 
 type SecurityData = {
@@ -22,10 +21,15 @@ type MtlsSettings = {
 };
 
 type OrgSecuritySettingsProps = {
+  /** The org being edited — the settings page's, never the header switcher's. */
+  orgId: string;
   security?: SecurityData;
   mtls?: MtlsSettings;
   onDirty?: () => void;
   onSave?: (data: SecurityData) => void;
+  /** Fired after the mTLS policy saved through its own route, so the page can
+   *  refresh the settings blob its section saves re-post wholesale. */
+  onMtlsSaved?: () => void;
   locked?: string[];
 };
 
@@ -40,7 +44,7 @@ const defaultSecurity: SecurityData = {
   ipAllowlist: ''
 };
 
-export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, locked }: OrgSecuritySettingsProps) {
+export default function OrgSecuritySettings({ orgId, security, mtls, onDirty, onSave, onMtlsSaved, locked }: OrgSecuritySettingsProps) {
   const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`security.${field}`) ?? false;
 
@@ -61,8 +65,6 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
   const [mtlsError, setMtlsError] = useState<string>();
   const [mtlsSuccess, setMtlsSuccess] = useState(false);
 
-  const { currentOrgId } = useOrgStore();
-
   const markDirty = () => {
     onDirty?.();
   };
@@ -82,14 +84,12 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
   };
 
   const handleMtlsSave = async () => {
-    if (!currentOrgId) return;
-
     setMtlsSaving(true);
     setMtlsError(undefined);
     setMtlsSuccess(false);
 
     try {
-      const response = await fetchWithAuth(`/agents/org/${currentOrgId}/settings/mtls`, {
+      const response = await fetchWithAuth(`/agents/org/${orgId}/settings/mtls`, {
         method: 'PATCH',
         body: JSON.stringify({
           certLifetimeDays,
@@ -104,6 +104,7 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
 
       setMtlsSuccess(true);
       setTimeout(() => setMtlsSuccess(false), 3000);
+      onMtlsSaved?.();
     } catch (err) {
       setMtlsError(err instanceof Error ? err.message : t('orgSecuritySettings.mtls.errors.save'));
     } finally {

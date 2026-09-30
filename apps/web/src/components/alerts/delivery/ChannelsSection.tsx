@@ -244,7 +244,7 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
 
     try {
       await runChannelSave(
-        { url, method, payload: requestPayload, channelName: selectedChannel?.name ?? '', isCreate },
+        { url, method, payload: requestPayload, channelName: values.name, isCreate },
         { onUnauthorized }
       );
       await onChanged();

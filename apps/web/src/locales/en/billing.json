@@ -925,7 +925,7 @@
         "subtotal": "Subtotal",
         "tax": "Tax",
         "taxRate": "Tax rate",
-        "taxRateHelp": "Applies to lines marked taxable. Set in the organization’s tax settings.",
+        "taxRateHelp": "Applies to lines marked taxable. This rate was set when the quote was created; to change it for future quotes, update the organization’s tax settings.",
         "title": "Live totals",
         "total": "Total"
       },
@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "Their email (optional)",
         "consequenceInvoice": "An invoice for {{amount}} will be issued and numbered now.",
         "consequenceContracts": "Recurring lines become draft contracts you activate later.",
-        "consequenceEmail": "The invoice will be emailed to the customer.",
+        "consequenceEmail": "The invoice will be emailed to {{recipients}}.",
         "consequenceDraft": "This quote was never sent. The customer's first sight of it will be the invoice.",
         "submit": "Accept and issue invoice",
         "success": "Quote accepted. Invoice {{number}} issued.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG or JPEG, up to 10 MB — e.g. the signed PO or document.",
         "evidenceTooLarge": "This file is larger than 10 MB. Choose a smaller file.",
         "evidenceAttached": "Evidence attached.",
-        "evidenceError": "The acceptance was recorded, but the evidence file could not be attached. Attach it from the quote page."
+        "evidenceError": "The acceptance was recorded, but the evidence file could not be attached. Attach it from the quote page.",
+        "consequenceEmailNoRecipient": "No recipient is recorded on this quote, so the invoice may not be emailed. Send it to the customer yourself if needed.",
+        "successNoRecipient": "Quote accepted. Invoice {{number}} issued. It may not have been emailed — no recipient is recorded on this quote."
       },
       "declineOnBehalf": {
         "button": "Decline on behalf",
@@ -1952,7 +1954,8 @@
       "inProvider": "In {{provider}}",
       "syncingToProvider": "Syncing…",
       "providerSyncFailed": "{{provider}} sync failed",
-      "reverseInProviderToo": "Reverse this in {{provider}} too"
+      "reverseInProviderToo": "Reverse this in {{provider}} too",
+      "overpayment": "Amount is more than the balance due ({{balance}})."
     },
     "requestPayment": {
       "invoiceSent": "Invoice sent",
@@ -2287,7 +2290,8 @@
     "loading": "Loading billing settings…",
     "saveButton": "Save billing settings",
     "saveError": "Failed to save billing settings.",
-    "saveSuccess": "Billing settings saved"
+    "saveSuccess": "Billing settings saved",
+    "readOnlyNotice": "You have view-only access to billing settings. Ask an administrator to change them."
   },
   "shared": {
     "documentWorkspace": {

@@ -776,6 +776,7 @@
     "remove": "Eliminar",
     "removed": "Eliminado",
     "searchThreats": "Buscar amenazas...",
+    "selectAllThreats": "Seleccionar todas las amenazas",
     "selectThreat": "Seleccionar amenaza {{name}}",
     "selectedCount": "{{count}} seleccionado",
     "severity": "Gravedad",
@@ -931,7 +932,9 @@
     "errors": {
       "windowsHello": "Falló la verificación de Windows Hello",
       "actionFailed": "No se pudo realizar la solicitud {{decision}}",
-      "network": "error de red"
+      "network": "error de red",
+      "notApproved": "El servidor no confirmó esta elevación como aprobada. Cierra este cuadro de diálogo para ver su estado actual.",
+      "notApprovedReason": "Elevación no aprobada: {{reason}}"
     },
     "toasts": {
       "approved": "Elevación aprobada",

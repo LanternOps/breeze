@@ -45,6 +45,19 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
   } as unknown as Response;
 }
 
+/** The respond route's 200 for a decision recorded as asked (routes/pam.ts). */
+function respondRecordsRequestedDecision() {
+  fetchWithAuthMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+    const approve = JSON.parse(String(init?.body ?? '{}')).decision === 'approve';
+    return makeJsonResponse({
+      success: true,
+      id: 'er-9',
+      status: approve ? 'approved' : 'denied',
+      enforcementStatus: approve ? 'pending_dispatch' : 'cleanup_pending',
+    });
+  });
+}
+
 const requestFixture = (over: Partial<ElevationRequest> = {}): ElevationRequest => ({
   id: 'er-9',
   orgId: 'org-1',
@@ -79,7 +92,7 @@ function respondBody(): Record<string, unknown> {
 describe('PamRespondModal Windows Hello step-up', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ success: true }));
+    respondRecordsRequestedDecision();
   });
 
   it('runs the assertion on approve and includes the proof in the respond body', async () => {
@@ -162,7 +175,7 @@ describe('PamRespondModal critical-tier (L4) re-authentication (#4052)', () => {
     vi.clearAllMocks();
     authState.user = { id: 'u-1', mfaEnabled: true, hasPassword: true };
     getApprovalAssertionMock.mockResolvedValue(proofFixture);
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ success: true }));
+    respondRecordsRequestedDecision();
   });
 
   it('does not show re-auth fields for a non-critical request', () => {
@@ -472,5 +485,184 @@ describe('PamRespondModal critical-tier (L4) re-authentication (#4052)', () => {
     submit();
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.queryByTestId('register-approver-device-link')).toBeNull();
+  });
+});
+
+// Pre-release sweep (v0.118.2 → main): the respond route answers HTTP 200
+// `{ success: true }` even when the decision it recorded is NOT the one asked
+// for. An approve whose target executable hash cannot be verified is refused
+// server-side (services/pamActuationLifecycle.ts): the row is flipped to
+// `denied` and the body carries `status: 'denied'`, `enforcementStatus:
+// 'refused'` and the reason. The modal used to toast "Elevation approved" for
+// it because it never read the body.
+describe('PamRespondModal non-success outcomes on a 200', () => {
+  const REFUSAL_REASON = 'Target identity could not be verified on the device; re-request elevation.';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authState.user = { id: 'u-1', mfaEnabled: true, hasPassword: true };
+    getApprovalAssertionMock.mockResolvedValue(proofFixture);
+  });
+
+  function approveCritical() {
+    fireEvent.change(screen.getByTestId('pam-respond-reauth-input'), {
+      target: { value: 'hunter2' },
+    });
+    submit();
+  }
+
+  it('shows a refused approve as an error inline and in a toast, never as "Elevation approved"', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        success: true,
+        id: 'er-9',
+        status: 'denied',
+        enforcementStatus: 'refused',
+        reason: REFUSAL_REASON,
+      }),
+    );
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 4 })}
+        onClose={() => {}}
+        onActioned={onActioned}
+      />,
+    );
+    approveCritical();
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(REFUSAL_REASON));
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: expect.stringContaining(REFUSAL_REASON) }),
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(showToastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Elevation approved' }),
+    );
+    // The modal stays open on the error; the request is no longer pending, so
+    // a second approve would only 409.
+    expect(onActioned).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pam-respond-submit')).toBeDisabled();
+  });
+
+  it('refreshes the list when a refused modal is dismissed, so the row shows as denied', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        success: true,
+        id: 'er-9',
+        status: 'denied',
+        enforcementStatus: 'refused',
+        reason: REFUSAL_REASON,
+      }),
+    );
+    const onActioned = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 4 })}
+        onClose={onClose}
+        onActioned={onActioned}
+      />,
+    );
+    approveCritical();
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(REFUSAL_REASON));
+
+    fireEvent.click(screen.getByTestId('pam-respond-cancel'));
+    expect(onActioned).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a 200 approve whose recorded status is not "approved" as not approved, even with no reason', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ success: true, id: 'er-9', status: 'denied' }),
+    );
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 2 })}
+        onClose={() => {}}
+        onActioned={onActioned}
+      />,
+    );
+    submit();
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/did not confirm this elevation as approved/i),
+    );
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(onActioned).not.toHaveBeenCalled();
+  });
+
+  // An approval gate must not claim "approved" on a 200 it cannot read as one
+  // (no `status`, or a body that is not JSON at all).
+  it.each([
+    ['names no status', { success: true }],
+    ['is not JSON', null],
+  ])('does not report an approve as approved when the 200 body %s', async (_label, payload) => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(payload));
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 2 })}
+        onClose={() => {}}
+        onActioned={onActioned}
+      />,
+    );
+    submit();
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/did not confirm this elevation as approved/i),
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(onActioned).not.toHaveBeenCalled();
+  });
+
+  it('still reports a dispatched approve as approved', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        success: true,
+        id: 'er-9',
+        status: 'approved',
+        enforcementStatus: 'pending_dispatch',
+      }),
+    );
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal
+        request={requestFixture({ riskTier: 2 })}
+        onClose={() => {}}
+        onActioned={onActioned}
+      />,
+    );
+    submit();
+
+    await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(1));
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Elevation approved' }),
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('still reports a deny as denied (status "denied" is the requested outcome there)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        success: true,
+        id: 'er-9',
+        status: 'denied',
+        enforcementStatus: 'cleanup_pending',
+      }),
+    );
+    const onActioned = vi.fn();
+    render(
+      <PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={onActioned} />,
+    );
+    fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+    submit();
+
+    await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(1));
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Elevation denied' }),
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });

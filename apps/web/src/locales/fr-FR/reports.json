@@ -397,7 +397,7 @@
         "fetchReports": "Impossible de récupérer des rapports",
         "generateReport": "Impossible de générer un rapport",
         "generic": "Une erreur s’est produite",
-        "noCompletedRun": "Aucun récit terminé à ouvrir pour l’instant"
+        "noCompletedRun": "Aucune exécution terminée à ouvrir pour l’instant"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "notGeneratedYet": "Pas encore généré",
       "success": {
         "generated": "Rapport « {{name}} » généré."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Impossible de charger les destinataires du rapport",
         "businessEmailOnly": "Les rapports d'activité sont envoyés uniquement aux adresses e-mail ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
         "partnerOwnedEmailOnly": "Ce rapport couvre toutes les organisations, il est donc envoyé uniquement aux adresses e-mail ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
+        "oneTimeNotEmailed": "Les rapports ponctuels ne sont pas envoyés par e-mail. Choisissez une planification récurrente pour envoyer ce rapport aux contacts.",
         "emailAddresses": "Adresses e-mail"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Tous les jours"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Une seule fois"
+        },
         "daily": {
           "label": "Quotidien"
         },
@@ -1361,10 +1366,17 @@
         "seriesTypeUnsupported": "Ce type de rapport ne peut pas être envoyé sous forme d’un rapport par organisation.",
         "seriesConfigOrgSpecific": "Retirez les filtres de site, d’appareil et de groupe : un rapport multi-organisation couvre des organisations entières.",
         "seriesManaged": "Ce rapport appartient à un rapport multi-organisation. Modifiez le rapport multi-organisation ou détachez d’abord cette copie.",
-        "seriesOwnerIneligible": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : il doit avoir accès à toutes les organisations et à tous les sites.",
+        "seriesOwnerIneligible": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligiblePermission": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : son rôle n’accorde pas l’autorisation d’exportation des rapports (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : il doit avoir accès à toutes les organisations.",
+        "seriesOwnerIneligibleInactive": "Le compte de cet utilisateur n’est pas actif : il ne peut donc pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligibleMembership": "Cet utilisateur n’est plus membre de votre partenaire : il ne peut donc pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligibleNotPartner": "Cet utilisateur n’appartient pas à votre partenaire : il ne peut donc pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligibleTenantInactive": "Votre compte partenaire n’est pas actif : un rapport multi-organisation ne peut donc pas changer de propriétaire.",
         "seriesNotFound": "Ce rapport multi-organisation n’existe plus.",
         "seriesWriteDenied": "Seuls les utilisateurs du partenaire ayant accès à toutes les organisations peuvent modifier les rapports multi-organisation.",
         "seriesTargetOrgInaccessible": "Une des organisations choisies ne vous est pas accessible.",
+        "seriesTargetOrgHidden": "Quick Support et l’organisation d’attente des appareils non attribués ne peuvent pas être couverts par un rapport multi-organisation.",
         "reportNotSeriesChild": "Ce rapport ne fait plus partie d’un rapport multi-organisation.",
         "recipientModeRequiresSeries": "« Ne jamais envoyer » ne s’applique qu’à une copie d’un rapport multi-organisation.",
         "recipientsNeedExportAndMfa": "L’envoi de rapports à des destinataires exige l’autorisation d’exportation et l’authentification multifacteur.",

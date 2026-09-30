@@ -397,7 +397,7 @@
         "fetchReports": "Impossibile recuperare i report",
         "generateReport": "Impossibile generare il report",
         "generic": "Si è verificato un errore",
-        "noCompletedRun": "Nessun resoconto completato da aprire per ora"
+        "noCompletedRun": "Nessuna esecuzione completata da aprire per ora"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Caricamento report...",
       "never": "Mai",
+      "notGeneratedYet": "Non ancora generato",
       "success": {
         "generated": "Report \"{{name}}\" generato."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Impossibile caricare i destinatari del report",
         "businessEmailOnly": "I report aziendali vengono inviati solo agli indirizzi email indicati sotto. Non è possibile aggiungere contatti dell'organizzazione.",
         "partnerOwnedEmailOnly": "Questo report copre tutte le organizzazioni, quindi viene inviato solo agli indirizzi email indicati sotto. Non è possibile aggiungere contatti dell'organizzazione.",
+        "oneTimeNotEmailed": "I report una tantum non vengono inviati via email. Scegli una pianificazione ricorrente per inviare questo report ai contatti.",
         "emailAddresses": "Indirizzi email"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Ogni giorno"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Una tantum"
+        },
         "daily": {
           "label": "Giornaliero"
         },
@@ -1361,10 +1366,17 @@
         "seriesTypeUnsupported": "Questo tipo di report non può essere inviato come un report per organizzazione.",
         "seriesConfigOrgSpecific": "Rimuovi i filtri per sito, dispositivo e gruppo: un report multi-organizzazione copre intere organizzazioni.",
         "seriesManaged": "Questo report appartiene a un report multi-organizzazione. Modifica il report multi-organizzazione o scollega prima questa copia.",
-        "seriesOwnerIneligible": "Quell’utente non può essere proprietario di un report multi-organizzazione: ha bisogno di accesso a tutte le organizzazioni e a tutti i siti.",
+        "seriesOwnerIneligible": "Quell’utente non può essere proprietario di un report multi-organizzazione.",
+        "seriesOwnerIneligiblePermission": "Quell’utente non può essere proprietario di un report multi-organizzazione: il suo ruolo non concede l’autorizzazione di esportazione dei report (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Quell’utente non può essere proprietario di un report multi-organizzazione: ha bisogno di accesso a tutte le organizzazioni.",
+        "seriesOwnerIneligibleInactive": "L’account di quell’utente non è attivo, quindi non può essere proprietario di un report multi-organizzazione.",
+        "seriesOwnerIneligibleMembership": "Quell’utente non è più membro del tuo partner, quindi non può essere proprietario di un report multi-organizzazione.",
+        "seriesOwnerIneligibleNotPartner": "Quell’utente non appartiene al tuo partner, quindi non può essere proprietario di un report multi-organizzazione.",
+        "seriesOwnerIneligibleTenantInactive": "Il tuo account partner non è attivo, quindi un report multi-organizzazione non può avere un nuovo proprietario.",
         "seriesNotFound": "Questo report multi-organizzazione non esiste più.",
         "seriesWriteDenied": "Solo gli utenti del partner con accesso a tutte le organizzazioni possono modificare i report multi-organizzazione.",
         "seriesTargetOrgInaccessible": "Una delle organizzazioni scelte non è disponibile per te.",
+        "seriesTargetOrgHidden": "Quick Support e l’organizzazione di attesa dei dispositivi non assegnati non possono essere coperti da un report multi-organizzazione.",
         "reportNotSeriesChild": "Questo report non fa più parte di un report multi-organizzazione.",
         "recipientModeRequiresSeries": "\"Non inviare mai\" si applica solo a una copia di un report multi-organizzazione.",
         "recipientsNeedExportAndMfa": "L’invio di report ai destinatari richiede l’autorizzazione di esportazione e l’accesso con autenticazione a più fattori.",

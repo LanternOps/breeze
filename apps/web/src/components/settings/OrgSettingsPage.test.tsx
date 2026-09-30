@@ -33,12 +33,24 @@ vi.mock('./OrgBrandingEditor', () => ({ default: (props: { onSave: (data: Record
 } }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
-vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
+// Capture the props the Security and Event Logs tabs get: both issue their own
+// org-scoped requests, so each must be handed the PAGE's org rather than fall
+// back to the header switcher's (pre-release sweep, v0.118.2 → main).
+const securityProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgSecuritySettings', () => ({ default: (props: {
   onDirty: () => void; onSave: (value: unknown) => void;
-}) => <button data-testid="security" onClick={() => {
-  onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
-}}>Save security</button> }));
-vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
+} & Record<string, unknown>) => {
+  securityProps.push(props);
+  const { onDirty, onSave } = props;
+  return <button data-testid="security" onClick={() => {
+    onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
+  }}>Save security</button>;
+} }));
+const eventLogProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgEventLogSettings', () => ({ default: (props: Record<string, unknown>) => {
+  eventLogProps.push(props);
+  return <div data-testid="event-logs" />;
+} }));
 // #6004: the AI budget editor. Capture its props — the tab is worthless if it
 // is not handed the org it is meant to edit.
 const aiBudgetProps: Array<Record<string, unknown>> = [];
@@ -472,6 +484,71 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.getByTestId('org-ai-budget')).not.toBeNull();
     expect(aiBudgetProps.at(-1)).toMatchObject({ orgId: 'org-1' });
   });
+
+  it.each([
+    ['#event-logs', 'event-logs', eventLogProps],
+    ['#security', 'security', securityProps],
+  ] as const)(
+    'hands the %s tab the org in the URL, not the header switcher org',
+    async (hash, testId, captured) => {
+      captured.length = 0;
+      window.location.hash = hash;
+      // Switcher on org-1, page on org-2.
+      useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+      fetchWithAuthMock.mockImplementation((url: string) => {
+        if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+        return Promise.resolve(makeJsonResponse({ ...orgDetails, id: 'org-2', name: 'Other Customer' }));
+      });
+
+      render(<OrgSettingsPage orgId="org-2" />);
+
+      await screen.findByTestId(testId);
+      expect(captured.length).toBeGreaterThan(0);
+      for (const props of captured) {
+        expect(props.orgId).toBe('org-2');
+      }
+    },
+  );
+
+  // The mTLS card and the Event Logs tab write organizations.settings.<key>
+  // through their own routes, while every page-level section save re-posts the
+  // WHOLE settings blob from the page's loaded copy (the org PATCH replaces
+  // `settings` wholesale). Without a refresh after those writes, the next
+  // section save silently reverted them.
+  it.each([
+    ['#security', 'mtls', 'onMtlsSaved', securityProps, { certLifetimeDays: 90 }, { certLifetimeDays: 30 }],
+    ['#event-logs', 'logForwarding', 'onSaved', eventLogProps, { enabled: false }, { enabled: true, elasticsearchUrl: 'https://es.new:9200' }],
+  ] as const)(
+    'after a %s self-save, the next section save carries the fresh %s value, not the stale one',
+    async (hash, key, callback, captured, before, after) => {
+      captured.length = 0;
+      window.location.hash = hash;
+      let current: Record<string, unknown> = before;
+      fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+        if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({}));
+        return Promise.resolve(makeJsonResponse({ ...orgDetails, settings: { [key]: current } }));
+      });
+
+      render(<OrgSettingsPage orgId="org-1" />);
+      await screen.findByTestId(hash === '#security' ? 'security' : 'event-logs');
+
+      // The child saved `after` through its own route, then reported it.
+      current = after;
+      const onSelfSaved = captured.at(-1)![callback] as (() => void) | undefined;
+      await act(async () => { onSelfSaved?.(); });
+
+      if (hash !== '#security') await userEvent.click(screen.getByRole('link', { name: /^security$/i }));
+      await userEvent.click(await screen.findByTestId('security'));
+
+      await waitFor(() =>
+        expect(fetchWithAuthMock.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
+      );
+      const patch = fetchWithAuthMock.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')!;
+      const sent = JSON.parse(String((patch[1] as RequestInit).body)) as { settings: Record<string, unknown> };
+      expect(sent.settings[key]).toEqual(after);
+    },
+  );
 
   it('places the AI tab beside Approval Security in the nav (#6004)', async () => {
     render(<OrgSettingsPage orgId="org-1" />);

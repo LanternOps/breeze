@@ -479,6 +479,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           />
         </div>
         <select
+          aria-label={t('patchComplianceView.filters.statusFilterLabel')}
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
           className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

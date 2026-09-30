@@ -397,7 +397,7 @@
         "fetchReports": "Raporlar getirilemedi",
         "generateReport": "Rapor oluşturulamadı",
         "generic": "Bir hata oluştu",
-        "noCompletedRun": "Açılacak tamamlanmış anlatı henüz yok"
+        "noCompletedRun": "Açılacak tamamlanmış çalıştırma henüz yok"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Raporlar yükleniyor...",
       "never": "Hiçbir zaman",
+      "notGeneratedYet": "Henüz oluşturulmadı",
       "success": {
         "generated": "\"{{name}}\" raporu oluşturuldu."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Rapor alıcıları yüklenemedi",
         "businessEmailOnly": "İş raporları yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
         "partnerOwnedEmailOnly": "Bu rapor tüm kuruluşları kapsadığından yalnızca aşağıdaki e-posta adreslerine gönderilir. Kuruluş kişileri eklenemez.",
+        "oneTimeNotEmailed": "Tek seferlik raporlar e-postayla gönderilmez. Bu raporu kişilere göndermek için yinelenen bir zamanlama seçin.",
         "emailAddresses": "E-posta adresleri"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Her gün"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Tek seferlik"
+        },
         "daily": {
           "label": "Günlük"
         },
@@ -1361,10 +1366,17 @@
         "seriesTypeUnsupported": "Bu rapor türü kuruluş başına bir rapor olarak gönderilemez.",
         "seriesConfigOrgSpecific": "Site, cihaz ve grup filtrelerini kaldırın: çok kuruluşlu rapor kuruluşların tamamını kapsar.",
         "seriesManaged": "Bu rapor bir çok kuruluşlu rapora ait. Çok kuruluşlu raporu düzenleyin veya önce bu kopyayı ayırın.",
-        "seriesOwnerIneligible": "Bu kullanıcı çok kuruluşlu raporun sahibi olamaz: tüm kuruluşlara ve tüm sitelere erişimi olmalıdır.",
+        "seriesOwnerIneligible": "Bu kullanıcı çok kuruluşlu raporun sahibi olamaz.",
+        "seriesOwnerIneligiblePermission": "Bu kullanıcı çok kuruluşlu raporun sahibi olamaz: rolü rapor dışa aktarma iznini (reports:export) vermiyor.",
+        "seriesOwnerIneligibleOrgAccess": "Bu kullanıcı çok kuruluşlu raporun sahibi olamaz: tüm kuruluşlara erişimi olmalıdır.",
+        "seriesOwnerIneligibleInactive": "Bu kullanıcının hesabı etkin değil, bu nedenle çok kuruluşlu raporun sahibi olamaz.",
+        "seriesOwnerIneligibleMembership": "Bu kullanıcı artık iş ortağınızın üyesi değil, bu nedenle çok kuruluşlu raporun sahibi olamaz.",
+        "seriesOwnerIneligibleNotPartner": "Bu kullanıcı iş ortağınıza ait değil, bu nedenle çok kuruluşlu raporun sahibi olamaz.",
+        "seriesOwnerIneligibleTenantInactive": "İş ortağı hesabınız etkin değil, bu nedenle çok kuruluşlu bir rapora yeni sahip atanamaz.",
         "seriesNotFound": "Bu çok kuruluşlu rapor artık yok.",
         "seriesWriteDenied": "Çok kuruluşlu raporları yalnızca tüm kuruluşlara erişimi olan iş ortağı kullanıcıları değiştirebilir.",
         "seriesTargetOrgInaccessible": "Seçilen kuruluşlardan biri sizin için kullanılamıyor.",
+        "seriesTargetOrgHidden": "Quick Support ve atanmamış cihazların bekleme kuruluşu çok kuruluşlu bir rapora dahil edilemez.",
         "reportNotSeriesChild": "Bu rapor artık bir çok kuruluşlu raporun parçası değil.",
         "recipientModeRequiresSeries": "\"Asla gönderme\" yalnızca çok kuruluşlu raporun bir kopyası için geçerlidir.",
         "recipientsNeedExportAndMfa": "Raporları alıcılara göndermek için dışa aktarma izni ve çok faktörlü oturum açma gerekir.",

@@ -2945,7 +2945,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   {quote.taxRate ? `${pctFromFraction(quote.taxRate)}%` : t('quotes.editor.symbols.notAvailable')}
                 </span>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="quote-tax-rate-help">
                 {t('quotes.editor.liveTotals.taxRateHelp')}
               </p>
             </div>

@@ -55,3 +55,25 @@ describe('Breadcrumbs (#7178 mobile overflow)', () => {
     expect(middleCrumb.className).toMatch(/\btruncate\b/);
   });
 });
+
+// Sweep: at 390px the current-page crumb was squeezed hardest (72px). It must
+// not shrink; middle/ancestor crumbs shrink (and truncate) first.
+describe('Breadcrumbs shrink priority', () => {
+  const items = [
+    { label: 'Settings', href: '/settings' },
+    { label: 'Organizations', href: '/settings/organizations' },
+    { label: 'Default Organization', href: '/settings/organizations/org-1' },
+    { label: 'Default Site' },
+  ];
+
+  it('never shrinks the last crumb but lets earlier crumbs shrink', () => {
+    render(<Breadcrumbs items={items} />);
+    const listItems = screen.getAllByRole('listitem');
+    const last = listItems[listItems.length - 1];
+    expect(last.className).toMatch(/\bshrink-0\b/);
+    for (const li of listItems.slice(0, -1)) {
+      expect(li.className).not.toMatch(/\bshrink-0\b/);
+    }
+  });
+});
+

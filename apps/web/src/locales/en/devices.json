@@ -1250,6 +1250,7 @@
     "noDeviceGroupsYetCreateOne": "No device groups yet. Create one to start organizing devices.",
     "createYourFirstGroup": "Create your first group",
     "selectAllGroups": "Select all groups",
+    "selectGroup": "Select group {{name}}",
     "dynamic": "Dynamic",
     "static": "Static",
     "device": "device",
