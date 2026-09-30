@@ -56,12 +56,14 @@ import {
 } from './backupCommandCredentials';
 import { recordBackupReadDispatch, recordRestoreIntegrity, recordStorageSessionMint, type RestoreIntegrityMetricStatus } from './backupMetrics';
 import {
+  INTEGRITY_LOOKUP_FAILED,
   evaluateRestoreIntegrity,
   indexMatchesAttestation,
   integrityMetricLabels,
   integrityPayload,
+  lookupIntegrityInformational,
   type IntegrityAttestationInput,
-  type RestoreIntegrity,
+  type IntegrityLookup,
 } from './backupRestoreIntegrity';
 import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
@@ -425,7 +427,16 @@ const REFUSAL_MESSAGES: Record<string, string> = {
     + 'Point the configuration back to where the backup was written.',
   invalid_backup_file: 'This database backup does not record a readable backup file name.',
   deadline_passed: 'This command reached its time limit before it could be delivered. Start it again.',
+  attestation_failed: 'This backup did not match its integrity record and cannot be read from storage.',
 };
+
+/**
+ * Reasons that refuse every restore-shaped type, the VM types included (which
+ * are otherwise delivered as queued when they cannot be brokered): the
+ * snapshot's stored objects did not match its attestation, so no file index
+ * of it can authorize a read, and the helper must not read it any other way.
+ */
+const REFUSED_FOR_EVERY_TYPE = new Set(['attestation_failed']);
 
 const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
 const SEALING_DEFERRAL_MESSAGE = 'The backup was still being finalized in storage.';
@@ -478,7 +489,7 @@ export async function deliverBrokeredReadCommand(
     deps.recordDispatch(ctx.type, 'deferred', decision.reason);
     throw new CommandDeliveryDeferredError(deferral);
   }
-  if (REF_TYPES.has(ctx.type)) {
+  if (REF_TYPES.has(ctx.type) || REFUSED_FOR_EVERY_TYPE.has(decision.reason)) {
     deps.recordMint('snapshot_read', 'refused', decision.reason);
     deps.recordDispatch(ctx.type, 'refused', decision.reason);
     throw new CommandDeliveryRefusedError(refusalMessage(decision.reason));
@@ -499,14 +510,16 @@ export const INTEGRITY_FIELD = 'integrity';
 function attachIntegrity(
   payload: Record<string, unknown>,
   commandType: string,
-  snapshot: StorageSnapshotRow | null,
+  snapshot: StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED,
   deps: BrokeredReadDeps,
 ): Record<string, unknown> {
-  const integrity: RestoreIntegrity | null = snapshot ? evaluateRestoreIntegrity(snapshot, snapshot.attestation) : null;
+  const integrity: IntegrityLookup = snapshot === INTEGRITY_LOOKUP_FAILED || snapshot === null
+    ? snapshot
+    : evaluateRestoreIntegrity(snapshot, snapshot.attestation);
   const labels = integrityMetricLabels(integrity);
   deps.recordIntegrity(commandType, labels.status as RestoreIntegrityMetricStatus, labels.reason);
   const { [INTEGRITY_FIELD]: _stale, ...out } = payload;
-  return integrity ? { ...out, [INTEGRITY_FIELD]: integrityPayload(integrity) } : out;
+  return integrity && integrity !== INTEGRITY_LOOKUP_FAILED ? { ...out, [INTEGRITY_FIELD]: integrityPayload(integrity) } : out;
 }
 
 /**
@@ -514,9 +527,18 @@ function attachIntegrity(
  * destination, or a VM command as queued), resolved the way `mint` resolves
  * it: by its provider snapshot id, in the referenced organization and
  * configuration, else in the target device's organization. Null unless
- * exactly one row matches.
+ * exactly one row matches. The lookup only feeds the integrity block, so a
+ * failure never holds the command back (INTEGRITY_LOOKUP_FAILED).
  */
-async function lookupSnapshotForIntegrity(
+function lookupSnapshotForIntegrity(
+  payload: Record<string, unknown>,
+  ctx: DeliveryRefreshContext,
+  deps: BrokeredReadDeps,
+): Promise<StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED> {
+  return lookupIntegrityInformational(`${ctx.type} delivery`, () => findSnapshotForIntegrity(payload, ctx, deps));
+}
+
+async function findSnapshotForIntegrity(
   payload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
   deps: BrokeredReadDeps,
@@ -653,6 +675,9 @@ async function mint(
     useFileIndex = false;
     authorizedKeyCount = controlKeys.length;
   } else {
+    // No index can ever match an attestation that did not match the stored
+    // objects (hydration refuses to build one): refused, not deferred.
+    if (snapshot.attestation?.status === 'mismatch') return { mode: 'unbrokered', reason: 'attestation_failed' };
     if (!indexMatchesAttestation(snapshot, snapshot.attestation)) {
       // Ask for a server-verified index so the next delivery attempt can be
       // brokered; this one is deferred. A complete index that was not built

@@ -30,7 +30,7 @@
  * database handle and schema tables, and builds control keys itself.
  */
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { recordRestoreIntegrity, type RestoreIntegrityMetricStatus } from './backupMetrics';
@@ -180,11 +180,19 @@ export function integrityPayload(integrity: RestoreIntegrity): Record<string, un
   return { v: RESTORE_INTEGRITY_FORMAT, mode: 'unattested', snapshotId: integrity.snapshotId, reason: integrity.reason };
 }
 
+/** A lookup whose query failed; the command is delivered without a block. */
+export const INTEGRITY_LOOKUP_FAILED = 'lookup_failed' as const;
+
+/** The outcome of resolving an expectation: the expectation, none (snapshot not resolved), or a failed lookup. */
+export type IntegrityLookup = RestoreIntegrity | null | typeof INTEGRITY_LOOKUP_FAILED;
+
 /**
  * `status`/`reason` labels for breeze_backup_restore_integrity_total. `absent`
- * = delivered without a block because the snapshot could not be resolved.
+ * = delivered without a block, because the snapshot could not be resolved
+ * (`snapshot_unresolved`) or the lookup failed (`lookup_failed`).
  */
-export function integrityMetricLabels(integrity: RestoreIntegrity | null): { status: string; reason: string } {
+export function integrityMetricLabels(integrity: IntegrityLookup): { status: string; reason: string } {
+  if (integrity === INTEGRITY_LOOKUP_FAILED) return { status: 'absent', reason: INTEGRITY_LOOKUP_FAILED };
   if (!integrity) return { status: 'absent', reason: 'snapshot_unresolved' };
   if (integrity.mode === 'attested') return { status: 'attested', reason: integrity.trust };
   return { status: 'unattested', reason: integrity.reason };
@@ -206,6 +214,27 @@ export function indexMatchesAttestation(
   if (!attestation) return true;
   if (!INDEX_BINDABLE_ATTESTATION_STATUSES.has(attestation.status)) return false;
   return index.fileIndexManifestSha256 !== null && index.fileIndexManifestSha256 === attestation.manifestSha256;
+}
+
+/**
+ * Runs a lookup whose only purpose is the (informational) integrity block,
+ * so that its failure never holds back or fails what it decorates: inside a
+ * held DB context it runs in a savepoint (a failed statement cannot abort the
+ * caller's transaction), and any error is logged and returned as
+ * INTEGRITY_LOOKUP_FAILED.
+ */
+export async function lookupIntegrityInformational<T>(
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T | typeof INTEGRITY_LOOKUP_FAILED> {
+  try {
+    return hasDbAccessContext() ? await withDbTransaction(fn) : await fn();
+  } catch (err) {
+    console.warn(`[backupRestoreIntegrity] ${label}: could not resolve the integrity expectation; continuing without it`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return INTEGRITY_LOOKUP_FAILED;
+  }
 }
 
 /** Columns for an attestation LEFT JOINed onto backup_snapshots (all null when there is none). */
@@ -280,8 +309,8 @@ export const RECOVERY_BOOTSTRAP_INTEGRITY_TYPE = 'recovery_bootstrap';
  * The `integrity` block for a recovery bootstrap (authenticate / exchange
  * responses), counted; null when the snapshot could not be resolved.
  */
-export function recoveryBootstrapIntegrity(integrity: RestoreIntegrity | null): Record<string, unknown> | null {
+export function recoveryBootstrapIntegrity(integrity: IntegrityLookup): Record<string, unknown> | null {
   const labels = integrityMetricLabels(integrity);
   recordRestoreIntegrity(RECOVERY_BOOTSTRAP_INTEGRITY_TYPE, labels.status as RestoreIntegrityMetricStatus, labels.reason);
-  return integrity ? integrityPayload(integrity) : null;
+  return integrity && integrity !== INTEGRITY_LOOKUP_FAILED ? integrityPayload(integrity) : null;
 }

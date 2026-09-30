@@ -46,6 +46,7 @@ let authState = {
 let permissionsState: any;
 
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
@@ -872,6 +873,38 @@ describe('bmr routes', () => {
     const block = { v: 1, mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' };
     expect(body.integrity).toEqual(block);
     expect(body.bootstrap.integrity).toEqual(block);
+  });
+
+  it('authenticate: an integrity lookup failure still returns the bootstrap, without a block', async () => {
+    resolveRestoreIntegrityMock.mockRejectedValueOnce(new Error('statement timeout'));
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal', targetConfig: null, status: 'active',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+        authenticatedAt: null, completedAt: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
+        timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
+        metadata: { providerType: 's3' }, backupType: 'file', isIncremental: false,
+        hardwareProfile: null, systemStateManifest: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{ configId: null }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]));
+    updateMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.tokenId).toBe(TOKEN_ID);
+    expect(body).not.toHaveProperty('integrity');
   });
 
   it('authenticate: legacy client (no capabilities) on a referenced snapshot is refused before the status flips', async () => {

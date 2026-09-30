@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db', () => ({
   db: {},
   hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => fn(),
   withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
 }));
@@ -693,6 +694,19 @@ describe('restore integrity expectations at delivery', () => {
     expect(JSON.stringify(out)).not.toContain('unattested_override');
   });
 
+  it.each([
+    ['a local restore', (p: Record<string, unknown>) => ({ ...p, provider: 'local' }), 'backup_restore', 1],
+    ['a VM command as queued', (_p: Record<string, unknown>) => ({ restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' }), 'vm_instant_boot', 0],
+  ])('%s whose snapshot lookup fails is still delivered, without a block, and counted', async (_name, shape, type, protocol) => {
+    const state = makeState();
+    state.device!.backupReadProtocolVersion = protocol;
+    const deps = makeDeps(state);
+    (deps.store.findSnapshots as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('statement timeout'));
+    const out = await deliverBrokeredReadCommand(shape(restorePayload()), ctx({ type }), deps);
+    expect(out).not.toHaveProperty('integrity');
+    expect(deps.recordIntegrity).toHaveBeenCalledWith(type, 'absent', 'lookup_failed');
+  });
+
   it('nothing is recorded for a delivery that is deferred or refused', async () => {
     const state = makeState();
     state.device!.backupReadProtocolVersion = 0;
@@ -720,13 +734,20 @@ describe('file index bound to the snapshot attestation', () => {
     await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
   });
 
-  it('never brokers on the index of a snapshot whose attestation did not match', async () => {
-    const state = makeState();
-    state.snapshots = [makeSnapshot({ integrityStatus: 'attestation_failed', attestation: makeAttestation({ status: 'mismatch' }) })];
-    const deps = makeDeps(state);
-    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
-    expect(state.sessions.size).toBe(0);
-  });
+  it.each(['backup_restore', 'backup_verify', 'vm_restore_from_backup'])(
+    'refuses %s on the index of a snapshot whose attestation did not match, without asking for an index that can never be built',
+    async (type) => {
+      const state = makeState();
+      state.snapshots = [makeSnapshot({ integrityStatus: 'attestation_failed', attestation: makeAttestation({ status: 'mismatch' }) })];
+      const deps = makeDeps(state);
+      const payload = type.startsWith('vm_') ? { restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' } : restorePayload();
+      await expect(deliverBrokeredReadCommand(payload, ctx({ type }), deps))
+        .rejects.toThrow('This backup did not match its integrity record and cannot be read from storage.');
+      expect(deps.requestIndexHydration).not.toHaveBeenCalled();
+      expect(deps.recordDispatch).toHaveBeenCalledWith(type, 'refused', 'attestation_failed');
+      expect(state.sessions.size).toBe(0);
+    },
+  );
 
   it('MSSQL reads (no index) are brokered whatever the index state, and still carry the expectation', async () => {
     const state = makeState();

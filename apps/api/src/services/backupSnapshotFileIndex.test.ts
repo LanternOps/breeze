@@ -486,12 +486,16 @@ describe('file index bound to the snapshot attestation', () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()])) // claim: no attestation yet
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const publishRead = chainMock([{ metadata: {}, attestation: { status: 'pending', manifestSha256: other } }]);
-    selectMock.mockReturnValueOnce(publishRead); // final transaction's locked read
+    const lockRead = chainMock([{ metadata: {} }]);
+    const attestationRead = chainMock([{ status: 'pending', manifestSha256: other }]);
+    // Final transaction: the snapshot row lock, then (a later statement, so a
+    // fresh snapshot under READ COMMITTED) the attestation.
+    selectMock.mockReturnValueOnce(lockRead).mockReturnValueOnce(attestationRead);
     const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_differs_from_attestation', retryable: false });
-    expect(publishRead.for).toHaveBeenCalledWith('update', expect.anything());
+    expect(lockRead.for).toHaveBeenCalledWith('update');
+    expect(attestationRead.for).not.toHaveBeenCalled();
     const sets = updateMock.mock.results.map((r) => r.value.set.mock.calls[0]?.[0]);
     expect(sets.some((v) => v?.fileIndexStatus === 'complete')).toBe(false);
   });
@@ -500,7 +504,8 @@ describe('file index bound to the snapshot attestation', () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
-      .mockReturnValueOnce(chainMock([{ metadata: {}, attestation: { status: 'mismatch', manifestSha256: digest } }]));
+      .mockReturnValueOnce(chainMock([{ metadata: {} }]))
+      .mockReturnValueOnce(chainMock([{ status: 'mismatch', manifestSha256: digest }]));
     const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'attestation_failed' });
@@ -510,7 +515,8 @@ describe('file index bound to the snapshot attestation', () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
-      .mockReturnValueOnce(chainMock([{ metadata: {}, attestation: { status: 'pending', manifestSha256: digest } }]));
+      .mockReturnValueOnce(chainMock([{ metadata: {} }]))
+      .mockReturnValueOnce(chainMock([{ status: 'pending', manifestSha256: digest }]));
     const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).toMatchObject({ status: 'complete', manifestSha256: digest });
   });

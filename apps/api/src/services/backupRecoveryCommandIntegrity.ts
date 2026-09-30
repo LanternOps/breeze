@@ -11,7 +11,8 @@
  * The snapshot is resolved in the target device's organization: for
  * `bmr_recover` from the payload's `snapshotId` (internal id or provider
  * snapshot id), for `bare_metal_rebuild` from the recovery it runs. When it
- * cannot be resolved to exactly one row the command goes without a block.
+ * cannot be resolved to exactly one row, or the lookup fails, the command goes
+ * without a block.
  */
 import { and, eq, or } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
@@ -20,8 +21,10 @@ import { bareMetalRecoveries } from '../db/schema/bareMetalRecoveries';
 import { devices } from '../db/schema/devices';
 import { recordRestoreIntegrity, type RestoreIntegrityMetricStatus } from './backupMetrics';
 import {
+  INTEGRITY_LOOKUP_FAILED,
   integrityMetricLabels,
   integrityPayload,
+  lookupIntegrityInformational,
   resolveRestoreIntegrity,
   type RestoreIntegrity,
 } from './backupRestoreIntegrity';
@@ -118,15 +121,19 @@ export async function deliverRecoveryCommandIntegrity(
   // Written by the server at delivery, never taken from what was queued.
   const { [INTEGRITY_FIELD]: _queued, ...payload } = queuedPayload;
 
-  const orgId = await deps.lookupDeviceOrg(ctx.deviceId);
-  const integrity = orgId
-    ? await deps.inOrgContext(orgId, async () => {
-        const snapshotDbId = await resolveSnapshotDbId(payload, ctx.type, orgId, deps);
-        return snapshotDbId ? deps.resolve(snapshotDbId) : null;
-      })
-    : null;
+  // Informational: a failed lookup never holds the command back.
+  const integrity = await lookupIntegrityInformational(`${ctx.type} delivery`, async () => {
+    const orgId = await deps.lookupDeviceOrg(ctx.deviceId);
+    if (!orgId) return null;
+    return deps.inOrgContext(orgId, async () => {
+      const snapshotDbId = await resolveSnapshotDbId(payload, ctx.type, orgId, deps);
+      return snapshotDbId ? deps.resolve(snapshotDbId) : null;
+    });
+  });
 
   const labels = integrityMetricLabels(integrity);
   deps.recordIntegrity(ctx.type, labels.status as RestoreIntegrityMetricStatus, labels.reason);
-  return integrity ? { ...payload, [INTEGRITY_FIELD]: integrityPayload(integrity) } : payload;
+  return integrity && integrity !== INTEGRITY_LOOKUP_FAILED
+    ? { ...payload, [INTEGRITY_FIELD]: integrityPayload(integrity) }
+    : payload;
 }

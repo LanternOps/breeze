@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../db', () => ({
   db: {},
   hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => fn(),
   withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
 }));
@@ -109,9 +110,17 @@ describe('integrity expectations on bare-metal recovery commands', () => {
     expect(out).toEqual({ snapshotId: SNAP });
   });
 
-  it('a lookup failure propagates, so the row is released for a later attempt rather than delivered', async () => {
+  it('a lookup failure never holds the command back: it is delivered without a block, and counted', async () => {
     const deps = makeDeps({ resolve: vi.fn(async () => { throw new Error('connection reset'); }) });
-    await expect(deliverRecoveryCommandIntegrity({ snapshotId: SNAP }, ctx('bmr_recover'), deps)).rejects.toThrow('connection reset');
-    expect(deps.recordIntegrity).not.toHaveBeenCalled();
+    const out = await deliverRecoveryCommandIntegrity({ snapshotId: SNAP, integrity: { v: 1 } }, ctx('bmr_recover'), deps);
+    expect(out).toEqual({ snapshotId: SNAP });
+    expect(deps.recordIntegrity).toHaveBeenCalledWith('bmr_recover', 'absent', 'lookup_failed');
+  });
+
+  it('a failed device lookup is counted the same way', async () => {
+    const deps = makeDeps({ lookupDeviceOrg: vi.fn(async () => { throw new Error('pool exhausted'); }) });
+    const out = await deliverRecoveryCommandIntegrity({ snapshotId: SNAP }, ctx('bmr_recover'), deps);
+    expect(out).toEqual({ snapshotId: SNAP });
+    expect(deps.recordIntegrity).toHaveBeenCalledWith('bmr_recover', 'absent', 'lookup_failed');
   });
 });

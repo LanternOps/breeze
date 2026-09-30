@@ -35,6 +35,7 @@ let authState: any = {
 };
 
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),

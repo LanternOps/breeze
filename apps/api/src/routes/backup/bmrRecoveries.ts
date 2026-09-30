@@ -46,7 +46,11 @@ import {
 } from '../../services/recoveryBootstrap';
 import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
 import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
-import { recoveryBootstrapIntegrity, resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
+import {
+  lookupIntegrityInformational,
+  recoveryBootstrapIntegrity,
+  resolveRestoreIntegrity,
+} from '../../services/backupRestoreIntegrity';
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { BMR_PROGRESS_IP_LIMIT, enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext } from './bmr';
@@ -371,7 +375,9 @@ async function buildRecoveryExchangeBootstrap(
     .limit(1);
 
   // The snapshot's integrity expectation (informational in this release).
-  const integrity = recoveryBootstrapIntegrity(await resolveRestoreIntegrity(snapshot.id));
+  const integrity = recoveryBootstrapIntegrity(
+    await lookupIntegrityInformational('recovery bootstrap', () => resolveRestoreIntegrity(snapshot.id)),
+  );
 
   return buildAuthenticatedBootstrapPayload({
     tokenId: tokenRow.id,

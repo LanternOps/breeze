@@ -550,16 +550,22 @@ async function verifyOriginsAndWrite(
         // The snapshot row lock serializes publication with the attestation
         // verifier (backupAttestationVerify.ts finish) and with an attestation
         // being recorded (backupAttestation.ts), which take the same lock
-        // first: the attestation read here is the one in force when the index
-        // becomes visible.
+        // first. The attestation is read by a LATER statement: under READ
+        // COMMITTED a statement's snapshot is taken before it waits for a
+        // lock, so only a statement issued after the lock is held sees the
+        // attestation in force when the index becomes visible.
         const [current] = await tx
-          .select({ metadata: backupSnapshots.metadata, attestation: indexAttestationColumns() })
+          .select({ metadata: backupSnapshots.metadata })
           .from(backupSnapshots)
-          .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
           .where(eq(backupSnapshots.id, snapshotDbId))
           .limit(1)
-          .for('update', { of: backupSnapshots });
-        const refusal = attestationRefusal(indexAttestationOf(current?.attestation), manifestSha256);
+          .for('update');
+        const [attestationRow] = await tx
+          .select(indexAttestationColumns())
+          .from(backupSnapshotAttestations)
+          .where(eq(backupSnapshotAttestations.snapshotDbId, snapshotDbId))
+          .limit(1);
+        const refusal = attestationRefusal(indexAttestationOf(attestationRow), manifestSha256);
         if (refusal) {
           await tx
             .update(backupSnapshots)
