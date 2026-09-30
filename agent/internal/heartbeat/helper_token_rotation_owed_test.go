@@ -30,7 +30,9 @@ func seedLegacyHelperTokenInAgentYAML(t *testing.T, cfgPath string) {
 	if _, err := f.WriteString("helper_auth_token: brz_current_helper\n"); err != nil {
 		t.Fatalf("append helper token: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close agent.yaml: %v", err)
+	}
 	if err := config.SetAndPersist("log_level", "info"); err != nil {
 		t.Fatalf("SetAndPersist (scrub): %v", err)
 	}
@@ -245,7 +247,9 @@ func TestUpgradeFromAgentYAMLHelperTokenKeepsAssistTokenValid(t *testing.T) {
 	if _, err := f.WriteString("helper_auth_token: " + currentHelper + "\n"); err != nil {
 		t.Fatalf("append helper token: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close agent.yaml: %v", err)
+	}
 	agentYAMLHasHelperToken := func(step string) bool {
 		t.Helper()
 		data, err := os.ReadFile(cfgPath)
