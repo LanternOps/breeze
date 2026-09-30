@@ -1,0 +1,147 @@
+package integrity
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
+)
+
+// VaultCopyDiffersWarning is the result warning when a vault copy failed its
+// checks and the object was read from primary storage instead.
+func VaultCopyDiffersWarning(key string) string {
+	return fmt.Sprintf("vault copy differs from backup; restored from primary storage: %s", key)
+}
+
+// StagingPrefix names every staging file this package creates, so a restore
+// that is interrupted leaves recognisable leftovers.
+const StagingPrefix = ".breeze-staging-"
+
+// download fetches key into dest through p, cancellable when p supports it.
+func download(ctx context.Context, p providers.BackupProvider, key, dest string) error {
+	if cd, ok := p.(providers.ContextDownloader); ok {
+		return cd.DownloadContext(ctx, key, dest)
+	}
+	return p.Download(key, dest)
+}
+
+// DownloadChecked downloads key into dest and runs CheckStoredBytes on it.
+// With an expectation present and a provider that reads from several sources
+// (a vault copy first), a copy that fails a content check is replaced once by
+// the same object read from the next source, and a warning says so. dest is
+// left holding the last attempt's bytes; the caller removes it on error.
+func DownloadChecked(ctx context.Context, p providers.BackupProvider, key, dest string, want Stored, e *Expectation) (CheckResult, []string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := download(ctx, p, key, dest); err != nil {
+		return CheckResult{}, nil, err
+	}
+	res, err := CheckStoredBytes(dest, want, e)
+	if err == nil || !e.Present() || !Retryable(err) {
+		return res, nil, err
+	}
+	skipper, ok := p.(providers.SourceSkipper)
+	if !ok || skipper.SourceCount() < 2 {
+		return res, nil, err
+	}
+	if dlErr := skipper.DownloadSkipping(ctx, key, dest, 1); dlErr != nil {
+		return CheckResult{}, nil, fmt.Errorf("%w; reading primary storage instead also failed: %v", err, dlErr)
+	}
+	res, err = CheckStoredBytes(dest, want, e)
+	if err != nil {
+		return CheckResult{}, nil, err
+	}
+	return res, []string{VaultCopyDiffersWarning(key)}, nil
+}
+
+// DownloadVerifiedControlObject downloads a snapshot control object to a
+// private temporary file under workDir and returns its path; the caller
+// removes it.
+//
+// In attested mode key must be the attested object's key for role, and the
+// bytes must match its size and SHA-256 before the caller parses any of them;
+// a role the expectation does not carry fails with ErrObjectNotAttested.
+// Outside attested mode the object is downloaded unchecked, as before.
+func DownloadVerifiedControlObject(ctx context.Context, p providers.BackupProvider, e *Expectation, role, key, workDir string) (string, []string, error) {
+	want := Stored{Size: -1}
+	if e.Attested() {
+		obj, ok := e.Object(role)
+		if !ok {
+			return "", nil, fmt.Errorf("%w: %s", ErrObjectNotAttested, role)
+		}
+		if key != obj.Key {
+			return "", nil, fmt.Errorf("%w: control object key %q is not the attested key %q", ErrIntegrityMismatch, key, obj.Key)
+		}
+		want = Stored{Size: obj.Size, SHA256: obj.SHA256}
+	}
+	tmp, err := os.CreateTemp(workDir, "control-object-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary file for %s: %w", role, err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+
+	if !e.Attested() {
+		if err := download(ctx, p, key, tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return "", nil, err
+		}
+		return tmpPath, nil, nil
+	}
+	_, warnings, err := DownloadChecked(ctx, p, key, tmpPath, want, e)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return "", nil, fmt.Errorf("%s %s: %w", role, key, err)
+	}
+	return tmpPath, warnings, nil
+}
+
+// FetchControlObject is DownloadVerifiedControlObject returning the bytes.
+func FetchControlObject(ctx context.Context, p providers.BackupProvider, e *Expectation, role, key, workDir string) ([]byte, []string, error) {
+	tmpPath, warnings, err := DownloadVerifiedControlObject(ctx, p, e, role, key, workDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", role, err)
+	}
+	return data, warnings, nil
+}
+
+// StageAndPublish downloads key into a staging file beside finalPath (same
+// directory, so the same volume), checks it with CheckStoredBytes and only
+// then renames it onto finalPath. On any failure the staging file is removed
+// and finalPath is left as it was. Never downloads into finalPath itself.
+func StageAndPublish(ctx context.Context, p providers.BackupProvider, key, finalPath string, want Stored, e *Expectation) (CheckResult, []string, error) {
+	staging, err := StagingPath(filepath.Dir(finalPath))
+	if err != nil {
+		return CheckResult{}, nil, err
+	}
+	res, warnings, err := DownloadChecked(ctx, p, key, staging, want, e)
+	if err != nil {
+		_ = os.Remove(staging)
+		return CheckResult{}, nil, err
+	}
+	if err := os.Rename(staging, finalPath); err != nil {
+		_ = os.Remove(staging)
+		return CheckResult{}, nil, fmt.Errorf("publish restored object: %w", err)
+	}
+	return res, warnings, nil
+}
+
+// StagingPath returns a new, unused staging file name in dir (the file is
+// not created).
+func StagingPath(dir string) (string, error) {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("staging name: %w", err)
+	}
+	return filepath.Join(dir, StagingPrefix+hex.EncodeToString(b[:])), nil
+}

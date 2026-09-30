@@ -18,6 +18,16 @@ type ContextDownloader interface {
 	DownloadContext(ctx context.Context, remotePath, localPath string) error
 }
 
+// SourceSkipper is implemented by a provider that serves downloads from an
+// ordered list of sources (FallbackProvider: a local vault copy first, then
+// primary storage). DownloadSkipping reads from the sources after the first
+// skip, so a caller whose checks refuse the copy the first source returned
+// can read the same object from the next one.
+type SourceSkipper interface {
+	DownloadSkipping(ctx context.Context, remotePath, localPath string, skip int) error
+	SourceCount() int
+}
+
 // StaleUploadSweeper is optionally implemented by providers that write a
 // temporary file beside an object during an upload (the local provider), so
 // ones left by an interrupted helper can be removed later.
