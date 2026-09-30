@@ -425,6 +425,10 @@ apiKeyRoutes.post(
     const creatorAuthEpoch = auth.token?.aep;
     const creatorMfaEpoch = auth.token?.mep;
     if (typeof creatorAuthEpoch !== 'number' || typeof creatorMfaEpoch !== 'number') {
+      // Unreachable through authMiddleware, which rejects any access token
+      // without numeric aep/mep. Reaching it means an auth path skipped that
+      // gate — refuse rather than mint a key no epoch check would ever bind.
+      console.warn('[api-keys] refused mint: request token carries no epoch claims', { userId: auth.user.id });
       return c.json({ error: 'Session is no longer valid. Sign in again.' }, 401);
     }
     const [liveCreator] = await db

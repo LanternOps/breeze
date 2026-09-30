@@ -330,7 +330,8 @@ describe('SR2-15 real-DB API key principal authorization', () => {
 // killed every key the user had minted.
 // ---------------------------------------------------------------------------
 const CREDENTIAL_EPOCH_MIGRATION = '2026-11-12-110000-api-key-creator-credential-epoch.sql';
-const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: () => {} });
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required to re-apply the #7489 migration');
+const adminSql = postgres(process.env.DATABASE_URL, { max: 1, onnotice: () => {} });
 afterAll(async () => { await adminSql.end({ timeout: 5 }); });
 
 async function liveEpochs(userId: string) {

@@ -30,14 +30,14 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'users' AND column_name = 'credential_epoch'
+    WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'credential_epoch'
   ) THEN
     ALTER TABLE users ADD COLUMN credential_epoch integer NOT NULL DEFAULT 1;
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'api_keys' AND column_name = 'creator_credential_epoch'
+    WHERE table_schema = current_schema() AND table_name = 'api_keys' AND column_name = 'creator_credential_epoch'
   ) THEN
     ALTER TABLE api_keys ADD COLUMN creator_credential_epoch integer;
   END IF;

@@ -43,7 +43,14 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../db/schema', () => ({
   apiKeys: {},
   organizations: {},
-  users: {}
+  // Sentinel columns so the mint guard's WHERE predicate can be inspected.
+  users: {
+    id: { col: 'users.id' },
+    status: { col: 'users.status' },
+    authEpoch: { col: 'users.auth_epoch' },
+    mfaEpoch: { col: 'users.mfa_epoch' },
+    credentialEpoch: { col: 'users.credential_epoch' },
+  }
 }));
 
 // The §1.4 rotation delegation ceiling resolves the key's delegating creator
@@ -235,13 +242,38 @@ describe('api keys routes', () => {
     }
 
     function mockLiveCreatorRow(rows: Array<Record<string, unknown>>) {
+      const captured: { where?: unknown } = {};
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(() => Promise.resolve(rows))
-          }))
+          where: vi.fn((predicate: unknown) => {
+            captured.where = predicate;
+            return { limit: vi.fn(() => Promise.resolve(rows)) };
+          })
         }))
       } as any);
+      return captured;
+    }
+
+    // Flatten a drizzle SQL tree into its leaf chunks (columns + bound values).
+    function sqlLeaves(node: unknown, out: unknown[] = []): unknown[] {
+      const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
+      if (!chunks) {
+        out.push(node);
+        return out;
+      }
+      for (const chunk of chunks) sqlLeaves(chunk, out);
+      return out;
+    }
+
+    // `eq(col, value)` renders as [col, " = ", value]: find the value bound to col.
+    function boundValue(leaves: unknown[], col: string): unknown {
+      const i = leaves.findIndex((l) => (l as { col?: string } | null)?.col === col);
+      if (i < 0) return undefined;
+      const rest = leaves.slice(i + 1).find((l) => {
+        const text = (l as { value?: unknown } | null)?.value;
+        return !(Array.isArray(text) && text.every((t) => typeof t === 'string'));
+      });
+      return rest;
     }
 
     function authWithToken(token: Record<string, unknown>) {
@@ -276,11 +308,19 @@ describe('api keys routes', () => {
     it('stamps the creator live credential epoch (plus the token auth/mfa epochs) onto a newly minted key', async () => {
       const captured = mockInsertCapture();
       authWithToken({ aep: 5, mep: 2 });
-      mockLiveCreatorRow([{ credentialEpoch: 3 }]);
+      const guard = mockLiveCreatorRow([{ credentialEpoch: 3 }]);
 
       const res = await createKey();
 
       expect(res.status).toBe(201);
+      // The live read is guarded on this session's validated epochs and an
+      // active creator — without those conditions it could stamp a credential
+      // epoch newer than the minting session, or mint for a disabled user.
+      const leaves = sqlLeaves(guard.where);
+      expect(boundValue(leaves, 'users.id')).toBe('user-123');
+      expect(boundValue(leaves, 'users.status')).toBe('active');
+      expect(boundValue(leaves, 'users.auth_epoch')).toBe(5);
+      expect(boundValue(leaves, 'users.mfa_epoch')).toBe(2);
       expect(captured.values).toMatchObject({
         creatorAuthEpoch: 5,
         creatorMfaEpoch: 2,
