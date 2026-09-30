@@ -6705,6 +6705,26 @@ describe('WebSocket desktop fallback start results', () => {
     expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'denied', reason: 'user' });
   });
 
+  it('passes the agent\'s consent detail on to a waiting WebSocket relay', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, event: 'consent_denied', reason: 'no_user', consentDetail: 'capture_target_changed', consentOutcome: 'granted', consentProtocol: 2 },
+      }),
+    } as any, ws as any);
+
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(SESSION, AGENT, COMMAND, { outcome: 'denied', reason: 'no_user', detail: 'capture_target_changed' });
+  });
+
   function rigRefusedActivation(row: Record<string, unknown> | null) {
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
