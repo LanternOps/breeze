@@ -165,6 +165,20 @@ describe('sealUnsealedSettingsSecrets', () => {
     expect((await readSettings(partners, partner.id)).notifications.pushoverAppToken).toBe('token-2');
   });
 
+  it('does not select a row whose only non-sealed list entries are not strings', async () => {
+    const partner = await createPartner();
+    const sealed = encryptColumnValueForWrite('partners', 'settings', {
+      notifications: { webhooks: ['https://hooks.example.com/x'] },
+    }) as Record<string, any>;
+    await getTestDb().update(partners)
+      .set({ settings: { notifications: { webhooks: [...sealed.notifications.webhooks, 42, null] } } })
+      .where(eq(partners.id, partner.id));
+
+    const result = await sealUnsealedSettingsSecrets();
+
+    expect(result.partners.scanned).toBe(0);
+  });
+
   it('ignores a sealed value it cannot open rather than touching it', async () => {
     const partner = await createPartner();
     const foreign = encryptSecret('sealed-elsewhere', { aad: 'organizations.settings' })!;

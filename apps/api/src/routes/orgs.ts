@@ -683,11 +683,12 @@ const supportedLocales = SUPPORTED_LOCALES;
 
 /**
  * The partner settings editor echoes a saved notification destination back as
- * the masked marker ("keep the stored value" — settingsSecretMasking.ts),
- * which the URL validator would otherwise reject. Accept the marker alongside
- * a valid URL; a typed replacement is still validated.
+ * the masked marker ("keep the stored value" — settingsSecretMasking.ts; a
+ * list entry carries a key naming the stored entry, `********:<key>`), which
+ * the URL validator would otherwise reject. Accept the marker alongside a
+ * valid URL; a typed replacement is still validated.
  */
-const maskedSettingsSecretMarker = z.string().regex(/^\*+$/);
+const maskedSettingsSecretMarker = z.string().regex(/^\*+(?::[0-9a-f]+)?$/);
 
 function keptSecretOrHttpUrl(label: string) {
   return z.union([maskedSettingsSecretMarker, httpUrlValue(label)]);
@@ -776,8 +777,8 @@ const partnerSettingsSchema = z.object({
     // Stored sealed and returned masked; the marker keeps the stored value.
     slackWebhookUrl: keptSecretOrHttpUrl('Slack webhook URL').optional(),
     slackChannel: z.string().optional(),
-    // Kept by position: a marker keeps the saved entry, an empty string
-    // removes it, a typed URL replaces or appends.
+    // Each saved entry comes back as a keyed marker; sending it keeps that
+    // entry, leaving it out removes it, and a typed URL is added.
     webhooks: z.array(keptSecretOrHttpUrl('Webhook URL')).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
     pushoverAppToken: z.string().max(30).optional(),

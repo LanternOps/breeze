@@ -75,20 +75,26 @@ function pathLiteral(path: JsonPath): string {
   return `{${path.join(',')}}`;
 }
 
-/** The leaf at `path` as a list of its string values (a string, or a list of strings). */
-function leafStringsSql(path: JsonPath): SQL {
+/** The leaf at `path` as a list of its values (a single value, or a list). */
+function leafValuesSql(path: JsonPath): SQL {
   const at = sql`settings #> ${pathLiteral(path)}::text[]`;
-  return sql`jsonb_array_elements_text(CASE jsonb_typeof(${at})
+  return sql`jsonb_array_elements(CASE jsonb_typeof(${at})
     WHEN 'array' THEN ${at}
     WHEN 'string' THEN jsonb_build_array(${at})
     ELSE '[]'::jsonb END)`;
 }
 
-/** SQL: this row still holds a non-empty, non-ciphertext string at a secret path. */
+/**
+ * SQL: this row still holds a non-empty, non-ciphertext string at a secret
+ * path. Must agree with `holdsPlaintext` below, or a row would be selected on
+ * every run and never change.
+ */
 function holdsPlaintextSql(): SQL {
   const perPath = SETTINGS_SECRET_JSON_PATHS.map((path) => sql`EXISTS (
-    SELECT 1 FROM ${leafStringsSql(path)} AS leaf(value)
-    WHERE leaf.value <> '' AND leaf.value NOT LIKE 'enc:v_:%'
+    SELECT 1 FROM ${leafValuesSql(path)} AS leaf(value)
+    WHERE jsonb_typeof(leaf.value) = 'string'
+      AND leaf.value #>> '{}' <> ''
+      AND leaf.value #>> '{}' NOT LIKE 'enc:v_:%'
   )`);
   return sql.join(perPath, sql` OR `);
 }

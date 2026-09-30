@@ -3,7 +3,7 @@ import type { SettingsSecretDestination } from './credentialOriginBinding';
 import { isSettingsSecretPath } from './encryptedColumnRegistry';
 import { INTEGRATION_MASKED_SECRET } from './integrationSettingsSecrets';
 import { isMaskedIntegrationSecret } from './notificationChannelSecrets';
-import { isEncryptedSecret } from './secretCrypto';
+import { hmacFingerprint, isEncryptedSecret } from './secretCrypto';
 
 /**
  * Response masking and write-side resolution for the registered `settings`
@@ -28,12 +28,14 @@ import { isEncryptedSecret } from './secretCrypto';
  *   - any other sealed value                                 → refused; a
  *     client never legitimately holds ciphertext it was not given
  *
- * A list of secret strings (`notifications.webhooks`) has no entry ids, so its
- * entries are matched by position: the editor keeps every saved entry in
- * place (the masked marker to keep it, an empty string to remove it) and
- * appends new ones. Removed entries are dropped from the stored list, and a
- * marker with no stored entry at its position is refused — the list changed
- * since the page loaded, and resolving it would keep the wrong entry.
+ * A list of secret strings (`notifications.webhooks`) has no entry ids, so
+ * each entry is masked as a keyed marker, `********:<key>`, where the key is
+ * an HMAC of the stored entry: it names the entry without revealing it, and
+ * does not depend on its position. The editor sends back the keyed markers of
+ * the entries it keeps, leaves out the ones it removes, and appends typed
+ * ones. A keyed marker whose entry is no longer stored — the list changed
+ * since the page loaded — is refused, as is a bare marker, which cannot say
+ * which entry it keeps.
  */
 
 export const MASKED_SETTINGS_SECRET = INTEGRATION_MASKED_SECRET;
@@ -61,11 +63,28 @@ function isMaskedMarker(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && isMaskedIntegrationSecret(value);
 }
 
+const LIST_ENTRY_KEY_LENGTH = 16;
+const KEYED_MARKER = /^\*+:([0-9a-f]+)$/;
+
+/** Names a stored list entry without revealing it (see the module comment). */
+function listEntryKey(stored: string): string {
+  return hmacFingerprint(`settings-secret-list-entry:${stored}`).slice(-LIST_ENTRY_KEY_LENGTH);
+}
+
+function keyedMarker(stored: string): string {
+  return `${MASKED_SETTINGS_SECRET}:${listEntryKey(stored)}`;
+}
+
 function maskAt(value: unknown, path: JsonPath): unknown {
   if (typeof value === 'string') {
     return value.length > 0 && isSecretLeaf(path, value) ? MASKED_SETTINGS_SECRET : value;
   }
   if (Array.isArray(value)) {
+    if (isSettingsSecretPath(path)) {
+      return value.map((entry) => (typeof entry === 'string'
+        ? (entry.length > 0 ? keyedMarker(entry) : entry)
+        : maskAt(entry, path)));
+    }
     return value.map((entry) => maskAt(entry, path));
   }
   if (isRecord(value)) {
@@ -120,25 +139,40 @@ function restoreLeaf(incoming: string, stored: unknown, path: JsonPath, label: s
 }
 
 /**
- * A list of secret strings, matched by position (see the module comment):
- * a marker keeps the stored entry at its position, an empty string removes
- * it, a typed value replaces or appends.
+ * A list of secret strings, matched by keyed marker (see the module comment):
+ * a keyed marker keeps the stored entry it names, a typed value is added, and
+ * an entry left out (or sent empty) is removed.
  */
 function restoreSecretStringList(incoming: unknown[], stored: unknown, path: JsonPath, label: string): unknown[] {
-  const storedList = Array.isArray(stored) ? stored : [];
+  const storedEntries = (Array.isArray(stored) ? stored : [])
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  const byKey = new Map(storedEntries.map((entry) => [listEntryKey(entry), entry]));
+  const changed = () => new SettingsSecretInputError(`settings.${label} changed since it was loaded; reload and save again`);
+
   const result: unknown[] = [];
   incoming.forEach((entry, index) => {
-    const entryLabel = `${label}[${index}]`;
     if (typeof entry !== 'string') {
-      result.push(restoreValue(entry, storedList[index], path, entryLabel));
+      result.push(restoreValue(entry, undefined, path, `${label}[${index}]`));
       return;
     }
     if (entry.length === 0) return;
-    if (isMaskedMarker(entry) && typeof storedList[index] !== 'string') {
-      throw new SettingsSecretInputError(`settings.${label} changed since it was loaded; reload and save again`);
+    const keyed = KEYED_MARKER.exec(entry);
+    if (keyed) {
+      const kept = byKey.get(keyed[1]!);
+      if (kept === undefined) throw changed();
+      result.push(kept);
+      return;
     }
-    const resolved = restoreLeaf(entry, storedList[index], path, entryLabel);
-    if (resolved !== undefined && resolved.length > 0) result.push(resolved);
+    if (isMaskedMarker(entry)) throw changed();
+    if (isEncryptedSecret(entry)) {
+      // A page loaded before responses were masked echoes the stored value.
+      if (!storedEntries.includes(entry)) {
+        throw new SettingsSecretInputError(`settings.${label}[${index}] must be re-entered, not submitted as a sealed value`);
+      }
+      result.push(entry);
+      return;
+    }
+    result.push(entry);
   });
   return result;
 }

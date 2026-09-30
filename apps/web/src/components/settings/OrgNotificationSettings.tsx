@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Bell, Mail, MessageSquare, Plus, Save, Send, Trash2, Webhook } from 'lucide-react';
-import { isMaskedSecret } from '@/lib/redactedSecret';
+import { isMaskedListEntry } from '@/lib/redactedSecret';
 import SavedSecretInput from './SavedSecretInput';
 
 type NotificationsData = {
@@ -87,9 +87,9 @@ export default function OrgNotificationSettings({
   const [newWebhook, setNewWebhook] = useState('');
   const [preferences, setPreferences] = useState(initialData.preferences || getDefaultPreferences());
 
-  // After a save the page re-reads the org, and the saved secrets come back as
-  // markers at their new positions. Start the secret fields over from what is
-  // stored, or a second save would replay a removal against shifted positions.
+  // After a save the page re-reads the org: start the secret fields over from
+  // what is stored, so values typed here show as saved and a second save
+  // sends the new markers.
   useEffect(() => {
     setSlackWebhookUrl(notifications?.slackWebhookUrl || '');
     setWebhooks(notifications?.webhooks || []);
@@ -108,15 +108,11 @@ export default function OrgNotificationSettings({
     markDirty();
   };
 
-  // Saved webhook URLs come back only as the masked marker, and the API keeps
-  // them by position. So a saved entry is never spliced out: removing it
-  // leaves an empty string in its place (the API drops it on save), and new
-  // entries are appended after the saved ones. An entry added in this session
-  // has nothing stored behind it and is simply removed.
+  // Saved webhook URLs come back only as keyed markers. Sending a marker back
+  // keeps that saved entry and leaving it out removes it, so removal is just
+  // dropping the entry from the list.
   const handleRemoveWebhook = (index: number) => {
-    setWebhooks(prev => (isMaskedSecret(prev[index])
-      ? prev.map((item, i) => (i === index ? '' : item))
-      : prev.filter((_, i) => i !== index)));
+    setWebhooks(prev => prev.filter((_, i) => i !== index));
     markDirty();
   };
 
@@ -366,14 +362,14 @@ export default function OrgNotificationSettings({
               </button>
             </div>
             <div className="space-y-2">
-              {webhooks.map((url, index) => (url === '' ? null : (
+              {webhooks.map((url, index) => (
                 <div
-                  key={index}
-                  data-testid={isMaskedSecret(url) ? 'org-notifications-webhook-saved' : 'org-notifications-webhook-pending'}
+                  key={`${index}:${url}`}
+                  data-testid={isMaskedListEntry(url) ? 'org-notifications-webhook-saved' : 'org-notifications-webhook-pending'}
                   className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-xs"
                 >
-                  <span className={`truncate ${isMaskedSecret(url) ? 'text-muted-foreground' : ''}`}>
-                    {isMaskedSecret(url) ? t('orgNotificationSettings.webhooks.savedEntry') : url}
+                  <span className={`truncate ${isMaskedListEntry(url) ? 'text-muted-foreground' : ''}`}>
+                    {isMaskedListEntry(url) ? t('orgNotificationSettings.webhooks.savedEntry') : url}
                   </span>
                   <button
                     type="button"
@@ -386,8 +382,8 @@ export default function OrgNotificationSettings({
                     {t('common:actions.remove')}
                   </button>
                 </div>
-              )))}
-              {webhooks.every(url => url === '') ? (
+              ))}
+              {webhooks.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t('orgNotificationSettings.webhooks.empty')}</p>
               ) : null}
             </div>

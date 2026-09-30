@@ -202,8 +202,13 @@ describe('assertNotLocked', () => {
       [{ settings: { notifications: { slackWebhookUrl: 'enc:v1:partner-slack', webhooks: ['enc:v1:partner-hook'] } } }],
     );
 
+    const { maskSettingsSecrets } = await import('./settingsSecretMasking');
+    const echoed = (maskSettingsSecrets({ notifications: { webhooks: ['enc:v1:org-hook'] } }) as {
+      notifications: { webhooks: string[] };
+    }).notifications.webhooks;
+
     await expect(
-      assertNotLocked('org-1', 'notifications', { slackWebhookUrl: '********', webhooks: ['********'] }),
+      assertNotLocked('org-1', 'notifications', { slackWebhookUrl: '********', webhooks: echoed }),
     ).resolves.toBeUndefined();
   });
 
@@ -224,8 +229,13 @@ describe('assertNotLocked', () => {
       [{ settings: { notifications: { webhooks: ['enc:v1:partner-hook'] } } }],
     );
 
+    const { maskSettingsSecrets } = await import('./settingsSecretMasking');
+    const [keepA] = (maskSettingsSecrets({ notifications: { webhooks: ['enc:v1:org-a'] } }) as {
+      notifications: { webhooks: string[] };
+    }).notifications.webhooks;
+
     await expect(
-      assertNotLocked('org-1', 'notifications', { webhooks: ['********'] }),
+      assertNotLocked('org-1', 'notifications', { webhooks: [keepA] }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
