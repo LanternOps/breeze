@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -210,9 +210,9 @@ describe.each([
   it.each(Object.keys(VIEWER_FILENAMES))('viewer (%s) download redirects to the object sync uploaded', async (platform) => {
     const res = await viewerDownloadRoutes.request(`/download/${platform}`);
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe(
-      `https://bucket.test/${bucket.reads[0]}`,
-    );
+    expect(bucket.reads).toHaveLength(1);
+    expect(res.headers.get('location')).toBe(`https://bucket.test/${bucket.reads[0]}`);
+    expect(bucket.reads[0]!.endsWith(`/${VIEWER_FILENAMES[platform]}`)).toBe(true);
   });
 
   it('Helper installer verified fetch reads the object sync uploaded', async () => {
@@ -230,6 +230,37 @@ describe.each([
     expect(new Set(dirs).size).toBe(dirs.length);
     const prefixes = bucket.syncCalls.map((call) => call.prefix);
     expect(new Set(prefixes).size).toBe(prefixes.length);
-    expect(statSync(dirs[0]!).isDirectory()).toBe(true);
+    // agent + viewer + helper, or agent + viewer when the helper shares the agent dir.
+    expect(dirs).toHaveLength(sharedHelperDir ? 2 : 3);
+  });
+});
+
+// Static guard: a staged binary's S3 key must come from binaryS3Key(), never a
+// hand-written template — that is how #7515's per-component prefixes drifted
+// from the sync. (Keys read from a DB row — uploaded software, blobs — are
+// variables, not templates, so they are unaffected.)
+describe('no hand-built S3 keys for staged binaries', () => {
+  it('no source file passes a template-literal key to an S3 reader', () => {
+    const srcRoot = join(__dirname, '..');
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== 'node_modules' && entry.name !== '__tests__') walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+        readFileSync(full, 'utf8')
+          .split('\n')
+          .forEach((line, i) => {
+            if (/(getPresignedUrl|getObjectStream)\(\s*`|\bs3Key:\s*`/.test(line)) {
+              offenders.push(`${full.slice(srcRoot.length + 1)}:${i + 1}`);
+            }
+          });
+      }
+    };
+    walk(srcRoot);
+    expect(offenders, 'use binaryS3Key(store, filename) from services/binaryStores.ts').toEqual([]);
   });
 });
