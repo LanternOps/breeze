@@ -93,6 +93,12 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // pick an arbitrary row. Which rules apply to a device is decided upstream by
   // resolveComplianceRulesForDevice; this never decides what a device gets.
   'services/configComplianceAlertBridge.ts',
+  // Reason text only: once resolveComplianceAssignmentForDevice (the view) has
+  // decided a compliance rule no longer applies to a device, this looks up the
+  // ONE authored link the alert was raised under to say why (rule set renamed,
+  // feature removed, policy deleted or inactive). It never decides what a
+  // device gets.
+  'services/complianceAlertReconcile.ts',
   // Evidence naming for RCA output only — never decides what a device gets.
   'services/alertCorrelationRca.ts',
   // AI tools operate on a policy's own links (create/update/remove/list).

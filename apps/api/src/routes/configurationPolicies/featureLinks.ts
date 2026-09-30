@@ -7,6 +7,8 @@ import {
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
   clientSuppliedWarrantyHpCmslConsent,
+  duplicateComplianceItemNameMessage,
+  duplicateComplianceItemNames,
   hardwareMonitoringInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   monitorsInlineSettingsSchema,
@@ -52,6 +54,29 @@ import {
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
+
+/**
+ * 400 body when two compliance rule sets in the link share a name, else null.
+ * A rule set is identified by (feature link, name) across saves: the
+ * evaluator's persisted state, the due check and the compliance alert all key
+ * on it, so two with one name would share a state row and an alert. The rest
+ * of the compliance shape is not validated here (the web tab's saved shape
+ * predates complianceInlineSettingsSchema); the service refuses duplicates
+ * again for callers that bypass this route.
+ */
+function duplicateComplianceNamesRefusal(settings: unknown) {
+  const items = settings && typeof settings === 'object' ? (settings as { items?: unknown }).items : undefined;
+  if (!Array.isArray(items)) return null;
+  const names = duplicateComplianceItemNames(
+    items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object'),
+  );
+  if (names.length === 0) return null;
+  return {
+    error: duplicateComplianceItemNameMessage(names[0]!),
+    code: 'DUPLICATE_COMPLIANCE_RULE_SET_NAME' as const,
+    names,
+  };
+}
 
 // The `config_policy_monitors_compat` deferred constraint trigger
 // (2026-10-16-160300-monitor-definitions.sql) is the owner-compatibility
@@ -346,6 +371,11 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'compliance') {
+      const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
+      if (refusal) return c.json(refusal, 400);
+    }
+
     // addFeatureLink returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
@@ -588,6 +618,10 @@ featureLinkRoutes.patch(
           );
         }
         data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'compliance') {
+        const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
+        if (refusal) return c.json(refusal, 400);
       }
     }
 

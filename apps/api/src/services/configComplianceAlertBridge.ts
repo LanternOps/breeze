@@ -60,7 +60,8 @@ const { db } = dbModule;
 
 export const CONFIG_COMPLIANCE_ALERT_SOURCE = 'config-policy-compliance';
 export const CONFIG_COMPLIANCE_TEMPLATE_NAME = 'Configuration Compliance Violation';
-const CONFIG_COMPLIANCE_RULE_PREFIX = 'Config Compliance Rule';
+/** Every org alert rule this bridge creates is named `<prefix>:…` (complianceAlertReconcile.ts finds them by it). */
+export const CONFIG_COMPLIANCE_RULE_PREFIX = 'Config Compliance Rule';
 const COOLDOWN_MINUTES = 30;
 const MAX_FAILED_RULE_MESSAGES = 5;
 

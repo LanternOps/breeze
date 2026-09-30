@@ -596,6 +596,7 @@
         "enforcementLevel": "Nivel de cumplimiento",
         "checkIntervalMinutes": "Intervalo de comprobación (minutos)",
         "untitledRuleSet": "Conjunto de reglas sin título",
+        "duplicateRuleSetName": "Hay más de un conjunto de reglas llamado \"{{name}}\". Asigna a cada conjunto de reglas su propio nombre.",
         "s": "s",
         "script": "script",
         "scriptId": "scriptId",

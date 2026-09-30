@@ -43,6 +43,11 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+const scheduleReconcileMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/complianceAlertReconcileTrigger', () => ({
+  scheduleComplianceAlertReconcile: scheduleReconcileMock,
+}));
+
 import { db } from '../../db';
 import { actionRoutes } from './actions';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
@@ -135,5 +140,30 @@ describe('POST /policies/:id/deactivate site ceiling', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
     expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
+// A disabled policy is never evaluated again, so nothing else would close the
+// alerts it raised (compliance alerts do not auto-resolve).
+describe('POST /policies/:id/deactivate closes the policy alerts', () => {
+  it('schedules a compliance-alert reconcile for the policy owner', async () => {
+    const res = await buildApp({}).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(scheduleReconcileMock).toHaveBeenCalledWith({ orgId: ORG_ID }, 'automation-policy-deactivate');
+  });
+
+  it('scopes a partner-wide policy to its partner', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([policyRow({ orgId: null, partnerId: 'partner-1' })]) as never);
+    const res = await buildApp({ scope: 'system' }).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(scheduleReconcileMock).toHaveBeenCalledWith({ partnerId: 'partner-1' }, 'automation-policy-deactivate');
+  });
+
+  it('schedules nothing when the deactivation is refused', async () => {
+    mfaOkMock.mockReturnValue(false);
+    await buildApp({}).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
+    expect(scheduleReconcileMock).not.toHaveBeenCalled();
   });
 });

@@ -35,7 +35,7 @@ vi.mock('./featureConfigResolver', () => ({
   scanDueComplianceChecks: scanDueMock,
 }));
 
-import { __configComplianceAfterCommit, scanAndEvaluateConfigPolicyCompliance } from './policyEvaluationService';
+import { __policyEvaluationAfterCommit, scanAndEvaluateConfigPolicyCompliance } from './policyEvaluationService';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE = {
@@ -130,7 +130,7 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
 
     expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.violation']);
     expect(errorSpy).toHaveBeenCalledWith(
-      '[ConfigPolicyCompliance] Failed to publish policy.evaluated:',
+      '[PolicyEvaluation] Failed to publish policy.evaluated (config-policy-compliance):',
       expect.any(Error),
     );
     errorSpy.mockRestore();
@@ -144,9 +144,9 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
       throw new Error('module load failed');
     });
     try {
-      const afterCommit = __configComplianceAfterCommit(
+      const afterCommit = __policyEvaluationAfterCommit(
         [{ runId: 'run-1', deviceId: DEVICE.id }],
-        [{ type: 'policy.violation', orgId: ORG_ID, payload: { deviceId: DEVICE.id } }],
+        [{ type: 'policy.violation', orgId: ORG_ID, payload: { deviceId: DEVICE.id }, source: 'config-policy-compliance' }],
       );
       await expect(afterCommit!()).resolves.toBeUndefined();
       expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.violation']);

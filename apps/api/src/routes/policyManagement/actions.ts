@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { automationPolicies } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { scheduleComplianceAlertReconcile } from '../../services/complianceAlertReconcileTrigger';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -78,6 +79,13 @@ actionRoutes.post(
       .set({ enabled: false, updatedAt: new Date() })
       .where(eq(automationPolicies.id, id))
       .returning();
+
+    // A disabled policy is never evaluated again, so no policy.compliant will
+    // close the alerts it raised; the compliance-alert reconcile does.
+    const owner = policy.orgId !== null
+      ? { orgId: policy.orgId }
+      : policy.partnerId ? { partnerId: policy.partnerId } : null;
+    if (updated && owner) scheduleComplianceAlertReconcile(owner, 'automation-policy-deactivate');
 
     writeRouteAudit(c, {
       orgId: policy.orgId,
