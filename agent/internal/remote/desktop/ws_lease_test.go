@@ -223,7 +223,7 @@ func (c *fakeWsCapturer) CaptureRegion(int, int, int, int) (*image.RGBA, error) 
 	return nil, nil
 }
 func (c *fakeWsCapturer) GetScreenBounds() (int, int, error) { return 1280, 720, nil }
-func (c *fakeWsCapturer) Close() error                        { c.closed.Store(true); return nil }
+func (c *fakeWsCapturer) Close() error                       { c.closed.Store(true); return nil }
 
 // The lease safety only exists if StartSession actually attaches the lease and
 // runs its watchdog. Drive the real StartSession and prove a revocation stops
