@@ -38,6 +38,9 @@ func (m *Manager) Command(ctx context.Context, kind string, payload map[string]a
 			actionErr = fmt.Errorf("time_apply_policy payload must be empty")
 		} else if m.blocked != nil {
 			actionErr = m.blocked
+		} else if m.state.Settings == nil {
+			// Run would return nil without evaluating anything: never report that as success.
+			actionErr = fmt.Errorf("no time sync settings have been received by this agent yet; retry after its next heartbeat")
 		} else if actionErr = m.save(m.state); actionErr == nil {
 			actionErr = m.reconciler().Run(ctx, true)
 		}

@@ -61,16 +61,8 @@ func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
 	s.Status = readStatus(ctx, c.sys, events)
 	if zone, e := c.sys.DynamicTimezone(ctx); e == nil {
 		s.Timezone = zone
-		s.Timezone.AutoUpdate = "unknown"
 	}
-	if start, e := c.sys.ReadDWORD(ctx, `SYSTEM\CurrentControlSet\Services\tzautoupdate`, "Start"); e == nil {
-		switch start {
-		case 3:
-			s.Timezone.AutoUpdate = "on"
-		case 4:
-			s.Timezone.AutoUpdate = "off"
-		}
-	}
+	s.Timezone.AutoUpdate = readTimezoneAutoUpdate(ctx, c.sys)
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -102,6 +94,23 @@ func (c *Collector) Commit(snapshot *Snapshot) error {
 	}
 	c.state = next
 	return nil
+}
+
+// readTimezoneAutoUpdate maps the tzautoupdate service start type (3 = manual
+// trigger-start = automatic timezone on, 4 = disabled). The snapshot and the
+// management guard that refuses tzutil /s both read it here so they cannot drift.
+func readTimezoneAutoUpdate(ctx context.Context, sys System) string {
+	start, e := sys.ReadDWORD(ctx, `SYSTEM\CurrentControlSet\Services\tzautoupdate`, "Start")
+	if e != nil {
+		return "unknown"
+	}
+	switch start {
+	case 3:
+		return "on"
+	case 4:
+		return "off"
+	}
+	return "unknown"
 }
 func readConfig(ctx context.Context, sys System) Config {
 	c := Config{ServiceState: "unknown", ServiceStartType: "unknown", PolicyManagedValues: []string{}}

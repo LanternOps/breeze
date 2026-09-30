@@ -69,18 +69,10 @@ func readManagementObservation(ctx context.Context, sys System, now time.Time) (
 	o.Config.ServiceState = config.ServiceState
 	o.Config.ServiceStartType = config.ServiceStartType
 	o.Domain.Role = readDomain(ctx, sys).Role
-	o.Timezone.AutoUpdate = "unknown"
 	if zone, e := sys.DynamicTimezone(ctx); e == nil {
 		o.Timezone.WindowsID = zone.WindowsID
 	}
-	if start, e := sys.ReadDWORD(ctx, `SYSTEM\CurrentControlSet\Services\tzautoupdate`, "Start"); e == nil {
-		switch start {
-		case 3:
-			o.Timezone.AutoUpdate = "on"
-		case 4:
-			o.Timezone.AutoUpdate = "off"
-		}
-	}
+	o.Timezone.AutoUpdate = readTimezoneAutoUpdate(ctx, sys)
 	// Status fallback reads are observational too: no collector window/cursor access.
 	events, _ := sys.RecentEvents(ctx, now.UTC(), 20)
 	status := readStatus(ctx, sys, events)

@@ -3,7 +3,10 @@ package timesync
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -129,5 +132,67 @@ func TestManagementStartServiceWait(t *testing.T) {
 	starts := 0
 	if err := startAndWaitRunning(ctx, func() error { starts++; return nil }, q, tick, limit); !errors.Is(err, context.Canceled) || starts != 0 {
 		t.Fatal(err, starts)
+	}
+}
+func TestManagementWriterErrorsNameTheStep(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		step string
+		call func(Writer) error
+	}{
+		{"w32tm /config /manualpeerlist", func(w Writer) error { return w.Manual(ctx, []string{"pool.ntp.org"}, false) }},
+		{"w32tm /config /syncfromflags:domhier", func(w Writer) error { return w.Hierarchy(ctx) }},
+		{"w32tm /config /update", func(w Writer) error { return w.Update(ctx) }},
+		{"sc config W32Time start= auto", func(w Writer) error { return w.Automatic(ctx) }},
+		{"w32tm /resync", func(w Writer) error { _, e := w.Resync(ctx); return e }},
+		{"tzutil /s", func(w Writer) error { return w.Timezone(ctx, "UTC") }},
+		{"write SpecialPollInterval", func(w Writer) error { return w.Poll(ctx, 3600) }},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			w := &commandWriter{run: func(context.Context, string, ...string) (int, error) { return 7, boom },
+				poll: func(int) error { return boom }, zone: func(string) error { return nil }}
+			err := tc.call(w)
+			if err == nil || !strings.HasPrefix(err.Error(), tc.step+": ") || !errors.Is(err, boom) {
+				t.Fatalf("error %v does not name step %q", err, tc.step)
+			}
+		})
+	}
+}
+
+// TestManagementExecHelperProcess is re-executed as a child to produce a real
+// *exec.ExitError on every platform; it is a no-op in a normal test run.
+func TestManagementExecHelperProcess(t *testing.T) {
+	if os.Getenv("TIMESYNC_EXEC_HELPER") != "1" {
+		return
+	}
+	os.Exit(42)
+}
+func TestManagementExecOutcomeFormatsExitAndTimeout(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestManagementExecHelperProcess$")
+	cmd.Env = append(os.Environ(), "TIMESYNC_EXEC_HELPER=1")
+	runErr := cmd.Run()
+	code, err := execOutcome("w32tm.exe", runErr, nil)
+	var ee *exec.ExitError
+	if code != 42 || err == nil || !errors.As(err, &ee) {
+		t.Fatal(code, err)
+	}
+	if got := err.Error(); got != "w32tm.exe exited 0x0000002A" {
+		t.Fatalf("exit error %q", got)
+	}
+	// Windows HRESULT exit codes (0x80070426 = service not started) read as hex, not decimal.
+	if got := (&exitCodeError{name: "w32tm.exe", code: 2147943462, err: runErr}).Error(); got != "w32tm.exe exited 0x80070426" {
+		t.Fatalf("hresult %q", got)
+	}
+	code, err = execOutcome("tzutil.exe", errors.New("signal: killed"), context.DeadlineExceeded)
+	if code != 1 || !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "tzutil.exe did not finish: ") {
+		t.Fatal(code, err)
+	}
+	code, err = execOutcome("sc.exe", errors.New("file not found"), nil)
+	if code != 1 || err == nil || err.Error() != "run sc.exe: file not found" {
+		t.Fatal(code, err)
+	}
+	if code, err = execOutcome("sc.exe", nil, nil); code != 0 || err != nil {
+		t.Fatal(code, err)
 	}
 }

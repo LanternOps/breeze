@@ -5,6 +5,7 @@ package timesync
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,4 +95,19 @@ func TestLabReconcileFromStoppedService(t *testing.T) {
 		t.Fatal("W32Time not running after apply")
 	}
 	t.Logf("before=%v after=%v", got.Before, got.After)
+}
+func TestLabStoppedServiceUpdateErrorNamesStep(t *testing.T) {
+	labWriteOptIn(t)
+	// w32tm /config /update with W32Time stopped changes nothing and exits
+	// 0x80070426; the error must say which step failed and show the HRESULT.
+	if labW32TimeState(t, labW32TimeState(t, false) == svc.Running) != svc.Stopped {
+		t.Fatal("could not stop W32Time")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := NewWriter().Update(ctx)
+	if err == nil || !strings.Contains(err.Error(), "w32tm /config /update: w32tm.exe exited 0x80070426") {
+		t.Fatal(err)
+	}
+	t.Log(err)
 }

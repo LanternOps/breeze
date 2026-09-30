@@ -700,3 +700,201 @@ func TestManagementSystemReadsAreFreshAndFailClosed(t *testing.T) {
 	}
 	// A nil collector above would panic if either guard used Collect or Commit.
 }
+func TestManagementApplyPolicyWithoutSettingsFails(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	sent := 0
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { sent++; return nil })
+	result, e := m.Command(context.Background(), "time_apply_policy", map[string]any{})
+	if e == nil || !strings.Contains(e.Error(), "no time sync settings") {
+		t.Fatal("apply without settings reported success", e)
+	}
+	if report, ok := result.(ManagementReport); !ok || report.NTP != nil || report.Timezone != nil {
+		t.Fatal(result)
+	}
+	if len(f.calls) != 0 || sent != 1 {
+		t.Fatal(f.calls, sent)
+	}
+}
+func TestManagementApplyPolicyFailedOutcomeFailsCommand(t *testing.T) {
+	for _, tc := range []struct{ fail, reason string }{{"manual", "exec_failed"}, {"", "readback_mismatch"}} {
+		t.Run(tc.reason, func(t *testing.T) {
+			f := newFakeTimeSystem("workgroup")
+			f.fail = tc.fail
+			f.mismatch = tc.fail == ""
+			sent := 0
+			m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { sent++; return nil })
+			if _, e := m.Apply(rawSettings(t, settingsFixture())); e != nil {
+				t.Fatal(e)
+			}
+			result, e := m.Command(context.Background(), "time_apply_policy", map[string]any{})
+			if e == nil || !strings.Contains(e.Error(), tc.reason) {
+				t.Fatal("failed enforcement reported as a completed command", e)
+			}
+			report := result.(ManagementReport)
+			if report.NTP == nil || report.NTP.Outcome != "failed" || report.NTP.Reason != tc.reason || sent != 1 {
+				t.Fatal(report.NTP, sent)
+			}
+		})
+	}
+}
+func TestManagementApplyPolicyRefusesWhileSettingsUnpersisted(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	sent := 0
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { sent++; return nil })
+	saveErr := errors.New("read-only state directory")
+	m.save = func(ManagementState) error { return saveErr }
+	if _, e := m.Apply(rawSettings(t, settingsFixture())); !errors.Is(e, saveErr) {
+		t.Fatal(e)
+	}
+	if _, e := m.Command(context.Background(), "time_apply_policy", map[string]any{}); !errors.Is(e, saveErr) {
+		t.Fatal("blocked apply not refused", e)
+	}
+	if len(f.calls) != 0 || f.reads != 0 || sent != 1 {
+		t.Fatal(f.calls, f.reads, sent)
+	}
+}
+func TestManagementRejectedOverlongFingerprintIsClamped(t *testing.T) {
+	m := managementFixture(t, t.TempDir(), newFakeTimeSystem("workgroup"), func(context.Context, any) error { return nil })
+	raw := rawSettings(t, settingsFixture())
+	raw["fingerprint"] = strings.Repeat("x", 100)
+	raw["timezone"] = map[string]any{"expected_windows_id": "UTC", "auto_fix": true}
+	if _, e := m.Apply(raw); e == nil {
+		t.Fatal("overlong fingerprint accepted")
+	}
+	for _, r := range []*EnforcementResult{m.state.Report.NTP, m.state.Report.Timezone} {
+		if r == nil || r.Reason != "invalid_settings" || r.Fingerprint != "" {
+			t.Fatal(r)
+		}
+		b, e := json.Marshal(r)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var wire struct{ Fingerprint string }
+		if e = json.Unmarshal(b, &wire); e != nil || len(wire.Fingerprint) > 80 {
+			t.Fatal("F.3 fingerprint limit exceeded", len(wire.Fingerprint), e)
+		}
+	}
+}
+func TestManagementResultSaveFailureKeepsReservationAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, managementFile)
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, dir, f, func(context.Context, any) error { return nil })
+	if _, e := m.Apply(rawSettings(t, settingsFixture())); e != nil {
+		t.Fatal(e)
+	}
+	// Persist normally until the writes have happened, then lose the result save
+	// (a crash between the writes and the result has the same on-disk effect).
+	m.save = func(s ManagementState) error {
+		if len(f.calls) > 0 {
+			return errors.New("disk full")
+		}
+		return saveManagement(path, s)
+	}
+	start := time.Now()
+	if e := m.Cycle(context.Background()); e == nil || len(f.calls) == 0 {
+		t.Fatal("result save failure hidden", e, f.calls)
+	}
+	calls := len(f.calls)
+	n := managementFixture(t, dir, f, func(context.Context, any) error { return nil })
+	gate := n.state.NTPGate
+	if gate.Failures != 1 || gate.Next.Before(start.Add(time.Hour)) || gate.Next.After(time.Now().Add(time.Hour)) || n.state.Report.NTP != nil {
+		t.Fatalf("reservation not what survived: %+v report=%v", gate, n.state.Report.NTP)
+	}
+	if e := n.Cycle(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	if len(f.calls) != calls {
+		t.Fatal("restart re-applied inside the reserved gate", f.calls[calls:])
+	}
+}
+func TestManagementCommandWaitsForInFlightOperation(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	if e := m.lock(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	done := make(chan error, 1)
+	go func() { _, e := m.Command(context.Background(), "time_resync", map[string]any{}); done <- e }()
+	select {
+	case e := <-done:
+		m.unlock()
+		t.Fatal("command ran while another operation held the manager", e)
+	case <-time.After(50 * time.Millisecond):
+	}
+	m.unlock()
+	select {
+	case e := <-done:
+		if e != nil {
+			t.Fatal(e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("command never ran after the lock was released")
+	}
+	if f.reads == 0 || len(f.calls) == 0 {
+		t.Fatal("command did not run", f.reads, f.calls)
+	}
+}
+func TestManagementCycleCommandAndApplyAreSerialized(t *testing.T) {
+	f := newFakeTimeSystem("workgroup")
+	m := managementFixture(t, t.TempDir(), f, func(context.Context, any) error { return nil })
+	raw := rawSettings(t, settingsFixture())
+	if _, e := m.Apply(raw); e != nil {
+		t.Fatal(e)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			if e := m.Cycle(context.Background()); e != nil {
+				t.Error(e)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, e := m.Command(context.Background(), "time_apply_policy", map[string]any{}); e != nil {
+				t.Error(e)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, e := m.Apply(raw); e != nil {
+				t.Error(e)
+			}
+		}()
+	}
+	wg.Wait()
+	// Whichever runs first applies; every later forced or scheduled run finds the
+	// host compliant. Interleaved runs would each see the stale state and re-apply.
+	if fmt.Sprint(f.calls) != "[auto start manual poll update resync]" {
+		t.Fatal("overlapping operations duplicated writes", f.calls)
+	}
+}
+func TestManagementTimezoneAutoUpdateMapping(t *testing.T) {
+	for _, tc := range []struct {
+		start *uint32
+		want  string
+	}{{managementPtr(uint32(3)), "on"}, {managementPtr(uint32(4)), "off"}, {managementPtr(uint32(2)), "unknown"}, {nil, "unknown"}} {
+		sys := &fakeSystem{dwords: map[string]uint32{}, zone: Timezone{WindowsID: managementPtr("Eastern Standard Time")},
+			roleErr: errors.New("domain read failed"), computerErr: errors.New("dns read failed"), pdcErr: errors.New("pdc failed")}
+		if tc.start != nil {
+			sys.dwords[`SYSTEM\CurrentControlSet\Services\tzautoupdate|Start`] = *tc.start
+		}
+		m, e := newManagement(t.TempDir(), nil, sys, nil, nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		o, e := m.read(context.Background())
+		if e != nil {
+			t.Fatal(e)
+		}
+		if o.Timezone.AutoUpdate != tc.want || !value(o.Timezone.WindowsID, "Eastern Standard Time") || o.Domain.Role != "unknown" {
+			t.Fatal(tc.want, o.Timezone, o.Domain)
+		}
+		// The collector's snapshot must agree with the guard that stops tzutil /s.
+		if got := readTimezoneAutoUpdate(context.Background(), sys); got != tc.want {
+			t.Fatal("collector mapping drifted", got, tc.want)
+		}
+	}
+}

@@ -2,7 +2,9 @@ package timesync
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -25,6 +27,16 @@ type commandWriter struct {
 	zone  func(string) error
 }
 
+// exec prefixes a failure with the step, so EnforcementResult.Error (the only
+// remote evidence of a failed apply) says which of the up-to-six writes failed.
+// w32tm /config appears in three steps, so the executable alone is not enough.
+func (w *commandWriter) exec(ctx context.Context, step, name string, args ...string) (int, error) {
+	code, err := w.run(ctx, name, args...)
+	if err != nil {
+		err = fmt.Errorf("%s: %w", step, err)
+	}
+	return code, err
+}
 func (w *commandWriter) Manual(ctx context.Context, hosts []string, reliable bool) error {
 	if len(hosts) < 1 || len(hosts) > 5 {
 		return fmt.Errorf("invalid peer count")
@@ -41,23 +53,23 @@ func (w *commandWriter) Manual(ctx context.Context, hosts []string, reliable boo
 		args = append(args, "/reliable:yes")
 	}
 	args = append(args, "/update")
-	_, err := w.run(ctx, "w32tm.exe", args...)
+	_, err := w.exec(ctx, "w32tm /config /manualpeerlist", "w32tm.exe", args...)
 	return err
 }
 func (w *commandWriter) Hierarchy(ctx context.Context) error {
-	_, e := w.run(ctx, "w32tm.exe", "/config", "/syncfromflags:domhier", "/update")
+	_, e := w.exec(ctx, "w32tm /config /syncfromflags:domhier", "w32tm.exe", "/config", "/syncfromflags:domhier", "/update")
 	return e
 }
 func (w *commandWriter) Update(ctx context.Context) error {
-	_, e := w.run(ctx, "w32tm.exe", "/config", "/update")
+	_, e := w.exec(ctx, "w32tm /config /update", "w32tm.exe", "/config", "/update")
 	return e
 }
 func (w *commandWriter) Automatic(ctx context.Context) error {
-	_, e := w.run(ctx, "sc.exe", "config", "W32Time", "start=", "auto")
+	_, e := w.exec(ctx, "sc config W32Time start= auto", "sc.exe", "config", "W32Time", "start=", "auto")
 	return e
 }
 func (w *commandWriter) Resync(ctx context.Context) (int, error) {
-	return w.run(ctx, "w32tm.exe", "/resync", "/rediscover")
+	return w.exec(ctx, "w32tm /resync", "w32tm.exe", "/resync", "/rediscover")
 }
 func (w *commandWriter) Poll(ctx context.Context, n int) error {
 	if err := ctx.Err(); err != nil {
@@ -66,7 +78,10 @@ func (w *commandWriter) Poll(ctx context.Context, n int) error {
 	if n < 900 || n > 86400 {
 		return fmt.Errorf("invalid poll seconds")
 	}
-	return w.poll(n)
+	if e := w.poll(n); e != nil {
+		return fmt.Errorf("write SpecialPollInterval: %w", e)
+	}
+	return nil
 }
 func (w *commandWriter) Start(ctx context.Context) error {
 	if e := ctx.Err(); e != nil {
@@ -84,7 +99,7 @@ func (w *commandWriter) Timezone(ctx context.Context, id string) error {
 	if e := w.ZoneExists(id); e != nil {
 		return e
 	}
-	_, e := w.run(ctx, "tzutil.exe", "/s", id)
+	_, e := w.exec(ctx, "tzutil /s", "tzutil.exe", "/s", id)
 	return e
 }
 
@@ -119,4 +134,35 @@ func startAndWaitRunning(ctx context.Context, start func() error, running func()
 		case <-tick.C:
 		}
 	}
+}
+
+// exitCodeError names the executable and shows its exit code in hex: Windows
+// tools exit with an HRESULT (0x80070426 = service not started), which the
+// default "exit status 2147943462" hides. It still unwraps to *exec.ExitError.
+type exitCodeError struct {
+	name string
+	code int
+	err  error
+}
+
+func (e *exitCodeError) Error() string {
+	return fmt.Sprintf("%s exited 0x%08X", e.name, uint32(e.code))
+}
+func (e *exitCodeError) Unwrap() error { return e.err }
+
+// execOutcome maps a finished command to its exit code and an error naming the
+// executable. ctxErr is the command's own context error: a timed-out or
+// cancelled command is a failure even if the kill produced a clean exit.
+func execOutcome(name string, runErr, ctxErr error) (int, error) {
+	if ctxErr != nil {
+		return 1, fmt.Errorf("%s did not finish: %w", name, ctxErr)
+	}
+	if runErr == nil {
+		return 0, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(runErr, &ee) {
+		return ee.ExitCode(), &exitCodeError{name: name, code: ee.ExitCode(), err: runErr}
+	}
+	return 1, fmt.Errorf("run %s: %w", name, runErr)
 }

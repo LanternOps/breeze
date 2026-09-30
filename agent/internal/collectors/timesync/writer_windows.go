@@ -24,24 +24,14 @@ func runTimeCommand(parent context.Context, name string, args ...string) (int, e
 	defer cancel()
 	dir, err := windows.GetSystemDirectory()
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("locate %s: %w", name, err)
 	}
 	// Fixed filenames supplied only by commandWriter; never a policy-controlled path.
 	cmd := exec.CommandContext(ctx, filepath.Join(dir, name), args...)
 	cmd.WaitDelay = time.Second
 	// Output is neither needed nor parsed; nil streams go to the null device.
 	err = cmd.Run()
-	if ctx.Err() != nil {
-		return 1, ctx.Err()
-	}
-	if err == nil {
-		return 0, nil
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode(), err
-	}
-	return 1, err
+	return execOutcome(name, err, ctx.Err())
 }
 func writeTimePoll(n int) error {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient`, registry.SET_VALUE)

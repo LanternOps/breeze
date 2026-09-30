@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -244,8 +245,21 @@ func TestReconcileFreshGuardBeforeEveryWrite(t *testing.T) {
 			if guard == "gpo" {
 				want = "conflict_gpo"
 			}
-			if r.State.Report.NTP.Reason != want {
-				t.Fatal(r.State.Report.NTP)
+			got := r.State.Report.NTP
+			if got.Reason != want {
+				t.Fatal(got)
+			}
+			assertValueKeys(t, got, false)
+			// Writes made before the guard stopped the apply stay visible in After.
+			wantStart := "manual"
+			if stopAt >= 1 {
+				wantStart = "auto"
+			}
+			if got.Before["serviceStartType"] != "manual" || got.After["serviceStartType"] != wantStart {
+				t.Fatalf("guard=%s stop=%d before=%v after=%v", guard, stopAt, got.Before, got.After)
+			}
+			if (stopAt >= 3) != (got.After["type"] == "NTP") {
+				t.Fatalf("guard=%s stop=%d after=%v", guard, stopAt, got.After)
 			}
 		}
 	}
@@ -562,11 +576,89 @@ func TestReconcileEveryWriteFailureStopsLaterWrites(t *testing.T) {
 		if e := r.Run(context.Background(), true); e != nil {
 			t.Fatal(e)
 		}
-		if len(f.calls) != index+1 || r.State.Report.NTP.Reason != "exec_failed" {
+		got := r.State.Report.NTP
+		if len(f.calls) != index+1 || got.Reason != "exec_failed" {
 			t.Fatal(name, f.calls, r.State.Report)
 		}
-		if r.State.Report.NTP.After == nil {
-			t.Fatal("partial read-back discarded")
+		assertValueKeys(t, got, false)
+		// Before is the pre-apply state; After is what the partial apply left behind.
+		if got.Before["serviceStartType"] != "manual" || got.Before["type"] != "NoSync" {
+			t.Fatal(name, got.Before)
 		}
+		if name != "auto" && got.After["serviceStartType"] != "auto" {
+			t.Fatal(name, "partial start-type write missing from After", got.After)
+		}
+		if name == "auto" && got.After["serviceStartType"] != "manual" {
+			t.Fatal(name, "failed write reported as applied", got.After)
+		}
+		peersWritten := name == "poll" || name == "update"
+		if peersWritten != (got.After["type"] == "NTP") ||
+			peersWritten != (got.After["ntpServer"] == "time.cloudflare.com,0x9 pool.ntp.org,0x9") {
+			t.Fatal(name, "After does not reflect the peer-list write", got.After)
+		}
+		if name == "update" && got.After["specialPollIntervalSeconds"] != 3600 {
+			t.Fatal(name, got.After)
+		}
+	}
+}
+func assertValueKeys(t *testing.T, r *EnforcementResult, zone bool) {
+	t.Helper()
+	keys := func(m map[string]any) []string {
+		out := make([]string, 0, len(m))
+		for k := range m {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return out
+	}
+	want := []string{"ntpServer", "serviceStartType", "specialPollIntervalSeconds", "type"}
+	if zone {
+		want = []string{"windowsId"}
+	}
+	if !reflect.DeepEqual(keys(r.Before), want) || !reflect.DeepEqual(keys(r.After), want) {
+		t.Fatal("before/after key set", keys(r.Before), keys(r.After), want)
+	}
+}
+func TestReconcileZoneValuesKeySet(t *testing.T) {
+	now := time.Now()
+	f := newFakeTimeSystem("workgroup")
+	r := fakeReconciler(f, &now)
+	r.State.Settings.EnforceNTP = false
+	r.State.Settings.Timezone = TimezoneSettings{managementPtr("Eastern Standard Time"), true}
+	if e := r.Run(context.Background(), true); e != nil {
+		t.Fatal(e)
+	}
+	got := r.State.Report.Timezone
+	assertValueKeys(t, got, true)
+	if got.Before["windowsId"] != "UTC" || got.After["windowsId"] != "Eastern Standard Time" {
+		t.Fatal(got.Before, got.After)
+	}
+}
+func TestReconcileReservationPersistsBeforeAnyWrite(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	f := newFakeTimeSystem("workgroup")
+	r := fakeReconciler(f, &now)
+	type saved struct {
+		calls int
+		state ManagementState
+	}
+	var saves []saved
+	r.Save = func(s ManagementState) error { saves = append(saves, saved{len(f.calls), s}); return nil }
+	if e := r.Run(context.Background(), false); e != nil {
+		t.Fatal(e)
+	}
+	if len(saves) != 2 || len(f.calls) == 0 {
+		t.Fatal("expected a reservation save and a result save", len(saves), f.calls)
+	}
+	reservation := saves[0]
+	if reservation.calls != 0 || reservation.state.NTPGate.Failures != 1 || !reservation.state.NTPGate.Next.Equal(now.Add(time.Hour)) ||
+		reservation.state.NTPGate.Fingerprint != r.State.Settings.Fingerprint {
+		t.Fatalf("reservation not durable before writes: %+v", reservation)
+	}
+	if reservation.state.Report.NTP != nil {
+		t.Fatal("reservation carried a result")
+	}
+	if saves[1].state.NTPGate.Failures != 0 || saves[1].state.Report.NTP == nil {
+		t.Fatal("result save", saves[1].state)
 	}
 }
