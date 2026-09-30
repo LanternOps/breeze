@@ -2034,10 +2034,11 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       // for the same reason the insert above needs one: the new org's id is not
       // in the caller's accessible_org_ids yet, so breeze_has_org_access(org_id)
       // would reject the contacts INSERT exactly as it rejects the organizations
-      // one. The blob itself is already persisted by the insert, so this only
-      // mirrors the row.
+      // one. The insert wrote the request's blob; the sync files it as the
+      // org's billing contact and re-projects the column from that contact,
+      // and the response carries what was actually stored.
       if (created[0] && data.billingContact) {
-        await syncBillingContactRow(db, created[0].id, data.billingContact, auth.user?.id ?? null);
+        created[0].billingContact = await syncBillingContactRow(db, created[0].id, data.billingContact, auth.user?.id ?? null);
       }
       // Race-free quota enforcement, same trick `POST /partner-api/organizations`
       // uses: the insert's own AFTER trigger takes the partner discovery lock
@@ -2603,15 +2604,17 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       stripOrgLifecycleInternalSettings(resolvedSecrets.settings)
     );
   }
-  // The blob write stays in THIS update rather than going through
-  // replaceBillingContact: the #2879 override path below re-asserts
-  // partner-ownership and suspended-status in the UPDATE's own WHERE, and the
-  // compat writer targets a bare eq(id, orgId), which would let a billing
-  // contact land on an org that stopped qualifying between check and write.
-  // The `contacts` row is mirrored by syncBillingContactRow once the guarded
-  // update has succeeded — exactly the "caller already wrote the blob" case
-  // that entry point exists for.
-  if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
+  // `billingContact` is deliberately NOT in this UPDATE. It is written by
+  // syncBillingContactRow in runUpdate below, only after this guarded UPDATE
+  // (the #2879 override path re-asserts partner-ownership and suspended-status
+  // in its own WHERE) has matched and so holds the org row lock. The sync edits
+  // the BILLING contact — the org-level contact holding the `billing` role,
+  // never the primary — and re-projects the column from it. Writing the
+  // request's value here first would also break that contact's selection:
+  // with several billing contacts, the "current recipient" tiebreak reads this
+  // column, and would compare against the new address instead of the old one.
+  // `updates` always carries `updatedAt`, so a billingContact-only PATCH still
+  // runs (and locks) the guarded UPDATE.
   if (data.contractStart !== undefined) {
     updates.contractStart = data.contractStart ? new Date(data.contractStart) : null;
   }
@@ -2658,7 +2661,8 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     // cannot see a suspended org — and `contacts` is policed by
     // breeze_has_org_access(org_id), so it could not see the row either.
     if (rows[0] && data.billingContact !== undefined) {
-      await syncBillingContactRow(db, rows[0].id, data.billingContact, auth.user?.id ?? null);
+      // Answer with the re-projected column, not the pre-sync RETURNING row.
+      rows[0].billingContact = await syncBillingContactRow(db, rows[0].id, data.billingContact, auth.user?.id ?? null);
     }
     return rows;
   };

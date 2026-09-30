@@ -2169,11 +2169,11 @@
       "title": "Indirizzo di fatturazione"
     },
     "contact": {
-      "description": "Preventivi e fatture vengono inviati via email a questo indirizzo. Senza un contatto, l'invio di una proposta la contrassegna come Inviata ma non spedisce alcuna email.",
-      "email": "Email contatto",
-      "emailInvalid": "Inserisci un indirizzo email valido",
-      "emailPlaceholder": "billing@customer.example",
-      "name": "Nome contatto",
+      "description": "Per impostazione predefinita, preventivi e fatture vengono inviati via email al contatto di fatturazione dell'organizzazione, cioè il contatto a livello di organizzazione con il ruolo Fatturazione. Puoi comunque modificare i destinatari a ogni invio.",
+      "manage": "Gestisci contatti",
+      "noEmail": "{{name}} ha il ruolo Fatturazione ma nessun indirizzo email: preventivi e fatture non possono essere inviati via email finché non ne viene aggiunto uno.",
+      "none": "Nessun contatto ha il ruolo Fatturazione. Finché non ce n'è uno, l'invio di una proposta la contrassegna come Inviata ma non spedisce alcuna email.",
+      "recipientLabel": "Destinatario predefinito:",
       "title": "Contatto di fatturazione"
     },
     "currency": {

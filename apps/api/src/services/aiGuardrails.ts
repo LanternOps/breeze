@@ -3131,20 +3131,25 @@ function buildApprovalDescription(
         parts.push(
           `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
         );
-        // Review finding (fix round 2): `siteId` and `isPrimary` are the only
-        // two add_contact inputs whose effect reaches beyond inserting a row,
-        // and neither was shown. `isPrimary: true` DEMOTES whoever currently
-        // holds the scope's primary slot and REPLACES the legacy projection —
-        // organizations.billing_contact, or sites.contact when a site is
-        // pinned, which is a public partner-API DTO. Without these the
-        // approver cannot tell "file a new contact" (routine, hence
-        // supervised) apart from "overwrite this customer's billing contact".
+        // Review finding (fix round 2): `siteId`, `isPrimary` and an
+        // org-level `billing` role are the add_contact inputs whose effect
+        // reaches beyond inserting a row, and none was shown. `isPrimary: true`
+        // DEMOTES whoever holds the scope's primary slot (and, pinned to a
+        // site, REPLACES sites.contact, a public partner-API DTO). An
+        // org-level `billing` role can make the new contact THE billing
+        // contact — organizations.billing_contact, the invoice/quote recipient.
+        // Without these the approver cannot tell "file a new contact"
+        // (routine, hence supervised) apart from "re-point this customer's
+        // invoices".
         const acSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
         if (acSiteId) parts.push(`on site ${acSiteId.slice(0, 8)}...`);
         if (input.isPrimary === true) {
           parts.push(
-            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : 'current billing contact'})`
+            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : "organization's current primary contact"})`
           );
+        }
+        if (!acSiteId && Array.isArray(input.roles) && input.roles.includes('billing')) {
+          parts.push("with the Billing role (can become the organization's default invoice recipient)");
         }
       } else parts.push(`Organizations: ${action}`);
       break;

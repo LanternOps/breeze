@@ -300,8 +300,29 @@ describe('tier-3 approval scope classification', () => {
     });
     expect(check.description).toBe(
       'Add contact "Jane Doe" to organization 11112222... '
-      + 'as PRIMARY contact (replaces the current billing contact)',
+      + "as PRIMARY contact (replaces the organization's current primary contact)",
     );
+  });
+
+  // The org's primary contact is no longer what invoices go to: the billing
+  // contact is the org-level contact holding the `billing` role. So it is the
+  // ROLE, not isPrimary, that can re-point this customer's invoices — and the
+  // approver has to be told.
+  it('add_contact approval description flags an org-level billing role as an invoice-recipient change', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', roles: ['technical', 'billing'],
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... '
+      + "with the Billing role (can become the organization's default invoice recipient)",
+    );
+  });
+
+  it('add_contact approval description does not flag a SITE contact with the billing role', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE, name: 'Jane Doe', roles: ['billing'],
+    });
+    expect(check.description).toBe('Add contact "Jane Doe" to organization 11112222... on site 22223333...');
   });
 
   it('add_contact approval description names the SITE and the site-contact takeover together', () => {

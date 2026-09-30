@@ -2169,11 +2169,11 @@
       "title": "Dirección de Envio"
     },
     "contact": {
-      "description": "Las cotizaciones y facturas se envían por correo electrónico a esta dirección. Sin él, enviar una propuesta se marca como Enviada pero no se envía nada por correo electrónico.",
-      "email": "Correo electrónico de contacto",
-      "emailInvalid": "Introduzca una dirección de correo electrónico válida",
-      "emailPlaceholder": "billing@customer.example",
-      "name": "Nombre de contacto",
+      "description": "Las cotizaciones y facturas se envían por correo electrónico al contacto de facturación de la organización de forma predeterminada: el contacto a nivel de organización con el rol de Facturación. Aún puede cambiar los destinatarios cada vez que envíe.",
+      "manage": "Administrar contactos",
+      "noEmail": "{{name}} tiene el rol de Facturación pero no tiene dirección de correo electrónico, así que no se pueden enviar cotizaciones ni facturas por correo hasta que se agregue una.",
+      "none": "Ningún contacto tiene el rol de Facturación. Hasta que alguno lo tenga, enviar una propuesta la marca como Enviada pero no se envía nada por correo electrónico.",
+      "recipientLabel": "Destinatario predeterminado:",
       "title": "contacto de facturación"
     },
     "currency": {

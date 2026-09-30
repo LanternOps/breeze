@@ -408,7 +408,12 @@ A **Contact** is a person attached to an organisation -- a billing contact, a te
 On `PATCH`, an explicit `null` clears a field and an omitted key leaves it alone. That distinction is the reason clearing a field lives here rather than in the contacts importer, which merges and never clears.
 
 <Aside type="note">
-  `organizations.billingContact` and `sites.contact` are still present, still readable, and still **writable** through the organisation and site routes (`POST`/`PATCH /orgs/organizations` and `/orgs/sites` accept them). They are maintained as **compatibility projections** of whichever contact holds the primary flag for that scope, and every write to either representation is kept in sync with the other — so the two never drift, whichever one you write. The `contacts` table is the system of record for people.
+  `organizations.billingContact` and `sites.contact` are still present, still readable, and still **writable** through the organisation and site routes (`POST`/`PATCH /orgs/organizations` and `/orgs/sites` accept them). They are maintained as **compatibility projections**, and every write to either representation is kept in sync with the other — so the two never drift, whichever one you write. The `contacts` table is the system of record for people.
+
+  - `sites.contact` projects the contact that holds the **primary** flag for that site.
+  - `organizations.billingContact` projects the organisation's **billing contact**: the organisation-level contact with the `billing` role. It is **not** the primary contact. When several organisation-level contacts hold the role, the primary one wins, then the one invoices already go to, then the oldest. When none does, `billingContact` is `null`. Quotes and invoices are emailed to this address by default.
+
+  Writing `billingContact` edits that billing contact (or creates one with the `billing` role when none exists) and never touches any other contact. Writing an empty value — or, on `PATCH /orgs/:orgId/billing-settings`, `billingContactEmail: null` — removes the `billing` role from the current billing contact; the contact itself is kept.
 </Aside>
 
 ---

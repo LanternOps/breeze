@@ -91,6 +91,15 @@ function stubState(state: {
   }));
 }
 
+/**
+ * The two reads updateContact adds for an ORG-LEVEL contact after `getContact`:
+ * the organization pre-lock, then the target re-read under it (which decides
+ * whether the row feeds organizations.billing_contact).
+ */
+function lockedReread(overrides: StateRow = {}): StateRow[][] {
+  return [[], [{ isPrimary: false, siteId: null, roles: [], ...overrides }]];
+}
+
 /** The projection `crud.getContact` selects, which updateContact reads first. */
 function storedContact(overrides: StateRow = {}): StateRow {
   return {
@@ -520,6 +529,28 @@ describe('commitContactImport', () => {
     );
   });
 
+  it('re-projects billing_contact when an import CREATES an org-level billing contact', async () => {
+    // Queue: org, sites, contacts, links, then the org pre-lock and the
+    // billing re-projection's read of the new row.
+    stubState({ then: [[], [{ name: 'Jane Ops', email: 'jane@acme.example', phone: null }]] });
+    const summary = await commitContactImport([
+      { organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', roles: ['billing'] },
+    ], CTX, ACTOR);
+    expect(summary.imported).toHaveLength(1);
+    expect(updated.filter((u) => u.table === organizations).map((u) => u.set.billingContact)).toEqual([
+      { name: 'Jane Ops', email: 'jane@acme.example', phone: null },
+    ]);
+  });
+
+  it('leaves billing_contact alone for an imported contact without the billing role', async () => {
+    stubState();
+    const summary = await commitContactImport([
+      { organizationId: ORG, name: 'Tess Tech', email: 'tess@acme.example', roles: ['technical'] },
+    ], CTX, ACTOR);
+    expect(summary.imported).toHaveLength(1);
+    expect(updated.filter((u) => u.table === organizations)).toHaveLength(0);
+  });
+
   it('CSV/API Entra labels are never directory evidence', async () => {
     stubState();
     const summary = await commitContactImport([
@@ -540,25 +571,24 @@ describe('commitContactImport', () => {
     expect(contactInserts()[0]!.values).toMatchObject({ name: 'Pat Pager', email: null, phone: '555-0142' });
   });
 
-  it('re-projects the legacy jsonb when an acknowledged match lands on the primary contact', async () => {
+  it('re-projects billing_contact when an acknowledged match lands on the billing contact', async () => {
     // An import row carries no isPrimary — the projection is reachable only by
-    // editing whoever already holds it, which must keep both sides in step.
-    // The re-projection re-reads the row AFTER the update, so it sees the
-    // merged values that must land in the jsonb.
-    const merged = { id: EXISTING, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
+    // editing whoever already feeds it, which must keep both sides in step.
+    // The re-projection reads the row AFTER the update, so it sees the merged
+    // values that must land in the jsonb.
+    const merged = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' };
     stubState({
       contacts: [{
         id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
-        email: 'jane@acme.example', isPrimary: true,
+        email: 'jane@acme.example', isPrimary: false,
       }],
       // updateContact re-reads the row, takes the org pre-lock, re-reads the
-      // target under it, then the re-projection reads the primary and compat
-      // re-reads the same row.
+      // target under it, then the billing re-projection reads the billing contact.
       then: [
-        [storedContact({ isPrimary: true })],
-        [],                                    // org pre-lock
-        [{ isPrimary: true, siteId: null }],   // the target, re-read under it
-        [merged], [merged],
+        [storedContact({ roles: ['billing'] })],
+        ...lockedReread({ roles: ['billing'] }),
+        [{ id: EXISTING }],   // pre-write recipient read (the row carries an email)
+        [merged],
       ],
     });
     const summary = await commitContactImport([{
@@ -568,23 +598,23 @@ describe('commitContactImport', () => {
 
     expect(summary.updated).toHaveLength(1);
     const blobWrite = updated.find((u) => u.table === organizations);
-    expect(blobWrite?.set.billingContact).toEqual({
-      name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
-    });
+    expect(blobWrite?.set.billingContact).toEqual(merged);
   });
 
-  it('leaves the legacy jsonb alone when the matched contact is not primary', async () => {
+  it('leaves billing_contact alone when the matched contact is the primary but not a billing contact', async () => {
     stubState({
       contacts: [{
         id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
-        email: 'jane@acme.example', isPrimary: false,
+        email: 'jane@acme.example', isPrimary: true,
       }],
-      then: [[storedContact()]],
+      then: [[storedContact({ isPrimary: true })], ...lockedReread({ isPrimary: true })],
     });
-    await commitContactImport([{
+    const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
       expectedAnnotation: 'email-match', expectedContactId: EXISTING,
     }], CTX, ACTOR);
+    // Positive control: the row really was applied.
+    expect(summary.updated).toHaveLength(1);
     expect(updated.filter((u) => u.table === organizations)).toHaveLength(0);
   });
 
@@ -601,7 +631,7 @@ describe('commitContactImport', () => {
   it('applies an acknowledged email-match as an update', async () => {
     stubState({
       contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
-      then: [[storedContact()]],
+      then: [[storedContact()], ...lockedReread()],
     });
     const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops-Smith', email: 'jane@acme.example', phone: '555-0100',
@@ -635,7 +665,7 @@ describe('commitContactImport', () => {
     expect(unpinned.updated).toEqual([]);
     expect(updated.filter((u) => u.table === contacts)).toHaveLength(0);
 
-    stubState({ ...state, then: [[storedContact({ email: null })]] });
+    stubState({ ...state, then: [[storedContact({ email: null })], ...lockedReread()] });
     const accepted = await commitContactImport(
       [{
         organizationId: ORG, name: 'Jane Ops', title: 'Controller',
@@ -760,9 +790,9 @@ describe('commitContactImport', () => {
   });
 
   it('APPLIES a matched row\'s site pin and keeps both jsonb projections in step', async () => {
-    // The contact is the org-level primary and the row moves it onto a site.
-    // Reporting `updated` while silently dropping the move would be a success
-    // response for a no-op.
+    // The contact is the org-level primary AND billing contact, and the row
+    // moves it onto a site. Reporting `updated` while silently dropping the
+    // move would be a success response for a no-op.
     const moved = { id: EXISTING, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null };
     stubState({
       sites: [{ id: SITE, orgId: ORG, name: 'HQ' }],
@@ -771,12 +801,12 @@ describe('commitContactImport', () => {
         email: 'jane@acme.example', isPrimary: true,
       }],
       then: [
-        [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: true, notes: null }],
+        [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: ['billing'], isPrimary: true, notes: null }],
         [{ id: SITE }],   // the site pin is validated against the org
         [], [],           // parent pre-locks: org, then site
-        [{ isPrimary: true, siteId: null }], // the target, re-read under them
-        [], [],           // vacated org scope: no primary left
+        [{ isPrimary: true, siteId: null, roles: ['billing'] }], // the target, re-read under them
         [moved], [moved], // claimed site scope
+        [],               // billing re-projection: no org-level billing contact is left
       ],
     });
 
@@ -788,7 +818,8 @@ describe('commitContactImport', () => {
     expect(summary.updated).toHaveLength(1);
     const patch = updated.find((u) => u.table === contacts && 'siteId' in u.set);
     expect(patch?.set).toMatchObject({ siteId: SITE });
-    // The headline contact moved scopes, so BOTH projections must follow.
+    // The site's new primary is projected into sites.contact, and the org no
+    // longer has a billing contact, so BOTH projections must follow.
     expect(updated.filter((u) => u.table === organizations).map((u) => u.set.billingContact)).toEqual([null]);
     expect(updated.filter((u) => u.table === sites).map((u) => u.set.contact)).toEqual([
       { name: 'Jane Ops', email: 'jane@acme.example', phone: null },
@@ -889,7 +920,7 @@ describe('commitContactImport', () => {
     // preview because nobody held new@ then — mints a duplicate beside her.
     stubState({
       contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
-      then: [[storedContact()]],
+      then: [[storedContact()], ...lockedReread()],
     });
 
     const summary = await commitContactImport([
@@ -937,7 +968,7 @@ describe('commitContactImport', () => {
     // create, not a stale email-match against the pre-batch index.
     stubState({
       contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
-      then: [[storedContact()]],
+      then: [[storedContact()], ...lockedReread()],
     });
 
     const summary = await commitContactImport([
@@ -1137,7 +1168,7 @@ describe('commitContactImport — link-match modes', () => {
     // value it merely read.
     stubState({
       ...LINKED,
-      then: [[storedContact({ title: 'Controller', mobile: '555-0999' })]],
+      then: [[storedContact({ title: 'Controller', mobile: '555-0999' })], ...lockedReread()],
     });
     const summary = await commitContactImport([LINKED_ROW], CTX, ACTOR, { mode: 'update' });
 
@@ -1151,7 +1182,7 @@ describe('commitContactImport — link-match modes', () => {
   it('does not re-insert the external link a link-matched row was identified BY', async () => {
     // The link row is how the row matched; inserting it again violates
     // contact_external_links_uniq and would fail an otherwise-good update.
-    stubState({ ...LINKED, then: [[storedContact()]] });
+    stubState({ ...LINKED, then: [[storedContact()], ...lockedReread()] });
     const summary = await commitContactImport([LINKED_ROW], CTX, ACTOR, { mode: 'update' });
 
     expect(summary.updated).toHaveLength(1);

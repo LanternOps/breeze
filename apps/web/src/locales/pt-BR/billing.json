@@ -2169,11 +2169,11 @@
       "title": "Endereço de cobrança"
     },
     "contact": {
-      "description": "As cotações e faturas são enviadas para este endereço. Sem ele, enviar uma proposta a marca como Enviada, mas nenhum e-mail é enviado.",
-      "email": "E-mail do contato",
-      "emailInvalid": "Informe um endereço de e-mail válido",
-      "emailPlaceholder": "faturamento@cliente.exemplo",
-      "name": "Nome do contato",
+      "description": "Por padrão, cotações e faturas são enviadas por e-mail ao contato de cobrança da organização: o contato no nível da organização com a função Faturamento. Você ainda pode alterar os destinatários a cada envio.",
+      "manage": "Gerenciar contatos",
+      "noEmail": "{{name}} tem a função Faturamento, mas nenhum endereço de e-mail; cotações e faturas não podem ser enviadas por e-mail até que um seja adicionado.",
+      "none": "Nenhum contato tem a função Faturamento. Até que algum tenha, enviar uma proposta a marca como Enviada, mas nenhum e-mail é enviado.",
+      "recipientLabel": "Destinatário padrão:",
       "title": "Contato de cobrança"
     },
     "currency": {

@@ -2169,11 +2169,11 @@
       "title": "Billing address"
     },
     "contact": {
-      "description": "Quotes and invoices are emailed to this address. Without it, sending a proposal marks it Sent but nothing is emailed.",
-      "email": "Contact email",
-      "emailInvalid": "Enter a valid email address",
-      "emailPlaceholder": "billing@customer.example",
-      "name": "Contact name",
+      "description": "Quotes and invoices are emailed to the organization's billing contact by default — the organization-level contact with the Billing role. You can still change the recipients each time you send.",
+      "manage": "Manage contacts",
+      "noEmail": "{{name}} has the Billing role but no email address, so quotes and invoices can't be emailed until one is added.",
+      "none": "No contact has the Billing role. Until one does, sending a proposal marks it Sent but nothing is emailed.",
+      "recipientLabel": "Default recipient:",
       "title": "Billing contact"
     },
     "currency": {
