@@ -89,6 +89,8 @@ func TestVMRestoreRelativePath(t *testing.T) {
 		{name: "unc without share", source: `\\fileserver`, wantErr: true},
 		{name: "empty", source: "", wantErr: true},
 		{name: "nul byte", source: "C:\\a\x00b.txt", wantErr: true},
+		{name: "trailing dot name", source: `C:\a\name.`, wantErr: true},
+		{name: "trailing space directory", source: `C:\a \b.txt`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

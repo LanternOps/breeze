@@ -179,6 +179,11 @@ func vmRestoreRelativePath(f vmRestoreManifFile) (string, error) {
 		if strings.ContainsAny(c, `:*?"<>|`) {
 			return "", fmt.Errorf("path %q has a component that is not a plain file name", recorded)
 		}
+		// ... and a name ending in a dot or space would be written under
+		// its shortened alias, not the recorded name.
+		if last := c[len(c)-1]; last == '.' || last == ' ' {
+			return "", fmt.Errorf("invalid_windows_name: path %q has a component ending in a dot or space", recorded)
+		}
 		parts = append(parts, c)
 	}
 	if len(parts) == 0 {
