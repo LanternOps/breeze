@@ -2505,7 +2505,10 @@
     {
       "pattern": "scripts/guided-setup.sh",
       "docs": [
-        "getting-started/prerequisites.mdx"
+        "getting-started/prerequisites.mdx",
+        "getting-started/quickstart.mdx",
+        "deploy/production.mdx",
+        "deploy/upgrades.mdx"
       ]
     },
     {
@@ -4312,7 +4315,8 @@
       "pattern": "apps/api/src/services/backupStorageSessions.ts",
       "docs": [
         "backup/restoring.mdx",
-        "deploy/upgrades.mdx"
+        "deploy/upgrades.mdx",
+        "backup/https-restores.mdx"
       ]
     },
     {
@@ -4402,6 +4406,51 @@
       "pattern": "apps/api/src/services/emailDomains/dnsOwnershipProof.ts",
       "docs": [
         "deploy/custom-sender-addresses.mdx"
+      ]
+    },
+    {
+      "pattern": "docker/turnserver.conf",
+      "docs": [
+        "deploy/turn-server.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/timeSync/**",
+      "docs": [
+        "features/time-sync.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/timeStatus.ts",
+      "docs": [
+        "features/time-sync.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/timesync/**",
+      "docs": [
+        "features/time-sync.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/monitors/builtInMonitors.ts",
+      "docs": [
+        "features/monitors.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/metricAnomalyEpisodeKeys.ts",
+      "docs": [
+        "features/ml-insights.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/xero*.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
       ]
     }
   ]

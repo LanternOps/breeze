@@ -240,6 +240,14 @@ The deployment status progresses through these states:
 | `failed` | The deployment failed on one or more devices. |
 | `cancelled` | The deployment was cancelled by an operator before completion. |
 
+#### Install progress on a device row
+
+In a deployment's per-device status list, an install no longer sits on a silent **Pending**. Each device row shows what is happening and for how long:
+
+- **Sent to agent**: the command was delivered and the agent has it. This works with every agent version.
+- **Downloading** or **Installing**: the agent reports its current step. This needs an agent that supports progress reports; older agents show **Sent to agent** with the elapsed time instead.
+- A warning appears when the agent has not reported for longer than that step normally takes (download 15 minutes, installer 30 minutes, 45 minutes if no step was reported). If nothing arrives, the install is marked failed 55 minutes after it was sent.
+
 The database-level `deployment_status` enum includes additional states used by the broader deployment system: `draft`, `paused`, `downloading`, `installing`, and `rollback`.
 
 ### Scheduling and Maintenance Windows

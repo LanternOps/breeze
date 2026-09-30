@@ -102,6 +102,7 @@ From the alert detail screen, technicians can:
 
 - **Acknowledge** an active alert with a single tap (`POST /alerts/:id/acknowledge`).
 - **Resolve** an alert with an optional resolution note (`POST /alerts/:id/resolve`).
+- **Reboot now** on an open "Reboot pending" alert. It asks you to confirm (naming the device), then sends the same reboot command as the device screen, with the same permission, MFA and site checks. Acknowledge only marks the alert as seen, and the alert stays open after the restart is sent. The button is hidden for resolved alerts.
 
 Both actions publish events (`alert.acknowledged`, `alert.resolved`) through the event bus and write audit log entries. Resolving a monitor alert applies its configured cooldown period. Historical alerts from retired policy rules can still be resolved; they no longer set a policy-rule cooldown.
 

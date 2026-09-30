@@ -110,7 +110,15 @@ Breeze uses this path when all of these hold:
 - the server address the device uses is HTTPS;
 - Breeze has a verified file list for the snapshot (it builds one automatically when it is missing), or, for SQL Server, the snapshot's manifest and backup file.
 
-Otherwise the restore uses the previous path, where the device receives the storage destination with the command. This is the case for devices whose backup helper predates 0.118 until they update. Restores keep working either way.
+**v0.119.0+.** There is no fallback. If a restore from S3-compatible storage cannot use a storage session, Breeze refuses it and tells you what to change (for example, update the agent on the device). See [HTTPS for Restores](/backup/https-restores/) for the requirements.
+
+### How backups reach storage
+
+**v0.119.0+.** With the 0.119 backup helper, backups to S3-compatible storage over HTTPS no longer send the storage destination or its keys to the device. Breeze issues a short-lived, write-only storage session and a snapshot ID for the job. The helper uploads through signed links that expire within minutes, and only under that snapshot ID. Breeze publishes the snapshot after the last upload link has expired.
+
+Snapshots are also attested. The helper records the size and checksum of the manifests it stored, and Breeze later reads them back from storage and compares. A new snapshot shows as attested about 21 to 26 minutes after its upload ends, because Breeze waits for the upload links to expire first. Attestation status is not shown in the web UI.
+
+Backups to local or NAS destinations or to S3 over plain HTTP, and devices whose backup helper predates 0.119, keep the previous path.
 
 <Aside type="note">
   A backup, restore or verify command still queued when its device moves to another organization, including during an organization merge, is not delivered. It is expired with a reason. Run it again after the move.

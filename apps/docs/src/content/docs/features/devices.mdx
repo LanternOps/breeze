@@ -40,6 +40,8 @@ The version renders in plain text with no tint when the comparison can't be made
 
 Since v0.117.0 an **Updates withheld** badge appears next to the version when the server has stopped offering agent updates to that device because it cannot confirm that the device's agent build accepts the edition this server serves. The device stays on its current version until it is recovered with an installer of the served edition, or an agent release that reports its edition. The device's Info tab shows the same warning with the date it started.
 
+A **Logs silent** badge appears on the device list, and a warning on the device's Info tab, when the device is online but has shipped no logs for more than 6 hours (or has never shipped one once it has been enrolled long enough to be expected to). It means log shipping may be disabled, failing or not reaching the server. It is an indicator only and does not raise an alert.
+
 ### Filters
 
 Above the list you can:

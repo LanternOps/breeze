@@ -44,7 +44,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/scripts/guided-setup.sh
 
    # Run from the directory that holds docker-compose.yml and .env, or pass --work-dir.
-   bash guided-setup.sh --upgrade 0.118.2   # omit the version to use the latest release
+   bash guided-setup.sh --upgrade 0.119.0   # omit the version to use the latest release
    ```
 
    The script:
@@ -60,8 +60,8 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    **4b. Tag-form: set the version, then pull and restart**
 
    ```bash
-   # In .env: set to the version you want (e.g. 0.118.2)
-   BREEZE_VERSION=0.118.2
+   # In .env: set to the version you want (e.g. 0.119.0)
+   BREEZE_VERSION=0.119.0
    ```
 
    ```bash
@@ -89,7 +89,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    breeze-agent version
    ```
 
-   `/health` reports the version baked into the running API image. If it does not match `BREEZE_VERSION` in `.env`, the image was not upgraded. The API logs `[version] BREEZE_VERSION=… but this API image is …` at startup, and **Administration → System → Connections** shows the same warning. This requires the Compose change described in [APP_VERSION comes from the image](#next-release--app_version-comes-from-the-image).
+   `/health` reports the version baked into the running API image. If it does not match `BREEZE_VERSION` in `.env`, the image was not upgraded. The API logs `[version] BREEZE_VERSION=… but this API image is …` at startup, and **Administration → System → Connections** shows the same warning. This requires the Compose change described in [APP_VERSION comes from the image](#v01190--app_version-comes-from-the-image).
 
    Also sign in through your public URL and confirm agents resume checking in. `/health` bypasses the HTTPS redirect and can stay healthy while a stale proxy address sends other requests into a redirect loop.
 
@@ -149,7 +149,7 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
-### Next release — `APP_VERSION` comes from the image
+### v0.119.0 — `APP_VERSION` comes from the image
 
 Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environment. That value replaced the version baked into the image, so `/health`, the upgrade preflight, and the recorded version history reported whatever `.env` said, even when the running image was older. The shipped `docker-compose.yml` and `deploy/docker-compose.prod.yml` no longer set it.
 
@@ -157,12 +157,13 @@ Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environ
 |---|---|
 | The `APP_VERSION:` line is removed from the shared API environment block (`x-api-env` in `docker-compose.yml`, the API environment in `deploy/docker-compose.prod.yml`). | Delete the `APP_VERSION:` line from your own Compose file. Keep `BREEZE_VERSION:`, which still selects the agent release. Until you remove the line, `/health` keeps reporting `BREEZE_VERSION` and the version-mismatch warning cannot fire. |
 
-### Next release — coturn relays again
+### v0.119.0 — coturn relays again
 
 | Change | Required action |
 |---|---|
-| The v0.118.0 coturn configuration listed `denied-peer-ip=::`. coturn reads an all-zero address as "no bound", so that one entry refused every peer and relayed (TURN) connections could not be set up. The entry is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`; coturn already refuses the unspecified address on its own. | Delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in a Compose file) from your coturn configuration and restart coturn, even if you skip this release. Do not replace it with `0.0.0.0` or a range starting at `::`. |
-### Next release — coturn refuses IPv4-mapped and NAT64 peers
+| The v0.118.0 coturn configuration listed `denied-peer-ip=::`. coturn reads an all-zero address as "no bound", so that one entry refused every peer and relayed (TURN) connections could not be set up. The entry is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`; coturn already refuses the unspecified address on its own. | Delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in a Compose file) from your coturn configuration and restart coturn, even if you skip this release. `guided-setup.sh --upgrade` does not edit your Compose file, so this is a manual step on every install that ran v0.118.0–v0.118.2. Do not replace it with `0.0.0.0` or a range starting at `::`. |
+
+### v0.119.0 — coturn refuses IPv4-mapped and NAT64 peers
 
 | Change | Required action |
 |---|---|
@@ -194,6 +195,95 @@ Changing an existing network's IPAM/subnet requires recreating that network duri
 Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
 
 ## Version-specific notes
+
+### v0.119.0 — TURN fix, HTTPS-only S3 restores, live inspection permission
+
+<Aside type="caution" title="On v0.118.x: TURN relaying stays broken until you edit coturn">
+  The v0.118.0–v0.118.2 Compose files pass `--denied-peer-ip=::` to coturn, which refuses every relay peer, so relayed (TURN) connections have failed since v0.118.0. `guided-setup.sh --upgrade` does not edit your Compose file. Remove the line and restart coturn, as described in [coturn relays again](#v01190--coturn-relays-again).
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. If you restore from S3 or S3-compatible storage, move the storage endpoint and the API address your agents use to HTTPS first, and check that `PUBLIC_API_URL` is set and correct. See [HTTPS for S3 Restores](/backup/https-restores/).
+2. On devices whose remote access policy is **Require consent**, update the agent before you upgrade the server (see [Remote sessions](#remote-sessions) below).
+3. Back up the database. With a large backup history, check `SELECT count(*) FROM backup_snapshots;` first (see [Migrations](#migrations)).
+4. Merge the Compose file changes: remove `--denied-peer-ip=::` from coturn and the `APP_VERSION:` line from the API environment. See [Compose file changes](#v01190--app_version-comes-from-the-image).
+5. Upgrade: `bash guided-setup.sh --upgrade 0.119.0` on a digest-pinned install, or set `BREEZE_VERSION=0.119.0` and run `docker compose pull api web portal && docker compose up -d` on a tag-form install. If you run the split worker, roll it together with `api`: `docker compose --profile worker-split pull worker && docker compose --profile worker-split up -d worker`.
+6. Let every agent and Breeze Helper update to 0.119.0.
+</Steps>
+
+If you edited only `BREEZE_VERSION` on an earlier upgrade of a digest-pinned install, run `guided-setup.sh --upgrade 0.119.0` now. It re-pins the image digests even when the version already matches. Fresh installs with `guided-setup.sh` now refuse a release older than 0.112.0, or a version that is not an exact release (such as `latest`), unless you pass `--allow-unverified-release`.
+
+**Update every agent and Helper.** These changes take effect on a device only once it runs the 0.119 agent or Helper: time sync, brokered backup writes and snapshot attestations, the macOS Full Disk Access and login-window fixes, mixed-DPI remote-desktop clicks, the wake-from-sleep and credential-rotation fixes, the helper-update fixes, the Restore-as-VM and instant-boot changes, and **Breeze Assist on macOS and Linux** (a Helper update; users outside the `breeze` group see a "contact your administrator" message). Macs moved to `/Library/Breeze/bin` by 0.118.0–0.118.2 stay there, and a Full Disk Access grant already made for that path keeps working.
+
+#### Access and permissions
+
+- **Live device inspection needs `devices:execute`.** Process, service, scheduled-task, event-log, file and registry reads, and the live session list, send a live command to the device, so they need it. The live session list also accepts `remote:access`. Org Viewer, Partner Viewer and the two seeded approver roles lose live inspection. Give `devices:execute` to any custom role that should keep it. MCP and API keys with only `ai:read` can no longer trigger live reads; they need `ai:write`. `analyze_disk_usage` no longer scans on its own: pass `refresh: true`. See [System Tools](/features/system-tools/).
+- **Site scoping.** Fleet security posture, threats, the executive summary and OS distribution now respect site-restricted access.
+- **Approver assurance becomes the default on 2026-11-05.** Partners that never saved an **Approval Security** choice need a registered approver device for high- and critical-risk approvals from that date. A saved choice is kept. Move the date with `APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM`. See [Approval Security](/features/approval-security/).
+
+#### Remote sessions
+
+On devices whose remote access policy is **Require consent**:
+
+- VNC tunnels, viewer-to-VNC fallback and VNC tickets are refused with `409 CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE`. Technicians use the remote desktop viewer, which can ask.
+- Desktop starts need an agent that can show the consent prompt; otherwise they return `409 CONSENT_UPGRADE_REQUIRED`.
+- A prompt policy the server cannot read refuses the start with `503 REMOTE_PROMPT_POLICY_UNAVAILABLE`. Re-save the device's remote access policy to fix it.
+- The AI screenshot, screen-analysis and computer-control tools, and the device diagnose action, are refused and audited as `screen_access_consent_blocked`.
+
+Two audit actions are renamed. An unanswered prompt is now `session_consent_blocked_unanswered` (was `session_consent_denied`), and a prompt that could not be shown is `session_consent_blocked_unavailable` (was `session_consent_bypassed`). Update saved audit filters, SIEM rules and exports. Rows written before the upgrade keep the old names. See [Session Consent & End-User Notification](/features/remote-access/#session-consent--end-user-notification).
+
+#### Backups and restores
+
+- **S3 restores need HTTPS end to end, with no fallback.** Restores, test restores and verification from S3 or S3-compatible storage always go through a short-lived storage session. A plain-`http://` storage endpoint, an API that agents reach over plain HTTP, or an unset or mismatched `PUBLIC_API_URL` refuses every S3 restore. Agents older than 0.118 are refused with "Update the Breeze agent on this device". When you move MinIO to HTTPS, keep its host and port; only the scheme may change, or earlier backups cannot be restored. Local and NAS destinations, and backups themselves, are not affected. See [HTTPS for S3 Restores](/backup/https-restores/).
+- **Brokered backup writes** turn on by themselves for S3 destinations over HTTPS once the 0.119 backup helper is on the device. See [How backups reach storage](/backup/restoring/#how-backups-reach-storage).
+
+#### Settings secrets and notifications
+
+- Notification secrets in partner, org and site settings (Slack webhook URL, webhook entries, Pushover tokens) are encrypted by a background sweep after the API's first boot, using the existing `APP_ENCRYPTION_KEY`. There is no SQL migration for this.
+- Settings responses return secrets as `********`. An integration that reads settings and writes them back must send the marker back unchanged.
+- Changing a log-forwarding or Elasticsearch endpoint to a different origin needs the secret re-entered. A blank org Event Logs key now keeps the stored key instead of clearing it.
+- **If you run a separate `worker` container, roll it together with `api`.** An older worker would send the encrypted value. See [Worker Split](/deploy/worker-split/).
+- If you roll back past this release, re-enter the partner Pushover defaults and the Slack URL, and re-add saved webhook entries.
+
+#### Other behaviour changes
+
+- **Billing contact.** An organization's invoice and quote recipient is the org-level contact with the **Billing** role, with no fallback to the primary contact. The org Billing tab is read-only and links to Contacts. No data is rewritten on upgrade. PR [#7519](https://github.com/LanternOps/breeze/pull/7519) has a read-only query that finds organizations whose invoices went to the primary contact; run it with RLS bypassed, then give the right contact the Billing role.
+- **Compliance alerts.** The built-in compliance alert templates no longer auto-resolve: an alert stays open until the device is compliant, and closes when its rule no longer applies. Duplicate rule set names within one policy are refused (`400 DUPLICATE_COMPLIANCE_RULE_SET_NAME`); PR [#7527](https://github.com/LanternOps/breeze/pull/7527) has a query that finds existing duplicates.
+- **Built-in time sync monitors.** On first boot, every partner gets the built-in time sync monitors. They are not attached to any policy, so nothing alerts until you attach them. Opt out with `BREEZE_BUILTIN_MONITORS_AUTOSEED=false`. See [Time Sync](/features/time-sync/).
+- **AI configuration.** Without a usable model provider, AI chat and the script builder return `503 ai_not_configured` instead of looking ready.
+- **Non-UTC API hosts.** Report schedules, discovery intervals and other time-based checks were shifted by the host's UTC offset. They are corrected, with no action needed.
+
+#### Environment variables
+
+**No new required variables.** The API boots on an unchanged `.env`. New optional ones:
+
+- `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`, `XERO_REDIRECT_URI`, `XERO_WEBHOOK_KEY`, `XERO_DAILY_CALL_LIMIT` (default `1000`). Unset keeps Xero hidden; an invalid `XERO_DAILY_CALL_LIMIT` refuses boot. Mapped in both shipped Compose files. See [Accounting (Xero)](/deploy/environment/#accounting-xero).
+- `AI_TOOL_SEARCH` (`auto` by default, `on`, `off`). `off` restores the previous behaviour. Mapped in `docker-compose.yml`; add it yourself if you use `deploy/docker-compose.prod.yml`.
+- `APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM` (default `2026-11-05T00:00:00Z`). An unparseable value refuses boot.
+- `PRE_ASSIGNMENT_ENROLLMENT_ENABLED` (default `false`). Keeps the Unassigned Devices holding area dark.
+- `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` (default `2`). Not mapped in Compose. See [Anomaly episode tuning](/deploy/environment/#anomaly-episode-tuning).
+
+`METRIC_ROLLUP_MAX_DELETE_BATCHES` is no longer read. Never set `BREEZE_BINARIES_VERSION` in `.env` or Compose; it is baked into the image.
+
+#### Migrations
+
+50 migrations apply on first boot through `autoMigrate` (unless `AUTO_MIGRATE=false`). They are idempotent and all run **before the API starts serving**, so a slow migration lengthens the outage but cannot race live traffic. Don't run `pg_dump` or long psql sessions while the new API is booting, because migrations wait on their locks.
+
+- **One backfill scales with your backup history.** `2026-11-08-120000-backup-snapshot-id-reservations` writes one row per existing backup snapshot. A local test took about 13 seconds per 300,000 snapshots; expect longer on slower storage. The rest are quick.
+- **`notification_channels.config` is dropped.** v0.118.0 moved channel configuration to its own table and kept this column for one release. On a v0.118.x image, alert delivery keeps working, but creating or editing a notification channel fails until you roll forward again. Do not roll back below v0.118.0.
+- **Metric history storage.** The migration only reshapes empty future months. Months written before this release keep their old layout until the nightly maintenance job rewrites them, once their 5-minute data has expired (90 days by default), and gives the disk space back. To reclaim space sooner, set `METRIC_ROLLUP_5M_RETENTION_DAYS=30` in `.env` **and** the `api` service's `environment:` block (and `worker`, if split), then restart. If your database role cannot run `CREATE SCHEMA`, the migration only warns: create the schema by hand (`CREATE SCHEMA metric_rollups_staging AUTHORIZATION <migration role>;`), or old months cannot be rewritten. See [Metric history retention](/deploy/environment/#metric-history-retention-metric_rollups).
+- One migration clears an unused password hash from portal logins that sign in with Entra ID.
+
+#### Known issues
+
+- **Restore as new VM and instant boot** create a Generation 2 VM with no EFI system partition, so the restored OS does not boot yet. File-level data in the VM is intact ([#7493](https://github.com/LanternOps/breeze/issues/7493)). Instant boot can also report success when `bcdboot` fails ([#7494](https://github.com/LanternOps/breeze/issues/7494)).
+- **Topology explorer** stays on "preparing" for sites without a topology-capable agent until an operator backfill runs ([#7513](https://github.com/LanternOps/breeze/issues/7513)).
+- **Backup Status report** preview tiles don't render, and its edit page shows the Devices builder ([#7506](https://github.com/LanternOps/breeze/issues/7506)).
+- **Org Viewer** sees a hydration error on every page, plus 403s from partner-only requests ([#7498](https://github.com/LanternOps/breeze/issues/7498)).
+
+**Rolling back** to v0.118.x means restoring the database backup you took before upgrading, together with the matching images.
 
 ### v0.118.0 — legacy alerting retired, network checks become monitors
 
@@ -248,7 +338,7 @@ To keep targeting these devices, rebuild the group on fields Breeze accepts for 
 #### Agent
 
 - **Windows: linked data and log directories are replaced.** If `C:\ProgramData\Breeze\data` or `C:\ProgramData\Breeze\logs` is a junction or symbolic link, the installer and the agent replace it with a real directory that only SYSTEM and Administrators can write to. Files in the old link target are not moved or copied, so copy anything you need first. If the link cannot be removed, **the agent refuses to start** and writes the reason to `C:\ProgramData\Breeze\logs\agent-start-failed.txt`. Remove the link by hand, then start the service.
-- **macOS: agent binaries move only when `/usr/local/bin` is unsafe.** Agents 0.118.0 through 0.118.2 moved the agent and watchdog binaries from `/usr/local/bin` to `/Library/Breeze/bin` on every Mac, on first start, which broke Full Disk Access for anyone on that path (macOS ties FDA to a bare binary's file path, not its identity). **Upgrade straight to 0.118.3 or later** — do not promote 0.118.0-0.118.2 to Macs you cannot touch. From 0.118.3, the agent moves only when `/usr/local/bin` (or a directory above it) is not owned by root, or is group- or world-writable — the known case is Homebrew on Intel Macs, which hands that directory to an admin user. A stock Mac (root-owned, non-writable `/usr/local/bin`) never moves and keeps all of its grants. Only a Mac that does move needs Full Disk Access re-granted for `/Library/Breeze/bin/breeze-agent`; the agent logs a warning when it moves and reports a `macos_fda_relocation` self-health warning until the grant lands. A Mac already moved by 0.118.0-0.118.2 stays at `/Library/Breeze/bin` on 0.118.3+ — it is not moved back, so a re-grant already done keeps holding. See [macOS Permissions](/agents/macos-permissions/#after-an-agent-relocation).
+- **macOS: agent binaries move only when `/usr/local/bin` is unsafe.** Agents 0.118.0 through 0.118.2 moved the agent and watchdog binaries from `/usr/local/bin` to `/Library/Breeze/bin` on every Mac, on first start, which broke Full Disk Access for anyone on that path (macOS ties FDA to a bare binary's file path, not its identity). **Upgrade straight to 0.119.0 or later** — do not promote 0.118.0-0.118.2 to Macs you cannot touch. From 0.119.0, the agent moves only when `/usr/local/bin` (or a directory above it) is not owned by root, or is group- or world-writable — the known case is Homebrew on Intel Macs, which hands that directory to an admin user. A stock Mac (root-owned, non-writable `/usr/local/bin`) never moves and keeps all of its grants. Only a Mac that does move needs Full Disk Access re-granted for `/Library/Breeze/bin/breeze-agent`; the agent logs a warning when it moves and reports a `macos_fda_relocation` self-health warning until the grant lands. A Mac already moved by 0.118.0-0.118.2 stays at `/Library/Breeze/bin` on 0.119.0+ — it is not moved back, so a re-grant already done keeps holding. See [macOS Permissions](/agents/macos-permissions/#after-an-agent-relocation).
 - **Helper token file.** On Linux and macOS, the Helper token moves to `helper_token.yaml`.
 
 #### Access, MFA and limits
@@ -287,7 +377,7 @@ To keep targeting these devices, rebuild the group on fields Breeze accepts for 
 - Inviting an address that already belongs to another tenant returns the normal success response.
 - Public download routes, including `install.sh` and `uninstall.sh`, return `503` while Redis is unavailable.
 - With `BINARY_SOURCE=local`, the Breeze Helper download is checked against the signed release manifest and returns `503` on a mismatch. Keep the manifest files next to the Helper binaries (`HELPER_BINARY_DIR` is respected).
-- Notification channel settings (webhook URLs, bot tokens, routing keys) move to their own table, which only the channel's owner can read. The old column is kept for rollback and is dropped in the next release.
+- Notification channel settings (webhook URLs, bot tokens, routing keys) move to their own table, which only the channel's owner can read. The old column is kept for rollback and is dropped in v0.119.0.
 
 #### Environment variables
 

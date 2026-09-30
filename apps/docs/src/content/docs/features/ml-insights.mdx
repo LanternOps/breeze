@@ -131,6 +131,8 @@ Before enabling Anomaly Detection more widely, you can check how it is performin
 - **Per-anomaly counts and rates** — how many anomalies are open, dismissed, promoted, or resolved, with dismiss, promote, and resolve rates. Anomalies that Breeze **cleared** automatically because the metric returned to normal are reported as their own `cleared` count and are left out of the total and every rate: an automatic close is not a technician's verdict, so it can't inflate or dilute the dismiss rate.
 - **An `episodes` block** — Breeze groups a continuous run of anomalous readings on one device into a single episode, so a CPU spike that lasts an hour counts once here rather than once per reading. The block reports the number of episodes, a breakdown by status (`open`, `resolved`, `dismissed`) and by how each closed (`cleared`, `expired_offline`, `expired_no_data`, `detection_off`, `user`, `snoozed`), the median time to close, the share of episodes that are repeats of one that closed in the previous week, and the share of closed episodes a technician actually acted on (resolved, dismissed, or promoted to an alert).
 
+Two gates keep short-lived noise from becoming episodes. A new episode needs at least two distinct five-minute readings (**persistence**), and upward and process detectors must exceed the device's recent 24-hour baseline maximum (**novelty**). Self-hosters can change the persistence minimum with `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` (default `2`); it is not mapped in the standard Compose file, so add it to the `api` service environment to use it. The **Anomalies** tab badge on a device and the fleet anomaly findings count only open episodes, not individual readings, and a snoozed or resolved episode is excluded.
+
 A high share of episodes closing as `cleared` with a low hands-on share means most detections resolve on their own without anyone needing to look — the expected steady state, not a problem. A high repeat share on one device usually points at a scheduled task or a real unfixed issue re-triggering detection rather than detector noise.
 
 ---
@@ -180,6 +182,17 @@ Remediation Suggestions (shown as **Suggested Fixes**) recommends concrete actio
 2. **Accept**, **Edit**, or **Reject** it. Editing lets you adjust the title, risk, rationale, or expected action before acting.
 3. For a script suggestion on a selected device, **Execute** runs it directly. High- and critical-risk actions route through [PAM approval](/features/pam/) first and show **Request approval** / **Approval pending** until an approver signs off.
 </Steps>
+
+### Fix memory and proven fixes
+
+Breeze remembers whether a fix you executed actually worked. After you run a suggested script, it watches for objective recovery, such as the alert or anomaly clearing on its own, and records the result as verified, failed, recurred or inconclusive. Fixes cleared by a person, or with no clear evidence, are recorded as inconclusive and don't count.
+
+- **Proven fix badge.** When the same kind of problem has a fix that has worked before, it is attached automatically and shows a **Proven fix** badge with its track record, for example "Worked 4 of 5 times across your clients".
+- **Partner-wide memory.** The record is shared across all of the partner's organizations, using counts only. No customer details cross organizations.
+- **Feedback.** Use **Worked** / **Didn't work** to vote, or **Done** to mark a fix as done and let Breeze watch for recovery.
+- **AI chat.** The `find_proven_fixes` tool lets the AI assistant look up proven fixes for a problem.
+
+This is part of Remediation Suggestions, so it is off unless `ml.remediation_suggestions.enabled` is on.
 
 <Aside type="caution">
   Remediation Suggestions never act on their own. Nothing runs until you accept and explicitly execute it, and elevated-risk actions still require approval.
