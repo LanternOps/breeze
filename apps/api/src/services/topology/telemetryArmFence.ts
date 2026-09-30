@@ -88,7 +88,9 @@ async function actorStillCurrent(reader: Reader, record: unknown): Promise<boole
 
 // ---------------------------------------------------------------------------
 // Live permission boundary (M3-D13, PR #7117 C4). The epochs above catch a
-// sign-out, MFA reset or deactivation, but NOT a role that lost its grants or
+// password change/reset, MFA reset or deactivation (an ordinary logout ends
+// only that sign-in session and leaves a standing arm to its own expiry and
+// these checks), but NOT a role that lost its grants or
 // a narrowed site allowlist. Those invalidate through the permission store's
 // authority version (`clearPermissionCache` bumps it on every permission
 // write). The enqueue boundary re-derives the actor's live permission set and

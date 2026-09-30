@@ -43,6 +43,9 @@ import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDe
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from './remoteAccessPolicy';
 import { getEffectiveMfaPolicy } from './mfaPolicy';
 import { remoteDesktopFenceRequired } from '../config/env';
+// Direct module (not the schema barrel) so suites that replace the barrel still
+// build the real sign-in check.
+import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 
 // ---------------------------------------------------------------------------
 // Constants — owned here, never borrowed from remoteWsSharedLease.ts
@@ -106,7 +109,8 @@ export type RevocationReason =
   | 'hard_deadline'
   | 'org_suspended'
   | 'partner_suspended'
-  | 'policy_denied';
+  | 'policy_denied'
+  | 'signed_out';
 
 /** The lease block shipped to the agent inside the `start_desktop` payload. */
 export interface RevocationLeaseGrant {
@@ -209,6 +213,12 @@ export interface RevocationRecheckRow {
     status: string;
     deletedAt: Date | null;
   };
+  /**
+   * The sign-in that opened the session (`remote_sessions.auth_session_id`)
+   * has been logged out — its refresh family is revoked. Absent/false when the
+   * session records no sign-in or the sign-in is live.
+   */
+  signInEnded?: boolean;
 }
 
 /** Live statuses a lease may be renewed for. */
@@ -272,6 +282,11 @@ export function evaluateRevocationRecheck(
   }
   if (user.status !== 'active') {
     return { ok: false, reason: 'user_inactive' };
+  }
+  // Logging out of the sign-in that opened the session ends it (and only it:
+  // logout revokes that sign-in's refresh family, nothing user-wide).
+  if (row.signInEnded === true) {
+    return { ok: false, reason: 'signed_out' };
   }
   // A lease-bearing session ALWAYS captured a baseline at creation. A missing
   // one means we cannot prove the caller's authority is unchanged, which is a
@@ -402,6 +417,11 @@ export async function loadRevocationRecheckRow(
           )`,
           partnerStatus: partners.status,
           partnerDeletedAt: partners.deletedAt,
+          signInEnded: sql<boolean>`EXISTS (
+            SELECT 1 FROM ${refreshTokenFamilies}
+            WHERE ${refreshTokenFamilies.familyId} = ${remoteSessions.authSessionId}
+              AND ${refreshTokenFamilies.revokedAt} IS NOT NULL
+          )`,
         })
         .from(remoteSessions)
         .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
@@ -486,6 +506,7 @@ export async function loadRevocationRecheckRow(
           status: found.partnerStatus,
           deletedAt: found.partnerDeletedAt ?? null,
         },
+        signInEnded: found.signInEnded === true,
       } satisfies RevocationRecheckRow;
     }),
   );

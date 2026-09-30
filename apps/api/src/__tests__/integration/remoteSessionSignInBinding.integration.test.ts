@@ -19,6 +19,7 @@ import { devices, refreshTokenFamilies } from '../../db/schema';
 import { revalidateTunnelSession } from '../../routes/tunnelWs';
 import { createRemoteSession } from '../../services/remoteSessionCreate';
 import { revalidateRemoteWsAuthority } from '../../services/remoteWsAuthorization';
+import { evaluateRevocationRecheck, loadRevocationRecheckRow } from '../../services/remoteRevocationLease';
 import { setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -79,6 +80,45 @@ describe('remote sessions end with the sign-in session that opened them', () => 
       ok: false, status: 403, reason: 'credential_revoked',
     });
     await expect(revalidateRemoteWsAuthority(subject(kept.id))).resolves.toEqual({ ok: true });
+  });
+
+  runDb('refuses the revocation lease of a desktop session after its sign-in ends', async () => {
+    // A peer-to-peer desktop stream is rechecked through its revocation lease
+    // (renewed by the agent and by the viewer), not only through a socket.
+    const env = await setupTestEnvironment({
+      rolePermissions: [{ resource: 'remote', action: 'access' }],
+    });
+    const [device] = await getTestDb().insert(devices).values({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      agentId: `signin-binding-lease-${randomUUID()}`,
+      hostname: 'synthetic-signin-binding-lease',
+      osType: 'linux',
+      osVersion: 'test',
+      architecture: 'x64',
+      agentVersion: 'test',
+      status: 'online',
+    }).returning({ id: devices.id });
+    const endedSignIn = await signInFamily(env.user.id);
+    const otherSignIn = await signInFamily(env.user.id);
+    const create = (authSessionId: string) => withSystemDbAccessContext(() => createRemoteSession('remote', {
+      deviceId: device!.id,
+      orgId: env.organization.id,
+      userId: env.user.id,
+      type: 'desktop',
+      authSessionId,
+    }));
+    const ended = await create(endedSignIn);
+    const kept = await create(otherSignIn);
+    const verdict = async (sessionId: string) => {
+      const now = Date.now();
+      return evaluateRevocationRecheck(await loadRevocationRecheckRow(sessionId), now, now + 60_000);
+    };
+
+    await expect(verdict(ended.id)).resolves.toEqual({ ok: true });
+    await endSignIn(endedSignIn);
+    await expect(verdict(ended.id)).resolves.toEqual({ ok: false, reason: 'signed_out' });
+    await expect(verdict(kept.id)).resolves.toEqual({ ok: true });
   });
 
   runDb('denies a relay tunnel after its sign-in ends', async () => {

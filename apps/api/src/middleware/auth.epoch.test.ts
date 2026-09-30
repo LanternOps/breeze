@@ -92,6 +92,8 @@ import { authMiddleware, requirePermission } from './auth';
 import { verifyToken } from '../services/jwt';
 import { getUserPermissions } from '../services/permissions';
 import { db } from '../db';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // Matches auth.test.ts's `selectWithLimit` helper shape — a
 // db.select({...}).from(...).where(...).limit(1) chain.
@@ -339,6 +341,15 @@ describe('authMiddleware sign-in session gate', () => {
     const columns = vi.mocked(db.select).mock.calls[0]![0] as unknown as Record<string, unknown>;
     expect(columns).toHaveProperty('sessionEnded');
     expect(collectSqlValues(columns.sessionEnded)).toContain(SESSION_ID);
+  });
+
+  it('qualifies the outer users.id so the owner comparison cannot bind to a column of the family table', async () => {
+    const app = appWith({ ...epochPayload, sid: SESSION_ID }, { ...liveUser, sessionEnded: false });
+    await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+    const columns = vi.mocked(db.select).mock.calls[0]![0] as unknown as Record<string, unknown>;
+    const { sql: rendered } = new PgDialect().sqlToQuery(columns.sessionEnded as SQL);
+    expect(rendered).toContain('"refresh_token_families"."user_id" <> "users"."id"');
+    expect(rendered).toContain('"refresh_token_families"."family_id" = $1::uuid');
   });
 
   it('never binds a non-UUID sid into the uuid comparison', async () => {

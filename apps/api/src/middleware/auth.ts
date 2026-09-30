@@ -12,7 +12,7 @@ import { users, partnerUsers, organizations } from '../db/schema';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
-import { and, eq, inArray, isNull, ne, or, sql, SQL } from 'drizzle-orm';
+import { and, eq, getTableName, inArray, isNull, ne, or, sql, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AiOriginRef } from '@breeze/shared';
 import type { PartnerTrustState } from '../db/schema/orgs';
@@ -614,10 +614,16 @@ export function withAuthDbAccessContext<T>(auth: AuthContext, fn: () => Promise<
  */
 function signInSessionEnded(sid: string | undefined): SQL<boolean> {
   const familyId = sid && PG_UUID_REGEX.test(sid) ? sid : null;
+  // Every column is table-qualified by hand: in a single-table select Drizzle
+  // renders columns unqualified, and an unqualified outer `"id"` would bind to
+  // the family table instead if it ever gained an `id` column.
+  const family = sql.identifier(getTableName(refreshTokenFamilies));
+  const column = (name: string) => sql`${family}.${sql.identifier(name)}`;
   return sql<boolean>`exists (
-    select 1 from ${refreshTokenFamilies}
-    where ${refreshTokenFamilies.familyId} = ${familyId}::uuid
-      and (${refreshTokenFamilies.revokedAt} is not null or ${refreshTokenFamilies.userId} <> ${users.id})
+    select 1 from ${family}
+    where ${column(refreshTokenFamilies.familyId.name)} = ${familyId}::uuid
+      and (${column(refreshTokenFamilies.revokedAt.name)} is not null
+        or ${column(refreshTokenFamilies.userId.name)} <> ${sql.identifier('users')}.${sql.identifier('id')})
   )`;
 }
 

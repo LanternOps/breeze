@@ -32,6 +32,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/assets'],
     ['GET', '/api/v1/portal/network/assets/'],
+    // Portal logout commits its durable signed-out record in its own system
+    // transaction; no portal request transaction may be held around it.
+    ['POST', '/api/v1/portal/auth/logout'],
+    ['POST', '/api/v1/portal/auth/logout/'],
     ['POST', '/api/v1/partner/stripe-connect/key'],
     ['POST', '/api/v1/partner/stripe-connect/key/'],
     ['GET', '/api/v1/partner/stripe-connect'],
@@ -262,6 +266,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
     ['GET', '/api/v1/portal/invoices/def-456/settle', 'portal settle is POST-only'],
+    ['GET', '/api/v1/portal/auth/logout', 'portal logout is POST-only'],
+    ['POST', '/api/v1/portal/auth/login', 'portal login keeps its own handling'],
     ['POST', '/api/v1/portal/invoices//settle', 'empty id segment must not match'],
     ['GET', '/api/v1/portal/quotes/def-456/pay', 'portal quote pay is POST-only'],
     ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],

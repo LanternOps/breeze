@@ -154,6 +154,17 @@ describe('evaluateRevocationRecheck', () => {
     ).toEqual({ ok: false, reason: 'user_inactive' });
   });
 
+  it('revokes a session whose opening sign-in was logged out', () => {
+    expect(
+      evaluateRevocationRecheck(row({ signInEnded: true }), NOW, NOW + 60_000),
+    ).toEqual({ ok: false, reason: 'signed_out' });
+  });
+
+  it('renews a session whose opening sign-in is live or unrecorded', () => {
+    expect(evaluateRevocationRecheck(row({ signInEnded: false }), NOW, NOW + 60_000)).toEqual({ ok: true });
+    expect(evaluateRevocationRecheck(row(), NOW, NOW + 60_000)).toEqual({ ok: true });
+  });
+
   it('revokes when the epoch baseline was never captured', () => {
     expect(
       evaluateRevocationRecheck(
