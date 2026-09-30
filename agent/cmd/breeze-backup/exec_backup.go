@@ -13,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
@@ -561,11 +562,17 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 		return fail("invalid restore payload: " + err.Error())
 	}
 
+	expectation, err := integrity.FromPayload(payload)
+	if err != nil {
+		return fail(err.Error())
+	}
+
 	cfg := backup.RestoreConfig{
 		SnapshotID:    p.SnapshotID,
 		TargetPath:    p.TargetPath,
 		SelectedPaths: p.SelectedPaths,
 		WorkRoot:      backupRestoreWorkRoot(),
+		Integrity:     expectation,
 	}
 
 	var progressFn backup.ProgressFunc
@@ -633,8 +640,11 @@ func execBackupVerifyContext(ctx context.Context, commandID string, payload json
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid verify payload: " + err.Error())
 	}
-	result, err := backup.VerifyIntegrityWithOptions(ctx, restoreProvider, p.SnapshotID,
-		verifyOptions(conn, commandID, "verifying"))
+	opts := verifyOptions(conn, commandID, "verifying")
+	if opts.Integrity, err = integrity.FromPayload(payload); err != nil {
+		return fail(err.Error())
+	}
+	result, err := backup.VerifyIntegrityWithOptions(ctx, restoreProvider, p.SnapshotID, opts)
 	return marshalResult(result, err)
 }
 
@@ -659,8 +669,11 @@ func execBackupTestRestoreContext(ctx context.Context, commandID string, payload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	result, err := backup.TestRestoreWithOptions(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(),
-		verifyOptions(conn, commandID, "test_restore"))
+	opts := verifyOptions(conn, commandID, "test_restore")
+	if opts.Integrity, err = integrity.FromPayload(payload); err != nil {
+		return fail(err.Error())
+	}
+	result, err := backup.TestRestoreWithOptions(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), opts)
 	return marshalResult(result, err)
 }
 
