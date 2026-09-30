@@ -72,10 +72,16 @@ export function summarizeSetLogLevelResult(result: CommandResult): Record<string
   if (typeof reported.baseLevel === 'string') response.baseLevel = reported.baseLevel;
   if (typeof reported.expiresAt === 'string') response.expiresAt = reported.expiresAt;
 
-  if (!persisted) {
+  if (persisted) {
+    // persisted means the service wrote the file; helpers apply it on their
+    // next poll, and nothing reports back from them.
+    response.note = 'Helper processes (desktop, user and backup helpers) apply the override within 30 seconds; helpers older than this agent version ignore it.';
+  } else {
     const reason = typeof reported.persistError === 'string'
       ? ` (${reported.persistError})`
-      : reported.persisted === undefined ? ' (this agent version predates persistent overrides)' : '';
+      : reported.persisted === undefined
+        ? ' (this agent version predates persistent overrides)'
+        : ' (the agent did not report whether the override was saved)';
     response.warning = `Applied to the running agent service only${reason}: it will be lost if the service restarts and does not reach the desktop helper, so WebRTC/remote-desktop diagnostics stay at their configured level.`;
   }
   return response;

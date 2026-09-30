@@ -256,6 +256,9 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.durationMinutes).toBe(30);
       expect(parsed.persisted).toBe(true);
       expect(parsed.warning).toBeUndefined();
+      // persisted only means the file was written; say how helpers get it.
+      expect(parsed.note).toMatch(/helper/i);
+      expect(parsed.note).toMatch(/30 seconds/);
 
       expect(aiExecuteCommand).toHaveBeenCalledWith(
         expect.anything(),
@@ -310,6 +313,22 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.appliedLevel).toBe('debug');
       expect(parsed.persisted).toBe(false);
       expect(parsed.warning).toMatch(/restart/);
+    });
+
+    it('gives a reason when the agent reports a non-boolean persisted value', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-odd',
+        stdout: JSON.stringify({ appliedLevel: 'debug', durationMinutes: 60, persisted: 'yes' }),
+      } as any);
+
+      const parsed = JSON.parse(await tools.get('set_agent_log_level')!.handler(
+        { deviceId: 'dev-1', level: 'debug' },
+        makeAuth('org-1'),
+      ));
+      expect(parsed.persisted).toBe(false);
+      expect(parsed.warning).toMatch(/did not report whether/);
     });
 
     it('returns an error, not success, when the agent reports failure', async () => {

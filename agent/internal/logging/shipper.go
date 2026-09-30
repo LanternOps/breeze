@@ -81,6 +81,11 @@ type Shipper struct {
 	// overrideExpiresAt means no override.
 	overrideLevel     slog.Level
 	overrideExpiresAt time.Time
+	// overrideSetAt is when the command that produced the override ran. A
+	// persisted override replaces the in-memory one only if it is at least
+	// as new, so a stale file cannot displace a newer override whose write
+	// failed.
+	overrideSetAt time.Time
 	// overridePath is the persisted override file (LevelOverrideFileName);
 	// empty disables persistence and polling.
 	overridePath string
@@ -302,11 +307,13 @@ func (s *Shipper) clock() time.Time {
 	return time.Now()
 }
 
-// setLevelOverride installs an override that expires at expiresAt.
-func (s *Shipper) setLevelOverride(level slog.Level, expiresAt time.Time) {
+// setLevelOverride installs an override that expires at expiresAt, set by a
+// command that ran at setAt.
+func (s *Shipper) setLevelOverride(level slog.Level, expiresAt, setAt time.Time) {
 	s.mu.Lock()
 	s.overrideLevel = level
 	s.overrideExpiresAt = expiresAt
+	s.overrideSetAt = setAt
 	s.mu.Unlock()
 }
 
@@ -316,9 +323,13 @@ func (s *Shipper) baseLevelName() string {
 	return levelName(s.minLevel)
 }
 
-// refreshLevelOverride applies the persisted override when it is active and
-// differs from the one in memory. An absent or expired file changes nothing
-// (see leveloverride.go); an untrustworthy one is reported once and ignored.
+// refreshLevelOverride applies the persisted override when it is active, at
+// least as new as the one in memory, and different from it. An absent or
+// expired file changes nothing (see leveloverride.go); an untrustworthy one
+// is reported once per bad spell and ignored.
+//
+// Never call this while holding shipperMu: it logs, and the log record goes
+// through shippingHandler.Handle, which read-locks shipperMu.
 func (s *Shipper) refreshLevelOverride() {
 	o, ok, err := ReadLevelOverride(s.overridePath, s.clock())
 	if err != nil {
@@ -328,15 +339,20 @@ func (s *Shipper) refreshLevelOverride() {
 		}
 		return
 	}
+	// A good read (including "no file" and "expired") re-arms the warning,
+	// so a later bad file is reported again.
+	s.overrideReadErrLogged.Store(false)
 	if !ok {
 		return
 	}
 	level := parseLevel(o.Level)
 	s.mu.Lock()
-	changed := s.overrideLevel != level || !s.overrideExpiresAt.Equal(o.ExpiresAt)
+	changed := !o.SetAt.Before(s.overrideSetAt) &&
+		(s.overrideLevel != level || !s.overrideExpiresAt.Equal(o.ExpiresAt))
 	if changed {
 		s.overrideLevel = level
 		s.overrideExpiresAt = o.ExpiresAt
+		s.overrideSetAt = o.SetAt
 	}
 	base := s.minLevel
 	s.mu.Unlock()

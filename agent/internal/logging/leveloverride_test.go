@@ -115,6 +115,7 @@ func TestShipperStartAppliesPersistedOverride(t *testing.T) {
 
 	s := NewShipper(ShipperConfig{
 		ServerURL:         func() string { return "http://localhost:0" },
+		AuthToken:         testToken("tok"),
 		MinLevel:          "warn",
 		LevelOverridePath: path,
 	})
@@ -134,6 +135,7 @@ func TestShipperIgnoresExpiredPersistedOverride(t *testing.T) {
 
 	s := NewShipper(ShipperConfig{
 		ServerURL:         func() string { return "http://localhost:0" },
+		AuthToken:         testToken("tok"),
 		MinLevel:          "warn",
 		LevelOverridePath: path,
 	})
@@ -158,6 +160,7 @@ func TestShipperPollsOverrideFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), LevelOverrideFileName)
 	s := NewShipper(ShipperConfig{
 		ServerURL:         func() string { return "http://localhost:0" },
+		AuthToken:         testToken("tok"),
 		MinLevel:          "warn",
 		LevelOverridePath: path,
 	})
@@ -180,10 +183,10 @@ func TestShipperPollsOverrideFile(t *testing.T) {
 
 func TestShipperOverrideExpiresInMemory(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	s := NewShipper(ShipperConfig{ServerURL: func() string { return "http://localhost:0" }, MinLevel: "warn"})
+	s := NewShipper(ShipperConfig{ServerURL: func() string { return "http://localhost:0" }, AuthToken: testToken("tok"), MinLevel: "warn"})
 	s.now = func() time.Time { return now }
 
-	s.setLevelOverride(slog.LevelDebug, now.Add(time.Minute))
+	s.setLevelOverride(slog.LevelDebug, now.Add(time.Minute), now)
 	if !s.ShouldShip(slog.LevelDebug) {
 		t.Fatal("override not active")
 	}
@@ -201,11 +204,11 @@ func TestShipperOverrideExpiresInMemory(t *testing.T) {
 // hard-coded "warn".
 func TestShipperOverrideRevertsToConfiguredBase(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	s := NewShipper(ShipperConfig{ServerURL: func() string { return "http://localhost:0" }, MinLevel: "warn"})
+	s := NewShipper(ShipperConfig{ServerURL: func() string { return "http://localhost:0" }, AuthToken: testToken("tok"), MinLevel: "warn"})
 	s.now = func() time.Time { return now }
 	s.SetMinLevel("info")
 
-	s.setLevelOverride(slog.LevelError, now.Add(time.Minute))
+	s.setLevelOverride(slog.LevelError, now.Add(time.Minute), now)
 	if s.ShouldShip(slog.LevelInfo) {
 		t.Fatal("override (error) should win over base (info) while active")
 	}
@@ -321,5 +324,46 @@ func TestShippingHandlerStillDropsBelowBothLevels(t *testing.T) {
 	case entry := <-shipper.buffer:
 		t.Fatalf("unexpected shipped entry: %+v", entry)
 	default:
+	}
+}
+
+// Regression: InitShipper used to hold shipperMu while Start ran, and Start
+// logs when it applies a persisted override. That record goes through the
+// package's own shippingHandler, whose Handle read-locks shipperMu — so a
+// restart with a live override deadlocked at startup. Uses the real default
+// logger (the package's rootHandler), not a test handler.
+func TestInitShipperWithLiveOverrideDoesNotDeadlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), LevelOverrideFileName)
+	writeOverrideFile(t, path, LevelOverride{Level: "debug", ExpiresAt: time.Now().Add(10 * time.Minute), SetAt: time.Now()})
+	t.Cleanup(StopShipper)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		InitShipper(ShipperConfig{
+			ServerURL:         func() string { return "http://localhost:0" },
+			AuthToken:         testToken("tok"),
+			MinLevel:          "warn",
+			LevelOverridePath: path,
+		})
+		// A second init (re-enrolment) must not deadlock either.
+		InitShipper(ShipperConfig{
+			ServerURL:         func() string { return "http://localhost:0" },
+			AuthToken:         testToken("tok"),
+			MinLevel:          "warn",
+			LevelOverridePath: path,
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitShipper deadlocked with a live override file")
+	}
+
+	shipperMu.RLock()
+	s := globalShipper
+	shipperMu.RUnlock()
+	if s == nil || !s.ShouldShip(slog.LevelDebug) {
+		t.Fatal("override not applied by InitShipper")
 	}
 }

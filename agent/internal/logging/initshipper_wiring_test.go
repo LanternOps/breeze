@@ -45,8 +45,8 @@ func TestEveryInitShipperCallPassesLevelOverridePath(t *testing.T) {
 				t.Errorf("%s: unterminated InitShipper literal", path)
 				continue
 			}
-			if !strings.Contains(text[loc[1]:loc[1]+end], "LevelOverridePath:") {
-				t.Errorf("%s: InitShipper call does not set LevelOverridePath (see #7416)", path)
+			if !strings.Contains(text[loc[1]:loc[1]+end], "LevelOverridePath: config.LogLevelOverridePath(),") {
+				t.Errorf("%s: InitShipper call does not set LevelOverridePath: config.LogLevelOverridePath() (see #7416)", path)
 			}
 		}
 		return nil

@@ -127,12 +127,14 @@ func WriteLevelOverride(path string, o LevelOverride) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".log_shipping_override-*.tmp")
+	// A fixed temp name (not CreateTemp) so a crash between write and rename
+	// leaves at most one stray file, which the next write reuses.
+	tmpName := path + ".tmp"
+	cleanup := func() { _ = os.Remove(tmpName) }
+	tmp, err := os.OpenFile(tmpName, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		cleanup()
@@ -152,11 +154,26 @@ func WriteLevelOverride(path string, o LevelOverride) error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := renameWithRetry(tmpName, path); err != nil {
 		cleanup()
 		return err
 	}
 	return nil
+}
+
+// renameWithRetry retries a failed rename briefly. On Windows a rename over a
+// file that another process has open fails, because Go opens files without
+// FILE_SHARE_DELETE, and every helper re-reads this file every 30 seconds.
+// The read takes microseconds, so a few short retries clear the collision.
+func renameWithRetry(from, to string) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = os.Rename(from, to); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+	return err
 }
 
 // ApplyShipperLevelOverride sets a bounded shipping-level override on this
@@ -182,7 +199,7 @@ func ApplyShipperLevelOverride(level string, d time.Duration) (LevelOverrideStat
 
 	now := s.clock()
 	expiresAt := now.Add(d)
-	s.setLevelOverride(parseLevel(level), expiresAt)
+	s.setLevelOverride(parseLevel(level), expiresAt, now)
 
 	st := LevelOverrideStatus{
 		Level:     level,

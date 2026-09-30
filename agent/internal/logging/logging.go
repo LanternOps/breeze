@@ -163,16 +163,24 @@ func Init(format, level string, output io.Writer) {
 }
 
 // InitShipper initializes the log shipper (call after enrollment).
+//
+// shipperMu is held only for the pointer swap. Stop and Start both run
+// outside it: Start logs when it applies a persisted set_log_level override,
+// and the old shipper's override loop may be logging while Stop waits for it.
+// Those records go through shippingHandler.Handle, which read-locks
+// shipperMu, so doing either under the write lock deadlocks (#7416).
 func InitShipper(cfg ShipperConfig) {
+	shipper := NewShipper(cfg)
+
 	shipperMu.Lock()
-	defer shipperMu.Unlock()
+	old := globalShipper
+	globalShipper = shipper
+	shipperMu.Unlock()
 
-	if globalShipper != nil {
-		globalShipper.Stop()
+	if old != nil {
+		old.Stop()
 	}
-
-	globalShipper = NewShipper(cfg)
-	globalShipper.Start()
+	shipper.Start()
 }
 
 // StopShipper gracefully stops the log shipper.
