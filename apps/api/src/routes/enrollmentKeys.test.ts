@@ -428,7 +428,8 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
       body: JSON.stringify({ platform: "windows" }),
     });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "Enrollment key not found" });
     expect(db.insert).not.toHaveBeenCalled();
     expect(issueDownloadHandleMock).not.toHaveBeenCalled();
     expect(createAuditLogAsync).not.toHaveBeenCalled();
@@ -2177,7 +2178,8 @@ describe("POST /:id/bootstrap-token", () => {
       body: JSON.stringify({ maxUsage: 1 }),
     });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "Enrollment key not found" });
     expect(issueSpy).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
     expect(createAuditLogAsync).not.toHaveBeenCalled();
@@ -2244,7 +2246,7 @@ describe("POST /:id/bootstrap-token", () => {
     expect(res.status).toBe(404);
   });
 
-  it("rejects when caller has no org access (403)", async () => {
+  it("returns the not-found 404 when caller has no org access", async () => {
     // Override authMiddleware to return a scope where canAccessOrg returns false
     const { authMiddleware: mockAuth } = await import("../middleware/auth");
     vi.mocked(mockAuth).mockImplementationOnce((c: any, next: any) => {
@@ -2280,7 +2282,8 @@ describe("POST /:id/bootstrap-token", () => {
       },
     );
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "Enrollment key not found" });
   });
 
   it("rejects expired parent key with 410", async () => {
