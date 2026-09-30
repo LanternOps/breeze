@@ -457,6 +457,11 @@ export async function updatePartnerLlmEndpoint(input: {
     .update(partnerLlmConfigs)
     .set({
       catalogEntryId: provider.entryId,
+      // #7587: pin the model just validated against this revision. A catalog
+      // revision serves only the models it mapped AND verified, so a partner
+      // left tracking the moving platform default goes `model_unverified` the
+      // moment that default changes.
+      defaultModel: model,
       configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
       updatedAt: new Date(),
     })

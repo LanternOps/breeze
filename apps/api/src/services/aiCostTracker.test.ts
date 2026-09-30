@@ -335,6 +335,9 @@ describe('calculateCostCents', () => {
     ['claude-opus-5-5', 400, 2000],
     ['claude-fable-5-1', 1000, 5000],
   ])('prices %s from MODEL_PRICING (no DEFAULT fallthrough)', (model, inCents, outCents) => {
+    // Input and output separately, so swapped or mis-split rates fail.
+    expect(calculateCostCents(model, 1_000_000, 0)).toBe(inCents);
+    expect(calculateCostCents(model, 0, 1_000_000)).toBe(outCents);
     // 1M in / 1M out should equal exactly the per-MTok rates summed.
     const expected = inCents + outCents;
     expect(calculateCostCents(model, 1_000_000, 1_000_000)).toBe(expected);
@@ -351,6 +354,20 @@ describe('calculateCostCents', () => {
       warn.mockRestore();
     },
   );
+
+  // #7587 review: Opus 5.5 and Fable 5.1 bill cache reads BELOW the standard
+  // 0.1x-of-input (SDK 0.3.286 tiers `tier_4_20_cache_read_0_20` and
+  // `tier_10_50_cache_read_0_25`). This token path prices every aborted turn
+  // (total_cost_usd 0), so a flat 0.1x would over-bill cache-heavy sessions.
+  it.each([
+    // [model, cache-read cents per MTok, cache-write cents per MTok]
+    ['claude-sonnet-5-5', 20, 250],
+    ['claude-opus-5-5', 20, 500],
+    ['claude-fable-5-1', 25, 1250],
+  ])('prices %s cache reads/writes at the model rate', (model, readCents, writeCents) => {
+    expect(calculateCostCents(model, 0, 0, 1_000_000, 0)).toBe(readCents);
+    expect(calculateCostCents(model, 0, 0, 0, 1_000_000)).toBe(writeCents);
+  });
 
   it('offers the current models and keeps the already-offered 4.x ids (#7587)', () => {
     for (const model of [

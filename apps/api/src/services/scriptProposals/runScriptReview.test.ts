@@ -231,6 +231,9 @@ describe('runScriptReview — happy path', () => {
     expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
     const [createArgs, createOpts] = shared.messagesCreateMock.mock.calls[0]! as [Record<string, unknown>, Record<string, unknown>];
     expect(createArgs).toMatchObject({ model: 'claude-sonnet-4-6', max_tokens: 2_000 });
+    // #7587: a current model gets adaptive thinking + effort medium (the API
+    // default effort otherwise eats the capped output budget).
+    expect(createArgs).toMatchObject({ thinking: { type: 'adaptive' }, output_config: { effort: 'medium' } });
     expect(createArgs).not.toHaveProperty('tools');
     expect(createArgs.messages).toHaveLength(1);
     const userText = (createArgs.messages as Array<{ role: string; content: string }>)[0]!.content;

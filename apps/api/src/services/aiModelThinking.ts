@@ -44,3 +44,19 @@ export function resolveModelThinking(model: string): ModelThinkingOptions {
   // thinking ON for Haiku 4.5 (live-checked on 0.3.286: ~11x the output tokens).
   return { thinking: { type: 'disabled' } };
 }
+
+/**
+ * The same table in Messages API shape, for raw `client.messages.create`
+ * one-shots (effort travels as `output_config.effort` there). Those surfaces
+ * never sent a thinking param before #7587, so only the adaptive case adds
+ * anything; every other id keeps sending nothing. Without this, Sonnet 5.5
+ * runs adaptive at the API's default effort and a 512-token JSON one-shot hit
+ * `max_tokens` with truncated output (live-checked, 1 run in 3).
+ */
+export function resolveMessagesApiThinking(
+  model: string,
+): { thinking?: { type: 'adaptive' }; output_config?: { effort: NonNullable<Options['effort']> } } {
+  const { thinking, effort } = resolveModelThinking(model);
+  if (thinking?.type !== 'adaptive' || !effort) return {};
+  return { thinking: { type: 'adaptive' }, output_config: { effort } };
+}
