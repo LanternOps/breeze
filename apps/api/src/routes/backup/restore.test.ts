@@ -683,6 +683,43 @@ describe('restore routes', () => {
     });
   });
 
+  it('does not present warnings on a completed restore as an error summary', async () => {
+    const row = (status: string) => ({
+      id: 'restore-3',
+      snapshotId: 'snap-1',
+      deviceId: 'device-1',
+      restoreType: 'full',
+      selectedPaths: [],
+      status,
+      targetPath: null,
+      startedAt: new Date('2026-04-01T00:00:00Z'),
+      completedAt: new Date('2026-04-01T00:05:00Z'),
+      restoredSize: 10,
+      restoredFiles: 1,
+      targetConfig: {
+        result: {
+          commandType: 'backup_restore',
+          status,
+          warnings: ['restored from an unattested snapshot: files were not checked against a snapshot attestation'],
+        },
+      },
+      commandId: 'cmd-3',
+      createdAt: new Date('2026-04-01T00:00:00Z'),
+      updatedAt: new Date('2026-04-01T00:05:00Z'),
+    });
+
+    selectMock.mockReturnValueOnce(chainMock([row('completed')]));
+    const completed = await (await app.request('/restore/restore-3', { method: 'GET' })).json();
+    expect(completed.data.errorSummary).toBeNull();
+    expect(completed.data.resultDetails.warnings).toHaveLength(1);
+
+    selectMock.mockReturnValueOnce(chainMock([row('partial')]));
+    const partial = await (await app.request('/restore/restore-3', { method: 'GET' })).json();
+    expect(partial.data.errorSummary).toBe(
+      'restored from an unattested snapshot: files were not checked against a snapshot attestation',
+    );
+  });
+
   it('surfaces immediate dispatch failure details through the read API', async () => {
     selectMock.mockReturnValueOnce(
       chainMock([{

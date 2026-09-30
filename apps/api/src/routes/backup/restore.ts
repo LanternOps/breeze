@@ -554,7 +554,9 @@ function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
       ? resultDetails.error
       : typeof resultDetails.stderr === 'string' && resultDetails.stderr.trim()
         ? resultDetails.stderr
-        : Array.isArray(resultDetails.warnings) && resultDetails.warnings.length > 0
+        // Warnings on a completed restore are advisory (e.g. an unattested
+        // snapshot) and are shown as warnings, never as the error summary.
+        : row.status !== 'completed' && Array.isArray(resultDetails.warnings) && resultDetails.warnings.length > 0
           ? String(resultDetails.warnings[0])
           : targetError
             ? targetError

@@ -50,6 +50,22 @@ const warningListSchema = z.union([
   z.string().max(10_000),
 ]);
 
+// Windows entries restored with a restrictive access list because their
+// recorded security descriptor could not be applied as-is. The count is the
+// authoritative total; the path list is display detail, so an oversize list is
+// trimmed here rather than rejecting (and so failing) an otherwise-successful
+// restore result.
+export const RESTORE_QUARANTINED_PATHS_MAX = 100;
+export const RESTORE_QUARANTINED_PATH_MAX_CHARS = 1024;
+
+export function boundQuarantinedPaths(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .slice(0, RESTORE_QUARANTINED_PATHS_MAX)
+    .map((entry) => entry.slice(0, RESTORE_QUARANTINED_PATH_MAX_CHARS));
+}
+
 export const restoreStructuredResultSchema = z.object({
   snapshotId: z.string().min(1).max(255).optional(),
   // 'refused' is the bare_metal_rebuild engine's preflight verdict (W05a); the
@@ -87,6 +103,10 @@ export const restoreStructuredResultSchema = z.object({
   // W06d: the optional Hyper-V VM step after a Windows rebuild.
   vmCreated: z.boolean().optional(),
   vmError: z.string().max(10_000).optional(),
+  securityDescriptorQuarantined: z.number().int().nonnegative().optional(),
+  securityDescriptorQuarantinedPaths: z.array(z.string()).transform(boundQuarantinedPaths).optional(),
+  // bmr_recover: stable outcome code (see bmrCompleteSchema in routes/backup/schemas.ts).
+  code: z.string().max(64).optional(),
 }).passthrough();
 
 export const backupVerificationStructuredResultSchema = z.object({

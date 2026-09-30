@@ -1922,6 +1922,9 @@ bmrPublicRoutes.post(
                 // recovery. Optional and left null (not 0) when an older agent
                 // build doesn't report it.
                 failedFiles: result.failedFiles ?? null,
+                // Outcome code (e.g. system_state_requires_rebuild); null for
+                // a helper that does not report one.
+                code: result.code ?? null,
               },
             },
             recoveryTokenId: row.id,
