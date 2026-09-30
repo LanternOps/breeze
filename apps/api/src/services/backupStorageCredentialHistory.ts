@@ -31,7 +31,7 @@
 import { createHash } from 'node:crypto';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { and, eq, isNotNull, isNull, lt, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { backupConfigs } from '../db/schema/backup';
 import { backupStorageCredentialHistory } from '../db/schema/backupStorageCredentialHistory';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
@@ -237,11 +237,13 @@ type DestinationState = { provider: string; providerConfig: unknown } | null;
  * before and after (null = did not exist / deleted). Nothing happens unless
  * the key pair or the storage it reaches changed.
  *
- * The replaced key's row is superseded with its connection settings sealed on
- * it. A replaced key that was never recorded (configured before this release
- * and not yet baselined) is recorded as in use before enforcement. The new
- * key gets a row with `broadcast_until` NULL: it has never been sent to a
- * device.
+ * The replaced key's row is superseded; if that key may have reached devices
+ * (`broadcast_until` set) its connection settings are sealed on it so it can
+ * be checked. A replaced key that was never recorded (configured before this
+ * release and not yet baselined) is recorded as in use before enforcement.
+ * The new key gets a row with `broadcast_until` NULL — it has never been sent
+ * to a device — unless it is the same key id as the replaced one (only the
+ * bucket, endpoint or secret changed), which keeps the replaced row's date.
  */
 export async function recordCredentialChange(input: {
   orgId: string;
@@ -256,9 +258,13 @@ export async function recordCredentialChange(input: {
   if (!before && !after) return;
   const now = input.now ?? new Date();
 
-  await db.transaction(async () => {
+  await withDbTransaction(async () => {
     const [current] = await db
-      .select({ id: backupStorageCredentialHistory.id, fingerprint: backupStorageCredentialHistory.accessKeyFingerprint })
+      .select({
+        id: backupStorageCredentialHistory.id,
+        fingerprint: backupStorageCredentialHistory.accessKeyFingerprint,
+        broadcastUntil: backupStorageCredentialHistory.broadcastUntil,
+      })
       .from(backupStorageCredentialHistory)
       .where(and(
         eq(backupStorageCredentialHistory.configId, input.configId),
@@ -267,8 +273,13 @@ export async function recordCredentialChange(input: {
       .limit(1)
       .for('update');
 
+    // When the key being replaced may have reached devices, so may the next
+    // one if it is the same key id (a bucket, endpoint or secret change):
+    // it stays listed as used before the change.
+    let replacedBroadcastUntil: Date | null = null;
     if (before) {
       let rowId = current && current.fingerprint === before.fingerprint ? current.id : null;
+      replacedBroadcastUntil = rowId ? current!.broadcastUntil : null;
       if (current && !rowId) {
         // The recorded key is not the one being replaced (it was changed
         // through a path that did not record it): it is no longer in use.
@@ -277,17 +288,26 @@ export async function recordCredentialChange(input: {
           .where(eq(backupStorageCredentialHistory.id, current.id));
       }
       if (!rowId) {
+        // Never recorded: configured before this release (or through a path
+        // that did not record it), so it may have reached devices.
+        replacedBroadcastUntil = (await loadEnforcementMoment()) ?? now;
         rowId = (await db.insert(backupStorageCredentialHistory).values({
           orgId: input.orgId,
           configId: input.configId,
           storageIdentity: before.storageIdentity,
           accessKeyFingerprint: before.fingerprint,
           firstSeenAt: now,
-          broadcastUntil: (await loadEnforcementMoment()) ?? now,
+          broadcastUntil: replacedBroadcastUntil,
         }).returning({ id: backupStorageCredentialHistory.id }))[0]!.id;
       }
+      // Settings are sealed only for a key that may have reached devices:
+      // they exist to check that key, and nothing else needs them.
       await db.update(backupStorageCredentialHistory)
-        .set({ supersededAt: now, sealedPreviousSecret: sealConnection(rowId, before.connection), updatedAt: now })
+        .set({
+          supersededAt: now,
+          sealedPreviousSecret: replacedBroadcastUntil ? sealConnection(rowId, before.connection) : null,
+          updatedAt: now,
+        })
         .where(eq(backupStorageCredentialHistory.id, rowId));
     } else if (current) {
       // The destination had no usable key pair before (or its row came from
@@ -298,13 +318,14 @@ export async function recordCredentialChange(input: {
     }
 
     if (after) {
+      const sameKeyId = before !== null && before.connection.accessKey === after.connection.accessKey;
       await db.insert(backupStorageCredentialHistory).values({
         orgId: input.orgId,
         configId: input.configId,
         storageIdentity: after.storageIdentity,
         accessKeyFingerprint: after.fingerprint,
         firstSeenAt: now,
-        broadcastUntil: null,
+        broadcastUntil: sameKeyId ? replacedBroadcastUntil : null,
       });
     }
   });
@@ -416,7 +437,10 @@ export async function baselineCredentialHistory(opts: {
 
 export type OrgRunner = <T>(fn: () => Promise<T>) => Promise<T>;
 
+export type CheckAdmission = { allowed: true } | { allowed: false; retryAfterSeconds: number };
+
 export type CheckResult =
+  | { status: 'rate_limited'; retryAfterSeconds: number }
   | { status: 'revoked'; code: string }
   | { status: 'still_live' }
   | { status: 'inconclusive'; code: string | null }
@@ -438,6 +462,12 @@ export async function checkReplacedCredential(input: {
   orgId: string;
   inOrg: OrgRunner;
   userId: string | null;
+  /**
+   * Takes a slot of the caller's check budget (rate limit). Called only once
+   * the row is found, replaced, not yet disabled and its settings open — a
+   * check that cannot run costs nothing. No DB context is held while it runs.
+   */
+  admit?: () => Promise<CheckAdmission>;
   now?: () => Date;
   probe?: (connection: S3Connection) => Promise<ProbeResult>;
 }): Promise<CheckResult> {
@@ -463,7 +493,20 @@ export async function checkReplacedCredential(input: {
   if (!loaded.supersededAt) return { status: 'not_checkable', reason: 'in_use' };
   if (!loaded.sealed) return { status: 'not_checkable', reason: 'no_sealed_settings' };
 
-  const connection = openSealedConnection(loaded.id, loaded.sealed);
+  let connection: S3Connection;
+  try {
+    connection = openSealedConnection(loaded.id, loaded.sealed);
+  } catch (err) {
+    console.warn('[backupStorageCredentialHistory] sealed storage settings could not be opened', {
+      historyId: loaded.id,
+      error: err instanceof Error ? err.name : 'unknown',
+    });
+    return { status: 'not_checkable', reason: 'no_sealed_settings' };
+  }
+  if (input.admit) {
+    const admission = await input.admit();
+    if (!admission.allowed) return { status: 'rate_limited', retryAfterSeconds: admission.retryAfterSeconds };
+  }
   const result = await probe(connection);
   const at = now();
 
@@ -471,38 +514,42 @@ export async function checkReplacedCredential(input: {
   // called its answer.
   if (result.outcome === 'denied' && result.code === KEY_GONE_CODE) {
     const code = result.code;
-    await input.inOrg(() => db.update(backupStorageCredentialHistory)
-      .set({
-        revokedAt: at,
-        revocationEvidence: 'probe_denied',
-        evidenceDetail: code,
-        verifiedByUserId: input.userId,
-        sealedPreviousSecret: null,
-        lastProbeAt: at,
-        lastProbeOutcome: null,
-        lastProbeCode: null,
-        updatedAt: at,
-      })
-      .where(and(eq(backupStorageCredentialHistory.id, loaded.id), isNull(backupStorageCredentialHistory.revokedAt))));
-    // Storage says the key id no longer exists: the organization's other
-    // replaced destinations using the same key on the same storage are
-    // recorded too. Never another organization's — the fingerprint names a
-    // key id and a storage location, not who can reach it — and never a
-    // destination still using the key.
-    await input.inOrg(() => db.update(backupStorageCredentialHistory)
-      .set({
-        revokedAt: at,
-        revocationEvidence: 'probe_denied',
-        evidenceDetail: `${code} (checked through another destination using the same key)`,
-        sealedPreviousSecret: null,
-        updatedAt: at,
-      })
-      .where(and(
-        eq(backupStorageCredentialHistory.orgId, input.orgId),
-        eq(backupStorageCredentialHistory.accessKeyFingerprint, loaded.fingerprint),
-        isNull(backupStorageCredentialHistory.revokedAt),
-        isNotNull(backupStorageCredentialHistory.supersededAt),
-      )));
+    // The row and the organization's other replaced rows with the same key,
+    // in one transaction.
+    await input.inOrg(async () => {
+      await db.update(backupStorageCredentialHistory)
+        .set({
+          revokedAt: at,
+          revocationEvidence: 'probe_denied',
+          evidenceDetail: code,
+          verifiedByUserId: input.userId,
+          sealedPreviousSecret: null,
+          lastProbeAt: at,
+          lastProbeOutcome: null,
+          lastProbeCode: null,
+          updatedAt: at,
+        })
+        .where(and(eq(backupStorageCredentialHistory.id, loaded.id), isNull(backupStorageCredentialHistory.revokedAt)));
+      // Storage says the key id no longer exists: the organization's other
+      // replaced destinations using the same key on the same storage are
+      // recorded too. Never another organization's — the fingerprint names a
+      // key id and a storage location, not who can reach it — and never a
+      // destination still using the key.
+      await db.update(backupStorageCredentialHistory)
+        .set({
+          revokedAt: at,
+          revocationEvidence: 'probe_denied',
+          evidenceDetail: `${code} (checked through another destination using the same key)`,
+          sealedPreviousSecret: null,
+          updatedAt: at,
+        })
+        .where(and(
+          eq(backupStorageCredentialHistory.orgId, input.orgId),
+          eq(backupStorageCredentialHistory.accessKeyFingerprint, loaded.fingerprint),
+          isNull(backupStorageCredentialHistory.revokedAt),
+          isNotNull(backupStorageCredentialHistory.supersededAt),
+        ));
+    });
     return { status: 'revoked', code };
   }
 

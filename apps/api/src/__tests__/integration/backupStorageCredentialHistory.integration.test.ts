@@ -28,7 +28,8 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { db, withDbAccessContext } from '../../db';
+import { db, hasDbAccessContext, withDbAccessContext } from '../../db';
+import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanitor';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import {
   CREDENTIAL_HISTORY_MIGRATION,
@@ -317,6 +318,121 @@ describe('storage key history', () => {
       expect(after.sealed_previous_secret).not.toBeNull();
     },
   );
+
+  runDb('a bucket or endpoint change that keeps the access key id keeps the key listed as used before the change', async () => {
+    const t = await seedWriteTenant();
+    await baselineCredentialHistory();
+    await replaceKeys(t, { ...WRITE_DESTINATION, bucket: 'other-bucket' });
+    const [old, current] = (await historyFor(t.configId)) as [Row, Row];
+    expect(old.superseded_at).not.toBeNull();
+    expect(current.superseded_at).toBeNull();
+    expect(current.broadcast_until).not.toBeNull();
+    expect(new Date(current.broadcast_until as unknown as string).getTime())
+      .toBe(new Date(old.broadcast_until as unknown as string).getTime());
+    expect(JSON.stringify(current)).not.toContain(WRITE_DESTINATION.accessKey);
+  });
+
+  runDb('a key never sent to a device keeps nothing sealed when it is replaced', async () => {
+    const t = await seedWriteTenant();
+    await inOrg(t.orgId)(() => recordCredentialChange({
+      orgId: t.orgId, configId: t.configId, previous: null, next: { provider: 's3', providerConfig: WRITE_DESTINATION },
+    }));
+    await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS });
+    const [old, current] = (await historyFor(t.configId)) as [Row, Row];
+    expect(old.broadcast_until).toBeNull();
+    expect(old.superseded_at).not.toBeNull();
+    expect(old.sealed_previous_secret).toBeNull();
+    expect(current.broadcast_until).toBeNull();
+  });
+
+  runDb('sealed settings that cannot be opened are reported as not checkable, before any admission is taken', async () => {
+    const t = await seedWriteTenant();
+    await baselineCredentialHistory();
+    await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS });
+    const [old] = (await historyFor(t.configId)) as [Row];
+    await getTestDb().execute(sql`
+      UPDATE backup_storage_credential_history SET sealed_previous_secret = 'enc:v1:not-a-valid-payload' WHERE id = ${old.id}
+    `);
+    let admitted = 0;
+    let probed = 0;
+    const res = await checkReplacedCredential({
+      historyId: old.id, orgId: t.orgId, inOrg: inOrg(t.orgId), userId: null,
+      admit: async () => { admitted += 1; return { allowed: true }; },
+      probe: async () => { probed += 1; return { outcome: 'live', code: null }; },
+    });
+    expect(res).toEqual({ status: 'not_checkable', reason: 'no_sealed_settings' });
+    expect(admitted).toBe(0);
+    expect(probed).toBe(0);
+  });
+
+  runDb('a check is admitted only for a replaced, checkable key, and a refused admission probes nothing', async () => {
+    const t = await seedWriteTenant();
+    await baselineCredentialHistory();
+    const [current] = (await historyFor(t.configId)) as [Row];
+    let admitted = 0;
+    await checkReplacedCredential({
+      historyId: current.id, orgId: t.orgId, inOrg: inOrg(t.orgId), userId: null,
+      admit: async () => { admitted += 1; return { allowed: true }; }, probe: refused(),
+    });
+    expect(admitted).toBe(0);
+
+    await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS });
+    const [old] = (await historyFor(t.configId)) as [Row];
+    let probed = 0;
+    const res = await checkReplacedCredential({
+      historyId: old.id, orgId: t.orgId, inOrg: inOrg(t.orgId), userId: null,
+      admit: async () => ({ allowed: false, retryAfterSeconds: 42 }),
+      probe: async () => { probed += 1; return { outcome: 'live', code: null }; },
+    });
+    expect(res).toEqual({ status: 'rate_limited', retryAfterSeconds: 42 });
+    expect(probed).toBe(0);
+  });
+
+  runDb('the old key is tried with no DB context held, and a refusal is recorded in one transaction', async () => {
+    const t = await seedWriteTenant();
+    await baselineCredentialHistory();
+    await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS });
+    const [old] = (await historyFor(t.configId)) as [Row];
+    let contexts = 0;
+    let heldDuringProbe: boolean | null = null;
+    await checkReplacedCredential({
+      historyId: old.id, orgId: t.orgId, userId: null,
+      inOrg: (fn) => { contexts += 1; return inOrg(t.orgId)(fn); },
+      probe: async () => { heldDuringProbe = hasDbAccessContext(); return { outcome: 'denied', code: 'InvalidAccessKeyId' }; },
+    });
+    expect(heldDuringProbe).toBe(false);
+    // One context to read the row, one to record the outcome (row + same-org fan-out together).
+    expect(contexts).toBe(2);
+  });
+
+  runDb('the cleanup job erases sealed settings of keys replaced more than 30 days ago', async () => {
+    const t = await seedWriteTenant();
+    await baselineCredentialHistory();
+    await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS }, new Date(Date.now() - 31 * 24 * 3600_000));
+    const summary = await runBackupWriteSessionJanitor({
+      now: () => new Date(),
+      storage: { abortMultipart: async () => undefined, listMultipart: async () => [] },
+      eraseExpiredSealedSettings: async (now) => eraseExpiredSealedSettings(now),
+    });
+    expect(summary.erasedSealedSettings).toBeGreaterThanOrEqual(1);
+    const [old] = (await historyFor(t.configId)) as [Row];
+    expect(old.sealed_previous_secret).toBeNull();
+  });
+
+  runDb('the first-start recording pages through every destination', async () => {
+    const t = await seedWriteTenant();
+    const extra = [randomUUID(), randomUUID()];
+    for (const id of extra) {
+      await getTestDb().execute(sql`
+        INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
+        VALUES (${id}, ${t.orgId}, 'More', 'file', 's3', ${JSON.stringify(WRITE_DESTINATION)}::jsonb)
+      `);
+    }
+    await baselineCredentialHistory({ batchSize: 1 });
+    for (const id of [t.configId, ...extra]) {
+      expect(await historyFor(id)).toHaveLength(1);
+    }
+  });
 
   runDb('an operator confirmation is recorded as weaker evidence', async () => {
     const t = await seedWriteTenant();

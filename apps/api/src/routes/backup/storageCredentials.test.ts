@@ -158,14 +158,30 @@ describe('POST /backup/storage-credentials/:id/check', () => {
     expect((await check()).status).toBe(status);
   });
 
-  it('is rate limited per organization, before any check runs', async () => {
-    m.rateLimiter.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 30_000) });
+  it('answers 429 with Retry-After when the service reports the organization\'s check budget is spent', async () => {
+    m.check.mockResolvedValue({ status: 'rate_limited', retryAfterSeconds: 30 });
     const res = await check();
     expect(res.status).toBe(429);
-    expect(res.headers.get('Retry-After')).toBeTruthy();
-    expect(m.check).not.toHaveBeenCalled();
-    const [, key] = m.rateLimiter.mock.calls[0] as unknown as [unknown, string];
+    expect(res.headers.get('Retry-After')).toBe('30');
+  });
+
+  it('takes the per-organization rate limit only through the admission the service calls once the key is checkable', async () => {
+    m.check.mockResolvedValue({ status: 'not_found' });
+    await check();
+    expect(m.rateLimiter).not.toHaveBeenCalled();
+
+    m.rateLimiter.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 30_000) });
+    let admission: unknown;
+    m.check.mockImplementation(async (input: { admit: () => Promise<unknown> }) => {
+      admission = await input.admit();
+      return { status: 'still_live' };
+    });
+    await check();
+    const [, key, limit, windowSeconds] = m.rateLimiter.mock.calls[0] as unknown as [unknown, string, number, number];
     expect(key).toBe(`backup-credential-check:${ORG_ID}`);
+    expect([limit, windowSeconds]).toEqual([10, 600]);
+    expect(admission).toMatchObject({ allowed: false });
+    expect((admission as { retryAfterSeconds: number }).retryAfterSeconds).toBeGreaterThan(0);
   });
 
   it('refuses a caller below the organization-wide governance ceiling', async () => {

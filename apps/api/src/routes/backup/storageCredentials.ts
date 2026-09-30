@@ -101,25 +101,31 @@ storageCredentialRoutes.post(
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
     const { id } = c.req.valid('param');
 
-    const limit = await rateLimiter(
-      getRedis(),
-      `backup-credential-check:${orgId}`,
-      CREDENTIAL_CHECK_LIMIT,
-      CREDENTIAL_CHECK_WINDOW_SECONDS,
-      1,
-      { refundOnReject: true },
-    );
-    if (!limit.allowed) {
-      c.header('Retry-After', String(Math.max(1, Math.ceil((limit.resetAt.getTime() - Date.now()) / 1000))));
-      return c.json({ error: 'Too many key checks for this organization. Try again shortly.' }, 429);
-    }
-
     const result = await checkReplacedCredential({
       historyId: id,
       orgId,
       inOrg: (fn) => withAuthDbAccessContext(auth, fn),
       userId: auth.user?.id ?? null,
+      // Taken only once the key is found and checkable: a check that cannot
+      // run does not spend the organization's budget.
+      admit: async () => {
+        const limit = await rateLimiter(
+          getRedis(),
+          `backup-credential-check:${orgId}`,
+          CREDENTIAL_CHECK_LIMIT,
+          CREDENTIAL_CHECK_WINDOW_SECONDS,
+          1,
+          { refundOnReject: true },
+        );
+        return limit.allowed
+          ? { allowed: true as const }
+          : { allowed: false as const, retryAfterSeconds: Math.max(1, Math.ceil((limit.resetAt.getTime() - Date.now()) / 1000)) };
+      },
     });
+    if (result.status === 'rate_limited') {
+      c.header('Retry-After', String(result.retryAfterSeconds));
+      return c.json({ error: 'Too many key checks for this organization. Try again shortly.' }, 429);
+    }
     if (result.status === 'not_found') return c.json({ error: 'Storage key not found' }, 404);
     if (result.status === 'not_checkable') {
       return c.json({ error: NOT_CHECKABLE_MESSAGES[result.reason], reason: result.reason }, 409);
