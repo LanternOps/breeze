@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -33,6 +34,10 @@ type VerifyOptions struct {
 	// A cancellation of the caller's ctx (backup_stop) is still returned as
 	// an error, exactly as before; only the run's own budget is converted.
 	TimeBudget time.Duration
+
+	// Integrity is the integrity expectation delivered with the command; nil
+	// when the server sent none (the earlier checks apply unchanged).
+	Integrity *integrity.Expectation
 }
 
 // errVerifyTimeBudget is the cancellation cause attached to a run context

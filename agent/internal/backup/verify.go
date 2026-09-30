@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -92,49 +93,22 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	runCtx, stopRun := opts.runContext(ctx)
 	defer stopRun()
 
-	// Download and parse manifest
-	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
-	tempManifest, err := os.CreateTemp("", "verify-manifest-*.json")
+	// Download and parse manifest. With an integrity expectation in attested
+	// mode its bytes must match the snapshot attestation before they are
+	// decoded; no object is read otherwise.
+	snapshot, manifestWarnings, failure, err := downloadVerifyManifest(ctx, runCtx, provider, snapshotID, "", opts)
 	if err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to create temp file: %v", err)
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result, nil
-	}
-	tempManifestPath := tempManifest.Name()
-	_ = tempManifest.Close()
-	defer os.Remove(tempManifestPath)
-
-	if err := downloadWithStallTimeout(runCtx, provider, manifestKey, tempManifestPath); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			result.DurationMs = time.Since(start).Milliseconds()
-			return result, ctxErr
-		}
-		result.Status = "failed"
-		result.Error = manifestDownloadError(runCtx, opts, err)
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result, nil
-	}
-	if err := ctx.Err(); err != nil {
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, err
 	}
-
-	manifestData, err := os.ReadFile(tempManifestPath)
-	if err != nil {
+	if failure != "" {
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to read manifest: %v", err)
+		result.Error = failure
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, nil
 	}
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(manifestData, &snapshot); err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("invalid manifest JSON: %v", err)
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result, nil
-	}
+	result.Warnings = append(result.Warnings, unattestedVerifyWarnings(opts.Integrity)...)
+	result.Warnings = append(result.Warnings, manifestWarnings...)
 
 	// Verify each file by downloading through the provider, several at once.
 	// Each worker writes only its own outcomes[i]; runFileChecks returns after
@@ -146,7 +120,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	outcomes := make([]fileCheckOutcome, len(files))
 	finished := 0
 	runFileChecks(runCtx, len(files), func(i int) {
-		outcomes[i] = verifySnapshotFile(runCtx, provider, files[i])
+		outcomes[i] = verifySnapshotFile(runCtx, provider, files[i], opts.Integrity)
 	}, func(i int) {
 		if outcomes[i].state == fileNotChecked {
 			return // interrupted by the run ending — not a finished entry
@@ -216,7 +190,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 		if result.Status == "passed" {
 			result.Status = "partial"
 		}
-		result.Warnings = append(result.Warnings, incompleteSnapshotWarning(&snapshot))
+		result.Warnings = append(result.Warnings, incompleteSnapshotWarning(snapshot))
 		log.Warn("snapshot manifest reports files that never uploaded; verification cannot be a pass",
 			"phase", "verify", "snapshotId", snapshotID,
 			"incompleteFiles", snapshot.IncompleteFiles,
@@ -229,7 +203,14 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 
 // verifySnapshotFile downloads one manifest entry to a temp file and checks
 // it against the manifest. Runs on a runFileChecks worker goroutine.
-func verifySnapshotFile(ctx context.Context, provider providers.BackupProvider, file SnapshotFile) fileCheckOutcome {
+//
+// Downloading proves presence; the content check catches SILENT corruption
+// (bit-rot, truncation, substitution) too. Size is always checked and the
+// SHA-256 whenever the manifest carries one; an entry without one counts as
+// size-only via FilesSizeOnly. In attested mode (e) both are exact, a
+// Volatile entry is not excused and an entry without a checksum fails
+// (integrity.CheckStoredBytes).
+func verifySnapshotFile(ctx context.Context, provider providers.BackupProvider, file SnapshotFile, e *integrity.Expectation) fileCheckOutcome {
 	if !file.HasContent() {
 		// Content-less entry (symlink/directory): no uploaded object to
 		// verify — see SnapshotFile.HasContent's doc comment.
@@ -246,63 +227,87 @@ func verifySnapshotFile(ctx context.Context, provider providers.BackupProvider, 
 	_ = tempFile.Close()
 	defer os.Remove(tempPath)
 
-	// Download the file from provider (provider validates gzip on .gz files)
-	dlErr := downloadWithDeadline(ctx, provider, file.BackupPath, tempPath, downloadDeadline(file.Size))
+	return checkedFileOutcome(ctx, "verify", provider, file, tempPath, e)
+}
+
+// checkedFileOutcome downloads file's object into dest (bounded by the
+// per-file deadline) and checks it against the entry. A vault copy that
+// fails the check with an expectation present is replaced by primary
+// storage's copy, with a warning.
+func checkedFileOutcome(ctx context.Context, phase string, provider providers.BackupProvider, file SnapshotFile, dest string, e *integrity.Expectation) fileCheckOutcome {
+	deadline := downloadDeadline(file.Size)
+	dl := func(ctx context.Context, p providers.BackupProvider, key, local string) error {
+		return downloadWithDeadline(ctx, p, key, local, deadline)
+	}
+	check, warnings, err := integrity.DownloadCheckedVia(ctx, dl, provider, file.BackupPath, dest, storedBytes(file), e)
 	if ctx.Err() != nil {
 		// The run ended (caller cancel or time budget) mid-download: no
 		// verdict on this file either way.
-		logInterruptedDownload("verify", file.BackupPath, dlErr)
+		logInterruptedDownload(phase, file.BackupPath, err)
 		return fileCheckOutcome{state: fileNotChecked}
 	}
-	if dlErr != nil {
-		log.Warn("download failed", "phase", "verify", "backupPath", file.BackupPath, "error", dlErr.Error())
-		return failed
+	if err != nil {
+		log.Warn("download or content check failed", "phase", phase, "backupPath", file.BackupPath,
+			"code", integrity.FailureCode(err), "error", err.Error())
+		return fileCheckOutcome{state: fileFailed}
 	}
-
-	// Validate the downloaded object against the manifest so SILENT
-	// corruption (bit-rot, truncation, tampering) is caught — not just a
-	// missing object. Downloading proves presence; without this a wrong-bytes
-	// object passed as "verified" (the remote/cloud providers, unlike
-	// LocalProvider, do not gzip-validate, and the manifest previously stored
-	// no checksum). Size is always checked; the SHA-256 is checked whenever
-	// the manifest carries one (manifests written before checksums were added
-	// do not — those are counted as size-only via FilesSizeOnly).
-	info, statErr := os.Stat(tempPath)
-	if statErr != nil || info == nil {
-		log.Warn("stat failed", "phase", "verify", "backupPath", file.BackupPath, "error", errString(statErr))
-		return failed
+	outcome := fileCheckOutcome{state: fileVerified, size: file.Size, sizeOnly: check.SizeOnly, warnings: warnings}
+	if info, statErr := os.Stat(dest); statErr == nil {
+		outcome.size = info.Size()
 	}
-	outcome := fileCheckOutcome{state: fileVerified, size: info.Size()}
-	if info.Size() != file.Size {
-		if !file.Volatile {
-			log.Warn("size mismatch", "phase", "verify", "backupPath", file.BackupPath,
-				"expectedBytes", file.Size, "actualBytes", info.Size())
-			return failed
-		}
-		// The source kept changing while it was backed up (#5581): the
-		// manifest's Size describes the last pre-upload measurement, not
-		// necessarily the object's current state. Advisory only — count the
-		// file verified, don't fail it.
-		outcome.warnings = append(outcome.warnings, fmt.Sprintf("%s: size differs from manifest (manifest %d, actual %d) — file was volatile during backup", file.BackupPath, file.Size, info.Size()))
-		log.Warn("volatile file size mismatch (advisory, not a failure)", "phase", "verify", "backupPath", file.BackupPath,
-			"expectedBytes", file.Size, "actualBytes", info.Size())
-	}
-	if file.Checksum == "" {
-		outcome.sizeOnly = true
-		return outcome
-	}
-	if !checksumMatches(tempPath, file.Checksum) {
-		if !file.Volatile {
-			log.Warn("checksum mismatch", "phase", "verify", "backupPath", file.BackupPath,
-				"expected", file.Checksum)
-			return failed
-		}
-		outcome.warnings = append(outcome.warnings,
-			fmt.Sprintf("%s: checksum differs from manifest (manifest %s) — file was volatile during backup", file.BackupPath, file.Checksum))
-		log.Warn("volatile file checksum mismatch (advisory, not a failure)", "phase", "verify", "backupPath", file.BackupPath,
-			"expected", file.Checksum)
+	if check.Warning != "" {
+		outcome.warnings = append(outcome.warnings, fmt.Sprintf("%s: %s", file.BackupPath, check.Warning))
+		log.Warn("volatile file differs from its manifest entry (advisory, not a failure)", "phase", phase, "backupPath", file.BackupPath)
 	}
 	return outcome
+}
+
+// unattestedVerifyLabel marks a verification or test restore whose bytes
+// were not checked against a snapshot attestation.
+const unattestedVerifyLabel = "unattested snapshot: files were not checked against a snapshot attestation"
+
+func unattestedVerifyWarnings(e *integrity.Expectation) []string {
+	if e.UnattestedWarning() == "" {
+		return nil
+	}
+	return []string{unattestedVerifyLabel}
+}
+
+// downloadVerifyManifest downloads and decodes the snapshot manifest for a
+// verify or test restore, into workDir ("" = the OS temp dir). A problem that
+// ends the run with a failed result is returned as failure (the result's
+// Error); err is set only when the caller's ctx ended.
+func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.BackupProvider, snapshotID, workDir string, opts VerifyOptions) (snapshot *Snapshot, warnings []string, failure string, err error) {
+	if err := opts.Integrity.CheckSnapshot(snapshotID); err != nil {
+		return nil, nil, err.Error(), nil
+	}
+	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
+	dl := func(ctx context.Context, p providers.BackupProvider, key, local string) error {
+		return downloadWithStallTimeout(ctx, p, key, local)
+	}
+	tempManifestPath, warnings, dlErr := integrity.DownloadVerifiedControlObjectVia(runCtx, dl, provider, opts.Integrity, integrity.RoleManifest, manifestKey, workDir)
+	if dlErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, "", ctxErr
+		}
+		if integrity.FailureCode(dlErr) != "" {
+			return nil, nil, fmt.Sprintf("snapshot manifest does not match its attestation: %v", dlErr), nil
+		}
+		return nil, nil, manifestDownloadError(runCtx, opts, dlErr), nil
+	}
+	defer os.Remove(tempManifestPath)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, "", err
+	}
+	manifestData, readErr := os.ReadFile(tempManifestPath)
+	if readErr != nil {
+		return nil, nil, fmt.Sprintf("failed to read manifest: %v", readErr), nil
+	}
+	var decoded Snapshot
+	if err := json.Unmarshal(manifestData, &decoded); err != nil {
+		return nil, nil, fmt.Sprintf("invalid manifest JSON: %v", err), nil
+	}
+	return &decoded, warnings, "", nil
 }
 
 // maxVerifyIncompletePathsReported caps how many missing source paths the
@@ -374,43 +379,19 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	runCtx, stopRun := opts.runContext(ctx)
 	defer stopRun()
 
-	// Download and parse manifest
-	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
-	tempManifest, err := os.CreateTemp(operationRoot, "restore-manifest-*.json")
+	// Download and parse manifest (checked against the snapshot attestation
+	// in attested mode before it is decoded).
+	snapshot, manifestWarnings, failure, err := downloadVerifyManifest(ctx, runCtx, provider, snapshotID, operationRoot, opts)
 	if err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to create temp file: %v", err)
-		return result, nil
-	}
-	tempManifestPath := tempManifest.Name()
-	_ = tempManifest.Close()
-	defer os.Remove(tempManifestPath)
-
-	if err := downloadWithStallTimeout(runCtx, provider, manifestKey, tempManifestPath); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return result, ctxErr
-		}
-		result.Status = "failed"
-		result.Error = manifestDownloadError(runCtx, opts, err)
-		return result, nil
-	}
-	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-
-	manifestData, err := os.ReadFile(tempManifestPath)
-	if err != nil {
+	if failure != "" {
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to read manifest: %v", err)
+		result.Error = failure
 		return result, nil
 	}
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(manifestData, &snapshot); err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("invalid manifest JSON: %v", err)
-		return result, nil
-	}
+	result.Warnings = append(result.Warnings, unattestedVerifyWarnings(opts.Integrity)...)
+	result.Warnings = append(result.Warnings, manifestWarnings...)
 
 	// Create a fresh, unguessable directory for every run. The parent is
 	// restricted to the privileged agent account by prepareRestoreWorkRoot.
@@ -448,7 +429,7 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	outcomes := make([]fileCheckOutcome, len(files))
 	finished := 0
 	runFileChecks(runCtx, len(files), func(i int) {
-		outcomes[i] = restoreSnapshotFile(runCtx, provider, files[i], destPaths[i], pathErrs[i])
+		outcomes[i] = restoreSnapshotFile(runCtx, provider, files[i], destPaths[i], pathErrs[i], opts.Integrity)
 	}, func(i int) {
 		if outcomes[i].state == fileNotChecked {
 			return
@@ -512,7 +493,7 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 		if result.Status == "passed" {
 			result.Status = "partial"
 		}
-		result.Warnings = append(result.Warnings, incompleteSnapshotWarning(&snapshot))
+		result.Warnings = append(result.Warnings, incompleteSnapshotWarning(snapshot))
 		log.Warn("snapshot manifest reports files that never uploaded; test restore cannot be a pass",
 			"phase", "restore", "snapshotId", snapshotID,
 			"incompleteFiles", snapshot.IncompleteFiles,
@@ -556,8 +537,9 @@ func testRestoreDestinations(restoreDir string, files []SnapshotFile) ([]string,
 }
 
 // restoreSnapshotFile downloads one manifest entry to destPath and checks it
-// against the manifest. Runs on a runFileChecks worker goroutine.
-func restoreSnapshotFile(ctx context.Context, provider providers.BackupProvider, file SnapshotFile, destPath string, pathErr error) fileCheckOutcome {
+// against the manifest (see checkedFileOutcome). Runs on a runFileChecks
+// worker goroutine.
+func restoreSnapshotFile(ctx context.Context, provider providers.BackupProvider, file SnapshotFile, destPath string, pathErr error, e *integrity.Expectation) fileCheckOutcome {
 	if !file.HasContent() {
 		// Content-less entry (symlink/directory): no uploaded object to
 		// restore — see SnapshotFile.HasContent's doc comment. The real
@@ -574,36 +556,9 @@ func restoreSnapshotFile(ctx context.Context, provider providers.BackupProvider,
 		log.Warn("create target dir failed", "phase", "restore", "destPath", destPath, "error", err.Error())
 		return failed
 	}
-
-	dlErr := downloadWithDeadline(ctx, provider, file.BackupPath, destPath, downloadDeadline(file.Size))
-	if ctx.Err() != nil {
-		logInterruptedDownload("restore", file.BackupPath, dlErr)
-		return fileCheckOutcome{state: fileNotChecked}
-	}
-	info, statErr := os.Stat(destPath)
-	switch {
-	case dlErr != nil:
-		log.Warn("download failed", "phase", "restore", "backupPath", file.BackupPath, "error", dlErr.Error())
-		return failed
-	case statErr != nil || info == nil:
-		log.Warn("stat failed", "phase", "restore", "backupPath", file.BackupPath, "error", errString(statErr))
-		return failed
-	case info.Size() != file.Size && !file.Volatile:
-		// A real test-restore must confirm the bytes came back intact, not
-		// just that a file appeared (same blind spot as VerifyIntegrity).
-		log.Warn("size mismatch", "phase", "restore", "backupPath", file.BackupPath,
-			"expectedBytes", file.Size, "actualBytes", info.Size())
-		return failed
-	case file.Checksum != "" && !file.Volatile && !checksumMatches(destPath, file.Checksum):
-		log.Warn("checksum mismatch", "phase", "restore", "backupPath", file.BackupPath,
-			"expected", file.Checksum)
-		return failed
-	}
-	outcome := fileCheckOutcome{state: fileVerified, size: info.Size()}
-	if file.Volatile && (info.Size() != file.Size || (file.Checksum != "" && !checksumMatches(destPath, file.Checksum))) {
-		outcome.warnings = []string{fmt.Sprintf("%s: differs from manifest — file was volatile during backup", file.BackupPath)}
-		log.Warn("volatile file mismatch (advisory, not a failure)", "phase", "restore", "backupPath", file.BackupPath)
-	}
+	outcome := checkedFileOutcome(ctx, "restore", provider, file, destPath, e)
+	// A test restore reports no size-only count.
+	outcome.sizeOnly = false
 	return outcome
 }
 
