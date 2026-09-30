@@ -181,6 +181,10 @@ async function runRollup(
     from,
     to,
     expectedSampleSeconds: 60,
+    // Fixtures are dated 2026-06-18. Evaluate the #7531 5-minute retention
+    // floor as of the window, not the wall clock, or the raw passes would be
+    // (correctly) skipped once that date is more than 90 days old.
+    now: to,
     ...(dayRollups === undefined ? {} : { dayRollups }),
   });
 }

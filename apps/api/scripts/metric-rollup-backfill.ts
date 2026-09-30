@@ -38,6 +38,16 @@ async function main(): Promise<void> {
   } else {
     console.log('[metric-rollup-backfill] Completed.');
   }
+  if (result.rawFrom !== undefined) {
+    // #7531: 5-minute rows older than METRIC_ROLLUP_5M_RETENTION_DAYS are not
+    // written (their month's 5-minute partition may already be dropped). Say
+    // so, so a partial backfill is not mistaken for a complete one.
+    console.warn(
+      result.rawFrom === null
+        ? '[metric-rollup-backfill] The whole range is older than the 5-minute retention window; no 5-minute buckets were written.'
+        : `[metric-rollup-backfill] 5-minute buckets before ${result.rawFrom} are outside the 5-minute retention window and were not written.`,
+    );
+  }
   console.log(JSON.stringify(result, null, 2));
 }
 

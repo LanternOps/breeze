@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { metricRollupRawWriteFloor } from './metricRollupRetention';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 import { recordRollupRun } from './retentionMetrics';
 
@@ -114,6 +115,8 @@ export interface MetricRollupRange {
    *    (including yesterday's last hours just after midnight).
    */
   dayRollups?: 'skip' | { from: Date };
+  /** Clock for the 5-minute retention floor (#7531). Defaults to now. */
+  now?: Date;
 }
 
 export interface MetricRollupResult {
@@ -122,6 +125,12 @@ export interface MetricRollupResult {
   to: string;
   statements: number;
   skipped: boolean;
+  /**
+   * #7531 — where the raw (5-minute) passes actually started, when the 5-minute
+   * retention floor moved it later than `from`; `null` when the whole window
+   * was below the floor and no raw pass ran. Absent when nothing was clamped.
+   */
+  rawFrom?: string | null;
 }
 
 function bucketStartSql(timestampSql: SQL, bucketSeconds: number): SQL<Date> {
@@ -761,17 +770,35 @@ async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<
     };
   }
 
+  // #7531 — never write a 5-minute row below the retention floor. Retention
+  // drops a month's `_5m` leaf once the whole month is past the 5-minute
+  // cutoff, and a row routed into that month would fail the statement with
+  // "no partition of relation ... found for row". The floor is a month start,
+  // so the clamped window stays aligned to whole buckets. Only the raw passes
+  // need it: the derived passes read the 5-minute rows, so an hour whose
+  // month lost its `_5m` leaf yields nothing (HAVING sum > 0) and leaves the
+  // retained hourly row untouched, and retention is monotonic (hourly >=
+  // 5-minute, daily >= hourly), so a leaf the derived passes write to exists
+  // whenever their input does.
+  const rawFloor = metricRollupRawWriteFloor(options.now ?? new Date());
+  const rawFrom = from.getTime() < rawFloor.getTime() ? rawFloor : from;
+  const rawClamped = rawFrom !== from;
+  const rawRunnable = rawFrom.getTime() < to.getTime();
+  const rawOptions: MetricRollupRange = { ...options, from: rawFrom, to };
+
   // #4341 — one statement per raw source table, not one per metric. Each of
   // these derives every series for its table from a single scan of the window.
   let statements = 0;
-  await rollupRawDeviceMetrics(options);
-  statements += 1;
+  if (rawRunnable) {
+    await rollupRawDeviceMetrics(rawOptions);
+    statements += 1;
 
-  await rollupRawProcessSampleMetrics(options);
-  statements += 1;
+    await rollupRawProcessSampleMetrics(rawOptions);
+    statements += 1;
 
-  await rollupRawSnmpMetrics(options);
-  statements += 1;
+    await rollupRawSnmpMetrics(rawOptions);
+    statements += 1;
+  }
 
   for (const sourceTable of ['device_metrics', 'device_process_samples', 'snmp_metrics'] as const) {
     await rollupDerivedMetricSource(options, hourWindow, sourceTable, RAW_BUCKET_SECONDS, HOUR_BUCKET_SECONDS);
@@ -788,5 +815,6 @@ async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<
     to: to.toISOString(),
     statements,
     skipped: false,
+    ...(rawClamped ? { rawFrom: rawRunnable ? rawFrom.toISOString() : null } : {}),
   };
 }
