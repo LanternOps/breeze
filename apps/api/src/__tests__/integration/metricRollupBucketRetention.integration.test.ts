@@ -36,6 +36,7 @@ import { getTestDb } from './setup';
 const RETENTION = { fiveMinute: 30, hourly: 5000, daily: 6000 } as const;
 const SUB_MONTH = { start: '2020-01-01 00:00:00', end: '2020-02-01 00:00:00', name: 'metric_rollups_y2020m01' };
 const LEGACY_MONTH = { start: '2020-03-01 00:00:00', end: '2020-04-01 00:00:00', name: 'metric_rollups_y2020m03' };
+const LEGACY_OLD_MONTH = { start: '2020-06-01 00:00:00', end: '2020-07-01 00:00:00', name: 'metric_rollups_y2020m06' };
 
 let orgId: string;
 let deviceId: string;
@@ -100,6 +101,54 @@ async function seedMonth(monthStart: string): Promise<void> {
 
 async function dropMonth(name: string): Promise<void> {
   await getTestDb().execute(sql.raw(`DROP TABLE IF EXISTS public."${name}"`));
+  for (const suffix of ['1h', '1d']) {
+    await getTestDb().execute(sql.raw(`DROP TABLE IF EXISTS metric_rollups_staging."${name}_${suffix}"`));
+  }
+}
+
+/** The pre-#7531 shape: one flat monthly partition holding every bucket size. */
+async function createLegacyMonth(month: { start: string; end: string; name: string }): Promise<void> {
+  await getTestDb().execute(sql.raw(`
+    CREATE TABLE public."${month.name}" PARTITION OF public.metric_rollups
+      FOR VALUES FROM ('${month.start}') TO ('${month.end}')
+  `));
+  await getTestDb().execute(sql.raw(`
+    ALTER TABLE public."${month.name}" ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public."${month.name}" FORCE ROW LEVEL SECURITY;
+    CREATE POLICY breeze_org_isolation_select ON public."${month.name}" FOR SELECT USING (public.breeze_has_org_access(org_id));
+    CREATE POLICY breeze_org_isolation_insert ON public."${month.name}" FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
+    CREATE POLICY breeze_org_isolation_update ON public."${month.name}" FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
+    CREATE POLICY breeze_org_isolation_delete ON public."${month.name}" FOR DELETE USING (public.breeze_has_org_access(org_id));
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."${month.name}" TO breeze_app;
+  `));
+}
+
+async function upsertHourly(bucketStart: string, avgValue: number): Promise<void> {
+  await getTestDb()
+    .insert(metricRollups)
+    .values({
+      orgId,
+      sourceTable: 'device_metrics',
+      deviceId,
+      metricType: 'cpu',
+      metricName: 'cpu_percent',
+      bucketStart: new Date(bucketStart),
+      bucketSeconds: 3600,
+      avgValue,
+      sampleCount: 5,
+    })
+    .onConflictDoUpdate({
+      target: [
+        metricRollups.orgId,
+        metricRollups.sourceTable,
+        metricRollups.deviceId,
+        metricRollups.metricType,
+        metricRollups.metricName,
+        metricRollups.bucketSeconds,
+        metricRollups.bucketStart,
+      ],
+      set: { avgValue },
+    });
 }
 
 describe('metric rollup bucket retention by partition drop (#7531, real DB, breeze_app)', () => {
@@ -132,7 +181,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       })
       .returning({ id: devices.id });
     deviceId = device!.id;
-    for (const name of [SUB_MONTH.name, 'metric_rollups_y2020m02', LEGACY_MONTH.name]) {
+    for (const name of [SUB_MONTH.name, 'metric_rollups_y2020m02', LEGACY_MONTH.name, LEGACY_OLD_MONTH.name]) {
       await dropMonth(name);
     }
   });
@@ -155,31 +204,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
 
     // The rollup writer's ON CONFLICT upsert still resolves through both
     // partition levels (the unique key carries both partition keys).
-    await getTestDb()
-      .insert(metricRollups)
-      .values({
-        orgId,
-        sourceTable: 'device_metrics',
-        deviceId,
-        metricType: 'cpu',
-        metricName: 'cpu_percent',
-        bucketStart: new Date('2020-01-01T00:00:00Z'),
-        bucketSeconds: 3600,
-        avgValue: 99,
-        sampleCount: 5,
-      })
-      .onConflictDoUpdate({
-        target: [
-          metricRollups.orgId,
-          metricRollups.sourceTable,
-          metricRollups.deviceId,
-          metricRollups.metricType,
-          metricRollups.metricName,
-          metricRollups.bucketSeconds,
-          metricRollups.bucketStart,
-        ],
-        set: { avgValue: 99 },
-      });
+    await upsertHourly('2020-01-01T00:00:00Z', 99);
     expect(await bucketCounts(SUB_MONTH.start, SUB_MONTH.end)).toEqual({ 300: 3, 3600: 2, 86400: 1 });
 
     const result = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION });
@@ -195,6 +220,13 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
     expect(await bucketCounts(SUB_MONTH.start, SUB_MONTH.end)).toEqual({ 3600: 2, 86400: 1 });
     expect(result.droppedPartitions).not.toContain(SUB_MONTH.name);
 
+    // Re-ensuring the month (e.g. METRIC_ROLLUP_PARTITION_MONTHS_BACK reaching
+    // it) must never resurrect the dropped leaf.
+    await withSystemDbAccessContext(() =>
+      ensureMetricRollupPartitions({ referenceDate: new Date(Date.UTC(2020, 0, 1)), monthsBack: 0, monthsAhead: 1 }),
+    );
+    expect(await childrenOf(SUB_MONTH.name)).toEqual([`${SUB_MONTH.name}_1d`, `${SUB_MONTH.name}_1h`]);
+
     await dropMonth(SUB_MONTH.name);
     await dropMonth('metric_rollups_y2020m02');
   });
@@ -202,19 +234,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
   it('rewrites a legacy flat month into per-bucket leaves once its 5-minute rows expire, reclaiming the space', async () => {
     // The pre-#7531 shape: one flat monthly partition holding every bucket
     // size. Every existing install has these for the current and past months.
-    await getTestDb().execute(sql.raw(`
-      CREATE TABLE public."${LEGACY_MONTH.name}" PARTITION OF public.metric_rollups
-        FOR VALUES FROM ('${LEGACY_MONTH.start}') TO ('${LEGACY_MONTH.end}')
-    `));
-    await getTestDb().execute(sql.raw(`
-      ALTER TABLE public."${LEGACY_MONTH.name}" ENABLE ROW LEVEL SECURITY;
-      ALTER TABLE public."${LEGACY_MONTH.name}" FORCE ROW LEVEL SECURITY;
-      CREATE POLICY breeze_org_isolation_select ON public."${LEGACY_MONTH.name}" FOR SELECT USING (public.breeze_has_org_access(org_id));
-      CREATE POLICY breeze_org_isolation_insert ON public."${LEGACY_MONTH.name}" FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id));
-      CREATE POLICY breeze_org_isolation_update ON public."${LEGACY_MONTH.name}" FOR UPDATE USING (public.breeze_has_org_access(org_id)) WITH CHECK (public.breeze_has_org_access(org_id));
-      CREATE POLICY breeze_org_isolation_delete ON public."${LEGACY_MONTH.name}" FOR DELETE USING (public.breeze_has_org_access(org_id));
-      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."${LEGACY_MONTH.name}" TO breeze_app;
-    `));
+    await createLegacyMonth(LEGACY_MONTH);
     expect(await relkind(LEGACY_MONTH.name)).toBe('r');
     await seedMonth(LEGACY_MONTH.start);
     expect(await bucketCounts(LEGACY_MONTH.start, LEGACY_MONTH.end)).toEqual({ 300: 3, 3600: 2, 86400: 1 });
@@ -246,11 +266,102 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       ]);
     }
 
-    // Idempotent: a second run finds nothing left to do for this month.
+    // The leaves adopted the parent's FKs (validated, attached as clones) and
+    // its three indexes, and the writer's upsert still resolves on them.
+    for (const leaf of [`${LEGACY_MONTH.name}_1h`, `${LEGACY_MONTH.name}_1d`]) {
+      const fks = (await getTestDb().execute(sql`
+        SELECT conname, convalidated, conparentid <> 0 AS "cloned"
+        FROM pg_constraint WHERE conrelid = ${`public.${leaf}`}::regclass AND contype = 'f' ORDER BY conname
+      `)) as unknown as Array<{ conname: string; convalidated: boolean; cloned: boolean }>;
+      expect(fks, leaf).toEqual([
+        { conname: 'metric_rollups_device_id_fkey', convalidated: true, cloned: true },
+        { conname: 'metric_rollups_org_id_fkey', convalidated: true, cloned: true },
+      ]);
+      const [indexes] = (await getTestDb().execute(sql`
+        SELECT count(*)::int AS n, bool_and(i.indisvalid) AS valid, count(*) FILTER (WHERE i.indisunique)::int AS "unique"
+        FROM pg_index i WHERE i.indrelid = ${`public.${leaf}`}::regclass
+      `)) as unknown as Array<{ n: number; valid: boolean; unique: number }>;
+      expect(indexes, leaf).toEqual({ n: 3, valid: true, unique: 1 });
+    }
+    await upsertHourly('2020-03-01T00:00:00Z', 42);
+    expect(await bucketCounts(LEGACY_MONTH.start, LEGACY_MONTH.end)).toEqual({ 3600: 2, 86400: 1 });
+
+    // Idempotent: a second run leaves the month exactly as it is.
+    const oid = async () =>
+      ((await getTestDb().execute(sql`SELECT ${`public.${LEGACY_MONTH.name}`}::regclass::oid AS oid`)) as unknown as Array<{ oid: number }>)[0]!.oid;
+    const before = await oid();
     const again = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION });
     expect(again.compactedPartitions).not.toContain(LEGACY_MONTH.name);
+    expect(again.failures).toEqual([]);
+    expect(await oid()).toBe(before);
     expect(await bucketCounts(LEGACY_MONTH.start, LEGACY_MONTH.end)).toEqual({ 3600: 2, 86400: 1 });
 
     await dropMonth(LEGACY_MONTH.name);
+  });
+  it('compacts a legacy month past the hourly cutoff to its daily leaf only, recovering from a staged-but-rolled-back run', async () => {
+    await createLegacyMonth(LEGACY_OLD_MONTH);
+    await seedMonth(LEGACY_OLD_MONTH.start);
+
+    // A previous run staged the month keeping hourly, then its compaction
+    // never committed (lock timeout). Staging twice must be harmless too.
+    const month = LEGACY_OLD_MONTH.start;
+    for (let i = 0; i < 2; i += 1) {
+      await withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`),
+      );
+    }
+    const staged = (await getTestDb().execute(sql`
+      SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'metric_rollups_staging' AND c.relkind = 'r' AND c.relname LIKE ${`${LEGACY_OLD_MONTH.name}%`} ORDER BY 1
+    `)) as unknown as Array<{ name: string }>;
+    expect(staged.map((row) => row.name)).toEqual([`${LEGACY_OLD_MONTH.name}_1d`, `${LEGACY_OLD_MONTH.name}_1h`]);
+
+    // Now the hourly window has passed too: only daily rows survive.
+    const result = await runMetricRollupMaintenance({
+      now: new Date(),
+      retentionDays: { fiveMinute: 30, hourly: 365, daily: 6000 },
+    });
+
+    expect(result.compactedPartitions).toContain(LEGACY_OLD_MONTH.name);
+    expect(await childrenOf(LEGACY_OLD_MONTH.name)).toEqual([`${LEGACY_OLD_MONTH.name}_1d`]);
+    expect(await bucketCounts(LEGACY_OLD_MONTH.start, LEGACY_OLD_MONTH.end)).toEqual({ 86400: 1 });
+    // The stale hourly stage is gone, and nothing is left in staging.
+    const leftover = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'metric_rollups_staging' AND c.relkind IN ('r', 'i') AND c.relname LIKE ${`${LEGACY_OLD_MONTH.name}%`}
+    `)) as unknown as Array<{ n: number }>;
+    expect(leftover[0]!.n).toBe(0);
+
+    await dropMonth(LEGACY_OLD_MONTH.name);
+  });
+
+  it('sweeps expired rows out of metric_rollups_default in batches and keeps rows still in retention', async () => {
+    // Months with no partition: rows land in the default partition.
+    const expired = ['2019-07-01T00:00:00Z', '2019-07-01T00:05:00Z', '2019-07-01T00:10:00Z'];
+    const kept = '2035-01-01T00:00:00Z';
+    await getTestDb().insert(metricRollups).values(
+      [...expired, kept].map((at) => ({
+        orgId,
+        sourceTable: 'device_metrics',
+        deviceId,
+        metricType: 'cpu',
+        metricName: 'cpu_percent',
+        bucketStart: new Date(at),
+        bucketSeconds: 300,
+        avgValue: 1,
+        sampleCount: 1,
+      })),
+    );
+    const defaultCount = async () =>
+      ((await getTestDb().execute(sql`
+        SELECT count(*)::int AS n FROM metric_rollups_default WHERE org_id = ${orgId}
+      `)) as unknown as Array<{ n: number }>)[0]!.n;
+    expect(await defaultCount()).toBe(4);
+
+    const result = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION, deleteBatchSize: 1 });
+
+    expect(result.defaultPartitionRowsDeleted).toBeGreaterThanOrEqual(3);
+    expect(await defaultCount()).toBe(1);
+    await getTestDb().execute(sql`DELETE FROM metric_rollups_default WHERE org_id = ${orgId}`);
   });
 });

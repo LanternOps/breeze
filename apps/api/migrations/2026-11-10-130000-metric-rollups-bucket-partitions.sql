@@ -446,8 +446,22 @@ REVOKE ALL ON FUNCTION public.breeze_metric_rollup_is_legacy_month(TEXT) FROM PU
 -- (extensions/tenancyTripwire.ts assertNoUnaccountedPublicTables) refuse to
 -- boot, and a staged leaf outlives a compaction that rolled back until the
 -- next run. Owner-only: nothing but these functions touches it.
-CREATE SCHEMA IF NOT EXISTS metric_rollups_staging;
-REVOKE ALL ON SCHEMA metric_rollups_staging FROM PUBLIC;
+--
+-- CREATE SCHEMA needs CREATE on the database, which the migration role has
+-- whenever it owns the database (every supported install). If it does not,
+-- do not fail the boot: warn, and let compaction of legacy months fail
+-- visibly in the maintenance job until an admin runs
+--   CREATE SCHEMA metric_rollups_staging AUTHORIZATION <migration role>;
+-- New months are unaffected either way.
+DO $$
+BEGIN
+  CREATE SCHEMA IF NOT EXISTS metric_rollups_staging;
+  REVOKE ALL ON SCHEMA metric_rollups_staging FROM PUBLIC;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE WARNING
+    'metric_rollups: cannot create schema metric_rollups_staging (%); legacy-month compaction will fail until it exists',
+    SQLERRM;
+END $$;
 
 -- A standalone table in metric_rollups_staging named like one of this month's
 -- leaves: left by a prepare step whose compaction has not committed yet.
@@ -494,11 +508,12 @@ BEGIN
   FOREACH v_bucket IN ARRAY v_target.o_keep LOOP
     v_leaf := v_target.o_name || '_' || public.breeze_metric_rollup_bucket_suffix(v_bucket);
     IF public.breeze_metric_rollup_is_staged_leaf(v_leaf) THEN
-      -- Staged by an earlier run whose compaction rolled back: reuse it. A
-      -- rolled-back copy leaves no visible rows; TRUNCATE also drops the dead
-      -- ones. Re-creating it would re-take the FK lock for nothing.
-      EXECUTE format('TRUNCATE TABLE metric_rollups_staging.%I', v_leaf);
-      CONTINUE;
+      -- Staged by an earlier run whose compaction rolled back. Rebuild it
+      -- rather than reuse it: if metric_rollups gained a column, index or FK
+      -- since, a reused stage would no longer match the parent and every
+      -- later ATTACH would fail. This is the short prepare transaction, so the
+      -- extra FK lock is milliseconds.
+      EXECUTE format('DROP TABLE metric_rollups_staging.%I', v_leaf);
     END IF;
     IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = 'public' AND c.relname = v_leaf) THEN
@@ -655,6 +670,16 @@ BEGIN
   END IF;
 
   v_name := format('metric_rollups_y%sm%s', to_char(v_start, 'YYYY'), to_char(v_start, 'MM'));
+
+  -- Staged compaction leaves for this month (a prepare whose compaction never
+  -- committed) are empty but would otherwise be stranded forever.
+  IF public.breeze_metric_rollup_is_staged_leaf(v_name || '_1h') THEN
+    EXECUTE format('DROP TABLE metric_rollups_staging.%I', v_name || '_1h');
+  END IF;
+  IF public.breeze_metric_rollup_is_staged_leaf(v_name || '_1d') THEN
+    EXECUTE format('DROP TABLE metric_rollups_staging.%I', v_name || '_1d');
+  END IF;
+
   IF NOT public.breeze_metric_rollup_is_attached(v_name, 'metric_rollups') THEN
     RETURN NULL;
   END IF;

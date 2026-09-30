@@ -69,6 +69,9 @@ export function createMetricRollupMaintenanceWorker(): Worker<MetricRollupMainte
           ` droppedBucketLeaves=${result.droppedBucketPartitions.length} compacted=${result.compactedPartitions.length}` +
           ` defaultRowsDeleted=${result.defaultPartitionRowsDeleted} failures=${result.failures.length} durationMs=${result.durationMs}`,
       );
+      if (result.skipped) {
+        console.warn(`[MetricRollupMaintenance] Run skipped: ${result.reason ?? 'unknown reason'}`);
+      }
       // A lock-contended run returns `skipped` with empty arrays — recording it
       // would claim "ran, backlog clear" for work that never happened.
       if (!result.skipped) {

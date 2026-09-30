@@ -68,6 +68,8 @@ type EnsurePartitionOptions = {
   referenceDate?: Date;
   monthsBack?: number;
   monthsAhead?: number;
+  /** Called for each month skipped because metric_rollups_default holds rows for it. */
+  onSkipped?: (partitionName: string) => void;
 };
 
 export type MetricRollupMonthPartition = {
@@ -235,6 +237,7 @@ export async function ensureMetricRollupPartitions(options: EnsurePartitionOptio
       console.warn(
         `[MetricRollupMaintenance] Skipping ${partitionName}; metric_rollups_default already contains rows for that month`,
       );
+      options.onSkipped?.(partitionName);
       continue;
     }
     ensured.push(ensuredName);
@@ -446,12 +449,14 @@ export async function runMetricRollupMaintenance(options: {
   // 1. Partitions for the write window. If another run holds the lock, skip the
   //    whole run: reporting "ran, nothing to do" would be a lie.
   let ensured: string[] | typeof LOCK_HELD;
+  const skippedMonths: string[] = [];
   try {
     ensured = await inMaintenanceStep('ensure', () =>
       ensureMetricRollupPartitions({
         referenceDate: now,
         monthsBack: options.partitionMonthsBack,
         monthsAhead: options.partitionMonthsAhead,
+        onSkipped: (name) => skippedMonths.push(name),
       }),
     );
   } catch (error) {
@@ -464,6 +469,17 @@ export async function runMetricRollupMaintenance(options: {
     return finish();
   }
   result.ensuredPartitions = ensured;
+  // A month the default partition already holds rows for cannot be created, so
+  // its writes keep landing in metric_rollups_default, where retention is only
+  // a row DELETE and the space is never returned. That is the failure this
+  // module exists to prevent, so it must not pass as a clean run.
+  for (const name of skippedMonths) {
+    result.failures.push({
+      step: 'ensure',
+      partition: name,
+      error: 'metric_rollups_default already holds rows for this month, so its partition cannot be created',
+    });
+  }
 
   // 2. Retention, month by month.
   const months = (await step('list', 'list', '*', () => listMetricRollupMonthPartitions())) ?? [];

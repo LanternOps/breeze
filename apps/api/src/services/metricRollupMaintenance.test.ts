@@ -326,6 +326,38 @@ describe('metric rollup maintenance service', () => {
       expect(result.failures).toEqual([]);
     });
 
+    it('reports a month the default partition blocks as a failure, not a clean run', async () => {
+      installDb({ months: [], ensure: (month) => (month.startsWith('2026-10') ? null : `m:${month}`) });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.failures).toEqual([
+        {
+          step: 'ensure',
+          partition: 'metric_rollups_y2026m10',
+          error: 'metric_rollups_default already holds rows for this month, so its partition cannot be created',
+        },
+      ]);
+    });
+
+    it('does not compact a month that prepare no longer finds flat', async () => {
+      const calls = installDb({ months: [{ partitionName: 'metric_rollups_y2026m05', relkind: 'r', leaves: [] }] });
+      const base = executeMock.getMockImplementation()!;
+      executeMock.mockImplementation(async (statement: unknown) => {
+        if (render(statement).text.includes('breeze_prepare_metric_rollup_compaction')) {
+          calls.push(render(statement));
+          return [{ partitionName: null }];
+        }
+        return base(statement);
+      });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(0);
+      expect(result.compactedPartitions).toEqual([]);
+      expect(result.failures).toEqual([]);
+    });
+
     it('skips the whole run when another run holds the maintenance lock', async () => {
       const calls = installDb({ lockAcquired: false });
 
