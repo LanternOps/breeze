@@ -15,6 +15,10 @@ vi.mock('@/services/fleetFindings', async (importOriginal) => {
 // ScriptPickerModal (reused verbatim from the device bulk run-script flow)
 // fetches `/scripts?includeSystem=true` through the auth store.
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchWithAuthMock }));
+// ScriptPickerModal reads permissions for its (single-device) session picker.
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
 
 vi.mock('@/lib/runAction', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/runAction')>();

@@ -53,10 +53,13 @@ describe('§9.2 — the disk tools over MCP', () => {
 
   it('their read-only actions stay reachable over MCP', () => {
     expect(Math.max(getToolTier('disk_cleanup')!, checkGuardrails('disk_cleanup', { action: 'preview' }).tier)).toBe(1);
-    expect(Math.max(getToolTier('system_cleanup')!, checkGuardrails('system_cleanup', { action: 'list' }).tier)).toBe(1);
     // `status` is a read of the run row: Tier 1, listed and callable over MCP.
     expect(Math.max(getToolTier('system_cleanup')!, checkGuardrails('system_cleanup', { action: 'status' }).tier)).toBe(1);
     expect(Math.max(getToolTier('analyze_disk_usage')!, checkGuardrails('analyze_disk_usage', {}).tier)).toBe(1);
+    // The live reads (catalog request, fresh scan) are Tier 2: reachable with
+    // ai:write, not with an ai:read-only key.
+    expect(Math.max(getToolTier('system_cleanup')!, checkGuardrails('system_cleanup', { action: 'list' }).tier)).toBe(2);
+    expect(Math.max(getToolTier('analyze_disk_usage')!, checkGuardrails('analyze_disk_usage', { refresh: true }).tier)).toBe(2);
   });
 
   it('both stay LISTED — they are mixed multiplexers, not wholly gated tools', () => {

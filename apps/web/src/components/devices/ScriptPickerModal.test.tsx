@@ -12,6 +12,13 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// The live session list (GET /devices/:id/sessions/live) needs devices:execute
+// or remote:access; the default grants cover it.
+const perms = vi.hoisted(() => ({ granted: new Set<string>(['scripts:execute', 'devices:read', 'devices:execute']) }));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => perms.granted.has(`${r}:${a}`) }),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -387,6 +394,30 @@ describe('ScriptPickerModal sourced parameters (#3409 PR3)', () => {
 describe('ScriptPickerModal session targeting', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    perms.granted = new Set(['scripts:execute', 'devices:read', 'devices:execute']);
+  });
+
+  it('does not ask the device for its live sessions without devices:execute or remote:access', async () => {
+    routeFetchMock();
+    const liveCalls = () => fetchWithAuthMock.mock.calls.filter(([url]) => String(url).endsWith('/sessions/live'));
+    const renderUserRun = () => {
+      const view = render(
+        <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="rds-01"
+          deviceOs="windows" deviceId="dev-1" helperLifecycleMode="on-demand" />
+      );
+      fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+      return view;
+    };
+
+    perms.granted = new Set(['scripts:execute', 'devices:read']);
+    const first = renderUserRun();
+    await waitFor(() => expect(screen.getByTestId('script-session-target')).toBeDefined());
+    expect(liveCalls()).toHaveLength(0);
+    first.unmount();
+
+    perms.granted = new Set(['scripts:execute', 'devices:read', 'remote:access']);
+    renderUserRun();
+    await waitFor(() => expect(liveCalls()).toHaveLength(1));
   });
 
   it('shows the session dropdown only for runAs=user on an on-demand device', async () => {

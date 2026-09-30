@@ -255,9 +255,9 @@ Use boot performance data to drive systematic optimization across your fleet:
 
 The AI assistant provides two tools for boot performance analysis.
 
-### analyze_boot_performance (Tier 1)
+### analyze_boot_performance (Tier 1; Tier 2 with `triggerCollection`)
 
-A read-only tool that analyzes boot performance history and startup items for a device. The AI can optionally trigger a fresh collection if the device is online.
+A read-only tool that analyzes boot performance history and startup items for a device. By default it reads the stored boot history (`devices.read`). With `triggerCollection: true` it first collects fresh data from the device if it is online; that live collection needs `devices.execute`, like `POST /devices/:id/collect-boot-metrics`, and runs at Tier 2 (no prompt, audit-logged; an MCP key needs `ai:write`).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

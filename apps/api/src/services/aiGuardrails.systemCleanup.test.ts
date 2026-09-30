@@ -20,7 +20,9 @@ describe('system_cleanup guardrails', () => {
   it('escalates run — and only run — to Tier 3', () => {
     expect(TIER3_ACTIONS.system_cleanup).toEqual(['run']);
     expect(checkGuardrails('system_cleanup', { action: 'run' }).tier).toBe(3);
-    expect(checkGuardrails('system_cleanup', { action: 'list' }).tier).toBe(1);
+    // list asks the device for its catalog: a live read, Tier 2 read-only
+    // (no prompt, audit row). status reads the stored run: Tier 1.
+    expect(checkGuardrails('system_cleanup', { action: 'list' })).toMatchObject({ tier: 2, readOnly: true, requiresApproval: false });
     expect(checkGuardrails('system_cleanup', { action: 'status' }).tier).toBe(1);
     expect(checkGuardrails('system_cleanup', { action: 'status' }).requiresApproval).toBe(false);
   });
@@ -36,9 +38,9 @@ describe('system_cleanup guardrails', () => {
     expect(checkGuardrails('system_cleanup', { action: 'run' }).approvalScope).toBe('supervised');
   });
 
-  it('maps RBAC per action: list and status read devices, run executes on them', () => {
+  it('maps RBAC per action: status reads the stored run, list and run reach the device', () => {
     expect(TOOL_PERMISSIONS.system_cleanup).toEqual({
-      list: { resource: 'devices', action: 'read' },
+      list: { resource: 'devices', action: 'execute' },
       run: { resource: 'devices', action: 'execute' },
       status: { resource: 'devices', action: 'read' },
     });

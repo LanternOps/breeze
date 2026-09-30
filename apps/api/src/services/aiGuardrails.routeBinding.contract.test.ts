@@ -200,6 +200,11 @@ export function routeRegistrationPermissions(
 interface Binding {
   tool: string;
   action?: string;
+  /**
+   * Extra tool input for a tool whose permission follows a non-`action` input
+   * (a boolean that asks for fresh data from the device). Merged with `action`.
+   */
+  input?: Record<string, unknown>;
   /** Relative to `src/routes/`. */
   routeFile: string;
   method: Method;
@@ -335,6 +340,16 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
   { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
+  // Live device reads outside /system-tools. The live request is bound to the
+  // route that sends the same command; the stored-data read to the route that
+  // reads the stored result.
+  { tool: 'system_cleanup', action: 'list', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/list' },
+  { tool: 'system_cleanup', action: 'run', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run' },
+  { tool: 'system_cleanup', action: 'status', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'get', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId' },
+  { tool: 'analyze_disk_usage', input: { refresh: true }, routeFile: 'devices/filesystem.ts', method: 'post', path: '/:id/filesystem/scan' },
+  { tool: 'analyze_disk_usage', routeFile: 'devices/filesystem.ts', method: 'get', path: '/:id/filesystem' },
+  { tool: 'analyze_boot_performance', input: { triggerCollection: true }, routeFile: 'devices/bootMetrics.ts', method: 'post', path: '/:id/collect-boot-metrics' },
+  { tool: 'analyze_boot_performance', routeFile: 'devices/bootMetrics.ts', method: 'get', path: '/:id/boot-metrics' },
 
   // §2.6 — the ten resources that did not exist in the canonical catalog.
   { tool: 'manage_deployments', action: 'get', routeFile: 'deployments.ts', method: 'get', path: '/:id' },
@@ -473,7 +488,7 @@ function routePermissionsFor(binding: Binding): string[] {
 function toolPermissionsFor(binding: Binding): string[] {
   const required = requiredPermissionsForTool(
     binding.tool,
-    binding.action ? { action: binding.action } : {},
+    { ...(binding.input ?? {}), ...(binding.action ? { action: binding.action } : {}) },
   );
   if (required === null) {
     throw new Error(`no RBAC mapping for ${binding.tool}${binding.action ? `.${binding.action}` : ''}`);
@@ -481,7 +496,8 @@ function toolPermissionsFor(binding: Binding): string[] {
   return [...new Set(required.map((r) => `${r.resource}:${r.action}`))].sort();
 }
 
-const label = (b: Binding) => `${b.tool}${b.action ? `.${b.action}` : ''}`;
+const label = (b: Binding) =>
+  `${b.tool}${b.action ? `.${b.action}` : ''}${b.input ? ` ${JSON.stringify(b.input)}` : ''}`;
 
 describe('contract: every remapped AI tool requires what its HTTP route requires', () => {
   it('the binder actually resolves a permission for every pair (not vacuously empty)', () => {

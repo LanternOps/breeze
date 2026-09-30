@@ -70,13 +70,34 @@ describe('DeviceFilesystemTab', () => {
     const { unmount } = render(
       <DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" onOpenFiles={() => {}} />,
     );
-    await screen.findByTestId('filesystem-analyze-button');
+    await screen.findByTestId('filesystem-refresh');
     expect(screen.queryByTestId('filesystem-open-files')).toBeNull();
     unmount();
 
     perms.granted = new Set(['devices:read', 'devices:execute']);
     render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" onOpenFiles={() => {}} />);
     expect(await screen.findByTestId('filesystem-open-files')).toBeInTheDocument();
+  });
+
+  it('offers a fresh scan and the native cleaner check only with devices:execute', async () => {
+    // Analyze now and Check actions each send a live command to the device
+    // (devices.execute on the API); the stored snapshot stays readable.
+    routeFetch((url) => {
+      if (url.includes('/filesystem')) return jsonResponse({ data: SNAPSHOT });
+      return jsonResponse({ data: [] });
+    });
+
+    perms.granted = new Set(['devices:read']);
+    const { unmount } = render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
+    await screen.findByTestId('filesystem-refresh');
+    expect(screen.queryByTestId('filesystem-analyze-button')).toBeNull();
+    expect(screen.queryByTestId('system-cleanup-check')).toBeNull();
+    unmount();
+
+    perms.granted = new Set(['devices:read', 'devices:execute']);
+    render(<DeviceFilesystemTab deviceId={DEVICE_ID} osType="linux" />);
+    expect(await screen.findByTestId('filesystem-analyze-button')).toBeInTheDocument();
+    expect(screen.getByTestId('system-cleanup-check')).toBeInTheDocument();
   });
 
   it('renders the error banner with role="alert" so a screen reader announces it', async () => {

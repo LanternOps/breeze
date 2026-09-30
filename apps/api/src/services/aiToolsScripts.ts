@@ -13,8 +13,8 @@
  * - get_script_execution_history (Tier 1): Get past execution results for a script
  * - get_script_execution (Tier 1): Get a single execution by ID (status + output)
  * - search_script_library (Tier 1): Search scripts and templates together
- * - manage_processes (Tier 1): List or kill running processes on a device
- * - manage_scheduled_tasks (Tier 1): List/run/enable/disable/delete scheduled tasks
+ * - manage_processes (Tier 2 list, Tier 3 kill): List or kill running processes on a device
+ * - manage_scheduled_tasks (Tier 2 list, Tier 3 run/enable/disable): List, run, enable or disable scheduled tasks
  * - registry_operations (Tier 1): Read or modify Windows registry keys/values
  */
 
@@ -890,7 +890,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // manage_processes - Tier 1 (list), Tier 3 via guardrails (kill)
+  // manage_processes - Tier 2 read-only via guardrails (list), Tier 3 (kill)
   // ============================================
 
   registerTool({

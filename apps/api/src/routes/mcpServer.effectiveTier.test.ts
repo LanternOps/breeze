@@ -254,6 +254,8 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
         : name === 'security_scan' || name === 'registry_operations'
           ? 2
           : name === 'manage_processes' || name === 'manage_patches'
+            || name === 'system_cleanup' || name === 'analyze_disk_usage'
+            || name === 'analyze_boot_performance'
             ? 1
             : undefined,
     );
@@ -347,11 +349,49 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
   // TIER2_ACTIONS), so the ORIGINAL scenario ("a benign read succeeds under
   // ai:read alone") is no longer true for this tool at all — every action on
   // it now requires ai:write. Re-pointed at a tool that IS genuinely tier 1
-  // with no escalation on this action: `manage_processes` action:'list'
-  // (aiToolsScripts.ts's own comment: "manage_processes list is Tier 1" —
-  // only `kill` escalates, tested separately below).
+  // with no per-action tier raise here: `manage_patches` action:'list' (a
+  // cached read; `manage_processes` list moved to Tier 2 because it runs a
+  // live command on the device — see the next test).
   it('ai:read key calling a benign read action on a genuinely tier-1 tool still succeeds', async () => {
+    const res = await callTool(['ai:read'], 'manage_patches', { action: 'list' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    expect(body.result?.content?.[0]?.text).toContain('ok');
+  });
+
+  // Live device inspection is Tier 2 (like file_operations / manage_services
+  // list): an ai:read-only key cannot list a device's processes live.
+  it('ai:read key calling manage_processes {list} (live inspection, tier 2) is denied (requires ai:write)', async () => {
     const res = await callTool(['ai:read'], 'manage_processes', { action: 'list', deviceId: 'dev-1' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('requires ai:write');
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // The other live device reads: listing the native cleaners, a fresh disk
+  // scan and a boot-metrics collection each run a command on the device.
+  it.each([
+    ['system_cleanup', { action: 'list', deviceId: 'dev-1' }],
+    ['analyze_disk_usage', { deviceId: 'dev-1', refresh: true }],
+    ['analyze_boot_performance', { deviceId: 'dev-1', triggerCollection: true }],
+  ] as const)('ai:read key calling %s %j (live read, tier 2) is denied (requires ai:write)', async (tool, args) => {
+    const res = await callTool(['ai:read'], tool, { ...args });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('requires ai:write');
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // Their stored-data reads stay tier 1.
+  it.each([
+    ['analyze_disk_usage', { deviceId: 'dev-1' }],
+    ['analyze_boot_performance', { deviceId: 'dev-1' }],
+  ] as const)('ai:read key calling %s %j (stored data, tier 1) still succeeds', async (tool, args) => {
+    const res = await callTool(['ai:read'], tool, { ...args });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.error).toBeUndefined();
@@ -418,12 +458,12 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 
-  // Review finding #5: re-pointed at `manage_processes` action:'list' for the
+  // Review finding #5: re-pointed at `manage_patches` action:'list' for the
   // same reason as the ai:read success test above — `registry_operations` no
   // longer has ANY action a non-tier-2 scope can reach, so it can no longer
   // stand in for "a benign action on a tier-1 tool".
   it('benign read action on a tier-1 tool does NOT create a ledger', async () => {
-    await callTool(['ai:read', 'ai:execute'], 'manage_processes', { action: 'list', deviceId: 'dev-1' });
+    await callTool(['ai:read', 'ai:execute'], 'manage_patches', { action: 'list' });
     expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,7 @@ import {
 } from "recharts";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
+import { usePermissions } from "../../lib/permissions";
 import { formatNumber } from "@/lib/i18n/format";
 import { formatBytes, friendlyFetchError } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
@@ -112,6 +113,10 @@ export default function DeviceBootPerformanceTab({
   timezone,
 }: DeviceBootPerformanceTabProps) {
   const { t } = useTranslation("devices");
+  // Collect now sends a live command to the device (devices.execute on the
+  // API); the stored boot history needs only read.
+  const { can } = usePermissions();
+  const canCollect = can("devices", "execute");
   const [boots, setBoots] = useState<BootRecord[]>([]);
   const [summary, setSummary] = useState<BootSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -248,7 +253,7 @@ export default function DeviceBootPerformanceTab({
   if (boots.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
+        <div data-testid="boot-performance-empty" className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
           <div className="text-center">
             <Timer className="mx-auto h-10 w-10 text-muted-foreground" />
             <h3 className="mt-3 text-lg font-semibold">
@@ -257,19 +262,22 @@ export default function DeviceBootPerformanceTab({
             <p className="mt-1 text-sm text-muted-foreground">
               {t("deviceBootPerformanceTab.bootMetricsWillAppearAfterThe")}{" "}
             </p>
-            <button
-              type="button"
-              onClick={collectNow}
-              disabled={collecting}
-              className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
-            >
-              {collecting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Zap className="h-4 w-4" />
-              )}
-              {t("deviceBootPerformanceTab.collectNow")}{" "}
-            </button>
+            {canCollect && (
+              <button
+                type="button"
+                data-testid="boot-performance-collect"
+                onClick={collectNow}
+                disabled={collecting}
+                className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+              >
+                {collecting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+                {t("deviceBootPerformanceTab.collectNow")}{" "}
+              </button>
+            )}
           </div>
         </div>
         {notice && (
@@ -299,6 +307,7 @@ export default function DeviceBootPerformanceTab({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              data-testid="boot-performance-refresh"
               onClick={fetchData}
               disabled={loading}
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
@@ -310,19 +319,22 @@ export default function DeviceBootPerformanceTab({
               )}
               {t("deviceBootPerformanceTab.refresh")}{" "}
             </button>
-            <button
-              type="button"
-              onClick={collectNow}
-              disabled={collecting}
-              className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
-            >
-              {collecting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Zap className="h-4 w-4" />
-              )}
-              {t("deviceBootPerformanceTab.collectNow")}{" "}
-            </button>
+            {canCollect && (
+              <button
+                type="button"
+                data-testid="boot-performance-collect"
+                onClick={collectNow}
+                disabled={collecting}
+                className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
+              >
+                {collecting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
+                {t("deviceBootPerformanceTab.collectNow")}{" "}
+              </button>
+            )}
           </div>
         </div>
       </div>

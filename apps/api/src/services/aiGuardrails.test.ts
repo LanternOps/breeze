@@ -32,6 +32,15 @@ vi.mock('./aiTools', () => ({
       // file_operations base tier 1; guardrails escalate read/write/delete/mkdir/rename to
       // Tier 3 (SR5-01) and downgrade list to Tier 2 (recon only)
       file_operations: 1,
+      // Mirror the real registry entries (aiToolsScripts.ts registerTool
+      // tier: 1); their list actions resolve to Tier 2 via TIER2_ACTIONS.
+      manage_processes: 1,
+      manage_scheduled_tasks: 1,
+      // Real registry entries are tier 1 (aiToolsFilesystem.ts /
+      // aiToolsPerformance.ts); their live variants resolve to Tier 2.
+      system_cleanup: 1,
+      analyze_disk_usage: 1,
+      analyze_boot_performance: 1,
       execute_command: 3,
       // Ticketing tools
       manage_tickets: 1,
@@ -185,6 +194,57 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     it.each(t2Cases)('%s:%s → Tier 2, no approval', (tool, action) => {
       const result = checkGuardrails(tool, { action });
       expect(result.tier).toBe(2);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+    });
+  });
+
+  // --- Live device inspection: Tier 2 read-only ---
+  // Each of these runs a live command on the device (devices:execute). They
+  // sit at Tier 2 read-only so they auto-execute without a prompt but keep an
+  // audit row, and an MCP key needs ai:write to reach them.
+  describe('Tier 2 read-only — live device inspection', () => {
+    const liveCases: [string, string][] = [
+      ['manage_processes', 'list'],
+      ['manage_scheduled_tasks', 'list'],
+      ['file_operations', 'list'],
+      ['system_cleanup', 'list'],
+    ];
+
+    it.each(liveCases)('%s:%s → Tier 2, read-only, no approval', (tool, action) => {
+      const result = checkGuardrails(tool, { action });
+      expect(result.tier).toBe(2);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+      expect(result.readOnly).toBe(true);
+    });
+
+    // Tools that read stored data by default and only reach the device when a
+    // boolean input asks for fresh data. Only the live request is Tier 2.
+    const liveFlagCases: [string, Record<string, unknown>][] = [
+      ['analyze_disk_usage', { deviceId: 'd', refresh: true }],
+      ['analyze_boot_performance', { deviceId: 'd', triggerCollection: true }],
+    ];
+
+    it.each(liveFlagCases)('%s with %j → Tier 2, read-only, no approval', (tool, input) => {
+      const result = checkGuardrails(tool, input);
+      expect(result.tier).toBe(2);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+      expect(result.readOnly).toBe(true);
+    });
+
+    const storedReadCases: [string, Record<string, unknown>][] = [
+      ['analyze_disk_usage', { deviceId: 'd' }],
+      ['analyze_disk_usage', { deviceId: 'd', refresh: false }],
+      ['analyze_boot_performance', { deviceId: 'd' }],
+      ['analyze_boot_performance', { deviceId: 'd', triggerCollection: false }],
+      ['system_cleanup', { deviceId: 'd', action: 'status' }],
+    ];
+
+    it.each(storedReadCases)('%s with %j reads stored data → Tier 1', (tool, input) => {
+      const result = checkGuardrails(tool, input);
+      expect(result.tier).toBe(1);
       expect(result.allowed).toBe(true);
       expect(result.requiresApproval).toBe(false);
     });

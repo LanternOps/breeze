@@ -70,7 +70,8 @@ vi.mock('./filesystemAnalysis', () => ({
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerFilesystemTools } from './aiToolsFilesystem';
-import { saveFilesystemSnapshot } from './filesystemAnalysis';
+import { saveFilesystemSnapshot, setFilesystemScanGeneration } from './filesystemAnalysis';
+import { executeCommand } from './commandQueue';
 
 function getTool(name: string): AiTool {
   const aiTools = new Map<string, AiTool>();
@@ -125,5 +126,23 @@ describe('analyze_disk_usage empty-snapshot guard', () => {
     expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
     expect(JSON.parse(raw).snapshot.summary.filesScanned).toBe(10);
     expect(JSON.parse(raw).error).toBeUndefined();
+  });
+});
+
+describe('analyze_disk_usage without refresh', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMockState.userRows = [{ id: 'user-1' }];
+    dbMockState.deviceRows = [{ id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0' }];
+  });
+
+  // Only refresh: true reaches the device. That is the input the permission
+  // (devices:execute) and the Tier 2 classification key on, so a call without
+  // it must never start a scan, even when there is no stored analysis yet.
+  it.each([{}, { refresh: false }])('does not scan the device when there is no stored analysis (%j)', async (extra) => {
+    const raw = await getTool('analyze_disk_usage').handler({ deviceId: DEVICE_ID, ...extra }, makeAuth());
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(setFilesystemScanGeneration).not.toHaveBeenCalled();
+    expect(JSON.parse(raw).message).toContain('refresh=true');
   });
 });

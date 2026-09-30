@@ -32,6 +32,7 @@
  */
 import {
   checkGuardrails,
+  LIVE_READ_INPUT_FLAGS,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER3_ACTIONS,
@@ -117,9 +118,13 @@ export function reachableRiskTiersForTool(toolName: string): number[] | null {
   const tiers = new Set<number>();
   // The empty probe yields the base tier, which is always reachable: an action
   // absent from every TIER*_ACTIONS table falls through to it.
+  // A tool whose live path is a boolean input rather than an action
+  // (LIVE_READ_INPUT_FLAGS) reaches its live tier only with that flag set.
+  const liveFlag = LIVE_READ_INPUT_FLAGS[canonical];
   const probes: Record<string, unknown>[] = [
     {},
     ...enumeratedActions(canonical).map((action) => ({ [actionKey]: action })),
+    ...(liveFlag ? [{ [liveFlag]: true }] : []),
   ];
   for (const probe of probes) {
     try {

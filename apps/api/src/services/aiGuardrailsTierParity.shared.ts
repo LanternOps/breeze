@@ -12,7 +12,7 @@
  * a `tool (action/action)` label and the comparison against checkGuardrails
  * live here once rather than being copied per surface.
  */
-import { checkGuardrails, TOOL_ACTION_INPUT_KEYS } from './aiGuardrails';
+import { checkGuardrails, LIVE_READ_INPUT_FLAGS, TOOL_ACTION_INPUT_KEYS } from './aiGuardrails';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 
 /** A tier claim made by a mirror surface, ready to be checked. */
@@ -35,8 +35,13 @@ export interface ClaimedTierEntry {
  * ("add/remove devices", "acknowledge/resolve actions") deliberately does NOT
  * match: an unreadable label must fail loudly, because a label the guard cannot
  * parse is a label it is not guarding.
+ *
+ * The parenthetical may also name the tool's live-read input flag
+ * (LIVE_READ_INPUT_FLAGS, e.g. `analyze_disk_usage (refresh)`), which is
+ * probed as `{ flag: true }`. Flags are camelCase input keys, so uppercase is
+ * accepted there and nowhere else.
  */
-const TOOL_LABEL_RE = /^(?<tool>[a-z0-9_]+)(?: \((?<actions>[a-z0-9_/]+)\))?$/;
+const TOOL_LABEL_RE = /^(?<tool>[a-z0-9_]+)(?: \((?<actions>[a-zA-Z0-9_/]+)\))?$/;
 
 export interface ParsedToolLabel {
   tool: string;
@@ -47,10 +52,10 @@ export interface ParsedToolLabel {
 export function parseToolLabel(label: string): ParsedToolLabel | null {
   const m = TOOL_LABEL_RE.exec(label.trim());
   if (!m?.groups) return null;
-  return {
-    tool: m.groups.tool!,
-    actions: m.groups.actions ? m.groups.actions.split('/') : [],
-  };
+  const tool = m.groups.tool!;
+  const actions = m.groups.actions ? m.groups.actions.split('/') : [];
+  if (actions.some((a) => /[A-Z]/.test(a) && a !== LIVE_READ_INPUT_FLAGS[tool])) return null;
+  return { tool, actions };
 }
 
 /**
@@ -83,12 +88,13 @@ export function findTierMismatches(entries: ClaimedTierEntry[]): string[] {
     // different discriminator (execute_command → commandType, #3088). Build
     // the probe input under the same key checkGuardrails resolves.
     const actionKey = TOOL_ACTION_INPUT_KEYS[entry.tool] ?? 'action';
+    const liveFlag = LIVE_READ_INPUT_FLAGS[entry.tool];
     const inputs: Array<Record<string, unknown>> = entry.actions.length > 0
-      ? entry.actions.map((action) => ({ [actionKey]: action }))
+      ? entry.actions.map((action) => (action === liveFlag ? { [liveFlag]: true } : { [actionKey]: action }))
       : [{}];
 
     for (const input of inputs) {
-      const action = input[actionKey] as string | undefined;
+      const action = (input[actionKey] as string | undefined) ?? (liveFlag && input[liveFlag] ? liveFlag : undefined);
       const actual = resolveTier(entry.tool, input);
       if (actual.tier === entry.claimedTier) continue;
       mismatches.push(
