@@ -12,6 +12,14 @@ vi.mock('../services/password', () => ({
   verifyPassword: vi.fn()
 }));
 
+// Logout's durable signed-out record is stubbed here (covered by
+// routes/portal/auth.logout.test.ts and the portal logout integration test).
+const revokePortalSessionDurably = vi.hoisted(() => vi.fn(async (_token: string, _userId: string) => undefined));
+vi.mock('../services/portal/sessionRevocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/portal/sessionRevocation')>()),
+  revokePortalSessionDurably,
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -242,6 +250,7 @@ describe('portal compatibility routes', () => {
       headers: { Authorization: `Bearer ${token}` }
     });
     expect(logoutRes.status).toBe(200);
+    expect(revokePortalSessionDurably).toHaveBeenCalledWith(token, portalUser.id);
 
     const profileRes = await app.request('/portal/profile', {
       method: 'GET',

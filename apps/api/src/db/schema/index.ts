@@ -33,6 +33,7 @@ export * from './patches';
 export * from './integrations';
 export * from './unifi';
 export * from './portal';
+export * from './portalSessionRevocations';
 export * from './emailInbound';
 export * from './analytics';
 export * from './fleetFindings';
