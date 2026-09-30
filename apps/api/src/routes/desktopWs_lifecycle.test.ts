@@ -190,7 +190,7 @@ function acceptPublishedStart(): void {
   );
   const last = calls.at(-1);
   if (!last) return;
-  const [agentId, cmd] = last as [string, { id: string; payload: { sessionId: string } }];
+  const [agentId, cmd] = last as unknown as [string, { id: string; payload: { sessionId: string } }];
   settleDesktopStreamStart(cmd.payload.sessionId, agentId, cmd.id, { outcome: 'accepted' });
 }
 

@@ -1053,6 +1053,23 @@ describe('desktopWs', () => {
       expect(() => closeDesktopRelayForStop('no-such-session')).not.toThrow();
     });
 
+    // stop_desktop is usually dispatched from inside a request's db
+    // transaction (End, teardown). The relay's durable close must not run on
+    // that transaction: it is escaped with runOutsideDbContext.
+    it('runs the durable close outside the caller\'s db context', async () => {
+      const { runOutsideDbContext } = await import('../db');
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      acceptStart();
+      vi.mocked(runOutsideDbContext).mockClear();
+
+      closeDesktopRelayForStop(SESSION_ID);
+      expect(runOutsideDbContext).toHaveBeenCalled();
+      await vi.waitFor(() => expect(finalizeDesktopSessionOnceMock).toHaveBeenCalled());
+    });
+
     it('refuses an agent without the start fence with the agent-update message and publishes nothing', async () => {
       setupSuccessfulValidation();
       vi.mocked(prepareRevocationLeaseForStart).mockResolvedValueOnce({ ok: false, reason: 'agent_upgrade_required' });

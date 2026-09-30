@@ -353,6 +353,14 @@ func TestDesktopStreamStartNotifyModeShowsNoticeAndIndicator(t *testing.T) {
 	s := newStreamHarness(t)
 	helper := newConsentHelper(t, []string{"notify", "consent_ui"})
 	s.h.sessionBroker = newTestBrokerWithSessions(t, helper.session)
+	// Answer the fence resync synchronously, so no goroutine is still reading
+	// the stream manager when the test inspects it, and register the stream
+	// the stub start stands in for before anything runs concurrently.
+	s.h.leaseSyncRequester = func(sessionID, nonce string) error {
+		s.h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{SessionID: sessionID, SyncNonce: nonce})
+		return nil
+	}
+	setUnexportedField(t, s.h.wsDesktopMgr, "sessions", map[string]*desktop.WsStreamSession{streamSessionID: {}})
 
 	got := make(chan *ipc.Envelope, 4)
 	go func() {
@@ -413,9 +421,6 @@ func TestDesktopStreamStartNotifyModeShowsNoticeAndIndicator(t *testing.T) {
 			stopped <- env
 		}
 	}()
-	// Register a live stream so the stop reports it stopped something.
-	s.h.wsDesktopMgr = desktop.NewWsSessionManager()
-	setUnexportedField(t, s.h.wsDesktopMgr, "sessions", map[string]*desktop.WsStreamSession{streamSessionID: {}})
 	stop := handleDesktopStreamStop(s.h, streamStopCmd("88888888-8888-4888-8888-888888888888"))
 	if stop.Status != "completed" {
 		t.Fatalf("stop should complete, got %q (%s)", stop.Status, stop.Error)

@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import {
   createViewerAccessToken,
@@ -1582,14 +1582,18 @@ function failDesktopStreamStart(
   } catch {
     // The socket may already be closing; the durable close below still runs.
   }
-  void closeDesktopSessionLifecycle(sessionId, {
-    expectedWs: ws,
-    connection: desktopConnectionIdentity(session),
-    reason: 'setup_failed',
-    terminalStatus: 'failed',
-    notifyAgent: true,
-  }).catch(() => {
-    reportRetainedDesktopCleanup(sessionId, 'revoked');
+  // Escaped from any ambient request transaction: the durable close opens its
+  // own system contexts and may enqueue a job.
+  runOutsideDbContext(() => {
+    void closeDesktopSessionLifecycle(sessionId, {
+      expectedWs: ws,
+      connection: desktopConnectionIdentity(session),
+      reason: 'setup_failed',
+      terminalStatus: 'failed',
+      notifyAgent: true,
+    }).catch(() => {
+      reportRetainedDesktopCleanup(sessionId, 'revoked');
+    });
   });
   try {
     ws.close(4003, failure.closeReason);
@@ -1693,14 +1697,21 @@ export function closeDesktopRelayForStop(sessionId: string): void {
   } catch {
     // The durable close below still runs.
   }
-  void closeDesktopSessionLifecycle(sessionId, {
-    expectedWs: ws,
-    connection: desktopConnectionIdentity(session),
-    reason: 'revoked',
-    terminalStatus: 'disconnected',
-    notifyAgent: true,
-  }).catch(() => {
-    reportRetainedDesktopCleanup(sessionId, 'revoked');
+  // stop_desktop is usually dispatched from inside a request's db transaction
+  // (End, teardown). The durable close must not inherit it: it opens its own
+  // system contexts and may enqueue a job. runOutsideDbContext is synchronous,
+  // so the closing state above and the lifecycle's own synchronous prologue
+  // still land before this returns.
+  runOutsideDbContext(() => {
+    void closeDesktopSessionLifecycle(sessionId, {
+      expectedWs: ws,
+      connection: desktopConnectionIdentity(session),
+      reason: 'revoked',
+      terminalStatus: 'disconnected',
+      notifyAgent: true,
+    }).catch(() => {
+      reportRetainedDesktopCleanup(sessionId, 'revoked');
+    });
   });
 }
 

@@ -712,6 +712,12 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok {
 			h.stopWsDesktopStream(sessionID)
 			h.handleConsentSessionEnd(sessionID)
+			// The stop may have taken the remembered prompt and sent its hide
+			// before afterDesktopStart's show went out; hide again from the
+			// local prompt so the indicator is never left on screen.
+			if prompt.ShowIndicator {
+				h.sendBannerHide(sessionID, "")
+			}
 			return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 		}
 	}
