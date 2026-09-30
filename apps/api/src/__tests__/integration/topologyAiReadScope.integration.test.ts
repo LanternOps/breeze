@@ -1,6 +1,6 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
@@ -9,6 +9,11 @@ vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
   ...await original<object>(),
   resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
 }));
+// Topology AI readiness requires a usable model provider (no key = not
+// configured). These suites exercise the gate itself, so give the platform
+// path a key for their duration.
+beforeAll(() => { vi.stubEnv('ANTHROPIC_API_KEY', 'test-key'); });
+afterAll(() => { vi.unstubAllEnvs(); });
 
 import { authMiddleware } from '../../middleware/auth';
 import { createSession } from '../../services/aiAgent';
@@ -171,6 +176,20 @@ describe('topology AI read scope (M4-D1/M4-D2, real DB)', () => {
     expect(created.status).toBe(403);
     const body = await (await post(env, '/tool/get_topology', { input: { site_id: env.site.id }, binding: { kind: 'ai_session', sessionId } })).json() as { code?: string };
     expect(body.code).toBe('topology_ai_disabled');
+  });
+
+  it('with no model provider on the server, session creation and every tool call are refused as ai_not_configured', async () => {
+    const sessionId = await openSession(env, env.site.id, graphA.nodeId);
+    for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN']) vi.stubEnv(key, '');
+    try {
+      const created = await post(env, '/session', { pageContext: topologyContext(env.site.id, graphA.nodeId) });
+      expect(created.status).toBe(503);
+      expect(await created.json()).toEqual({ error: 'ai_not_configured' });
+      const body = await (await post(env, '/tool/get_topology', { input: { site_id: env.site.id }, binding: { kind: 'ai_session', sessionId } })).json() as { code?: string };
+      expect(body.code).toBe('ai_not_configured');
+    } finally {
+      vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
+    }
   });
 
   it('a site-restricted user cannot pin a site outside their allowlist, and loses a pinned site when restricted later', async () => {

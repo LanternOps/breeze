@@ -15,5 +15,6 @@
   "PATH_NOT_FOUND": "Caminho não encontrado",
   "PATH_CONFLICT": "O caminho já existe",
   "AGENT_COMMAND_REJECTED": "O dispositivo recusou o comando",
-  "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento"
+  "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento",
+  "ai_not_configured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos."
 }

@@ -551,6 +551,7 @@
     "fallback": "The evidence, health and diagnostics on this page still work.",
     "errors": {
       "disabled": "AI explanations are turned off for this organization or site.",
+      "notConfigured": "AI isn't configured on this server. An administrator needs to add a model provider key.",
       "limit": "The AI investigation limit was reached. Try again later.",
       "scopeChanged": "The selection or its site changed. Start a new explanation.",
       "accessChanged": "You no longer have access to this site's topology.",

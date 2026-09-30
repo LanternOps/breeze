@@ -9,6 +9,7 @@
 import { create } from 'zustand';
 import { fetchWithAuth } from './auth';
 import { extractApiError } from '@/lib/apiError';
+import { i18n } from '@/lib/i18n';
 import type {
   AiStreamEvent,
   ScriptBuilderContext,
@@ -128,6 +129,17 @@ interface ScriptAiState {
   clearError: () => void;
 }
 
+/**
+ * Error text for a failed script-builder request. A server with no model
+ * provider answers `code: 'ai_not_configured'`; show that plainly (localized)
+ * rather than the raw API text, so the panel never just sits empty.
+ */
+function scriptAiRequestError(data: unknown, fallback: string): string {
+  const code = data && typeof data === 'object' ? (data as { code?: unknown }).code : undefined;
+  if (code === 'ai_not_configured') return i18n.t('errors:ai_not_configured');
+  return extractApiError(data, fallback);
+}
+
 // ============================================
 // Apply tool names — when we see these in tool_result, we apply to the form
 // ============================================
@@ -224,7 +236,7 @@ export const useScriptAiStore = create<ScriptAiState>()(
         });
         if (!res.ok) {
           const data = await res.json().catch(() => null);
-          throw new Error(extractApiError(data, 'Failed to create session'));
+          throw new Error(scriptAiRequestError(data, 'Failed to create session'));
         }
         const data = await res.json();
         set({
@@ -305,7 +317,7 @@ export const useScriptAiStore = create<ScriptAiState>()(
             return;
           }
 
-          throw new Error(extractApiError(data, 'Failed to send message'));
+          throw new Error(scriptAiRequestError(data, 'Failed to send message'));
         }
 
         // Process SSE stream

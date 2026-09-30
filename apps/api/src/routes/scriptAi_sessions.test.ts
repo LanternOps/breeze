@@ -3,6 +3,13 @@ import { Hono } from 'hono';
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
+// Which platform AI provider the server is configured for (default: Anthropic).
+const providerRef = vi.hoisted(() => ({ provider: 'anthropic' as string }));
+vi.mock('../config/validate', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../config/validate')>(),
+  getConfig: () => ({ MCP_LLM_PROVIDER: providerRef.provider }),
+}));
+
 vi.mock('../db', () => ({
   db: {
     insert: vi.fn(),
@@ -188,6 +195,48 @@ describe('scriptAi routes — session CRUD', () => {
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
       expect(createScriptBuilderSession).not.toHaveBeenCalled();
+    });
+
+    it('returns ai_not_configured as 503 before creating the session when no model key is configured', async () => {
+      vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
+      vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+      try {
+        vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+
+        const res = await app.request('/ai/script-builder/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Test' }),
+        });
+
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
+        expect(createScriptBuilderSession).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('returns ai_not_configured on an OpenAI-compatible-only server: the builder always runs the Agent SDK', async () => {
+      vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
+      vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+      providerRef.provider = 'openai-compatible';
+      try {
+        vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+
+        const res = await app.request('/ai/script-builder/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Test' }),
+        });
+
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'ai_not_configured' });
+        expect(createScriptBuilderSession).not.toHaveBeenCalled();
+      } finally {
+        providerRef.provider = 'anthropic';
+        vi.unstubAllEnvs();
+      }
     });
 
     it('captures resolver throws and returns a generic retryable 503', async () => {

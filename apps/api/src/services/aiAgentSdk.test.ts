@@ -73,6 +73,12 @@ vi.mock('./llm/llmConfigResolver', () => ({
   resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
 }));
 
+// The real decision, observed: which transport a session type is checked for.
+vi.mock('./llm/llmAvailability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./llm/llmAvailability')>();
+  return { ...actual, llmUnusableCode: vi.fn(actual.llmUnusableCode) };
+});
+
 const mockCheckAiRateLimit = vi.fn();
 const mockCheckBudget = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
@@ -438,6 +444,33 @@ describe('runPreFlightChecks', () => {
       expect(mockCheckBudget).not.toHaveBeenCalled();
     },
   );
+
+  it('returns the ai_not_configured 503 contract when the platform path has no model key, before any spend', async () => {
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+    try {
+      mockResolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+      expect(result).toEqual({ ok: false, error: 'ai_not_configured', status: 503 });
+      expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+      expect(mockCheckBudget).not.toHaveBeenCalled();
+      expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('checks a script-builder session against the Agent SDK transport, every other session against chat', async () => {
+    const { llmUnusableCode } = await import('./llm/llmAvailability');
+    mockGetSession.mockResolvedValueOnce(makeSession({ type: 'script_builder' }));
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(llmUnusableCode).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'platform' }), 'agent_sdk');
+    mockGetSession.mockResolvedValueOnce(makeSession({ type: 'general' }));
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(llmUnusableCode).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'platform' }), 'chat');
+  });
 
   it('captures resolver failures and returns a generic retryable 503', async () => {
     const error = new Error('raw resolver failure');

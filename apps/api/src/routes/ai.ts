@@ -80,6 +80,7 @@ import {
   TicketDraftFailedError,
 } from '../services/aiTicketDraft';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
+import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
 // Loaded lazily, only for a topology session: its tool/transport graph must not
@@ -124,17 +125,10 @@ import {
   type ReserveAiBudgetResult,
 } from '../services/aiBudgetReservations';
 
-// Provider check that tolerates an unvalidated config: route unit tests never
-// call validateConfig(), and getConfig() throws in that state. Without a
-// validated config, behave as the default anthropic path. Production always
-// validates at boot, so this never masks a misconfiguration there.
-export function isOpenAICompatibleProvider(): boolean {
-  try {
-    return getConfig().MCP_LLM_PROVIDER === 'openai-compatible';
-  } catch {
-    return false;
-  }
-}
+// Provider check that tolerates an unvalidated config (route unit tests never
+// call validateConfig()). It lives with the "can a model be called" decision
+// it feeds (services/llm/llmAvailability.ts); re-exported for existing callers.
+export { isOpenAICompatibleProvider };
 
 /** Provider configuration revision for the topology answer cache key (M4 Task 3). */
 function topologyProviderRevision(resolved: { source: string; model?: string; configId?: string; configVersion?: number }): string {
@@ -270,6 +264,7 @@ aiRoutes.post(
       });
       return c.json(session, 201);
     } catch (err) {
+      if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       if (err instanceof TopologyAiSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       const message = err instanceof Error ? err.message : 'Failed to create session';
@@ -742,6 +737,7 @@ aiRoutes.post(
     );
     if (!preflight.ok) {
       const err = preflight.error;
+      if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
       if (preflight.status === 503) return c.json({ error: err }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);

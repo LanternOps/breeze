@@ -1,6 +1,6 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
@@ -8,6 +8,11 @@ vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
   ...await original<object>(),
   resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
 }));
+// Topology AI readiness requires a usable model provider (no key = not
+// configured). These suites exercise the gate itself, so give the platform
+// path a key for their duration.
+beforeAll(() => { vi.stubEnv('ANTHROPIC_API_KEY', 'test-key'); });
+afterAll(() => { vi.unstubAllEnvs(); });
 
 import { authMiddleware } from '../../middleware/auth';
 import { reauthorizeTopologyAiCitations } from '../../services/topology/aiCitations';

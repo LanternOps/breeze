@@ -551,6 +551,7 @@
     "fallback": "Nachweise, Zustand und Diagnosen auf dieser Seite funktionieren weiterhin.",
     "errors": {
       "disabled": "KI-Erklärungen sind für diese Organisation oder diesen Standort deaktiviert.",
+      "notConfigured": "KI ist auf diesem Server nicht eingerichtet. Ein Administrator muss einen Schlüssel für einen Modellanbieter hinzufügen.",
       "limit": "Das Limit für KI-Analysen wurde erreicht. Versuchen Sie es später erneut.",
       "scopeChanged": "Die Auswahl oder ihr Standort hat sich geändert. Starten Sie eine neue Erklärung.",
       "accessChanged": "Sie haben keinen Zugriff mehr auf die Topologie dieses Standorts.",

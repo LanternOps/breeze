@@ -551,6 +551,7 @@
     "fallback": "Le evidenze, lo stato e la diagnostica di questa pagina funzionano ancora.",
     "errors": {
       "disabled": "Le spiegazioni con IA sono disattivate per questa organizzazione o sede.",
+      "notConfigured": "L'IA non è configurata su questo server. Un amministratore deve aggiungere una chiave di un fornitore di modelli.",
       "limit": "È stato raggiunto il limite di indagini con IA. Riprova più tardi.",
       "scopeChanged": "La selezione o la sua sede è cambiata. Avvia una nuova spiegazione.",
       "accessChanged": "Non hai più accesso alla topologia di questa sede.",

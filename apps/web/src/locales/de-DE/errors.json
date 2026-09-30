@@ -15,5 +15,6 @@
   "PATH_NOT_FOUND": "Path not found",
   "PATH_CONFLICT": "The path already exists",
   "AGENT_COMMAND_REJECTED": "The device rejected the command",
-  "tool_source_unavailable": "Die Quelle dieses Tools ist derzeit nicht verfügbar"
+  "tool_source_unavailable": "Die Quelle dieses Tools ist derzeit nicht verfügbar",
+  "ai_not_configured": "KI ist auf diesem Server nicht eingerichtet. Ein Administrator muss einen Schlüssel für einen Modellanbieter hinzufügen."
 }

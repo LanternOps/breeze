@@ -15,5 +15,6 @@
   "PATH_NOT_FOUND": "Path not found",
   "PATH_CONFLICT": "The path already exists",
   "AGENT_COMMAND_REJECTED": "The device rejected the command",
-  "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor"
+  "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor",
+  "ai_not_configured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor."
 }

@@ -551,6 +551,7 @@
     "fallback": "Bu sayfadaki kanıtlar, durum bilgisi ve tanılamalar çalışmaya devam eder.",
     "errors": {
       "disabled": "Bu kuruluş veya konum için yapay zekâ açıklamaları kapalı.",
+      "notConfigured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor.",
       "limit": "Yapay zekâ inceleme sınırına ulaşıldı. Daha sonra tekrar deneyin.",
       "scopeChanged": "Seçim veya konumu değişti. Yeni bir açıklama başlatın.",
       "accessChanged": "Artık bu konumun topolojisine erişiminiz yok.",
