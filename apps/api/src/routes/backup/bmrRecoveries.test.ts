@@ -35,6 +35,7 @@ let authState: any = {
 };
 
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
@@ -193,6 +194,12 @@ vi.mock('../../services/recoveryBootstrap', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/recoveryBootstrap')>();
   return { ...actual };
 });
+
+const resolveRestoreIntegrityMock = vi.hoisted(() => vi.fn(async (_snapshotDbId: string): Promise<unknown> => null));
+vi.mock('../../services/backupRestoreIntegrity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/backupRestoreIntegrity')>()),
+  resolveRestoreIntegrity: (id: string) => resolveRestoreIntegrityMock(id),
+}));
 
 const enqueueSnapshotFileIndexHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
 vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
@@ -567,6 +574,8 @@ describe('bare-metal recoveries routes', () => {
       // bmr.SnapshotExpectsSystemState): the exchange bootstrap must carry
       // it alongside systemStateManifest, exactly as authenticate does.
       expect(body.bootstrap.bootstrap.snapshot).toMatchObject({ snapshotId: 'snap-ext-1', backupType: 'full', systemStateManifest: null });
+      // No integrity expectation resolved: the block is omitted.
+      expect(body.bootstrap).not.toHaveProperty('integrity');
 
       const updateCall = updateMock.mock.results
         .map((r) => r.value.set.mock.calls[0]?.[0])
@@ -574,6 +583,48 @@ describe('bare-metal recoveries routes', () => {
       expect(updateCall.nonceHash).toBe(hashRecoveryNonce(body.bootstrap.bootstrap.recovery.nonce));
       expect(updateCall.status).toBe('media_booted');
       expect(updateCall.codeUsedAt).toBeInstanceOf(Date);
+    });
+
+    it('the exchange bootstrap carries the snapshot integrity expectation', async () => {
+      const code = 'ABCDEFGHJ';
+      resolveRestoreIntegrityMock.mockResolvedValueOnce({
+        mode: 'attested', trust: 'server_verified', snapshotId: 'snap-ext-1', sourceDeviceId: DEVICE_ID,
+        objects: [{ role: 'manifest', key: 'snapshots/snap-ext-1/manifest.json', sha256: 'a'.repeat(64), size: 9 }],
+      });
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+          codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'none', manifestSha256: null, externalCount: null, error: null, jobId: null, storageIdentity: null,
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: null, configId: null, snapshotId: 'snap-ext-1',
+          label: null, location: null, timestamp: new Date(), size: 1, fileCount: 1, metadata: {},
+          hardwareProfile: null, systemStateManifest: null, backupType: 'full', isIncremental: false,
+          storageIdentity: null,
+        }]))
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'rig-01', osType: 'linux', architecture: 'x86_64', displayName: null }]));
+      insertMock.mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', targetConfig: {}, expiresAt: new Date(Date.now() + 86_400_000), authenticatedAt: new Date() }]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, status: 'media_booted' }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const block = {
+        v: 1, mode: 'attested', trust: 'server_verified', snapshotId: 'snap-ext-1',
+        objects: [{ role: 'manifest', key: 'snapshots/snap-ext-1/manifest.json', sha256: 'a'.repeat(64), size: 9 }],
+      };
+      expect(body.bootstrap.integrity).toEqual(block);
+      expect(body.bootstrap.bootstrap.integrity).toEqual(block);
+      expect(resolveRestoreIntegrityMock).toHaveBeenCalledWith(SNAPSHOT_ID);
     });
 
     it('#5629: helper older than the server floor — 409 helper_version_too_old BEFORE the code is claimed', async () => {

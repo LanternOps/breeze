@@ -10,7 +10,9 @@ import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared'
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
+import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { isSupportedKeyLayout } from './backupKeyLayout';
+import { boundIndexCondition, indexMatchesAttestation } from './backupRestoreIntegrity';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
@@ -54,18 +56,50 @@ export async function authorizeExternalReference(
   };
 
   const [tokenSnapshot] = await dbHandle
-    .select({ fileIndexStatus: backupSnapshots.fileIndexStatus })
+    .select({
+      fileIndexStatus: backupSnapshots.fileIndexStatus,
+      fileIndexManifestSha256: backupSnapshots.fileIndexManifestSha256,
+      integrityStatus: backupSnapshots.integrityStatus,
+      attestation: {
+        status: backupSnapshotAttestations.status,
+        manifestSha256: backupSnapshotAttestations.manifestSha256,
+      },
+    })
     .from(backupSnapshots)
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
     .where(eq(backupSnapshots.id, args.snapshotDbId))
     .limit(1);
   if (!tokenSnapshot || tokenSnapshot.fileIndexStatus !== 'complete') {
     return refuse('file index not complete');
   }
+  // The index authorizes only when it was built from exactly the manifest
+  // bytes the snapshot's attestation names (services/backupRestoreIntegrity.ts).
+  const attestation = tokenSnapshot.attestation
+    && typeof tokenSnapshot.attestation.status === 'string'
+    && typeof tokenSnapshot.attestation.manifestSha256 === 'string'
+    ? { status: tokenSnapshot.attestation.status, manifestSha256: tokenSnapshot.attestation.manifestSha256 }
+    : null;
+  const boundDigest = tokenSnapshot.fileIndexManifestSha256 ?? null;
+  if (!indexMatchesAttestation(
+    { fileIndexStatus: tokenSnapshot.fileIndexStatus, fileIndexManifestSha256: boundDigest, integrityStatus: tokenSnapshot.integrityStatus ?? null },
+    attestation,
+  )) {
+    return refuse('file index does not match the snapshot attestation');
+  }
 
+  // Membership is read in one statement with the index state it was approved
+  // on: rows of an index being rebuilt, or rebuilt from other bytes since the
+  // check above, never count.
   const [membership] = await dbHandle
     .select({ id: backupSnapshotFiles.id })
     .from(backupSnapshotFiles)
-    .where(and(eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId), eq(backupSnapshotFiles.backupPath, args.key)))
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+    .where(and(
+      eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId),
+      eq(backupSnapshotFiles.backupPath, args.key),
+      boundIndexCondition(boundDigest),
+    ))
     .limit(1);
   if (!membership) {
     return refuse('key is not a member of the snapshot file index');

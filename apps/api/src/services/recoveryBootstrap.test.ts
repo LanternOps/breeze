@@ -47,6 +47,7 @@ import {
   asRecord,
   buildRecoveryDownloadDescriptor,
   computeRecoveryDownloadExpiry,
+  buildAuthenticatedBootstrapPayload,
   expireUnusedRecoveryTokens,
   generateRecoveryToken,
   getStringValue,
@@ -433,6 +434,41 @@ describe('buildRecoveryDownloadDescriptor', () => {
 });
 
 // ── expireUnusedRecoveryTokens (D9) ─────────────────────────────────────────
+
+describe('buildAuthenticatedBootstrapPayload integrity expectation', () => {
+  const base = {
+    tokenId: 't',
+    deviceId: 'd',
+    snapshotId: 's',
+    restoreType: 'bare_metal',
+    targetConfig: null,
+    authenticatedAt: new Date('2026-09-30T00:00:00Z'),
+    device: null,
+    snapshot: { id: 's', snapshotId: 'snap-1' },
+    providerType: 's3',
+    config: null,
+  };
+  const block = {
+    v: 1,
+    mode: 'attested',
+    trust: 'server_verified',
+    snapshotId: 'snap-1',
+    objects: [{ role: 'manifest', key: 'snapshots/snap-1/manifest.json', sha256: 'a'.repeat(64), size: 3 }],
+  };
+
+  it('carries the block on the envelope and on the nested bootstrap', () => {
+    const payload = buildAuthenticatedBootstrapPayload({ ...base, integrity: block });
+    expect(payload.integrity).toEqual(block);
+    expect(payload.bootstrap.integrity).toEqual(block);
+  });
+
+  it('omits it entirely when there is none (the shape older recovery clients know)', () => {
+    const payload = buildAuthenticatedBootstrapPayload({ ...base, integrity: null });
+    expect(payload).not.toHaveProperty('integrity');
+    expect(payload.bootstrap).not.toHaveProperty('integrity');
+    expect(buildAuthenticatedBootstrapPayload(base)).not.toHaveProperty('integrity');
+  });
+});
 
 describe('expireUnusedRecoveryTokens', () => {
   const dialect = new PgDialect();

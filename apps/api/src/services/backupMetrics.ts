@@ -20,6 +20,7 @@ type BackupMetricsRecorder = {
   onUnexpectedLegacyWrite: (commandType: string, reason: string, count?: number) => void;
   onConditionalWriteProbe: (outcome: string, reason: string, count?: number) => void;
   onSnapshotPublishRefused: (reason: string, count?: number) => void;
+  onRestoreIntegrity: (commandType: string, status: string, reason: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -42,6 +43,7 @@ let recorder: BackupMetricsRecorder = {
   onUnexpectedLegacyWrite: noop,
   onConditionalWriteProbe: noop,
   onSnapshotPublishRefused: noop,
+  onRestoreIntegrity: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -63,6 +65,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onUnexpectedLegacyWrite: next?.onUnexpectedLegacyWrite ?? noop,
     onConditionalWriteProbe: next?.onConditionalWriteProbe ?? noop,
     onSnapshotPublishRefused: next?.onSnapshotPublishRefused ?? noop,
+    onRestoreIntegrity: next?.onRestoreIntegrity ?? noop,
   };
 }
 
@@ -268,4 +271,23 @@ export type BackupWriteJanitorAction = 'abort_upload' | 'settle_delete' | 'sweep
 
 export function recordBackupWriteJanitor(action: BackupWriteJanitorAction, outcome: 'ok' | 'failed', count = 1): void {
   recorder.onWriteJanitor(action, outcome, count);
+}
+
+/**
+ * The integrity expectation delivered with one restore-shaped command or
+ * recovery bootstrap (services/backupRestoreIntegrity.ts): `attested` (reason
+ * = trust: `server_verified` | `producer_only`), `unattested` (reason =
+ * `unattested_legacy` | `unattested` | `pending` | `attestation_failed`), or
+ * `absent` (no block; the snapshot could not be resolved). `override` and
+ * `refused` are reserved for when restores are gated on it.
+ */
+export type RestoreIntegrityMetricStatus = 'attested' | 'unattested' | 'absent' | 'override' | 'refused';
+
+export function recordRestoreIntegrity(
+  commandType: string,
+  status: RestoreIntegrityMetricStatus,
+  reason: string,
+  count = 1,
+): void {
+  recorder.onRestoreIntegrity(commandType, status, reason, count);
 }

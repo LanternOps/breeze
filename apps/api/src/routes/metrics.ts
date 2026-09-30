@@ -341,6 +341,13 @@ const backupAttestationsTotal = new Counter({
   registers: [register]
 });
 
+const backupRestoreIntegrityTotal = new Counter({
+  name: 'breeze_backup_restore_integrity_total',
+  help: 'Integrity expectations delivered with restore-shaped commands and recovery bootstraps, by command type, status (attested, unattested, absent, override, refused) and reason',
+  labelNames: ['type', 'status', 'reason'] as const,
+  registers: [register]
+});
+
 const backupVerificationSkipsTotal = new Counter({
   name: 'breeze_backup_verification_skips_total',
   help: 'Scheduled backup verification skips by verification type and reason',
@@ -960,6 +967,14 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
 }
 
+function recordRestoreIntegrityMetric(commandType: string, status: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupRestoreIntegrityTotal
+    .labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(status, 'unknown'), normalizeMetricLabel(reason, 'unknown'))
+    .inc(safeCount);
+}
+
 function recordUnexpectedLegacyWriteMetric(commandType: string, reason: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1181,6 +1196,7 @@ function bindMetricsRecorders(): void {
     onUnexpectedLegacyWrite: recordUnexpectedLegacyWriteMetric,
     onConditionalWriteProbe: recordConditionalWriteProbeMetric,
     onSnapshotPublishRefused: recordSnapshotPublishRefusedMetric,
+    onRestoreIntegrity: recordRestoreIntegrityMetric,
   });
 
   setAnomalyMetricsRecorder({

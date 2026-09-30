@@ -1694,6 +1694,22 @@ describe('backup storage-session and helper-capability metrics', () => {
     for (const s of series) expect(Object.keys(s.labels)).toEqual(['outcome']);
   });
 
+  it('counts restore integrity expectations by command type, status and reason', async () => {
+    const { recordRestoreIntegrity } = await import('../services/backupMetrics');
+    recordRestoreIntegrity('backup_restore', 'attested', 'server_verified');
+    recordRestoreIntegrity('backup_restore', 'attested', 'server_verified');
+    recordRestoreIntegrity('vm_instant_boot', 'unattested', 'unattested_legacy');
+    recordRestoreIntegrity('bmr_recover', 'absent', 'snapshot_unresolved');
+
+    const series = await seriesOf('breeze_backup_restore_integrity_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { type: 'backup_restore', status: 'attested', reason: 'server_verified' }, value: 2 },
+      { labels: { type: 'vm_instant_boot', status: 'unattested', reason: 'unattested_legacy' }, value: 1 },
+      { labels: { type: 'bmr_recover', status: 'absent', reason: 'snapshot_unresolved' }, value: 1 },
+    ]));
+    for (const s of series) expect(Object.keys(s.labels).sort()).toEqual(['reason', 'status', 'type']);
+  });
+
   it('counts backup helper capability regressions by capability only', async () => {
     const { recordBackupCapabilityRegressed } = await import('../services/backupMetrics');
     recordBackupCapabilityRegressed('integrity');

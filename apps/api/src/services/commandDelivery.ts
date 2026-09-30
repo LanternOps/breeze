@@ -2,6 +2,7 @@ import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredential
 import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
 import { hasDbAccessContext, withDbTransaction } from '../db';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
+import { RECOVERY_INTEGRITY_COMMAND_TYPES, deliverRecoveryCommandIntegrity } from './backupRecoveryCommandIntegrity';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import {
   isCommandDeliveryDeferral,
@@ -99,6 +100,13 @@ registerDeliveryRefresher('software_install', async (payload) => {
 // refresher, it does not compete with it.
 for (const type of BROKERED_READ_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBrokeredReadCommand);
+}
+// Every restore-shaped read above also carries the snapshot's integrity
+// expectation, written at delivery (services/backupRestoreIntegrity.ts). The
+// bare-metal recovery commands read no storage destination from their payload
+// (they run against a recovery token) and get only the expectation.
+for (const type of RECOVERY_INTEGRITY_COMMAND_TYPES) {
+  registerDeliveryRefresher(type, deliverRecoveryCommandIntegrity);
 }
 // Backup WRITES queued as commands (on-demand MSSQL / Hyper-V): a helper that
 // reports brokered writes gets a write-scoped storage session; any other

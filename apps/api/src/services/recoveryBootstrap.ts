@@ -463,7 +463,14 @@ export function buildAuthenticatedBootstrapPayload(args: {
   recovery?: AuthenticatedBootstrapRecovery | null;
   grantedCapabilities?: string[];
   fileIndex?: { status: 'complete'; manifestSha256: string; externalCount: number; originSnapshotIds: string[] } | null;
+  /**
+   * The snapshot's integrity expectation (services/backupRestoreIntegrity.ts
+   * integrityPayload), on the envelope and on the nested bootstrap. Omitted
+   * when there is none.
+   */
+  integrity?: Record<string, unknown> | null;
 }) {
+  const integrity = args.integrity ? { integrity: args.integrity } : {};
   const providerSnapshotId =
     getStringValue(asNullableRecord(args.snapshot), 'snapshotId') ?? args.snapshotId;
   const download = providerSnapshotId
@@ -495,6 +502,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
       : null,
     download,
     ...(args.recovery ? { recovery: args.recovery } : {}),
+    ...integrity,
   };
 
   return {
@@ -513,6 +521,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
     // the top-level response, not the doubly-nested `bootstrap.bootstrap`.
     snapshot: args.fileIndex && args.snapshot ? { ...args.snapshot, fileIndex: args.fileIndex } : args.snapshot,
     authenticatedAt: args.authenticatedAt.toISOString(),
+    ...integrity,
     bootstrap,
   };
 }

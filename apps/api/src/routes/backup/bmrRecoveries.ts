@@ -46,6 +46,11 @@ import {
 } from '../../services/recoveryBootstrap';
 import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
 import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
+import {
+  lookupIntegrityInformational,
+  recoveryBootstrapIntegrity,
+  resolveRestoreIntegrity,
+} from '../../services/backupRestoreIntegrity';
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { BMR_PROGRESS_IP_LIMIT, enforcePublicRateLimit, enforceTokenRateLimit, runInRecoveryOrgContext } from './bmr';
@@ -369,6 +374,14 @@ async function buildRecoveryExchangeBootstrap(
     .where(eq(devices.id, tokenRow.deviceId))
     .limit(1);
 
+  // The snapshot's integrity expectation (informational in this release).
+  const integrity = recoveryBootstrapIntegrity(
+    await lookupIntegrityInformational(
+      { label: 'recovery bootstrap', snapshotRef: snapshot.id },
+      () => resolveRestoreIntegrity(snapshot.id),
+    ),
+  );
+
   return buildAuthenticatedBootstrapPayload({
     tokenId: tokenRow.id,
     deviceId: tokenRow.deviceId,
@@ -422,6 +435,7 @@ async function buildRecoveryExchangeBootstrap(
     recovery,
     grantedCapabilities: negotiated?.grantedCapabilities,
     fileIndex: negotiated?.fileIndex,
+    integrity,
   });
 }
 
