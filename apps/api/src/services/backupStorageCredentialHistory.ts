@@ -308,7 +308,12 @@ export async function recordCredentialChange(input: {
  * enforcement. System context; each destination in its own short
  * transaction; never logs a key.
  */
-export async function baselineCredentialHistory(opts: { now?: Date; batchSize?: number } = {}): Promise<{
+export async function baselineCredentialHistory(opts: {
+  now?: Date;
+  batchSize?: number;
+  /** Test seam: runs after a destination was listed and before it is locked and recorded. */
+  beforeRecord?: (configId: string) => Promise<void>;
+} = {}): Promise<{
   scanned: number;
   recorded: number;
   failed: number;
@@ -338,12 +343,28 @@ export async function baselineCredentialHistory(opts: { now?: Date; batchSize?: 
     if (batch.length === 0) break;
     afterId = batch[batch.length - 1]!.id;
 
-    for (const config of batch) {
+    for (const listed of batch) {
       stats.scanned += 1;
-      const credential = s3CredentialOf(config.provider, config.providerConfig);
-      if (!credential) continue;
+      if (!s3CredentialOf(listed.provider, listed.providerConfig)) continue;
       try {
+        await opts.beforeRecord?.(listed.id);
         const inserted = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+          // Re-read under the destination's row lock: a concurrent key change
+          // (which updates this row, then records the change) either landed
+          // already — and is seen here — or waits for this transaction.
+          const [config] = await db
+            .select({
+              id: backupConfigs.id,
+              orgId: backupConfigs.orgId,
+              provider: backupConfigs.provider,
+              providerConfig: backupConfigs.providerConfig,
+            })
+            .from(backupConfigs)
+            .where(eq(backupConfigs.id, listed.id))
+            .limit(1)
+            .for('update');
+          const credential = config ? s3CredentialOf(config.provider, config.providerConfig) : null;
+          if (!config || !credential) return false;
           const [current] = await db
             .select({ id: backupStorageCredentialHistory.id, fingerprint: backupStorageCredentialHistory.accessKeyFingerprint })
             .from(backupStorageCredentialHistory)
@@ -372,7 +393,7 @@ export async function baselineCredentialHistory(opts: { now?: Date; batchSize?: 
       } catch (err) {
         stats.failed += 1;
         console.error('[backupStorageCredentialHistory] could not record the storage key in use for a destination', {
-          configId: config.id,
+          configId: listed.id,
           error: err instanceof Error ? err.name : 'unknown',
         });
       }
@@ -396,10 +417,10 @@ export type CheckResult =
 /**
  * Checks a replaced key. Reads the row in the caller's organization (`inOrg`),
  * tries the old key with no DB context held, then records the outcome. A
- * refused key is recorded as disabled (probe_denied) and its sealed settings
- * erased; when storage says the key id itself no longer exists, every other
- * replaced row with the same fingerprint (any organization — system context)
- * is recorded too, since it is the same key on the same storage.
+ * refused key is recorded as disabled (probe_denied, with the storage error
+ * code) and its sealed settings erased; when storage says the key id itself
+ * no longer exists, the organization's other replaced rows with the same
+ * fingerprint are recorded too, since it is the same key on the same storage.
  */
 export async function checkReplacedCredential(input: {
   historyId: string;
@@ -451,7 +472,12 @@ export async function checkReplacedCredential(input: {
       })
       .where(and(eq(backupStorageCredentialHistory.id, loaded.id), isNull(backupStorageCredentialHistory.revokedAt))));
     if (code === 'InvalidAccessKeyId') {
-      await withSystemDbAccessContext(() => db.update(backupStorageCredentialHistory)
+      // Storage says the key id no longer exists: the organization's other
+      // replaced destinations using the same key on the same storage are
+      // recorded too. Never another organization's — the fingerprint names a
+      // key id and a storage location, not who can reach it — and never a
+      // destination still using the key.
+      await input.inOrg(() => db.update(backupStorageCredentialHistory)
         .set({
           revokedAt: at,
           revocationEvidence: 'probe_denied',
@@ -460,6 +486,7 @@ export async function checkReplacedCredential(input: {
           updatedAt: at,
         })
         .where(and(
+          eq(backupStorageCredentialHistory.orgId, input.orgId),
           eq(backupStorageCredentialHistory.accessKeyFingerprint, loaded.fingerprint),
           isNull(backupStorageCredentialHistory.revokedAt),
           isNotNull(backupStorageCredentialHistory.supersededAt),

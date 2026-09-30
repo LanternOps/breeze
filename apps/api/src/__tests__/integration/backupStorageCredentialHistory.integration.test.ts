@@ -9,8 +9,10 @@
  *  - checking an old key: a refusal records probe_denied and erases the
  *    sealed settings; a key that still works, or a check that cannot tell,
  *    records nothing; a key id that no longer exists is recorded for every
- *    replaced destination using it, in any organization — never for a
- *    destination still using it;
+ *    other replaced destination of the same organization using it — never
+ *    for another organization's, and never for a destination still using it;
+ *  - the first-start recording re-reads each destination under a row lock, so
+ *    a key replaced concurrently is never recorded as current;
  *  - operator confirmation is recorded as weaker evidence;
  *  - sealed settings are erased 30 days after the key was replaced;
  *  - RLS: an organization cannot see another's history; a row cannot name
@@ -237,24 +239,58 @@ describe('storage key history', () => {
     })).toEqual({ status: 'not_checkable', reason: 'in_use' });
   });
 
-  runDb('a key id that no longer exists is recorded for every replaced destination using it, in any organization — never one still using it', async () => {
+  runDb('a key id that no longer exists is recorded for the organization\'s other replaced destinations using it — never another organization\'s, never one still in use', async () => {
     const a = await seedWriteTenant();
     const b = await seedWriteTenant();
-    const c = await seedWriteTenant();
+    const aSecond = randomUUID();
+    const aThird = randomUUID();
+    for (const id of [aSecond, aThird]) {
+      await getTestDb().execute(sql`
+        INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
+        VALUES (${id}, ${a.orgId}, 'Second', 'file', 's3', ${JSON.stringify(WRITE_DESTINATION)}::jsonb)
+      `);
+    }
     await baselineCredentialHistory();
     await replaceKeys(a, { ...WRITE_DESTINATION, ...NEW_KEYS });
+    await replaceKeys({ orgId: a.orgId, configId: aSecond }, { ...WRITE_DESTINATION, ...NEW_KEYS });
     await replaceKeys(b, { ...WRITE_DESTINATION, ...NEW_KEYS });
     const [aOld] = (await historyFor(a.configId)) as [Row];
+    const [aSecondOld] = (await historyFor(aSecond)) as [Row];
+    const [aThirdCurrent] = (await historyFor(aThird)) as [Row];
     const [bOld] = (await historyFor(b.configId)) as [Row];
-    const [cCurrent] = (await historyFor(c.configId)) as [Row];
-    expect(bOld.access_key_fingerprint).toBe(aOld.access_key_fingerprint);
-    expect(cCurrent.access_key_fingerprint).toBe(aOld.access_key_fingerprint);
+    expect(new Set([aSecondOld.access_key_fingerprint, aThirdCurrent.access_key_fingerprint, bOld.access_key_fingerprint]))
+      .toEqual(new Set([aOld.access_key_fingerprint]));
 
     await checkReplacedCredential({ historyId: aOld.id, orgId: a.orgId, inOrg: inOrg(a.orgId), userId: null, probe: refused('InvalidAccessKeyId') });
 
-    expect(await historyRow(bOld.id)).toMatchObject({ revocation_evidence: 'probe_denied', sealed_previous_secret: null });
-    expect((await historyRow(bOld.id)).evidence_detail).toMatch(/another destination/);
-    expect(await historyRow(cCurrent.id)).toMatchObject({ revoked_at: null });
+    expect(await historyRow(aSecondOld.id)).toMatchObject({ revocation_evidence: 'probe_denied', sealed_previous_secret: null });
+    expect((await historyRow(aSecondOld.id)).evidence_detail).toMatch(/another destination/);
+    expect(await historyRow(aThirdCurrent.id)).toMatchObject({ revoked_at: null });
+    const bAfter = await historyRow(bOld.id);
+    expect(bAfter.revoked_at).toBeNull();
+    expect(bAfter.sealed_previous_secret).not.toBeNull();
+  });
+
+  runDb('the first-start recording never records a key replaced concurrently as current', async () => {
+    const t = await seedWriteTenant();
+    // The destination changes after the recording read it but before it locks it.
+    let changed = false;
+    await baselineCredentialHistory({
+      beforeRecord: async (configId) => {
+        if (changed || configId !== t.configId) return;
+        changed = true;
+        await replaceKeys(t, { ...WRITE_DESTINATION, ...NEW_KEYS });
+      },
+    });
+    const rows = await historyFor(t.configId);
+    expect(rows).toHaveLength(2);
+    const [old, current] = rows as [Row, Row];
+    expect(old.superseded_at).not.toBeNull();
+    expect(old.sealed_previous_secret).not.toBeNull();
+    expect(current.superseded_at).toBeNull();
+    expect(current.access_key_fingerprint).toBe(credentialFingerprint(
+      NEW_KEYS.accessKey, normalizeStorageIdentity('s3', WRITE_DESTINATION),
+    ));
   });
 
   runDb('a key refused for another reason is recorded only for the destination checked', async () => {

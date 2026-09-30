@@ -556,11 +556,14 @@ configsRoutes.delete(
   }
 
   const { id: configId } = c.req.valid('param');
+  // Locked so the first-start key recording (services/backupStorageCredentialHistory.ts)
+  // and this deletion see the destination one after the other.
   const [existing] = await db
     .select()
     .from(backupConfigs)
     .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
-    .limit(1);
+    .limit(1)
+    .for('update');
   if (!existing) {
     return c.json({ error: 'Config not found' }, 404);
   }

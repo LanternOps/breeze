@@ -11,7 +11,7 @@ const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'set', 'values']) {
+  for (const method of ['from', 'where', 'limit', 'for', 'returning', 'set', 'values']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
