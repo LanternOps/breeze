@@ -1,9 +1,10 @@
 import { Hono, type Context } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
+import { binaryS3Key, binaryStoreDir, type BinaryStore } from '../../services/binaryStores';
 import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
@@ -114,8 +115,6 @@ interface ComponentDownloadConfig {
   path: string;
   /** Log-line prefix, e.g. 'watchdog-download' → '[watchdog-download] ...'. */
   logTag: string;
-  /** S3 key prefix, e.g. 'watchdog' → 'watchdog/breeze-watchdog-linux-amd64'. */
-  s3Prefix: string;
   /** Human label used in the 404 body, e.g. 'Watchdog binary "..." is not available.' */
   entityLabel: string;
   /** Resolves the on-disk filename for a validated (os, arch) pair. */
@@ -133,8 +132,12 @@ interface ComponentDownloadConfig {
    * builder falls back to the env-resolved BINARY_VERSION/BREEZE_VERSION.
    */
   githubUrlFor: (os: string, arch: string, version?: string) => string;
-  /** Local binary directory to serve from in non-github mode. */
-  binaryDir: () => string;
+  /**
+   * Binaries directory the file is staged in (non-github mode). It decides
+   * BOTH the disk path and the S3 key (binaryS3Key), so the route always
+   * reads the object syncBinaries() uploaded for that file (#7515).
+   */
+  store: BinaryStore;
 }
 
 // breeze-{component}-{os}-{arch}[.exe] — the shape shared by agent, watchdog,
@@ -303,10 +306,11 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
       }
     }
 
-    // Local mode: try S3 presigned redirect first (bandwidth offload)
+    // Local mode: try S3 presigned redirect first (bandwidth offload). The key
+    // comes from the file's store, the same one syncBinaries() uploaded it to.
     if (isS3Configured()) {
       try {
-        const s3Key = `${config.s3Prefix}/${filename}`;
+        const s3Key = binaryS3Key(config.store, filename);
         const url = await getPresignedUrl(s3Key);
         return c.redirect(url, 302);
       } catch (err) {
@@ -321,7 +325,7 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     }
 
     // Local mode: serve from disk
-    const binaryDir = config.binaryDir();
+    const binaryDir = binaryStoreDir(config.store);
     const filePath = join(binaryDir, filename);
 
     let fileStat: ReturnType<typeof statSync>;
@@ -383,12 +387,11 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
 registerComponentDownloadRoute({
   path: '/download/:os/:arch',
   logTag: 'agent-download',
-  s3Prefix: 'agent',
   entityLabel: 'Agent binary',
   component: 'agent',
   filenameFor: perArchFilename('agent'),
   githubUrlFor: getGithubAgentUrl,
-  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+  store: 'agent',
 });
 
 // ============================================
@@ -411,7 +414,7 @@ downloadRoutes.get('/download/windows/amd64/msi', async (c) => {
   const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'agent-msi-download');
   if (rateLimited) return rateLimited;
 
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const binaryDir = binaryStoreDir('agent');
   const filePath = join(binaryDir, 'breeze-agent.msi');
 
   let fileStat: ReturnType<typeof statSync>;
@@ -597,12 +600,11 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
 registerComponentDownloadRoute({
   path: '/download/watchdog/:os/:arch',
   logTag: 'watchdog-download',
-  s3Prefix: 'watchdog',
   entityLabel: 'Watchdog binary',
   component: 'watchdog',
   filenameFor: perArchFilename('watchdog'),
   githubUrlFor: getGithubWatchdogUrl,
-  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+  store: 'agent',
 });
 
 // ============================================
@@ -616,12 +618,11 @@ registerComponentDownloadRoute({
 registerComponentDownloadRoute({
   path: '/download/backup/:os/:arch',
   logTag: 'backup-download',
-  s3Prefix: 'backup',
   entityLabel: 'Backup binary',
   component: 'backup',
   filenameFor: perArchFilename('backup'),
   githubUrlFor: getGithubBackupUrl,
-  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+  store: 'agent',
 });
 
 // breeze-recovery-linux-<arch>.iso (W04b): the bare-metal recovery media,
@@ -634,13 +635,12 @@ registerComponentDownloadRoute({
 registerComponentDownloadRoute({
   path: '/download/recovery-iso/:os/:arch',
   logTag: 'recovery-iso-download',
-  s3Prefix: 'recovery-iso',
   entityLabel: 'Recovery media',
   component: 'recovery-iso',
   filenameFor: (os, arch) => (os === 'linux' ? `breeze-recovery-linux-${arch}.iso` : undefined),
   invalidOsMessage: (os) => `Recovery media is only available for linux today. Got: ${os}`,
   githubUrlFor: (_os, arch, version) => getGithubRecoveryIsoUrl(arch, version),
-  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+  store: 'agent',
 });
 
 // breeze-user-helper: the GUI-subsystem sibling of breeze-agent (Windows in
@@ -654,12 +654,11 @@ registerComponentDownloadRoute({
 registerComponentDownloadRoute({
   path: '/download/user-helper/:os/:arch',
   logTag: 'user-helper-download',
-  s3Prefix: 'user-helper',
   entityLabel: 'User-helper binary',
   component: 'user-helper',
   filenameFor: perArchFilename('user-helper'),
   githubUrlFor: getGithubUserHelperUrl,
-  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+  store: 'agent',
 });
 
 // ============================================

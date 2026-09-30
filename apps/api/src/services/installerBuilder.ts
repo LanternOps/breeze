@@ -30,6 +30,7 @@ import {
   isEncodedWindowsFilenameApiHost,
 } from './installerFilenameHost';
 import { getObjectStream, isS3Configured } from './s3Storage';
+import { binaryS3Key, binaryStoreDir } from './binaryStores';
 
 // --- Enrollment key validation ---
 
@@ -546,11 +547,11 @@ async function fetchVerifiedMacosPkgUncached(
     return { buffer: result.buffer, artifact: result.verified };
   }
 
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const binaryDir = binaryStoreDir('agent');
   const result = await fetchVerifiedLocalArtifact({
     assetName,
     diskPath: join(binaryDir, assetName),
-    s3Key: `agent/${assetName}`,
+    s3Key: binaryS3Key('agent', assetName),
     expectedPlatformTrust: MACOS_PLATFORM_TRUST,
     requireMacosPublisher: true,
   });
@@ -610,11 +611,11 @@ async function fetchVerifiedHelperInstallerUncached(os: string): Promise<Verifie
     return { buffer: result.buffer, artifact: result.verified };
   }
 
-  const binaryDir = resolve(process.env.HELPER_BINARY_DIR || './agent/bin');
+  const binaryDir = binaryStoreDir('helper');
   const result = await fetchVerifiedLocalArtifact({
     assetName,
     diskPath: join(binaryDir, assetName),
-    s3Key: `helper/${assetName}`,
+    s3Key: binaryS3Key('helper', assetName),
     expectedPlatformTrust: '',
     requireMacosPublisher: false,
     manifestPairCandidates: helperInstallerManifestCandidates(binaryDir),

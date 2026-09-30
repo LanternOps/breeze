@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
+import { binaryS3Key, binaryStoreDir } from '../../services/binaryStores';
 import { getBinarySource, getGithubViewerUrl, VIEWER_FILENAMES } from '../../services/binarySource';
 
 export const viewerDownloadRoutes = new Hono();
@@ -31,7 +32,7 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
   // Local mode: try S3 presigned redirect first (bandwidth offload)
   if (isS3Configured()) {
     try {
-      const s3Key = `viewer/${filename}`;
+      const s3Key = binaryS3Key('viewer', filename);
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
@@ -47,7 +48,7 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
   }
 
   // Local mode: serve from disk
-  const viewerDir = resolve(process.env.VIEWER_BINARY_DIR || './viewer/bin');
+  const viewerDir = binaryStoreDir('viewer');
   const filePath = join(viewerDir, filename);
 
   let fileStat: ReturnType<typeof statSync>;
