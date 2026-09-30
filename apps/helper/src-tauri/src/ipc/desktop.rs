@@ -1,26 +1,25 @@
 //! Desktop consent dialog + session banner: window creation, frontend event
-//! emission, and the bridge that carries the user's consent decision from the
-//! `submit_consent` Tauri command back to the IPC session loop.
+//! emission, and the bridge that carries the prompt window's events (the
+//! prompt is on screen; the user's answer) back to the IPC session loop.
 //!
 //! The Go agent (`agent/internal/heartbeat/consent_gate.go`) drives this:
-//!   - `consent_request` (env id `consent-<sessionId>`, sent via
-//!     `SendCommandAndWait`) → we pop up the always-on-top consent window and
-//!     wait for the user. The agent expects a `consent_result` response on the
-//!     SAME socket with the SAME envelope id; that correlation is done by
-//!     `Session.HandleResponse` in `agent/internal/sessionbroker/session.go`
-//!     (it routes by `env.ID`). `expectedResponseType("consent_request")` is
-//!     `""` (not in the switch), so the response *type* is not validated — but
-//!     we still send the canonical `consent_result` type for correctness.
+//!   - `consent_request` (env id `consent-<sessionId>`) → we pop up the
+//!     always-on-top consent window. The exchange itself (presentation
+//!     acknowledgement, one terminal result, nonce correlation, refusing a
+//!     second prompt) lives in [`super::consent`]; this module only owns the
+//!     Tauri side.
 //!   - `banner_show` / `banner_hide` (fire-and-forget `SendNotify`) → we
 //!     create / close the small always-on-top session banner window.
 //!
 //! Tauri types live only in this submodule so the wire-protocol layer
-//! (`envelope`, `client`) stays transport-only where it can.
+//! (`envelope`, `client`, `consent`) stays transport-only where it can.
 
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+pub use super::consent::{ConsentRequest, UiEvent};
 
 /// Window label for the consent dialog. The React entry branches on
 /// `location.hash === "#consent"` to render `ConsentDialog`.
@@ -28,31 +27,6 @@ pub const CONSENT_WINDOW_LABEL: &str = "consent";
 /// Window label for the session banner. React renders `SessionBanner` for
 /// `location.hash === "#banner"`.
 pub const BANNER_WINDOW_LABEL: &str = "session-banner";
-
-/// The `consent_request` payload from the agent. JSON keys mirror Go's
-/// `ipc.ConsentRequest` (`agent/internal/ipc/message.go`).
-#[derive(Debug, Deserialize)]
-pub struct ConsentRequest {
-    #[serde(rename = "sessionId", default)]
-    pub session_id: String,
-    #[serde(rename = "technicianName", default)]
-    pub technician_name: String,
-    #[serde(rename = "technicianEmail", default)]
-    pub technician_email: String,
-    #[serde(rename = "orgName", default)]
-    pub org_name: String,
-    #[serde(rename = "timeoutMs", default)]
-    pub timeout_ms: i64,
-    #[serde(rename = "onTimeout", default)]
-    pub on_timeout: String,
-}
-
-/// The `consent_result` payload sent back to the agent. Matches Go's
-/// `ipc.ConsentResult` (`{"decision":"allow"|"deny"}`).
-#[derive(Debug, Serialize)]
-pub struct ConsentResult {
-    pub decision: String,
-}
 
 /// The `banner_show` payload from the agent. Mirrors Go's
 /// `ipc.BannerShowRequest`.
@@ -85,6 +59,9 @@ struct ConsentRequestEvent<'a> {
     timeout_ms: i64,
     #[serde(rename = "onTimeout")]
     on_timeout: Option<&'a str>,
+    /// Present for a v2 prompt: the window echoes it when it confirms the
+    /// prompt is on screen and when it reports the answer.
+    nonce: Option<&'a str>,
 }
 
 /// Payload emitted to the banner window's React frontend.
@@ -103,54 +80,61 @@ fn none_if_empty(s: &str) -> Option<&str> {
     }
 }
 
-/// A consent decision routed from the `submit_consent` Tauri command back to the
-/// IPC session loop, which writes the `consent_result` frame over the socket.
-#[derive(Debug, Clone)]
-pub struct ConsentDecision {
-    /// The session this decision answers; the IPC loop maps it to the pending
-    /// envelope id `consent-<session_id>`.
-    pub session_id: String,
-    /// `"allow"` or `"deny"`.
-    pub decision: String,
-}
-
 /// Bridge held in Tauri managed state. Each live IPC session registers its
-/// outbound decision sender here; `submit_consent` looks it up and forwards the
-/// user's verdict. A session deregisters on teardown so a stale sender from a
-/// dropped connection is never used.
+/// event sender here; the `consent_presented` / `submit_consent` Tauri
+/// commands forward the prompt window's events through it. A session
+/// deregisters on teardown so a stale sender from a dropped connection is
+/// never used. It also holds the request currently on screen, so a window
+/// that mounts after the `consent-request` event was emitted can still fetch
+/// it (`get_consent_request`) instead of rendering blank.
 #[derive(Default)]
 pub struct ConsentBridge {
-    sender: Mutex<Option<tokio::sync::mpsc::UnboundedSender<ConsentDecision>>>,
+    sender: Mutex<Option<tokio::sync::mpsc::UnboundedSender<UiEvent>>>,
+    current: Mutex<Option<serde_json::Value>>,
 }
 
 impl ConsentBridge {
-    /// Register the active session's decision sender, replacing any previous one
+    /// Register the active session's event sender, replacing any previous one
     /// (a reconnect supersedes the old session's bridge).
-    pub fn set_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<ConsentDecision>) {
+    pub fn set_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<UiEvent>) {
         if let Ok(mut guard) = self.sender.lock() {
             *guard = Some(tx);
         }
     }
 
     /// Drop the current sender (called when a session ends) so later
-    /// `submit_consent` calls fail fast instead of sending into a dead channel.
+    /// commands fail fast instead of sending into a dead channel.
     pub fn clear_sender(&self) {
         if let Ok(mut guard) = self.sender.lock() {
             *guard = None;
         }
+        self.set_current(None);
     }
 
-    /// Forward a decision to the live session loop. Returns `false` if there is
-    /// no active session (no bridge registered, or the loop's receiver is gone).
-    pub fn submit(&self, decision: ConsentDecision) -> bool {
+    /// Forward a window event to the live session loop. Returns `false` if
+    /// there is no active session (no bridge registered, or the loop's
+    /// receiver is gone).
+    pub fn submit(&self, event: UiEvent) -> bool {
         let guard = match self.sender.lock() {
             Ok(g) => g,
             Err(_) => return false,
         };
         match guard.as_ref() {
-            Some(tx) => tx.send(decision).is_ok(),
+            Some(tx) => tx.send(event).is_ok(),
             None => false,
         }
+    }
+
+    /// Record (or clear) the request the consent window should display.
+    pub fn set_current(&self, event: Option<serde_json::Value>) {
+        if let Ok(mut guard) = self.current.lock() {
+            *guard = event;
+        }
+    }
+
+    /// The request the consent window should display, if any.
+    pub fn current(&self) -> Option<serde_json::Value> {
+        self.current.lock().ok().and_then(|g| g.clone())
     }
 }
 
@@ -161,14 +145,24 @@ impl ConsentBridge {
 /// `consent` / `index.html#consent`,
 /// `inner_size(380,300).center().decorations(false).always_on_top(true)
 ///  .focused(true).skip_taskbar(true)`.
-pub fn show_consent_window(app: &AppHandle, req: &ConsentRequest) {
+pub fn show_consent_window(
+    app: &AppHandle,
+    bridge: &ConsentBridge,
+    req: &ConsentRequest,
+) -> Result<(), String> {
+    let event = consent_request_event(req);
+    let value = serde_json::to_value(&event).map_err(|e| e.to_string())?;
+    // Stored before the window exists so a window that mounts late can pull it.
+    bridge.set_current(Some(value));
+
     if let Some(win) = app.get_webview_window(CONSENT_WINDOW_LABEL) {
-        // Already open (e.g. a re-prompt): re-emit and refocus rather than
+        // Already open (e.g. a v1 re-prompt): re-emit and refocus rather than
         // building a duplicate window (Tauri errors on a duplicate label).
         let _ = win.show();
         let _ = win.set_focus();
-        emit_consent_request(app, req);
-        return;
+        return app
+            .emit("consent-request", &event)
+            .map_err(|e| format!("emit consent-request: {}", e));
     }
 
     let builder = WebviewWindowBuilder::new(
@@ -186,27 +180,42 @@ pub fn show_consent_window(app: &AppHandle, req: &ConsentRequest) {
     .resizable(false);
 
     match builder.build() {
-        Ok(_win) => emit_consent_request(app, req),
-        Err(e) => eprintln!("[helper] failed to create consent window: {}", e),
+        Ok(_win) => {
+            // Best effort: the window also pulls the request on mount, so a
+            // missed event only delays it, never loses it.
+            if let Err(e) = app.emit("consent-request", &event) {
+                eprintln!("[helper] failed to emit consent-request: {}", e);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            bridge.set_current(None);
+            Err(format!("create consent window: {}", e))
+        }
     }
 }
 
-fn emit_consent_request(app: &AppHandle, req: &ConsentRequest) {
-    let event = ConsentRequestEvent {
+fn consent_request_event(req: &ConsentRequest) -> ConsentRequestEvent<'_> {
+    ConsentRequestEvent {
         session_id: &req.session_id,
         technician_name: &req.technician_name,
         technician_email: none_if_empty(&req.technician_email),
         org_name: none_if_empty(&req.org_name),
         timeout_ms: req.timeout_ms,
         on_timeout: none_if_empty(&req.on_timeout),
-    };
-    if let Err(e) = app.emit("consent-request", &event) {
-        eprintln!("[helper] failed to emit consent-request: {}", e);
+        nonce: if req.is_v2() {
+            Some(req.nonce.as_str())
+        } else {
+            None
+        },
     }
 }
 
 /// Close the consent window (after a decision is submitted, or to dismiss it).
 pub fn close_consent_window(app: &AppHandle) {
+    if let Some(bridge) = app.try_state::<std::sync::Arc<ConsentBridge>>() {
+        bridge.set_current(None);
+    }
     if let Some(win) = app.get_webview_window(CONSENT_WINDOW_LABEL) {
         if let Err(e) = win.close() {
             eprintln!("[helper] failed to close consent window: {}", e);

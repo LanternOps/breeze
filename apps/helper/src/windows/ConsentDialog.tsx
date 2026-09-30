@@ -8,6 +8,8 @@ export interface ConsentRequest {
   orgName: string | null;
   timeoutMs: number;
   onTimeout: "proceed" | "block";
+  /** Present for a v2 prompt (see ConsentWindow.tsx); null/absent for v1. */
+  nonce?: string | null;
 }
 
 export function ConsentDialog({

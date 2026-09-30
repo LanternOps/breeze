@@ -48,6 +48,22 @@ type DetectedSession struct {
 	// idle (or fail to) leave IdleKnown false.
 	IdleFor   time.Duration `json:"-"`
 	IdleKnown bool          `json:"-"`
+
+	// Locked reports a locked screen for this session; only meaningful when
+	// LockKnown is true. Windows reads it from the WTS session flags, Linux
+	// from logind's LockedHint. The consent gate treats an unknown lock state
+	// as "cannot tell whether the user can see the prompt".
+	Locked    bool `json:"-"`
+	LockKnown bool `json:"-"`
+
+	// Linux (logind) only: the session Class ("user", "greeter",
+	// "background", ...) and raw Type ("x11", "wayland", "tty", ...), and
+	// whether `loginctl show-session` could be read at all. When
+	// PropertiesUnknown is set, State/Display/Seat/Class are defaults, not
+	// facts, and must not be used to conclude that nobody is at a desktop.
+	Class             string `json:"-"`
+	LogindType        string `json:"-"`
+	PropertiesUnknown bool   `json:"-"`
 }
 
 // SessionDetector detects user sessions and monitors login/logout events.

@@ -50,3 +50,28 @@ Last release: **v0.119.0** (2026-09-30).
   the server-side handshake above. Updated agents advertise this with a new
   heartbeat capability, `securityCapabilities.desktopWsFenceProtocolVersion: 1`;
   the server accepts it but does not record or require it yet.
+
+- **Remote desktop consent prompts now report whether they were shown and
+  answered (consent prompt protocol 2).** Only affects devices whose remote
+  access policy uses the **consent** prompt mode.
+  - **Upgrade order:** update the server before (or together with) agents. A
+    server from before this release does not recognise protocol 2 and refuses
+    consent- and notify-mode desktop starts on updated agents with "update the
+    agent".
+  - **Behaviour change on updated agents:** when someone is signed in to the
+    session being viewed but the consent prompt cannot be shown to them (Breeze
+    Assist not running or not responding, the native dialog failing), the
+    session is now always refused, whatever "If no one can respond" is set to.
+    That setting still applies when nobody is signed in, and when a prompt the
+    user could see went unanswered.
+  - An unanswered prompt only counts as "unanswered" when the prompt confirmed
+    it was on screen and the session was active and unlocked. Only Windows
+    reports the lock state reliably, so on macOS and Linux an unanswered prompt
+    is refused.
+  - **Breeze Assist:** update Assist along with the agent. An older Assist still
+    works for Allow / Deny, but its unanswered prompts are now refused (it cannot
+    say whether the prompt was shown).
+  - The audit log records the new detail on consent events (`consentOutcome`,
+    `consentOccupancy`, `consentProtocol`), and two new reasons:
+    `no_user_session` (nobody signed in) and `helper_unreachable` (signed-in user
+    could not be asked).

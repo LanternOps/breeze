@@ -16,9 +16,9 @@ var lookPathFn = exec.LookPath
 // remote-session consent dialog. On Linux the dialog uses zenity, which
 // requires both the binary to be present AND a usable display (X11 or
 // Wayland) to actually show anything. Without either (headless servers,
-// minimal desktops, SSH-only boxes) we do not advertise support so the
-// agent's consent gate keeps helper_absent semantics instead of falling
-// through to zenity's failure path and recording a fake user-deny.
+// minimal desktops, SSH-only boxes) we do not advertise support, so the
+// agent's consent gate sees no prompt-capable helper and checks whether anyone
+// is signed in, instead of handing the prompt to a zenity that cannot show it.
 func consentUISupported() bool {
 	if _, err := lookPathFn("zenity"); err != nil {
 		return false

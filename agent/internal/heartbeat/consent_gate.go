@@ -1,7 +1,11 @@
 package heartbeat
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -69,30 +73,108 @@ func parseDesktopPrompt(payload map[string]any) *ipc.DesktopPrompt {
 	return &prompt
 }
 
-// requestConsent asks the local user (via the consent_ui-capable helper) to
-// allow or deny a remote session. It uses h.consentUISessionForTarget to
-// locate the best consent-UI helper: the Tauri assist helper (consent_ui)
-// when present, else a native user-helper that advertised consent_ui_fallback
-// — both scoped strictly to targetWinSession when it is non-empty. Returns
-// (verdict, helperPresent, timedOut):
-//   - no consent_ui-capable helper connected -> ("", false, false)  [helper_absent]
-//   - helper present but IPC timed out        -> ("", true, true)   [timeout]
-//   - helper replied with a valid decision    -> (result.Decision, true, false)
-//   - helper present but replied with an error envelope or an undecodable
-//     payload                                 -> ("", true, false)  [no_user, fails closed]
-//
-// The verdict is fed to decideConsent, which applies the unavailable-behavior
-// policy for the helper_absent/timeout cases and fails closed for an
-// invalid reply from a present helper. requestConsent itself does not decide
-// whether to proceed.
-func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) (verdict string, helperPresent, timedOut bool) {
+// consentPresentBudgetMs is how long the agent waits for the helper to confirm
+// the consent prompt is on screen (consent_presented). The prompt's own
+// countdown starts only then, so the whole answer can take this plus
+// ConsentTimeoutMs plus consentTimeoutGraceMs. Mirrored as
+// AGENT_CONSENT_PRESENT_BUDGET_MS in apps/api/src/routes/remote/consentTiming.ts,
+// which sizes the viewer's answer wait from it; change both together.
+const consentPresentBudgetMs = 10000
+
+// consentPresentBudget is consentPresentBudgetMs as a Duration (a var so tests
+// can shorten it).
+var consentPresentBudget = time.Duration(consentPresentBudgetMs) * time.Millisecond
+
+// consentHostOS is the OS whose consent binding rules apply (a var so tests
+// can exercise the Windows and macOS rules anywhere).
+var consentHostOS = runtime.GOOS
+
+// consentInFlight holds the helper sessions (by SessionID) currently showing a
+// consent prompt. A second start that would prompt the same helper is refused
+// rather than stacked: two prompts on one desktop invite an answer to the
+// wrong request.
+var consentInFlight sync.Map
+
+// Test seams for the two OS facts the decision may need.
+var (
+	// consentOccupancyFn reports whether anyone is signed in to the session a
+	// start would capture (target = Windows session, "" untargeted).
+	consentOccupancyFn = func(target string) string {
+		sessions, err := listConsentSessionsFn()
+		displays, displayErr := 0, error(nil)
+		if runtime.GOOS == "linux" {
+			displays, displayErr = countX11DisplaysFn()
+		}
+		return classifyConsentOccupancy(runtime.GOOS, sessions, err, target, displays, displayErr)
+	}
+	// consentVisibleFn reports whether the user in the consenting helper's
+	// session could see its prompt (active and unlocked).
+	consentVisibleFn = func(helper *sessionbroker.Session) bool {
+		if helper == nil {
+			return false
+		}
+		sessions, err := listConsentSessionsFn()
+		return consentTargetVisible(runtime.GOOS, sessions, err, helper.WinSessionID)
+	}
+)
+
+// runConsentGate asks the signed-in user (when there is one to ask) and
+// decides whether a consent-mode start may proceed. See decideConsent for the
+// matrix.
+func (h *Heartbeat) runConsentGate(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) consentVerdict {
+	att := h.solicitConsent(sessionID, prompt, targetWinSession)
+	v := decideConsent(att, prompt.ConsentUnavailableBehavior,
+		func() string { return consentOccupancyFn(targetWinSession) },
+		func() bool { return consentVisibleFn(att.helper) })
+	log.Info("consent gate decided",
+		"sessionId", sessionID,
+		"proceed", v.proceed,
+		"reason", v.reason,
+		"outcome", v.outcome,
+		"occupancy", v.occupancy,
+		"detail", v.detail,
+	)
+	return v
+}
+
+// consentHelperForTarget picks the helper that will show the prompt: the
+// Breeze Assist app (consent_ui) when connected, else a native user helper
+// that advertised consent_ui_fallback AND the v2 exchange. A pre-v2 native
+// helper is never asked — it answered "allow" when its countdown ran out
+// under a proceed policy, which is indistinguishable from a click. Targeting
+// is strict (see sessionWithScopeForTarget).
+func (h *Heartbeat) consentHelperForTarget(targetWinSession string) *sessionbroker.Session {
 	if h.sessionBroker == nil {
-		return "", false, false
+		return nil
 	}
-	session := h.consentUISessionForTarget(targetWinSession)
+	if s := h.sessionWithScopeForTarget(ipc.ScopeConsentUI, targetWinSession); s != nil {
+		return s
+	}
+	s := h.sessionWithScopeForTarget(ipc.ScopeConsentUIFallback, targetWinSession)
+	if s == nil {
+		return nil
+	}
+	if s.ConsentProtocolVersion < ipc.ConsentProtocolVersion {
+		log.Warn("native consent helper predates the current consent prompt protocol; not asking it",
+			"winSession", s.WinSessionID, "pid", s.PID, "helperProtocol", s.ConsentProtocolVersion)
+		return nil
+	}
+	return s
+}
+
+// solicitConsent shows the consent prompt and reports what happened. It never
+// decides: decideConsent does, from the returned attempt.
+func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) consentAttempt {
+	session := h.consentHelperForTarget(targetWinSession)
 	if session == nil {
-		return "", false, false
+		return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "no_helper"}
 	}
+	if _, busy := consentInFlight.LoadOrStore(session.SessionID, struct{}{}); busy {
+		log.Warn("consent prompt refused: another prompt is already on this helper",
+			"sessionId", sessionID, "helper", session.SessionID)
+		return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "prompt_in_progress", helper: session}
+	}
+	defer consentInFlight.Delete(session.SessionID)
 
 	// Record which helper the prompt is routed to. On the success path the
 	// broker's send/reply is otherwise silent, so this is the only line that
@@ -105,6 +187,7 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 		"identity", session.IdentityKey,
 		"role", session.HelperRole,
 		"pid", session.PID,
+		"helperProtocol", session.ConsentProtocolVersion,
 	)
 
 	req := ipc.ConsentRequest{
@@ -114,36 +197,265 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 		OrgName:         derefString(prompt.OrgName),
 		TimeoutMs:       prompt.ConsentTimeoutMs,
 		OnTimeout:       prompt.ConsentUnavailableBehavior,
+		ProtocolVersion: ipc.ConsentProtocolVersion,
+		Nonce:           newConsentNonce(),
 	}
+	answerWait := time.Duration(prompt.ConsentTimeoutMs+consentTimeoutGraceMs) * time.Millisecond
 
-	timeout := time.Duration(prompt.ConsentTimeoutMs+consentTimeoutGraceMs) * time.Millisecond
-	resp, err := h.sessionBroker.SendCommandAndWait(session, "consent-"+sessionID, ipc.TypeConsentRequest, req, timeout)
+	var att consentAttempt
+	if session.ConsentProtocolVersion >= ipc.ConsentProtocolVersion {
+		att = solicitConsentV2(session, "consent-"+sessionID, req, answerWait)
+	} else {
+		att = solicitConsentLegacy(session, "consent-"+sessionID, req, answerWait)
+	}
+	att.helper = session
+	return att
+}
+
+// solicitConsentV2 runs the two-stage exchange: wait up to consentPresentBudget
+// for the presentation acknowledgement, then up to answerWait for the terminal
+// result, both correlated by nonce. A prompt abandoned without a terminal
+// result is cancelled on the helper so it does not linger on screen.
+func solicitConsentV2(session *sessionbroker.Session, id string, req ipc.ConsentRequest, answerWait time.Duration) consentAttempt {
+	stream, err := session.OpenCommandStream(id, ipc.TypeConsentRequest, req)
 	if err != nil {
-		// Treat any IPC error (including ErrCommandTimeout) as "the user did not
-		// answer in time". decideConsent + the unavailable-behavior policy then
-		// decide whether to proceed or block.
-		log.Warn("consent request to helper failed", "sessionId", sessionID, "error", err.Error())
-		return "", true, true
+		log.Warn("consent request to helper failed", "id", id, "error", err.Error())
+		return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "send_failed"}
+	}
+	defer stream.Close()
+
+	terminal := false
+	defer func() {
+		if terminal {
+			return
+		}
+		if err := session.SendNotify("consent-cancel-"+req.Nonce, ipc.TypeConsentCancel, ipc.ConsentCancel{Nonce: req.Nonce}); err != nil {
+			log.Debug("failed to cancel abandoned consent prompt", "id", id, "error", err.Error())
+		}
+	}()
+
+	presented := false
+	timer := time.NewTimer(consentPresentBudget)
+	defer timer.Stop()
+
+	handle := func(env *ipc.Envelope) (consentAttempt, bool) {
+		att, done, ack := classifyConsentEnvelope(env, req.Nonce, presented)
+		if ack && !presented {
+			presented = true
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(answerWait)
+		}
+		return att, done
 	}
 
-	// A present helper that signals an application-level error (e.g. it could not
-	// build or show the dialog) yielded no user decision. Mirror RequestPamApproval:
-	// surface it as an invalid reply (verdict "") so decideConsent fails closed
-	// rather than letting a "proceed" default grant the session.
-	if resp != nil && resp.Error != "" {
-		log.Warn("consent helper returned an error", "sessionId", sessionID, "error", resp.Error)
-		return "", true, false
-	}
-
-	var result ipc.ConsentResult
-	if resp != nil && resp.Payload != nil {
-		// An undecodable payload from a present helper is treated the same way:
-		// verdict "" -> decideConsent fails closed.
-		if err := json.Unmarshal(resp.Payload, &result); err != nil {
-			log.Warn("failed to unmarshal consent result", "sessionId", sessionID, "error", err.Error())
+	for {
+		select {
+		case env := <-stream.Envelopes():
+			if att, done := handle(env); done {
+				terminal = true
+				return att
+			}
+		case <-stream.Done():
+			// A reply can land just before the helper's EOF.
+			for {
+				select {
+				case env := <-stream.Envelopes():
+					if att, done := handle(env); done {
+						terminal = true
+						return att
+					}
+					continue
+				default:
+				}
+				break
+			}
+			terminal = true // nobody left to cancel
+			if presented {
+				return consentAttempt{outcome: consentOutcomeUnknown, detail: "helper_disconnected"}
+			}
+			return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "helper_disconnected"}
+		case <-timer.C:
+			if presented {
+				log.Warn("consent prompt was shown but no answer arrived", "id", id)
+				return consentAttempt{outcome: consentOutcomeUnknown, detail: "no_answer"}
+			}
+			log.Warn("consent helper did not confirm showing the prompt", "id", id)
+			return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "no_presentation"}
 		}
 	}
-	return result.Decision, true, false
+}
+
+// classifyConsentEnvelope interprets one reply to a v2 consent request.
+// ack reports a presentation acknowledgement for this nonce; done reports a
+// terminal reply (att is then the attempt). Replies for another nonce, and
+// message types that are neither, are ignored.
+func classifyConsentEnvelope(env *ipc.Envelope, nonce string, presented bool) (att consentAttempt, done, ack bool) {
+	if env == nil {
+		return consentAttempt{}, false, false
+	}
+	switch env.Type {
+	case ipc.TypeConsentPresented:
+		var p ipc.ConsentPresented
+		if err := json.Unmarshal(env.Payload, &p); err != nil || p.Nonce != nonce {
+			return consentAttempt{}, false, false
+		}
+		return consentAttempt{}, false, true
+	case ipc.TypeConsentResult:
+		if env.Error != "" {
+			log.Warn("consent helper returned an error", "id", env.ID, "error", env.Error)
+			if presented {
+				return consentAttempt{outcome: consentOutcomeUnknown, detail: "helper_error"}, true, false
+			}
+			return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "helper_error"}, true, false
+		}
+		var res ipc.ConsentResult
+		if err := json.Unmarshal(env.Payload, &res); err != nil {
+			return consentAttempt{outcome: consentOutcomeUnknown, detail: "invalid_reply"}, true, false
+		}
+		if res.Nonce != nonce {
+			log.Warn("ignoring consent result for another prompt", "id", env.ID)
+			return consentAttempt{}, false, false
+		}
+		switch res.Outcome {
+		case ipc.ConsentOutcomeGranted, ipc.ConsentOutcomeDenied:
+			// A click proves the prompt was on screen.
+			return consentAttempt{outcome: res.Outcome}, true, false
+		case ipc.ConsentOutcomePresentedExpired:
+			if !presented {
+				return consentAttempt{outcome: consentOutcomeUnknown, detail: "expired_without_presentation"}, true, false
+			}
+			return consentAttempt{outcome: res.Outcome}, true, false
+		case ipc.ConsentOutcomeUnavailable:
+			if presented {
+				return consentAttempt{outcome: consentOutcomeUnknown, detail: "contradictory_reply"}, true, false
+			}
+			return consentAttempt{outcome: res.Outcome, detail: sanitizeConsentDetail(res.Detail)}, true, false
+		default:
+			return consentAttempt{outcome: consentOutcomeUnknown, detail: "invalid_reply"}, true, false
+		}
+	default:
+		return consentAttempt{}, false, false
+	}
+}
+
+// solicitConsentLegacy talks to a version 1 Assist helper, which replies only
+// to a click and says nothing when its countdown runs out (or when it could
+// not show the prompt at all). Its clicks are honored; anything else is an
+// unknown outcome, which blocks — silence is not proof the prompt was seen.
+func solicitConsentLegacy(session *sessionbroker.Session, id string, req ipc.ConsentRequest, answerWait time.Duration) consentAttempt {
+	resp, err := session.SendCommand(id, ipc.TypeConsentRequest, req, answerWait)
+	if err != nil {
+		log.Warn("legacy consent helper gave no answer", "id", id, "error", err.Error())
+		return consentAttempt{outcome: consentOutcomeUnknown, detail: "legacy_no_answer"}
+	}
+	if resp == nil || resp.Error != "" {
+		return consentAttempt{outcome: consentOutcomeUnknown, detail: "helper_error"}
+	}
+	var result ipc.ConsentResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return consentAttempt{outcome: consentOutcomeUnknown, detail: "invalid_reply"}
+	}
+	switch result.Decision {
+	case "allow":
+		return consentAttempt{outcome: ipc.ConsentOutcomeGranted}
+	case "deny":
+		return consentAttempt{outcome: ipc.ConsentOutcomeDenied}
+	default:
+		return consentAttempt{outcome: consentOutcomeUnknown, detail: "invalid_reply"}
+	}
+}
+
+// sanitizeConsentDetail keeps a helper-supplied detail only when it is short
+// lowercase snake_case (the API refuses anything else).
+func sanitizeConsentDetail(detail string) string {
+	if detail == "" || len(detail) > 64 {
+		return ""
+	}
+	for _, r := range detail {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+			return ""
+		}
+	}
+	return detail
+}
+
+// newConsentNonce returns a fresh 128-bit hex nonce for one consent prompt.
+func newConsentNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand does not fail on supported platforms; fall back to a
+		// time-derived value rather than an empty (uncorrelatable) nonce.
+		return fmt.Sprintf("%032x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// consentCaptureTarget binds an untargeted Windows start to the session whose
+// user answered the prompt, so the capture shows the desktop of the person who
+// consented (and not, say, the console while the prompt went to an RDP user).
+// Everything else keeps its target.
+func consentCaptureTarget(goos, target string, helper *sessionbroker.Session) string {
+	if goos != "windows" || target != "" || helper == nil {
+		return target
+	}
+	if helper.WinSessionID == "" || helper.WinSessionID == "0" {
+		return target
+	}
+	return helper.WinSessionID
+}
+
+// sameConsentPrincipal reports whether the capture helper serves the desktop
+// the consenting helper's user answered on. On Windows the capture helper runs
+// as SYSTEM inside the user's session, so the WTS session is the binding; on
+// macOS the capture helper runs as the user. Linux has no capture helper.
+func sameConsentPrincipal(goos string, consent, capture *sessionbroker.Session) bool {
+	switch goos {
+	case "windows":
+		return consent.WinSessionID != "" && consent.WinSessionID == capture.WinSessionID
+	case "darwin":
+		return consent.IdentityKey != "" && consent.IdentityKey == capture.IdentityKey
+	default:
+		return true
+	}
+}
+
+// consentBindingDetail re-checks, after capture started and before the answer
+// is released, that the grounds the gate proceeded on still hold. It returns a
+// non-empty detail when they do not.
+//
+//   - A user answer or an unanswered prompt binds to the helper that showed
+//     it: it must still be connected (same logon), and the capture must be of
+//     that user's desktop. viaHelper says the capture runs in a helper, whose
+//     identity must then be known — an unresolvable capture helper is refused
+//     rather than assumed to match.
+//   - "Nobody is signed in" must still be true.
+func (h *Heartbeat) consentBindingDetail(sessionID string, v consentVerdict, target string, viaHelper bool) string {
+	switch v.reason {
+	case consentReasonUser, consentReasonTimeout:
+		if v.helper == nil || v.helper.IsClosed() {
+			return "consent_helper_gone"
+		}
+		if !viaHelper {
+			return ""
+		}
+		capture := h.desktopOwnerSession(sessionID)
+		if capture == nil {
+			return "capture_target_unknown"
+		}
+		if !sameConsentPrincipal(consentHostOS, v.helper, capture) {
+			return "capture_target_changed"
+		}
+	case consentReasonNoUserSession:
+		if consentOccupancyFn(target) != occupancyUnoccupied {
+			return "user_signed_in"
+		}
+	}
+	return ""
 }
 
 // sessionWithScopeForTarget resolves the helper session that should present
@@ -271,26 +583,49 @@ func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
 	}
 }
 
+// consentMarkerFields is the structured consent record a consent-mode start
+// result carries to the API (apps/api/src/routes/agentWs.ts
+// desktopCommandResultSchema): the protocol, what happened to the prompt,
+// whether anyone was signed in (only when that decided it), and a short
+// machine-readable detail.
+func consentMarkerFields(v consentVerdict) map[string]any {
+	m := map[string]any{
+		"consentProtocol": ipc.ConsentProtocolVersion,
+		"consentOutcome":  v.outcome,
+	}
+	if v.occupancy != "" {
+		m["consentOccupancy"] = v.occupancy
+	}
+	if v.detail != "" {
+		m["consentDetail"] = v.detail
+	}
+	return m
+}
+
 // consentDeniedResult builds the command result the API ingests when consent is
 // not granted. It is returned as a COMPLETED result (not failed) so the
 // agent->WS conversion in HandleCommand carries the marker in the `result`
 // field; a `failed` result drops the Stdout payload. The session is NOT started.
-func consentDeniedResult(sessionID, reason string, durationMs int64) tools.CommandResult {
-	return tools.NewSuccessResult(map[string]any{
+func consentDeniedResult(sessionID string, v consentVerdict, durationMs int64) tools.CommandResult {
+	data := map[string]any{
 		"sessionId": sessionID,
 		"event":     "consent_denied",
-		"reason":    reason,
-	}, durationMs)
+		"reason":    v.reason,
+	}
+	for k, val := range consentMarkerFields(v) {
+		data[k] = val
+	}
+	return tools.NewSuccessResult(data, durationMs)
 }
 
 // withConsentGranted re-marshals a successful helper start result to add the
-// consentReason marker when the session passed a consent-mode gate. reason is
-// decideConsent's reason for proceeding: "user" when the end user allowed it,
-// or "helper_absent"/"timeout" when consent could not be solicited and
-// consentUnavailableBehavior "proceed" let the start through (#6819). The API
-// audits "user" as a user grant, so it must never stand in for the other two.
-// For notify/off modes it returns the result unchanged.
-func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt, reason string) tools.CommandResult {
+// consent marker when the session passed a consent-mode gate: consentReason is
+// "user" when the end user allowed it, "timeout" when a prompt they could see
+// went unanswered, or "no_user_session" when nobody is signed in — the last
+// two only under consentUnavailableBehavior "proceed". The API audits "user"
+// as a user grant, so it never stands in for the others. For notify/off modes
+// it returns the result unchanged.
+func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt, v consentVerdict) tools.CommandResult {
 	if prompt == nil || prompt.Mode != "consent" || result.Status != "completed" || result.Stdout == "" {
 		return result
 	}
@@ -299,7 +634,10 @@ func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt, r
 		log.Warn("failed to decode start result for consent marker", "error", errString(err))
 		return result
 	}
-	data["consentReason"] = reason
+	data["consentReason"] = v.reason
+	for k, val := range consentMarkerFields(v) {
+		data[k] = val
+	}
 	return tools.NewSuccessResult(data, result.DurationMs)
 }
 

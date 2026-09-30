@@ -54,49 +54,17 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 			State:    "active",
 		}
 
-		// Query session properties
+		// Query session properties. A failed query leaves State/Display/Seat
+		// at their defaults; flag it so callers never read those defaults as
+		// "nobody is at a desktop" (the consent gate's occupancy check).
 		propCtx, propCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 		propOut, propErr := exec.CommandContext(propCtx, "loginctl", "show-session", sessionID,
-			"--property=Type,Remote,Display,Seat,State,IdleHint,IdleSinceHint").Output()
+			logindSessionProperties).Output()
 		propCancel()
-		if propErr == nil {
-			var idleHint bool
-			var idleSinceRaw string
-			propScanner := newDetectorScanner(string(propOut))
-			for propScanner.Scan() {
-				parts := strings.SplitN(strings.TrimSpace(propScanner.Text()), "=", 2)
-				if len(parts) != 2 {
-					continue
-				}
-				switch parts[0] {
-				case "Type":
-					if parts[1] == "x11" || parts[1] == "wayland" || parts[1] == "mir" {
-						sess.Display = parts[1]
-					}
-				case "Remote":
-					sess.IsRemote = parts[1] == "yes"
-				case "Seat":
-					sess.Seat = parts[1]
-				case "State":
-					sess.State = parts[1]
-				case "IdleHint":
-					idleHint = parts[1] == "yes"
-				case "IdleSinceHint":
-					idleSinceRaw = parts[1]
-				}
-			}
-			if err := propScanner.Err(); err != nil {
-				return nil, fmt.Errorf("parse loginctl show-session output for %s: %w", sessionID, err)
-			}
-			// Idle is only reported when the DE actively asserts IdleHint=yes.
-			// IdleHint=no must stay unknown, not "active": most DEs and all
-			// headless sessions never call SetIdleHint, so "no" is
-			// indistinguishable from "nobody reports it".
-			if idleHint {
-				if since, ok := parseIdleSinceHint(idleSinceRaw); ok {
-					sess.IdleFor, sess.IdleKnown = idleSince(time.Now(), since)
-				}
-			}
+		if propErr != nil {
+			sess.PropertiesUnknown = true
+		} else if err := applyLogindSessionProperties(&sess, string(propOut), time.Now()); err != nil {
+			return nil, err
 		}
 
 		sess, err = sanitizeDetectedSession(sess)

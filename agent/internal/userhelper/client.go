@@ -56,10 +56,13 @@ type Client struct {
 	connMu     sync.Mutex
 	conn       *ipc.Conn
 	sessionKey []byte
-	agentID    string
-	scopes     []string
-	stopChan   chan struct{}
-	desktopMgr *helperDesktopManager
+	// consentPromptActive is set while a v2 consent dialog is on screen, so
+	// a second prompt is refused instead of stacked (handleConsentRequest).
+	consentPromptActive atomic.Bool
+	agentID             string
+	scopes              []string
+	stopChan            chan struct{}
+	desktopMgr          *helperDesktopManager
 	// desktopFence is the helper half of the SEC-038 start fence: seeded from
 	// the service on connect, maintained from the starts and stops this helper
 	// sees. Zero value ready to use.
@@ -290,6 +293,7 @@ func (c *Client) authenticate() error {
 	// Opaque, host-identity-free session id (#3109) — see newSessionID.
 	sessionID := newSessionID()
 
+	supportsConsent := consentUISupported()
 	authReq := ipc.AuthRequest{
 		ProtocolVersion:   ipc.ProtocolVersion,
 		UID:               uint32(uid),
@@ -303,7 +307,11 @@ func (c *Client) authenticate() error {
 		HelperRole:        c.role,
 		BinaryKind:        c.binaryKind,
 		DesktopContext:    c.context,
-		SupportsConsentUI: consentUISupported(),
+		SupportsConsentUI: supportsConsent,
+		// Advertised only alongside SupportsConsentUI: the agent hands v2
+		// prompts only to helpers that render them (sessionbroker's
+		// consentProtocolFromAuth applies the same condition).
+		ConsentProtocolVersion: consentProtocolForAuth(supportsConsent),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {

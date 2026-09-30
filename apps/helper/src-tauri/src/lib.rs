@@ -627,41 +627,73 @@ fn minimize_window(app: tauri::AppHandle) {
     }
 }
 
-/// Submit the local user's consent verdict for a remote session.
+/// Submit the local user's answer to the remote-session consent prompt.
 ///
-/// Invoked by the React consent window on Allow / Deny / timeout. `decision` is
-/// `"allow"` or `"deny"`. The verdict is handed to the live IPC session loop via
-/// the [`ConsentBridge`](crate::ipc::desktop::ConsentBridge), which writes the
-/// `consent_result` response back to the agent (correlated by envelope id
-/// `consent-<session_id>`), then we close the consent window.
+/// Invoked by the React consent window on Allow / Deny, and — for a v2 prompt
+/// (`nonce` present) — when its countdown runs out (`decision` = `expired`).
+/// The event goes to the live IPC session loop via the
+/// [`ConsentBridge`](crate::ipc::desktop::ConsentBridge); the loop's
+/// `ConsentTracker` turns it into the `consent_result` for the agent. Then we
+/// close the consent window.
 ///
-/// Best-effort: if no IPC session is currently live the verdict is dropped — the
-/// agent has its own consent-timeout fallback, so a missing response is safe.
+/// If no IPC session is live the answer is dropped; the agent then reports the
+/// prompt as unanswered, which never starts a session on its own.
 #[tauri::command]
-fn submit_consent(app: tauri::AppHandle, session_id: String, decision: String) {
-    // Normalize to the two values the agent understands; anything unexpected is
-    // treated as a deny (fail-closed).
-    let decision = if decision == "allow" {
-        "allow".to_string()
-    } else {
-        "deny".to_string()
-    };
+fn submit_consent(
+    app: tauri::AppHandle,
+    session_id: String,
+    decision: String,
+    nonce: Option<String>,
+) {
+    // Normalize to the values the tracker understands; anything unexpected
+    // is treated as a deny (fail-closed).
+    let decision = match decision.as_str() {
+        "allow" => "allow",
+        "expired" => "expired",
+        _ => "deny",
+    }
+    .to_string();
 
-    if let Some(bridge) =
-        app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>()
-    {
-        let submitted = bridge.submit(crate::ipc::desktop::ConsentDecision {
+    if let Some(bridge) = app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>() {
+        let submitted = bridge.submit(crate::ipc::desktop::UiEvent::Decision {
             session_id,
+            nonce: nonce.filter(|n| !n.is_empty()),
             decision,
         });
         if !submitted {
-            eprintln!("[helper] submit_consent: no live IPC session to deliver verdict");
+            eprintln!("[helper] submit_consent: no live IPC session to deliver the answer");
         }
     } else {
         eprintln!("[helper] submit_consent: consent bridge not initialized");
     }
 
     crate::ipc::desktop::close_consent_window(&app);
+}
+
+/// The consent window has rendered the prompt for `nonce` and it is visible;
+/// the agent starts the countdown from here (v2 presentation acknowledgement).
+#[tauri::command]
+fn consent_presented(app: tauri::AppHandle, nonce: String) {
+    if nonce.is_empty() {
+        return;
+    }
+    match app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>() {
+        Some(bridge) => {
+            if !bridge.submit(crate::ipc::desktop::UiEvent::Presented { nonce }) {
+                eprintln!("[helper] consent_presented: no live IPC session");
+            }
+        }
+        None => eprintln!("[helper] consent_presented: consent bridge not initialized"),
+    }
+}
+
+/// The request the consent window should display. The window pulls it on
+/// mount, so a `consent-request` event emitted before its listener was ready
+/// is never lost.
+#[tauri::command]
+fn get_consent_request(app: tauri::AppHandle) -> Option<serde_json::Value> {
+    app.try_state::<std::sync::Arc<crate::ipc::desktop::ConsentBridge>>()
+        .and_then(|bridge| bridge.current())
 }
 
 /// Update the helper status file when chat activity changes.
@@ -1255,6 +1287,8 @@ pub fn run() {
             helper_token_ready,
             restart_ipc_if_stopped,
             submit_consent,
+            consent_presented,
+            get_consent_request,
             workspace_open::open_workspace_path,
         ])
         .setup(|app| {

@@ -171,27 +171,27 @@ When a session is active, a small indicator ("*Jordan Lee is connected*" with a 
 
 **What the end user sees in Consent mode**
 
-The consent dialog asks the user to allow or deny the remote session, with **Deny selected by default** — a privacy prompt never grants access on a stray keypress. If the user doesn't respond before the prompt times out, Breeze applies the policy's fallback (see below).
+The consent dialog asks the user to allow or deny the remote session, with **Deny selected by default** — a privacy prompt never grants access on a stray keypress. If the user doesn't respond before the prompt times out, Breeze applies the policy's fallback (see below). The countdown starts only once the prompt is confirmed on screen, and a prompt that expired while the session was locked or disconnected counts as "could not be shown", not as unanswered.
 
 **Settings (per Configuration Policy → Remote Access)**
 
 | Setting | Options | Default | Effect |
 |---------|---------|---------|--------|
 | Session prompt mode | Off / Notify / Consent | **Notify** | Whether the user is notified and/or must consent. |
-| When consent can't be asked | Proceed / Block | **Proceed** | What happens on an **unattended** machine, with no Helper installed, or when the user doesn't respond in time. **Proceed** connects anyway; **Block** refuses the session. An explicit **Deny** always blocks regardless of this setting. |
+| When consent can't be asked | Proceed / Block | **Proceed** | What happens when **no one is signed in** to the session being viewed, or when the signed-in user doesn't respond in time. **Proceed** connects anyway; **Block** refuses the session. An explicit **Deny** always blocks regardless of this setting. With current agents, a session where someone **is** signed in but the prompt can't be shown to them (Breeze Assist not running or not responding) is always refused, whatever this is set to. |
 | Notify on session end | On / Off | **On** | Whether the "session ended" notice is shown. |
 | Show active-session indicator | On / Off | **On** | Whether the top-of-screen indicator appears during the session. |
 | Technician identity shown | Name & email / Name only / Generic | **Name & email** | How much of the technician's identity is revealed to the end user. **Generic** shows "*A technician*" with no name or email. |
 
 <Aside>
-  These surfaces are drawn by the **Breeze Helper** running in the signed-in user's desktop session. On an unattended machine (no user logged in, or the Helper not installed), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out.
+  These surfaces are drawn by the **Breeze Helper** running in the signed-in user's desktop session. On an unattended machine (no user signed in), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out. If a user is signed in but the Helper can't show them the prompt, current agents refuse the session instead of connecting without asking. Only Windows reports whether the screen is locked, so on macOS and Linux a prompt that times out is refused.
 </Aside>
 
 <Aside type="note">
   **Upgrade behavior:** Because the default prompt mode is **Notify**, devices with the Breeze Helper installed begin showing a start notice for remote sessions after upgrade. To restore silent behavior, set the **Remote Access** feature on a Configuration Policy to prompt mode **Off**.
 </Aside>
 
-Every consent outcome is audit logged — granted, denied, or bypassed (with the reason, for example no user logged in).
+Every consent outcome is audit logged — granted, denied, blocked, or bypassed — with the reason (for example `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked) and, from current agents, whether the prompt was shown (`consentOutcome`) and whether anyone was signed in (`consentOccupancy`).
 
 The same prompt, notice and indicator apply when the viewer falls back to the WebSocket (JPEG) transport. The technician's view stays on *connecting* until the agent reports that the stream started, so in Consent mode nothing is shown or sent before the user allows it; a denial or an unanswered prompt ends the session with the reason, just as on WebRTC.
 

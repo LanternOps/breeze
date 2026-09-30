@@ -19,6 +19,13 @@ export const DESKTOP_CONSENT_TIMEOUT_MS = 30_000;
 export const AGENT_CONSENT_IPC_GRACE_MS = 2_000;
 
 /**
+ * Mirrors `consentPresentBudgetMs` in agent/internal/heartbeat/consent_gate.go:
+ * how long the agent waits for the helper to confirm the prompt is on screen.
+ * The dialog's own countdown starts only once it is.
+ */
+export const AGENT_CONSENT_PRESENT_BUDGET_MS = 10_000;
+
+/**
  * Mirrors `consentHelperWait` in agent/internal/heartbeat/handlers_desktop_lease.go:
  * on an on-demand (RDS) host the agent gives the user helper this long to
  * spawn before any end-user prompt (consent or notify) can render.
@@ -43,6 +50,7 @@ export function viewerAnswerTimeoutMs(promptMode: string | null | undefined): nu
     case 'consent':
       return VIEWER_BASE_ANSWER_TIMEOUT_MS
         + AGENT_CONSENT_HELPER_WAIT_MS
+        + AGENT_CONSENT_PRESENT_BUDGET_MS
         + DESKTOP_CONSENT_TIMEOUT_MS
         + AGENT_CONSENT_IPC_GRACE_MS;
     case 'notify':

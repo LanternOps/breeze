@@ -78,10 +78,11 @@ type wtsInfoEx struct {
 }
 
 // querySessionLastInput returns the time of last user input for a session via
-// WTSSessionInfoEx. ok=false when the query fails or returns a short/unknown
-// payload. A zero LastInputTime yields the zero time (treated as unknown by
-// idleSince) — this is the documented console-session quirk.
-func (d *windowsDetector) querySessionLastInput(sessionID uint32) (time.Time, bool) {
+// WTSSessionInfoEx, and the session's lock flags. ok=false when the query
+// fails or returns a short/unknown payload. A zero LastInputTime yields the
+// zero time (treated as unknown by idleSince) — this is the documented
+// console-session quirk.
+func (d *windowsDetector) querySessionLastInput(sessionID uint32) (time.Time, int32, bool) {
 	var buf *wtsInfoEx
 	var bytesReturned uint32
 
@@ -93,14 +94,14 @@ func (d *windowsDetector) querySessionLastInput(sessionID uint32) (time.Time, bo
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
 	if r1 == 0 || buf == nil {
-		return time.Time{}, false
+		return time.Time{}, -1, false
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 
 	if uintptr(bytesReturned) < unsafe.Sizeof(wtsInfoEx{}) || buf.Level != 1 {
-		return time.Time{}, false
+		return time.Time{}, -1, false
 	}
-	return filetimeToTime(uint64(buf.Data.LastInputTime)), true
+	return filetimeToTime(uint64(buf.Data.LastInputTime)), buf.Data.SessionFlags, true
 }
 
 func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
@@ -156,8 +157,9 @@ func (d *windowsDetector) ListSessions() ([]DetectedSession, error) {
 			Type:            sessionType,
 		}
 		if sessionType != "services" {
-			if lastInput, ok := d.querySessionLastInput(info.SessionID); ok {
+			if lastInput, flags, ok := d.querySessionLastInput(info.SessionID); ok {
 				session.IdleFor, session.IdleKnown = idleSince(time.Now(), lastInput)
+				session.Locked, session.LockKnown = wtsLockState(flags)
 			}
 		}
 		var err error

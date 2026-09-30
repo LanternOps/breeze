@@ -96,6 +96,35 @@ const (
 	TypeConsentResult  = "consent_result"
 	TypeBannerShow     = "banner_show"
 	TypeBannerHide     = "banner_hide"
+
+	// Consent protocol v2 (ConsentProtocolVersion). consent_presented is sent
+	// by the helper, on the consent_request's envelope ID, once the prompt is
+	// on screen; its countdown starts then. consent_cancel is a
+	// fire-and-forget from the agent telling the helper to take down a prompt
+	// whose answer is no longer awaited.
+	TypeConsentPresented = "consent_presented"
+	TypeConsentCancel    = "consent_cancel"
+)
+
+// ConsentProtocolVersion is the consent prompt exchange a helper advertises in
+// AuthRequest.ConsentProtocolVersion and the agent stamps on ConsentRequest.
+//
+//   - 1 (implicit, field absent): the helper replies {"decision":"allow"|"deny"}
+//     on a click. It cannot say whether the prompt was ever shown, and a
+//     native v1 helper answered "allow" when its countdown expired under a
+//     proceed policy.
+//   - 2: the helper first confirms the prompt is on screen (consent_presented
+//     {nonce}), then sends exactly one terminal consent_result {nonce,
+//     outcome} where outcome is one of the ConsentOutcome* values. It never
+//     turns an expired countdown into a decision.
+const ConsentProtocolVersion = 2
+
+// Terminal consent outcomes a v2 helper reports in ConsentResult.Outcome.
+const (
+	ConsentOutcomeGranted          = "granted"           // the user clicked Allow
+	ConsentOutcomeDenied           = "denied"            // the user clicked Deny (or dismissed the prompt)
+	ConsentOutcomePresentedExpired = "presented_expired" // the prompt was shown and its countdown ran out
+	ConsentOutcomeUnavailable      = "unavailable"       // the prompt could not be shown
 )
 
 // PreAuthReject codes identify why the broker rejected a connection.
@@ -204,6 +233,10 @@ type AuthRequest struct {
 	// Drives the consent_ui_fallback scope grant. Additive: absent/false on
 	// older helpers.
 	SupportsConsentUI bool `json:"supportsConsentUi,omitempty"`
+
+	// ConsentProtocolVersion advertises the consent prompt exchange this
+	// helper speaks (see ConsentProtocolVersion). Absent/0 means version 1.
+	ConsentProtocolVersion int `json:"consentProtocolVersion,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -635,12 +668,39 @@ type ConsentRequest struct {
 	TimeoutMs       int    `json:"timeoutMs"`
 	// OnTimeout is the behaviour when the dialog times out: "proceed" or "block".
 	OnTimeout string `json:"onTimeout"`
+
+	// ProtocolVersion is ConsentProtocolVersion when the agent speaks the v2
+	// exchange; absent on a v1 agent. A helper answers in v2 form only when
+	// this is >= 2 AND Nonce is set.
+	ProtocolVersion int `json:"protocolVersion,omitempty"`
+	// Nonce uniquely identifies this prompt. Every v2 consent_presented and
+	// consent_result echoes it; the agent ignores anything that does not.
+	Nonce string `json:"nonce,omitempty"`
 }
 
-// ConsentResult is the user's decision returned from the desktop prompt UI.
-// Decision is "allow" or "deny".
+// ConsentPresented is the v2 presentation acknowledgement: the prompt for
+// Nonce is on screen and its countdown has started.
+type ConsentPresented struct {
+	Nonce string `json:"nonce"`
+}
+
+// ConsentCancel tells a helper to take down the prompt for Nonce: the agent is
+// no longer waiting for its answer.
+type ConsentCancel struct {
+	Nonce string `json:"nonce"`
+}
+
+// ConsentResult is returned from the desktop prompt UI.
+//
+// Version 1: Decision is "allow" or "deny".
+// Version 2: Nonce echoes the request, Outcome is one of the ConsentOutcome*
+// values, and Detail optionally names why the prompt was unavailable
+// (lowercase snake_case, e.g. "prompt_in_progress").
 type ConsentResult struct {
-	Decision string `json:"decision"`
+	Decision string `json:"decision,omitempty"`
+	Nonce    string `json:"nonce,omitempty"`
+	Outcome  string `json:"outcome,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // BannerShowRequest tells the desktop helper to display the on-screen session
