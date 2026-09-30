@@ -1151,6 +1151,63 @@ describe('alert routes', () => {
       sendPushoverMock.mockRestore();
     });
 
+    it('decrypts the partner Pushover defaults before a channel test sends with them', async () => {
+      const priorKey = process.env.APP_ENCRYPTION_KEY;
+      process.env.APP_ENCRYPTION_KEY = 'alerts-route-test-key-material';
+      try {
+        const { encryptSecret } = await import('../services/secretCrypto');
+        const channelId = 'ffffffff-ffff-4fff-8fff-fffffffffffe';
+        vi.mocked(db.select)
+          .mockReturnValueOnce(channelLookupChain([{
+            id: channelId,
+            orgId: '11111111-1111-1111-1111-111111111111',
+            name: 'Pushover',
+            type: 'pushover',
+            config: { token: '', user: '' }
+          }]))
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  settings: {
+                    notifications: {
+                      pushoverAppToken: encryptSecret('sealed-app-token', { aad: 'partners.settings' }),
+                      pushoverDefaultUser: encryptSecret('sealed-user-key'),
+                    }
+                  }
+                }])
+              })
+            })
+          } as any);
+
+        const sendersModule = await import('../services/notificationSenders');
+        const sendPushoverMock = vi.spyOn(sendersModule, 'sendPushoverNotification')
+          .mockResolvedValue({ success: true, statusCode: 200, request: 'req-1' } as any);
+
+        const res = await app.request(`/alerts/channels/${channelId}/test`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        expect(sendPushoverMock).toHaveBeenCalledWith(
+          expect.objectContaining({ token: 'sealed-app-token', user: 'sealed-user-key' }),
+          expect.anything()
+        );
+        sendPushoverMock.mockRestore();
+      } finally {
+        if (priorKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+        else process.env.APP_ENCRYPTION_KEY = priorKey;
+      }
+    });
+
     it('rejects creating a pushover channel when both channel and partner have no token', async () => {
       // partner lookup returns no notifications config
       vi.mocked(db.select)

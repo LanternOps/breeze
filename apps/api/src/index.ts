@@ -177,6 +177,7 @@ import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
+import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -1826,6 +1827,26 @@ async function bootstrap(): Promise<void> {
     })
     .catch((err) => {
       console.error('[startup] Failed to provision built-in monitors:', err);
+    });
+
+  // Notification-channel secrets in partner/org/site settings are sealed on
+  // write; this seals values stored before that. Detached after serve() like
+  // the built-ins above: readers open both forms, so nothing waits on it.
+  // Idempotent — once every value is sealed it finds nothing to do.
+  void sealUnsealedSettingsSecrets()
+    .then((result) => {
+      const touched = Object.entries(result).filter(([, stats]) => stats.scanned > 0);
+      if (touched.length > 0) {
+        console.log(
+          `[startup] Settings secrets sealed: ${touched
+            .map(([table, s]) => `${table} ${s.sealed}/${s.scanned} row(s) (${s.contended} changed concurrently, ${s.failed} failed)`)
+            .join('; ')}`,
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Sealing stored settings secrets failed:', err);
+      captureException(err, undefined, { area: 'settings_secret_backfill' });
     });
 
   // W05d — convert whatever legacy alerting the W05c release left unconverted,

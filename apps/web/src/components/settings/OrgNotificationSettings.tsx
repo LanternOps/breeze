@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Bell, Mail, MessageSquare, Plus, Save, Send, Trash2, Webhook } from 'lucide-react';
+import { isMaskedSecret } from '@/lib/redactedSecret';
+import SavedSecretInput from './SavedSecretInput';
 
 type NotificationsData = {
   fromAddress?: string;
@@ -78,7 +80,7 @@ export default function OrgNotificationSettings({
   const [smtpUsername, setSmtpUsername] = useState(initialData.smtpUsername || '');
   const [smtpPassword, setSmtpPassword] = useState('');
   const [smtpEncryption, setSmtpEncryption] = useState(initialData.smtpEncryption || 'tls');
-  const [slackWebhookUrl, setSlackWebhookUrl] = useState(initialData.slackWebhookUrl || '');
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string | undefined>(initialData.slackWebhookUrl || '');
   const [slackChannel, setSlackChannel] = useState(initialData.slackChannel || '#ops-alerts');
   const [slackStatus, setSlackStatus] = useState<string | null>(null);
   const [webhooks, setWebhooks] = useState(initialData.webhooks || []);
@@ -98,8 +100,15 @@ export default function OrgNotificationSettings({
     markDirty();
   };
 
-  const handleRemoveWebhook = (url: string) => {
-    setWebhooks(prev => prev.filter(item => item !== url));
+  // Saved webhook URLs come back only as the masked marker, and the API keeps
+  // them by position. So a saved entry is never spliced out: removing it
+  // leaves an empty string in its place (the API drops it on save), and new
+  // entries are appended after the saved ones. An entry added in this session
+  // has nothing stored behind it and is simply removed.
+  const handleRemoveWebhook = (index: number) => {
+    setWebhooks(prev => (isMaskedSecret(prev[index])
+      ? prev.map((item, i) => (i === index ? '' : item))
+      : prev.filter((_, i) => i !== index)));
     markDirty();
   };
 
@@ -116,11 +125,13 @@ export default function OrgNotificationSettings({
       smtpPort,
       smtpUsername,
       smtpEncryption,
-      slackWebhookUrl,
       slackChannel,
-      webhooks,
       preferences
     };
+    // A partner-managed secret is left out: the API keeps whatever the org
+    // has stored, and the partner's value is the one that applies.
+    if (!isLocked('slackWebhookUrl')) data.slackWebhookUrl = slackWebhookUrl;
+    if (!isLocked('webhooks')) data.webhooks = webhooks;
     onSave?.(data);
   };
 
@@ -264,22 +275,20 @@ export default function OrgNotificationSettings({
               <MessageSquare className="h-4 w-4" />
               {t('orgNotificationSettings.slack.title')}
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t('orgNotificationSettings.slack.webhookUrl')}</label>
-              <input
-                type="text"
-                value={slackWebhookUrl}
-                disabled={isLocked('slackWebhookUrl')}
-                onChange={event => {
-                  setSlackWebhookUrl(event.target.value);
-                  markDirty();
-                }}
-                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('slackWebhookUrl') ? 'opacity-60' : ''}`}
-              />
+            <SavedSecretInput
+              value={slackWebhookUrl}
+              onChange={next => {
+                setSlackWebhookUrl(next);
+                markDirty();
+              }}
+              label={t('orgNotificationSettings.slack.webhookUrl')}
+              testId="org-notifications-slack-webhook"
+              disabled={isLocked('slackWebhookUrl')}
+            >
               {isLocked('slackWebhookUrl') && (
                 <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
               )}
-            </div>
+            </SavedSecretInput>
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t('orgNotificationSettings.slack.defaultChannel')}</label>
@@ -327,6 +336,7 @@ export default function OrgNotificationSettings({
             <div className={`flex flex-wrap gap-2 ${isLocked('webhooks') ? 'opacity-60' : ''}`}>
               <input
                 type="text"
+                data-testid="org-notifications-webhook-new"
                 value={newWebhook}
                 disabled={isLocked('webhooks')}
                 onChange={event => setNewWebhook(event.target.value)}
@@ -335,6 +345,7 @@ export default function OrgNotificationSettings({
               />
               <button
                 type="button"
+                data-testid="org-notifications-webhook-add"
                 onClick={handleAddWebhook}
                 disabled={isLocked('webhooks')}
                 className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
@@ -344,23 +355,28 @@ export default function OrgNotificationSettings({
               </button>
             </div>
             <div className="space-y-2">
-              {webhooks.map(url => (
+              {webhooks.map((url, index) => (url === '' ? null : (
                 <div
-                  key={url}
+                  key={index}
+                  data-testid={isMaskedSecret(url) ? 'org-notifications-webhook-saved' : 'org-notifications-webhook-pending'}
                   className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-xs"
                 >
-                  <span className="truncate">{url}</span>
+                  <span className={`truncate ${isMaskedSecret(url) ? 'text-muted-foreground' : ''}`}>
+                    {isMaskedSecret(url) ? t('orgNotificationSettings.webhooks.savedEntry') : url}
+                  </span>
                   <button
                     type="button"
-                    onClick={() => handleRemoveWebhook(url)}
-                    className="inline-flex items-center gap-1 text-muted-foreground transition hover:text-foreground"
+                    data-testid="org-notifications-webhook-remove"
+                    onClick={() => handleRemoveWebhook(index)}
+                    disabled={isLocked('webhooks')}
+                    className="inline-flex items-center gap-1 text-muted-foreground transition hover:text-foreground disabled:opacity-50"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     {t('common:actions.remove')}
                   </button>
                 </div>
-              ))}
-              {webhooks.length === 0 ? (
+              )))}
+              {webhooks.every(url => url === '') ? (
                 <p className="text-xs text-muted-foreground">{t('orgNotificationSettings.webhooks.empty')}</p>
               ) : null}
             </div>

@@ -36,12 +36,12 @@ import {
   type WebhookConfig,
   type PagerDutyConfig,
   type PushoverConfig,
-  type PushoverPriority,
   type AlertSeverity
 } from './notificationSenders';
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
+import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from './partnerPushoverDefaults';
 import { attachWorkerObservability } from '../jobs/workerObservability';
 import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
 import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
@@ -1098,51 +1098,31 @@ async function sendPagerDutyChannelNotification(
  * Send notification via Pushover channel.
  *
  * Per-org channels may leave any field blank; in that case we fall back to
- * the partner-level `pushoverAppToken` / `pushoverDefaultUser` /
- * `pushoverDefaultSound` / `pushoverDefaultPriority` from
- * `partners.settings.notifications`. This mirrors the Slack-webhook-URL
- * inheritance pattern.
+ * the partner-level Pushover defaults in `partners.settings.notifications`
+ * (partnerPushoverDefaults.ts, which opens the sealed token and user key).
  */
-async function sendPushoverChannelNotification(
+export async function sendPushoverChannelNotification(
   config: PushoverConfig,
   alert: typeof alerts.$inferSelect,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
-  const merged: PushoverConfig = { ...config };
+  let merged: PushoverConfig = { ...config };
 
   const tokenBlank = !merged.token || merged.token.trim().length === 0;
   const userBlank = !merged.user || merged.user.trim().length === 0;
   const needsInherit = tokenBlank || userBlank || merged.sound === undefined || merged.priority === undefined;
 
   if (needsInherit && org?.partnerId) {
-    const inherited = await runWithSystemDbAccess(async () => {
+    const partnerSettings = await runWithSystemDbAccess(async () => {
       const [partner] = await db
         .select({ settings: partners.settings })
         .from(partners)
         .where(eq(partners.id, org.partnerId))
         .limit(1);
-      const notifications = (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications;
-      return {
-        pushoverAppToken: typeof notifications?.pushoverAppToken === 'string' ? notifications.pushoverAppToken : undefined,
-        pushoverDefaultUser: typeof notifications?.pushoverDefaultUser === 'string' ? notifications.pushoverDefaultUser : undefined,
-        pushoverDefaultSound: typeof notifications?.pushoverDefaultSound === 'string' ? notifications.pushoverDefaultSound : undefined,
-        pushoverDefaultPriority: typeof notifications?.pushoverDefaultPriority === 'number' ? notifications.pushoverDefaultPriority as PushoverPriority : undefined,
-      };
+      return partner?.settings;
     });
-
-    if (tokenBlank && inherited.pushoverAppToken) {
-      merged.token = inherited.pushoverAppToken;
-    }
-    if (userBlank && inherited.pushoverDefaultUser) {
-      merged.user = inherited.pushoverDefaultUser;
-    }
-    if (merged.sound === undefined && inherited.pushoverDefaultSound) {
-      merged.sound = inherited.pushoverDefaultSound;
-    }
-    if (merged.priority === undefined && inherited.pushoverDefaultPriority !== undefined) {
-      merged.priority = inherited.pushoverDefaultPriority;
-    }
+    merged = applyPartnerPushoverDefaults(merged, readPartnerPushoverDefaults(partnerSettings));
   }
 
   const dashboardUrl = process.env.DASHBOARD_URL

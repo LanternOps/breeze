@@ -198,7 +198,7 @@ The Pushover sender delivers alert notifications to a user's phone via the [Push
 
 \* Either the channel config or the partner default must supply both `token` and `user`. Saving a channel with both blank and no partner default returns a validation error.
 
-**Partner-level inheritance:** MSPs can set default Pushover credentials once at the partner level (`pushoverAppToken` and `pushoverDefaultUser` under the partner's notification settings). Any organization channel that leaves `token` and/or `user` blank inherits the partner default, so customers don't each need their own Pushover application.
+**Partner-level inheritance:** MSPs can set default Pushover credentials once at the partner level (`pushoverAppToken` and `pushoverDefaultUser` under the partner's notification settings). Any organization channel that leaves `token` and/or `user` blank inherits the partner default, so customers don't each need their own Pushover application. Like the channel values, the partner defaults are stored encrypted and returned masked: the settings page shows a saved value as saved, leaving the field blank keeps it, and **Remove** clears it.
 
 **Security:** The `token` and `user` values are encrypted at rest, the same as PagerDuty credentials.
 

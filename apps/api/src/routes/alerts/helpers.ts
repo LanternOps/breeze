@@ -24,6 +24,7 @@ import {
 } from '../../services/notificationSenders';
 import { canReadPartnerWideRows } from '../../services/partnerWideAccess';
 import { getNotificationChannelWithConfig } from '../../services/notificationChannelConfig';
+import { readPartnerPushoverDefaults, type PartnerPushoverDefaults } from '../../services/partnerPushoverDefaults';
 
 export type AlertRuleRow = typeof alertRules.$inferSelect;
 export type AlertTemplateRow = typeof alertTemplates.$inferSelect;
@@ -397,11 +398,20 @@ export async function validatePushoverChannelInheritance(
       .from(partners)
       .where(eq(partners.id, partnerId))
       .limit(1);
-    return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
+    return partner?.settings ?? null;
   }));
 
-  const partnerToken = typeof inherited?.pushoverAppToken === 'string' && inherited.pushoverAppToken.trim().length > 0;
-  const partnerUser = typeof inherited?.pushoverDefaultUser === 'string' && inherited.pushoverDefaultUser.trim().length > 0;
+  // Opened here too, so a stored default that can no longer be read is
+  // reported at save time rather than as a failed send.
+  let defaults: PartnerPushoverDefaults;
+  try {
+    defaults = readPartnerPushoverDefaults(inherited);
+  } catch (err) {
+    console.warn('[alerts] partner Pushover defaults could not be opened:', err instanceof Error ? err.message : String(err));
+    return 'The partner Pushover defaults could not be read; re-enter them in the partner notification settings';
+  }
+  const partnerToken = Boolean(defaults.appToken);
+  const partnerUser = Boolean(defaults.defaultUser);
 
   if (tokenBlank && !partnerToken) {
     return 'Pushover channel has no token and the partner has no pushoverAppToken configured for inheritance';

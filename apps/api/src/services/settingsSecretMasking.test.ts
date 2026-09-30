@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MASKED_SETTINGS_SECRET,
   SettingsSecretInputError,
+  keepsStoredSettingsSecret,
   maskSettingsSecrets,
   restoreMaskedSettingsSecrets,
   withMaskedSettings,
@@ -179,5 +180,113 @@ describe('restoreMaskedSettingsSecrets', () => {
   it('leaves a literal asterisk string under a non-secret key alone', () => {
     expect(restoreMaskedSettingsSecrets({ branding: { tagline: '****' } }, {}))
       .toEqual({ branding: { tagline: '****' } });
+  });
+});
+
+describe('notification channel secrets in settings', () => {
+  const SLACK = 'https://hooks.slack.example/services/T000/B000/abcdef';
+  const EXTRA_A = 'https://hooks.example.com/a?token=aaa';
+  const SEALED_A = 'enc:v1:webhook-a';
+  const SEALED_B = 'enc:v1:webhook-b';
+
+  it('masks the Slack URL, Pushover credentials and every extra webhook URL, sealed or not', () => {
+    const masked = maskSettingsSecrets({
+      notifications: {
+        slackWebhookUrl: SLACK,
+        slackChannel: '#ops-alerts',
+        pushoverAppToken: 'enc:v1:app-token',
+        pushoverDefaultUser: 'uQiRzpo4DXghDmr9QzzfQu27cmVRsG',
+        pushoverDefaultSound: 'pushover',
+        webhooks: [EXTRA_A, SEALED_B],
+      },
+    });
+
+    expect(masked).toEqual({
+      notifications: {
+        slackWebhookUrl: MASKED_SETTINGS_SECRET,
+        slackChannel: '#ops-alerts',
+        pushoverAppToken: MASKED_SETTINGS_SECRET,
+        pushoverDefaultUser: MASKED_SETTINGS_SECRET,
+        pushoverDefaultSound: 'pushover',
+        webhooks: [MASKED_SETTINGS_SECRET, MASKED_SETTINGS_SECRET],
+      },
+    });
+  });
+
+  it('does not mask a `webhooks` list outside notifications', () => {
+    const input = { ticketing: { webhooks: ['ticket.created'] } };
+    expect(maskSettingsSecrets(input)).toEqual(input);
+  });
+
+  const stored = {
+    notifications: {
+      slackWebhookUrl: 'enc:v1:slack',
+      pushoverAppToken: 'enc:v1:app-token',
+      webhooks: [SEALED_A, SEALED_B],
+    },
+  };
+
+  it('keeps every stored value when the editor echoes the masked blob back', () => {
+    const next = restoreMaskedSettingsSecrets({
+      notifications: {
+        slackWebhookUrl: MASKED_SETTINGS_SECRET,
+        pushoverAppToken: MASKED_SETTINGS_SECRET,
+        webhooks: [MASKED_SETTINGS_SECRET, MASKED_SETTINGS_SECRET],
+      },
+    }, stored);
+    expect(next).toEqual(stored);
+  });
+
+  it('replaces a typed Slack URL and clears one sent as an empty string', () => {
+    const next = restoreMaskedSettingsSecrets({
+      notifications: { slackWebhookUrl: SLACK, pushoverAppToken: '' },
+    }, stored) as { notifications: Record<string, unknown> };
+    expect(next.notifications.slackWebhookUrl).toBe(SLACK);
+    expect(next.notifications.pushoverAppToken).toBe('');
+  });
+
+  it('removes a saved webhook blanked in place, keeps the others by position, and appends new ones', () => {
+    const next = restoreMaskedSettingsSecrets({
+      notifications: { webhooks: ['', MASKED_SETTINGS_SECRET, EXTRA_A] },
+    }, stored) as { notifications: { webhooks: string[] } };
+    expect(next.notifications.webhooks).toEqual([SEALED_B, EXTRA_A]);
+  });
+
+  it('refuses a masked webhook entry with nothing stored at its position (the list changed since it loaded)', () => {
+    // Loaded as [A, B, C]; another save removed A. Resolving this stale
+    // [keep, remove, keep] by position would delete C and keep B.
+    expect(() => restoreMaskedSettingsSecrets({
+      notifications: { webhooks: [MASKED_SETTINGS_SECRET, '', MASKED_SETTINGS_SECRET] },
+    }, stored)).toThrow(SettingsSecretInputError);
+  });
+
+  it('keeps the stored webhook list when the key is omitted from a present notifications object', () => {
+    const next = restoreMaskedSettingsSecrets({ notifications: { slackChannel: '#ops' } }, stored) as {
+      notifications: Record<string, unknown>;
+    };
+    expect(next.notifications.webhooks).toEqual([SEALED_A, SEALED_B]);
+    expect(next.notifications.slackWebhookUrl).toBe('enc:v1:slack');
+  });
+
+  it('refuses a sealed webhook entry that is not the one stored at that position', () => {
+    expect(() => restoreMaskedSettingsSecrets({
+      notifications: { webhooks: [SEALED_B, SEALED_A] },
+    }, stored)).toThrow(SettingsSecretInputError);
+  });
+});
+
+describe('keepsStoredSettingsSecret', () => {
+  it('is true for the marker echoed back for a stored secret, or for nothing stored', () => {
+    expect(keepsStoredSettingsSecret('notifications', 'slackWebhookUrl', MASKED_SETTINGS_SECRET, 'enc:v1:slack')).toBe(true);
+    expect(keepsStoredSettingsSecret('notifications', 'slackWebhookUrl', MASKED_SETTINGS_SECRET, undefined)).toBe(true);
+    expect(keepsStoredSettingsSecret('notifications', 'webhooks', [MASKED_SETTINGS_SECRET], ['enc:v1:a'])).toBe(true);
+  });
+
+  it('is false for a typed value, a removal, a shortened list, or a non-secret field', () => {
+    expect(keepsStoredSettingsSecret('notifications', 'slackWebhookUrl', 'https://hooks.slack.example/x', 'enc:v1:slack')).toBe(false);
+    expect(keepsStoredSettingsSecret('notifications', 'slackWebhookUrl', '', 'enc:v1:slack')).toBe(false);
+    expect(keepsStoredSettingsSecret('notifications', 'webhooks', [MASKED_SETTINGS_SECRET], ['enc:v1:a', 'enc:v1:b'])).toBe(false);
+    expect(keepsStoredSettingsSecret('notifications', 'webhooks', [], ['enc:v1:a'])).toBe(false);
+    expect(keepsStoredSettingsSecret('notifications', 'slackChannel', MASKED_SETTINGS_SECRET, '#ops')).toBe(false);
   });
 });
