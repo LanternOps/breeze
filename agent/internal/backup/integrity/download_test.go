@@ -211,3 +211,45 @@ func assertOnlyEntries(t *testing.T, dir string, names ...string) {
 		t.Fatalf("dir holds %v, want %v", got, names)
 	}
 }
+
+func TestDownloadCheckedViaUsesTheSuppliedDownloaderForEveryAttempt(t *testing.T) {
+	body := "file bytes"
+	want := Stored{Size: int64(len(body)), SHA256: sum(body)}
+	attested := mustParse(t, attestedJSON("snap-1", "m"))
+	vault := &memProvider{objects: map[string]string{"k": "FILE BYTES"}}
+	primary := &memProvider{objects: map[string]string{"k": body}}
+	calls := 0
+	dl := func(ctx context.Context, p providers.BackupProvider, key, dest string) error {
+		calls++
+		return p.Download(key, dest)
+	}
+	dest := filepath.Join(t.TempDir(), "dest")
+	_, warnings, err := DownloadCheckedVia(context.Background(), dl, providers.NewFallbackProvider(vault, primary), "k", dest, want, attested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(warnings) != 1 {
+		t.Fatalf("calls=%d warnings=%v", calls, warnings)
+	}
+	if len(vault.downloads) != 1 || len(primary.downloads) != 1 {
+		t.Fatalf("vault=%v primary=%v", vault.downloads, primary.downloads)
+	}
+}
+
+func TestCheckControlObjectFile(t *testing.T) {
+	manifest := `{"id":"snap-1","files":[]}`
+	attested := mustParse(t, attestedJSON("snap-1", manifest))
+	good := writeTemp(t, manifest)
+	if err := CheckControlObjectFile(attested, RoleManifest, manifestKey, good); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckControlObjectFile(attested, RoleManifest, manifestKey, writeTemp(t, `{"id":"snap-1","files":{}}`)); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("err = %v", err)
+	}
+	if err := CheckControlObjectFile(attested, RoleLayout, "snapshots/snap-1/layout.json", good); !errors.Is(err, ErrObjectNotAttested) {
+		t.Fatalf("err = %v", err)
+	}
+	if err := CheckControlObjectFile(nil, RoleManifest, manifestKey, good); err != nil {
+		t.Fatal("absent expectation checks nothing")
+	}
+}
