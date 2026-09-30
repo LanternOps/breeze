@@ -1,8 +1,8 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { db, type DbAccessContext } from '../db';
 import { organizations } from '../db/schema';
 import { getActiveOrgTenant, getActivePartner } from './tenantStatus';
-import { notHiddenOrgType } from './unassignedPool/visibility';
+import { UNASSIGNED_POOL_ORG_TYPE } from './unassignedPool/orgType';
 
 /**
  * #7363 — the RLS context an anonymous automation webhook runs its writes
@@ -56,10 +56,11 @@ export async function resolveAutomationWebhookOwnerContext(
         eq(organizations.partnerId, partner.id),
         inArray(organizations.status, ['active', 'trial']),
         isNull(organizations.deletedAt),
-        // Neither the holding org nor the quick-support org is a customer
+        // Neither the quick-support org nor the holding org is a customer
         // tenant a partner-wide automation targets (automationOwnerOrgIds
         // leaves both out too).
-        notHiddenOrgType(),
+        ne(organizations.type, 'quick_support'),
+        ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
       ));
     return {
       scope: 'partner',

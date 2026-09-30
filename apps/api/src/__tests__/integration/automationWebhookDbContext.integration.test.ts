@@ -128,11 +128,14 @@ describe('automation webhook route under breeze_app (#7363)', () => {
     const orgA = await createOrganization({ partnerId: partner!.id });
     const orgB = await createOrganization({ partnerId: partner!.id });
     const suspended = await createOrganization({ partnerId: partner!.id, status: 'suspended' });
+    // Active status but soft-deleted: only the owner allowlist's deletedAt filter excludes it.
+    const deleted = await createOrganization({ partnerId: partner!.id, status: 'active', deletedAt: new Date() });
     const foreignPartner = await createPartner();
     const foreignOrg = await createOrganization({ partnerId: foreignPartner!.id });
     const a = await seedDevice(orgA!.id);
     const b = await seedDevice(orgB!.id);
     await seedDevice(suspended!.id);
+    await seedDevice(deleted!.id);
     await seedDevice(foreignOrg!.id);
     const automation = await seedWebhookAutomation({ partnerId: partner!.id });
 
@@ -141,7 +144,7 @@ describe('automation webhook route under breeze_app (#7363)', () => {
     expect(res.status).toBe(202);
     const body = await res.json();
     expect((await runsFor(automation.id)).map((r) => r.id)).toEqual([body.run.id]);
-    // Fans out across the partner's active orgs; never another partner's.
+    // Fans out across the partner's active orgs; never suspended, deleted or another partner's.
     expect(enqueueAutomationRun).toHaveBeenCalledTimes(1);
     expect([...enqueueAutomationRun.mock.calls[0]![1]].sort()).toEqual([a.id, b.id].sort());
   });
@@ -175,12 +178,18 @@ describe('automation webhook route under breeze_app (#7363)', () => {
     const orgOwned = await seedWebhookAutomation({ orgId: org!.id });
     await getTestDb().update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, org!.id));
 
+    const inactivePartnerOrgOwner = await createPartner();
+    const activeOrgOfInactivePartner = await createOrganization({ partnerId: inactivePartnerOrgOwner!.id });
+    const orgOwnedInactivePartner = await seedWebhookAutomation({ orgId: activeOrgOfInactivePartner!.id });
+    await getTestDb().update(partners).set({ status: 'suspended' }).where(eq(partners.id, inactivePartnerOrgOwner!.id));
+
     const suspendedPartner = await createPartner();
     const partnerWide = await seedWebhookAutomation({ partnerId: suspendedPartner!.id });
     await getTestDb().update(partners).set({ status: 'suspended' }).where(eq(partners.id, suspendedPartner!.id));
 
     expect((await signedPost(orgOwned.id, {})).status).toBe(403);
     expect((await signedPost(partnerWide.id, {})).status).toBe(403);
+    expect((await signedPost(orgOwnedInactivePartner.id, {})).status).toBe(403);
     // An unverified caller learns nothing about the owner's status.
     expect((await signedPost(orgOwned.id, {}, 'wrong-secret')).status).toBe(401);
     expect(await runsFor(orgOwned.id)).toEqual([]);
