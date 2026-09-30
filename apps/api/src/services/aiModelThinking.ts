@@ -46,17 +46,24 @@ export function resolveModelThinking(model: string): ModelThinkingOptions {
 }
 
 /**
- * The same table in Messages API shape, for raw `client.messages.create`
- * one-shots (effort travels as `output_config.effort` there). Those surfaces
- * never sent a thinking param before #7587, so only the adaptive case adds
- * anything; every other id keeps sending nothing. Without this, Sonnet 5.5
- * runs adaptive at the API's default effort and a 512-token JSON one-shot hit
- * `max_tokens` with truncated output (live-checked, 1 run in 3).
+ * Thinking/effort for raw `client.messages.create` one-shots (effort travels
+ * as `output_config.effort` there). Those surfaces never sent a thinking
+ * param, so this only ever REDUCES thinking: params are added solely for
+ * models that already run adaptive when the param is omitted (Fable, Opus /
+ * Sonnet 5+), to cap them at the table's effort. Opus/Sonnet 4.6–4.8 do not
+ * think by default on the Messages API and keep sending nothing, as does
+ * every other id. Without this, Sonnet 5.5 ran adaptive at the API's default
+ * effort and a 512-token JSON one-shot hit `max_tokens` with truncated output
+ * (live-checked, 1 run in 3).
  */
 export function resolveMessagesApiThinking(
   model: string,
 ): { thinking?: { type: 'adaptive' }; output_config?: { effort: NonNullable<Options['effort']> } } {
-  const { thinking, effort } = resolveModelThinking(model);
-  if (thinking?.type !== 'adaptive' || !effort) return {};
-  return { thinking: { type: 'adaptive' }, output_config: { effort } };
+  const match = FIRST_PARTY_MODEL_ID.exec(model);
+  if (!match) return {};
+  const family = match[1];
+  const thinksByDefault = family === 'fable' || ((family === 'opus' || family === 'sonnet') && Number(match[2]) >= 5);
+  if (!thinksByDefault) return {};
+  const { effort } = resolveModelThinking(model);
+  return effort ? { thinking: { type: 'adaptive' }, output_config: { effort } } : {};
 }

@@ -76,7 +76,10 @@ describe('resolveModelThinking (#7587 interim table)', () => {
 // hit max_tokens 1 run in 3 with truncated JSON; adaptive + effort medium
 // finished in ~240 tokens every time.
 describe('resolveMessagesApiThinking (#7587)', () => {
-  it.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-4-6', 'claude-opus-4-8'])(
+  // Only models that ALREADY run adaptive when the param is omitted (Fable,
+  // Opus/Sonnet 5+) get params here — the effort caps thinking they would do
+  // anyway. A one-shot is never switched from no-thinking to thinking.
+  it.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5'])(
     '%s → adaptive thinking + output_config.effort medium',
     (model) => {
       expect(resolveMessagesApiThinking(model)).toEqual({
@@ -89,7 +92,7 @@ describe('resolveMessagesApiThinking (#7587)', () => {
   // These one-shots never sent a thinking param before #7587; everything that
   // is not adaptive keeps sending nothing (no new field reaches a catalog/BYO
   // gateway, and the Messages API does not think by default on these models).
-  it.each(['claude-haiku-4-5', 'claude-sonnet-4-5', 'anthropic/claude-sonnet-5-5', 'my-vllm-model'])(
+  it.each(['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-opus-4-6', 'claude-haiku-4-5', 'claude-sonnet-4-5', 'anthropic/claude-sonnet-5-5', 'my-vllm-model'])(
     '%s → no params (unchanged)',
     (model) => {
       expect(resolveMessagesApiThinking(model)).toEqual({});
