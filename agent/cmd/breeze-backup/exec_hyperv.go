@@ -17,6 +17,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/hyperv"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/mssql"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -390,8 +391,13 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 		return fail("backup not configured")
 	}
 
+	expect, err := appRestoreIntegrity(payload, p.SnapshotID)
+	if err != nil {
+		return fail("Hyper-V restore: " + err.Error())
+	}
+
 	provider := mgr.GetProvider()
-	manifest, err := downloadHypervSnapshotManifest(p.SnapshotID, provider)
+	manifest, integrityWarnings, err := downloadHypervSnapshotManifestChecked(p.SnapshotID, provider, expect)
 	if err != nil {
 		return fail("failed to download Hyper-V snapshot manifest: " + err.Error())
 	}
@@ -415,9 +421,11 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 	stopHeartbeat := startHypervStagingHeartbeat(restoreDir, hypervStagingHeartbeatInterval)
 	defer stopHeartbeat()
 
-	if err := restoreHypervSnapshotFiles(provider, manifest, restoreDir); err != nil {
+	fileWarnings, err := restoreHypervSnapshotFiles(provider, manifest, restoreDir, expect)
+	if err != nil {
 		return fail("failed to restore Hyper-V snapshot files: " + err.Error())
 	}
+	integrityWarnings = withUnattestedWarning(append(integrityWarnings, fileWarnings...), expect)
 
 	importRoot, err := hypervImportRoot(manifest, restoreDir)
 	if err != nil {
@@ -432,8 +440,8 @@ func execHypervRestore(payload json.RawMessage, mgr *backup.BackupManager) backu
 	}
 	vmName := hypervRestoreVMName(p.VMName, manifest.VMName, time.Now())
 	result, err := importHypervVM(importRoot, vmName)
-	if result != nil && len(preflightWarnings) > 0 {
-		result.Warnings = append(preflightWarnings, result.Warnings...)
+	if extra := append(preflightWarnings, integrityWarnings...); result != nil && len(extra) > 0 {
+		result.Warnings = append(extra, result.Warnings...)
 	}
 	return marshalResult(result, err)
 }
@@ -522,40 +530,42 @@ func uploadHypervSnapshotManifest(provider providers.BackupProvider, stagingDir 
 }
 
 func downloadHypervSnapshotManifest(snapshotID string, provider providers.BackupProvider) (*hypervSnapshotManifest, error) {
+	manifest, _, err := downloadHypervSnapshotManifestChecked(snapshotID, provider, nil)
+	return manifest, err
+}
+
+// downloadHypervSnapshotManifestChecked reads the snapshot's manifest; with
+// an attested expectation its bytes are checked against the attestation
+// before they are parsed.
+func downloadHypervSnapshotManifestChecked(snapshotID string, provider providers.BackupProvider, expect *integrity.Expectation) (*hypervSnapshotManifest, []string, error) {
 	if snapshotID == "" {
-		return nil, fmt.Errorf("snapshotId is required")
+		return nil, nil, fmt.Errorf("snapshotId is required")
 	}
-	tempFile, err := os.CreateTemp("", "hyperv-manifest-*.json")
+	data, warnings, err := readAppSnapshotManifest(context.Background(), provider, snapshotID, "hyperv-manifest-*.json", expect)
 	if err != nil {
-		return nil, err
-	}
-	tempPath := tempFile.Name()
-	_ = tempFile.Close()
-	defer os.Remove(tempPath)
-
-	manifestKey := path.Join("snapshots", snapshotID, "manifest.json")
-	if err := provider.Download(manifestKey, tempPath); err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(tempPath)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var manifest hypervSnapshotManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if manifest.ID == "" {
 		manifest.ID = snapshotID
 	}
-	return &manifest, nil
+	return &manifest, warnings, nil
 }
 
-func restoreHypervSnapshotFiles(provider providers.BackupProvider, manifest *hypervSnapshotManifest, restoreDir string) error {
+// restoreHypervSnapshotFiles places every export file under restoreDir. With
+// an expectation each file is staged beside its final path, checked against
+// its manifest entry (integrity.CheckStoredBytes: exact size and SHA-256 when
+// attested) and only then renamed into place; the first file that fails
+// fails the restore, so Import-VM never runs on unchecked bytes. Without one
+// files are downloaded straight into place, as before. It returns the
+// check's warnings.
+func restoreHypervSnapshotFiles(provider providers.BackupProvider, manifest *hypervSnapshotManifest, restoreDir string, expect *integrity.Expectation) ([]string, error) {
 	if manifest == nil {
-		return fmt.Errorf("manifest is required")
+		return nil, fmt.Errorf("manifest is required")
 	}
 	restoreRoot := filepath.Clean(restoreDir)
 	// Entries without a backup path are left out of the download plan; each
@@ -567,21 +577,31 @@ func restoreHypervSnapshotFiles(provider providers.BackupProvider, manifest *hyp
 		}
 	}
 	providers.PrepareDownloads(provider, keys)
+	var warnings []string
 	for _, file := range manifest.Files {
 		relativePath := filepath.Clean(filepath.FromSlash(file.SourcePath))
 		targetPath := filepath.Join(restoreRoot, relativePath)
 		cleanTarget := filepath.Clean(targetPath)
 		if cleanTarget != restoreRoot && !strings.HasPrefix(cleanTarget, restoreRoot+string(filepath.Separator)) {
-			return fmt.Errorf("invalid export path %q", file.SourcePath)
+			return nil, fmt.Errorf("invalid export path %q", file.SourcePath)
 		}
 		if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o755); err != nil {
-			return err
+			return nil, err
+		}
+		if expect.Present() {
+			want := integrity.Stored{Size: file.Size, SHA256: file.Checksum}
+			_, w, err := integrity.StageAndPublish(context.Background(), provider, file.BackupPath, cleanTarget, want, expect)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", file.SourcePath, err)
+			}
+			warnings = append(warnings, w...)
+			continue
 		}
 		if err := provider.Download(file.BackupPath, cleanTarget); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 func hypervImportRoot(manifest *hypervSnapshotManifest, restoreDir string) (string, error) {

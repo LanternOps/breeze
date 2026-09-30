@@ -36,7 +36,7 @@ func TestHypervRestorePlanOmitsEntriesWithoutBackupPath(t *testing.T) {
 			{SourcePath: "vm/c.vmcx", BackupPath: "snapshots/snap-1/files/c"},
 		},
 	}
-	err := restoreHypervSnapshotFiles(provider, manifest, t.TempDir())
+	_, err := restoreHypervSnapshotFiles(provider, manifest, t.TempDir(), nil)
 	if len(provider.plans) != 1 {
 		t.Fatalf("plans = %d, want 1", len(provider.plans))
 	}
