@@ -108,8 +108,8 @@ async function indexRow(snapshotDbId: string): Promise<{ status: string; digest:
 const verify = (snapshotDbId: string, bytes: Uint8Array) =>
   verifySnapshotAttestation(snapshotDbId, { ...defaultVerifyDeps, fetchObject: vi.fn(async () => bytes) });
 
-const hydrate = (snapshotDbId: string, fetchManifestBytes: () => Promise<Uint8Array>) =>
-  runOutsideDbContext(() => hydrateSnapshotFileIndex(snapshotDbId, { includeUnreferenced: true, deps: { fetchManifestBytes } }));
+const hydrate = (snapshotDbId: string, fetchManifestBytes: () => Promise<Uint8Array>, force = false) =>
+  runOutsideDbContext(() => hydrateSnapshotFileIndex(snapshotDbId, { includeUnreferenced: true, force, deps: { fetchManifestBytes } }));
 
 async function seedSnapshot(t: WriteTenant): Promise<{ snapshotId: string; snapshotDbId: string; manifest: Uint8Array }> {
   const snapshotId = newId();
@@ -210,7 +210,7 @@ describe('file index bound to the snapshot attestation', () => {
         await insertAttestation(t, snapshotDbId, snapshotId, manifest);
         verification = runOutsideDbContext(() => verify(snapshotDbId, manifest));
         return differing;
-      }).catch(() => null);
+      }, true);
       await verification;
 
       const row = await indexRow(snapshotDbId);

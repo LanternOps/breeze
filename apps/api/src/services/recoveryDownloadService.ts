@@ -7,12 +7,12 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { isSupportedKeyLayout } from './backupKeyLayout';
-import { indexMatchesAttestation } from './backupRestoreIntegrity';
+import { boundIndexCondition, indexMatchesAttestation } from './backupRestoreIntegrity';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
@@ -59,6 +59,7 @@ export async function authorizeExternalReference(
     .select({
       fileIndexStatus: backupSnapshots.fileIndexStatus,
       fileIndexManifestSha256: backupSnapshots.fileIndexManifestSha256,
+      integrityStatus: backupSnapshots.integrityStatus,
       attestation: {
         status: backupSnapshotAttestations.status,
         manifestSha256: backupSnapshotAttestations.manifestSha256,
@@ -79,7 +80,10 @@ export async function authorizeExternalReference(
     ? { status: tokenSnapshot.attestation.status, manifestSha256: tokenSnapshot.attestation.manifestSha256 }
     : null;
   const boundDigest = tokenSnapshot.fileIndexManifestSha256 ?? null;
-  if (!indexMatchesAttestation({ fileIndexStatus: tokenSnapshot.fileIndexStatus, fileIndexManifestSha256: boundDigest }, attestation)) {
+  if (!indexMatchesAttestation(
+    { fileIndexStatus: tokenSnapshot.fileIndexStatus, fileIndexManifestSha256: boundDigest, integrityStatus: tokenSnapshot.integrityStatus ?? null },
+    attestation,
+  )) {
     return refuse('file index does not match the snapshot attestation');
   }
 
@@ -89,12 +93,13 @@ export async function authorizeExternalReference(
   const [membership] = await dbHandle
     .select({ id: backupSnapshotFiles.id })
     .from(backupSnapshotFiles)
-    .innerJoin(backupSnapshots, and(
-      eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId),
-      eq(backupSnapshots.fileIndexStatus, 'complete'),
-      sql`${backupSnapshots.fileIndexManifestSha256} IS NOT DISTINCT FROM ${boundDigest}`,
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+    .where(and(
+      eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId),
+      eq(backupSnapshotFiles.backupPath, args.key),
+      boundIndexCondition(boundDigest),
     ))
-    .where(and(eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId), eq(backupSnapshotFiles.backupPath, args.key)))
     .limit(1);
   if (!membership) {
     return refuse('key is not a member of the snapshot file index');

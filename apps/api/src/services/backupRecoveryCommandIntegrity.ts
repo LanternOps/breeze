@@ -122,14 +122,20 @@ export async function deliverRecoveryCommandIntegrity(
   const { [INTEGRITY_FIELD]: _queued, ...payload } = queuedPayload;
 
   // Informational: a failed lookup never holds the command back.
-  const integrity = await lookupIntegrityInformational(`${ctx.type} delivery`, async () => {
-    const orgId = await deps.lookupDeviceOrg(ctx.deviceId);
-    if (!orgId) return null;
-    return deps.inOrgContext(orgId, async () => {
-      const snapshotDbId = await resolveSnapshotDbId(payload, ctx.type, orgId, deps);
-      return snapshotDbId ? deps.resolve(snapshotDbId) : null;
-    });
-  });
+  const snapshotRef = typeof payload.snapshotId === 'string'
+    ? payload.snapshotId
+    : typeof payload.recoveryId === 'string' ? `recovery:${payload.recoveryId}` : null;
+  const integrity = await lookupIntegrityInformational(
+    { label: `${ctx.type} delivery`, commandId: ctx.commandId, deviceId: ctx.deviceId, snapshotRef },
+    async () => {
+      const orgId = await deps.lookupDeviceOrg(ctx.deviceId);
+      if (!orgId) return null;
+      return deps.inOrgContext(orgId, async () => {
+        const snapshotDbId = await resolveSnapshotDbId(payload, ctx.type, orgId, deps);
+        return snapshotDbId ? deps.resolve(snapshotDbId) : null;
+      });
+    },
+  );
 
   const labels = integrityMetricLabels(integrity);
   deps.recordIntegrity(ctx.type, labels.status as RestoreIntegrityMetricStatus, labels.reason);

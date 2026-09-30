@@ -17,7 +17,7 @@ import {
 } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
-import { attestationJoinColumns, joinedAttestation } from './backupRestoreIntegrity';
+import { attestationJoinColumns, boundIndexCondition, joinedAttestation } from './backupRestoreIntegrity';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
@@ -192,12 +192,13 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
     const rows = await db
       .select({ backupPath: backupSnapshotFiles.backupPath })
       .from(backupSnapshotFiles)
-      .innerJoin(backupSnapshots, and(
-        eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId),
-        eq(backupSnapshots.fileIndexStatus, 'complete'),
-        sql`${backupSnapshots.fileIndexManifestSha256} IS NOT DISTINCT FROM ${boundManifestSha256}`,
-      ))
-      .where(and(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId), inArray(backupSnapshotFiles.backupPath, keys)));
+      .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+      .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+      .where(and(
+        eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
+        inArray(backupSnapshotFiles.backupPath, keys),
+        boundIndexCondition(boundManifestSha256),
+      ));
     return new Set(rows.map((r) => r.backupPath));
   },
 

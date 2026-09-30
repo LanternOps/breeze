@@ -29,11 +29,12 @@
  * Leaf module on the command-delivery import path: it imports only the
  * database handle and schema tables, and builds control keys itself.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { recordRestoreIntegrity, type RestoreIntegrityMetricStatus } from './backupMetrics';
+import { captureException } from './sentry';
 
 export const RESTORE_INTEGRITY_FORMAT = 1;
 
@@ -246,17 +247,41 @@ export function indexMatchesAttestation(
  * INTEGRITY_LOOKUP_FAILED.
  */
 export async function lookupIntegrityInformational<T>(
-  label: string,
+  context: { label: string; commandId?: string; deviceId?: string; snapshotRef?: string | null },
   fn: () => Promise<T>,
 ): Promise<T | typeof INTEGRITY_LOOKUP_FAILED> {
   try {
     return hasDbAccessContext() ? await withDbTransaction(fn) : await fn();
   } catch (err) {
+    const { label, ...ids } = context;
     console.warn(`[backupRestoreIntegrity] ${label}: could not resolve the integrity expectation; continuing without it`, {
+      ...ids,
       error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err instanceof Error ? err : new Error(String(err)));
     return INTEGRITY_LOOKUP_FAILED;
   }
+}
+
+/**
+ * SQL form of indexMatchesAttestation, for a statement that reads
+ * backup_snapshots LEFT JOINed to backup_snapshot_attestations: the index is
+ * complete, was built from the manifest bytes with digest `boundDigest` (the
+ * digest the caller approved), and is bound to the attestation in force at
+ * that statement. Used by every file-index membership read, so rows of an
+ * index being rebuilt, rebuilt from other bytes, or of a snapshot whose
+ * attestation did not match never count.
+ */
+export function boundIndexCondition(boundDigest: string | null): SQL {
+  return and(
+    eq(backupSnapshots.fileIndexStatus, 'complete'),
+    sql`${backupSnapshots.fileIndexManifestSha256} IS NOT DISTINCT FROM ${boundDigest}`,
+    sql`(
+      (${backupSnapshotAttestations.id} IS NULL AND ${backupSnapshots.integrityStatus} <> 'attestation_failed')
+      OR (${backupSnapshotAttestations.status} IN ('pending', 'verified', 'producer_only')
+          AND ${backupSnapshotAttestations.manifestSha256} = ${backupSnapshots.fileIndexManifestSha256})
+    )`,
+  )!;
 }
 
 /** Columns for an attestation LEFT JOINed onto backup_snapshots (all null when there is none). */

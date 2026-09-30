@@ -549,7 +549,15 @@ function lookupSnapshotForIntegrity(
   ctx: DeliveryRefreshContext,
   deps: BrokeredReadDeps,
 ): Promise<StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED> {
-  return lookupIntegrityInformational(`${ctx.type} delivery`, () => findSnapshotForIntegrity(payload, ctx, deps));
+  return lookupIntegrityInformational(
+    {
+      label: `${ctx.type} delivery`,
+      commandId: ctx.commandId,
+      deviceId: ctx.deviceId,
+      snapshotRef: typeof payload.snapshotId === 'string' ? payload.snapshotId : null,
+    },
+    () => findSnapshotForIntegrity(payload, ctx, deps),
+  );
 }
 
 async function findSnapshotForIntegrity(

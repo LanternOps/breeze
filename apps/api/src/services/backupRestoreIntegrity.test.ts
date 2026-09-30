@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 import { expectedControlKey } from './backupAttestation';
 import {
   evaluateRestoreIntegrity,
   indexFailedOnAttestation,
+  lookupIntegrityInformational,
   snapshotIntegrityFailed,
   indexMatchesAttestation,
   integrityPayload,
@@ -240,5 +244,27 @@ describe('indexMatchesAttestation with a refused statement and no row', () => {
   it('authorizes nothing when the snapshot is recorded as failing its integrity check', () => {
     expect(indexMatchesAttestation({ fileIndexStatus: 'complete', fileIndexManifestSha256: MANIFEST_SHA, integrityStatus: 'attestation_failed' }, null)).toBe(false);
     expect(indexMatchesAttestation({ fileIndexStatus: 'complete', fileIndexManifestSha256: MANIFEST_SHA, integrityStatus: 'unattested_legacy' }, null)).toBe(true);
+  });
+});
+
+describe('lookupIntegrityInformational', () => {
+  it('returns the lookup result', async () => {
+    expect(await lookupIntegrityInformational({ label: 'x' }, async () => 42)).toBe(42);
+  });
+
+  it('reports a failure with the command, device and snapshot it was for, and continues', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const err = new Error('statement timeout');
+    const out = await lookupIntegrityInformational(
+      { label: 'vm_instant_boot delivery', commandId: 'cmd-1', deviceId: 'dev-1', snapshotRef: SNAP },
+      async () => { throw err; },
+    );
+    expect(out).toBe('lookup_failed');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('vm_instant_boot delivery'),
+      expect.objectContaining({ commandId: 'cmd-1', deviceId: 'dev-1', snapshotRef: SNAP, error: 'statement timeout' }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledWith(err);
+    warn.mockRestore();
   });
 });

@@ -45,6 +45,8 @@ import {
   __resetDeliveryRefreshersForTests,
 } from './commandDelivery';
 import { encryptSensitivePayloadFields } from './sensitiveCommandPayload';
+import { deliverBrokeredReadCommand } from './backupStorageSessions';
+import { deliverRecoveryCommandIntegrity } from './backupRecoveryCommandIntegrity';
 
 const CLAIM_DEVICE = '99999999-9999-4999-8999-999999999999';
 
@@ -261,9 +263,12 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
   it('ships an integrity refresher for every restore-shaped command type, bare-metal recovery included', () => {
     for (const type of [
       'backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore', 'mssql_verify',
-      'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot', 'bmr_recover', 'bare_metal_rebuild',
+      'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
     ]) {
-      expect(typeof deliveryRefreshers[type], type).toBe('function');
+      expect(deliveryRefreshers[type], type).toBe(deliverBrokeredReadCommand);
+    }
+    for (const type of ['bmr_recover', 'bare_metal_rebuild']) {
+      expect(deliveryRefreshers[type], type).toBe(deliverRecoveryCommandIntegrity);
     }
   });
 

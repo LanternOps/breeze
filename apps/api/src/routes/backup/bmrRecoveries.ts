@@ -376,7 +376,10 @@ async function buildRecoveryExchangeBootstrap(
 
   // The snapshot's integrity expectation (informational in this release).
   const integrity = recoveryBootstrapIntegrity(
-    await lookupIntegrityInformational('recovery bootstrap', () => resolveRestoreIntegrity(snapshot.id)),
+    await lookupIntegrityInformational(
+      { label: 'recovery bootstrap', snapshotRef: snapshot.id },
+      () => resolveRestoreIntegrity(snapshot.id),
+    ),
   );
 
   return buildAuthenticatedBootstrapPayload({

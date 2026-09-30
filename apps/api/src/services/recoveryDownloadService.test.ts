@@ -31,13 +31,17 @@ const resolveSnapshotProviderConfigMock = vi.fn();
 // the backup_snapshot_origins row.
 const lineageRows = vi.hoisted(() => [] as Array<Array<Record<string, unknown>>>);
 const innerJoins = vi.hoisted(() => [] as unknown[][]);
+const wheres = vi.hoisted(() => [] as unknown[]);
 
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => {
       const chain: Record<string, any> = {};
       chain.from = vi.fn(() => chain);
-      chain.where = vi.fn(() => chain);
+      chain.where = vi.fn((cond: unknown) => {
+        wheres.push(cond);
+        return chain;
+      });
       chain.leftJoin = vi.fn(() => chain);
       chain.innerJoin = vi.fn((...args: unknown[]) => {
         innerJoins.push(args);
@@ -589,6 +593,28 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
 
       expect(result.unavailable).toBe(false);
       expect(innerJoins).toHaveLength(1);
+    });
+
+    it('reads membership only against the index state it approved, in the same statement', async () => {
+      mockCurrentSnapshotLocal('store-1');
+      wheres.length = 0;
+      const digest = 'c'.repeat(64);
+      lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: digest, attestation: { status: 'verified', manifestSha256: digest } }]);
+      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+
+      await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
+
+      // wheres: lineage, token snapshot, membership, origin.
+      const { PgDialect } = await import('drizzle-orm/pg-core');
+      const query = new PgDialect().sqlToQuery(wheres[2] as any);
+      const text = query.sql.toLowerCase().replace(/\s+/g, ' ');
+      expect(text).toContain('"backup_snapshot_files"."backup_path" = $');
+      expect(text).toContain('"backup_snapshots"."file_index_status" = $');
+      expect(text).toContain('"backup_snapshots"."file_index_manifest_sha256" is not distinct from $');
+      expect(text).toContain("<> 'attestation_failed'");
+      expect(text).toContain('"backup_snapshot_attestations"."manifest_sha256" = "backup_snapshots"."file_index_manifest_sha256"');
+      expect(query.params).toEqual(expect.arrayContaining(['snapshot-db-current', 'snapshots/older/files/a.gz', 'complete', digest]));
     });
 
     it("an external key is refused when the snapshot's file_index_status is not complete (e.g. agent)", async () => {
