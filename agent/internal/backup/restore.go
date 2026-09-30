@@ -29,6 +29,15 @@ type RestoreConfig struct {
 	// Integrity is the integrity expectation delivered with the command; nil
 	// when the server sent none (the earlier checks apply unchanged).
 	Integrity *integrity.Expectation
+
+	// SecurityDescriptorsAsCaptured applies every recorded Windows security
+	// descriptor as captured, without checking that the machine running the
+	// restore recognises the principals it names. Only for a whole-machine
+	// rebuild, where the restored tree becomes the machine those accounts
+	// belong to (the helper itself may be running in a recovery
+	// environment that recognises none of them). Never set from a command
+	// payload.
+	SecurityDescriptorsAsCaptured bool
 }
 
 // RestoreResult tracks the outcome of a restore.
@@ -42,6 +51,14 @@ type RestoreResult struct {
 	Warnings      []string `json:"warnings,omitempty"`
 	StagingDir    string   `json:"stagingDir,omitempty"`
 	Error         string   `json:"error,omitempty"`
+
+	// SecurityDescriptorQuarantined counts the Windows entries whose recorded
+	// security descriptor named principals the target does not recognise, so
+	// they were restored with the restrictive quarantine descriptor (owner
+	// Administrators; SYSTEM and Administrators only) instead; the paths are
+	// listed in SecurityDescriptorQuarantinedPaths.
+	SecurityDescriptorQuarantined      int      `json:"securityDescriptorQuarantined,omitempty"`
+	SecurityDescriptorQuarantinedPaths []string `json:"securityDescriptorQuarantinedPaths,omitempty"`
 }
 
 // ProgressFunc is called after each file is restored.
@@ -154,6 +171,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// held for this run only and released when it returns.
 	secDescs, secWarnings := newRestoreSecurity(snapshot.SecurityDescriptors, append(append(append([]SnapshotFile(nil), contentFiles...), links...), dirs...), restoreAppliesSecurityDescriptors)
 	result.Warnings = append(result.Warnings, secWarnings...)
+	secDescs.asCaptured = cfg.SecurityDescriptorsAsCaptured
 	if secDescs.active() {
 		release := enableRestoreSDPrivileges()
 		defer release()
@@ -280,16 +298,18 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if file.ModeBits != 0 {
 			mode = os.FileMode(file.ModeBits)
 		}
-		var secApplier *securefs.SecurityApplier
+		// A descriptor naming principals this machine does not recognise is
+		// replaced by the restrictive quarantine descriptor (restore_sd.go).
+		var secPlan sdPlan
 		if sd := secDescs.forEntry(file); sd != nil {
 			var secErr error
-			if secApplier, secErr = restoreSecurityApplier(sd); secErr != nil {
+			if secPlan, secErr = secDescs.plan(sd); secErr != nil {
 				// An invalid descriptor is a fidelity warning; the content
 				// still installs (R39).
 				result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: could not reapply security descriptor: %v", displayPath, secErr))
 			}
 		}
-		installWarnings, err := securefs.InstallFileWithSecurity(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs, secApplier)
+		installWarnings, err := securefs.InstallFileWithSecurity(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs, secPlan.applier)
 		if err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
@@ -301,6 +321,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		for _, warning := range installWarnings {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: %v", displayPath, warning))
 		}
+		secDescs.record(result, displayPath, secPlan)
 		if !applyOwnership && (file.Owner != nil || file.ModeBits&uint32(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0) {
 			warnOwnership()
 		}
@@ -428,11 +449,21 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		return strings.Count(dirSecurity[i].relative, string(filepath.Separator)) > strings.Count(dirSecurity[j].relative, string(filepath.Separator))
 	})
 	for _, ds := range dirSecurity {
-		applier, secErr := restoreSecurityApplier(ds.sd)
-		if secErr == nil && applier != nil {
-			secErr = securefs.ApplyDirSecurity(targetBase, ds.relative, *applier)
+		plan, secErr := secDescs.plan(ds.sd)
+		if secErr == nil && plan.applier != nil {
+			secErr = securefs.ApplyDirSecurity(targetBase, ds.relative, *plan.applier)
 		}
-		if secErr != nil {
+		switch {
+		case secErr == nil:
+			secDescs.record(result, ds.display, plan)
+		case plan.verdict == sdQuarantine:
+			// The directory could not be restricted, so it keeps the
+			// target's inherited ACL: report it failed, never restored.
+			result.FilesRestored--
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, ds.display)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("could not restrict %s, whose recorded security descriptor names principals this machine does not recognise: %v", ds.display, secErr))
+		default:
 			result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: could not reapply security descriptor: %v", ds.display, secErr))
 		}
 	}

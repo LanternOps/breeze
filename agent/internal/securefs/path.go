@@ -68,15 +68,24 @@ func InstallFileWithAttrs(base, relative, source string, mode os.FileMode, modTi
 // succeed (WRITE_DAC, WRITE_OWNER, ACCESS_SYSTEM_SECURITY on Windows; ignored
 // elsewhere). Apply receives the raw pinned handle: a windows.Handle on
 // Windows, a file descriptor on Linux/macOS. It must not close it.
+//
+// Required turns an Apply failure — or, on Windows, a refusal of the extra
+// Access on the exclusive create — from a fidelity warning into a failed
+// install: the temporary is discarded and nothing is published. It is for
+// descriptors that restrict access, where publishing the file with its
+// parent's inherited ACL instead would widen access rather than lose
+// fidelity.
 type SecurityApplier struct {
-	Access uint32
-	Apply  func(handle uintptr) error
+	Access   uint32
+	Apply    func(handle uintptr) error
+	Required bool
 }
 
 // InstallFileWithSecurity is InstallFileWithAttrs plus sec, which runs on the
 // PINNED temporary after its content, mode, owner, mtime and attributes are
 // set and BEFORE the atomic publish. An Apply error is a fidelity warning,
-// never a failed install. nil sec is exactly InstallFileWithAttrs.
+// never a failed install, unless sec.Required. nil sec is exactly
+// InstallFileWithAttrs.
 func InstallFileWithSecurity(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32, sec *SecurityApplier) ([]error, error) {
 	clean, err := CleanRelative(relative)
 	if err != nil {

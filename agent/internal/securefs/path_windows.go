@@ -470,7 +470,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 	tempHandle, err := createTemporary(parentHandle, tempName, tempAccess)
 	var secWarn error
-	if err != nil && sec != nil && isSecurityAccessRefusal(err) {
+	if err != nil && sec != nil && !sec.Required && isSecurityAccessRefusal(err) {
 		// R39: the security descriptor is fidelity, never a reason to lose
 		// the file. The refusal is about the EXTRA access (e.g.
 		// ACCESS_SYSTEM_SECURITY without SeSecurityPrivilege), so retry the
@@ -571,6 +571,9 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	// file by a reparse point swapped into the path afterwards.
 	if sec != nil && sec.Apply != nil {
 		if err := sec.Apply(uintptr(tempHandle)); err != nil {
+			if sec.Required {
+				return nil, fmt.Errorf("apply security descriptor: %w", err)
+			}
 			warnings = append(warnings, fmt.Errorf("apply security descriptor: %w", err))
 		}
 	}

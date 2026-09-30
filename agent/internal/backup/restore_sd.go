@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"runtime"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // restoreAppliesSecurityDescriptors gates NTFS security-descriptor apply on
@@ -18,6 +20,35 @@ var restoreAppliesSecurityDescriptors = runtime.GOOS == "windows"
 // A var only so untagged tests can record the applies
 // RestoreFromSnapshotContext makes, and when.
 var restoreSecurityApplier = securityApplier
+
+// sdPlatform is the machinery the restore's descriptor decision needs from
+// the OS (sd_windows.go; inert stubs in sd_other.go): read the principals a
+// descriptor names, resolve the domains this machine recognises, and build
+// the two alternative appliers — the captured descriptor without its SACL,
+// and the restrictive quarantine descriptor.
+type sdPlatform struct {
+	principals  func(sd []byte) (sdPrincipals, error)
+	domains     func() (knownDomains, []string)
+	withoutSACL func(sd []byte) (*securefs.SecurityApplier, error)
+	quarantine  func() (*securefs.SecurityApplier, error)
+}
+
+// restoreSDPlatform is the OS machinery the restore uses. A var only so
+// untagged tests can drive the decision on any host.
+var restoreSDPlatform = sdPlatform{
+	principals:  descriptorPrincipals,
+	domains:     localKnownDomains,
+	withoutSACL: securityApplierWithoutSACL,
+	quarantine:  quarantineApplier,
+}
+
+// sdPlan is what the restore does with one entry's captured descriptor: the
+// applier to hand securefs, and the verdict that chose it.
+type sdPlan struct {
+	applier *securefs.SecurityApplier
+	verdict sdVerdict
+	reason  string
+}
 
 // decodeSecurityDescriptors turns Snapshot.SecurityDescriptors (base64,
 // 1-based via SnapshotFile.SDIndex — see sdtable.go) into the raw-bytes
@@ -62,6 +93,18 @@ type restoreSecurity struct {
 	table    [][]byte
 	hasTable bool
 	missing  int
+
+	// asCaptured skips the principal check (RestoreConfig.
+	// SecurityDescriptorsAsCaptured).
+	asCaptured bool
+
+	// The machine's domains, resolved once per run on first use.
+	domainsResolved bool
+	domains         knownDomains
+	domainNotes     []string
+
+	quarantined, saclDropped        int
+	firstQuarantined, firstSACLDrop string
 }
 
 // newRestoreSecurity decodes the table when enabled (Windows) and checks its
@@ -117,11 +160,101 @@ func (rs *restoreSecurity) forEntry(e SnapshotFile) []byte {
 	return sdBytesAt(rs.table, e.SDIndex)
 }
 
-// finish returns the run's aggregate warning (one per restore, never one per
-// file) for entries restored without a recorded descriptor.
-func (rs *restoreSecurity) finish() []string {
-	if rs.missing == 0 {
-		return nil
+// plan decides how sd is applied to an entry. The captured descriptor is
+// validated first (restoreSecurityApplier); an invalid one returns its error
+// exactly as before (a fidelity warning; the entry keeps the target's
+// inherited ACL). A valid one is applied as captured only when every
+// principal it names is recognised here (judgeDescriptor); otherwise the
+// entry gets the restrictive quarantine descriptor, or — when only the SACL
+// names an unrecognised principal — the descriptor without its SACL.
+// Principals that cannot be read are treated as unrecognised.
+func (rs *restoreSecurity) plan(sd []byte) (sdPlan, error) {
+	applier, err := restoreSecurityApplier(sd)
+	if err != nil || applier == nil || rs.asCaptured {
+		return sdPlan{applier: applier}, err
 	}
-	return []string{fmt.Sprintf("%d entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target", rs.missing)}
+	verdict, reason := sdQuarantine, ""
+	if p, perr := restoreSDPlatform.principals(sd); perr != nil {
+		reason = fmt.Sprintf("its principals could not be read (%v)", perr)
+	} else {
+		verdict, reason = judgeDescriptor(p, rs.knownDomains())
+	}
+	switch verdict {
+	case sdApply:
+		return sdPlan{applier: applier, verdict: sdApply}, nil
+	case sdApplyWithoutSACL:
+		reduced, rerr := restoreSDPlatform.withoutSACL(sd)
+		if rerr == nil && reduced != nil {
+			return sdPlan{applier: reduced, verdict: sdApplyWithoutSACL, reason: reason}, nil
+		}
+		// Cannot build the SACL-less form: restrict rather than apply the
+		// SACL or fall back to the inherited ACL.
+		reason = fmt.Sprintf("%s, and the descriptor could not be applied without it (%v)", reason, rerr)
+	}
+	return sdPlan{applier: quarantineRequired(), verdict: sdQuarantine, reason: reason}, nil
+}
+
+// quarantineRequired is the quarantine applier, marked Required so a failure
+// to restrict the entry fails it instead of publishing it with the parent's
+// inherited ACL.
+func quarantineRequired() *securefs.SecurityApplier {
+	q, err := restoreSDPlatform.quarantine()
+	if err != nil || q == nil {
+		if err == nil {
+			err = fmt.Errorf("no restrictive descriptor on this platform")
+		}
+		return &securefs.SecurityApplier{Required: true, Apply: func(uintptr) error {
+			return fmt.Errorf("build restrictive descriptor: %w", err)
+		}}
+	}
+	required := *q
+	required.Required = true
+	return &required
+}
+
+// knownDomains resolves the machine's domains once per restore run.
+func (rs *restoreSecurity) knownDomains() knownDomains {
+	if !rs.domainsResolved {
+		rs.domainsResolved = true
+		rs.domains, rs.domainNotes = restoreSDPlatform.domains()
+	}
+	return rs.domains
+}
+
+// record notes an entry whose plan was applied successfully: a quarantined
+// entry is counted and listed in the result, a dropped SACL is counted for
+// the run's aggregate warning.
+func (rs *restoreSecurity) record(result *RestoreResult, display string, p sdPlan) {
+	switch p.verdict {
+	case sdQuarantine:
+		result.SecurityDescriptorQuarantined++
+		result.SecurityDescriptorQuarantinedPaths = append(result.SecurityDescriptorQuarantinedPaths, display)
+		rs.quarantined++
+		if rs.firstQuarantined == "" {
+			rs.firstQuarantined = display + ": " + p.reason
+		}
+	case sdApplyWithoutSACL:
+		rs.saclDropped++
+		if rs.firstSACLDrop == "" {
+			rs.firstSACLDrop = display + ": " + p.reason
+		}
+	}
+}
+
+// finish returns the run's aggregate warnings (one per outcome per restore,
+// never one per file): entries restored without a recorded descriptor,
+// entries quarantined, entries restored without their SACL, and any note
+// from resolving the machine's domains.
+func (rs *restoreSecurity) finish() []string {
+	var out []string
+	if rs.missing > 0 {
+		out = append(out, fmt.Sprintf("%d entries had no security descriptor recorded; they were restored with ACLs inherited from the restore target", rs.missing))
+	}
+	if rs.quarantined > 0 {
+		out = append(out, fmt.Sprintf("%d entries were restored with a restrictive access list (owner Administrators; SYSTEM and Administrators only) instead of their recorded security descriptor, which names principals this machine does not recognise (first: %s)", rs.quarantined, rs.firstQuarantined))
+	}
+	if rs.saclDropped > 0 {
+		out = append(out, fmt.Sprintf("%d entries were restored without their recorded audit entries (SACL), which name principals this machine does not recognise (first: %s)", rs.saclDropped, rs.firstSACLDrop))
+	}
+	return append(out, rs.domainNotes...)
 }

@@ -263,6 +263,12 @@ func recordingSecurityApplier(t *testing.T, snapshot func() sdApplyCall) *[]sdAp
 	var calls []sdApplyCall
 	orig := restoreSecurityApplier
 	t.Cleanup(func() { restoreSecurityApplier = orig })
+	// The fake descriptors name no principals, so the trustee decision
+	// (restore_sd_quarantine_test.go covers it) applies them as captured.
+	origPlatform := restoreSDPlatform
+	t.Cleanup(func() { restoreSDPlatform = origPlatform })
+	restoreSDPlatform.principals = func([]byte) (sdPrincipals, error) { return sdPrincipals{}, nil }
+	restoreSDPlatform.domains = func() (knownDomains, []string) { return knownDomains{}, nil }
 	restoreSecurityApplier = func(sd []byte) (*securefs.SecurityApplier, error) {
 		if string(sd) == "sd-INVALID" {
 			return nil, errors.New("injected invalid descriptor")
