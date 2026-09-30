@@ -482,6 +482,25 @@ describe('file index bound to the snapshot attestation', () => {
     expect(deps.fetchManifestBytes).not.toHaveBeenCalled();
   });
 
+  it('refuses to build an index for a snapshot whose statement was refused when it was reported (no attestation row)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow({ integrityStatus: 'attestation_failed' })]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'attestation_failed', retryable: false });
+    expect(deps.fetchManifestBytes).not.toHaveBeenCalled();
+  });
+
+  it('a statement refused meanwhile (projection only) also keeps the index unpublished', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([snapshotRow()]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+      .mockReturnValueOnce(chainMock([{ metadata: {}, integrityStatus: 'attestation_failed' }]))
+      .mockReturnValueOnce(chainMock([]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).toMatchObject({ status: 'failed', failure: 'attestation_failed' });
+  });
+
   it('re-checks under the snapshot row lock at publish: an attestation recorded meanwhile that names other bytes keeps the index unpublished', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()])) // claim: no attestation yet
@@ -541,6 +560,16 @@ describe('file index bound to the snapshot attestation', () => {
         .mockReturnValueOnce(chainMock([{ referencedFiles: 1 }]));
       const state = await readSnapshotFileIndexState(SNAPSHOT_DB_ID);
       expect(state).toMatchObject({ status: 'none', manifestSha256: null, originSnapshotIds: [] });
+    });
+
+    it('reports the index of a snapshot whose statement was refused (no row) as failed', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          status: 'complete', manifestSha256: digest, externalCount: 1, error: null, jobId: 'job-1', storageIdentity: STORAGE_IDENTITY,
+          integrityStatus: 'attestation_failed', attestation: null,
+        }]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 1 }]));
+      expect(await readSnapshotFileIndexState(SNAPSHOT_DB_ID)).toMatchObject({ status: 'failed', retryable: false });
     });
 
     it('reports the index of a snapshot whose attestation did not match as failed, not retryable', async () => {

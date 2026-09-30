@@ -166,6 +166,26 @@ export function evaluateRestoreIntegrity(
   }
 }
 
+/**
+ * True when the snapshot failed its integrity check: its attestation did not
+ * match the stored objects, no longer describes the snapshot row, has a status
+ * this server does not know, or was refused when it was reported. Such a
+ * snapshot is never read from storage.
+ */
+export function snapshotIntegrityFailed(snapshot: IntegritySnapshotInput & { attestation: IntegrityAttestationInput | null }): boolean {
+  const integrity = evaluateRestoreIntegrity(snapshot, snapshot.attestation);
+  return integrity.mode === 'unattested' && integrity.reason === 'attestation_failed';
+}
+
+/** HydrationFailure prefixes (backupSnapshotFileIndex.ts) that mean the stored bytes are not the attested ones. */
+const ATTESTATION_INDEX_FAILURES = ['manifest_differs_from_attestation', 'attestation_failed'];
+
+/** True when a 'failed' index failed because the stored manifest is not the attested one. */
+export function indexFailedOnAttestation(fileIndexError: string | null | undefined): boolean {
+  const prefix = (fileIndexError ?? '').split(':', 1)[0] ?? '';
+  return ATTESTATION_INDEX_FAILURES.includes(prefix);
+}
+
 /** The `integrity` block exactly as it goes on the wire. */
 export function integrityPayload(integrity: RestoreIntegrity): Record<string, unknown> {
   if (integrity.mode === 'attested') {
@@ -207,11 +227,13 @@ export function integrityMetricLabels(integrity: IntegrityLookup): { status: str
  * lie in another control object.
  */
 export function indexMatchesAttestation(
-  index: { fileIndexStatus: string; fileIndexManifestSha256: string | null },
+  index: { fileIndexStatus: string; fileIndexManifestSha256: string | null; integrityStatus?: string | null },
   attestation: { status: string; manifestSha256: string } | null,
 ): boolean {
   if (index.fileIndexStatus !== 'complete') return false;
-  if (!attestation) return true;
+  // A statement refused when it was reported leaves no row, only the
+  // projection: treated exactly like a mismatched attestation.
+  if (!attestation) return index.integrityStatus !== 'attestation_failed';
   if (!INDEX_BINDABLE_ATTESTATION_STATUSES.has(attestation.status)) return false;
   return index.fileIndexManifestSha256 !== null && index.fileIndexManifestSha256 === attestation.manifestSha256;
 }

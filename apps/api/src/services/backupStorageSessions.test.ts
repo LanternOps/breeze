@@ -80,6 +80,7 @@ function makeSnapshot(overrides: Partial<StorageSnapshotRow> = {}): StorageSnaps
     keyLayout: 'legacy_flat',
     fileIndexStatus: 'complete',
     fileIndexManifestSha256: MANIFEST_SHA,
+    fileIndexError: null,
     jobId: JOB,
     integrityStatus: 'unattested_legacy',
     attestation: null,
@@ -701,10 +702,24 @@ describe('restore integrity expectations at delivery', () => {
     const state = makeState();
     state.device!.backupReadProtocolVersion = protocol;
     const deps = makeDeps(state);
-    (deps.store.findSnapshots as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('statement timeout'));
+    const find = deps.store.findSnapshots as ReturnType<typeof vi.fn>;
+    const real = find.getMockImplementation()!;
+    // The VM command's own decision (is this snapshot readable at all?) reads
+    // the snapshot first; only the lookup that feeds the block fails.
+    if (type === 'vm_instant_boot') find.mockImplementationOnce(real);
+    find.mockRejectedValue(new Error('statement timeout'));
     const out = await deliverBrokeredReadCommand(shape(restorePayload()), ctx({ type }), deps);
     expect(out).not.toHaveProperty('integrity');
     expect(deps.recordIntegrity).toHaveBeenCalledWith(type, 'absent', 'lookup_failed');
+  });
+
+  it('a failure reading the snapshot for the delivery decision itself is not delivered (released for a later attempt)', async () => {
+    const state = makeState();
+    state.device!.backupReadProtocolVersion = 0;
+    const deps = makeDeps(state);
+    (deps.store.findSnapshots as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('statement timeout'));
+    await expect(deliverBrokeredReadCommand({ restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' }, ctx({ type: 'vm_instant_boot' }), deps))
+      .rejects.toThrow('statement timeout');
   });
 
   it('nothing is recorded for a delivery that is deferred or refused', async () => {
@@ -725,6 +740,21 @@ describe('file index bound to the snapshot attestation', () => {
     expect(deps.requestIndexHydration).toHaveBeenCalledWith(SNAPSHOT_DB_ID);
     expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'deferred', 'index_attestation_mismatch');
     expect(state.sessions.size).toBe(0);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toThrow(
+      "The backup's file list did not match its integrity record and is being rebuilt from storage.",
+    );
+  });
+
+  it.each([
+    ['manifest_differs_from_attestation: manifest digest x is not the attested y'],
+    ['attestation_failed: the snapshot attestation does not match its stored objects'],
+  ])('refuses, as a permanent condition, a snapshot whose index could not be built from the attested bytes (%s)', async (error) => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ fileIndexStatus: 'failed', fileIndexError: error, attestation: makeAttestation({ status: 'pending' }) })];
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps))
+      .rejects.toThrow('The stored backup does not match its integrity record and cannot be read from storage.');
+    expect(deps.requestIndexHydration).not.toHaveBeenCalled();
   });
 
   it.each(['pending', 'producer_only'])('defers a %s attestation whose index digest differs', async (status) => {
@@ -734,11 +764,29 @@ describe('file index bound to the snapshot attestation', () => {
     await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps)).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
   });
 
-  it.each(['backup_restore', 'backup_verify', 'vm_restore_from_backup'])(
-    'refuses %s on the index of a snapshot whose attestation did not match, without asking for an index that can never be built',
-    async (type) => {
+  const failedIntegrity = {
+    'a mismatched attestation': () => makeSnapshot({
+      fileIndexStatus: 'failed',
+      fileIndexError: 'attestation_failed: the snapshot attestation does not match its stored objects',
+      integrityStatus: 'attestation_failed',
+      attestation: makeAttestation({ status: 'mismatch' }),
+      metadata: { backupFileName: 'db.bak' },
+    }),
+    'an attestation refused when it was reported (no row)': () => makeSnapshot({
+      integrityStatus: 'attestation_failed',
+      attestation: null,
+      metadata: { backupFileName: 'db.bak' },
+    }),
+  } as const;
+
+  it.each(Object.keys(failedIntegrity).flatMap((kind) => [
+    'backup_restore', 'backup_verify', 'backup_test_restore', 'mssql_restore', 'mssql_verify', 'hyperv_restore',
+    'vm_restore_from_backup', 'vm_instant_boot',
+  ].map((type) => [kind, type] as const)))(
+    'refuses a snapshot with %s for %s, without asking for an index that can never be built',
+    async (kind, type) => {
       const state = makeState();
-      state.snapshots = [makeSnapshot({ integrityStatus: 'attestation_failed', attestation: makeAttestation({ status: 'mismatch' }) })];
+      state.snapshots = [failedIntegrity[kind as keyof typeof failedIntegrity]()];
       const deps = makeDeps(state);
       const payload = type.startsWith('vm_') ? { restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' } : restorePayload();
       await expect(deliverBrokeredReadCommand(payload, ctx({ type }), deps))
@@ -749,17 +797,21 @@ describe('file index bound to the snapshot attestation', () => {
     },
   );
 
-  it('MSSQL reads (no index) are brokered whatever the index state, and still carry the expectation', async () => {
-    const state = makeState();
-    state.snapshots = [makeSnapshot({
-      metadata: { backupFileName: 'db.bak' },
-      integrityStatus: 'attestation_failed',
-      attestation: makeAttestation({ status: 'mismatch' }),
-    })];
-    const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand(restorePayload(), ctx({ type: 'mssql_restore' }), deps);
-    expect(out.storageSession).toBeTruthy();
-    expect(out.integrity).toEqual({ v: 1, mode: 'unattested', snapshotId: SNAP, reason: 'attestation_failed' });
+  it.each([
+    ['the helper does not support storage sessions', (state: FakeState) => { state.device!.backupReadProtocolVersion = 0; }],
+    ['the device reports another server origin', (state: FakeState) => { state.device!.agentServerUrl = 'https://other.example'; }],
+    ['the destination is not S3', (state: FakeState) => { state.config!.provider = 'azure'; }],
+    ['the storage identity changed', (state: FakeState) => { state.snapshots[0]!.storageIdentity = 's3::elsewhere::bucket-z'; }],
+  ])('never delivers a VM command for a failed snapshot as queued, even when %s', async (_name, change) => {
+    for (const kind of Object.keys(failedIntegrity)) {
+      const state = makeState();
+      state.snapshots = [failedIntegrity[kind as keyof typeof failedIntegrity]()];
+      change(state);
+      const deps = makeDeps(state);
+      await expect(deliverBrokeredReadCommand({ restoreJobId: 'r1', snapshotId: SNAP, vmName: 'vm1' }, ctx({ type: 'vm_instant_boot' }), deps))
+        .rejects.toThrow('This backup did not match its integrity record and cannot be read from storage.');
+      expect(deps.recordDispatch).toHaveBeenCalledWith('vm_instant_boot', 'refused', 'attestation_failed');
+    }
   });
 
   it('revokes a session whose snapshot index stops matching the attestation', async () => {
@@ -772,14 +824,23 @@ describe('file index bound to the snapshot attestation', () => {
     expect(state.revoked).toEqual([{ id: row.id, reason: 'index_attestation_mismatch' }]);
   });
 
-  it('revokes a session once the attestation is found not to match', async () => {
+  it.each(['backup_restore', 'mssql_restore'])('revokes a %s session once the attestation is found not to match (index failed with it)', async (type) => {
     const state = makeState();
-    state.snapshots = [makeSnapshot({ attestation: makeAttestation({ status: 'pending' }) })];
-    const { deps, row } = await mintSession(state);
-    state.snapshots = [makeSnapshot({ attestation: makeAttestation({ status: 'mismatch' }) })];
+    state.snapshots = [makeSnapshot({ metadata: { backupFileName: 'db.bak' }, attestation: makeAttestation({ status: 'pending' }) })];
+    const { deps, row } = await mintSession(state, type);
+    state.snapshots = [failedIntegrity['a mismatched attestation']()];
     const result = await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/manifest.json`], deps);
     expect(result).toMatchObject({ status: 410 });
-    expect(state.revoked.map((r) => r.reason)).toEqual(['index_attestation_mismatch']);
+    expect(state.revoked.map((r) => r.reason)).toEqual(['attestation_failed']);
+  });
+
+  it('revokes a session once the snapshot is recorded as failing its integrity check without an attestation row', async () => {
+    const state = makeState();
+    const { deps, row } = await mintSession(state);
+    state.snapshots = [failedIntegrity['an attestation refused when it was reported (no row)']()];
+    const result = await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/manifest.json`], deps);
+    expect(result).toMatchObject({ status: 410 });
+    expect(state.revoked.map((r) => r.reason)).toEqual(['attestation_failed']);
   });
 
   it('checks membership against the exact index digest it approved', async () => {

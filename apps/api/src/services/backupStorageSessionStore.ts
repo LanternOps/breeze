@@ -35,6 +35,7 @@ const snapshotColumns = () => ({
   keyLayout: backupSnapshots.keyLayout,
   fileIndexStatus: backupSnapshots.fileIndexStatus,
   fileIndexManifestSha256: backupSnapshots.fileIndexManifestSha256,
+  fileIndexError: backupSnapshots.fileIndexError,
   integrityStatus: backupSnapshots.integrityStatus,
   metadata: backupSnapshots.metadata,
   // One row per snapshot at most (unique on snapshot_db_id).

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { expectedControlKey } from './backupAttestation';
 import {
   evaluateRestoreIntegrity,
+  indexFailedOnAttestation,
+  snapshotIntegrityFailed,
   indexMatchesAttestation,
   integrityPayload,
   integrityMetricLabels,
@@ -206,5 +208,37 @@ describe('indexMatchesAttestation', () => {
 
   it('an attestation status this server does not know authorizes nothing', () => {
     expect(indexMatchesAttestation(complete, { status: 'something_new', manifestSha256: MANIFEST_SHA })).toBe(false);
+  });
+});
+
+describe('snapshotIntegrityFailed', () => {
+  it('is true for a mismatched attestation, a changed binding, an unknown status and a refused statement', () => {
+    expect(snapshotIntegrityFailed({ ...snapshot(), attestation: attestation({ status: 'mismatch' }) })).toBe(true);
+    expect(snapshotIntegrityFailed({ ...snapshot({ storageIdentity: 'other' }), attestation: attestation() })).toBe(true);
+    expect(snapshotIntegrityFailed({ ...snapshot(), attestation: attestation({ status: 'something_new' }) })).toBe(true);
+    expect(snapshotIntegrityFailed({ ...snapshot({ integrityStatus: 'attestation_failed' }), attestation: null })).toBe(true);
+  });
+
+  it('is false for attested, pending and unattested snapshots', () => {
+    expect(snapshotIntegrityFailed({ ...snapshot(), attestation: attestation() })).toBe(false);
+    expect(snapshotIntegrityFailed({ ...snapshot(), attestation: attestation({ status: 'pending' }) })).toBe(false);
+    expect(snapshotIntegrityFailed({ ...snapshot({ integrityStatus: 'unattested_legacy' }), attestation: null })).toBe(false);
+    expect(snapshotIntegrityFailed({ ...snapshot({ integrityStatus: 'unattested' }), attestation: null })).toBe(false);
+  });
+});
+
+describe('indexFailedOnAttestation', () => {
+  it('recognizes only the attestation-related hydration failures', () => {
+    expect(indexFailedOnAttestation('manifest_differs_from_attestation: x')).toBe(true);
+    expect(indexFailedOnAttestation('attestation_failed: x')).toBe(true);
+    expect(indexFailedOnAttestation('origin_unverifiable: x')).toBe(false);
+    expect(indexFailedOnAttestation(null)).toBe(false);
+  });
+});
+
+describe('indexMatchesAttestation with a refused statement and no row', () => {
+  it('authorizes nothing when the snapshot is recorded as failing its integrity check', () => {
+    expect(indexMatchesAttestation({ fileIndexStatus: 'complete', fileIndexManifestSha256: MANIFEST_SHA, integrityStatus: 'attestation_failed' }, null)).toBe(false);
+    expect(indexMatchesAttestation({ fileIndexStatus: 'complete', fileIndexManifestSha256: MANIFEST_SHA, integrityStatus: 'unattested_legacy' }, null)).toBe(true);
   });
 });

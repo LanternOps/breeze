@@ -25,7 +25,9 @@ import './setup';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
+import { deliverRecoveryCommandIntegrity, defaultRecoveryCommandIntegrityDeps } from '../../services/backupRecoveryCommandIntegrity';
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
 import { hydrateSnapshotFileIndex, readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
 import { resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
@@ -192,28 +194,54 @@ describe('file index bound to the snapshot attestation', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  runDb('hydration of bytes that differ from the attestation, racing verification of the attested ones, never leaves that index complete (50 runs)', async () => {
+  runDb('an attestation recorded while differing bytes are being read, verified concurrently, never leaves that index complete (50 runs)', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     for (let i = 0; i < 50; i++) {
       const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
       const differing = manifestFor(snapshotId, 'differing');
       // Half the runs start from an index built before the attestation existed.
       if (i % 2 === 0) await setIndex(snapshotDbId, 'complete', sha(differing));
-      await insertAttestation(t, snapshotDbId, snapshotId, manifest);
 
-      await Promise.all([
-        hydrateSnapshotFileIndex(snapshotDbId, {
-          includeUnreferenced: true,
-          force: true,
-          deps: { fetchManifestBytes: async () => differing },
-        }).catch(() => null),
-        verify(snapshotDbId, manifest),
-      ]);
+      let verification: Promise<unknown> = Promise.resolve();
+      await hydrate(snapshotDbId, async () => {
+        // Hydration has claimed the snapshot with no attestation in sight; the
+        // attestation is recorded now and verified concurrently with the rest
+        // of hydration (row writes, publish under the snapshot row lock).
+        await insertAttestation(t, snapshotDbId, snapshotId, manifest);
+        verification = runOutsideDbContext(() => verify(snapshotDbId, manifest));
+        return differing;
+      }).catch(() => null);
+      await verification;
 
       const row = await indexRow(snapshotDbId);
       expect(row.status === 'complete' && row.digest === sha(differing), `run ${i}: ${JSON.stringify(row)}`).toBe(false);
     }
-  }, 120_000);
+  }, 180_000);
+
+  runDb('hydration of the attested bytes racing a verification that finds a mismatch never leaves a complete index (50 runs)', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    for (let i = 0; i < 50; i++) {
+      const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+      await insertAttestation(t, snapshotDbId, snapshotId, manifest);
+
+      let verification: Promise<unknown> = Promise.resolve();
+      await hydrate(snapshotDbId, async () => {
+        // The stored manifest matches the attestation, but another control
+        // object does not: the verifier decides `mismatch` while hydration of
+        // the manifest is still in flight.
+        verification = runOutsideDbContext(() =>
+          verifySnapshotAttestation(snapshotDbId, {
+            ...defaultVerifyDeps,
+            fetchObject: vi.fn(async () => manifestFor(snapshotId, 'stored-bytes-differ')),
+          }));
+        return manifest;
+      }).catch(() => null);
+      await verification;
+
+      const row = await indexRow(snapshotDbId);
+      expect(row.status, `run ${i}: ${JSON.stringify(row)}`).not.toBe('complete');
+    }
+  }, 180_000);
 });
 
 describe('readers apply the binding', () => {
@@ -276,5 +304,106 @@ describe('readers apply the binding', () => {
       snapshotId,
       objects: [{ role: 'manifest', key: `snapshots/${snapshotId}/manifest.json`, sha256: sha(manifest), size: manifest.byteLength }],
     });
+  });
+});
+
+describe('index membership is decided in one statement with the binding', () => {
+  runDb('file keys count only while the index is complete, built from the approved bytes, and bound to the attestation', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+    const key = `snapshots/${snapshotId}/files/a`;
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path) VALUES (${snapshotDbId}, 'C:/a', ${key})
+    `);
+    const members = (digest: string | null) =>
+      withDbAccessContext(orgContext(t.orgId), () => drizzleBrokeredReadStore.filterIndexedKeys(snapshotDbId, [key], digest));
+
+    // No attestation, complete index: the approved digest must be the stored one.
+    await setIndex(snapshotDbId, 'complete', sha(manifest));
+    expect([...(await members(sha(manifest)))]).toEqual([key]);
+    expect([...(await members(sha(manifestFor(snapshotId, 'differing'))))]).toEqual([]);
+
+    // Being rebuilt: nothing counts.
+    await setIndex(snapshotDbId, 'hydrating', sha(manifest));
+    expect([...(await members(sha(manifest)))]).toEqual([]);
+
+    // An attestation naming other bytes: nothing counts.
+    await setIndex(snapshotDbId, 'complete', sha(manifest));
+    await insertAttestation(t, snapshotDbId, snapshotId, manifestFor(snapshotId, 'other'));
+    expect([...(await members(sha(manifest)))]).toEqual([]);
+  });
+
+  runDb('a mismatched attestation, or a refused statement with no row, makes every key count for nothing', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    for (const variant of ['mismatch', 'refused'] as const) {
+      const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+      const key = `snapshots/${snapshotId}/files/a`;
+      await getTestDb().execute(sql`
+        INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path) VALUES (${snapshotDbId}, 'C:/a', ${key})
+      `);
+      await setIndex(snapshotDbId, 'complete', sha(manifest));
+      if (variant === 'mismatch') {
+        await insertAttestation(t, snapshotDbId, snapshotId, manifest);
+        await getTestDb().execute(sql`UPDATE backup_snapshot_attestations SET status = 'mismatch' WHERE snapshot_db_id = ${snapshotDbId}`);
+      } else {
+        await getTestDb().execute(sql`UPDATE backup_snapshots SET integrity_status = 'attestation_failed' WHERE id = ${snapshotDbId}`);
+      }
+      const got = await withDbAccessContext(orgContext(t.orgId), () =>
+        drizzleBrokeredReadStore.filterIndexedKeys(snapshotDbId, [key], sha(manifest)));
+      expect([...got], variant).toEqual([]);
+    }
+  });
+});
+
+describe('a failed integrity lookup never aborts the delivery transaction', () => {
+  runDb('a VM command delivered as queued: the block is dropped and the caller\'s transaction stays usable', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    await getTestDb().execute(sql`UPDATE devices SET backup_read_protocol_version = 0 WHERE id = ${t.deviceId}`);
+    const { snapshotId } = await seedSnapshot(t);
+    const realFind = drizzleBrokeredReadStore.findSnapshots.bind(drizzleBrokeredReadStore);
+    const spy = vi.spyOn(drizzleBrokeredReadStore, 'findSnapshots')
+      // The delivery decision reads the snapshot first; the lookup that
+      // feeds the block runs a statement that fails in the database.
+      .mockImplementationOnce(realFind)
+      .mockImplementation(async () => {
+        await db.execute(sql`SELECT 1 / 0`);
+        return [];
+      });
+    try {
+      const after = await withDbAccessContext(orgContext(t.orgId), async () => {
+        const out = await deliverBrokeredReadCommand(
+          { restoreJobId: 'r1', snapshotId, vmName: 'vm1' },
+          { commandId: randomUUID(), deviceId: t.deviceId, type: 'vm_instant_boot', claimedAt: new Date() },
+        );
+        expect(out).not.toHaveProperty('integrity');
+        // Same transaction: still usable after the failed statement.
+        return db.execute(sql`SELECT count(*)::int AS n FROM devices WHERE id = ${t.deviceId}`);
+      });
+      expect((after as unknown as Array<{ n: number }>)[0]!.n).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  runDb('a bare-metal recovery command: the block is dropped and the caller\'s transaction stays usable', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId } = await seedSnapshot(t);
+    const deps = {
+      ...defaultRecoveryCommandIntegrityDeps,
+      resolve: async () => {
+        await db.execute(sql`SELECT 1 / 0`);
+        return null;
+      },
+    };
+    const after = await withDbAccessContext(orgContext(t.orgId), async () => {
+      const out = await deliverRecoveryCommandIntegrity(
+        { snapshotId, recoveryToken: 'enc', serverUrl: 'https://api.example' },
+        { commandId: randomUUID(), deviceId: t.deviceId, type: 'bmr_recover', claimedAt: new Date() },
+        deps,
+      );
+      expect(out).not.toHaveProperty('integrity');
+      return db.execute(sql`SELECT count(*)::int AS n FROM devices WHERE id = ${t.deviceId}`);
+    });
+    expect((after as unknown as Array<{ n: number }>)[0]!.n).toBe(1);
   });
 });

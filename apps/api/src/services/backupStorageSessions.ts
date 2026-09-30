@@ -58,10 +58,12 @@ import { recordBackupReadDispatch, recordRestoreIntegrity, recordStorageSessionM
 import {
   INTEGRITY_LOOKUP_FAILED,
   evaluateRestoreIntegrity,
+  indexFailedOnAttestation,
   indexMatchesAttestation,
   integrityMetricLabels,
   integrityPayload,
   lookupIntegrityInformational,
+  snapshotIntegrityFailed,
   type IntegrityAttestationInput,
   type IntegrityLookup,
 } from './backupRestoreIntegrity';
@@ -141,6 +143,8 @@ export type StorageSnapshotRow = {
   fileIndexStatus: string;
   /** SHA-256 of the manifest bytes the server-built file index was built from. */
   fileIndexManifestSha256: string | null;
+  /** Why the index is 'failed', when it is (backupSnapshotFileIndex.ts HydrationFailure prefix). */
+  fileIndexError: string | null;
   /** backup_snapshots.integrity_status (display projection). */
   integrityStatus: string;
   /** The snapshot's attestation row, or null when it has none. */
@@ -428,6 +432,8 @@ const REFUSAL_MESSAGES: Record<string, string> = {
   invalid_backup_file: 'This database backup does not record a readable backup file name.',
   deadline_passed: 'This command reached its time limit before it could be delivered. Start it again.',
   attestation_failed: 'This backup did not match its integrity record and cannot be read from storage.',
+  manifest_differs_from_attestation:
+    'The stored backup does not match its integrity record and cannot be read from storage.',
 };
 
 /**
@@ -436,13 +442,14 @@ const REFUSAL_MESSAGES: Record<string, string> = {
  * snapshot's stored objects did not match its attestation, so no file index
  * of it can authorize a read, and the helper must not read it any other way.
  */
-const REFUSED_FOR_EVERY_TYPE = new Set(['attestation_failed']);
+const REFUSED_FOR_EVERY_TYPE = new Set(['attestation_failed', 'manifest_differs_from_attestation']);
 
 const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
 const SEALING_DEFERRAL_MESSAGE = 'The backup was still being finalized in storage.';
 const DEFERRAL_MESSAGES: Record<string, string> = {
   index_unavailable: DEFERRAL_MESSAGE,
-  index_attestation_mismatch: DEFERRAL_MESSAGE,
+  index_attestation_mismatch:
+    "The backup's file list did not match its integrity record and is being rebuilt from storage.",
   snapshot_sealing: SEALING_DEFERRAL_MESSAGE,
   helper_unreported: BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE,
 };
@@ -494,10 +501,17 @@ export async function deliverBrokeredReadCommand(
     deps.recordDispatch(ctx.type, 'refused', decision.reason);
     throw new CommandDeliveryRefusedError(refusalMessage(decision.reason));
   }
-  // VM commands name no destination; they go as queued.
+  // VM commands name no destination; they go as queued — never for a
+  // snapshot that failed its integrity check, whichever way it was reached.
+  const queuedSnapshot = await lookupSnapshotForIntegrity(payload, ctx, deps);
+  if (queuedSnapshot && queuedSnapshot !== INTEGRITY_LOOKUP_FAILED && snapshotIntegrityFailed(queuedSnapshot)) {
+    deps.recordMint('snapshot_read', 'refused', 'attestation_failed');
+    deps.recordDispatch(ctx.type, 'refused', 'attestation_failed');
+    throw new CommandDeliveryRefusedError(refusalMessage('attestation_failed'));
+  }
   deps.recordMint('snapshot_read', 'legacy', decision.reason);
   deps.recordDispatch(ctx.type, 'legacy', decision.reason);
-  return attachIntegrity(payload, ctx.type, await lookupSnapshotForIntegrity(payload, ctx, deps), deps);
+  return attachIntegrity(payload, ctx.type, queuedSnapshot, deps);
 }
 
 export const INTEGRITY_FIELD = 'integrity';
@@ -615,6 +629,17 @@ async function mint(
   const device = await store.loadDevice(ctx.deviceId);
   if (!device || device.orgId !== orgId) return { mode: 'unbrokered', reason: 'device_org_mismatch' };
 
+  const externalSnapshotId = typeof payload.snapshotId === 'string' ? payload.snapshotId : '';
+  const candidates = externalSnapshotId
+    ? await store.findSnapshots({ orgId, externalSnapshotId, configId: refConfigId })
+    : [];
+  // Decided before any other outcome, so a snapshot whose stored objects did
+  // not match its attestation is never read, whatever else is true of the
+  // helper or the destination (and never delivered as queued).
+  if (candidates.length === 1 && snapshotIntegrityFailed(candidates[0]!)) {
+    return { mode: 'unbrokered', reason: 'attestation_failed' };
+  }
+
   const protocol = effectiveHelperProtocol(ctx.reportedBackupReadProtocolVersion, device.backupReadProtocolVersion);
   if (protocol === null) return { mode: 'unbrokered', reason: 'helper_unreported' };
   if (!(protocol >= MIN_BACKUP_READ_PROTOCOL_VERSION)) return { mode: 'unbrokered', reason: 'helper_unsupported' };
@@ -634,9 +659,7 @@ async function mint(
   if (!baseUrl) return { mode: 'unbrokered', reason: 'server_origin_unavailable' };
   if (!baseUrl.startsWith('https://')) return { mode: 'unbrokered', reason: 'insecure_server_origin' };
 
-  const externalSnapshotId = typeof payload.snapshotId === 'string' ? payload.snapshotId : '';
   if (!externalSnapshotId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
-  const candidates = await store.findSnapshots({ orgId, externalSnapshotId, configId: refConfigId });
   if (candidates.length !== 1) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const snapshot = candidates[0]!;
   if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
@@ -675,9 +698,11 @@ async function mint(
     useFileIndex = false;
     authorizedKeyCount = controlKeys.length;
   } else {
-    // No index can ever match an attestation that did not match the stored
-    // objects (hydration refuses to build one): refused, not deferred.
-    if (snapshot.attestation?.status === 'mismatch') return { mode: 'unbrokered', reason: 'attestation_failed' };
+    // Hydration already refused to build an index from the stored manifest
+    // because its bytes are not the attested ones: permanent, not pending.
+    if (snapshot.fileIndexStatus === 'failed' && indexFailedOnAttestation(snapshot.fileIndexError)) {
+      return { mode: 'unbrokered', reason: 'manifest_differs_from_attestation' };
+    }
     if (!indexMatchesAttestation(snapshot, snapshot.attestation)) {
       // Ask for a server-verified index so the next delivery attempt can be
       // brokered; this one is deferred. A complete index that was not built
@@ -867,6 +892,14 @@ export async function resolveStorageSessionObjects(
   ) {
     await store.revokeSession(session.id, 'storage_changed');
     return { status: 410, error: 'The snapshot or its storage destination changed' };
+  }
+
+  // A snapshot that failed its integrity check since the session was minted
+  // ends every session reading it, index-based or not (the verifier leaves
+  // its index 'failed', so the index check below would not see it).
+  if (snapshotIntegrityFailed(snapshot)) {
+    await store.revokeSession(session.id, 'attestation_failed');
+    return { status: 410, error: 'The snapshot did not match its integrity record' };
   }
 
   // An index that no longer matches the snapshot's attestation (an
