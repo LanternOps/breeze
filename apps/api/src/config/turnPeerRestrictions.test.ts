@@ -163,6 +163,13 @@ const MUST_DENY = [
   '255.255.255.255',
   '::1',
   '64:ff9b:1::a00:1',
+  // IPv4-mapped IPv6 (::ffff:0:0/96): 127.0.0.1, 10.124.0.4, 169.254.169.254
+  '::ffff:7f00:1',
+  '::ffff:a7c:4',
+  '::ffff:a9fe:a9fe',
+  // NAT64 well-known prefix (64:ff9b::/96): 127.0.0.1, 169.254.169.254
+  '64:ff9b::7f00:1',
+  '64:ff9b::a9fe:a9fe',
   '2001::1',
   '2002:a00:1::1',
   'fd12:3456::1',
@@ -204,12 +211,12 @@ describe.each(SOURCES)('coturn peer restrictions ($name)', (src) => {
     expect(src.options).not.toContain('verbose');
   });
 
-  it('ships the IPv4-mapped and NAT64 denies commented out, not active', () => {
+  it('denies the IPv4-mapped and NAT64 ranges as active rules', () => {
     const mapped = 'denied-peer-ip=::ffff:0:0-::ffff:ffff:ffff';
     const nat64 = 'denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff';
     for (const line of [mapped, nat64]) {
-      expect(src.commented).toContain(line);
-      expect(src.options).not.toContain(line);
+      expect(src.options).toContain(line);
+      expect(src.commented).not.toContain(line);
     }
   });
 
