@@ -51,6 +51,18 @@ var wellKnownExact = map[string]bool{
 	"S-1-5-113":  true,
 	"S-1-5-114":  true,
 	"S-1-5-1000": true,
+	// LOCAL, CONSOLE LOGON; NTLM, SChannel and Digest authentication; the
+	// user-mode driver framework host; the Window Manager and Font Driver
+	// Host groups. Only these exact values: the same families also hold
+	// per-session identities whose meaning differs between machines.
+	"S-1-2-0":            true,
+	"S-1-2-1":            true,
+	"S-1-5-64-10":        true,
+	"S-1-5-64-14":        true,
+	"S-1-5-64-21":        true,
+	"S-1-5-84-0-0-0-0-0": true,
+	"S-1-5-90-0":         true,
+	"S-1-5-96-0":         true,
 }
 
 // wellKnownPrefixes are machine-independent SID families. exactly means one
@@ -63,14 +75,9 @@ var wellKnownPrefixes = []struct {
 }{
 	{"S-1-5-32", true}, // BUILTIN\Administrators, Users, …
 	{"S-1-3", true},    // CREATOR OWNER, CREATOR GROUP, OWNER RIGHTS, …
-	{"S-1-2", true},    // LOCAL, CONSOLE LOGON
-	{"S-1-5-64", true}, // NTLM / SChannel / Digest authentication
 	{"S-1-5-80", false},
 	{"S-1-5-82", false}, // IIS application pool identities (named)
 	{"S-1-5-83", false}, // Hyper-V virtual machine accounts
-	{"S-1-5-84", false}, // user-mode driver framework host
-	{"S-1-5-90", false}, // window manager
-	{"S-1-5-96", false}, // font driver host
 	{"S-1-15-2", false},
 	{"S-1-15-3", false}, // capabilities
 }

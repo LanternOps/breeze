@@ -48,6 +48,13 @@ func TestSIDAllowed(t *testing.T) {
 		{"font driver host", "S-1-5-96-0", true},
 		{"capability", "S-1-15-3-1024-1-2-3", true},
 		{"interactive with an extra sub-authority", "S-1-5-4-1", false},
+		{"per-session window manager identity", "S-1-5-90-0-2", false},
+		{"per-session font driver identity", "S-1-5-96-0-3", false},
+		{"other user-mode driver identity", "S-1-5-84-1-0-0-0-0", false},
+		{"unlisted local-logon sid", "S-1-2-5", false},
+		{"unlisted authentication sid", "S-1-5-64-99", false},
+		{"schannel authentication", "S-1-5-64-14", true},
+		{"digest authentication", "S-1-5-64-21", true},
 		{"unlisted fixed authority", "S-1-5-99", false},
 
 		// Prefix confusion against the well-known set.
