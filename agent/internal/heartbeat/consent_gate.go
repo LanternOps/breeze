@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -434,15 +435,15 @@ func sameConsentPrincipal(goos string, consent, capture *sessionbroker.Session) 
 // captureDisplayOwnerFn reports who owns the X display the Linux capturer
 // will attach to (x11.SelectX11Target). known=false when that cannot be
 // established (no attachable display, or an owner that resolves to root).
-var captureDisplayOwnerFn = func() (int, bool) {
+var captureDisplayOwnerFn = func() (uint32, bool) {
 	if runtime.GOOS != "linux" {
 		return 0, false
 	}
 	t, err := x11.SelectX11Target()
-	if err != nil || t.OwnerUID <= 0 {
+	if err != nil || t.OwnerUID <= 0 || t.OwnerUID > math.MaxUint32 {
 		return 0, false
 	}
-	return t.OwnerUID, true
+	return uint32(t.OwnerUID), true
 }
 
 // linuxConsentBindingDetail binds a Linux answer to the captured display: the
@@ -452,7 +453,7 @@ var captureDisplayOwnerFn = func() (int, bool) {
 // signed in — there is no telling whose desktop would be shown.
 func linuxConsentBindingDetail(helper *sessionbroker.Session) string {
 	if uid, known := captureDisplayOwnerFn(); known {
-		if uint32(uid) != helper.UID {
+		if uid != helper.UID {
 			return "capture_target_changed"
 		}
 		return ""

@@ -429,7 +429,7 @@ func TestLinuxConsentBinding(t *testing.T) {
 	}
 	tests := []struct {
 		name     string
-		ownerUID int
+		ownerUID uint32
 		known    bool
 		sessions []sessionbroker.DetectedSession
 		want     string
@@ -443,7 +443,7 @@ func TestLinuxConsentBinding(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withConsentHostOS(t, "linux")
 			origOwner, origList := captureDisplayOwnerFn, listConsentSessionsFn
-			captureDisplayOwnerFn = func() (int, bool) { return tt.ownerUID, tt.known }
+			captureDisplayOwnerFn = func() (uint32, bool) { return tt.ownerUID, tt.known }
 			listConsentSessionsFn = func() ([]sessionbroker.DetectedSession, error) { return tt.sessions, nil }
 			t.Cleanup(func() { captureDisplayOwnerFn, listConsentSessionsFn = origOwner, origList })
 
