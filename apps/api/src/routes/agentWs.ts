@@ -3293,6 +3293,15 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             // (same ownership predicates as any other start result).
             if (!isTerm && message.commandId.startsWith('desk-start-')) {
               await failUnreadableDesktopStart(message.commandId, authenticatedAgent.deviceId, runWithAgentDbAccess);
+              // A WebSocket-fallback relay waiting on this exact start tells
+              // the viewer and closes; a no-op for a WebRTC start.
+              const unreadableStart = parseDesktopStartCommandId(message.commandId);
+              if (unreadableStart) {
+                settleDesktopStreamStart(unreadableStart.sessionId, agentId, message.commandId, {
+                  outcome: 'failed',
+                  error: UNREADABLE_DESKTOP_START_MESSAGE,
+                });
+              }
             }
             return;
           }
@@ -3664,11 +3673,15 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               try {
                 activation = await runWithAgentDbAccess('agentWs.desktop.streamAccepted', async () => {
                   const consentReason = fastResult.consentReason;
+                  if (!consentMarkerIsCoherent(fastResult)) {
+                    console.warn(`[AgentWs] Stream start for session ${sessionId}: consentReason=${String(consentReason)} is not backed by consentOutcome=${String(fastResult.consentOutcome)}; not activating a consent-mode start`);
+                  }
                   const outcome = await activateDesktopStreamStart({
                     sessionId,
                     deviceId: authenticatedAgent.deviceId,
                     startCommandId: fastCommandId,
                     consentReason,
+                    consentMarker: fastResult,
                   });
                   if (!outcome.activated) {
                     console.warn(`[AgentWs] Stream start for session ${sessionId} not activated (consentReason=${String(consentReason)}, terminal=${outcome.terminal}; not the connecting start, not owned by agent ${agentId}, or no consent marker it is entitled to)`);

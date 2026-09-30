@@ -14,7 +14,7 @@
 import { and, eq, ne, or, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions } from '../db/schema';
-import { isUnsolicitedConsentReason } from '../routes/remote/helpers';
+import { consentMarkerIsCoherent, isUnsolicitedConsentReason } from '../routes/remote/helpers';
 
 const LIVE_STATUSES: ReadonlySet<string> = new Set(['pending', 'connecting', 'active']);
 
@@ -45,6 +45,12 @@ export interface DesktopStreamStartActivationInput {
   /** The exact command id the result answers. */
   startCommandId: string;
   consentReason: unknown;
+  /**
+   * The agent's whole consent record (the result body). A version 2 marker
+   * must be backed by its own outcome (consentMarkerIsCoherent); one that is
+   * not cannot activate a consent-mode start — same rule as the WebRTC answer.
+   */
+  consentMarker: Record<string, unknown>;
 }
 
 /** Only the exact connecting start, on the reporting device, with an entitled consent marker. */
@@ -54,7 +60,9 @@ export function desktopStreamStartActivationWhere(input: DesktopStreamStartActiv
     eq(remoteSessions.deviceId, input.deviceId),
     eq(remoteSessions.status, 'connecting'),
     eq(remoteSessions.desktopStartCommandId, input.startCommandId),
-    ...desktopConsentActivationPredicate(input.consentReason),
+    ...(consentMarkerIsCoherent(input.consentMarker)
+      ? desktopConsentActivationPredicate(input.consentReason)
+      : [ne(remoteSessions.desktopPromptMode, 'consent')]),
   );
 }
 

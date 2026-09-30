@@ -28,12 +28,13 @@ const SESSION = '12121212-1212-4121-8121-121212121212';
 const DEVICE = '34343434-3434-4343-8343-343434343434';
 const COMMAND = `desk-start-${SESSION}-56565656-5656-4565-8565-565656565656`;
 
-function render(consentReason: unknown) {
+function render(consentReason: unknown, consentMarker: Record<string, unknown> = { consentReason }) {
   return dialect.sqlToQuery(desktopStreamStartActivationWhere({
     sessionId: SESSION,
     deviceId: DEVICE,
     startCommandId: COMMAND,
     consentReason,
+    consentMarker,
   })!);
 }
 
@@ -56,6 +57,20 @@ describe('desktop stream start activation predicate', () => {
     expect(q.params).toEqual(expect.arrayContaining(['consent', 'proceed']));
   });
 
+  // A version 2 marker must be backed by its own outcome (user → granted,
+  // timeout → presented_expired, no_user_session → unavailable), exactly as on
+  // the WebRTC answer path. An incoherent one cannot activate a consent start.
+  it('an incoherent version 2 marker never activates a consent-mode start', () => {
+    const q = render('user', { consentReason: 'user', consentProtocol: 2, consentOutcome: 'presented_expired' });
+    expect(q.sql).toContain('"remote_sessions"."desktop_prompt_mode" <> $');
+    expect(q.params).toEqual(expect.arrayContaining(['consent']));
+  });
+
+  it('a coherent version 2 grant activates like a version 1 grant', () => {
+    const coherent = render('user', { consentReason: 'user', consentProtocol: 2, consentOutcome: 'granted' });
+    expect(coherent.sql).not.toContain('"desktop_prompt_mode" <> $');
+  });
+
   it('no consent marker never activates a consent-mode start', () => {
     const q = render(undefined);
     expect(q.sql).toContain('"remote_sessions"."desktop_prompt_mode" <> $');
@@ -69,7 +84,7 @@ describe('activateDesktopStreamStart', () => {
     updateReturning.mockReset();
     selectLimit.mockReset();
   });
-  const input = { sessionId: SESSION, deviceId: DEVICE, startCommandId: COMMAND, consentReason: 'user' };
+  const input = { sessionId: SESSION, deviceId: DEVICE, startCommandId: COMMAND, consentReason: 'user', consentMarker: { consentReason: 'user' } };
 
   it('reports the activated row', async () => {
     const row = { id: SESSION, orgId: 'o', userId: 'u', type: 'desktop', promptMode: 'off', consentUnavailableBehavior: null };

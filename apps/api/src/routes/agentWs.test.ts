@@ -6797,6 +6797,30 @@ describe('WebSocket desktop fallback start results', () => {
     expect(closeDesktopRelayForStop).toHaveBeenCalledWith(SESSION);
   });
 
+  it('tells the relay the start failed when its result cannot be read', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: COMMAND,
+        status: 'completed',
+        result: { sessionId: SESSION, screenWidth: 1280, notAField: true },
+      }),
+    } as any, ws as any);
+
+    expect(settleDesktopStreamStart).toHaveBeenCalledWith(
+      SESSION, AGENT, COMMAND, expect.objectContaining({ outcome: 'failed' }),
+    );
+    warn.mockRestore();
+  });
+
   it('closes any local desktop relay for the session the moment stop_desktop is sent', async () => {
     vi.mocked(partnerTrustMode).mockReturnValue('off');
     await connectedAgent('agent-stop-relay', DEVICE);

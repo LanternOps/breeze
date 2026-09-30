@@ -813,6 +813,24 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     expect(await auditActionsFor(sessionId)).toEqual([]);
   });
 
+  runDb('stream start with a version 2 grant not backed by its outcome stays connecting', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      screenWidth: 1920,
+      screenHeight: 1080,
+      consentReason: 'user',
+      consentProtocol: 2,
+      consentOutcome: 'presented_expired',
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('connecting');
+    expect(await auditActionsFor(sessionId)).toEqual([]);
+  });
+
   runDb('stream start in notify mode activates with no consent audit', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const dev = await insertDevice(env.organization.id, env.site.id);
