@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -78,6 +79,22 @@ var maxConsecutiveDownloadFailures = 25
 // func, not a redefinition of it — restore_linux.go is owned by a sibling
 // wave and is not touched here.
 var newRestorerFunc = newRestorer
+
+// recoverHostGOOS is runtime.GOOS; a var so tests exercise the Windows
+// files-only path and the live-apply path on any host.
+var recoverHostGOOS = runtime.GOOS
+
+// CodeSystemStateRequiresRebuild is RecoveryResult.Code for a Windows
+// recovery of a snapshot that carries system state: the files were
+// restored and the system state was left for a bare-metal rebuild, which
+// applies it offline (rebuild.Run → RestoreSystemStateOfflineWindows). A
+// Windows bmr_recover never imports registry hives, boot configuration,
+// certificates, firewall policy or drivers into the running system.
+const CodeSystemStateRequiresRebuild = "system_state_requires_rebuild"
+
+// systemStateRequiresRebuildWarning accompanies CodeSystemStateRequiresRebuild
+// in Warnings, so a reader that only renders warnings still says why.
+const systemStateRequiresRebuildWarning = CodeSystemStateRequiresRebuild + ": system state is applied by a bare-metal rebuild; this recovery restored files only"
 
 // RunRecovery orchestrates a full bare metal recovery.
 //
@@ -175,7 +192,15 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	stateResult := applySystemState(ctx, cfg, provider)
+	var stateResult systemStateResult
+	if recoverHostGOOS == "windows" {
+		stateResult = deferWindowsSystemState(cfg, provider)
+		if stateResult.requiresRebuild {
+			result.Code = CodeSystemStateRequiresRebuild
+		}
+	} else {
+		stateResult = applySystemState(ctx, cfg, provider)
+	}
 	result.StateApplied = stateResult.applied
 	result.DriversInjected = stateResult.drivers
 	result.Warnings = append(result.Warnings, stateResult.warnings...)
@@ -220,7 +245,10 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		return result, ctx.Err()
 	}
 	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr, SystemStateOutcome{
-		Expected:      cfg.ExpectSystemState,
+		// A Windows files-only recovery never set out to apply the
+		// snapshot's system state (CodeSystemStateRequiresRebuild says so),
+		// so validation does not hold it to it.
+		Expected:      cfg.ExpectSystemState && !stateResult.requiresRebuild,
 		ManifestFound: stateResult.manifestFound,
 		Applied:       stateResult.applied,
 	})
@@ -506,6 +534,10 @@ type systemStateResult struct {
 	// persists and the console shows; before this, the reason lived only
 	// in warnings and the console could say nothing but "failed" (#5479).
 	firstArtifactFailure string
+	// requiresRebuild is set by deferWindowsSystemState: the snapshot
+	// carries system state that this (Windows) recovery deliberately left
+	// for a bare-metal rebuild.
+	requiresRebuild bool
 }
 
 // resolveStagingArtifactPath validates artifact.Path — an untrusted,
@@ -607,6 +639,31 @@ func deepestExistingAncestor(p string) string {
 		}
 		p = parent
 	}
+}
+
+// deferWindowsSystemState is the system-state phase of a recovery on a
+// Windows host: nothing is downloaded into staging and nothing is applied
+// to the running system. It only works out whether the snapshot carries
+// system state — the bootstrap says so, the attestation covers a state
+// manifest, or one exists in storage — and if it does, marks the result so
+// the operator is sent to a bare-metal rebuild, which applies it offline.
+func deferWindowsSystemState(cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
+	_, attested := cfg.Integrity.Object(integrity.RoleSystemStateManifest)
+	carriesState := cfg.ExpectSystemState || attested
+	if !carriesState {
+		_, probeErr := downloadToTemp(provider, systemStateManifestKey(cfg.SnapshotID))
+		switch {
+		case probeErr == nil:
+			carriesState = true
+		case errors.Is(probeErr, ErrRecoverySessionLost):
+			return systemStateResult{err: fmt.Errorf("bmr: probe system state manifest: %w", probeErr)}
+		}
+	}
+	if !carriesState {
+		return systemStateResult{warnings: []string{"no system state found in snapshot, skipping state restore"}}
+	}
+	slog.Info("bmr: system state left for a bare-metal rebuild on this Windows host", "snapshotId", cfg.SnapshotID)
+	return systemStateResult{requiresRebuild: true, warnings: []string{systemStateRequiresRebuildWarning}}
 }
 
 func applySystemState(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
