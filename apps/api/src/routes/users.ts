@@ -1807,8 +1807,10 @@ userRoutes.patch(
             // auth_epoch and durably revoke refresh families in the SAME
             // transaction so a rollback undoes both together. Scoped to
             // authentication-state changes only — a name-only edit must NOT
-            // sign the user out everywhere.
-            await advanceUserEpochs(tx, userId, { auth: true });
+            // sign the user out everywhere. A status change also voids the
+            // user's API keys (credential_epoch), so re-enabling a disabled
+            // account does not resurrect keys minted before it (#7489).
+            await advanceUserEpochs(tx, userId, { auth: true, credential: true });
             await revokeAllRefreshFamilies(tx, userId, `status:${row.status ?? 'changed'}`);
           }
           return [row];

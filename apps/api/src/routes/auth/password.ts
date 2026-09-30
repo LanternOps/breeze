@@ -254,7 +254,7 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
         await advanceUserEpochs(
           tx,
           userId,
-          { auth: true, passwordReset: true },
+          { auth: true, passwordReset: true, credential: true },
           { passwordResetEpoch: envelope.passwordResetEpoch, email: live.email },
         );
         await revokeAllRefreshFamilies(tx, userId, 'password-reset');
@@ -396,7 +396,7 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
       await advanceUserEpochs(
         tx,
         auth.user.id,
-        { auth: true, passwordReset: true },
+        { auth: true, passwordReset: true, credential: true },
         { authEpoch: expectedAuthEpoch },
       );
       await revokeAllRefreshFamilies(tx, auth.user.id, 'password-change');

@@ -447,9 +447,10 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(200);
       // Main password write.
       expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
-      // advanceUserEpochs({ auth: true, passwordReset: true }) — both bumped
-      // in the SAME update.
-      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v)).toBe(true);
+      // advanceUserEpochs({ auth: true, passwordReset: true, credential: true })
+      // — all bumped in the SAME update. credential_epoch is what kills the
+      // user's human API keys (#7489).
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v && 'credentialEpoch' in v)).toBe(true);
       // revokeAllRefreshFamilies durable family revoke.
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
       expect(db.transaction).toHaveBeenCalledTimes(1);
@@ -814,8 +815,9 @@ describe('password reset eligibility (#719)', () => {
       expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
       // advanceUserEpochs({ auth: true, passwordReset: true }): SR2-08 closes
       // the same sibling-reset-token window from the authenticated path too —
-      // a password change must also supersede any outstanding reset token.
-      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v)).toBe(true);
+      // a password change must also supersede any outstanding reset token —
+      // and advance credential_epoch so the user's API keys die (#7489).
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v && 'credentialEpoch' in v)).toBe(true);
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
       expect(db.transaction).toHaveBeenCalledTimes(1);
       // A previously authorized MCP OAuth refresh token must be revoked on a

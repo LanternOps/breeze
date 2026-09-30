@@ -3424,11 +3424,14 @@ describe('user routes', () => {
     }
 
     it('tears down remote sessions on the active→disabled transition', async () => {
-      seedPatch('active', 'disabled');
+      const { capturedUpdates } = seedPatch('active', 'disabled');
 
       const res = await patchStatus('disabled');
 
       expect(res.status).toBe(200);
+      // A status change voids the user's API keys too (#7489): credential_epoch
+      // advances with auth_epoch, so re-enabling cannot resurrect them.
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'credentialEpoch' in v)).toBe(true);
       expect(teardownMock).toHaveBeenCalledTimes(1);
       expect(teardownMock).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });

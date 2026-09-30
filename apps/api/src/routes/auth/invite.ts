@@ -212,7 +212,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
         .returning({ id: users.id });
       if (activated.length !== 1) throw new AuthIssuanceCapabilityError();
 
-      const epochs = await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
+      const epochs = await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true, credential: true });
       await lockActiveRefreshFamiliesForUsers(tx, [userId]);
       await revokeAllRefreshFamilies(tx, userId, 'invite_accepted');
       return issueUserSession(identity, {

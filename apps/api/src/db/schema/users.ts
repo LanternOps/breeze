@@ -67,6 +67,11 @@ export const users = pgTable('users', {
   authEpoch: integer('auth_epoch').notNull().default(1),
   mfaEpoch: integer('mfa_epoch').notNull().default(1),
   emailEpoch: integer('email_epoch').notNull().default(1),
+  // Advanced ONLY by events that change or void the user's sign-in
+  // credential (password change/reset, invite acceptance, admin status
+  // change) — never by logout or other session-only events. Human API keys
+  // bind to this, not auth_epoch (#7489). See services/authLifecycle.ts.
+  credentialEpoch: integer('credential_epoch').notNull().default(1),
   permissionsEpoch: bigint('permissions_epoch', { mode: 'number' }).notNull().default(0),
   // SR2-17: the address the user has ASKED to move to. users.email remains the
   // verified, authoritative identity (login, password reset, CF Access and SSO

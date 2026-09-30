@@ -387,7 +387,7 @@ describe('apiKeyAuth middleware', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a human-delegated key once the creator has rotated their password after mint (auth_epoch advanced)', async () => {
+  it('rejects a pre-#7489 key (auth_epoch snapshot, no credential snapshot) once the creator auth_epoch advanced', async () => {
     // A password reset/change ends every human-delegated key minted before
     // it: a key minted earlier must not outlive the password change.
     buildSequentialSelectMock([
@@ -515,6 +515,84 @@ describe('apiKeyAuth middleware', () => {
 
     await apiKeyAuthMiddleware(c, next);
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  describe('#7489: keys bind to the credential epoch, not the session epoch', () => {
+    function humanKeyRow(snapshot: {
+      creatorAuthEpoch: number | null;
+      creatorMfaEpoch: number | null;
+      creatorCredentialEpoch: number | null;
+    }) {
+      return {
+        id: 'key-7489',
+        orgId: 'org-1',
+        name: 'Key',
+        keyPrefix: 'brz_',
+        keyHash: 'hash',
+        scopes: ['read'],
+        expiresAt: null,
+        rateLimit: 10,
+        usageCount: 0,
+        status: 'active',
+        createdBy: 'user-1',
+        principalType: 'human',
+        ...snapshot,
+      };
+    }
+
+    it('accepts a key after its creator logs out (auth_epoch advanced, credential_epoch unchanged)', async () => {
+      // Ordinary logout is a global sign-out: it advances users.auth_epoch.
+      // It is not a credential change, so it must not kill the creator's keys.
+      buildSequentialSelectMock([
+        [humanKeyRow({ creatorAuthEpoch: 2, creatorMfaEpoch: 1, creatorCredentialEpoch: 1 })],
+        [{ status: 'active', authEpoch: 3, mfaEpoch: 1, credentialEpoch: 1 }],
+      ]);
+
+      const next = vi.fn();
+      await apiKeyAuthMiddleware(createContext({ 'X-API-Key': 'brz_after_logout' }), next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a key once its creator changes or resets their password (credential_epoch advanced)', async () => {
+      buildSequentialSelectMock([
+        [humanKeyRow({ creatorAuthEpoch: 2, creatorMfaEpoch: 1, creatorCredentialEpoch: 1 })],
+        [{ status: 'active', authEpoch: 3, mfaEpoch: 1, credentialEpoch: 2 }],
+      ]);
+
+      const next = vi.fn();
+      await expect(
+        apiKeyAuthMiddleware(createContext({ 'X-API-Key': 'brz_after_password' }), next),
+      ).rejects.toMatchObject({ status: 401, message: 'API key creator credentials have changed' });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('still rejects a key once its creator changes an MFA factor, even with a matching credential_epoch', async () => {
+      buildSequentialSelectMock([
+        [humanKeyRow({ creatorAuthEpoch: 2, creatorMfaEpoch: 1, creatorCredentialEpoch: 1 })],
+        [{ status: 'active', authEpoch: 2, mfaEpoch: 2, credentialEpoch: 1 }],
+      ]);
+
+      const next = vi.fn();
+      await expect(
+        apiKeyAuthMiddleware(createContext({ 'X-API-Key': 'brz_after_mfa' }), next),
+      ).rejects.toMatchObject({ status: 401, message: 'API key creator credentials have changed' });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the auth_epoch comparison for a key without a credential snapshot (minted before this binding)', async () => {
+      // A key the backfill could not prove still valid keeps its old
+      // (auth_epoch) binding: it is not silently revived.
+      buildSequentialSelectMock([
+        [humanKeyRow({ creatorAuthEpoch: 2, creatorMfaEpoch: 1, creatorCredentialEpoch: null })],
+        [{ status: 'active', authEpoch: 3, mfaEpoch: 1, credentialEpoch: 1 }],
+      ]);
+
+      const next = vi.fn();
+      await expect(
+        apiKeyAuthMiddleware(createContext({ 'X-API-Key': 'brz_legacy_auth_bound' }), next),
+      ).rejects.toMatchObject({ status: 401, message: 'API key creator credentials have changed' });
+      expect(next).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects when API key creator lookup returns no row', async () => {

@@ -107,6 +107,17 @@ describe('advanceUserEpochs', () => {
     expect(set.mfaEpoch).toBeUndefined();
     expect(set.emailEpoch).toBeUndefined();
     expect(set.passwordResetEpoch).toBeUndefined();
+    // #7489: a session-only advance (logout, role change) must never move the
+    // credential epoch that human API keys bind to.
+    expect(set.credentialEpoch).toBeUndefined();
+  });
+
+  it('advances credential_epoch only when asked, as a server-side increment (#7489)', async () => {
+    const { tx, setCalls } = makeTx();
+    await advanceUserEpochs(tx, 'u1', { auth: true, passwordReset: true, credential: true });
+    const set = setCalls[0]!;
+    expect(set.credentialEpoch).toBeInstanceOf(SQL);
+    expect(set.authEpoch).toBeInstanceOf(SQL);
   });
 
   it('binds a password transition to every supplied authorizing fact', async () => {
