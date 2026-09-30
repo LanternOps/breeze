@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Restores, test restores and backup verification that read from **S3 or S3-compatible storage** (MinIO, Wasabi, Backblaze B2 and so on) use a short-lived, read-only **storage session**. The session is bound to one command and one device. The device never receives the storage destination or its access keys for a read. Backups themselves are not affected by anything on this page.
+Restores, test restores and backup verification that read from **S3 or S3-compatible storage** (MinIO, Wasabi, Backblaze B2 and so on) use a short-lived, read-only **storage session**. The session is bound to one command and one device. The device never receives the storage destination or its access keys for a read. Backups to S3 storage have the same requirements and are written through a storage session too: see [HTTPS for Backups](/backup/https-backups/).
 
 Since v0.119, Breeze has no fallback for a read that cannot use a storage session. If a requirement below is missing, the restore is refused with a message that names what to change. Before v0.119, such a restore fell back to sending the storage destination to the device.
 

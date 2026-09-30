@@ -1,0 +1,72 @@
+---
+title: HTTPS for Backups
+description: Backups to S3 storage are written through a short-lived storage session over HTTPS. The minimum agent version, what a self-hosted install needs, and how to replace and disable the storage keys used before.
+sidebar:
+  order: 5.6
+  label: "HTTPS for Backups"
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Backups to **S3 or S3-compatible storage** (MinIO, Wasabi, Backblaze B2 and so on) are written through a short-lived, write-scoped **storage session**. The session is bound to one backup job, one device and one snapshot identifier that Breeze issues for that job. The device uploads each object with a signed link that Breeze issues for that object only. No backup command carries the storage destination or its access keys. This covers file and system image backups, SQL Server backups and Hyper-V backups, whether scheduled or run on demand.
+
+There is no fallback. If a requirement below is missing, the backup is refused with a message that names what to change.
+
+Local and NAS destinations are paths, not credentials. They back up the same way as before, on any agent version.
+
+## Requirements
+
+A backup to S3 storage needs all of these:
+
+| Requirement | Why | If it is missing |
+|---|---|---|
+| The device runs the **v0.119.0 agent or later** | Older backup components cannot write through a storage session. | `Update the Breeze agent on this device, then try again. Backups now require secure storage access, and the backup component on this device has not reported support for it.` (HTTP 409 from the SQL Server and Hyper-V backup routes; scheduled backups fail with the same message.) |
+| Agents reach the Breeze API over **HTTPS**, and `PUBLIC_API_URL` is set to that address | The device redeems the storage session at this origin. It accepts only a bare `https://` origin that matches the server it is enrolled with. | `Backups to S3 storage require agents to reach Breeze over HTTPS.` or `Set PUBLIC_API_URL to the address agents use.` |
+| The backup destination's **storage endpoint uses HTTPS** | Signed upload links are only issued for an HTTPS endpoint. | `Backups to S3 storage require the storage endpoint to use HTTPS.` |
+| The destination is **S3-compatible or local** | Only these providers can be written through a storage session. | `This backup destination uses a storage provider that backups no longer support.` |
+
+An empty endpoint (AWS S3) counts as HTTPS. So does an endpoint entered without a scheme: `minio.example.com:9000` is treated as `https://minio.example.com:9000`.
+
+A device that has just enrolled and has not yet reported its agent version waits for its first report (a few minutes at most) before a backup is started or refused.
+
+<Aside type="caution" title="Check before you upgrade">
+Update every device that backs up to S3 storage to the v0.119.0 agent or later, and move `http://` storage endpoints and `http://` agent API addresses to HTTPS, **before** you upgrade the server to a release that includes this change. After that upgrade, backups from older agents and to `http://` endpoints are refused. There is no setting that turns the old path back on.
+</Aside>
+
+The steps for moving the agent API and MinIO to HTTPS are the same as for restores: see [HTTPS for Restores](/backup/https-restores/#moving-the-agent-api-to-https).
+
+## Replacing and disabling old storage keys
+
+Storage keys that devices received before backups used storage sessions keep working until you disable them with your storage provider. Breeze lists every such key until there is evidence it no longer works.
+
+Open **Configuration Policies**, choose a policy with a **Backup** feature, and look at the **Destination** section. While any key needs attention, a card titled **Replace and disable the storage keys used before &lt;date&gt;** lists each one with the destination it belongs to.
+
+<Steps>
+1. **Create a new key** with your storage provider for the same bucket. Give it only the permissions Breeze needs on that bucket: read, write, delete and list objects, and multipart uploads.
+
+2. **Replace the key on the destination.** Edit the destination in Breeze, enter the new access key and secret key, and save. The old key moves to **Replaced** on the card. Run **Test connection**, then a backup and a restore, to confirm the new key works.
+
+3. **Disable the old key** with your storage provider. Deleting it is best: a deleted key can be checked conclusively.
+
+4. **Check the old key.** Select **Check old key** on the card. Breeze tries to list one object with the old key:
+   - If storage refuses it, the key is recorded as disabled and leaves the card.
+   - If it still works, the card says so. Disable it with your provider, then check again.
+   - If the storage provider cannot be reached, nothing is recorded. Try again later.
+</Steps>
+
+Breeze keeps what it needs to check a replaced key for 30 days. After that, or if the check cannot reach your storage, disable the key with your provider and select **I disabled this key**. Breeze records your confirmation. It is weaker evidence than a check that shows the key no longer works.
+
+When one key is used by several destinations, deleting it with your provider and checking it on one destination records it as disabled everywhere it was replaced. A destination that still uses the key must be given a new key first.
+
+Checks are limited to 10 per organization every 10 minutes. Checking a key, confirming it and changing a destination's keys are recorded in the audit log.
+
+## Other refusal messages
+
+| Message | What to do |
+|---|---|
+| `This backup job has already finished or been cancelled.` | Nothing. Run the backup again if you need it. |
+| `The backup was not started: a secure storage session could not be issued for it. Run the backup again.` | Run the backup again. If it keeps failing, check the API logs. |
+| `This backup was queued by an earlier version of Breeze and can no longer be delivered. Start it again.` | Start the backup again. |
+| `The backup destination encryption settings changed after this backup was queued. Start it again.` | Start the backup again. |
+
+See [Backup Troubleshooting](/backup/troubleshooting/) for other failures.
