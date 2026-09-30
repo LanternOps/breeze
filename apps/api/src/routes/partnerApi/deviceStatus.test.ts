@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -50,13 +50,14 @@ type QueryResult = unknown[] | Error;
 let selectResults: QueryResult[] = [];
 let whereArgs: SQL[] = [];
 let selections: Record<string, unknown>[] = [];
+let orderByArgs: unknown[][] = [];
 function query(result: QueryResult) {
   const promise = result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
   const builder: any = {
     from: vi.fn(() => builder),
     leftJoin: vi.fn(() => builder),
     where: vi.fn((arg: SQL) => { whereArgs.push(arg); return builder; }),
-    orderBy: vi.fn(() => builder),
+    orderBy: vi.fn((...args: unknown[]) => { orderByArgs.push(args); return builder; }),
     limit: vi.fn(() => promise),
   };
   return builder;
@@ -86,6 +87,7 @@ describe('partner device status feed', () => {
     selectResults = [];
     whereArgs = [];
     selections = [];
+    orderByArgs = [];
     mocks.accessibleOrgIds = [ORG_ID, OTHER_ORG_ID];
     mocks.select.mockImplementation((selection: Record<string, unknown>) => {
       selections.push(selection);
@@ -149,7 +151,40 @@ describe('partner device status feed', () => {
     expect(where.sql).toContain('"devices"."org_id" in');
     expect(where.params).toEqual(expect.arrayContaining([ORG_ID, OTHER_ORG_ID]));
     expect(where.sql).toContain('"devices"."is_ephemeral" =');
+    expect(where.params).toContain(false);
+    expect(where.params).not.toContain(true);
     expect(where.sql).toContain('"devices"."created_at" <=');
+    expect(orderByArgs).toHaveLength(1);
+    expect(orderByArgs[0]).toHaveLength(1);
+    const order = new PgDialect().sqlToQuery(sql`${orderByArgs[0]![0]}`).sql.toLowerCase();
+    expect(order).toBe('"devices"."id" asc');
+  });
+
+  it('keeps the traversal start fixed across pages (membership bound comes from the cursor)', async () => {
+    selectResults.push([deviceRow(DEVICE_A), deviceRow(DEVICE_B)]);
+    const first = await (await request('/partner-api/device-status?limit=1')).json();
+    const cursor = decodePartnerExportCursor(first.nextCursor, {
+      partnerId: PARTNER_ID, resource: 'device-status', updatedSince: null,
+      filters: { orgId: null, siteId: null, status: null },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    selectResults.push([deviceRow(DEVICE_B)]);
+    expect((await request(`/partner-api/device-status?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`)).status).toBe(200);
+    const createdAtBound = renderedWhere(1).params.find((param) => param instanceof Date || (typeof param === 'string' && /^\d{4}-/u.test(param)));
+    expect(new Date(createdAtBound as string | Date).toISOString()).toBe(cursor.snapshotAt);
+  });
+
+  it('withholds a row whose agent-reported version trips the secret scan and reports it in blocked', async () => {
+    selectResults.push([
+      deviceRow(DEVICE_A, { agentVersion: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890' }),
+      deviceRow(DEVICE_B),
+    ]);
+    const body = partnerDeviceStatusEnvelopeSchema.parse(await (await request('/partner-api/device-status')).json());
+    expect(body.data.map((row) => row.deviceId)).toEqual([DEVICE_B]);
+    expect(body.blocked).toEqual([
+      expect.objectContaining({ resource: 'device-status', id: DEVICE_A, orgId: ORG_ID, reason: 'secret_detected' }),
+    ]);
+    expect(JSON.stringify(body)).not.toContain('ghp_');
   });
 
   it('returns an empty envelope without querying when the principal reaches no orgs', async () => {
@@ -231,6 +266,35 @@ describe('partner device status feed', () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({ code: 'invalid_partner_export_cursor' });
     }
+  });
+
+  it('binds orgId and siteId into the cursor and normalizes the status list', async () => {
+    const orgFilter = `orgId=${ORG_ID}`;
+    const siteFilter = `siteId=${SITE_ID}`;
+    for (const [filter, replays] of [
+      [orgFilter, ['', `orgId=${OTHER_ORG_ID}`]],
+      [siteFilter, ['', `siteId=${OTHER_ORG_ID}`]],
+    ] as const) {
+      selectResults.push([deviceRow(DEVICE_A), deviceRow(DEVICE_B)]);
+      const first = await (await request(`/partner-api/device-status?limit=1&${filter}`)).json();
+      expect(first.nextCursor).toEqual(expect.any(String));
+      for (const replay of replays) {
+        const response = await request(
+          `/partner-api/device-status?limit=1&${replay}&cursor=${encodeURIComponent(first.nextCursor)}`,
+        );
+        expect(response.status, `${filter} -> ${replay}`).toBe(400);
+        expect(await response.json()).toMatchObject({ code: 'invalid_partner_export_cursor' });
+      }
+    }
+
+    // Order and duplicates in the status list do not change the binding.
+    selectResults.push([deviceRow(DEVICE_A), deviceRow(DEVICE_B)]);
+    const first = await (await request('/partner-api/device-status?limit=1&status=offline,online')).json();
+    selectResults.push([deviceRow(DEVICE_B)]);
+    const continued = await request(
+      `/partner-api/device-status?limit=1&status=online,offline,online&cursor=${encodeURIComponent(first.nextCursor)}`,
+    );
+    expect(continued.status).toBe(200);
   });
 
   it('rejects a cursor minted for another partner', async () => {

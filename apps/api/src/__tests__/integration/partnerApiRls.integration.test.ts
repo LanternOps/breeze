@@ -323,6 +323,34 @@ describe('partner reconstruction export RLS traversal', () => {
     const refused = await app.request('/device-status', { headers: apiHeaders(devicesOnlyKey) });
     expect(refused.status).toBe(403);
 
+    // Rows the principal must never see even though RLS alone would not hide
+    // them from its own partner: a device in a suspended org of partner A
+    // (outside accessibleOrgIds) and an ephemeral Quick Support device.
+    const suspendedOrg = await createOrganization({
+      partnerId: partnerA.partner.id, name: 'A-suspended-org', status: 'suspended',
+    });
+    const suspendedSite = await createSite({ orgId: suspendedOrg.id, name: 'A-suspended-site' });
+    const hiddenSeeds = [
+      { orgId: suspendedOrg.id, siteId: suspendedSite.id, isEphemeral: false, label: 'suspended' },
+      { orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, isEphemeral: true, label: 'ephemeral' },
+    ];
+    const hiddenDeviceIds = new Set<string>();
+    for (const seed of hiddenSeeds) {
+      const [hidden] = await getTestDb().insert(devices).values({
+        orgId: seed.orgId,
+        siteId: seed.siteId,
+        agentId: `a-${seed.label}-${crypto.randomUUID()}`.slice(0, 64),
+        hostname: `A-${seed.label}-device`,
+        osType: 'linux',
+        osVersion: 'Ubuntu 24.04',
+        architecture: 'amd64',
+        agentVersion: '1.0.0',
+        isEphemeral: seed.isEphemeral,
+      }).returning();
+      if (!hidden) throw new Error(`${seed.label} device seed failed`);
+      hiddenDeviceIds.add(hidden.id);
+    }
+
     const keyA = await issueKey(partnerA.partner.id, partnerA.user.id, ['device-status:read']);
     const lastSeenAt = new Date('2026-09-30T08:00:00.000Z');
     const [heartbeatDevice] = partnerA.devices;
@@ -351,6 +379,28 @@ describe('partner reconstruction export RLS traversal', () => {
       await getEnvelope(app, keyA, '/device-status?status=online'),
     );
     expect(online.data.map((row) => row.deviceId)).toEqual([heartbeatDevice!.id]);
+
+    expect(envelope.data.some((row) => hiddenDeviceIds.has(row.deviceId))).toBe(false);
+    // Ascending device id order, across pages too.
+    const ids = envelope.data.map((row) => row.deviceId);
+    expect(ids).toEqual([...ids].sort());
+    const pagedIds: string[] = [];
+    let pageCursor: string | null = null;
+    do {
+      const pageQuery = new URLSearchParams({ limit: '1' });
+      if (pageCursor) pageQuery.set('cursor', pageCursor);
+      const page = partnerDeviceStatusEnvelopeSchema.parse(
+        await getEnvelope(app, keyA, `/device-status?${pageQuery}`),
+      );
+      pagedIds.push(...page.data.map((row) => row.deviceId));
+      pageCursor = page.nextCursor;
+    } while (pageCursor);
+    expect(pagedIds).toEqual(ids);
+
+    const suspended = await app.request(`/device-status?orgId=${suspendedOrg.id}`, {
+      headers: apiHeaders(keyA),
+    });
+    expect(suspended.status).toBe(404);
 
     const foreignOrg = await app.request(`/device-status?orgId=${partnerB.orgs[0]!.id}`, {
       headers: apiHeaders(keyA),
