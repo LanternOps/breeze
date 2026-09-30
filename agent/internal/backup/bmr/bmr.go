@@ -1082,6 +1082,20 @@ func restoreFiles(
 			overridden = true
 		}
 
+		// On Windows a component carrying a stream separator or ending in a
+		// dot or space is not the file it names (an alternate data stream,
+		// or a name Win32 silently shortens): refuse it before any write.
+		if recoverHostGOOS == "windows" {
+			if err := windowsRestorePathError(targetPath); err != nil {
+				addFailure("restore refused for %s: %s", origPath, err.Error())
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+		}
+
 		// A RESUMED restore must never write THROUGH an ancestor a
 		// previous (possibly interrupted) run already recreated as a
 		// symlink — see ensureNoSymlinkAncestor's doc comment (review
@@ -1491,4 +1505,21 @@ func clearReadOnly(dst string) (restored bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// windowsRestorePathError checks every component of a Windows restore path
+// after its volume (`C:`, `\\?\C:`, `\\.\C:`) with
+// securefs.ValidateWindowsComponents; the error carries invalid_windows_name.
+func windowsRestorePathError(p string) error {
+	rest := p
+	for _, prefix := range []string{`\\?\`, `\\.\`} {
+		if strings.HasPrefix(rest, prefix) {
+			rest = rest[len(prefix):]
+			break
+		}
+	}
+	if len(rest) >= 2 && rest[1] == ':' && ((rest[0] >= 'A' && rest[0] <= 'Z') || (rest[0] >= 'a' && rest[0] <= 'z')) {
+		rest = rest[2:]
+	}
+	return securefs.ValidateWindowsComponents(rest)
 }
