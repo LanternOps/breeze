@@ -346,6 +346,68 @@ describe('RestoreWizard', () => {
     expect(screen.getByText(/Target path: \/restore-target/i)).toBeTruthy();
   });
 
+  const renderWithLatestResult = async (resultDetails: Record<string, unknown>, status = 'completed') => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({
+          data: [{
+            id: 'restore-q',
+            snapshotId: 'snap-1',
+            deviceId: 'device-1',
+            restoreType: 'full',
+            status,
+            targetPath: null,
+            createdAt: '2026-03-31T11:00:00.000Z',
+            updatedAt: '2026-03-31T11:05:00.000Z',
+            completedAt: '2026-03-31T11:05:00.000Z',
+            restoredSize: 1024,
+            restoredFiles: 3,
+            commandId: 'cmd-q',
+            errorSummary: null,
+            resultDetails,
+          }],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+  };
+
+  it('shows the restricted-descriptor count and a collapsible path list', async () => {
+    await renderWithLatestResult({
+      status: 'completed',
+      securityDescriptorQuarantined: 3,
+      securityDescriptorQuarantinedPaths: ['C:\\Data\\a.txt', 'C:\\Data\\b.txt'],
+    });
+
+    const notice = await screen.findByTestId('restore-result-restricted-descriptors');
+    expect(notice.textContent).toContain('3');
+    const list = screen.getByTestId('restore-result-restricted-descriptors-paths');
+    expect(list.tagName).toBe('DETAILS');
+    expect(list.textContent).toContain('C:\\Data\\a.txt');
+    expect(list.textContent).toContain('C:\\Data\\b.txt');
+    // The count exceeds the listed paths — say so rather than implying the list is complete.
+    expect(screen.getByTestId('restore-result-restricted-descriptors-unlisted').textContent).toContain('1');
+  });
+
+  it('shows the restricted-descriptor count without a list when the helper sent none', async () => {
+    await renderWithLatestResult({ status: 'completed', securityDescriptorQuarantined: 4 });
+    expect((await screen.findByTestId('restore-result-restricted-descriptors')).textContent).toContain('4');
+    expect(screen.queryByTestId('restore-result-restricted-descriptors-paths')).toBeNull();
+  });
+
+  it('renders no restricted-descriptor notice for a result without the fields', async () => {
+    await renderWithLatestResult({ status: 'completed' });
+    expect(screen.queryByTestId('restore-result-restricted-descriptors')).toBeNull();
+    expect(screen.queryByTestId('restore-result-restricted-descriptors')).toBeNull();
+  });
+
   it('blocks the restore until an alternate destination path is typed (#6349)', async () => {
     // The wizard shipped with the demo path '/restore/nyc-db-14' pre-filled.
     // It was unreachable so nobody saw it; mounted, that is a restore pointed

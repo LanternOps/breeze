@@ -1092,5 +1092,18 @@
       "error": "Could not load external backup status",
       "alsoCheck": "Also check third-party backup connections under Integrations."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "System state is applied by a bare-metal rebuild",
+    "systemStateRequiresRebuildBody": "This Windows recovery restored files only. To apply the snapshot's system state, run a bare-metal rebuild of this snapshot (Restore as VM, Rebuild engine).",
+    "unattestedSnapshot": "Unattested snapshot: files were not checked against a snapshot attestation.",
+    "resultCode": "Result code: {{code}}",
+    "restrictedDescriptors_one": "{{count}} item restored with a restrictive access list",
+    "restrictedDescriptors_other": "{{count}} items restored with a restrictive access list",
+    "restrictedDescriptorsBody": "Their recorded permissions named accounts this machine does not recognise or could not be read, so only SYSTEM and Administrators can access them (owner: Administrators). Review and reassign permissions as needed.",
+    "restrictedDescriptorsShowPaths_one": "Show {{count}} path",
+    "restrictedDescriptorsShowPaths_other": "Show {{count}} paths",
+    "restrictedDescriptorsUnlisted_one": "{{count}} more item is not listed.",
+    "restrictedDescriptorsUnlisted_other": "{{count}} more items are not listed."
   }
 }

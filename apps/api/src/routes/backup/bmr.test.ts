@@ -1301,6 +1301,57 @@ describe('bmr routes', () => {
     });
   });
 
+  it('persists the recovery result code and the null default for a helper that omits it', async () => {
+    const tokenRow = {
+      id: TOKEN_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      snapshotId: SNAPSHOT_ID,
+      restoreType: 'bare_metal',
+      targetConfig: { diskLayout: 'auto' },
+      status: 'authenticated',
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+      authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
+      completedAt: null,
+      usedAt: null,
+    };
+    const restoreJobId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
+    const complete = async (result: Record<string, unknown>) => {
+      selectMock.mockReturnValueOnce(chainMock([tokenRow]));
+      let insertedValues: Record<string, unknown> | null = null;
+      const insertChain = chainMock([{ id: restoreJobId, status: 'completed' }]);
+      insertChain.values = vi.fn((value: Record<string, unknown>) => {
+        insertedValues = value;
+        return insertChain;
+      });
+      insertMock.mockReturnValueOnce(insertChain);
+      updateMock.mockReturnValue(chainMock([]));
+      const res = await app.request('/backup/bmr/recover/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, result }),
+      });
+      expect(res.status).toBe(200);
+      return insertedValues as unknown as { targetConfig: { result: Record<string, unknown> } };
+    };
+
+    const withCode = await complete({
+      status: 'completed',
+      filesRestored: 120,
+      code: 'system_state_requires_rebuild',
+      warnings: ['system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only'],
+    });
+    expect(withCode.targetConfig.result).toMatchObject({
+      status: 'completed',
+      code: 'system_state_requires_rebuild',
+    });
+
+    const withoutCode = await complete({ status: 'completed', filesRestored: 120 });
+    expect(withoutCode.targetConfig.result.code).toBeNull();
+  });
+
   it('returns the existing restore job for repeated completion calls', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([{

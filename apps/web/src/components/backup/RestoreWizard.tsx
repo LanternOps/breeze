@@ -19,6 +19,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
+import RestoreResultNotices from './RestoreResultNotices';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
@@ -852,6 +853,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     </div>
                   </div>
                 ) : null}
+
+                <RestoreResultNotices result={latestKnownRestore.resultDetails} showUnattestedWarning={false} />
 
                 <div className="grid gap-3">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">

@@ -3,6 +3,9 @@ import {
   restoreStructuredResultSchema,
   backupVerificationStructuredResultSchema,
   vaultSyncStructuredResultSchema,
+  RESTORE_QUARANTINED_PATHS_MAX,
+  RESTORE_QUARANTINED_PATH_MAX_CHARS,
+  validateCriticalCommandResult,
 } from './agentCommandResultValidation';
 
 // The agent-reported byte totals use .refine(Number.isInteger) rather than .int()
@@ -50,5 +53,92 @@ describe('agentCommandResultValidation — bare_metal_rebuild terminal statuses 
       target: { kind: 'vhdx', path: '/mnt/rebuild/out.vhdx' },
     });
     expect(parsed.status).toBe('refused');
+  });
+});
+
+describe('agentCommandResultValidation — restore result details (restricted descriptors, result code)', () => {
+  it('accepts the restricted-descriptor count and path list', () => {
+    const r = restoreStructuredResultSchema.safeParse({
+      status: 'completed',
+      securityDescriptorQuarantined: 2,
+      securityDescriptorQuarantinedPaths: ['C:\\Data\\a.txt', 'C:\\Data\\b.txt'],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.securityDescriptorQuarantined).toBe(2);
+      expect(r.data.securityDescriptorQuarantinedPaths).toEqual(['C:\\Data\\a.txt', 'C:\\Data\\b.txt']);
+    }
+  });
+
+  it('keeps a result from a helper that reports neither field unchanged', () => {
+    const r = restoreStructuredResultSchema.safeParse({ status: 'completed', filesRestored: 3 });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).not.toHaveProperty('securityDescriptorQuarantined');
+      expect(r.data).not.toHaveProperty('securityDescriptorQuarantinedPaths');
+    }
+  });
+
+  it('bounds a long path list instead of rejecting the whole restore result', () => {
+    const paths = Array.from({ length: 5_000 }, (_, i) => `C:\\Users\\u\\file_${i}.docx`);
+    const r = restoreStructuredResultSchema.safeParse({
+      status: 'completed',
+      securityDescriptorQuarantined: 5_000,
+      securityDescriptorQuarantinedPaths: paths,
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.securityDescriptorQuarantined).toBe(5_000);
+      expect(r.data.securityDescriptorQuarantinedPaths).toHaveLength(RESTORE_QUARANTINED_PATHS_MAX);
+      expect(r.data.securityDescriptorQuarantinedPaths?.[0]).toBe(paths[0]);
+    }
+  });
+
+  it('truncates an over-long path entry', () => {
+    const r = restoreStructuredResultSchema.safeParse({
+      securityDescriptorQuarantined: 1,
+      securityDescriptorQuarantinedPaths: ['x'.repeat(5_000)],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.securityDescriptorQuarantinedPaths?.[0]).toHaveLength(RESTORE_QUARANTINED_PATH_MAX_CHARS);
+    }
+  });
+
+  it('rejects a negative or fractional restricted-descriptor count', () => {
+    expect(restoreStructuredResultSchema.safeParse({ securityDescriptorQuarantined: -1 }).success).toBe(false);
+    expect(restoreStructuredResultSchema.safeParse({ securityDescriptorQuarantined: 1.5 }).success).toBe(false);
+  });
+
+  it('accepts a short recovery result code and rejects an over-long one', () => {
+    const ok = restoreStructuredResultSchema.safeParse({ status: 'completed', code: 'system_state_requires_rebuild' });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.code).toBe('system_state_requires_rebuild');
+    expect(restoreStructuredResultSchema.safeParse({ code: 'x'.repeat(65) }).success).toBe(false);
+  });
+});
+
+describe('agentCommandResultValidation — bmr_recover command result shape', () => {
+  it('accepts the recovery helper result, whose failedFiles is a count', () => {
+    const validated = validateCriticalCommandResult('bmr_recover', {
+      commandId: 'cmd-bmr-1',
+      status: 'completed',
+      stdout: JSON.stringify({
+        status: 'completed',
+        filesRestored: 120,
+        bytesRestored: 4096,
+        stateApplied: false,
+        driversInjected: 0,
+        failedFiles: 0,
+        code: 'system_state_requires_rebuild',
+        warnings: ['system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only'],
+      }),
+    });
+    expect(validated?.structuredResult).toMatchObject({ failedFiles: 0, code: 'system_state_requires_rebuild' });
+  });
+
+  it('still accepts failedFiles as a path list and rejects a negative count', () => {
+    expect(restoreStructuredResultSchema.safeParse({ failedFiles: ['/etc/hosts'] }).success).toBe(true);
+    expect(restoreStructuredResultSchema.safeParse({ failedFiles: -1 }).success).toBe(false);
   });
 });

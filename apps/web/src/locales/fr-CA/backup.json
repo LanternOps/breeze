@@ -1092,5 +1092,18 @@
       "error": "Impossible de charger l'état de la sauvegarde externe",
       "alsoCheck": "Vérifiez aussi les connexions de sauvegarde tierces dans Intégrations."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "L'état du système est appliqué par une reconstruction bare-metal",
+    "systemStateRequiresRebuildBody": "Cette récupération Windows n'a restauré que des fichiers. Pour appliquer l'état du système de l'instantané, lancez une reconstruction bare-metal de cet instantané (Restaurer en tant que VM, moteur de reconstruction).",
+    "unattestedSnapshot": "Instantané non attesté : les fichiers n'ont pas été vérifiés par rapport à une attestation d'instantané.",
+    "resultCode": "Code de résultat : {{code}}",
+    "restrictedDescriptors_one": "{{count}} élément restauré avec une liste d'accès restrictive",
+    "restrictedDescriptors_other": "{{count}} éléments restaurés avec une liste d'accès restrictive",
+    "restrictedDescriptorsBody": "Leurs autorisations enregistrées désignaient des comptes que cette machine ne reconnaît pas ou n'ont pas pu être lues ; seuls SYSTEM et les Administrateurs peuvent donc y accéder (propriétaire : Administrateurs). Vérifiez et réattribuez les autorisations si nécessaire.",
+    "restrictedDescriptorsShowPaths_one": "Afficher {{count}} chemin",
+    "restrictedDescriptorsShowPaths_other": "Afficher {{count}} chemins",
+    "restrictedDescriptorsUnlisted_one": "{{count}} autre élément n'est pas listé.",
+    "restrictedDescriptorsUnlisted_other": "{{count}} autres éléments ne sont pas listés."
   }
 }
