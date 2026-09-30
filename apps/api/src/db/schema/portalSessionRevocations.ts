@@ -4,7 +4,7 @@ import { portalUsers } from './portal';
 
 /**
  * Customer-portal sessions ended at logout (migration
- * `2026-11-10-140000-portal-session-revocations.sql`).
+ * `2026-11-11-110000-portal-session-revocations.sql`).
  *
  * The portal session itself is an opaque token cached in Redis; this row is
  * the durable record that the token was signed out, so a failed cache delete
