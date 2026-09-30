@@ -213,6 +213,11 @@ describe('topology capabilities', () => {
     expect(capabilities.ui).toEqual({ available: false, reason: 'topology_preparing' });
   });
 
+  it('reports a recorded first-snapshot import failure instead of preparing (#7557)', () => {
+    expect(getTopologyCapabilities(allFlags, 'import_failed', {}).ui).toEqual({ available: false, reason: 'topology_import_failed' });
+    expect(getTopologyCapabilities({ ...allFlags, materialization: false }, 'import_failed', {}).ui).toEqual({ available: false, reason: 'materialization_disabled' });
+  });
+
   it('keeps pre-M1 collection and diagnostics unavailable with machine reasons', () => {
     const capabilities = getTopologyCapabilities(allFlags, true, {});
     expect(capabilities.ui).toEqual({ available: true, reason: null });
