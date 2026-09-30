@@ -9,7 +9,7 @@ import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from '../../services/guardedS3Client';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { backupConfigs, backupSnapshots } from '../../db/schema';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -247,14 +247,15 @@ configsRoutes.post(
     // its previous default already cleared and no new one to replace it (the
     // org default is the destination every partner-wide backup resolves to).
     // The partial unique index on (org_id) WHERE is_default enforces at most one.
-    const [row] = await db.transaction(async (tx) => {
+    // The key record is written in the same transaction as the destination.
+    const [row] = await withDbTransaction(async () => {
       if (payload.isDefault === true) {
-        await tx
+        await db
           .update(backupConfigs)
           .set({ isDefault: false, updatedAt: now })
           .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
       }
-      return tx
+      const inserted = await db
         .insert(backupConfigs)
         .values({
           orgId,
@@ -271,18 +272,22 @@ configsRoutes.post(
           updatedAt: now,
         })
         .returning();
+      const created = inserted[0];
+      if (created) {
+        // A key configured from now on has never been sent to a device.
+        await recordCredentialChange({
+          orgId,
+          configId: created.id,
+          previous: null,
+          next: { provider: created.provider, providerConfig: created.providerConfig },
+        });
+      }
+      return inserted;
     });
 
     if (!row) {
       return c.json({ error: 'Failed to create config' }, 500);
     }
-    // A key configured from now on has never been sent to a device.
-    await recordCredentialChange({
-      orgId,
-      configId: row.id,
-      previous: null,
-      next: { provider: row.provider, providerConfig: row.providerConfig },
-    });
 
     writeRouteAudit(c, {
       orgId,
@@ -342,11 +347,14 @@ configsRoutes.patch(
     // org with NO default destination — and the org default is what every
     // partner-wide and profile-linked backup resolves to, so their scheduled
     // backups would start skipping with no obvious cause.
+    // Locked: the key change recorded below compares against exactly this
+    // state, and a concurrent change waits for this one to commit.
     const [current] = await db
       .select()
       .from(backupConfigs)
       .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
-      .limit(1);
+      .limit(1)
+      .for('update');
 
     if (!current) {
       return c.json({ error: 'Config not found' }, 404);
@@ -483,31 +491,34 @@ configsRoutes.patch(
     // Demote + promote atomically: the partial unique index on (org_id) WHERE
     // is_default allows at most one default, so a concurrent promote must not
     // see a half-applied swap.
-    const [row] = await db.transaction(async (tx) => {
+    // The key record is written in the same transaction as the change.
+    const [row] = await withDbTransaction(async () => {
       if (payload.isDefault === true) {
-        await tx
+        await db
           .update(backupConfigs)
           .set({ isDefault: false, updatedAt: new Date() })
           .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
       }
-      return tx
+      const updated = await db
         .update(backupConfigs)
         .set(updateData)
         .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
         .returning();
+      const changed = updated[0];
+      if (changed && payload.details !== undefined) {
+        // A replaced key stays listed until there is evidence it was disabled.
+        await recordCredentialChange({
+          orgId,
+          configId: changed.id,
+          previous: { provider: current.provider, providerConfig: current.providerConfig },
+          next: { provider: changed.provider, providerConfig: changed.providerConfig },
+        });
+      }
+      return updated;
     });
 
     if (!row) {
       return c.json({ error: 'Config not found' }, 404);
-    }
-    if (payload.details !== undefined) {
-      // A replaced key stays listed until there is evidence it was disabled.
-      await recordCredentialChange({
-        orgId,
-        configId: row.id,
-        previous: { provider: current.provider, providerConfig: current.providerConfig },
-        next: { provider: row.provider, providerConfig: row.providerConfig },
-      });
     }
 
     const warnings: string[] = [];
@@ -567,18 +578,20 @@ configsRoutes.delete(
   if (!existing) {
     return c.json({ error: 'Config not found' }, 404);
   }
-  // The destination's key stays listed (with its settings sealed, so it can
-  // still be checked) until there is evidence it was disabled.
-  await recordCredentialChange({
-    orgId,
-    configId: existing.id,
-    previous: { provider: existing.provider, providerConfig: existing.providerConfig },
-    next: null,
+  const [deleted] = await withDbTransaction(async () => {
+    // The destination's key stays listed (with its settings sealed, so it can
+    // still be checked) until there is evidence it was disabled.
+    await recordCredentialChange({
+      orgId,
+      configId: existing.id,
+      previous: { provider: existing.provider, providerConfig: existing.providerConfig },
+      next: null,
+    });
+    return db
+      .delete(backupConfigs)
+      .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+      .returning();
   });
-  const [deleted] = await db
-    .delete(backupConfigs)
-    .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
-    .returning();
 
   if (!deleted) {
     return c.json({ error: 'Config not found' }, 404);
