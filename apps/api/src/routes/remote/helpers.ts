@@ -378,12 +378,42 @@ export function classifyConsentDenyAction(reason: string): ConsentDenyAuditActio
 
 /**
  * Consent-mode start reasons that mean consent was never obtained from the end
- * user: no consent-capable helper was present, or the prompt went unanswered.
- * A start carrying one may activate only under a `proceed` fallback bound to
- * that start, and is audited as a bypass, never as a user grant (#6819).
+ * user: no consent-capable helper was present (`helper_absent`, version 1
+ * agents), nobody is signed in to the captured session (`no_user_session`,
+ * version 2 agents), or the prompt went unanswered (`timeout`). A start
+ * carrying one may activate only under a `proceed` fallback bound to that
+ * start, and is audited as a bypass, never as a user grant (#6819).
+ * `helper_unreachable` (someone is signed in but could not be asked) is
+ * deliberately absent: it is only ever a refusal.
  */
-export const UNSOLICITED_CONSENT_REASONS = ['helper_absent', 'timeout'] as const;
+export const UNSOLICITED_CONSENT_REASONS = ['helper_absent', 'timeout', 'no_user_session'] as const;
 export type UnsolicitedConsentReason = typeof UNSOLICITED_CONSENT_REASONS[number];
+
+/**
+ * The structured consent record a desk-start result carries into its audit
+ * row. A version 2 agent sends `consentProtocol: 2` plus the outcome fields; a
+ * version 1 agent sends none, recorded as `consentProtocol: 1` so a reviewer
+ * can tell a legacy report (which cannot distinguish "nobody signed in" from
+ * "the prompt could not be shown") from a version 2 one. Only values the
+ * result schema already validated reach here; anything else is omitted.
+ */
+export function consentMarkerAuditDetails(result: Record<string, unknown>): {
+  consentProtocol: number;
+  consentOutcome?: string;
+  consentOccupancy?: string;
+  consentDetail?: string;
+} {
+  const details: {
+    consentProtocol: number;
+    consentOutcome?: string;
+    consentOccupancy?: string;
+    consentDetail?: string;
+  } = { consentProtocol: result.consentProtocol === 2 ? 2 : 1 };
+  if (typeof result.consentOutcome === 'string') details.consentOutcome = result.consentOutcome;
+  if (typeof result.consentOccupancy === 'string') details.consentOccupancy = result.consentOccupancy;
+  if (typeof result.consentDetail === 'string') details.consentDetail = result.consentDetail;
+  return details;
+}
 
 export function isUnsolicitedConsentReason(reason: unknown): reason is UnsolicitedConsentReason {
   return (UNSOLICITED_CONSENT_REASONS as readonly unknown[]).includes(reason);

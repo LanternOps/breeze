@@ -280,15 +280,17 @@ export function normalizeDesktopFenceProtocolVersion(value: unknown): 0 | 1 {
 }
 
 /**
- * Normalize the only consent/notification prompt protocol version
- * implemented here. Same tolerance contract as the fence/lease versions:
- * absent, malformed, or a future version this server does not speak is 0,
- * and any dispatch site resolving a policy that requires consent or
- * notification must refuse to start rather than send a `prompt` block a
- * capability-0 agent will silently ignore.
+ * Normalize the consent/notification prompt protocol versions implemented
+ * here. Same tolerance contract as the fence/lease versions: absent,
+ * malformed, or a future version this server does not speak is 0, and any
+ * dispatch site resolving a policy that requires consent or notification must
+ * refuse to start rather than send a `prompt` block a capability-0 agent will
+ * silently ignore. Version 2 gates capture exactly like version 1 and also
+ * reports whether the prompt was shown and answered, and whether anyone is
+ * signed in to the captured session (see consentGate.ts).
  */
-export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 {
-  return value === 1 ? 1 : 0;
+export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2 {
+  return value === 1 || value === 2 ? value : 0;
 }
 
 /**

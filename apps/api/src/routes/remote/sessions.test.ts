@@ -1338,7 +1338,7 @@ describe('remote sessions — site-scope enforcement', () => {
         });
       }
 
-      it.each([0, 2, undefined])('refuses a consent-mode start before dispatch when the agent reports consent prompt protocol %s', async (version) => {
+      it.each([0, 3, undefined])('refuses a consent-mode start before dispatch when the agent reports consent prompt protocol %s', async (version) => {
         getSessionWithOrgCheck.mockResolvedValue({
           session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
           device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', consentPromptProtocolVersion: version },
@@ -1355,6 +1355,20 @@ describe('remote sessions — site-scope enforcement', () => {
         // Refused before the start intent is committed and before any dispatch.
         expect(db.update).not.toHaveBeenCalled();
         expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+      });
+
+      it.each([1, 2])('dispatches a consent-mode start to an agent on consent prompt protocol %s', async (version) => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', consentPromptProtocolVersion: version },
+        });
+        rigOfferUpdate();
+        vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(consentPrompt as never);
+
+        const res = await offer();
+
+        expect(res.status).toBe(200);
+        expect(vi.mocked(sendCommandToAgent)).toHaveBeenCalled();
       });
 
       it('does not gate a notify-mode start on the consent prompt protocol', async () => {

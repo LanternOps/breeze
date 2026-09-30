@@ -54,10 +54,25 @@ export function viewerAnswerTimeoutMs(promptMode: string | null | undefined): nu
 
 /**
  * The technician-facing reason recorded on a session the agent's consent gate
- * refused. `reason` is the agent's decideConsent reason
- * (agent/internal/heartbeat/consent.go).
+ * refused. `reason` is the agent's decideConsent reason and `detail` its
+ * optional consentDetail (agent/internal/heartbeat/consent.go).
  */
-export function consentDeniedMessage(reason: string): string {
+export function consentDeniedMessage(reason: string, detail?: string): string {
+  if (reason === 'helper_unreachable') {
+    switch (detail) {
+      case 'prompt_in_progress':
+        return 'Another connection request is already waiting for the user on the remote device to answer. '
+          + 'Try again once it has been answered.';
+      case 'prompt_not_visible':
+        return 'The user on the remote device could not see the consent prompt (the screen was locked or '
+          + 'they were away), so the session was not started.';
+      case 'no_helper':
+        return 'Someone is signed in on the remote device, but it has no way to show them the consent prompt '
+          + '(Breeze Assist is not installed or not running). The session was not started.';
+      default:
+        break;
+    }
+  }
   switch (reason) {
     case 'user':
       return 'The user on the remote device declined the connection.';
@@ -65,6 +80,11 @@ export function consentDeniedMessage(reason: string): string {
       return 'The user on the remote device did not respond to the connection request in time.';
     case 'helper_absent':
       return 'No one on the remote device could be asked to allow the connection, and policy requires approval.';
+    case 'no_user_session':
+      return 'No one is signed in on the remote device to allow the connection, and policy requires approval.';
+    case 'helper_unreachable':
+      return 'Someone is signed in on the remote device, but the consent prompt could not be shown to them '
+        + '(Breeze Assist is not responding). The session was not started.';
     default:
       return 'The connection could not be approved on the remote device.';
   }

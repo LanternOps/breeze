@@ -3134,10 +3134,11 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
   // consent/notification is refused rather than silently started unfenced.
   it.each([
     { name: 'recognized version 1', capabilities: { consentPromptProtocolVersion: 1 }, expected: 1 },
+    { name: 'recognized version 2 (reports whether the prompt was shown and answered)', capabilities: { consentPromptProtocolVersion: 2 }, expected: 2 },
     { name: 'omitted capability object', capabilities: undefined, expected: 0 },
     { name: 'omitted key (pre-consent-gate agent)', capabilities: {}, expected: 0 },
     { name: 'explicit zero downgrade', capabilities: { consentPromptProtocolVersion: 0 }, expected: 0 },
-    { name: 'unknown integer version', capabilities: { consentPromptProtocolVersion: 2 }, expected: 0 },
+    { name: 'unknown integer version', capabilities: { consentPromptProtocolVersion: 3 }, expected: 0 },
     { name: 'fractional version', capabilities: { consentPromptProtocolVersion: 1.5 }, expected: 0 },
     { name: 'string version', capabilities: { consentPromptProtocolVersion: '1' }, expected: 0 },
   ])('persists tolerant non-sticky consent-prompt capability: $name', async ({

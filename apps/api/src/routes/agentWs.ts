@@ -76,11 +76,13 @@ import {
   logSessionAudit,
   classifyConsentDenyAction,
   isUnsolicitedConsentReason,
+  consentMarkerAuditDetails,
   UNSOLICITED_CONSENT_REASONS,
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
 import { consentDeniedMessage } from './remote/consentTiming';
+import { CONSENT_OCCUPANCIES, CONSENT_OUTCOMES } from './remote/consentGate';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { nextAgentUpdateAttempt } from '@breeze/shared';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
@@ -3425,7 +3427,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     // #6818: record why, so the viewer's answer poll can tell the
                     // technician "declined" / "did not respond" instead of a
                     // generic "session ended".
-                    write: { status: 'denied', endedAt: new Date(), errorMessage: consentDeniedMessage(reason) },
+                    write: {
+                      status: 'denied',
+                      endedAt: new Date(),
+                      errorMessage: consentDeniedMessage(
+                        reason,
+                        typeof fastResult.consentDetail === 'string' ? fastResult.consentDetail : undefined,
+                      ),
+                    },
                     phase: 'confirmed',
                     where: [
                       eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
@@ -3451,6 +3460,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                         sessionId,
                         type: updated.type,
                         reason,
+                        ...consentMarkerAuditDetails(fastResult),
                         sessionOwnerId: updated.userId,
                         deviceId: authenticatedAgent.deviceId,
                         startCommandId: fastCommandId,
@@ -3489,7 +3499,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                   // A consent-mode generation may become active only when the
                   // exact agent result carries a consent marker it is entitled
                   // to: 'user' (the end user allowed), or — #6819 — an
-                  // unsolicited-consent reason (helper_absent / timeout) when
+                  // unsolicited-consent reason (helper_absent / timeout /
+                  // no_user_session) when
                   // THIS start shipped consentUnavailableBehavior='proceed'. A
                   // NULL/'block' binding fails closed. Notify/off generations
                   // need no marker. Older agents send 'user' for every
@@ -3544,6 +3555,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                           sessionId,
                           type: updated.type,
                           reason: 'user',
+                          ...consentMarkerAuditDetails(fastResult),
                           sessionOwnerId: updated.userId,
                           deviceId: authenticatedAgent.deviceId,
                           startCommandId: fastCommandId,
@@ -3566,6 +3578,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                           type: updated.type,
                           reason: consentReason,
                           outcome: 'proceeded',
+                          ...consentMarkerAuditDetails(fastResult),
                           consentUnavailableBehavior: updated.consentUnavailableBehavior,
                           sessionOwnerId: updated.userId,
                           deviceId: authenticatedAgent.deviceId,
@@ -4153,7 +4166,7 @@ export const terminalCommandResultSchema = z.object({
   }).strict().optional(),
 }).passthrough();
 
-const desktopCommandResultSchema = z.object({
+export const desktopCommandResultSchema = z.object({
   type: z.literal('command_result'),
   commandId: z.string().regex(/^desk-[a-zA-Z0-9_-]+$/).max(256),
   status: z.enum(['completed', 'failed', 'cancelled']),
@@ -4170,8 +4183,21 @@ const desktopCommandResultSchema = z.object({
     // 'timeout' when consent could not be solicited and the start's
     // consentUnavailableBehavior='proceed' let it through. Older agents send
     // 'user' for all three.
-    reason: z.enum(['user', 'timeout', 'no_user', 'helper_absent']).optional(),
+    // Version 2 agents (consentPromptProtocolVersion 2) never send
+    // helper_absent: they say no_user_session (nobody is signed in to the
+    // captured session) or helper_unreachable (someone is, but the prompt
+    // could not be shown to them — only ever a refusal, so it is not an
+    // accepted consentReason).
+    reason: z.enum(['user', 'timeout', 'no_user', 'helper_absent', 'no_user_session', 'helper_unreachable']).optional(),
     consentReason: z.enum(['user', ...UNSOLICITED_CONSENT_REASONS] as const).optional(),
+    // Version 2 structured consent record, carried into the audit row: what
+    // happened to the prompt, whether anyone is signed in to the captured
+    // session (only evaluated when the prompt could not be shown), a short
+    // machine-readable detail, and the protocol the agent spoke.
+    consentOutcome: z.enum(CONSENT_OUTCOMES).optional(),
+    consentOccupancy: z.enum(CONSENT_OCCUPANCIES).optional(),
+    consentDetail: z.string().max(64).regex(/^[a-z0-9_]+$/).optional(),
+    consentProtocol: z.number().int().min(1).max(2).optional(),
     // Desk-stop confirmations from fielded agents send {"stopped": true}
     // (agent/internal/heartbeat/handlers_desktop.go). Not consumed
     // server-side, but must be accepted so the result isn't dropped as
