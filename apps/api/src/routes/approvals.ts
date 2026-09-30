@@ -508,7 +508,11 @@ function toIntentOutcome(
       errorCode: null,
       reason:
         approval.status === 'denied'
-          ? approval.decisionReason?.trim() || 'the approval was denied, so it did not run'
+          // A refused approve (the approver approved, the server refused it)
+          // reports why it was refused, not a denial by the approver.
+          ? approval.refusalReason?.trim()
+            || approval.decisionReason?.trim()
+            || 'the approval was denied, so it did not run'
           : approval.status === 'expired'
             ? 'the approval expired, so it did not run'
             : approval.status === 'reported'
@@ -1293,10 +1297,15 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
       }
     } else {
       // Non-intent-linked rows (executionId-linked legacy AI mobile-push
-      // flow, or plain dev-seed/PAM rows with neither): unchanged from
-      // before this fix round — a single flip statement, plus a best-effort
-      // ai_tool_executions mirror. There is no intent/sibling fan-in for
-      // these rows, so there is nothing else to make atomic with the flip.
+      // flow, or plain dev-seed/PAM rows with neither): a single flip
+      // statement, plus a best-effort ai_tool_executions mirror. There is no
+      // intent/sibling fan-in for these rows, so there is nothing else to
+      // make atomic with the flip.
+      //
+      // The flip is a CAS on status = 'pending', like the intent branch
+      // above: a decide that committed after the pre-fetch (including an
+      // approve stored as denied because the server refused it) keeps its
+      // outcome. The report itself still revokes and audits below.
       await db
         .update(approvalRequests)
         .set({
@@ -1304,7 +1313,11 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
           decidedAt: new Date(),
           decisionReason: 'Reported as suspicious by user',
         })
-        .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+        .where(and(
+          eq(approvalRequests.id, id),
+          eq(approvalRequests.userId, userId),
+          eq(approvalRequests.status, 'pending'),
+        ));
 
       // Mirror to ai_tool_executions so the SDK waiter unblocks with denial.
       //

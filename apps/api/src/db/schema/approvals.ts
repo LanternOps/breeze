@@ -45,6 +45,19 @@ export const approvalRequests = pgTable(
     decidedAt: timestamp('decided_at', { withTimezone: true }),
     decisionReason: text('decision_reason'),
     /**
+     * Set when the approver approved but the server refused to apply the
+     * approve in the same decide transaction: a PAM elevation whose target
+     * identity could not be verified (`createPamDecisionIntent`). The row is
+     * then `denied`, because `status` records what took effect. The
+     * approver's approve is still on the row: `user_id`, `decided_at`,
+     * `decided_via` and `decided_assurance_level` describe it, and
+     * `decision_reason` stays the approver's own reason. A non-null value is
+     * what tells "approved, then refused" apart from "the approver denied".
+     * `approval_requests_refusal_reason_status_chk` allows it only on a
+     * denied row.
+     */
+    refusalReason: text('refusal_reason'),
+    /**
      * For AI-agent-initiated approvals, links back to the
      * `ai_tool_executions` row that the SDK is blocked on via
      * `waitForApproval(executionId, ...)`. Nullable because non-AI
