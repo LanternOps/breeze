@@ -23,8 +23,11 @@ import { resolve } from 'node:path';
 export type BinaryStore = 'agent' | 'viewer' | 'helper';
 
 interface BinaryStoreDef {
-  /** Env var holding the directory. */
-  dirEnv: string;
+  /**
+   * Reads the directory env var. A literal `process.env.X` (not an indexed
+   * read) so the env inventory (system/connections/envInventory) can see it.
+   */
+  configured: () => string | undefined;
   /** Used when the env var is unset: a path, or another store's directory. */
   fallback: string | { store: BinaryStore };
   s3Prefix: string;
@@ -34,9 +37,9 @@ interface BinaryStoreDef {
 // one owns it (see resolveStore). An unset HELPER_BINARY_DIR means "the agent
 // dir" — wherever AGENT_BINARY_DIR points, not a cwd-relative ./agent/bin.
 const STORES: Record<BinaryStore, BinaryStoreDef> = {
-  agent: { dirEnv: 'AGENT_BINARY_DIR', fallback: './agent/bin', s3Prefix: 'agent' },
-  viewer: { dirEnv: 'VIEWER_BINARY_DIR', fallback: './viewer/bin', s3Prefix: 'viewer' },
-  helper: { dirEnv: 'HELPER_BINARY_DIR', fallback: { store: 'agent' }, s3Prefix: 'helper' },
+  agent: { configured: () => process.env.AGENT_BINARY_DIR, fallback: './agent/bin', s3Prefix: 'agent' },
+  viewer: { configured: () => process.env.VIEWER_BINARY_DIR, fallback: './viewer/bin', s3Prefix: 'viewer' },
+  helper: { configured: () => process.env.HELPER_BINARY_DIR, fallback: { store: 'agent' }, s3Prefix: 'helper' },
 };
 
 const STORE_ORDER = Object.keys(STORES) as BinaryStore[];
@@ -44,7 +47,7 @@ const STORE_ORDER = Object.keys(STORES) as BinaryStore[];
 /** Absolute directory a store's files are staged in (env-resolved per call). */
 export function binaryStoreDir(store: BinaryStore): string {
   const def = STORES[store];
-  const configured = process.env[def.dirEnv];
+  const configured = def.configured();
   if (configured) return resolve(configured);
   return typeof def.fallback === 'string' ? resolve(def.fallback) : binaryStoreDir(def.fallback.store);
 }
