@@ -138,12 +138,15 @@ func TestApplySystemState_Attested(t *testing.T) {
 		wantApplied bool
 		wantFatal   bool
 		wantInWarn  string
+		// wantNoRestore: nothing from the snapshot's system state may be
+		// applied to the live system once an attested artifact failed.
+		wantNoRestore bool
 	}{
 		{name: "attested and matching", mode: "attested", expect: true, wantApplied: true},
 		{name: "state manifest bytes differ from attestation", mode: "attested-other-bytes", expect: true, wantFatal: true},
 		{name: "no state object while snapshot carries state", mode: "attested-no-state-object", expect: true, wantFatal: true},
 		{name: "no state object, state manifest present anyway", mode: "attested-no-state-object", expect: false, wantFatal: true},
-		{name: "attested, artifact without checksum", mode: "attested", noSum: true, expect: true, wantInWarn: "missing_checksum"},
+		{name: "attested, artifact without checksum", mode: "attested", noSum: true, expect: true, wantInWarn: "missing_checksum", wantNoRestore: true},
 		{name: "override, artifact without checksum", mode: "override", noSum: true, expect: true, wantApplied: true, wantInWarn: "unverified"},
 	}
 	for _, tc := range cases {
@@ -168,6 +171,15 @@ func TestApplySystemState_Attested(t *testing.T) {
 				}
 				if fr.restoreCalls != 0 {
 					t.Fatal("restorer ran after a state manifest integrity failure")
+				}
+				return
+			}
+			if tc.wantNoRestore {
+				if fr.restoreCalls != 0 || res.applied || res.err == nil {
+					t.Fatalf("restorer ran %d time(s), applied=%v err=%v: an attested artifact failed its check", fr.restoreCalls, res.applied, res.err)
+				}
+				if !strings.Contains(strings.Join(res.warnings, "\n"), tc.wantInWarn) {
+					t.Fatalf("warnings %v do not contain %q", res.warnings, tc.wantInWarn)
 				}
 				return
 			}

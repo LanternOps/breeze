@@ -830,6 +830,20 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	// is gone.
 	serviceUnits, serviceUnitsErr := enabledSystemdUnitsFromStaging(stagingDir)
 
+	// An attested snapshot applies its system state whole or not at all: once
+	// one artifact failed its integrity check, none of the others reach the
+	// live system.
+	if cfg.Integrity.Attested() && verificationFailed {
+		return systemStateResult{
+			manifestFound:        true,
+			warnings:             warnings,
+			err:                  fmt.Errorf("bmr: system state not applied: %s", firstFailure),
+			serviceUnits:         serviceUnits,
+			serviceUnitsErr:      serviceUnitsErr,
+			firstArtifactFailure: firstFailure,
+		}
+	}
+
 	// Apply system state via platform-specific restorer.
 	restorer := newRestorerFunc()
 	restoreErr := restorer.RestoreSystemState(stagingDir)
