@@ -10,6 +10,7 @@ import {
   listLatestSecurityPosture
 } from '../../services/securityPosture';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
+import { siteAllowlistOf } from '../../services/aiToolsSiteScope';
 import { postureQuerySchema, deviceIdParamSchema } from './schemas';
 import { getPagination, paginate } from './helpers';
 
@@ -52,6 +53,7 @@ postureRoutes.get(
 
     const data = await listLatestSecurityPosture({
       orgIds,
+      siteIds: siteAllowlistOf(auth),
       minScore: parsedMinScore,
       maxScore: parsedMaxScore,
       riskLevel: query.riskLevel,

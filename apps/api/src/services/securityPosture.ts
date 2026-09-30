@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, ilike, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -12,6 +12,7 @@ import {
   securityThreats
 } from '../db/schema';
 import { EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 const SECURITY_FACTOR_WEIGHTS = {
@@ -90,6 +91,12 @@ export interface SecurityPostureFilter {
    * by the query: filtering afterwards produced short pages (#6096).
    */
   deviceIds?: readonly string[];
+  /**
+   * Site allowlist (`auth.allowedSiteIds`). Undefined = unrestricted; `[]` (or
+   * a malformed value) = nothing in scope. Matches the device's CURRENT site.
+   * Applied in SQL so `limit` and the counts cover visible devices only.
+   */
+  siteIds?: readonly string[];
   minScore?: number;
   maxScore?: number;
   riskLevel?: SecurityRiskLevel;
@@ -943,6 +950,8 @@ export async function listLatestSecurityPosture(filter: SecurityPostureFilter): 
   // already compiles to `false`, but short-circuiting keeps it explicit and
   // saves the round trip.
   if (filter.deviceIds && filter.deviceIds.length === 0) return [];
+  const siteIds = normalizeSiteAllowlist(filter.siteIds);
+  if (siteIds && siteIds.length === 0) return [];
 
   const maxLimit = Math.min(Math.max(Number(filter.limit ?? 500), 1), 2000);
   const scopeConditions: SQL[] = [];
@@ -991,6 +1000,9 @@ export async function listLatestSecurityPosture(filter: SecurityPostureFilter): 
   }
   if (filter.search) {
     latestConditions.push(ilike(devices.hostname, `%${filter.search}%`));
+  }
+  if (siteIds) {
+    latestConditions.push(inArray(devices.siteId, [...siteIds]));
   }
 
   const rows = await db
@@ -1078,6 +1090,8 @@ const EMPTY_SECURITY_POSTURE_COUNTS: SecurityPostureCounts = {
  */
 export async function getSecurityPostureCounts(filter: SecurityPostureFilter): Promise<SecurityPostureCounts> {
   if (filter.deviceIds && filter.deviceIds.length === 0) return EMPTY_SECURITY_POSTURE_COUNTS;
+  const siteIds = normalizeSiteAllowlist(filter.siteIds);
+  if (siteIds && siteIds.length === 0) return EMPTY_SECURITY_POSTURE_COUNTS;
 
   const scopeConditions: SQL[] = [];
   if (filter.orgId) {
@@ -1112,6 +1126,9 @@ export async function getSecurityPostureCounts(filter: SecurityPostureFilter): P
   }
   if (filter.search) {
     latestConditions.push(ilike(devices.hostname, `%${filter.search}%`));
+  }
+  if (siteIds) {
+    latestConditions.push(inArray(devices.siteId, [...siteIds]));
   }
 
   const [row] = await db
@@ -1182,12 +1199,93 @@ export async function getLatestSecurityPostureForDevice(deviceId: string): Promi
   return hydratePostureRows([row], [device])[0] ?? null;
 }
 
+type TrendScoreRow = {
+  capturedAt: Date;
+  overallScore: number;
+  patchComplianceScore: number;
+  encryptionScore: number;
+  avHealthScore: number;
+  firewallScore: number;
+  openPortsScore: number;
+  passwordPolicyScore: number;
+  osCurrencyScore: number;
+  adminExposureScore: number;
+};
+
+function groupTrendPoints(rows: TrendScoreRow[]): Array<Record<string, string | number>> {
+  const grouped = new Map<string, TrendScoreRow[]>();
+  for (const row of rows) {
+    const day = row.capturedAt.toISOString().slice(0, 10);
+    const current = grouped.get(day) ?? [];
+    current.push(row);
+    grouped.set(day, current);
+  }
+
+  return Array.from(grouped.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([timestamp, entries]) => computeTrendPoint(timestamp, entries));
+}
+
+/**
+ * Organization snapshots carry no device or site lineage, so a site-restricted
+ * trend is rebuilt from the per-device snapshots of devices currently in an
+ * allowed site. Each posture run writes every device snapshot and the org
+ * snapshot with one `captured_at`, so grouping by (org, captured_at) yields the
+ * org snapshot that run would have written for the visible devices; those then
+ * go through the same daily grouping as stored org snapshots.
+ */
+async function listSiteScopedTrendRuns(
+  params: { orgId?: string; orgIds?: string[] },
+  since: Date,
+  siteIds: readonly string[],
+): Promise<TrendScoreRow[]> {
+  const conditions: SQL[] = [
+    gte(securityPostureSnapshots.capturedAt, since),
+    inArray(devices.siteId, [...siteIds]),
+  ];
+  if (params.orgId) {
+    conditions.push(eq(securityPostureSnapshots.orgId, params.orgId));
+  } else if (params.orgIds && params.orgIds.length > 0) {
+    conditions.push(inArray(securityPostureSnapshots.orgId, params.orgIds));
+  }
+
+  const avgScore = (column: AnyColumn) =>
+    sql<number>`round(avg(${column}))::int`;
+
+  return db
+    .select({
+      capturedAt: securityPostureSnapshots.capturedAt,
+      overallScore: avgScore(securityPostureSnapshots.overallScore),
+      patchComplianceScore: avgScore(securityPostureSnapshots.patchComplianceScore),
+      encryptionScore: avgScore(securityPostureSnapshots.encryptionScore),
+      avHealthScore: avgScore(securityPostureSnapshots.avHealthScore),
+      firewallScore: avgScore(securityPostureSnapshots.firewallScore),
+      openPortsScore: avgScore(securityPostureSnapshots.openPortsScore),
+      passwordPolicyScore: avgScore(securityPostureSnapshots.passwordPolicyScore),
+      osCurrencyScore: avgScore(securityPostureSnapshots.osCurrencyScore),
+      adminExposureScore: avgScore(securityPostureSnapshots.adminExposureScore)
+    })
+    .from(securityPostureSnapshots)
+    .innerJoin(devices, eq(devices.id, securityPostureSnapshots.deviceId))
+    .where(and(...conditions))
+    .groupBy(securityPostureSnapshots.orgId, securityPostureSnapshots.capturedAt)
+    .orderBy(desc(securityPostureSnapshots.capturedAt));
+}
+
 export async function getSecurityPostureTrend(params: {
   orgId?: string;
   orgIds?: string[];
+  /** Site allowlist: undefined = unrestricted; `[]` (or malformed) = no points. */
+  siteIds?: readonly string[];
   days: number;
 }): Promise<Array<Record<string, string | number>>> {
   const since = new Date(Date.now() - params.days * 24 * 60 * 60 * 1000);
+  const siteIds = normalizeSiteAllowlist(params.siteIds);
+  if (siteIds) {
+    if (siteIds.length === 0) return [];
+    return groupTrendPoints(await listSiteScopedTrendRuns(params, since, siteIds));
+  }
+
   const conditions = [gte(securityPostureOrgSnapshots.capturedAt, since)];
   if (params.orgId) {
     conditions.push(eq(securityPostureOrgSnapshots.orgId, params.orgId));
@@ -1212,20 +1310,7 @@ export async function getSecurityPostureTrend(params: {
     .where(and(...conditions))
     .orderBy(desc(securityPostureOrgSnapshots.capturedAt));
 
-  type TrendRow = typeof rows[number];
-  const grouped = new Map<string, Array<typeof rows[number]>>();
-  for (const row of rows) {
-    const day = row.capturedAt.toISOString().slice(0, 10);
-    const current = grouped.get(day) ?? [];
-    current.push(row);
-    grouped.set(day, current);
-  }
-
-  const points = Array.from(grouped.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([timestamp, entries]) => computeTrendPoint(timestamp, entries as TrendRow[]));
-
-  return points;
+  return groupTrendPoints(rows);
 }
 
 export function computeTrendPoint(
