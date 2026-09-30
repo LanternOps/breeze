@@ -330,6 +330,16 @@ describe('CleanupPanel', () => {
       expect(screen.getByTestId('cleanup-selection-limit')).toHaveTextContent('200');
     });
 
+    it('offers Clear after a capped select-all, which unticks and re-enables the rest', async () => {
+      render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={big()} onExecuted={vi.fn()} />);
+      const btn = screen.getByTestId('cleanup-category-select-all-temp_files');
+      await userEvent.click(btn);
+      expect(btn).toHaveTextContent('Clear');
+      await userEvent.click(btn);
+      expect(screen.getByTestId('cleanup-execute')).toBeDisabled();
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f200')).not.toBeDisabled();
+    });
+
     it('does not let individual ticks exceed 200', async () => {
       render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={big()} onExecuted={vi.fn()} />);
       await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));

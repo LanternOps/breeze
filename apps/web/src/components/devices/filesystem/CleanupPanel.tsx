@@ -241,7 +241,12 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {preview.categories.map((category) => {
           const rows = byCategory.get(category.category) ?? [];
-          const allOn = rows.length > 0 && rows.every((row) => selected.has(row.path));
+          // At the cap a category can never be fully ticked, so the button must
+          // still offer Clear (otherwise it is a silent no-op, review finding).
+          const allOn = rows.length > 0 && (
+            rows.every((row) => selected.has(row.path))
+            || (atSelectionLimit && rows.some((row) => selected.has(row.path)))
+          );
           return (
             <div
               key={category.category}
