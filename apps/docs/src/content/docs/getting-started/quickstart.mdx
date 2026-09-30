@@ -22,14 +22,21 @@ curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/scripts/gui
 bash guided-setup.sh
 ```
 
+The installer accepts Breeze 0.112.0 or later, because release signatures only
+cover the container images from 0.112.0 on. It refuses an older release unless
+you pass `--allow-unverified-release`, which installs it from unverified image
+tags.
+
 On Linux the installer also offers to register a boot service (`breeze-rmm`) so
 the stack comes back up on its own after a reboot. Accept it on a server you
 want running unattended; you can install or update it later with
 `bash guided-setup.sh --install-systemd`.
 
-The installer pins the Breeze images by digest. To upgrade, run
-`bash guided-setup.sh --upgrade`, not `docker compose pull`. Pulling fetches the
-release you already run. See the [Upgrade Guide](/deploy/upgrades/).
+The installer pins the Breeze images by digest. To upgrade, download the
+current `guided-setup.sh` again and run `bash guided-setup.sh --upgrade`, not
+`docker compose pull`. Pulling fetches the release you already run, and older
+copies of the script do not have `--upgrade`. See the
+[Upgrade Guide](/deploy/upgrades/).
 
 Prefer to configure `.env` yourself? The manual path is below.
 

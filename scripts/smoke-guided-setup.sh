@@ -42,8 +42,9 @@
 #                                    guided-setup.sh's SIGNED_IMAGE_INVENTORY_MIN_VERSION —
 #                                    this smoke signs and verifies a real image
 #                                    inventory manifest below, which only runs
-#                                    at/above that floor. The below-floor skip
-#                                    path is covered without Docker by
+#                                    at/above that floor. The below-floor
+#                                    refusal and its --allow-unverified-release
+#                                    override are covered without Docker by
 #                                    scripts/check-guided-setup-signed-image-floor.sh.
 #   GUIDED_SMOKE_BINARIES_IMAGE_REF  agent binaries image (default ghcr.io/lanternops/breeze/binaries:latest)
 #   GUIDED_SMOKE_WORK_DIR            installer work dir (default $HOME/breeze-guided-smoke)
