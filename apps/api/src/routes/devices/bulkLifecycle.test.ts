@@ -288,6 +288,37 @@ describe('POST /devices/bulk/restore', () => {
     expect(restoreRemovedDevice).toHaveBeenCalledWith(expect.anything(), DEV_2, { orgId: ORG_A, siteId: 'site-2' });
   });
 
+  // One pooled connection at a time: the system-scoped restore opens only
+  // after the item's tenant-scoped authorization transaction has finished,
+  // never nested inside it (#1105).
+  it('opens the system-scoped restore only after the tenant-scoped check has closed', async () => {
+    let tenantOpen = false;
+    const tenantOpenAtRestore: boolean[] = [];
+    vi.mocked(withDbAccessContext).mockImplementation((async (
+      _ctx: unknown,
+      fn: () => Promise<unknown>,
+    ) => {
+      tenantOpen = true;
+      try {
+        return await fn();
+      } finally {
+        tenantOpen = false;
+      }
+    }) as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
+      accessibleDevice(id as string),
+    );
+    vi.mocked(restoreRemovedDevice).mockImplementation(async (_tx, id) => {
+      tenantOpenAtRestore.push(tenantOpen);
+      return { device: accessibleDevice(id) as never, uninstallAlreadyDispatched: false };
+    });
+
+    const res = await post(app, '/devices/bulk/restore', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(200);
+    expect(tenantOpenAtRestore).toEqual([false, false]);
+  });
+
   it('reports a device refused at the partner device limit and still restores the rest', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
       accessibleDevice(id as string),

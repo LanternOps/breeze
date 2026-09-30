@@ -902,6 +902,7 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     expect(admitPartnerDeviceCapacity).toHaveBeenCalledWith(expect.anything(), {
       orgId: 'org-123',
       expectedPartnerId: 'partner-1',
+      excludeDeviceId: DEVICE_ID,
     });
   });
 

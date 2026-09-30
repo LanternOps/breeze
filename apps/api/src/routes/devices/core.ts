@@ -2242,8 +2242,10 @@ coreRoutes.post(
     // the caller's tenant RLS. Authorization is unchanged and happened above,
     // in the tenant context; the service refuses (STATE_CHANGED) if the locked
     // row is no longer in the org and site that check approved.
-    // `runOutsideDbContext` wraps `withSystemDbAccessContext` for the reason
-    // given on the permanent-delete route below.
+    // `runOutsideDbContext` is required, not an optimisation: inside the
+    // request's `withDbAccessContext` transaction a bare
+    // `withSystemDbAccessContext` joins that tenant transaction instead of
+    // escalating, and admission would then find no partner row.
     let result: Awaited<ReturnType<typeof restoreRemovedDevice>>;
     try {
       result = await runOutsideDbContext(() =>

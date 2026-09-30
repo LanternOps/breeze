@@ -16,16 +16,17 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { devices, partners } from '../../db/schema';
+import { devices, organizationUsers, partners } from '../../db/schema';
 import { deviceRoutes } from '../../routes/devices';
 import { DeviceLifecycleError, restoreRemovedDevice } from '../../services/deviceLifecycle';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
-import { setupTestEnvironment, type TestEnvironment } from './db-utils';
+import { clearPermissionCache } from '../../services/permissions';
+import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg, seedParkedDevice } from './unassignedPoolFixtures';
 
@@ -132,6 +133,36 @@ describe('restoring a decommissioned device respects the partner device limit â€
     expect(await statusOf(removed)).toBe('offline');
   });
 
+  // The restore write now runs in a system-scoped transaction, so the
+  // tenant-scoped check in front of it is the only thing keeping a caller
+  // away from a device it cannot see. Both refusals must leave the row alone.
+  runDb('refuses a device in another tenant (404) or a hidden site (403) before any write', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const token = await mfaToken(env);
+    const other = await setupTestEnvironment({ scope: 'organization' });
+    const foreign = await seedDevice(other.organization.id, other.site.id, 'decommissioned');
+
+    const crossTenant = await restoreRequest(token, foreign);
+    expect(crossTenant.status).toBe(404);
+    await expect(crossTenant.json()).resolves.toEqual({ error: 'Device not found' });
+    expect(await statusOf(foreign)).toBe('decommissioned');
+
+    const hiddenSite = await createSite({ orgId: env.organization.id, name: `hidden ${randomUUID()}` });
+    const hidden = await seedDevice(env.organization.id, hiddenSite.id, 'decommissioned');
+    await getTestDb().update(organizationUsers)
+      .set({ siteIds: [env.site.id] })
+      .where(and(
+        eq(organizationUsers.userId, env.user.id),
+        eq(organizationUsers.orgId, env.organization.id),
+      ));
+    await clearPermissionCache(env.user.id);
+
+    const siteDenied = await restoreRequest(token, hidden);
+    expect(siteDenied.status).toBe(403);
+    await expect(siteDenied.json()).resolves.toEqual({ error: 'Access to this site denied' });
+    expect(await statusOf(hidden)).toBe('decommissioned');
+  });
+
   runDb('bulk restore admits each device on its own and reports the ones over the limit', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mfaToken(env);
@@ -230,5 +261,45 @@ describe('restoring a decommissioned device respects the partner device limit â€
     });
     expect(await statusOf(a)).toBe('offline');
     expect(await statusOf(b)).toBe('decommissioned');
+  });
+
+  runDb('two restores of the SAME device: the loser is told it is no longer removed, not "limit reached"', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    await seedDevice(env.organization.id, env.site.id, 'online');
+    const device = await seedDevice(env.organization.id, env.site.id, 'decommissioned');
+    await setDeviceLimit(env.partner.id, 2);
+    const pin = { orgId: env.organization.id, siteId: env.site.id };
+
+    let releaseFirst!: () => void;
+    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstRestored!: () => void;
+    const firstHoldsLock = new Promise<void>((resolve) => { firstRestored = resolve; });
+    let secondPid: number | undefined;
+
+    const first = withSystemDbAccessContext(() => db.transaction(async (tx) => {
+      const result = await restoreRemovedDevice(tx, device, pin);
+      firstRestored();
+      await holdFirst;
+      return result;
+    }));
+    await firstHoldsLock;
+
+    const second = withSystemDbAccessContext(() => db.transaction(async (tx) => {
+      const [pidRow] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid()::int as pid`);
+      secondPid = pidRow!.pid;
+      return restoreRemovedDevice(tx, device, pin);
+    })).then(
+      () => 'restored' as const,
+      (err: unknown) => err,
+    );
+    while (secondPid === undefined) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    await waitForBlockedBackend(secondPid);
+    releaseFirst();
+
+    await expect(first).resolves.toMatchObject({ device: { status: 'offline' } });
+    const secondOutcome = await second;
+    expect(secondOutcome).toBeInstanceOf(DeviceLifecycleError);
+    expect(secondOutcome).toMatchObject({ code: 'NOT_REMOVED' });
+    expect(await statusOf(device)).toBe('offline');
   });
 });

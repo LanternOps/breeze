@@ -174,6 +174,12 @@ async function lockDevice(tx: Tx, deviceId: string): Promise<LockedRow> {
  * locking the device first here would be the opposite order: AB-BA, 40P01.
  * Admitting first also serializes two restores racing for the last slot on
  * the partner row, exactly as enrollment and provisioning are serialized.
+ * Parked-device assignment (holdingAreaLock.ts) takes the device before the
+ * partner, the other way round, but the two never meet on one device:
+ * assignment refuses a decommissioned device before it admits, and restore
+ * does not admit a parked device (it takes no licensed slot).
+ * Cost: while waiting up to 3s for a contended devices row, restore holds the
+ * partner row, so that partner's admissions wait with it.
  *
  * Release-then-flip inside the caller's transaction — the safety property is
  * the TRANSACTION (no session can observe "status flipped, uninstall still
@@ -225,9 +231,8 @@ interface RestoreTarget {
 
 /**
  * Unlocked pre-read, then partner-device-limit admission for a device that
- * takes a licensed slot once active. A decommissioned device is not in the
- * admission count, so the answer is exactly "may one more device be active".
- * Ephemeral and parked devices never take a slot and are not admitted.
+ * takes a licensed slot once active. Ephemeral and parked devices never take
+ * a slot and are not admitted.
  */
 async function admitRestore(
   tx: Tx,
@@ -245,8 +250,7 @@ async function admitRestore(
   if (target.org_id !== authorized.orgId) {
     throw new DeviceLifecycleError('STATE_CHANGED', 'Device changed before it could be restored; try again');
   }
-  // Answered here, not as a limit refusal: an already-active device is
-  // counted, so admitting it would misreport a race as "limit reached".
+  // An already-active device is answered here, not by admission.
   if (target.status !== 'decommissioned') {
     throw new DeviceLifecycleError('NOT_REMOVED', 'Device is not removed');
   }
@@ -255,9 +259,14 @@ async function admitRestore(
 
   let admission;
   try {
+    // The device is left out of the count so the answer is "may THIS device
+    // be active". A concurrent restore of the same device that commits while
+    // this one waits on the partner lock then surfaces as NOT_REMOVED under
+    // the device lock, not as a misleading "limit reached".
     admission = await admitPartnerDeviceCapacity(tx, {
       orgId: authorized.orgId,
       expectedPartnerId: target.partner_id,
+      excludeDeviceId: deviceId,
     });
   } catch (err) {
     if (err instanceof PartnerDeviceCapacityError) {

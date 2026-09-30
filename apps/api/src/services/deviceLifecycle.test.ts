@@ -261,9 +261,13 @@ describe('restoreRemovedDevice — partner device limit', () => {
       status: 403,
       details: { currentDevices: 5, maxDevices: 5 },
     });
+    // The device itself is left out of the count: the question is "may THIS
+    // device be active", so a concurrent restore of the same device that
+    // committed first yields NOT_REMOVED under the lock, not a limit refusal.
     expect(admitPartnerDeviceCapacity).toHaveBeenCalledWith(tx, {
       orgId: ORG,
       expectedPartnerId: PARTNER,
+      excludeDeviceId: DEV,
     });
     expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
     expect(calls).not.toContain('update');
