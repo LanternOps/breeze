@@ -34,6 +34,7 @@ import {
   compareAgentVersions,
   buildEventLogConfigUpdate,
   buildHardwareMonitoringConfigUpdate,
+  buildTimeSyncConfigUpdate,
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
@@ -2204,6 +2205,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     warrantySettings: { hpCmslEnabled: boolean } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
+    timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
   };
   let policyConfigs: PolicyConfigUpdates = {
     eventLogSettings: null,
@@ -2212,6 +2214,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: null,
     warrantySettings: null,
     hardwareMonitoringSettings: null,
+    timeSyncSettings: null,
   };
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
@@ -2221,6 +2224,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
       let warrantySettings: { hpCmslEnabled: boolean } | null = null;
       let hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null = null;
+      let timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null = null;
 
       // Sentry on all four, not just pam/patch_source. Losing an event_log or
       // monitoring policy is precisely the invisible failure #2930 is about:
@@ -2288,7 +2292,27 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
-      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings, hardwareMonitoringSettings };
+      // Time sync (index §F.2). After warranty for the same reason warranty is
+      // late: a resolver error here only ever omits time_sync_settings (the
+      // agent keeps its last applied settings), and placing it after pam means
+      // its SQL error can never abort the shared transaction before pam
+      // resolves and drop uacInterceptionEnabled to false.
+      try {
+        timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build time sync config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      return {
+        eventLogSettings,
+        monitoringSettings,
+        pamSettings,
+        patchSourceSettings,
+        warrantySettings,
+        hardwareMonitoringSettings,
+        timeSyncSettings,
+      };
     });
   } catch (err) {
     // Transaction setup/commit failure — see the note above. Every resolver's
@@ -2297,7 +2321,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] policy config context failed for ${agentId} — omitting config updates this heartbeat:`, err);
     captureException(err);
   }
-  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings, hardwareMonitoringSettings } = policyConfigs;
+  const {
+    eventLogSettings,
+    monitoringSettings,
+    pamSettings,
+    patchSourceSettings,
+    warrantySettings,
+    hardwareMonitoringSettings,
+    timeSyncSettings,
+  } = policyConfigs;
 
   const policyConfigUpdate: Record<string, unknown> = {};
   if (eventLogSettings) {
@@ -2305,6 +2337,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (hardwareMonitoringSettings) {
     policyConfigUpdate.hardware_monitoring_settings = hardwareMonitoringSettings;
+  }
+  if (timeSyncSettings) {
+    policyConfigUpdate.time_sync_settings = timeSyncSettings;
   }
   // null = couldn't resolve this cycle (device vanished mid-resolution, #5677,
   // or the resolver threw) → omit, and the agent keeps its watches. "No

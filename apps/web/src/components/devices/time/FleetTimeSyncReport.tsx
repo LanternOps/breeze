@@ -19,6 +19,7 @@ import {
 } from './fleetState';
 import type { FleetTimeResult } from './fleetTypes';
 import DomainGroupView, { TimeRows } from './DomainGroupView';
+import TimeSyncActions from './TimeSyncActions';
 export default function FleetTimeSyncReport() {
   const { t } = useTranslation('devices');
   const currentOrgId = useOrgStore((s) => s.currentOrgId),
@@ -325,6 +326,12 @@ export default function FleetTimeSyncReport() {
       )}
       {!loading && !error && result && (
         <>
+          <TimeSyncActions
+            bulk
+            targets={result.data
+              .filter((row) => row.view.state === 'reported')
+              .map((row) => ({ deviceId: row.deviceId, name: row.hostname }))}
+          />
           <p className="text-sm text-muted-foreground">
             {t('timeFleet.count', { count: result.total })}
           </p>

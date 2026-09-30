@@ -5,6 +5,7 @@ import {
   Cloud,
   FileSearch,
   HardDrive,
+  Clock,
   Layers,
   LifeBuoy,
   PackageCheck,
@@ -27,6 +28,7 @@ import { friendlyFetchError } from "../../lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { i18n } from "../../lib/i18n";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -131,6 +133,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
   device_lifecycle: { label: "Device Lifecycle", Icon: Trash2 },
   hardware_monitoring: { label: "Hardware Monitoring", Icon: HardDrive },
+  time_sync: {
+    get label() {
+      return i18n.t("devices:timeSync.management.title");
+    },
+    Icon: Clock,
+  },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the

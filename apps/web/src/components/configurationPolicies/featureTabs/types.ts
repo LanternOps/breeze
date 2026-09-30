@@ -1,4 +1,5 @@
 import type { ConfigFeatureType } from '@breeze/shared';
+import { i18n } from '@/lib/i18n';
 
 // Derived from the canonical CONFIG_FEATURE_TYPES (single source of truth in
 // @breeze/shared) so the config-policy editor's feature tabs can't silently
@@ -85,4 +86,13 @@ export const FEATURE_META: Record<FeatureType, {
   onedrive_helper: { label: 'OneDrive Helper', fetchUrl: null, description: 'Silently sign in OneDrive, enforce Files On-Demand and Known Folder Move, and auto-mount SharePoint libraries per user.' },
   device_lifecycle: { label: 'Device Lifecycle', fetchUrl: null, description: 'Permanently delete removed devices after a retention window' },
   hardware_monitoring: { label: 'Hardware Monitoring', fetchUrl: null, description: 'RAID and disk health collection intervals' },
+  time_sync: {
+    get label() {
+      return i18n.t('devices:timeSync.management.title');
+    },
+    fetchUrl: null,
+    get description() {
+      return i18n.t('devices:timeSync.management.description');
+    },
+  },
 };

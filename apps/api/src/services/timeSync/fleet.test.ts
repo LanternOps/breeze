@@ -15,6 +15,8 @@ import {
   listFleetTimeStatus,
   FleetTimeForbidden,
 } from './fleet';
+import { exportCurrentTimeCsv, exportHistoryTimeCsv } from './exports';
+import { deviceTimeDaily } from '../../db/schema';
 const org = '11111111-1111-4111-8111-111111111111',
   site = '22222222-2222-4222-8222-222222222222';
 const device = '33333333-3333-4333-8333-333333333333',
@@ -122,9 +124,12 @@ it('validates vocabulary and bounded pages', () => {
   });
 });
 it('finds a PDC beyond the filtered page', async () => {
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    findings: [{ code: 'sync_stale', severity: 'warning', detail: {} }],
+  }));
   m.queue.push(
-    [{ total: 20 }],
-    [header(device)],
+    [header(site), header(device)],
     [{ orgId: org, domainDns: 'example.com', pdcExpected: true, pdcId: pdc }],
     [header(pdc)],
   );
@@ -134,7 +139,7 @@ it('finds a PDC beyond the filtered page', async () => {
       auth(),
     ),
   ).toMatchObject({
-    total: 20,
+    total: 2,
     page: 2,
     limit: 1,
     data: [{ deviceId: device }],
@@ -149,12 +154,12 @@ it('finds a PDC beyond the filtered page', async () => {
     ],
   });
   const query = new PgDialect().sqlToQuery(
-    m.select.mock.results[2]!.value.where.mock.calls[0][0],
+    m.select.mock.results[1]!.value.where.mock.calls[0][0],
   );
   expect(query.params).toContain(org);
   expect(query.params).not.toContain('sync_stale');
   expect(query.params).not.toContain('member');
-  expect(m.view.mock.calls).toEqual([[device], [pdc]]);
+  expect(m.view.mock.calls).toEqual([[site], [device], [pdc]]);
 });
 it('keeps equal DNS names in different organizations separate', async () => {
   const other = pdc;
@@ -197,18 +202,51 @@ it('reports an expected missing PDC without inventing a device', async () => {
     },
   ]);
 });
-it('recomputes timezone filtering from the live site mapping', () => {
-  const query = new PgDialect().sqlToQuery(
-    fleetScope({ finding: 'timezone_mismatch' }, auth())!,
+it('filters and counts canonical policy findings before selecting a page', async () => {
+  m.queue.push([header(site), header(device), header(pdc)]);
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    domain: null,
+    health: id === site ? 'healthy' : 'warning',
+    findings:
+      id === site
+        ? []
+        : [{ code: 'policy_not_applied', severity: 'warning', detail: {} }],
+  }));
+  const result = await listFleetTimeStatus(
+    { finding: 'policy_not_applied', health: 'warning', page: 2, limit: 1 },
+    auth(),
   );
-  expect(query.sql).toContain('array_remove');
-  expect(query.sql).toContain('IS DISTINCT FROM');
-  expect(query.sql).toContain('"sites"."timezone"');
-  expect(
-    query.params.some(
-      (p) => typeof p === 'string' && p.includes('Eastern Standard Time'),
-    ),
-  ).toBe(true);
+  expect(result.total).toBe(2);
+  expect(result.data.map((row) => row.deviceId)).toEqual([pdc]);
+  expect(m.view.mock.calls).toEqual([[site], [device], [pdc]]);
+  const query = new PgDialect().sqlToQuery(
+    m.select.mock.results[0]!.value.where.mock.calls[0][0],
+  );
+  expect(query.params).not.toContain('policy_not_applied');
+  expect(query.params).not.toContain('warning');
+});
+it('re-reads changed policy findings on every fleet request', async () => {
+  for (const findings of [
+    [{ code: 'timezone_mismatch', severity: 'info', detail: {} }],
+    [],
+    [{ code: 'policy_not_applied', severity: 'warning', detail: {} }],
+    [],
+  ]) {
+    m.queue.push([header(device)]);
+    m.view.mockResolvedValue({ ...view(device), domain: null, findings });
+    const result = await listFleetTimeStatus(
+      {
+        finding:
+          findings[0]?.code === 'policy_not_applied'
+            ? 'policy_not_applied'
+            : 'timezone_mismatch',
+      },
+      auth(),
+    );
+    expect(result.total).toBe(findings.length);
+    expect(result.data).toHaveLength(findings.length);
+  }
 });
 it('returns an empty report with no visible devices', async () => {
   m.queue.push([{ total: 0 }], []);
@@ -220,4 +258,84 @@ it('returns an empty report with no visible devices', async () => {
     domains: [],
   });
   expect(m.view).not.toHaveBeenCalled();
+});
+it('exports hydrate each candidate exactly once across CSV pages', async () => {
+  const ids = Array.from(
+    { length: 250 },
+    (_, i) => `55555555-5555-4555-8555-${String(i).padStart(12, '0')}`,
+  );
+  const candidates = ids.map((id) => ({ ...header(id), hostname: id }));
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    domain: null,
+  }));
+  m.select.mockImplementation(() => {
+    let table: unknown, offset = 0, limit = Infinity;
+    const chain: any = {
+      then: (resolve: (value: unknown) => unknown) =>
+        Promise.resolve(
+          table === deviceTimeDaily
+            ? []
+            : candidates.slice(offset, offset + limit),
+        ).then(resolve),
+    };
+    for (const key of ['innerJoin', 'leftJoin', 'where', 'orderBy', 'groupBy'])
+      chain[key] = vi.fn(() => chain);
+    chain.from = vi.fn((value: unknown) => ((table = value), chain));
+    chain.limit = vi.fn((value: number) => ((limit = value), chain));
+    chain.offset = vi.fn((value: number) => ((offset = value), chain));
+    return chain;
+  });
+  let current = '';
+  for await (const chunk of exportCurrentTimeCsv({ page: 3, limit: 1 }, auth()))
+    current += chunk;
+  expect(m.view).toHaveBeenCalledTimes(ids.length);
+  expect(new Set(m.view.mock.calls.map(([id]) => id)).size).toBe(ids.length);
+  for (const id of ids) expect(current).toContain(`"${id}"`);
+  m.view.mockClear();
+  let history = '';
+  for await (const chunk of exportHistoryTimeCsv(
+    {},
+    { from: '2026-09-28', to: '2026-09-28' },
+    auth(),
+  ))
+    history += chunk;
+  expect(m.view).toHaveBeenCalledTimes(ids.length);
+  expect(history.trim().split('\r\n')).toHaveLength(ids.length + 2);
+});
+it('hydrates only the requested page when no policy filter is set', async () => {
+  const ids = Array.from(
+    { length: 250 },
+    (_, i) => `66666666-6666-4666-8666-${String(i).padStart(12, '0')}`,
+  );
+  m.view.mockImplementation(async (id: string) => ({
+    ...view(id),
+    domain: null,
+  }));
+  m.select.mockImplementation(() => {
+    let counting = false,
+      offset = 0,
+      limit = Infinity;
+    const chain: any = {
+      then: (resolve: (value: unknown) => unknown) =>
+        Promise.resolve(
+          counting
+            ? [{ total: ids.length }]
+            : ids
+                .slice(offset, offset + limit)
+                .map((id) => ({ ...header(id), hostname: id })),
+        ).then(resolve),
+    };
+    for (const key of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'groupBy'])
+      chain[key] = vi.fn(() => chain);
+    chain.limit = vi.fn((value: number) => ((limit = value), chain));
+    chain.offset = vi.fn((value: number) => ((offset = value), chain));
+    const projection = m.select.mock.calls.at(-1)?.[0] ?? {};
+    counting = 'total' in projection;
+    return chain;
+  });
+  const result = await listFleetTimeStatus({ page: 3, limit: 10 }, auth());
+  expect(result.total).toBe(ids.length);
+  expect(result.data.map((row) => row.deviceId)).toEqual(ids.slice(20, 30));
+  expect(m.view).toHaveBeenCalledTimes(10);
 });

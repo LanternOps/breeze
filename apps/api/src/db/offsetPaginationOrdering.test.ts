@@ -59,6 +59,11 @@ const ALLOWED_WITHOUT_LITERAL_ID: ReadonlyArray<{
   reason: string;
 }> = [
   {
+    file: 'services/timeSync/fleet.ts',
+    orderByContains: '...fleetOrder',
+    reason: 'time sync fleet: fleetOrder is a shared array ending in asc(devices.id), the base table key',
+  },
+  {
     file: 'services/aiAgents/agentService.ts',
     orderByContains: 'limited.offset(opts.offset)',
     reason: 'A-W05: listAgents applies optional limit/offset in later statements; the base query orders by desc(aiAgents.createdAt), desc(aiAgents.id)',

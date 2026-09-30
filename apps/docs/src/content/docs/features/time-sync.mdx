@@ -41,15 +41,15 @@ A disabled service suppresses the separate stale-sync finding. Group Policy mana
 
 ## Expected timezone and the UTC default
 
-This release derives the expected timezone from the device's site. Site values **UTC** and **Etc/UTC** are treated as an unset default, so they do not produce a timezone mismatch—even when the device uses Pacific Standard Time. The section explains "No expected timezone (site uses the UTC default)". This prevents an untouched site default from flagging an entire fleet.
+By default, the expected timezone is derived from the device's site; a time policy can pin a different zone (see [Manage Windows time settings](#manage-windows-time-settings)). Site values **UTC** and **Etc/UTC** are treated as an unset default, so they do not produce a timezone mismatch—even when the device uses Pacific Standard Time. The section explains "No expected timezone (site uses the UTC default)". This prevents an untouched site default from flagging an entire fleet.
 
 Comparison uses Windows timezone IDs. For example, America/New_York and America/Detroit both map to Eastern Standard Time. Site changes are reflected the next time the device view is read. If there is no site or the site's IANA timezone has no Windows mapping, Breeze explains why no expected timezone is available. It does not invent a mapping. In particular, Antarctica/Troll has no CLDR Windows mapping.
 
-Review the displayed source and site name before correcting the device. Automatic timezone being on suppresses a mismatch finding. This visibility release does not apply time policies or offer time-changing commands.
+Review the displayed source and site name before correcting the device. Automatic timezone being on suppresses a mismatch finding. Viewing this section does not change the device; time policies and time actions are described in [Manage Windows time settings](#manage-windows-time-settings).
 
 ## Alerts
 
-Three built-in monitors are provisioned for each partner. They are **not attached by default**.
+Three visibility monitors are provisioned for each partner, plus the management monitor described in [Alert on enforcement failures](#alert-on-enforcement-failures). They are **not attached by default**.
 Attach a monitor to a configuration policy to enable its evaluation for that policy's devices.
 
 | Monitor | Built-in key | Default severity | Findings |
@@ -100,3 +100,92 @@ independently verified. Exports are live reads; fleet membership may change duri
 large download. Historical rows follow a device when it moves organizations and are
 deleted with the device. Downloaded CSVs are the durable artifact. Retention removes
 rows older than 400 days; the cutoff date itself remains eligible until the next day.
+
+## Manage Windows time settings
+
+Open **Configuration Policies → Time sync**. A policy can belong to one
+organization or be shared across all organizations in a partner. Assignment
+inheritance chooses the effective policy for each device. Use the policy tab's
+Save button to save changes; an inherited tab can be overridden or reverted.
+
+Time synchronization enforcement and automatic timezone correction start off.
+Collection and findings continue independently of enforcement.
+
+### Domain-aware NTP enforcement
+
+Enable **Enforce time synchronization**, enter up to five NTP hosts, and choose
+an integer poll interval from 15 to 1440 minutes. Enter one host per line,
+without ports, command flags or W32Time peer flags. Breeze adds the necessary
+peer flags on the device.
+
+Workgroup devices, Entra-only devices and the forest-root PDC use the policy's
+NTP servers. Domain members, domain controllers and other PDC emulators use
+the domain hierarchy. A device with an unknown domain role is skipped.
+
+**Group Policy takes precedence.** Breeze does not change W32Time settings
+managed by Group Policy. A reported conflict is informational; correct the
+owning Group Policy if a different policy should apply.
+
+### Expected timezone
+
+The default is **Follow site timezone**. A site still using the UTC default
+has no expected timezone, so it does not generate a timezone mismatch.
+There is no organization or partner timezone fallback.
+
+Use **Pin a timezone** for a device that should use a different zone, such as
+a server intentionally running in UTC. The pinned timezone overrides the site timezone. The device's Time section
+names the policy providing that pin.
+
+**Automatically correct the timezone** is an explicit opt-in. It uses the
+expected zone, and skips correction when Windows automatic timezone is on.
+An unknown or unmapped expected zone is never guessed.
+
+### Run a time action
+
+In a Windows device's **Info → Time** section:
+
+- **Resync** starts W32Time if necessary and requests resynchronization.
+- **Set timezone to expected** uses the current server-resolved expected zone.
+  Devices with no expected zone are shown as skipped.
+- **Apply time policy now** asks the agent to reconcile immediately, bypassing
+  its normal rate limit. The agent still checks domain role and Group Policy.
+
+The fleet **Reporting → Time Sync** page can resync selected devices or set each
+selected device to its own expected timezone. The outcome list keeps a
+separate result for every selected device, including skipped and failed ones.
+Offline commands expire after one hour. A delivered command has up to
+60 seconds to execute.
+
+**Queued is not applied.** Queue acceptance means the API accepted the command,
+not that Windows changed. The latest enforcement result shows the observed
+outcome, its time, the reason, and before/after values. Each new result is
+recorded in the device audit trail. Wait for an updated observation to confirm
+the requested state.
+
+Management requires the agent update that includes time-sync reconciliation
+and handlers. The management API and policy editor can ship before that agent
+update; older agents do not apply these settings or execute the new actions.
+
+### Removing enforcement
+
+Disabling enforcement or removing the policy stops future reconciliation once
+the updated settings reach the device. It does not restore the previous Windows
+configuration. Settings delivery can use a cache for up to 120 seconds; the
+agent applies changes on its next reconciliation. A temporary resolver failure
+leaves the agent's previous settings in place until a successful delivery.
+
+Normal reconciliation is limited to one apply per hour for an unchanged
+settings fingerprint; failures back off up to 24 hours. A changed fingerprint
+resets that limit. The immediate policy action bypasses the timer, not the
+Group Policy or domain-role guards.
+
+### Alert on enforcement failures
+
+The built-in **Time policy not applied** monitor reports the
+`policy_not_applied` finding after two accepted snapshots. Its default severity
+is low. Like other built-in monitors it is provisioned without an assignment;
+attach it to a configuration policy to enable alert evaluation. GPO conflicts
+remain separately visible as `policy_conflict_gpo`.
+
+Evidence remains observed synchronization reported by the agent. These controls
+do not measure clock offset against Breeze and do not set the clock directly.

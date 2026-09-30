@@ -1,9 +1,4 @@
 import { and, asc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
-import {
-  TIME_SYNC_FINDING_CODES,
-  TIME_SYNC_FINDING_SEVERITY,
-} from '@breeze/shared';
-import windowsZones from '../../../../../packages/shared/src/data/windowsZones.json';
 import { db } from '../../db';
 import {
   devices,
@@ -14,7 +9,6 @@ import {
 import type { AuthContext } from '../../middleware/auth';
 import { deviceScopeCondition, siteScopeCondition } from '../aiToolsSiteScope';
 import { getDeviceTimeStatusView, type DeviceTimeStatusView } from './view';
-import { resolveExpectedTimezone } from './expectedTimezone';
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 import { fleetTimeFiltersSchema, type FleetTimeFilters } from './fleetFilters';
 export { fleetTimeFiltersSchema, type FleetTimeFilters };
@@ -56,39 +50,15 @@ const projection = {
   siteName: sites.name,
 };
 const pdcRank = sql<number>`CASE WHEN ${t.domainRole}='forest_root_pdc_emulator' THEN 0 WHEN ${t.domainRole}='pdc_emulator' THEN 1 ELSE 2 END`;
-// Build the SQL lookup through the same pure resolver as ingest and the view.
-// Source id/name affect provenance only; this synthetic site is never persisted.
-const expectedWindowsByIana = Object.fromEntries(
-  Object.keys(windowsZones.ianaToWindows).map((timezone) => [
-    timezone,
-    resolveExpectedTimezone({
-      site: {
-        id: '00000000-0000-4000-8000-000000000000',
-        name: null,
-        timezone,
-      },
-    })?.windowsId ?? null,
-  ]),
-);
-const expectedWindows = sql<
-  string | null
->`${JSON.stringify(expectedWindowsByIana)}::jsonb ->> ${sites.timezone}`;
-export const fleetFindingCodes = sql<
-  string[]
->`array_remove(coalesce(${t.findings},'{}'::text[]),'timezone_mismatch') || CASE WHEN ${t.deviceId} IS NOT NULL AND ${expectedWindows} IS NOT NULL AND ${t.timezoneAutoUpdate}<>'on' AND ${t.timezoneWindowsId} IS DISTINCT FROM ${expectedWindows} THEN ARRAY['timezone_mismatch']::text[] ELSE '{}'::text[] END`;
-const critical = TIME_SYNC_FINDING_CODES.filter(
-  (c) => TIME_SYNC_FINDING_SEVERITY[c] === 'critical',
-);
-const warning = TIME_SYNC_FINDING_CODES.filter(
-  (c) => TIME_SYNC_FINDING_SEVERITY[c] === 'warning',
-);
-export const fleetHealth = sql<string>`CASE WHEN ${fleetFindingCodes} && ARRAY[${sql.join(
-  critical.map((c) => sql`${c}`),
-  sql`, `,
-)}]::text[] THEN 'critical' WHEN ${fleetFindingCodes} && ARRAY[${sql.join(
-  warning.map((c) => sql`${c}`),
-  sql`, `,
-)}]::text[] THEN 'warning' WHEN ${t.deviceId} IS NULL OR (${t.statusMethod}='unavailable' AND cardinality(${fleetFindingCodes})=0) THEN 'unknown' ELSE 'healthy' END`;
+const fleetOrder = [
+  asc(devices.orgId),
+  asc(t.domainDns),
+  pdcRank,
+  asc(devices.hostname),
+  asc(devices.id),
+];
+// Policy-dependent findings and health are evaluated from the canonical device
+// view. SQL limits only authorization and policy-independent candidate selection.
 export function fleetScope(
   filters: FleetTimeFilters,
   auth: AuthContext,
@@ -112,12 +82,6 @@ export function fleetScope(
     displayFilters && filters.domain
       ? eq(t.domainDns, filters.domain)
       : undefined,
-    displayFilters && filters.health
-      ? sql`${fleetHealth}=${filters.health}`
-      : undefined,
-    displayFilters && filters.finding
-      ? sql`${filters.finding}=ANY(${fleetFindingCodes})`
-      : undefined,
   );
 }
 export function fleetRowsQuery() {
@@ -138,6 +102,54 @@ async function hydrate(
   }
   return result;
 }
+type ParsedFleetFilters = ReturnType<typeof fleetTimeFiltersSchema.parse>;
+// Every statically eligible candidate is hydrated through the same uncached,
+// policy-aware view used for device display; finding/health filters are applied
+// only after that. One pass is O(visible candidates), sequential on the ambient
+// request connection. Any later batching must reuse the same resolver; never
+// restore a SQL prefilter on policy findings. Callers that need every row (the
+// CSV exports) consume this stream once rather than re-walking it per page.
+async function* hydratedFleetRows(
+  q: ParsedFleetFilters,
+  where: SQL | undefined,
+): AsyncGenerator<FleetTimeRow> {
+  const batchSize = 200;
+  for (let offset = 0; ; offset += batchSize) {
+    const candidates = await fleetRowsQuery()
+      .where(where)
+      .orderBy(...fleetOrder)
+      .limit(batchSize)
+      .offset(offset);
+    for (const row of await hydrate(candidates)) {
+      if (q.health && row.view.health !== q.health) continue;
+      if (
+        q.finding &&
+        !row.view.findings.some((finding) => finding.code === q.finding)
+      )
+        continue;
+      yield row;
+    }
+    if (candidates.length < batchSize) break;
+  }
+}
+/**
+ * Every visible row that passes the health/finding filters, in report order,
+ * ignoring page/limit. Throws FleetTimeForbidden synchronously (at call time).
+ */
+export function iterateFleetTimeRows(
+  filters: FleetTimeFilters,
+  auth: AuthContext,
+): AsyncGenerator<FleetTimeRow> {
+  const q = fleetTimeFiltersSchema.parse(filters);
+  return hydratedFleetRows(
+    q,
+    and(
+      fleetScope(q, auth),
+      siteScopeCondition(auth, devices.siteId),
+      deviceScopeCondition(auth, devices.id),
+    ),
+  );
+}
 export async function listFleetTimeStatus(
   filters: FleetTimeFilters,
   auth: AuthContext,
@@ -150,25 +162,35 @@ export async function listFleetTimeStatus(
       siteScopeCondition(auth, devices.siteId),
       deviceScopeCondition(auth, devices.id),
     );
-  const [count] = await db
-    .select({ total: sql<number>`count(*)::int` })
-    .from(devices)
-    .leftJoin(t, eq(t.deviceId, devices.id))
-    .leftJoin(sites, eq(sites.id, devices.siteId))
-    .where(where);
-  const data = await hydrate(
-    await fleetRowsQuery()
-      .where(where)
-      .orderBy(
-        asc(devices.orgId),
-        asc(t.domainDns),
-        pdcRank,
-        asc(devices.hostname),
-        asc(devices.id),
-      )
-      .limit(q.limit)
-      .offset((q.page - 1) * q.limit),
-  );
+  let data: FleetTimeRow[] = [];
+  let total = 0;
+  const start = (q.page - 1) * q.limit;
+  if (!q.health && !q.finding) {
+    // No policy-dependent filter: the static candidate set IS the result set,
+    // so the SQL count is exact and only the requested page is hydrated (still
+    // through the canonical policy-aware view). The full pass below is reserved
+    // for health/finding filters, where totals need every candidate resolved.
+    const [count] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
+      .leftJoin(sites, eq(sites.id, devices.siteId))
+      .leftJoin(t, eq(t.deviceId, devices.id))
+      .where(where);
+    total = count?.total ?? 0;
+    data = await hydrate(
+      await fleetRowsQuery()
+        .where(where)
+        .orderBy(...fleetOrder)
+        .limit(q.limit)
+        .offset(start),
+    );
+  } else {
+    for await (const row of hydratedFleetRows(q, where)) {
+      if (total >= start && data.length < q.limit) data.push(row);
+      total += 1;
+    }
+  }
   const domains: FleetTimeDomain[] = [];
   const keys = [
     ...new Map(
@@ -222,11 +244,5 @@ export async function listFleetTimeStatus(
       });
     }
   }
-  return {
-    data,
-    total: count?.total ?? 0,
-    page: q.page,
-    limit: q.limit,
-    domains,
-  };
+  return { data, total, page: q.page, limit: q.limit, domains };
 }

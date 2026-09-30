@@ -1326,6 +1326,28 @@ describe('manage_policy_feature_link describe action (A-W03)', () => {
    expect(db.select).not.toHaveBeenCalled();expect(getConfigPolicy).not.toHaveBeenCalled();
   });
 
+  it('describes time management defaults and precedence without reading a policy', async () => {
+    vi.clearAllMocks();
+    const out = JSON.parse(
+      await tool().handler(
+        { action: 'describe', featureType: 'time_sync' },
+        {} as never,
+      ),
+    );
+    expect(out).toMatchObject({ featureType: 'time_sync', linkOnly: false });
+    for (const text of [
+      'enforceNtp: false',
+      'pollIntervalMinutes: 60',
+      '15..1440',
+      'overrides the site timezone',
+      'GPO',
+    ]) {
+      expect(out.inlineSettings).toContain(text);
+    }
+    expect(db.select).not.toHaveBeenCalled();
+    expect(getConfigPolicy).not.toHaveBeenCalled();
+  });
+
   it.each(['nope', 'toString', '__proto__', undefined])('rejects invalid feature type %s', async (featureType) => {
     const out = JSON.parse(await tool().handler({ action: 'describe', featureType }, {} as never));
     expect(out.error).toMatch(/featureType/);

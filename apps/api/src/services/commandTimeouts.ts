@@ -204,6 +204,12 @@ export function getCommandTimeoutMs(
   commandType: string,
   payload?: Record<string, unknown> | null,
 ): number {
+  if (
+    commandType === CommandTypes.TIME_RESYNC ||
+    commandType === CommandTypes.TIME_SET_TIMEZONE ||
+    commandType === CommandTypes.TIME_APPLY_POLICY
+  )
+    return 60_000;
   if (commandType === CommandTypes.SCRIPT) {
     const timeoutSeconds =
       typeof payload?.timeoutSeconds === 'number'

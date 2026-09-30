@@ -40,6 +40,33 @@ describe('feature Save action feedback', () => {
     expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true });
     expect(showToast).not.toHaveBeenCalled();
   });
+it.each([null, LINK])(
+  'saves time_sync through runAction for link %s',
+  async (existingId) => {
+    vi.clearAllMocks();
+    const timePayload = {
+      featureType: 'time_sync' as const,
+      featurePolicyId: null,
+      inlineSettings: {
+        enforceNtp: false,
+        ntpServers: [],
+        pollIntervalMinutes: 60,
+        timezone: { expected: 'site', pinnedTimezone: null, autoFix: false },
+      },
+    };
+    const row = { id: LINK, ...timePayload };
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(JSON.stringify(row), { status: 200 }),
+    );
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => {
+      expect(await result.current.save(existingId, timePayload)).toEqual(row);
+    });
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  },
+);
 });
 
 // #6644 review finding 4: the hook is shared by every feature tab.
