@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -45,6 +46,9 @@ const MaxLevelOverrideDuration = 24 * time.Hour
 // levelOverridePollInterval is how often a running shipper re-reads the
 // override file. A var so tests can shorten it.
 var levelOverridePollInterval = 30 * time.Second
+
+// levelOverrideWriteMu serialises WriteLevelOverride within a process.
+var levelOverrideWriteMu sync.Mutex
 
 // ErrShipperNotInitialized is returned when no shipper is running in this
 // process (agent not enrolled, or log shipping not configured).
@@ -123,6 +127,16 @@ func ReadLevelOverride(path string, now time.Time) (LevelOverride, bool, error) 
 // level name and timestamps, and helpers running as the logged-in user must
 // be able to read it.
 func WriteLevelOverride(path string, o LevelOverride) error {
+	// Serialise writers in this process: two set_log_level commands running
+	// at once would otherwise interleave on the shared temp file.
+	levelOverrideWriteMu.Lock()
+	defer levelOverrideWriteMu.Unlock()
+	return writeLevelOverrideLocked(path, o)
+}
+
+// writeLevelOverrideLocked is WriteLevelOverride's body; the caller holds
+// levelOverrideWriteMu.
+func writeLevelOverrideLocked(path string, o LevelOverride) error {
 	data, err := json.Marshal(o)
 	if err != nil {
 		return err
@@ -197,6 +211,12 @@ func ApplyShipperLevelOverride(level string, d time.Duration) (LevelOverrideStat
 		return LevelOverrideStatus{}, ErrShipperNotInitialized
 	}
 
+	// One lock across the in-memory set and the file write, so concurrent
+	// commands land in the file in the same order as in memory and a restart
+	// comes back at the last command, not an earlier one. Nothing below logs.
+	levelOverrideWriteMu.Lock()
+	defer levelOverrideWriteMu.Unlock()
+
 	now := s.clock()
 	expiresAt := now.Add(d)
 	s.setLevelOverride(parseLevel(level), expiresAt, now)
@@ -210,7 +230,7 @@ func ApplyShipperLevelOverride(level string, d time.Duration) (LevelOverrideStat
 		st.PersistError = "no override path configured"
 		return st, nil
 	}
-	if err := WriteLevelOverride(s.overridePath, LevelOverride{Level: level, ExpiresAt: expiresAt.UTC(), SetAt: now.UTC()}); err != nil {
+	if err := writeLevelOverrideLocked(s.overridePath, LevelOverride{Level: level, ExpiresAt: expiresAt.UTC(), SetAt: now.UTC()}); err != nil {
 		st.PersistError = err.Error()
 		return st, nil
 	}
