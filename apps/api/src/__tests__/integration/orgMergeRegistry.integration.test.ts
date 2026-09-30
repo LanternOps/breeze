@@ -260,6 +260,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'backup_snapshot_id_reservations.backup_snapshot_id_reservations_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
   'backup_storage_sessions.backup_storage_sessions_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
   'backup_storage_session_uploads.backup_storage_session_uploads_parent_org_guard': 'checks only changed parent references; an org_id-only repoint is exempt',
+  // Storage key history (2026-11-12-100000): checks only a config_id an
+  // INSERT sets or an UPDATE changes; an org_id-only repoint is never checked.
+  'backup_storage_credential_history.backup_storage_credential_history_parent_org_guard': 'checks only a changed config_id; an org_id-only repoint is exempt',
   // Partner alerts feed (2026-10-30-130000): BEFORE INSERT OR UPDATE, only sets
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.
