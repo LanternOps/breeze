@@ -2,7 +2,6 @@ package bmr
 
 import (
 	"fmt"
-	"reflect"
 
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
 )
@@ -35,7 +34,7 @@ func BootstrapIntegrity(bs *BootstrapResponse) (*integrity.Expectation, error) {
 	switch {
 	case fromSnapshot == nil:
 		e = fromTop
-	case fromTop != nil && !reflect.DeepEqual(fromSnapshot, fromTop):
+	case fromTop != nil && !sameExpectation(fromSnapshot, fromTop):
 		return nil, fmt.Errorf("%w: the bootstrap carries two different integrity blocks", integrity.ErrInvalidExpectation)
 	}
 	if e != nil && bs.Snapshot != nil && bs.Snapshot.SnapshotID != "" {
@@ -71,19 +70,37 @@ func ResolveIntegrity(fromCommand, fromBootstrap *integrity.Expectation) (*integ
 	}
 }
 
-// sameObjects compares two attested object lists regardless of order.
+// sameExpectation reports whether two parsed integrity blocks say the same
+// thing: the same version, mode, trust, snapshot, authorization and reason,
+// and the same set of objects in any order.
+func sameExpectation(a, b *integrity.Expectation) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.V == b.V &&
+		a.Mode == b.Mode &&
+		a.Trust == b.Trust &&
+		a.SnapshotID == b.SnapshotID &&
+		a.AuthorizationID == b.AuthorizationID &&
+		a.Reason == b.Reason &&
+		sameObjects(a.Objects, b.Objects)
+}
+
+// sameObjects compares two attested object lists as multisets: the same
+// objects, each as many times, regardless of order.
 func sameObjects(a, b []integrity.Object) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	byRole := make(map[string]integrity.Object, len(a))
+	counts := make(map[integrity.Object]int, len(a))
 	for _, o := range a {
-		byRole[o.Role] = o
+		counts[o]++
 	}
 	for _, o := range b {
-		if byRole[o.Role] != o {
+		if counts[o] == 0 {
 			return false
 		}
+		counts[o]--
 	}
 	return true
 }
