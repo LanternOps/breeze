@@ -27,6 +27,7 @@ vi.mock('../services/topology/legacyImport', () => ({ importLegacyTopologySite: 
 import { loadTopologyFlags } from '../services/topology/flags';
 import { TopologyCaptureIncompleteError } from '../services/topology/legacyImportState';
 import {
+  TOPOLOGY_BOOTSTRAP_PASS_BUDGET_MS,
   TOPOLOGY_BOOTSTRAP_SITE_BATCH,
   resetTopologyBootstrapStateForTests,
   runTopologyBootstrapPass,
@@ -107,12 +108,13 @@ describe('topology first-snapshot bootstrap pass (#7557)', () => {
 
   it('treats incomplete capture as not-yet-eligible: no throw, no failure marker, global back-off, rate-limited alert', async () => {
     mocks.execute.mockResolvedValueOnce([candidate(1), candidate(2)]);
-    mocks.importSite.mockRejectedValue(new TopologyCaptureIncompleteError());
+    mocks.importSite.mockRejectedValue(new TopologyCaptureIncompleteError(['topology_layout']));
     await expect(runTopologyBootstrapPass()).resolves.toBeUndefined();
     // capture is global: one probe, not one per site
     expect(mocks.importSite).toHaveBeenCalledOnce();
     expect(mocks.execute).toHaveBeenCalledOnce(); // no failure marker written
     expect(mocks.capture).toHaveBeenCalledOnce();
+    expect(mocks.capture.mock.calls[0]![2]).toMatchObject({ missing: 'topology_layout' });
     // back-off: the next pass does not even query
     await runTopologyBootstrapPass();
     expect(mocks.execute).toHaveBeenCalledOnce();
@@ -141,12 +143,48 @@ describe('topology first-snapshot bootstrap pass (#7557)', () => {
     expect(mocks.capture).not.toHaveBeenCalled();
   });
 
-  it('leaves a persistently contended site unmarked so a later pass retries it', async () => {
+  it('defers a persistently contended site: unmarked, excluded from the next candidate query, one alert', async () => {
     mocks.execute.mockResolvedValueOnce([candidate(1)]);
     mocks.importSite.mockRejectedValue({ cause: { code: '40P01' } });
     await runTopologyBootstrapPass();
     expect(mocks.importSite).toHaveBeenCalledTimes(3);
     expect(mocks.execute).toHaveBeenCalledOnce();
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await runTopologyBootstrapPass();
+    expect(sqlText(mocks.execute.mock.calls[1]!)).toContain(candidate(1).site_id);
+    expect(sqlText(mocks.execute.mock.calls[0]!)).not.toContain(candidate(1).site_id);
+  });
+
+  it.each(['57014', '08006', '53300', '57P01', 'ECONNRESET', 'CONNECTION_CLOSED'])(
+    'never marks a site failed for database/driver fault %s; defers it with rate-limited alerts',
+    async code => {
+      mocks.execute.mockResolvedValueOnce([candidate(1), candidate(2)]).mockResolvedValue([]);
+      mocks.importSite.mockRejectedValue({ code });
+      await runTopologyBootstrapPass();
+      expect(mocks.importSite).toHaveBeenCalledTimes(2); // no in-transaction retry
+      expect(mocks.execute).toHaveBeenCalledOnce(); // no failure marker
+      expect(mocks.capture).toHaveBeenCalledOnce(); // two deferrals, one alert
+    },
+  );
+
+  it('defers (does not re-alert every pass) when the failure marker itself cannot be written', async () => {
+    mocks.execute.mockResolvedValueOnce([candidate(1)]).mockRejectedValueOnce(new Error('marker write failed')).mockResolvedValue([]);
+    mocks.importSite.mockRejectedValueOnce(new Error('malformed legacy row'));
+    await runTopologyBootstrapPass();
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    await runTopologyBootstrapPass();
+    expect(sqlText(mocks.execute.mock.calls[2]!)).toContain(candidate(1).site_id);
+  });
+
+  it('stops starting new imports once the pass time budget is spent', async () => {
+    let now = 1_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      mocks.execute.mockResolvedValueOnce([candidate(1), candidate(2), candidate(3)]);
+      mocks.importSite.mockImplementation(async () => { now += TOPOLOGY_BOOTSTRAP_PASS_BUDGET_MS; return { complete: true }; });
+      await runTopologyBootstrapPass();
+      expect(mocks.importSite).toHaveBeenCalledOnce();
+    } finally { spy.mockRestore(); }
   });
 
   it('never imports more than the per-pass batch even if the query over-returns', async () => {
