@@ -146,7 +146,10 @@ func TestWsStreamSessionStopsWhenLeaseRevoked(t *testing.T) {
 	h := newWsLeaseHarness(t, "ws-revoked", nil)
 
 	h.mgr.RevokeSession("ws-revoked", "session_ended")
-	if h.step() && h.step() {
+	// The tick after the revocation decides to stop; the one after it finds
+	// the stream gone (fireTick reports a stop one call late by construction).
+	h.step()
+	if h.step() {
 		t.Fatal("a revoked stream must stop on the next watchdog tick")
 	}
 	if got := h.awaitStopCallback(); got != "ws-revoked:"+StopReasonLeaseRevoked {
