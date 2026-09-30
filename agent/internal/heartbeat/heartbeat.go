@@ -605,6 +605,11 @@ type Heartbeat struct {
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing  atomic.Bool
 	tokenRotating atomic.Bool
+	// Retry schedule for a rotation owed because an older agent kept the
+	// helper token in agent.yaml (maybeStartOwedHelperTokenRotation).
+	owedRotationMu          sync.Mutex
+	owedRotationNextAttempt time.Time
+	owedRotationBackoff     time.Duration
 	// Issue #2621 — a staged credential rotation is sitting on disk unconfirmed.
 	// Drives the per-tick retry so recovery does not depend on a process restart.
 	pendingRotationOnDisk atomic.Bool
@@ -5220,6 +5225,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Handle proactive bearer-token rotation before the token becomes stale.
 	if response.RotateToken {
+		go h.handleTokenRotation()
+	} else if !response.ConfirmTokenRotation && h.maybeStartOwedHelperTokenRotation(time.Now()) {
+		// An older agent kept the helper token in agent.yaml. The startup scrub
+		// moved it to secrets.yaml; one rotation replaces it as well.
+		log.Info("rotating credentials once after moving the helper token out of agent.yaml")
 		go h.handleTokenRotation()
 	}
 

@@ -93,7 +93,8 @@ func runDesktopHelper() {
 	// This gate is now reachable in user context too: LoadHelperConfig reads
 	// agent.yaml (world-readable) and skips root-only secrets.yaml, so the macOS
 	// user-session desktop-helper populates AgentID/ServerURL/HelperAuthToken
-	// and ships its diagnostics (#2483), as does the Windows SYSTEM helper.
+	// and ships its diagnostics (#2483). On Windows no user-readable file
+	// carries the helper token (see config/helpertoken_windows.go).
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.HelperAuthToken = ""

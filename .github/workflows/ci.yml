@@ -1993,6 +1993,27 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
           if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # The helper-scoped token must never sit in a file a standard Windows user
+      # can read: it reaches the console-session Breeze Assist over IPC only,
+      # and a token an older agent left in agent.yaml is scrubbed and rotated.
+      # The owner/DACL step above runs only its own tests, so none of these —
+      # including the platform-neutral ones that encode the Windows behaviour —
+      # ran on Windows before. Assert every one of them actually PASSED.
+      - name: Run Windows helper token tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/config -run '^Test(WindowsHelperToken|IsSecretYAMLKey$|HelperTokensAreNeverExemptedFromStripping$|PersistSettersNeverWriteLoadedSecretsBack$|FixAgentYAMLPermissionsRecordsRotationOwedForLegacyHelperToken$|RotationOwedSurvivesAnUnwritableMarker$|PromotePendingCredentialsClearsRotationOwed$|SaveToKeepsFullAgentTokensOutOfAgentYAML$|MigrateInlineSecretsToSecretFileScrubsAgentYAML$)' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the helper token tests SKIPPED" }
+          if ($passes -ne 10) { throw "expected exactly 10 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
       # every component, the atomic FILE_RENAME_INFO publish, and symlink entry

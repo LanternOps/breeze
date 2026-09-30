@@ -2075,9 +2075,11 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	//
 	// This block is reachable in BOTH user- and SYSTEM-context helpers: the
 	// LoadHelperConfig above reads agent.yaml (world-readable) and skips
-	// root-only secrets.yaml, so the AgentID/ServerURL/HelperAuthToken this gate
-	// needs are populated in a user session too (#2483). Everything the gate
-	// checks lives in agent.yaml by design (see secretKeyAllowedInAgentYAML).
+	// root-only secrets.yaml, so AgentID/ServerURL are populated in a user
+	// session too (#2483). HelperAuthToken comes from the group-scoped helper
+	// token file on Unix; on Windows no user-readable file carries it (it is
+	// delivered to the console-session Breeze Assist over IPC), so this gate
+	// stays closed there.
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.AuthToken = ""
