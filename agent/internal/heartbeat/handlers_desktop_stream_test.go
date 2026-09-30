@@ -6,6 +6,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"image"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -43,10 +44,10 @@ func newStreamHarness(t *testing.T) *streamHarness {
 		})
 		return nil
 	}
-	s.h.wsDesktopStart = func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error) {
+	s.h.wsDesktopStart = func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 		s.started.Add(1)
 		s.gotLease.Store(lease)
-		return 1920, 1080, nil
+		return 1920, 1080, nil, nil
 	}
 	return s
 }
@@ -466,5 +467,206 @@ func TestRevocationLeaseAnswersReachTheStreamManager(t *testing.T) {
 			t.Fatal("a revoked lease answer must stop the stream session")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Real stream manager (fake capturer): lease wiring, exact-stream cleanup and
+// the watchdog stop hook.
+// ---------------------------------------------------------------------------
+
+type noScreenCapturer struct{}
+
+func (noScreenCapturer) Capture() (*image.RGBA, error)                         { return nil, nil }
+func (noScreenCapturer) CaptureRegion(int, int, int, int) (*image.RGBA, error) { return nil, nil }
+func (noScreenCapturer) GetScreenBounds() (int, int, error)                    { return 1280, 720, nil }
+func (noScreenCapturer) Close() error                                          { return nil }
+
+func newTestStreamManager() *desktop.WsSessionManager {
+	return desktop.NewWsSessionManagerForTest(func() desktop.ScreenCapturer { return noScreenCapturer{} })
+}
+
+func testStreamLease(expiresIn time.Duration) *desktop.RevocationLease {
+	now := time.Now()
+	return &desktop.RevocationLease{
+		ExpiresAt:    now.Add(expiresIn),
+		HardDeadline: now.Add(time.Hour),
+		Grace:        90 * time.Second,
+		RenewEvery:   25 * time.Second,
+	}
+}
+
+// Lease answers from the control plane must reach the stream's own lease
+// state — renewal, "cannot answer" on a never-renewed stream, and revocation.
+func TestRevocationLeaseAnswersReachTheStreamLease(t *testing.T) {
+	mgr := newTestStreamManager()
+	h := &Heartbeat{desktopMgr: desktop.NewSessionManager(), wsDesktopMgr: mgr}
+	send := func(string, []byte) error { return nil }
+
+	_, _, renewed, err := mgr.StartSession("ws-renew", 0, desktop.DefaultStreamConfig(), testStreamLease(time.Minute), send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(renewed.Stop)
+	before, _ := mgr.LeaseStatus("ws-renew")
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:       "ws-renew",
+		ExpiresAtUnixMs: time.Now().Add(30 * time.Minute).UnixMilli(),
+	})
+	after, ok := mgr.LeaseStatus("ws-renew")
+	if !ok || !after.ExpiresAt.After(before.ExpiresAt) || after.Revoked {
+		t.Fatalf("a renewal answer must extend the stream's lease: before=%v after=%+v", before.ExpiresAt, after)
+	}
+
+	_, _, fresh, err := mgr.StartSession("ws-unavail", 0, desktop.DefaultStreamConfig(), testStreamLease(time.Minute), send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fresh.Stop)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{SessionID: "ws-unavail", Unavailable: true})
+	if st, _ := mgr.LeaseStatus("ws-unavail"); !st.Revoked {
+		t.Fatal("an unavailable answer to a never-renewed stream must revoke its lease")
+	}
+
+	_, _, revoked, err := mgr.StartSession("ws-revoke", 0, desktop.DefaultStreamConfig(), testStreamLease(time.Minute), send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(revoked.Stop)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{SessionID: "ws-revoke", Revoked: true, Reason: "session_ended"})
+	if st, ok := mgr.LeaseStatus("ws-revoke"); ok && !st.Revoked {
+		t.Fatal("a revoked answer must revoke (or stop) the stream")
+	}
+}
+
+// A lease-driven stop must end the session on the server like a WebRTC peer
+// drop (so the row and the viewer are not left frozen), and must hide the
+// on-screen indicator even when no prompt was remembered yet.
+func TestWsStreamWatchdogStopReportsTheDisconnectAndHidesTheIndicator(t *testing.T) {
+	helper := newConsentHelper(t, []string{"consent_ui"})
+	h := &Heartbeat{
+		desktopMgr:    desktop.NewSessionManager(),
+		wsDesktopMgr:  desktop.NewWsSessionManager(),
+		sessionBroker: newTestBrokerWithSessions(t, helper.session),
+	}
+	h.wireWsDesktopStreamHooks()
+	type stop struct{ id, reason string }
+	reported := make(chan stop, 1)
+	h.wsStreamStopNotify = func(id, reason string) { reported <- stop{id, reason} }
+
+	h.wsDesktopMgr.OnSessionStopped(streamSessionID, desktop.StopReasonLeaseRevoked)
+
+	select {
+	case got := <-reported:
+		if got.id != streamSessionID || got.reason != desktop.StopReasonLeaseRevoked {
+			t.Fatalf("reported %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a watchdog stop must be reported to the server as a disconnect")
+	}
+	env := helper.recv(t)
+	if env == nil || env.Type != ipc.TypeBannerHide {
+		t.Fatalf("a watchdog stop must hide the indicator, got %+v", env)
+	}
+}
+
+func TestRememberedStreamPromptIsOnlyTakenByItsOwnStart(t *testing.T) {
+	p := &ipc.DesktopPrompt{Mode: "notify", ShowIndicator: true}
+	rememberDesktopPromptFor(streamSessionID, "desk-start-b", p)
+	t.Cleanup(func() { takeDesktopPrompt(streamSessionID) })
+
+	if got := takeDesktopPromptIfOwnedBy(streamSessionID, "desk-start-a"); got != nil {
+		t.Fatal("an older start must not take a newer start's prompt")
+	}
+	if got := takeDesktopPromptIfOwnedBy(streamSessionID, "desk-start-b"); got != p {
+		t.Fatal("the owning start must get its prompt back")
+	}
+}
+
+// Start A captures, then a newer start B for the same session replaces its
+// stream before A's re-check. A is refused as superseded and must tear down
+// only its own (already replaced) stream: B keeps running.
+func TestStaleStreamStartAfterANewerStartLeavesTheNewerStreamRunning(t *testing.T) {
+	s := newStreamHarness(t)
+	mgr := newTestStreamManager()
+	s.h.wsDesktopMgr = mgr
+	var streamB *desktop.WsStreamSession
+	var resB tools.CommandResult
+	calls := 0
+	s.h.wsDesktopStart = func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
+		calls++
+		w, h, stream, err := mgr.StartSession(sessionID, displayIndex, config, lease, sendFrame)
+		if calls == 1 {
+			// B arrives while A is still between capture and its re-check.
+			resB = handleDesktopStreamStart(s.h, streamStartCmd("desk-start-b", map[string]any{"startGeneration": "2"}))
+		} else {
+			streamB = stream
+		}
+		return w, h, stream, err
+	}
+
+	resA := handleDesktopStreamStart(s.h, streamStartCmd("desk-start-a", map[string]any{"startGeneration": "1"}))
+	t.Cleanup(func() { mgr.StopAll() })
+
+	if resB.Status != "completed" {
+		t.Fatalf("the newer start should succeed, got %q (%s)", resB.Status, resB.Error)
+	}
+	if resA.Status != "failed" || !strings.Contains(resA.Error, string(desktopFenceReasonSuperseded)) {
+		t.Fatalf("the older start must be refused as superseded, got %q (%s)", resA.Status, resA.Error)
+	}
+	if streamB == nil || !mgr.IsCurrent(streamSessionID, streamB) || mgr.ActiveCount() != 1 {
+		t.Fatal("the older start's cleanup must not stop the newer start's stream")
+	}
+}
+
+// A lease stop that lands between capture and the start notice leaves no
+// stream; the start must not report success, and the indicator it just showed
+// must be hidden again.
+func TestStreamStartStoppedBeforeItsNoticeHidesTheIndicator(t *testing.T) {
+	s := newStreamHarness(t)
+	helper := newConsentHelper(t, []string{"notify", "consent_ui"})
+	s.h.sessionBroker = newTestBrokerWithSessions(t, helper.session)
+	s.h.leaseSyncRequester = func(sessionID, nonce string) error {
+		s.h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{SessionID: sessionID, SyncNonce: nonce})
+		return nil
+	}
+	mgr := newTestStreamManager()
+	s.h.wsDesktopMgr = mgr
+	s.h.wsDesktopStart = func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
+		w, h, stream, err := mgr.StartSession(sessionID, displayIndex, config, lease, sendFrame)
+		mgr.StopExact(sessionID, stream) // the watchdog got there first
+		return w, h, stream, err
+	}
+
+	got := make(chan string, 8)
+	go func() {
+		for {
+			env := helper.recv(t)
+			if env == nil {
+				return
+			}
+			got <- env.Type
+			if env.Type == ipc.TypeBannerHide {
+				return
+			}
+		}
+	}()
+
+	res := handleDesktopStreamStart(s.h, streamStartCmd("desk-start-gone", map[string]any{
+		"startGeneration": "1",
+		"prompt":          promptPayload(t, &ipc.DesktopPrompt{Mode: "notify", ShowIndicator: true}),
+	}))
+	if res.Status != "failed" {
+		t.Fatalf("a start whose stream is already gone must not succeed, got %q", res.Status)
+	}
+	sawHide := false
+	deadline := time.After(5 * time.Second)
+	for !sawHide {
+		select {
+		case typ := <-got:
+			sawHide = typ == ipc.TypeBannerHide
+		case <-deadline:
+			t.Fatal("the indicator must be hidden when the stream is gone")
+		}
 	}
 }

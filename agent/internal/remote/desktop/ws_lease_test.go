@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"errors"
+	"image"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -193,7 +194,7 @@ func TestWsStreamSessionStopsWhenFirstRenewalIsUnavailable(t *testing.T) {
 
 func TestWsSessionManagerStartSessionRefusesWithoutRevocationLease(t *testing.T) {
 	mgr := NewWsSessionManager()
-	_, _, err := mgr.StartSession("ws-no-lease", 0, DefaultStreamConfig(), nil, func(string, []byte) error { return nil })
+	_, _, _, err := mgr.StartSession("ws-no-lease", 0, DefaultStreamConfig(), nil, func(string, []byte) error { return nil })
 	if !errors.Is(err, ErrRevocationLeaseRequired) {
 		t.Fatalf("StartSession without a lease: err = %v, want ErrRevocationLeaseRequired", err)
 	}
@@ -210,5 +211,126 @@ func TestWsLeaseAnswersForUnknownSessionsAreIgnored(t *testing.T) {
 	mgr.RevokeSession("nope", "x")
 	if mgr.ActiveCount() != 0 {
 		t.Fatal("lease answers must never create sessions")
+	}
+}
+
+// fakeWsCapturer is a capturer with no screen: every Capture reports "no new
+// frame". Enough to run a real WsSessionManager.StartSession end to end.
+type fakeWsCapturer struct{ closed atomic.Bool }
+
+func (c *fakeWsCapturer) Capture() (*image.RGBA, error) { return nil, nil }
+func (c *fakeWsCapturer) CaptureRegion(int, int, int, int) (*image.RGBA, error) {
+	return nil, nil
+}
+func (c *fakeWsCapturer) GetScreenBounds() (int, int, error) { return 1280, 720, nil }
+func (c *fakeWsCapturer) Close() error                        { c.closed.Store(true); return nil }
+
+// The lease safety only exists if StartSession actually attaches the lease and
+// runs its watchdog. Drive the real StartSession and prove a revocation stops
+// the capture it created.
+func TestWsSessionManagerStartSessionRunsTheLeaseWatchdog(t *testing.T) {
+	capturer := &fakeWsCapturer{}
+	mgr := NewWsSessionManagerForTest(func() ScreenCapturer { return capturer })
+	clock := newVirtualClock(func(msg string) { t.Errorf("%s", msg) })
+	mgr.clock = clock.watchdogClock()
+	stopped := make(chan string, 1)
+	mgr.OnSessionStopped = func(id, reason string) { stopped <- id + ":" + reason }
+
+	now := clock.Now()
+	lease := &RevocationLease{
+		ExpiresAt:    now.Add(helperLeaseTTL),
+		HardDeadline: now.Add(time.Hour),
+		Grace:        helperGrace,
+		RenewEvery:   helperRenewEvery,
+	}
+	w, h, stream, err := mgr.StartSession("ws-real", 0, DefaultStreamConfig(), lease, func(string, []byte) error { return nil })
+	if err != nil || w != 1280 || h != 720 || stream == nil {
+		t.Fatalf("StartSession = %d,%d,%v,%v", w, h, stream, err)
+	}
+	t.Cleanup(stream.Stop)
+	if !mgr.IsCurrent("ws-real", stream) {
+		t.Fatal("the started stream must be the current one")
+	}
+
+	mgr.RevokeSession("ws-real", "session_ended")
+	clock.advance(watchdogTickInterval)
+	select {
+	case clock.ticks <- clock.Now():
+	case <-time.After(5 * time.Second):
+		t.Fatal("StartSession started no lease watchdog: nothing consumed the tick")
+	}
+	select {
+	case <-clock.observed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchdog never read the clock")
+	}
+	select {
+	case got := <-stopped:
+		if got != "ws-real:"+StopReasonLeaseRevoked {
+			t.Fatalf("OnSessionStopped = %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a revoked lease must stop the stream StartSession created")
+	}
+	if mgr.ActiveCount() != 0 || !capturer.closed.Load() {
+		t.Fatalf("stream not torn down: active=%d closed=%v", mgr.ActiveCount(), capturer.closed.Load())
+	}
+}
+
+func TestWsSessionManagerLeaseStatusReflectsAnswers(t *testing.T) {
+	mgr := NewWsSessionManagerForTest(func() ScreenCapturer { return &fakeWsCapturer{} })
+	clock := newVirtualClock(func(msg string) { t.Errorf("%s", msg) })
+	mgr.clock = clock.watchdogClock() // never ticked: answers only
+	now := clock.Now()
+	lease := &RevocationLease{ExpiresAt: now.Add(time.Minute), HardDeadline: now.Add(time.Hour), Grace: helperGrace, RenewEvery: helperRenewEvery}
+	_, _, stream, err := mgr.StartSession("ws-status", 0, DefaultStreamConfig(), lease, func(string, []byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stream.Stop)
+
+	later := now.Add(10 * time.Minute)
+	mgr.ApplyRevocationLease("ws-status", later, time.Time{})
+	st, ok := mgr.LeaseStatus("ws-status")
+	if !ok || !st.ExpiresAt.Equal(later) || st.Revoked {
+		t.Fatalf("after renewal: %+v ok=%v", st, ok)
+	}
+	mgr.RevokeSession("ws-status", "x")
+	if st, _ := mgr.LeaseStatus("ws-status"); !st.Revoked {
+		t.Fatal("RevokeSession must mark the stream's lease revoked")
+	}
+	if _, ok := mgr.LeaseStatus("nope"); ok {
+		t.Fatal("unknown session must report no lease")
+	}
+}
+
+// A superseded start must only ever tear down the stream IT created: a newer
+// start that already replaced it under the same id keeps running.
+func TestWsSessionManagerStopExactLeavesAReplacementRunning(t *testing.T) {
+	mgr := NewWsSessionManagerForTest(func() ScreenCapturer { return &fakeWsCapturer{} })
+	mgr.clock = newVirtualClock(func(msg string) { t.Errorf("%s", msg) }).watchdogClock()
+	lease := func() *RevocationLease {
+		n := time.Now()
+		return &RevocationLease{ExpiresAt: n.Add(time.Minute), HardDeadline: n.Add(time.Hour), Grace: helperGrace, RenewEvery: helperRenewEvery}
+	}
+	send := func(string, []byte) error { return nil }
+	_, _, older, err := mgr.StartSession("ws-x", 0, DefaultStreamConfig(), lease(), send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, newer, err := mgr.StartSession("ws-x", 0, DefaultStreamConfig(), lease(), send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(newer.Stop)
+
+	if mgr.StopExact("ws-x", older) {
+		t.Fatal("stopping the replaced stream must not report removing the current one")
+	}
+	if !mgr.IsCurrent("ws-x", newer) || mgr.ActiveCount() != 1 {
+		t.Fatal("the newer stream must keep running")
+	}
+	if !mgr.StopExact("ws-x", newer) || mgr.ActiveCount() != 0 {
+		t.Fatal("stopping the current stream must remove it")
 	}
 }

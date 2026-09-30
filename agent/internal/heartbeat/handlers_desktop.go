@@ -533,7 +533,7 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// End and every server-side teardown send stop_desktop, and without this
 	// the stream kept capturing until the relay's next revalidation tick.
 	if h.stopWsDesktopStream(sessionID) {
-		h.handleConsentSessionEnd(sessionID)
+		h.endWsStreamUX(sessionID)
 	}
 
 	// State-based routing: if an IPC helper actually owns this session, stop it
@@ -690,7 +690,7 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	if startSession == nil {
 		startSession = h.wsDesktopMgr.StartSession
 	}
-	w, h2, err := startSession(sessionID, displayIndex, config, lease, func(sid string, data []byte) error {
+	w, h2, stream, err := startSession(sessionID, displayIndex, config, lease, func(sid string, data []byte) error {
 		if h.wsClient != nil {
 			return h.wsClient.SendDesktopFrame(sid, data)
 		}
@@ -701,25 +701,28 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	// Capture setup takes time too: re-check before telling the end user, and
-	// again after — a stop that ran between the two found no remembered
-	// prompt, so the indicator and end notice are this path's to clean up.
+	// again after. Cleanup only ever touches the stream THIS start created
+	// (a newer start may already have replaced it under the same id), and
+	// only this start's own prompt.
 	if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok {
-		h.stopWsDesktopStream(sessionID)
+		h.stopWsDesktopStreamExact(sessionID, stream)
 		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
 	if prompt != nil {
-		h.afterDesktopStart(sessionID, prompt, "")
-		if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok {
-			h.stopWsDesktopStream(sessionID)
-			h.handleConsentSessionEnd(sessionID)
-			// The stop may have taken the remembered prompt and sent its hide
-			// before afterDesktopStart's show went out; hide again from the
-			// local prompt so the indicator is never left on screen.
-			if prompt.ShowIndicator {
-				h.sendBannerHide(sessionID, "")
-			}
-			return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
+		h.afterDesktopStreamStart(sessionID, cmd.ID, prompt)
+	}
+	ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput)
+	if ok && !h.wsStreamIsCurrent(sessionID, stream) {
+		// The stream is gone although nothing ended the session: its lease
+		// watchdog stopped it before the notice went out.
+		ok, reason = false, desktopFenceReasonTerminal
+	}
+	if !ok {
+		h.stopWsDesktopStreamExact(sessionID, stream)
+		if prompt != nil {
+			h.endOvertakenStreamUX(sessionID, cmd.ID, reason)
 		}
+		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
 
 	result := map[string]any{
@@ -770,7 +773,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// satisfy the API's durable-proof parser.
 		h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
 		if h.stopWsDesktopStream(sessionID) {
-			h.handleConsentSessionEnd(sessionID)
+			h.endWsStreamUX(sessionID)
 		}
 		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 	}
@@ -788,7 +791,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	outcome := "already_absent"
 	if h.stopWsDesktopStream(sessionID) {
 		outcome = "stopped"
-		h.handleConsentSessionEnd(sessionID)
+		h.endWsStreamUX(sessionID)
 	}
 	return tools.NewSuccessResult(map[string]any{
 		"sessionId":      sessionID,

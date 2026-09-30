@@ -103,6 +103,23 @@ func (m *WsSessionManager) leaseStateFor(id string) *revocationLeaseState {
 	return session.leaseState
 }
 
+// WsLeaseStatus is a read of a stream's lease state.
+type WsLeaseStatus struct {
+	ExpiresAt    time.Time
+	HardDeadline time.Time
+	Revoked      bool
+}
+
+// LeaseStatus reports the lease state of the running stream for sessionID.
+func (m *WsSessionManager) LeaseStatus(sessionID string) (WsLeaseStatus, bool) {
+	state := m.leaseStateFor(sessionID)
+	if state == nil {
+		return WsLeaseStatus{}, false
+	}
+	snap := state.snapshot()
+	return WsLeaseStatus{ExpiresAt: snap.expiresAt, HardDeadline: snap.hardDeadline, Revoked: snap.revoked}, true
+}
+
 // ApplyRevocationLease records a successful renewal for a live stream.
 // Unknown session ids are ignored (the stream already ended, or the id
 // belongs to a WebRTC session).

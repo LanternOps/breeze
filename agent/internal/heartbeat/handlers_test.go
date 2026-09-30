@@ -208,9 +208,9 @@ func TestHandleRefreshInventoryDispatchesSendInventory(t *testing.T) {
 func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 	var gotDisplayIndex int
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			gotDisplayIndex = displayIndex
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -243,9 +243,9 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehaviorBlocks(t *testing.T) {
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -283,9 +283,9 @@ func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehavior
 func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t *testing.T) {
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -324,9 +324,9 @@ func TestHandleDesktopStreamStartStartsImmediatelyWhenNoPromptBlockSent(t *testi
 	// exactly as before this change (regression control).
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -349,9 +349,9 @@ func TestHandleDesktopStreamStartStartsImmediatelyForNotifyMode(t *testing.T) {
 	// not block the start.
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 

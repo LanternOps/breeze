@@ -527,8 +527,11 @@ type Heartbeat struct {
 	pamRecoveryMaxAttempts       int
 	pamGateProofTimeout          time.Duration
 	pamGateStuckReassertInterval time.Duration
-	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners                sync.Map // desktop session ID -> helper session ID
+	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error)
+	// wsStreamStopNotify reports a lease-driven stream stop to the control
+	// plane; nil means sendDesktopDisconnectNotification (tests override it).
+	wsStreamStopNotify func(sessionID, reason string)
+	desktopOwners      sync.Map // desktop session ID -> helper session ID
 	// leaseRenewRequester asks the control plane to renew a desktop session's
 	// revocation lease. Indirected through a field (rather than calling the
 	// method directly) so the helper-hosted bridge is observable in tests.
@@ -1226,12 +1229,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// renewals for helper-hosted sessions too.
 	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
 	// The WebSocket fallback stream renews the same lease over the same
-	// socket, and a lease-driven stop cleans up the on-screen indicator and
-	// end notice exactly as an operator stop does.
-	h.wsDesktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
-	h.wsDesktopMgr.OnSessionStopped = func(sessionID, _ string) {
-		h.handleConsentSessionEnd(sessionID)
-	}
+	// socket, and a lease-driven stop is reported like a WebRTC peer drop and
+	// ends the on-screen indicator and notice (handlers_desktop_stream.go).
+	h.wireWsDesktopStreamHooks()
 	// Same outbound renew, reached from the IPC side: a helper-hosted session's
 	// watchdog lives in the helper process, so its renewals arrive here as
 	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
