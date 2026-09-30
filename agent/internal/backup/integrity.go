@@ -15,6 +15,14 @@ import "github.com/breeze-rmm/agent/internal/backup/integrity"
 // they cannot match, incremental bases checked against their attestation,
 // and digested database/VM backups.
 //
+// Version 2 additionally requires every restore consumer to read the
+// integrity expectation delivered with the command or recovery bootstrap and,
+// in attested mode, to check each control object against it before parsing
+// and every restored object against its manifest entry before publishing
+// it: file restore, verify and test restore (including resume and a vault
+// copy), Hyper-V, VM and instant-boot restores, database restore and verify,
+// bare-metal recovery with its system state, and bare-metal rebuild.
+//
 // The value lives in the integrity package so the recovery client (bmr),
 // which does not import this package, reports the same number.
 const IntegrityProtocolVersion = integrity.ProtocolVersion
