@@ -1,10 +1,14 @@
 package security
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path"
 	"strings"
 	"time"
 )
@@ -37,6 +41,7 @@ type lsblkEncryptionNode struct {
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Fstype     string `json:"fstype"`
+	Label      string `json:"label"`
 	Mountpoint string `json:"mountpoint"`
 	// Mountpoints (util-linux >= 2.37) lists every mount of the device, e.g.
 	// each btrfs subvolume; Mountpoint then shows only one of them.
@@ -63,9 +68,9 @@ func lsblkNodeIsEncryptionLayer(n lsblkEncryptionNode) bool {
 }
 
 // evaluateLinuxEncryption is the pure core: lsblkJSON is `lsblk -J` output
-// with NAME,TYPE,FSTYPE,MOUNTPOINT[,MOUNTPOINTS]; procMounts is the content of
-// /proc/self/mounts; zfsProps runs `zfs get` for a dataset. It returns an
-// error only when the lsblk output itself is unusable.
+// with NAME,TYPE,FSTYPE,LABEL,MOUNTPOINT[,MOUNTPOINTS]; procMounts is the
+// content of /proc/self/mounts; zfsProps runs `zfs get` for a dataset. It
+// returns an error only when the lsblk output itself is unusable.
 func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsProps func(dataset string) (string, error)) (linuxEncryptionReport, error) {
 	var payload struct {
 		Blockdevices []lsblkEncryptionNode `json:"blockdevices"`
@@ -77,10 +82,23 @@ func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsProps func(dataset
 	report := linuxEncryptionReport{Volumes: make([]map[string]any, 0)}
 	rootSeen := false
 	rootAllProtected := true
+	// A device can be listed under several parents (lsblk repeats md RAID
+	// and multi-PV LVM nodes under each member), so every protection verdict
+	// below is an AND across all paths: protected only if every path is.
+	nodeProtected := map[string]bool{}
+	zfsPoolMembers := map[string][]bool{}
 
 	var walk func(node lsblkEncryptionNode, inheritedProtected bool)
 	walk = func(node lsblkEncryptionNode, inheritedProtected bool) {
 		isProtected := inheritedProtected || lsblkNodeIsEncryptionLayer(node)
+		if prev, seen := nodeProtected[node.Name]; seen {
+			nodeProtected[node.Name] = prev && isProtected
+		} else {
+			nodeProtected[node.Name] = isProtected
+		}
+		if strings.EqualFold(node.Fstype, "zfs_member") && node.Label != "" {
+			zfsPoolMembers[node.Label] = append(zfsPoolMembers[node.Label], isProtected)
+		}
 		for _, mount := range node.mounts() {
 			method := "none"
 			if isProtected {
@@ -94,8 +112,6 @@ func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsProps func(dataset
 			})
 			if mount == "/" {
 				rootSeen = true
-				// A device can be listed under several parents (e.g. md RAID
-				// members); only call root protected if every path is.
 				rootAllProtected = rootAllProtected && isProtected
 			}
 		}
@@ -114,23 +130,51 @@ func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsProps func(dataset
 	}
 
 	source, fstype, ok := rootMountFromProcMounts(procMounts)
-	if !ok || fstype != "zfs" {
-		report.RootErr = errors.New("root filesystem not found in lsblk output")
-		if ok {
-			report.RootErr = fmt.Errorf("root filesystem (%s on %s) not found in lsblk output", fstype, source)
+	switch {
+	case !ok:
+		report.RootErr = errors.New("root filesystem not found in lsblk output or /proc/self/mounts")
+	case fstype == "zfs":
+		evaluateZfsRoot(&report, source, zfsPoolMembers, zfsProps)
+	case strings.HasPrefix(source, "/dev/"):
+		// lsblk before util-linux 2.37 reports one mountpoint per device, so
+		// a btrfs "/" subvolume can hide behind "/home". Resolve the root
+		// device by name instead (/dev/mapper/<name>, /dev/<kname>).
+		name := path.Base(source)
+		protected, found := nodeProtected[name]
+		if !found {
+			report.RootErr = fmt.Errorf("root device %s not found in lsblk output", source)
+			break
 		}
-		return report, nil
+		method := "none"
+		if protected {
+			method = "luks"
+		}
+		report.Volumes = append(report.Volumes, map[string]any{
+			"mount":     "/",
+			"device":    name,
+			"method":    method,
+			"protected": protected,
+		})
+		report.RootProtected = protected
+	default:
+		report.RootErr = fmt.Errorf("root filesystem (%s on %s) is not a block device lsblk can see", fstype, source)
 	}
+	return report, nil
+}
 
-	out, err := zfsProps(source)
+// evaluateZfsRoot fills the headline and "/" volume for a ZFS root. The root
+// is protected by native ZFS encryption on the dataset, or, when that is off,
+// by every vdev of its pool sitting on a LUKS/dm-crypt device.
+func evaluateZfsRoot(report *linuxEncryptionReport, dataset string, poolMembers map[string][]bool, zfsProps func(string) (string, error)) {
+	out, err := zfsProps(dataset)
 	if err != nil {
-		report.RootErr = fmt.Errorf("zfs root %s: %w", source, err)
-		return report, nil
+		report.RootErr = fmt.Errorf("zfs root %s: %w", dataset, err)
+		return
 	}
 	encryption, keystatus, err := parseZfsEncryptionProps(out)
 	if err != nil {
-		report.RootErr = fmt.Errorf("zfs root %s: %w", source, err)
-		return report, nil
+		report.RootErr = fmt.Errorf("zfs root %s: %w", dataset, err)
+		return
 	}
 	// Any cipher other than "off" means the dataset is encrypted at rest,
 	// whether or not its key is currently loaded.
@@ -138,10 +182,21 @@ func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsProps func(dataset
 	method := "none"
 	if protected {
 		method = "zfs"
+	} else {
+		pool, _, _ := strings.Cut(dataset, "/")
+		members := poolMembers[pool]
+		allOnCrypt := len(members) > 0
+		for _, memberProtected := range members {
+			allOnCrypt = allOnCrypt && memberProtected
+		}
+		if allOnCrypt {
+			protected = true
+			method = "luks"
+		}
 	}
 	vol := map[string]any{
 		"mount":      "/",
-		"device":     source,
+		"device":     dataset,
 		"method":     method,
 		"protected":  protected,
 		"encryption": encryption,
@@ -151,7 +206,6 @@ func evaluateLinuxEncryption(lsblkJSON, procMounts string, zfsProps func(dataset
 	}
 	report.Volumes = append(report.Volumes, vol)
 	report.RootProtected = protected
-	return report, nil
 }
 
 // dedupeRootVolume collapses repeated "/" entries (a device reached through
@@ -216,25 +270,51 @@ func collectLinuxEncryption() (linuxEncryptionReport, error) {
 	if !hasCommand("lsblk") {
 		return linuxEncryptionReport{}, fmt.Errorf("lsblk not found")
 	}
-	output, err := runCommand(8*time.Second, "lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,MOUNTPOINT,MOUNTPOINTS")
+	output, err := runCommandStdout(8*time.Second, "lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,LABEL,MOUNTPOINT,MOUNTPOINTS")
 	if err != nil {
 		// util-linux < 2.37 has no MOUNTPOINTS column and rejects the
 		// whole invocation; retry with the single-mountpoint column.
-		output, err = runCommand(8*time.Second, "lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,MOUNTPOINT")
-		if err != nil {
-			return linuxEncryptionReport{}, err
+		var retryErr error
+		output, retryErr = runCommandStdout(8*time.Second, "lsblk", "-J", "-o", "NAME,TYPE,FSTYPE,LABEL,MOUNTPOINT")
+		if retryErr != nil {
+			return linuxEncryptionReport{}, errors.Join(err, retryErr)
 		}
 	}
 
 	procMounts := ""
-	if data, readErr := os.ReadFile("/proc/self/mounts"); readErr == nil {
+	data, mountsErr := os.ReadFile("/proc/self/mounts")
+	if mountsErr == nil {
 		procMounts = string(data)
 	}
 
-	return evaluateLinuxEncryption(output, procMounts, func(dataset string) (string, error) {
+	report, err := evaluateLinuxEncryption(output, procMounts, func(dataset string) (string, error) {
 		if !hasCommand("zfs") {
 			return "", fmt.Errorf("zfs command not found")
 		}
-		return runCommand(5*time.Second, "zfs", "get", "-H", "-o", "property,value", "encryption,keystatus", dataset)
+		return runCommandStdout(5*time.Second, "zfs", "get", "-H", "-o", "property,value", "encryption,keystatus", dataset)
 	})
+	if err == nil && report.RootErr != nil && mountsErr != nil {
+		report.RootErr = fmt.Errorf("%w (reading /proc/self/mounts: %v)", report.RootErr, mountsErr)
+	}
+	return report, err
+}
+
+// runCommandStdout is runCommand without stderr: lsblk can print warnings on
+// stderr while still exiting 0, and those must not be spliced into the JSON.
+// Stderr is kept for the error message when the command fails.
+func runCommandStdout(timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("command timed out: %s", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("command failed: %s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(string(output)), nil
 }

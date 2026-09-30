@@ -107,6 +107,81 @@ const lsblkMixedPathRoot = `{"blockdevices":[
  ]}
 ]}`
 
+// Same as lsblkMixedPathRoot with the encrypted path listed first, so the
+// first "/" row seen is protected even though root is not.
+const lsblkMixedPathRootEncryptedFirst = `{"blockdevices":[
+ {"name":"sda","type":"disk","fstype":"crypto_LUKS","mountpoint":null,"mountpoints":[null],"children":[
+  {"name":"md0","type":"raid1","fstype":"ext4","mountpoint":"/","mountpoints":["/"]}
+ ]},
+ {"name":"sdb","type":"disk","fstype":"linux_raid_member","mountpoint":null,"mountpoints":[null],"children":[
+  {"name":"md0","type":"raid1","fstype":"ext4","mountpoint":"/","mountpoints":["/"]}
+ ]}
+]}`
+
+// Pre-2.37 lsblk, btrfs on LUKS: the single MOUNTPOINT column names "/home",
+// so "/" is only resolvable through the /proc/self/mounts source device.
+const lsblkLegacyBtrfsOnCrypt = `{"blockdevices":[
+ {"name":"nvme0n1","type":"disk","fstype":null,"mountpoint":null,"children":[
+  {"name":"nvme0n1p3","type":"part","fstype":"crypto_LUKS","mountpoint":null,"children":[
+   {"name":"luks-7c1e","type":"crypt","fstype":"btrfs","mountpoint":"/home"}
+  ]}
+ ]}
+]}`
+
+const lsblkLegacyBtrfsPlain = `{"blockdevices":[
+ {"name":"sda","type":"disk","fstype":null,"mountpoint":null,"children":[
+  {"name":"sda2","type":"part","fstype":"btrfs","mountpoint":"/home"}
+ ]}
+]}`
+
+const procMountsBtrfsCrypt = `/dev/mapper/luks-7c1e /home btrfs rw,relatime,subvol=/home 0 0
+/dev/mapper/luks-7c1e / btrfs rw,relatime,subvol=/root 0 0`
+
+const procMountsBtrfsPlain = `/dev/sda2 /home btrfs rw,relatime,subvol=/@home 0 0
+/dev/sda2 / btrfs rw,relatime,subvol=/@ 0 0`
+
+const procMountsUnknownDevice = `/dev/root / ext4 rw,relatime 0 0`
+
+// md0 reachable via a plain path, then an encrypted one, with no mountpoint
+// in lsblk (root resolved via /proc/self/mounts): the source-device fallback
+// must also require every path to be protected.
+const lsblkMixedPathNoMount = `{"blockdevices":[
+ {"name":"sda","type":"disk","fstype":"linux_raid_member","mountpoint":null,"children":[
+  {"name":"md0","type":"raid1","fstype":"ext4","mountpoint":null}
+ ]},
+ {"name":"sdb","type":"disk","fstype":"crypto_LUKS","mountpoint":null,"children":[
+  {"name":"md0","type":"raid1","fstype":"ext4","mountpoint":null}
+ ]}
+]}`
+
+const procMountsMd0 = `/dev/md0 / ext4 rw,relatime 0 0`
+
+// ZFS pool "rpool" whose vdevs sit on LUKS (dataset encryption off).
+const lsblkZfsOnLuks = `{"blockdevices":[
+ {"name":"sda","type":"disk","fstype":null,"label":null,"mountpoint":null,"mountpoints":[null],"children":[
+  {"name":"sda3","type":"part","fstype":"crypto_LUKS","label":null,"mountpoint":null,"mountpoints":[null],"children":[
+   {"name":"luks-a","type":"crypt","fstype":"zfs_member","label":"rpool","mountpoint":null,"mountpoints":[null]}
+  ]}
+ ]},
+ {"name":"sdb","type":"disk","fstype":null,"label":null,"mountpoint":null,"mountpoints":[null],"children":[
+  {"name":"sdb3","type":"part","fstype":"crypto_LUKS","label":null,"mountpoint":null,"mountpoints":[null],"children":[
+   {"name":"luks-b","type":"crypt","fstype":"zfs_member","label":"rpool","mountpoint":null,"mountpoints":[null]}
+  ]}
+ ]}
+]}`
+
+// ZFS pool "rpool" mirrored across one LUKS vdev and one plain vdev.
+const lsblkZfsHalfOnLuks = `{"blockdevices":[
+ {"name":"sda","type":"disk","fstype":null,"label":null,"mountpoint":null,"mountpoints":[null],"children":[
+  {"name":"sda3","type":"part","fstype":"crypto_LUKS","label":null,"mountpoint":null,"mountpoints":[null],"children":[
+   {"name":"luks-a","type":"crypt","fstype":"zfs_member","label":"rpool","mountpoint":null,"mountpoints":[null]}
+  ]}
+ ]},
+ {"name":"sdb","type":"disk","fstype":null,"label":null,"mountpoint":null,"mountpoints":[null],"children":[
+  {"name":"sdb3","type":"part","fstype":"zfs_member","label":"rpool","mountpoint":null,"mountpoints":[null]}
+ ]}
+]}`
+
 const procMountsExt4 = `sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
 /dev/mapper/vgubuntu-root / ext4 rw,relatime,errors=remount-ro 0 0
 /dev/sda2 /boot ext4 rw,relatime 0 0`
@@ -141,6 +216,7 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 		wantProtected bool
 		wantRootErr   string // substring; empty = no error
 		wantRootVol   map[string]any
+		wantNoKeys    []string // keys that must be absent from the root volume
 	}{
 		{
 			name:          "plain crypt root",
@@ -207,6 +283,69 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 			wantRootVol:   map[string]any{"mount": "/", "device": "md0", "method": "none", "protected": false},
 		},
 		{
+			name:          "mixed paths with encrypted path first keeps root unprotected",
+			lsblk:         lsblkMixedPathRootEncryptedFirst,
+			mounts:        procMountsExt4,
+			zfs:           noZfs,
+			wantProtected: false,
+			wantRootVol:   map[string]any{"mount": "/", "device": "md0", "method": "none", "protected": false},
+		},
+		{
+			name:          "legacy lsblk btrfs on crypt resolved via root source device",
+			lsblk:         lsblkLegacyBtrfsOnCrypt,
+			mounts:        procMountsBtrfsCrypt,
+			zfs:           noZfs,
+			wantProtected: true,
+			wantRootVol:   map[string]any{"mount": "/", "device": "luks-7c1e", "method": "luks", "protected": true},
+		},
+		{
+			name:          "legacy lsblk plain btrfs resolved via root source device",
+			lsblk:         lsblkLegacyBtrfsPlain,
+			mounts:        procMountsBtrfsPlain,
+			zfs:           noZfs,
+			wantProtected: false,
+			wantRootVol:   map[string]any{"mount": "/", "device": "sda2", "method": "none", "protected": false},
+		},
+		{
+			name:          "root source device reachable via plain and encrypted paths is not protected",
+			lsblk:         lsblkMixedPathNoMount,
+			mounts:        procMountsMd0,
+			zfs:           noZfs,
+			wantProtected: false,
+			wantRootVol:   map[string]any{"mount": "/", "device": "md0", "method": "none", "protected": false},
+		},
+		{
+			name:        "root source device absent from lsblk yields unknown",
+			lsblk:       lsblkLegacyBtrfsPlain,
+			mounts:      procMountsUnknownDevice,
+			zfs:         noZfs,
+			wantRootErr: "/dev/root",
+		},
+		{
+			name:          "zfs root on luks vdevs with native encryption off",
+			lsblk:         lsblkZfsOnLuks,
+			mounts:        procMountsZfs,
+			zfs:           zfsPropsFixture("encryption\toff\nkeystatus\t-\n"),
+			wantProtected: true,
+			wantRootVol:   map[string]any{"mount": "/", "device": "rpool/ROOT/ubuntu_abc123", "method": "luks", "protected": true, "encryption": "off"},
+			wantNoKeys:    []string{"status"},
+		},
+		{
+			name:          "zfs root with only some vdevs on luks is not protected",
+			lsblk:         lsblkZfsHalfOnLuks,
+			mounts:        procMountsZfs,
+			zfs:           zfsPropsFixture("encryption\toff\nkeystatus\t-\n"),
+			wantProtected: false,
+			wantRootVol:   map[string]any{"mount": "/", "device": "rpool/ROOT/ubuntu_abc123", "method": "none", "protected": false},
+		},
+		{
+			name:        "zfs without encryption support (pre-0.8) yields unknown",
+			lsblk:       lsblkZfsRoot,
+			mounts:      procMountsZfs,
+			zfs:         zfsPropsFixture("encryption\t-\nkeystatus\t-\n"),
+			wantRootErr: "encryption property",
+		},
+		{
 			name:          "zfs root natively encrypted",
 			lsblk:         lsblkZfsRoot,
 			mounts:        procMountsZfs,
@@ -229,6 +368,7 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 			zfs:           zfsPropsFixture("encryption\toff\nkeystatus\t-\n"),
 			wantProtected: false,
 			wantRootVol:   map[string]any{"mount": "/", "device": "rpool/ROOT/ubuntu_abc123", "method": "none", "protected": false, "encryption": "off"},
+			wantNoKeys:    []string{"status"},
 		},
 		{
 			name:        "zfs query fails yields unknown, not unencrypted",
@@ -302,6 +442,11 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 					t.Fatalf("root volume %s = %v, want %v (full: %v)", k, got[k], want, got)
 				}
 			}
+			for _, k := range tt.wantNoKeys {
+				if _, has := got[k]; has {
+					t.Fatalf("root volume must not carry %q: %v", k, got)
+				}
+			}
 		})
 	}
 }
@@ -311,18 +456,63 @@ func TestEvaluateLinuxEncryptionVolumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byMount := map[string]map[string]any{}
-	for _, v := range report.Volumes {
-		byMount[v["mount"].(string)] = v
+	assertVolumes(t, report.Volumes, map[string]bool{"/boot/efi": false, "/boot": false, "/": true, "[SWAP]": true})
+}
+
+func TestEvaluateLinuxEncryptionVolumesPerMount(t *testing.T) {
+	// Protection is scoped to each device's own tree: an encrypted data disk
+	// does not make the plain root protected.
+	report, err := evaluateLinuxEncryption(lsblkPlainRootEncryptedData, procMountsExt4, noZfs)
+	if err != nil {
+		t.Fatal(err)
 	}
-	want := map[string]bool{"/boot/efi": false, "/boot": false, "/": true, "[SWAP]": true}
-	if len(byMount) != len(want) {
-		t.Fatalf("volumes = %v, want mounts %v", report.Volumes, want)
+	assertVolumes(t, report.Volumes, map[string]bool{"/": false, "/srv/data": true})
+
+	// btrfs: MOUNTPOINT and MOUNTPOINTS both name /home; it must appear once.
+	report, err = evaluateLinuxEncryption(lsblkBtrfsOnCryptRoot, procMountsExt4, noZfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVolumes(t, report.Volumes, map[string]bool{"/boot/efi": false, "/home": true, "/": true})
+}
+
+func TestEvaluateLinuxEncryptionUnknownRootKeepsOtherVolumes(t *testing.T) {
+	report, err := evaluateLinuxEncryption(lsblkZfsRoot, procMountsZfs, func(string) (string, error) {
+		return "", errors.New("zfs: command not found")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RootErr == nil {
+		t.Fatal("expected RootErr")
+	}
+	assertVolumes(t, report.Volumes, map[string]bool{"/boot/efi": false})
+}
+
+func TestEvaluateLinuxEncryptionEmptyDeviceList(t *testing.T) {
+	report, err := evaluateLinuxEncryption(`{"blockdevices":[]}`, procMountsExt4, noZfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// procMountsExt4's root device is not in the (empty) tree.
+	if report.RootErr == nil || len(report.Volumes) != 0 {
+		t.Fatalf("want RootErr and no volumes, got err=%v volumes=%v", report.RootErr, report.Volumes)
+	}
+}
+
+func assertVolumes(t *testing.T, volumes []map[string]any, want map[string]bool) {
+	t.Helper()
+	if len(volumes) != len(want) {
+		t.Fatalf("got %d volumes %v, want exactly mounts %v", len(volumes), volumes, want)
+	}
+	byMount := map[string]map[string]any{}
+	for _, v := range volumes {
+		byMount[v["mount"].(string)] = v
 	}
 	for mount, protected := range want {
 		v, ok := byMount[mount]
 		if !ok {
-			t.Fatalf("missing volume %q in %v", mount, report.Volumes)
+			t.Fatalf("missing volume %q in %v", mount, volumes)
 		}
 		if v["protected"] != protected {
 			t.Fatalf("volume %q protected=%v, want %v", mount, v["protected"], protected)
