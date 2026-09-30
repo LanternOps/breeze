@@ -19,6 +19,7 @@ import { hashEnrollmentKey, hashEnrollmentSecret } from '../services/enrollmentK
 import { getBinarySource, getGithubAgentUrl } from '../services/binarySource';
 import { isWindowsAgentSigned } from '../services/windowsAgentSigning';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../services/s3Storage';
+import { binaryS3Key } from '../services/binaryStores';
 import { rateLimiter } from '../services/rate-limit';
 import { getRedis } from '../services/redis';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
@@ -409,7 +410,7 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
   // filename-preservation reason as the GitHub branch above.
   if (isS3Configured()) {
     try {
-      const url = await getPresignedUrl(`agent/${SUPPORT_AGENT_FILENAME}`);
+      const url = await getPresignedUrl(binaryS3Key('agent', SUPPORT_AGENT_FILENAME));
       const res = await proxyBinary(url, filename, 's3');
       if (res) return res;
     } catch (err) {

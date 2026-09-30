@@ -1123,7 +1123,7 @@ describe("binarySync", () => {
       warnSpy.mockRestore();
     });
 
-    it("defaults HELPER_BINARY_DIR to ./agent/bin when unset", async () => {
+    it("defaults HELPER_BINARY_DIR to the agent dir (AGENT_BINARY_DIR) when unset", async () => {
       setLocalEnv();
       delete process.env.HELPER_BINARY_DIR;
       const seen: string[] = [];
@@ -1134,8 +1134,11 @@ describe("binarySync", () => {
 
       await syncBinaries();
 
-      // resolve("./agent/bin") — the same default the download route uses.
-      expect(seen.some((d) => d.endsWith("/agent/bin") && !d.includes("/fake/"))).toBe(true);
+      // binaryStoreDir("helper") — the same resolution the Helper download
+      // uses (#7515). An unset HELPER_BINARY_DIR follows AGENT_BINARY_DIR, not
+      // a cwd-relative ./agent/bin that exists only in a dev checkout.
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((d) => d === "/fake/agent/bin")).toBe(true);
     });
 
     it("isolates helper registration failures after the agent succeeds", async () => {
