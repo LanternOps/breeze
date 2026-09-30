@@ -323,10 +323,11 @@ export async function baselineCredentialHistory(opts: {
   const stats = { scanned: 0, recorded: 0, failed: 0 };
   const enforcement = (await runOutsideDbContext(() => withSystemDbAccessContext(() => loadEnforcementMoment()))) ?? now;
 
+  type ListedConfig = { id: string; orgId: string; provider: string; providerConfig: unknown };
   let afterId: string | null = null;
   for (;;) {
     const cursor: string | null = afterId;
-    const batch = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    const batch: ListedConfig[] = await runOutsideDbContext(() => withSystemDbAccessContext((): Promise<ListedConfig[]> =>
       db.select({
         id: backupConfigs.id,
         orgId: backupConfigs.orgId,
