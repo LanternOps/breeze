@@ -520,7 +520,7 @@ type Heartbeat struct {
 	pamRecoveryMaxAttempts       int
 	pamGateProofTimeout          time.Duration
 	pamGateStuckReassertInterval time.Duration
-	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners                sync.Map // desktop session ID -> helper session ID
 	// leaseRenewRequester asks the control plane to renew a desktop session's
 	// revocation lease. Indirected through a field (rather than calling the
@@ -1218,6 +1218,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// unconditionally (not only in direct mode): the service process runs the
 	// renewals for helper-hosted sessions too.
 	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	// The WebSocket fallback stream renews the same lease over the same
+	// socket, and a lease-driven stop cleans up the on-screen indicator and
+	// end notice exactly as an operator stop does.
+	h.wsDesktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	h.wsDesktopMgr.OnSessionStopped = func(sessionID, _ string) {
+		h.handleConsentSessionEnd(sessionID)
+	}
 	// Same outbound renew, reached from the IPC side: a helper-hosted session's
 	// watchdog lives in the helper process, so its renewals arrive here as
 	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
@@ -1287,6 +1294,9 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// otherwise the silence the grace window budgets for.
 	if msg.Unavailable {
 		h.desktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		if h.wsDesktopMgr != nil {
+			h.wsDesktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		}
 		go h.forwardRevocationLeaseToHelper(msg)
 		return
 	}
@@ -1309,6 +1319,12 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
 			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
 			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		// A WebSocket fallback stream keeps the same lease (desktop/ws_lease.go).
+		if h.wsDesktopMgr != nil {
+			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID,
+				desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
+				desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		}
 		return
 	}
 
@@ -1317,6 +1333,9 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// Mark it revoked first — synchronously, so the local watchdog is already
 	// authoritative before anything below can fail or stall.
 	h.desktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	if h.wsDesktopMgr != nil {
+		h.wsDesktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	}
 	// The stop itself runs OFF the read pump: handleStopDesktop does a 10s
 	// synchronous IPC SendCommand and StopSession -> wg.Wait(), and
 	// websocket/client.go documents that this callback must not block. With the

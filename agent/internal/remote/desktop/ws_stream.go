@@ -44,6 +44,10 @@ type WsStreamSession struct {
 	cursor   *cursorOverlay
 	metrics  *StreamMetrics
 	adaptive *adaptiveQuality
+
+	// leaseState is the stream's revocation lease (see ws_lease.go). Set
+	// before the watchdog starts and never replaced.
+	leaseState *revocationLeaseState
 }
 
 // newWsStreamSession creates a new streaming session (called by WsSessionManager)

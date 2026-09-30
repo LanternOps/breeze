@@ -10,6 +10,17 @@ import (
 type WsSessionManager struct {
 	sessions map[string]*WsStreamSession
 	mu       sync.RWMutex
+
+	// RequestRevocationLeaseRenew asks the control plane to renew a stream's
+	// revocation lease (fire-and-forget; the answer arrives via
+	// ApplyRevocationLease / NoteLeaseUnavailable / RevokeSession).
+	RequestRevocationLeaseRenew func(sessionID string)
+	// OnSessionStopped is called, on its own goroutine, when the lease
+	// watchdog stops a stream — so the caller can hide the on-screen session
+	// indicator and send the end notice exactly as an operator stop does.
+	OnSessionStopped func(sessionID, reason string)
+	// clock is the watchdog's time source; nil in production (real clock).
+	clock *watchdogClock
 }
 
 // NewWsSessionManager creates a new manager
@@ -19,8 +30,13 @@ func NewWsSessionManager() *WsSessionManager {
 	}
 }
 
-// StartSession creates and starts a new desktop streaming session.
-func (m *WsSessionManager) StartSession(id string, displayIndex int, config StreamConfig, sendFrame SendFrameFunc) (screenWidth, screenHeight int, err error) {
+// StartSession creates and starts a new desktop streaming session. lease is
+// the server-issued revocation lease from the start payload; a start without
+// one is refused before any capture is created, exactly as start_desktop is.
+func (m *WsSessionManager) StartSession(id string, displayIndex int, config StreamConfig, lease *RevocationLease, sendFrame SendFrameFunc) (screenWidth, screenHeight int, err error) {
+	if lease == nil {
+		return 0, 0, ErrRevocationLeaseRequired
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -55,6 +71,7 @@ func (m *WsSessionManager) StartSession(id string, displayIndex int, config Stre
 	session := newWsStreamSession(id, capturer, inputHandler, sendFrame, config)
 	m.sessions[id] = session
 	session.Start()
+	m.startLeaseWatchdog(id, session, lease)
 
 	slog.Info("Desktop WS stream session started",
 		"sessionId", id,
