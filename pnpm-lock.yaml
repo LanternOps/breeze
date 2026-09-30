@@ -6,7 +6,7 @@ settings:
 
 overrides:
   adm-zip@<0.6.1: '>=0.6.1'
-  axios@>=1.0.0 <1.15.2: '>=1.15.2'
+  axios@>=1.0.0 <1.20.0: '>=1.20.0'
   websocket-driver@<0.7.5: '>=0.7.5'
   fast-xml-parser@<5.5.7: '>=5.5.7'
   fast-xml-parser@<5.7.0: '>=5.7.0'
@@ -6349,8 +6349,8 @@ packages:
     peerDependencies:
       postcss: '>=8.5.23'
 
-  axios@1.18.0:
-    resolution: {integrity: sha512-E32NzpYKp++W7XRe52rHiXV2ehxmh3wbdgO7MHeFM+vqxLBYHzt0ElkiImtOBxtOmyp0yoC8C6uESVV84Y2/hw==}
+  axios@1.20.0:
+    resolution: {integrity: sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg==}
 
   axobject-query@4.1.0:
     resolution: {integrity: sha512-qIj0G9wZbMGNLjLmg1PT6v2mE9AH2zlnADJD/2tC6E00hgmhUOfEB6greHPAfLRSufHqROIUTkw6E+M3lH0PTQ==}
@@ -17962,7 +17962,7 @@ snapshots:
       postcss: 8.5.28
       postcss-value-parser: 4.2.0
 
-  axios@1.18.0:
+  axios@1.20.0:
     dependencies:
       follow-redirects: 1.16.0
       form-data: 4.0.6
@@ -24120,7 +24120,7 @@ snapshots:
 
   twilio@6.0.2:
     dependencies:
-      axios: 1.18.0
+      axios: 1.20.0
       dayjs: 1.11.21
       https-proxy-agent: 5.0.1
       jsonwebtoken: 9.0.3
