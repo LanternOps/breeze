@@ -1,10 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 
 	"github.com/breeze-rmm/agent/internal/backup/storagesession"
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -102,5 +112,120 @@ func TestIntegrityBlock_BareMetalRebuildPayloadUnchanged(t *testing.T) {
 				t.Fatalf("%s: validate: %v", name, err)
 			}
 		}
+	}
+}
+
+// withIntegrityInBootstrap fronts a recovery test server and adds an
+// integrity block to the authenticate response, on the envelope and on the
+// nested bootstrap, exactly where the server puts it.
+func withIntegrityInBootstrap(t *testing.T, upstream *httptest.Server, block any) *httptest.Server {
+	t.Helper()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request.URL.Path != "/api/v1/backup/bmr/recover/authenticate" || resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return err
+		}
+		envelope["integrity"] = block
+		if nested, ok := envelope["bootstrap"].(map[string]any); ok {
+			nested["integrity"] = block
+		}
+		out, err := json.Marshal(envelope)
+		if err != nil {
+			return err
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
+		resp.ContentLength = int64(len(out))
+		resp.Header.Del("Content-Length")
+		return nil
+	}
+	server := httptest.NewServer(proxy)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestIntegrityBlock_BareMetalRebuildRunsAsBefore(t *testing.T) {
+	type observed struct {
+		target     rebuild.Target
+		identity   string
+		snapshotID string
+		dryRuns    []bool
+	}
+	run := func(t *testing.T, block any) observed {
+		upstream, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
+		server := upstream
+		payload := testBareMetalRebuildPayload(t, upstream.URL)
+		if block != nil {
+			server = withIntegrityInBootstrap(t, upstream, block)
+			var p map[string]any
+			if err := json.Unmarshal(testBareMetalRebuildPayload(t, server.URL), &p); err != nil {
+				t.Fatalf("payload: %v", err)
+			}
+			p["integrity"] = block
+			payload, _ = json.Marshal(p)
+		}
+		fake := &fakeRebuild{}
+		res := execBareMetalRebuild(context.Background(), payload, fake.fn)
+		if !res.Success {
+			t.Fatalf("bare_metal_rebuild failed: %q", res.Stderr)
+		}
+		if len(fake.calls) != 2 {
+			t.Fatalf("rebuild calls = %d, want a dry run then the run", len(fake.calls))
+		}
+		o := observed{target: fake.calls[1].Target, identity: string(fake.calls[1].Identity), snapshotID: fake.calls[1].SnapshotID}
+		for _, c := range fake.calls {
+			o.dryRuns = append(o.dryRuns, c.DryRun)
+		}
+		return o
+	}
+	want := run(t, nil)
+	for name, block := range compatIntegrityBlocks {
+		t.Run(name, func(t *testing.T) {
+			if got := run(t, block); !reflect.DeepEqual(got, want) {
+				t.Fatalf("rebuild options differ with an integrity block:\n got %+v\nwant %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestIntegrityBlock_BMRRecoverCommandRunsAsBefore(t *testing.T) {
+	orig := runBMRRecovery
+	t.Cleanup(func() { runBMRRecovery = orig })
+	var got []bmr.RecoveryConfig
+	runBMRRecovery = func(_ context.Context, cfg bmr.RecoveryConfig) (*bmr.RecoveryResult, error) {
+		got = append(got, cfg)
+		return &bmr.RecoveryResult{Status: "completed"}, nil
+	}
+	base := map[string]any{"recoveryToken": "brz_rec_x", "serverUrl": "https://api.example", "snapshotId": "snap-integrity-compat", "deviceId": "dev-1"}
+	if res := execBMRRecover(context.Background(), sessionPayloadJSON(t, base), nil); !res.Success {
+		t.Fatalf("bmr_recover failed: %q", res.Stderr)
+	}
+	for name, block := range compatIntegrityBlocks {
+		with := map[string]any{"integrity": block}
+		for k, v := range base {
+			with[k] = v
+		}
+		if res := execBMRRecover(context.Background(), sessionPayloadJSON(t, with), nil); !res.Success {
+			t.Fatalf("%s: bmr_recover with an integrity block failed: %q", name, res.Stderr)
+		}
+	}
+	for i := 1; i < len(got); i++ {
+		if !reflect.DeepEqual(got[i], got[0]) {
+			t.Fatalf("recovery config differs with an integrity block:\n got %+v\nwant %+v", got[i], got[0])
+		}
+	}
+	if len(got) != 1+len(compatIntegrityBlocks) {
+		t.Fatalf("recoveries run = %d", len(got))
 	}
 }
