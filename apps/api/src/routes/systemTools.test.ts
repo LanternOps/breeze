@@ -114,6 +114,22 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
   requireMfa: vi.fn(() => async (_c: unknown, next: () => Promise<unknown>) => next()),
+  // Mirrors the real requirePermission: resolve the caller's permissions once
+  // (through the mocked module below, so per-test mockResolvedValueOnce grants
+  // such as allowedSiteIds reach the router) and keep them in context.
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: () => Promise<unknown>) => {
+    const perms = await import('../services/permissions');
+    const auth = c.get('auth');
+    const userPerms = await perms.getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined,
+    });
+    if (!userPerms || !perms.hasPermission(userPerms, resource, action)) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    c.set('permissions', userPerms);
+    return next();
+  }),
 }));
 
 vi.mock('../services/permissions', () => ({

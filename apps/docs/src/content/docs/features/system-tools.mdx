@@ -10,7 +10,7 @@ System Tools provide a suite of remote administration capabilities that let tech
 Every operation is dispatched to the Breeze agent running on the target device via the command queue. All mutating actions (killing processes, starting/stopping services, editing the registry, uploading files, running/enabling/disabling scheduled tasks) are recorded in the audit log.
 
 <Aside>
-  System Tools require authentication with MFA and a role that includes the `devices.read` permission for read operations or `devices.execute` for mutating operations.
+  System Tools require authentication with MFA and a role that includes the `devices.execute` permission, for reads as well as changes. Every tool, including listing processes, services, files, registry keys, event logs and scheduled tasks, runs a live command on the device. Roles with only `devices.read` (such as the built-in Viewer roles) can still see the inventory Breeze has already collected on the device page, but cannot open Remote Tools.
 </Aside>
 
 ---
@@ -547,24 +547,24 @@ All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replac
 
 | Method | Path                    | Description       | Permission        |
 |--------|-------------------------|-------------------|-------------------|
-| GET    | `/files?path=...`       | List directory    | `devices.read`    |
-| GET    | `/files/download?path=...` | Download file  | `devices.read`    |
+| GET    | `/files?path=...`       | List directory    | `devices.execute` |
+| GET    | `/files/download?path=...` | Download file  | `devices.execute` |
 | POST   | `/files/upload`         | Upload file       | `devices.execute` |
 
 ### Process Manager
 
 | Method | Path                          | Description           | Permission        |
 |--------|-------------------------------|-----------------------|-------------------|
-| GET    | `/processes`                  | List processes        | `devices.read`    |
-| GET    | `/processes/:pid`             | Get process details   | `devices.read`    |
+| GET    | `/processes`                  | List processes        | `devices.execute` |
+| GET    | `/processes/:pid`             | Get process details   | `devices.execute` |
 | POST   | `/processes/:pid/kill`        | Kill process          | `devices.execute` |
 
 ### Service Manager
 
 | Method | Path                          | Description           | Permission        |
 |--------|-------------------------------|-----------------------|-------------------|
-| GET    | `/services`                   | List services         | `devices.read`    |
-| GET    | `/services/:name`             | Get service details   | `devices.read`    |
+| GET    | `/services`                   | List services         | `devices.execute` |
+| GET    | `/services/:name`             | Get service details   | `devices.execute` |
 | POST   | `/services/:name/start`       | Start service         | `devices.execute` |
 | POST   | `/services/:name/stop`        | Stop service          | `devices.execute` |
 | POST   | `/services/:name/restart`     | Restart service       | `devices.execute` |
@@ -573,9 +573,9 @@ All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replac
 
 | Method | Path                          | Description              | Permission        |
 |--------|-------------------------------|--------------------------|--------------------|
-| GET    | `/registry/keys?hive=...&path=...`   | List subkeys      | `devices.read`    |
-| GET    | `/registry/values?hive=...&path=...` | List values        | `devices.read`    |
-| GET    | `/registry/value?hive=...&path=...&name=...` | Get value  | `devices.read`    |
+| GET    | `/registry/keys?hive=...&path=...`   | List subkeys      | `devices.execute` |
+| GET    | `/registry/values?hive=...&path=...` | List values        | `devices.execute` |
+| GET    | `/registry/value?hive=...&path=...&name=...` | Get value  | `devices.execute` |
 | PUT    | `/registry/value`             | Set value                | `devices.execute` |
 | DELETE | `/registry/value?hive=...&path=...&name=...` | Delete value | `devices.execute` |
 | POST   | `/registry/key`               | Create key               | `devices.execute` |
@@ -585,18 +585,18 @@ All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replac
 
 | Method | Path                                        | Description         | Permission        |
 |--------|---------------------------------------------|---------------------|-------------------|
-| GET    | `/eventlogs`                                | List logs           | `devices.read`    |
-| GET    | `/eventlogs/:name`                          | Get log info        | `devices.read`    |
-| GET    | `/eventlogs/:name/events`                   | Query events        | `devices.read`    |
-| GET    | `/eventlogs/:name/events/:recordId`         | Get event detail    | `devices.read`    |
+| GET    | `/eventlogs`                                | List logs           | `devices.execute` |
+| GET    | `/eventlogs/:name`                          | Get log info        | `devices.execute` |
+| GET    | `/eventlogs/:name/events`                   | Query events        | `devices.execute` |
+| GET    | `/eventlogs/:name/events/:recordId`         | Get event detail    | `devices.execute` |
 
 ### Scheduled Tasks (Windows only)
 
 | Method | Path                                  | Description          | Permission        |
 |--------|---------------------------------------|----------------------|-------------------|
-| GET    | `/tasks`                              | List tasks           | `devices.read`    |
-| GET    | `/tasks/:path`                        | Get task details     | `devices.read`    |
-| GET    | `/tasks/:path/history`                | Get task history     | `devices.read`    |
+| GET    | `/tasks`                              | List tasks           | `devices.execute` |
+| GET    | `/tasks/:path`                        | Get task details     | `devices.execute` |
+| GET    | `/tasks/:path/history`                | Get task history     | `devices.execute` |
 | POST   | `/tasks/:path/run`                    | Run task             | `devices.execute` |
 | POST   | `/tasks/:path/enable`                 | Enable task          | `devices.execute` |
 | POST   | `/tasks/:path/disable`                | Disable task         | `devices.execute` |

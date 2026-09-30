@@ -11,6 +11,10 @@ import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
+// The Live toggle is offered only with devices:execute.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 

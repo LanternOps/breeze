@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { Dialog } from '../shared/Dialog';
 import { formatNumber } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { usePermissions } from '../../lib/permissions';
 
 type Row = { name: string; pid: number; cpu: number; ramMb: number; diskBps?: number; netBps?: number };
 type SortKey = 'cpu' | 'ramMb';
@@ -27,6 +28,10 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
   // Effects use the stable translator so a locale change does not re-run them
   // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
   const stableT = useStableT(t);
+  // The Live listing runs a command on the device (GET /system-tools/...,
+  // devices.execute on the API); read-only roles keep the recorded samples.
+  const { can } = usePermissions();
+  const canViewLive = can('devices', 'execute');
   const [rows, setRows] = useState<Row[]>([]);
   const [sampleTime, setSampleTime] = useState<string | null>(null);
   const [emptyKind, setEmptyKind] = useState<EmptyKind>(null);
@@ -103,15 +108,17 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
       <div className="p-4" data-testid="process-drilldown-panel">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-base font-semibold">{t('processDrilldownPanel.title')}</h3>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={live}
-              onChange={(e) => setLive(e.target.checked)}
-              data-testid="process-drilldown-live-toggle"
-            />
-            {t('processDrilldownPanel.live')}
-          </label>
+          {canViewLive && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={live}
+                onChange={(e) => setLive(e.target.checked)}
+                data-testid="process-drilldown-live-toggle"
+              />
+              {t('processDrilldownPanel.live')}
+            </label>
+          )}
         </div>
 
         <p className="mt-1 text-xs text-muted-foreground" data-testid="process-drilldown-sample-time">

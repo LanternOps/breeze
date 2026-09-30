@@ -67,3 +67,38 @@ describe('DeviceActions Wake is permission-gated (#7215)', () => {
     expect(screen.getByRole('button', { name: /^wake$/i })).toBeInTheDocument();
   });
 });
+
+describe('DeviceActions Remote Tools is permission-gated (live device inspection)', () => {
+  // Every Remote Tools tab dispatches a live command to the agent, and the API
+  // requires devices:execute for all of them — so a devices:read-only role
+  // (e.g. the built-in Viewer roles) should not be offered the entry point.
+  const onlineDevice: Device = { ...offlineDevice, status: 'online' };
+
+  it('hides the header Remote Tools without devices:execute', () => {
+    h.granted.add('devices:read');
+    render(<DeviceActions device={onlineDevice} />);
+    expect(screen.getByRole('button', { name: /run script/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remote tools/i })).toBeNull();
+  });
+
+  it('shows the header Remote Tools with devices:execute', () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={onlineDevice} />);
+    expect(screen.getByRole('button', { name: /remote tools/i })).toBeInTheDocument();
+  });
+
+  it('hides the compact-menu Remote Tools without devices:execute while the menu opens', async () => {
+    h.granted.add('devices:read');
+    render(<DeviceActions device={onlineDevice} compact />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(screen.getByRole('button', { name: /^reboot$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remote tools/i })).toBeNull();
+  });
+
+  it('shows the compact-menu Remote Tools with devices:execute', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={onlineDevice} compact />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(screen.getByRole('button', { name: /remote tools/i })).toBeInTheDocument();
+  });
+});

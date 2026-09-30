@@ -1037,7 +1037,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
-    list: { resource: 'devices', action: 'read' },
+    // Live inspection: list dispatches list_processes to the agent, the same
+    // command GET /system-tools/devices/:id/processes sends, and that router
+    // requires DEVICES_EXECUTE on every method (routes/systemTools/index.ts).
+    list: { resource: 'devices', action: 'execute' },
     kill: { resource: 'devices', action: 'execute' },
   },
   security_scan: {
@@ -1074,7 +1077,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
   manage_scheduled_tasks: {
-    list: { resource: 'devices', action: 'read' },
+    // Live inspection: list dispatches tasks_list to the agent, like GET
+    // /system-tools/devices/:id/tasks (DEVICES_EXECUTE router-wide).
+    list: { resource: 'devices', action: 'execute' },
     run: { resource: 'devices', action: 'execute' },
     disable: { resource: 'devices', action: 'execute' },
     enable: { resource: 'devices', action: 'execute' },

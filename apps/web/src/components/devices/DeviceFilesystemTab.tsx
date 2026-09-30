@@ -5,6 +5,7 @@ import { osRootScanPath } from '@breeze/shared';
 import { showToast } from '@/components/shared/Toast';
 import { ActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '@/stores/auth';
+import { usePermissions } from '../../lib/permissions';
 import '../../lib/i18n';
 import type { OSType } from './DeviceList';
 import VolumePicker from './filesystem/VolumePicker';
@@ -43,6 +44,10 @@ export default function DeviceFilesystemTab({
   onOpenFiles,
 }: DeviceFilesystemTabProps) {
   const { t } = useTranslation('devices');
+  // The file manager lists the device's files live (GET /system-tools/...,
+  // devices.execute on the API); the recorded snapshot here needs only read.
+  const { can } = usePermissions();
+  const canOpenFileManager = can('devices', 'execute');
   const isOffline = deviceStatus != null && deviceStatus !== 'online';
   const offlineTitle = isOffline ? t('deviceFilesystemTab.deviceIsOfflineScansRequireAConnectedAgent') : undefined;
   const volumes = useFilesystemVolumes(deviceId);
@@ -230,7 +235,7 @@ export default function DeviceFilesystemTab({
               <RefreshCw className={`h-3.5 w-3.5 ${busy === 'refresh' ? 'animate-spin' : ''}`} />
               {t('deviceFilesystemTab.refresh')}
             </button>
-            {onOpenFiles && (
+            {onOpenFiles && canOpenFileManager && (
               <button
                 type="button"
                 data-testid="filesystem-open-files"

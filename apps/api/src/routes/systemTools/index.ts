@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { authMiddleware, requireMfa, requireScope } from '../../middleware/auth';
-import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
 import { processesRoutes } from './processes';
 import { servicesRoutes } from './services';
@@ -13,36 +13,21 @@ import { getDeviceWithOrgCheck } from './helpers';
 
 export const systemToolsRoutes = new Hono();
 
-// Global RBAC: GET/HEAD → devices.read, non-GET → devices.execute
+// Global RBAC: every method requires devices:execute. Each /system-tools route
+// — including the GETs that list processes, services, scheduled tasks, event
+// logs, files and registry keys — dispatches a live command to the device's
+// agent and returns what it reads, so live device inspection is an
+// execute-level operation. devices:read alone covers the cached inventory
+// reads under /devices, not these. Keep this a router-level requirePermission:
+// aiGuardrails.routeBinding.contract.test.ts reads it to hold the equivalent
+// AI tools (manage_processes, manage_scheduled_tasks, manage_services,
+// file_operations, registry_operations) to the same permission.
 systemToolsRoutes.use(
   '*',
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
   requireMfa(),
-  async (c, next) => {
-    const auth = c.get('auth');
-
-    const method = c.req.method.toUpperCase();
-    const required = (method === 'GET' || method === 'HEAD')
-      ? PERMISSIONS.DEVICES_READ
-      : PERMISSIONS.DEVICES_EXECUTE;
-
-    const userPerms = await getUserPermissions(auth.user.id, {
-      partnerId: auth.partnerId || undefined,
-      orgId: auth.orgId || undefined
-    });
-
-    if (!userPerms) {
-      throw new HTTPException(403, { message: 'No permissions found' });
-    }
-
-    if (!hasPermission(userPerms, required.resource, required.action)) {
-      throw new HTTPException(403, { message: 'Permission denied' });
-    }
-
-    (c as any).set('permissions', userPerms);
-    await next();
-  }
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)
 );
 
 // Device chokepoint: every system tool executes against a live device, so org

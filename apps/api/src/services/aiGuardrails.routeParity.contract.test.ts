@@ -165,6 +165,40 @@ describe('registry_operations reads are agent executions, not device reads (§2.
   });
 });
 
+describe('live device inspection requires devices:execute, like every /system-tools route', () => {
+  // routes/systemTools/index.ts gates every method on DEVICES_EXECUTE: each of
+  // these actions dispatches a live command to the agent. Cached inventory
+  // reads stay on devices:read.
+  const LIVE_READS: ReadonlyArray<readonly [string, string]> = [
+    ['manage_processes', 'list'],
+    ['manage_scheduled_tasks', 'list'],
+    ['manage_services', 'list'],
+    ['file_operations', 'list'],
+    ['file_operations', 'read'],
+    ['registry_operations', 'read_key'],
+    ['registry_operations', 'get_value'],
+  ];
+
+  it.each(LIVE_READS)('%s.%s is denied to the seeded viewer roles', (tool, action) => {
+    expect(allows(grantsOf('Org Viewer'), tool, { action })).toBe(false);
+    expect(allows(grantsOf('Partner Viewer'), tool, { action })).toBe(false);
+    expect(allows(parseGrants(['devices:read', 'devices:write']), tool, { action })).toBe(false);
+  });
+
+  it.each(LIVE_READS)('%s.%s is allowed to the seeded technician roles', (tool, action) => {
+    expect(allows(ORG_TECHNICIAN, tool, { action })).toBe(true);
+    expect(allows(grantsOf('Partner Technician'), tool, { action })).toBe(true);
+    expect(allows(parseGrants(['devices:execute']), tool, { action })).toBe(true);
+  });
+
+  it('the viewer roles keep cached device reads', () => {
+    for (const role of ['Org Viewer', 'Partner Viewer']) {
+      expect(allows(grantsOf(role), 'query_devices')).toBe(true);
+      expect(allows(grantsOf(role), 'get_device_details')).toBe(true);
+    }
+  });
+});
+
 // These four tools require the same permission as the HTTP route they mirror.
 // Each pair below is asserted in BOTH directions: the previous tool grant
 // alone is refused, and the route's grant is allowed.

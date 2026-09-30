@@ -122,14 +122,11 @@ export async function getDeviceWithOrgAndSiteCheck(
 /**
  * Explicit `devices:execute` check for system-tools reads that expose raw,
  * high-signal device content rather than metadata: file download, registry
- * key/value reads, and events from a sensitive event-log channel. The
- * router-wide split in `routes/systemTools/index.ts` maps every GET to
- * `devices:read`, which is enough for listing/browsing but not for reading
- * content back off an agent that runs as root/LocalSystem — the AI tool path
- * already requires devices:execute for the equivalent operations
- * (aiGuardrails.ts TOOL_PERMISSIONS file_operations.read/list and
- * registry_operations.read_key/get_value). This brings the REST routes to the
- * same tier.
+ * key/value reads, and events from a sensitive event-log channel. The router
+ * in `routes/systemTools/index.ts` already requires `devices:execute` on every
+ * method; this per-handler check is kept as a second gate on the content reads
+ * so they stay execute-level even if a sub-router is mounted on its own
+ * (systemToolsPermissionParity.test.ts mounts them that way).
  *
  * Reads permissions from `c.get('permissions')` when present (set by the
  * router-wide middleware) and fetches lazily otherwise, mirroring

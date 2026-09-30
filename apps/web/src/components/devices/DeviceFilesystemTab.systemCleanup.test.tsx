@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import DeviceFilesystemTab from './DeviceFilesystemTab';
 
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn().mockResolvedValue({
     ok: false, status: 404, statusText: 'Not Found',
