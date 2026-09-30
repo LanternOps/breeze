@@ -43,6 +43,17 @@ const EXPIRED_PARTITION = 'metric_rollups_y2019m01';
 const FUTURE_PARTITIONS = [FUTURE_PARTITION, 'metric_rollups_y2031m06'];
 const EXPIRED_PARTITIONS = [EXPIRED_PARTITION, 'metric_rollups_y2019m02'];
 
+/** Drizzle wraps a Postgres error as "Failed query: ..."; the server message is on `cause`. */
+async function pgErrorMessage(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (error) {
+    const cause = (error as { cause?: { message?: unknown } }).cause;
+    return typeof cause?.message === 'string' ? cause.message : String((error as Error).message);
+  }
+  throw new Error('expected the statement to fail');
+}
+
 async function partitionExists(name: string): Promise<boolean> {
   const rows = await getTestDb().execute(sql`
     SELECT 1 AS present
@@ -139,20 +150,81 @@ describe('metric rollup partition maintenance (real DB, breeze_app privileges)',
   it('runs the whole maintenance job through to retention without aborting', async () => {
     // The BREEZE-10 symptom was not a bad partition — it was that ensure()
     // threw first, so dropExpired/prune never ran. Assert the job reaches the
-    // end and reports a retention result for all three bucket tiers.
-    const result = await withSystemDbAccessContext(() =>
-      runMetricRollupMaintenance({ now: new Date(Date.UTC(2031, 4, 15)) }),
-    );
+    // end with no failed step. Called bare, as the worker does (#7531): every
+    // step opens its own short system transaction.
+    const result = await runMetricRollupMaintenance({ now: new Date() });
 
     expect(result.skipped).toBeUndefined();
+    expect(result.failures).toEqual([]);
     expect(result.ensuredPartitions.length).toBeGreaterThan(0);
-    expect(result.retention.map((tier) => tier.bucketSeconds)).toEqual([300, 3600, 86400]);
-    for (const tier of result.retention) {
-      expect(tier.deleted).toBeGreaterThanOrEqual(0);
-    }
+    expect(result.defaultPartitionRowsDeleted).toBeGreaterThanOrEqual(0);
+    expect(Object.keys(result.cutoffs)).toEqual(['fiveMinute', 'hourly', 'daily']);
+  });
 
-    for (const name of result.ensuredPartitions) {
+  it('creates new months in the per-bucket shape, RLS converged on the month and every leaf', async () => {
+    for (const name of FUTURE_PARTITIONS) {
       await getTestDb().execute(sql.raw(`DROP TABLE IF EXISTS "${name}"`));
     }
+    await withSystemDbAccessContext(() =>
+      ensureMetricRollupPartitions({ referenceDate: FUTURE_MONTH, monthsBack: 0, monthsAhead: 1 }),
+    );
+
+    const leaves = (await getTestDb().execute(sql`
+      SELECT child.relname AS name, child.relrowsecurity AS rls, child.relforcerowsecurity AS forced
+      FROM pg_inherits
+      JOIN pg_class child ON child.oid = pg_inherits.inhrelid
+      JOIN pg_class parent ON parent.oid = pg_inherits.inhparent
+      WHERE parent.relname = ${FUTURE_PARTITION}
+      ORDER BY child.relname
+    `)) as unknown as Array<{ name: string; rls: boolean; forced: boolean }>;
+    expect(leaves.map((leaf) => leaf.name)).toEqual([
+      `${FUTURE_PARTITION}_1d`,
+      `${FUTURE_PARTITION}_1h`,
+      `${FUTURE_PARTITION}_5m`,
+    ]);
+    for (const leaf of leaves) {
+      expect(leaf, leaf.name).toMatchObject({ rls: true, forced: true });
+      const grants = (await getTestDb().execute(sql`
+        SELECT privilege_type FROM information_schema.role_table_grants
+        WHERE table_name = ${leaf.name} AND grantee = 'breeze_app'
+      `)) as unknown as Array<{ privilege_type: string }>;
+      for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+        expect(grants.map((g) => g.privilege_type), leaf.name).toContain(privilege);
+      }
+    }
+
+    for (const name of FUTURE_PARTITIONS) {
+      await getTestDb().execute(sql.raw(`DROP TABLE IF EXISTS "${name}"`));
+    }
+  });
+
+  it('refuses to drop a bucket leaf or compact a month inside the minimum retention, whatever the caller asks', async () => {
+    // Defense in depth against a bad app clock or config: the SQL seam checks
+    // the floors (5m 30 days, hourly 365 days) against the DB clock itself.
+    const thisMonth = new Date();
+    const literal = `${thisMonth.getUTCFullYear()}-${String(thisMonth.getUTCMonth() + 1).padStart(2, '0')}-01 00:00:00`;
+    const inSystemScope = (statement: ReturnType<typeof sql>) =>
+      pgErrorMessage(withSystemDbAccessContext(() => db.execute(statement)));
+
+    expect(
+      await inSystemScope(sql`SELECT public.breeze_drop_metric_rollup_bucket_partition(${literal}::timestamp, 300)`),
+    ).toMatch(/minimum/);
+    expect(
+      await inSystemScope(sql`SELECT public.breeze_compact_metric_rollup_partition(${literal}::timestamp, true)`),
+    ).toMatch(/minimum/);
+    expect(
+      await inSystemScope(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${literal}::timestamp, true)`),
+    ).toMatch(/minimum/);
+    expect(await inSystemScope(sql`SELECT public.breeze_drop_metric_rollup_partition(${literal}::timestamp)`)).toMatch(
+      /minimum/,
+    );
+  });
+
+  it('refuses to compact outside system scope, where RLS would hide rows from the copy', async () => {
+    expect(
+      await pgErrorMessage(
+        db.execute(sql`SELECT public.breeze_compact_metric_rollup_partition('2019-01-01 00:00:00'::timestamp, true)`),
+      ),
+    ).toMatch(/requires breeze.scope = system/);
   });
 });

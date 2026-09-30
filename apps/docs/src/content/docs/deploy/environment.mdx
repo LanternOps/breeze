@@ -329,6 +329,32 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 
+### Metric history retention (`metric_rollups`)
+
+Device history charts, capacity trends, AI performance tools and anomaly detection read the `metric_rollups` table. It stores each metric at three resolutions: 5-minute, hourly and daily buckets. Each resolution has its own retention window, and each month of data is stored as one partition per resolution. When a resolution's window passes a whole month, the maintenance job drops that month's partition for the resolution. Dropping a partition returns its disk space to the operating system immediately. No row-by-row `DELETE` is involved, and no `VACUUM FULL` is needed.
+
+| Variable | Default | Minimum | Description |
+|---|---|---|---|
+| `METRIC_ROLLUP_5M_RETENTION_DAYS` | `90` | `30` | Days to keep 5-minute buckets. About 92% of the table, so this window sets most of its size. |
+| `METRIC_ROLLUP_HOURLY_RETENTION_DAYS` | `548` | `365` | Days to keep hourly buckets. Raised to at least the 5-minute window. |
+| `METRIC_ROLLUP_DAILY_RETENTION_DAYS` | `1095` | `730` | Days to keep daily buckets. Raised to at least the hourly window. Past this, the whole month is dropped. |
+| `METRIC_ROLLUP_MAINTENANCE_CRON` | `13 3 * * *` | — | When the daily maintenance job runs (partition creation, retention, compaction). |
+| `METRIC_ROLLUP_MAINTENANCE_ENABLED` | `true` | — | Set to `false` to stop the job. Retention then stops too, and the table grows without limit. |
+| `METRIC_ROLLUP_PARTITION_MONTHS_AHEAD` | `3` | `1` | How many months of partitions to create in advance. |
+| `METRIC_ROLLUP_DELETE_BATCH_SIZE` | `5000` | `100` | Batch size for the one remaining row delete, on `metric_rollups_default`. That partition only holds rows written for a month that had no partition, and is normally empty. |
+
+Values below the minimum are raised to the minimum. Retention runs at whole-month granularity: a month is dropped once all of it is older than the window. With the 90-day default, you keep between 90 and about 120 days of 5-minute data. Disk use for `metric_rollups` levels off once each window has filled.
+
+#### Upgrading an existing install
+
+Before this change, each month was one partition that held all three resolutions. 5-minute rows were removed by a capped `DELETE`, which never gave the space back. On upgrade:
+
+- The migration converts empty pre-created future months to the new per-resolution layout. New data lands in the new layout from the next month onwards.
+- Months that already hold data keep the old layout and keep working. Once a month's 5-minute data is past `METRIC_ROLLUP_5M_RETENTION_DAYS`, the maintenance job rewrites it. The job copies only the hourly and daily rows, about 8% of the month, into the new layout, then drops the old table. That frees the month's whole footprint, including the dead space left by the old deletes.
+- To reclaim space sooner, lower `METRIC_ROLLUP_5M_RETENTION_DAYS`, down to the minimum of 30, and restart. The next maintenance run compacts every older month.
+
+Each compaction runs in its own transaction and only blocks writes to the month being rewritten; reads continue throughout. The final switch takes a short exclusive lock on `metric_rollups`, `devices` and `organizations`, waits at most 5 seconds for it, and only changes catalog entries. If it cannot get the lock in time it rolls back, and the next nightly run retries it. A failed step fails the `metric-rollup-maintenance` job with the month named, so it shows up in job monitoring.
+
 ### Audit-chain verification
 
 The nightly job that re-verifies the tamper-evident audit chain is bounded rather than walking the whole table every night.

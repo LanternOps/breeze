@@ -71,6 +71,21 @@ import {
 
 const ORIGINAL_FLAG = process.env.METRIC_ROLLUP_MAINTENANCE_ENABLED;
 
+function maintenanceResult(overrides: Record<string, unknown> = {}) {
+  return {
+    ensuredPartitions: ['metric_rollups_y2026m06'],
+    droppedPartitions: [],
+    droppedBucketPartitions: ['metric_rollups_y2026m03_5m'],
+    compactedPartitions: [],
+    defaultPartitionRowsDeleted: 4,
+    retentionDays: { fiveMinute: 90, hourly: 548, daily: 1095 },
+    cutoffs: { fiveMinute: '', hourly: '', daily: '' },
+    failures: [],
+    durationMs: 12,
+    ...overrides,
+  };
+}
+
 describe('metric rollup maintenance worker', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -80,12 +95,7 @@ describe('metric rollup maintenance worker', () => {
     queueCloseMock.mockResolvedValue(undefined);
     workerCloseMock.mockResolvedValue(undefined);
     withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
-    runMaintenanceMock.mockResolvedValue({
-      ensuredPartitions: ['metric_rollups_y2026m06'],
-      droppedPartitions: [],
-      retention: [{ bucketSeconds: 300, deleted: 4 }],
-      durationMs: 12,
-    });
+    runMaintenanceMock.mockResolvedValue(maintenanceResult());
     capturedWorkerProcessor.current = null;
     delete process.env.METRIC_ROLLUP_MAINTENANCE_ENABLED;
   });
@@ -155,7 +165,7 @@ describe('metric rollup maintenance worker', () => {
     expect(addMock).not.toHaveBeenCalled();
   });
 
-  it('runs maintenance inside system DB context', async () => {
+  it('runs maintenance without an outer DB context (every step owns its own short transaction)', async () => {
     createMetricRollupMaintenanceWorker();
     expect(capturedWorkerProcessor.current).toBeTypeOf('function');
 
@@ -165,19 +175,34 @@ describe('metric rollup maintenance worker', () => {
       data: {
         requestedAt: '2026-06-18T12:00:00.000Z',
         deleteBatchSize: 250,
+        // Stored in pre-#7531 repeatable jobs; must be ignored, not forwarded.
         maxDeleteBatches: 2,
       },
     });
 
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-    expect(runMaintenanceMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        now: new Date('2026-06-18T12:00:00.000Z'),
-        deleteBatchSize: 250,
-        maxDeleteBatches: 2,
+    // #7531: one outer transaction would hold every partition DROP's
+    // ACCESS EXCLUSIVE lock on metric_rollups until the end of the run.
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+    expect(runMaintenanceMock).toHaveBeenCalledWith({
+      now: new Date('2026-06-18T12:00:00.000Z'),
+      partitionMonthsBack: undefined,
+      partitionMonthsAhead: undefined,
+      deleteBatchSize: 250,
+    });
+    expect(result).toMatchObject({ ensuredPartitions: ['metric_rollups_y2026m06'] });
+  });
+
+  it('fails the job when a retention step failed, after the rest of the run completed', async () => {
+    runMaintenanceMock.mockResolvedValue(
+      maintenanceResult({
+        failures: [{ step: 'compact', partition: 'metric_rollups_y2026m05', error: 'lock timeout' }],
       }),
     );
-    expect(result).toMatchObject({ ensuredPartitions: ['metric_rollups_y2026m06'] });
+    createMetricRollupMaintenanceWorker();
+
+    await expect(
+      capturedWorkerProcessor.current!({ id: 'job-3', name: 'metric-rollup-maintenance', data: {} }),
+    ).rejects.toThrow(/1 step\(s\) failed: compact metric_rollups_y2026m05: lock timeout/);
   });
 
   it('ignores unknown job names without running maintenance', async () => {

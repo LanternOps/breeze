@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
@@ -91,7 +91,16 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 describe('metric rollups service', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    // The fixtures below are dated 2026-06-18. Pin the clock the day after, so
+    // the #7531 5-minute retention floor (now - 90 days, month-aligned) sits
+    // well before them and every raw pass runs.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-19T00:00:00.000Z'));
     contextTrace.length = 0;
     executedByLabel.clear();
     openContext.label = undefined;
@@ -278,6 +287,55 @@ describe('metric rollups service', () => {
   // managed DB's single vCPU, 900+GB of shared buffer reads) and was the top DB
   // load by a wide margin. Each source window is now scanned once and every
   // series is derived from that single pass.
+  describe('#7531 5-minute retention floor', () => {
+    const ORG = '11111111-1111-1111-1111-111111111111';
+    // Default 5-minute retention is 90 days: with now = 2026-09-29 the cutoff is
+    // 2026-07-01T00:00Z, so the floor (start of the cutoff's month) is 2026-07-01.
+    const NOW = new Date('2026-09-29T12:00:00.000Z');
+
+    it('skips the raw passes for a window entirely below the floor (its 5m leaf may already be dropped)', async () => {
+      const result = await rollupDeviceMetricsRange({
+        orgId: ORG,
+        from: new Date('2026-06-18T12:00:00.000Z'),
+        to: new Date('2026-06-18T13:00:00.000Z'),
+        now: NOW,
+      });
+
+      expect(executedByLabel.get('metricRollups.raw.device_metrics')).toBeUndefined();
+      expect(executedByLabel.get('metricRollups.raw.device_process_samples')).toBeUndefined();
+      expect(executedByLabel.get('metricRollups.raw.snmp_metrics')).toBeUndefined();
+      // The derived passes still run: they only read 5m rows, and write nothing
+      // when those rows are gone.
+      expect(result).toMatchObject({ statements: 6, skipped: false, rawFrom: null });
+    });
+
+    it('starts the raw passes at the month-aligned floor when the window straddles it', async () => {
+      const result = await rollupDeviceMetricsRange({
+        orgId: ORG,
+        from: new Date('2026-06-30T23:00:00.000Z'),
+        to: new Date('2026-07-01T01:00:00.000Z'),
+        now: NOW,
+      });
+
+      expect(result).toMatchObject({ statements: 9, rawFrom: '2026-07-01T00:00:00.000Z' });
+      const deviceSql = JSON.stringify(executedByLabel.get('metricRollups.raw.device_metrics'));
+      expect(deviceSql).toContain('2026-07-01T00:00:00.000Z');
+      expect(deviceSql).not.toContain('2026-06-30T23:00:00.000Z');
+    });
+
+    it('leaves a window inside retention untouched and reports no clamp', async () => {
+      const result = await rollupDeviceMetricsRange({
+        orgId: ORG,
+        from: new Date('2026-09-29T11:00:00.000Z'),
+        to: new Date('2026-09-29T11:15:00.000Z'),
+        now: NOW,
+      });
+
+      expect(result).toMatchObject({ statements: 9 });
+      expect(result).not.toHaveProperty('rawFrom');
+    });
+  });
+
   describe('#4341 single-pass raw rollups', () => {
     const DEVICE_METRIC_SERIES: ReadonlyArray<readonly [string, string]> = [
       ['cpu', 'cpu_percent'],
