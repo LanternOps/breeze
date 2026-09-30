@@ -19,7 +19,10 @@ const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const deleteMock = vi.fn(() => chainMock([]));
 
+// Key history recording is covered by configs.test.ts and its integration suite.
+vi.mock('../../services/backupStorageCredentialHistory', () => ({ recordCredentialChange: async () => undefined }));
 vi.mock('../../db', () => ({
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
