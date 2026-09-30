@@ -28,12 +28,12 @@ func labW32TimeState(t *testing.T, stop bool) svc.State {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	s, err := m.OpenService("W32Time")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if stop {
 		if _, err = s.Control(svc.Stop); err != nil {
 			t.Fatal(err)

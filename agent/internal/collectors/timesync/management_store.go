@@ -21,7 +21,7 @@ func loadManagement(path string) (ManagementState, error) {
 	if e != nil {
 		return s, e
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, e := io.ReadAll(io.LimitReader(f, managementLimit+1))
 	if e != nil {
 		return s, e
@@ -58,7 +58,7 @@ func saveManagement(path string, s ManagementState) error {
 		return e
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if e = f.Chmod(0600); e != nil {
 		_ = f.Close()
 		return e

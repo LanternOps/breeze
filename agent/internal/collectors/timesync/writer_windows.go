@@ -38,7 +38,7 @@ func writeTimePoll(n int) error {
 	if err != nil {
 		return err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 	return key.SetDWordValue("SpecialPollInterval", uint32(n))
 }
 func windowsZoneExists(id string) error {
@@ -68,12 +68,12 @@ func startTimeService(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	s, err := m.OpenService("W32Time")
 	if err != nil {
 		return fmt.Errorf("open W32Time: %w", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	// Synchronous SCM calls; the running-state wait is bounded by ctx and 30 s.
 	return startAndWaitRunning(ctx, func() error { return scmStartError(s.Start()) }, func() (bool, error) {
 		st, e := s.Query()
