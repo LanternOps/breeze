@@ -13,6 +13,18 @@ vi.mock('../../db', () => ({
   },
   withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
+vi.mock('./settings', () => ({
+  resolveDeviceTimeSyncSettings: vi.fn(async () => ({
+    orgId: '11111111-1111-4111-8111-111111111111',
+    settings: {
+      enforceNtp: false,
+      ntpServers: [],
+      pollIntervalMinutes: 60,
+      timezone: { expected: 'site', pinnedTimezone: null, autoFix: false },
+    },
+    policy: null,
+  })),
+}));
 import { getDeviceTimeStatusView } from './view';
 import { buildTimeStatusRow } from './ingest';
 import { resolveTimeFindings } from './findings';

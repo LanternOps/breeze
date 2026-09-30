@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
-const m = vi.hoisted(() => ({ list: vi.fn(), where: vi.fn() }));
+const m = vi.hoisted(() => ({ rows: vi.fn(), where: vi.fn() }));
 vi.mock('../../db', () => ({
   db: {
     select: () => ({ from: () => ({ innerJoin: () => ({ where: m.where }) }) }),
@@ -8,7 +8,7 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('./fleet', async (original) => ({
   ...(await original<typeof import('./fleet')>()),
-  listFleetTimeStatus: m.list,
+  iterateFleetTimeRows: m.rows,
 }));
 import {
   evidenceDays,
@@ -43,6 +43,9 @@ const row = {
     timezone: null,
   },
 };
+async function* stream(rows: unknown[]) {
+  yield* rows;
+}
 async function collect(generator: AsyncGenerator<string>) {
   let text = '';
   for await (const chunk of generator) text += chunk;
@@ -51,13 +54,7 @@ async function collect(generator: AsyncGenerator<string>) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-28T12:00:00Z'));
-  m.list.mockReset().mockResolvedValue({
-    data: [row],
-    total: 1,
-    page: 1,
-    limit: 100,
-    domains: [],
-  });
+  m.rows.mockReset().mockImplementation(() => stream([row]));
   m.where.mockReset().mockResolvedValue([]);
 });
 afterEach(() => vi.useRealTimers());
@@ -115,26 +112,23 @@ it('lists gaps and preserves historical timezone and source', async () => {
   expect(text).toContain('America/New_York');
   expect(text).toContain('Eastern Standard Time');
 });
-it('exports all pages rather than the currently displayed page', async () => {
-  m.list
-    .mockResolvedValueOnce({ data: [row], total: 101, limit: 100 })
-    .mockResolvedValueOnce({
-      data: [{ ...row, deviceId: org }],
-      total: 101,
-      limit: 100,
-    });
+it('exports every row in one pass rather than the currently displayed page', async () => {
+  const rows = Array.from({ length: 101 }, (_, i) => ({
+    ...row,
+    deviceId: `${device.slice(0, -3)}${String(i).padStart(3, '0')}`,
+  }));
+  m.rows.mockImplementation(() => stream(rows));
   const text = await collect(exportCurrentTimeCsv({ page: 8, limit: 1 }, auth));
-  expect(m.list.mock.calls.map((call) => call[0].page)).toEqual([1, 2]);
-  expect(text).toContain(`"${device}"`);
+  expect(m.rows).toHaveBeenCalledTimes(1);
+  for (const r of rows) expect(text).toContain(`"${r.deviceId}"`);
+  await collect(
+    exportHistoryTimeCsv({}, { from: '2026-09-28', to: '2026-09-28' }, auth),
+  );
+  // One device_time_daily query per 100-row chunk.
+  expect(m.where).toHaveBeenCalledTimes(2);
 });
 it('does not invent devices or gaps for an empty accessible fleet', async () => {
-  m.list.mockResolvedValue({
-    data: [],
-    total: 0,
-    page: 1,
-    limit: 100,
-    domains: [],
-  });
+  m.rows.mockImplementation(() => stream([]));
   const text = await collect(
     exportHistoryTimeCsv({}, { from: '2026-09-28', to: '2026-09-28' }, auth),
   );

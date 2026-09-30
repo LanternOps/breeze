@@ -46,3 +46,38 @@ it('reserves pinned policy precedence, including pinned UTC, with site fallback'
     }),
   ).toMatchObject({ source: 'site' });
 });
+it('allows pinned UTC even though site UTC is unset', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  expect(
+    resolveExpectedTimezone({
+      site: { id, name: 'Site', timezone: 'America/New_York' },
+      policy: {
+        policyId: id,
+        policyName: 'UTC servers',
+        expected: 'pinned',
+        pinnedTimezone: 'UTC',
+      },
+    }),
+  ).toEqual({
+    iana: 'UTC',
+    windowsId: 'UTC',
+    source: 'policy',
+    sourceId: id,
+    sourceName: 'UTC servers',
+  });
+});
+it('keeps a site-following policy on the site path', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const site = { id, name: 'Site', timezone: 'America/New_York' };
+  expect(
+    resolveExpectedTimezone({
+      site,
+      policy: {
+        policyId: id,
+        policyName: 'Site followers',
+        expected: 'site',
+        pinnedTimezone: null,
+      },
+    }),
+  ).toEqual(resolveExpectedTimezone({ site }));
+});

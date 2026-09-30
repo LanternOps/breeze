@@ -27,6 +27,8 @@ export const CONFIG_FEATURE_TYPES = [
   'monitors',
   // #6856 — inherited RAID/disk-health collection settings, inline-only.
   'hardware_monitoring',
+  // Time sync — inherited NTP/timezone management settings, inline-only.
+  'time_sync',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -125,6 +127,7 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   device_lifecycle: 'protective', // informational lifecycle status — no execution capability
   monitors: 'protective', // monitor definitions — detection only
   hardware_monitoring: 'protective', // RAID/disk-health collection — detection only
+  time_sync: 'protective', // NTP/timezone enforcement settings — no execution capability
   warranty: 'protective', // informational warranty alerts — no execution capability
   // A device that self-selects into a group
   // gains nothing new from patch/backup that it doesn't already have as an

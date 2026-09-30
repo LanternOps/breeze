@@ -9,7 +9,8 @@ import { CommandTypes } from './commandTypes';
 export type OfflinePolicy = { kind: 'reject' } | { kind: 'queue'; deliverWithinMs: number };
 
 /** TTL class = how long a queued row may wait for the device (OD-1). */
-export type DeliveryTtlClass = 'live' | 'live_only' | 'standard' | 'short' | 'power_state';
+export type DeliveryTtlClass =
+  'live' | 'live_only' | 'standard' | 'short' | 'power_state' | 'time_sync';
 
 /**
  * The `live` TTL class's nominal window. It is NOT stamped on `reject` rows —
@@ -69,6 +70,10 @@ export function deliveryTtlMs(cls: DeliveryTtlClass): number {
       return envHours('DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS', 24) * HOUR_MS;
     case 'power_state':
       return envHours('DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS', 24) * HOUR_MS;
+    case 'time_sync':
+      // Time management (#7452 W03a, index §F.4): a resync or timezone fix
+      // that lands a day late acts on stale intent. Fixed, not env-tunable.
+      return HOUR_MS;
   }
 }
 
@@ -295,6 +300,12 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.SYSTEM_STATE_COLLECT,
 ];
 
+const TIME_SYNC: readonly string[] = [
+  C.TIME_RESYNC,
+  C.TIME_SET_TIMEZONE,
+  C.TIME_APPLY_POLICY,
+];
+
 // Build the registry from CommandTypes so a NEW type cannot be added without
 // also being classified. A type added to CommandTypes but to none of the lists
 // lands in `standard`, the safe default for fire-and-forget work — a type that
@@ -307,6 +318,7 @@ for (const type of BACKUP_AND_RESTORE) registry[type] = 'live';
 for (const type of LIVE_ONLY) registry[type] = 'live_only';
 for (const type of SHORT) registry[type] = 'short';
 for (const type of POWER_STATE_TTL_TYPES) registry[type] = 'power_state';
+for (const type of TIME_SYNC) registry[type] = 'time_sync';
 registry.wake = 'live';
 
 export const COMMAND_OFFLINE_POLICY_REGISTRY: Readonly<Record<string, DeliveryTtlClass>> = Object.freeze(registry);
@@ -320,7 +332,15 @@ export const COMMAND_OFFLINE_POLICY_REGISTRY: Readonly<Record<string, DeliveryTt
  * an oversight.
  */
 export const EXPLICITLY_CLASSIFIED_COMMAND_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set<string>([...LIVE, ...LIVE_ONLY, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE_TTL_TYPES, ...STANDARD_REVIEWED]),
+  new Set<string>([
+    ...LIVE,
+    ...LIVE_ONLY,
+    ...BACKUP_AND_RESTORE,
+    ...SHORT,
+    ...POWER_STATE_TTL_TYPES,
+    ...STANDARD_REVIEWED,
+    ...TIME_SYNC,
+  ]),
 ) as ReadonlySet<string>;
 
 export function defaultOfflinePolicy(type: string): OfflinePolicy {

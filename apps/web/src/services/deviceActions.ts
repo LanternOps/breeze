@@ -83,21 +83,27 @@ async function getErrorMessage(response: Response, fallback: string): Promise<st
   }
 }
 
+export function requestDeviceCommand(
+  deviceId: string,
+  type: string,
+  payload?: Record<string, unknown>,
+): Promise<Response> {
+  const body = payload ? { type, payload } : { type };
+  return fetchWithAuth(`/devices/${deviceId}/commands`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
 export async function sendDeviceCommand(
   deviceId: string,
   type: string,
-  payload?: Record<string, unknown>
+  payload?: Record<string, unknown>,
 ): Promise<CommandResult> {
-  const body = payload ? { type, payload } : { type };
-  const response = await fetchWithAuth(`/devices/${deviceId}/commands`, {
-    method: 'POST',
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to send device command'));
-  }
-
+  const response = await requestDeviceCommand(deviceId, type, payload);
+  if (!response.ok)
+    throw new Error(
+      await getErrorMessage(response, 'Failed to send device command'),
+    );
   const data = await response.json();
   return data.command ?? data.data ?? data;
 }

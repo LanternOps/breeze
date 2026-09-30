@@ -13,6 +13,7 @@ import {
   configPolicyMaintenanceSettings,
   configPolicyEventLogSettings,
   configPolicyHardwareMonitoringSettings,
+  configPolicyTimeSyncSettings,
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -58,6 +59,7 @@ import {
   monitorsInheritanceSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+  timeSyncInlineSettingsSchema,
   warrantyInlineSettingsSchema,
   warrantyHpCmslCollectionEffective,
   readRecordedWarrantyHpCmslConsent,
@@ -870,6 +872,20 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'time_sync': {
+      const parsed = timeSyncInlineSettingsSchema.parse(s);
+      await tx.insert(configPolicyTimeSyncSettings).values({
+        featureLinkId: linkId,
+        enforceNtp: parsed.enforceNtp,
+        ntpServers: parsed.ntpServers,
+        pollIntervalMinutes: parsed.pollIntervalMinutes,
+        timezoneExpected: parsed.timezone.expected,
+        pinnedTimezone: parsed.timezone.pinnedTimezone,
+        timezoneAutoFix: parsed.timezone.autoFix,
+      });
+      break;
+    }
+
     case 'sensitive_data': {
       await tx.insert(configPolicySensitiveDataSettings).values({
         featureLinkId: linkId,
@@ -1131,6 +1147,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
     case 'hardware_monitoring':
       hardwareMonitoringInlineSettingsSchema.parse(settings);
       break;
+    case 'time_sync':
+      timeSyncInlineSettingsSchema.parse(settings);
+      break;
     case 'maintenance':
       maintenanceInlineSettingsSchema.parse(settings);
       break;
@@ -1175,6 +1194,9 @@ async function deleteNormalizedRows(
       break;
     case 'hardware_monitoring':
       await tx.delete(configPolicyHardwareMonitoringSettings).where(eq(configPolicyHardwareMonitoringSettings.featureLinkId, linkId));
+      break;
+    case 'time_sync':
+      await tx.delete(configPolicyTimeSyncSettings).where(eq(configPolicyTimeSyncSettings.featureLinkId, linkId));
       break;
     case 'sensitive_data':
       await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
@@ -1353,6 +1375,26 @@ async function assembleInlineSettings(
             pollIntervalMinutes: row.pollIntervalMinutes,
             diskHealthIntervalMinutes: row.diskHealthIntervalMinutes,
           }
+        : null;
+    }
+
+    case 'time_sync': {
+      const [row] = await executor
+        .select()
+        .from(configPolicyTimeSyncSettings)
+        .where(eq(configPolicyTimeSyncSettings.featureLinkId, linkId))
+        .limit(1);
+      return row
+        ? timeSyncInlineSettingsSchema.parse({
+            enforceNtp: row.enforceNtp,
+            ntpServers: row.ntpServers,
+            pollIntervalMinutes: row.pollIntervalMinutes,
+            timezone: {
+              expected: row.timezoneExpected,
+              pinnedTimezone: row.pinnedTimezone,
+              autoFix: row.timezoneAutoFix,
+            },
+          })
         : null;
     }
 
@@ -2968,6 +3010,7 @@ export async function validateFeaturePolicyExists(
   if (
     featureType === 'event_log' ||
     featureType === 'hardware_monitoring' ||
+    featureType === 'time_sync' ||
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||

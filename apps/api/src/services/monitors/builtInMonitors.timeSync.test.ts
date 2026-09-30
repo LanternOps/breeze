@@ -1,14 +1,14 @@
-// services/monitors/builtInMonitors.timeSync.test.ts
 import { expect, it } from 'vitest';
 import {
-  BUILT_IN_MONITORS_VERSION,
   BUILT_IN_MONITOR_DEFAULTS,
+  BUILT_IN_MONITORS_VERSION,
   defaultsToProvision,
 } from './builtInMonitors';
-it('adds exactly the three approved v4 defaults and no v5 policy default', () => {
-  expect(BUILT_IN_MONITORS_VERSION).toBe(4);
+import { getMonitorKindSpec } from './kinds';
+it('adds exactly the three approved v4 defaults using their original version gate', () => {
+  expect(BUILT_IN_MONITORS_VERSION).toBe(5);
   expect(
-    defaultsToProvision(3).map((d) => [
+    BUILT_IN_MONITOR_DEFAULTS.filter((d) => d.sinceVersion === 4).map((d) => [
       d.key,
       d.name,
       d.condition,
@@ -50,10 +50,39 @@ it('adds exactly the three approved v4 defaults and no v5 policy default', () =>
       4,
     ],
   ]);
-  expect(defaultsToProvision(4)).toEqual([]);
+  expect(defaultsToProvision(5)).toEqual([]);
+});
+it('adds only the management monitor to a v4 partner and never resurrects a deleted v5 default', () => {
+  expect(BUILT_IN_MONITORS_VERSION).toBe(5);
+  expect(defaultsToProvision(4)).toEqual([
+    {
+      key: 'time_policy_not_applied',
+      name: 'Time policy not applied',
+      description:
+        'Alerts after two snapshots reporting failed time-policy enforcement.',
+      kind: 'time_sync',
+      condition: { findings: ['policy_not_applied'], consecutiveSnapshots: 2 },
+      severity: 'low',
+      cooldownMinutes: 60,
+      sinceVersion: 5,
+    },
+  ]);
+  expect(defaultsToProvision(5)).toEqual([]);
+});
+it('preserves the v4 time defaults and validates every condition', () => {
   expect(
-    BUILT_IN_MONITOR_DEFAULTS.some(
-      (d) => String(d.key) === 'time_policy_not_applied',
+    BUILT_IN_MONITOR_DEFAULTS.filter((x) => x.sinceVersion === 4).map(
+      (x) => x.key,
     ),
-  ).toBe(false);
+  ).toEqual(['time_source_problem', 'time_sync_stale', 'timezone_mismatch']);
+  expect(
+    BUILT_IN_MONITOR_DEFAULTS.filter((x) => x.sinceVersion < 4),
+  ).toHaveLength(8);
+  for (const monitor of BUILT_IN_MONITOR_DEFAULTS) {
+    expect(
+      getMonitorKindSpec(monitor.kind).conditionSchema.safeParse(
+        monitor.condition,
+      ).success,
+    ).toBe(true);
+  }
 });

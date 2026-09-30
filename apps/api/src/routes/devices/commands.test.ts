@@ -212,6 +212,10 @@ describe('device commands routes', () => {
     // finding — reset both and restore the module-factory default explicitly.
     vi.mocked(validateStepUpGrant).mockReset().mockResolvedValue(true);
     vi.mocked(consumeStepUpGrant).mockReset().mockResolvedValue(true);
+    // Same hazard on the trust gate: a trust-denial case that is refused
+    // earlier (e.g. a payload the schema rejects) leaves its
+    // `mockRejectedValueOnce` queued for the next test that reaches the gate.
+    assertDeviceExecuteAllowedMock.mockReset().mockResolvedValue(undefined);
     // Same hazard on the #5128 dispatch seam — restore the delivered-by-default
     // implementation explicitly rather than relying on clearAllMocks.
     dispatchDeviceCommandMock.mockReset().mockImplementation(
@@ -224,6 +228,91 @@ describe('device commands routes', () => {
     );
     app = new Hono();
     app.route('/devices', commandsRoutes);
+  });
+
+  describe('time management command admission', () => {
+    const deviceId = '11111111-1111-4111-8111-111111111111';
+    const cases = [
+      ['time_resync', {}],
+      ['time_set_timezone', { windowsId: 'Eastern Standard Time' }],
+      ['time_apply_policy', {}],
+    ] as const;
+    const request = (type: string, payload: unknown) =>
+      app.request(`/devices/${deviceId}/commands`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+        },
+        body: JSON.stringify({ type, payload }),
+      });
+    it.each(cases)(
+      'queues %s only through the execute gate and dispatcher',
+      async (type, payload) => {
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+          id: deviceId,
+          orgId: 'org-123',
+          status: 'online',
+        } as never);
+        expect((await request(type, payload)).status).toBe(201);
+        expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+          deviceId,
+          type,
+          'user-123',
+        );
+        expect(dispatchDeviceCommandMock).toHaveBeenCalledWith({
+          deviceId,
+          type,
+          payload,
+          userId: 'user-123',
+        });
+        const { writeRouteAudit } = await import('../../services/auditEvents');
+        expect(writeRouteAudit).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            action: 'device.command.queue',
+            resourceType: 'device_command',
+          }),
+        );
+      },
+    );
+    it.each(cases)(
+      'denies a foreign-org device for %s',
+      async (type, payload) => {
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(null as never);
+        expect((await request(type, payload)).status).toBe(404);
+        expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+      },
+    );
+    it.each(cases)('requires MFA for %s', async (type, payload) => {
+      authState.mfa = false;
+      expect((await request(type, payload)).status).toBe(403);
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
+    it.each(cases)('propagates a trust denial for %s', async (type, payload) => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: deviceId,
+        orgId: 'org-123',
+        status: 'online',
+      } as never);
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError(
+          'TRUST_RESTRICTED',
+          'Partner access is restricted.',
+          deviceId,
+          type,
+        ),
+      );
+      expect((await request(type, payload)).status).toBe(403);
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
+    it('rejects malformed timezone before device lookup', async () => {
+      expect(
+        (await request('time_set_timezone', { windowsId: 'unknown' })).status,
+      ).toBe(400);
+      expect(getDeviceWithOrgCheck).not.toHaveBeenCalled();
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /devices/bulk/commands', () => {

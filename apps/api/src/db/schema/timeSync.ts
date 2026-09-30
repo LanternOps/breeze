@@ -28,6 +28,7 @@ import type {
   TimeSyncJoinType,
   TimeSyncDomainRole,
   TimeSyncAutoUpdate,
+  TimeSyncEnforcementState,
 } from '@breeze/shared';
 export const deviceTimeStatus = pgTable(
   'device_time_status',
@@ -120,6 +121,10 @@ export const deviceTimeStatus = pgTable(
       .$type<
         Partial<Record<TimeSyncFindingCode, { present: number; absent: number }>>
       >()
+      .notNull()
+      .default({}),
+    enforcement: jsonb('enforcement')
+      .$type<TimeSyncEnforcementState | Record<string, never>>()
       .notNull()
       .default({}),
     createdAt: timestamp('created_at', { withTimezone: true })
