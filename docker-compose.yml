@@ -947,10 +947,14 @@ services:
       - --no-tcp-relay
       - --max-bps=${TURN_MAX_BPS:-5000000}
       - --no-multicast-peers
-      # Relay only to public peers. Refused: unspecified, loopback, private/VPC,
-      # CGNAT (100.64/10, also used by tailnets), link-local (including the cloud
+      # Relay only to public peers. Refused: loopback, private/VPC, CGNAT
+      # (100.64/10, also used by tailnets), link-local (including the cloud
       # metadata address 169.254.169.254), documentation/benchmark, 6to4/Teredo,
-      # multicast and reserved ranges, for IPv4 and IPv6.
+      # multicast and reserved ranges, for IPv4 and IPv6. coturn refuses the
+      # unspecified address itself. Never list `::` or `0.0.0.0` on its own, or
+      # start an IPv6 range at `::`: coturn reads an all-zero bound as "no
+      # bound", so such an entry refuses every peer and no relayed session can
+      # connect.
       # Never add this relay's own public IP (the external-ip) to this list: when
       # both peers are relayed through this server, relay-to-relay traffic targets
       # that address and would be refused.
@@ -969,7 +973,6 @@ services:
       - --denied-peer-ip=203.0.113.0-203.0.113.255
       - --denied-peer-ip=224.0.0.0-239.255.255.255
       - --denied-peer-ip=240.0.0.0-255.255.255.255
-      - '--denied-peer-ip=::'
       - --denied-peer-ip=::1
       - --denied-peer-ip=64:ff9b:1::-64:ff9b:1:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=2001::-2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff

@@ -35,6 +35,10 @@ for file in docker/turnserver.conf docker-compose.yml deploy/docker-compose.prod
   require_grep 'no-multicast-peers|--no-multicast-peers' "$file" "$file must deny multicast TURN peers"
   require_grep '^(no-tcp-relay|[[:space:]]*- --no-tcp-relay)$' "$file" "$file must disable TURN TCP relay allocations"
   reject_grep '^(verbose|[[:space:]]*- --verbose)$' "$file" "$file must not enable verbose TURN logging"
+  # coturn reads an all-zero range bound as "no bound": a lone `::` or `0.0.0.0`
+  # entry refuses every peer, and an IPv6 range starting at `::` refuses every
+  # IPv4 peer. coturn already refuses the unspecified address on its own.
+  reject_grep "^[[:space:]]*(- '?--)?denied-peer-ip=(::|0\\.0\\.0\\.0|::-[^']*)'?\$" "$file" "$file must not list an all-zero denied-peer-ip bound (it refuses every peer)"
 done
 
 # SR-009: coturn must fail closed if TURN_SECRET is unset/empty. An empty REST

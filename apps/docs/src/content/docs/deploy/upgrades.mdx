@@ -157,6 +157,12 @@ Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environ
 |---|---|
 | The `APP_VERSION:` line is removed from the shared API environment block (`x-api-env` in `docker-compose.yml`, the API environment in `deploy/docker-compose.prod.yml`). | Delete the `APP_VERSION:` line from your own Compose file. Keep `BREEZE_VERSION:`, which still selects the agent release. Until you remove the line, `/health` keeps reporting `BREEZE_VERSION` and the version-mismatch warning cannot fire. |
 
+### Next release — coturn relays again
+
+| Change | Required action |
+|---|---|
+| The v0.118.0 coturn configuration listed `denied-peer-ip=::`. coturn reads an all-zero address as "no bound", so that one entry refused every peer and relayed (TURN) connections could not be set up. The entry is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`; coturn already refuses the unspecified address on its own. | Delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in a Compose file) from your coturn configuration and restart coturn, even if you skip this release. Do not replace it with `0.0.0.0` or a range starting at `::`. |
+
 ### v0.118.0 — coturn peer restrictions and API stop grace
 
 The [v0.118.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.118.0/docker-compose.yml) and `docker/turnserver.conf` change two things:

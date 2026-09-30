@@ -21,6 +21,7 @@ Last release: **v0.118.0** (2026-09-27).
   - agents reach the API over plain `http://`, or `PUBLIC_API_URL` is unset or does not match the address agents use;
   - the storage configuration's endpoint is `http://` (typical for a self-hosted MinIO).
   **Self-hosters on plain-HTTP MinIO or a plain-HTTP API: move to HTTPS before upgrading**, or every S3 restore is refused. Keep MinIO's host and port when you switch; only the scheme may change, or earlier backups cannot be restored. Guide: `/backup/https-restores/`. Local/NAS destinations and backups themselves are not affected. A snapshot whose file list is not yet prepared is held and delivered automatically once it is.
+- **Bundled coturn relays again.** v0.118.0's coturn configuration listed `denied-peer-ip=::`, which coturn reads as matching every address, so every relayed (TURN) connection was refused. The line is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`. Self-hosters who copied the v0.118 Compose file or run their own coturn from the TURN Server guide: delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in Compose) and restart coturn. Do not replace it with `0.0.0.0` or a range starting at `::`.
 
 ### Remote desktop consent: VNC refused, consent-capable agent required, audit actions renamed
 
