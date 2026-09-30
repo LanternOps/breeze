@@ -3680,6 +3680,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     deviceId: authenticatedAgent.deviceId,
                     startCommandId: fastCommandId,
                     consentReason,
+                    markerDetails: consentMarkerAuditDetails(fastResult),
                     updated: outcome.row,
                   });
                   return outcome;
@@ -4281,6 +4282,8 @@ async function auditDesktopConsentActivation(input: {
   deviceId: string;
   startCommandId: string;
   consentReason: unknown;
+  /** The structured consent record from the agent's result (consentMarkerAuditDetails). */
+  markerDetails: Record<string, unknown>;
   updated: {
     orgId: string;
     userId: string;
@@ -4289,7 +4292,7 @@ async function auditDesktopConsentActivation(input: {
     consentUnavailableBehavior: string | null;
   };
 }): Promise<void> {
-  const { sessionId, deviceId, startCommandId, consentReason, updated } = input;
+  const { sessionId, deviceId, startCommandId, consentReason, markerDetails, updated } = input;
   if (consentReason === 'user' && updated.promptMode === 'consent') {
     await logSessionAudit(
       'session_consent_granted',
@@ -4299,6 +4302,7 @@ async function auditDesktopConsentActivation(input: {
         sessionId,
         type: updated.type,
         reason: 'user',
+        ...markerDetails,
         sessionOwnerId: updated.userId,
         deviceId,
         startCommandId,
@@ -4318,6 +4322,7 @@ async function auditDesktopConsentActivation(input: {
         type: updated.type,
         reason: consentReason,
         outcome: 'proceeded',
+        ...markerDetails,
         consentUnavailableBehavior: updated.consentUnavailableBehavior,
         sessionOwnerId: updated.userId,
         deviceId,

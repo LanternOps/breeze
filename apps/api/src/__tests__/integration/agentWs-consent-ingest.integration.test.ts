@@ -793,7 +793,8 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     expect(await consentAuditFor(sessionId, 'session_consent_granted')).toMatchObject({
       actorType: 'agent',
       actorId: dev.id,
-      details: expect.objectContaining({ startCommandId: startCommandId(sessionId) }),
+      // Same structured consent record as the WebRTC answer path.
+      details: expect.objectContaining({ startCommandId: startCommandId(sessionId), consentProtocol: 1 }),
     });
   });
 
