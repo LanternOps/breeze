@@ -32,12 +32,15 @@ describe('resolveModelThinking (#7587 interim table)', () => {
     expect(resolveModelThinking('claude-sonnet-4-6').effort).toBe('medium');
   });
 
+  // Haiku keeps today's behavior, which is an explicit `disabled`. Omitting the
+  // param is NOT equivalent: live-checked on SDK 0.3.286, the CLI then turns
+  // extended thinking ON for Haiku 4.5 (5,925 output tokens vs 272 on the same
+  // prompt, ~11x the cost).
   it.each(['claude-haiku-4-5', 'claude-haiku-4-5-20251001'])(
-    '%s → no thinking param at all',
+    '%s → thinking disabled, never omitted (#7587)',
     (model) => {
       const out = resolveModelThinking(model);
-      expect(out).toEqual({});
-      expect('thinking' in out).toBe(false);
+      expect(out).toEqual(DISABLED);
       expect('effort' in out).toBe(false);
     },
   );

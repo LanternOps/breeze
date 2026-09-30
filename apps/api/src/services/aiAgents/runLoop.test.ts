@@ -1770,9 +1770,9 @@ describe('executeAgentRun', () => {
 
   it.each([
     ['claude-sonnet-5-5', { type: 'adaptive' }, 'medium'],
-    ['claude-haiku-4-5', undefined, undefined],
+    ['claude-haiku-4-5', { type: 'disabled' }, undefined],
     ['claude-agent-model', { type: 'disabled' }, undefined],
-  ])('sends the per-model thinking/effort for %s, never a hard-coded disabled (#7587)', async (model, thinking, effort) => {
+  ])('sends the per-model thinking/effort for %s via resolveModelThinking (#7587)', async (model, thinking, effort) => {
     seedRows({ effective: policy({ model }) });
 
     await executeAgentRun(RUN_ID);

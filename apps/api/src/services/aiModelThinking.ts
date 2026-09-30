@@ -31,17 +31,16 @@ export function resolveModelThinking(model: string): ModelThinkingOptions {
   const major = Number(match[2]);
   const minor = match[3] === undefined ? 0 : Number(match[3]);
 
-  // Haiku: no thinking param at all.
-  if (family === 'haiku') return {};
-
   // Fable 5.x, Opus/Sonnet 5+, Opus 4.6–4.8, Sonnet 4.6: adaptive thinking
   // with effort `medium` (never `xhigh`, which 4.6 does not accept).
   const adaptive =
     family === 'fable' ||
-    major >= 5 ||
-    (major === 4 && minor >= 6 && (family === 'opus' || family === 'sonnet'));
+    ((family === 'opus' || family === 'sonnet') && (major >= 5 || (major === 4 && minor >= 6)));
   if (adaptive) return { thinking: { type: 'adaptive' }, effort: 'medium' };
 
-  // Older Opus/Sonnet (4.5 and below) accept `disabled`: keep today's behavior.
+  // Haiku 4.5 and older Opus/Sonnet (4.5 and below) accept `disabled`: keep
+  // today's behavior. For Haiku this must be an explicit `disabled`, not an
+  // omitted param — with no `thinking` option the Agent SDK CLI turns extended
+  // thinking ON for Haiku 4.5 (live-checked on 0.3.286: ~11x the output tokens).
   return { thinking: { type: 'disabled' } };
 }
