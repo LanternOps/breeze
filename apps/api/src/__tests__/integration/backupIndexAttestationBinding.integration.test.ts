@@ -121,7 +121,7 @@ describe('file index bound to the snapshot attestation', () => {
     const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
     await insertAttestation(t, snapshotDbId, snapshotId, manifest);
 
-    const outcome = await hydrate(snapshotDbId, async () => manifestFor(snapshotId, 'substituted'));
+    const outcome = await hydrate(snapshotDbId, async () => manifestFor(snapshotId, 'differing'));
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_differs_from_attestation', retryable: false });
     const row = await indexRow(snapshotDbId);
     expect(row.status).toBe('failed');
@@ -146,7 +146,7 @@ describe('file index bound to the snapshot attestation', () => {
       // Recorded after hydration claimed the snapshot (no attestation then),
       // before its index is published.
       await insertAttestation(t, snapshotDbId, snapshotId, manifest);
-      return manifestFor(snapshotId, 'substituted');
+      return manifestFor(snapshotId, 'differing');
     });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_differs_from_attestation' });
     expect((await indexRow(snapshotDbId)).status).toBe('failed');
@@ -155,9 +155,9 @@ describe('file index bound to the snapshot attestation', () => {
   runDb('verification sends a complete index built from other bytes back to none, and it is rebuilt on its next use', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
-    const substituted = manifestFor(snapshotId, 'substituted');
+    const differing = manifestFor(snapshotId, 'differing');
     // An index built before the attestation existed, from other bytes.
-    await setIndex(snapshotDbId, 'complete', sha(substituted));
+    await setIndex(snapshotDbId, 'complete', sha(differing));
     await insertAttestation(t, snapshotDbId, snapshotId, manifest);
 
     expect(await verify(snapshotDbId, manifest)).toEqual({ outcome: 'verified' });
@@ -192,26 +192,26 @@ describe('file index bound to the snapshot attestation', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  runDb('hydration of substituted bytes racing verification of the attested ones never leaves the substituted index complete (50 runs)', async () => {
+  runDb('hydration of bytes that differ from the attestation, racing verification of the attested ones, never leaves that index complete (50 runs)', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     for (let i = 0; i < 50; i++) {
       const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
-      const substituted = manifestFor(snapshotId, 'substituted');
+      const differing = manifestFor(snapshotId, 'differing');
       // Half the runs start from an index built before the attestation existed.
-      if (i % 2 === 0) await setIndex(snapshotDbId, 'complete', sha(substituted));
+      if (i % 2 === 0) await setIndex(snapshotDbId, 'complete', sha(differing));
       await insertAttestation(t, snapshotDbId, snapshotId, manifest);
 
       await Promise.all([
         hydrateSnapshotFileIndex(snapshotDbId, {
           includeUnreferenced: true,
           force: true,
-          deps: { fetchManifestBytes: async () => substituted },
+          deps: { fetchManifestBytes: async () => differing },
         }).catch(() => null),
         verify(snapshotDbId, manifest),
       ]);
 
       const row = await indexRow(snapshotDbId);
-      expect(row.status === 'complete' && row.digest === sha(substituted), `run ${i}: ${JSON.stringify(row)}`).toBe(false);
+      expect(row.status === 'complete' && row.digest === sha(differing), `run ${i}: ${JSON.stringify(row)}`).toBe(false);
     }
   }, 120_000);
 });
@@ -220,7 +220,7 @@ describe('readers apply the binding', () => {
   runDb('the index state recovery negotiates on reports an unbound complete index as not built', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
-    await setIndex(snapshotDbId, 'complete', sha(manifestFor(snapshotId, 'substituted')));
+    await setIndex(snapshotDbId, 'complete', sha(manifestFor(snapshotId, 'differing')));
     await insertAttestation(t, snapshotDbId, snapshotId, manifest);
 
     const state = await withDbAccessContext(orgContext(t.orgId), () => readSnapshotFileIndexState(snapshotDbId));
@@ -263,7 +263,7 @@ describe('readers apply the binding', () => {
         deliverBrokeredReadCommand(payload, { commandId, deviceId: t.deviceId, type: 'backup_restore', claimedAt: new Date() }));
     };
 
-    await setIndex(snapshotDbId, 'complete', sha(manifestFor(snapshotId, 'substituted')));
+    await setIndex(snapshotDbId, 'complete', sha(manifestFor(snapshotId, 'differing')));
     await expect(deliver()).rejects.toBeInstanceOf(CommandDeliveryDeferredError);
 
     await setIndex(snapshotDbId, 'complete', sha(manifest));

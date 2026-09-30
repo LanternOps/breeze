@@ -39,14 +39,14 @@ const attestedBlock = {
 function makeDeps(overrides: Partial<RecoveryCommandIntegrityDeps> = {}) {
   const deps = {
     lookupDeviceOrg: vi.fn(async () => ORG),
-    inOrgContext: vi.fn(async <T,>(_orgId: string, fn: () => Promise<T>) => fn()),
+    inOrgContext: vi.fn(async (_orgId: string, fn: () => Promise<unknown>) => fn()) as unknown as RecoveryCommandIntegrityDeps['inOrgContext'],
     findSnapshotIds: vi.fn(async (_orgId: string, ref: string) => (ref === SNAP || ref === SNAPSHOT_DB_ID ? [SNAPSHOT_DB_ID] : [])),
     findRecoverySnapshotId: vi.fn(async (_orgId: string, recoveryId: string) => (recoveryId === RECOVERY ? SNAPSHOT_DB_ID : null)),
     resolve: vi.fn(async (id: string) => (id === SNAPSHOT_DB_ID ? attested : null)),
     recordIntegrity: vi.fn(),
     ...overrides,
   };
-  return deps;
+  return deps as typeof deps & RecoveryCommandIntegrityDeps;
 }
 
 const ctx = (type: string) => ({ commandId: 'c1', deviceId: DEVICE, type, claimedAt: new Date() });
