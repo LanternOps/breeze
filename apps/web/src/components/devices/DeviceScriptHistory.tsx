@@ -68,6 +68,9 @@ type ScriptWithDetails = Script & {
 
 type DeviceScriptHistoryProps = {
   deviceId: string;
+  // #7479 — the viewed device's own org. "Run again" pins its device picker to
+  // it so it does not fall back to the top-bar org switcher's organization.
+  orgId?: string;
   timezone?: string;
   // #4886 — highlight (and auto-open) the execution a post-run redirect sent
   // the operator here to watch. Comes from the `#scripts/<executionId>` hash
@@ -269,7 +272,7 @@ function ExecutionStatusBadge({
   );
 }
 
-export default function DeviceScriptHistory({ deviceId, timezone, highlightExecutionId }: DeviceScriptHistoryProps) {
+export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlightExecutionId }: DeviceScriptHistoryProps) {
   const { t } = useTranslation('devices');
   const { t: tScripts } = useTranslation('scripts');
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
@@ -827,6 +830,7 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
           isOpen
           onClose={handleCloseRunAgain}
           onExecute={handleExecuteRunAgain}
+          orgId={orgId}
           initialDeviceIds={[deviceId]}
           initialParameters={runAgainParameters}
         />

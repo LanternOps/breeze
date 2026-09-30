@@ -696,3 +696,43 @@ describe('ScriptExecutionModal initial values (#4885 Run again)', () => {
     expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-1'], { message: 'kept' }, 'system');
   });
 });
+
+describe('ScriptExecutionModal device-org pinning (#7479)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async () => new Response(JSON.stringify({
+      data: [],
+      page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-09-30T00:00:00.000Z' },
+    }), { status: 200 }));
+  });
+
+  function renderPinned() {
+    return render(
+      <ScriptExecutionModal
+        script={baseScript}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={vi.fn()}
+        initialDeviceIds={['d-1']}
+        orgId="org-b"
+      />
+    );
+  }
+
+  it('requests device options pinned to the supplied orgId', async () => {
+    renderPinned();
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const urls = fetchWithAuthMock.mock.calls.map((c) => String(c[0]));
+    for (const url of urls) {
+      expect(url).toContain('/devices/options');
+      expect(new URL(url, 'http://x').searchParams.get('orgId')).toBe('org-b');
+    }
+  });
+
+  it('explains why Execute is disabled when a selected device cannot be resolved', async () => {
+    renderPinned();
+    const reason = await screen.findByTestId('script-execute-blocked-reason');
+    expect(reason).toHaveTextContent(/cannot run/i);
+    expect(screen.getByText('Execute').closest('button')).toBeDisabled();
+  });
+});

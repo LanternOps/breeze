@@ -1026,6 +1026,7 @@ export default function DeviceDetails({
       {activeTab === "scripts" && (
         <DeviceScriptHistory
           deviceId={device.id}
+          orgId={device.orgId}
           timezone={effectiveTimezone}
           highlightExecutionId={highlightedExecutionId}
         />

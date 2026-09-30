@@ -968,6 +968,7 @@
       "description": "Run “{{name}}” on {{count}} device(s) as {{runAs}}. Scripts are queued and begin executing immediately."
     },
     "selectedCount": "{{count}} device(s) selected",
+    "executeBlocked": "Execute is unavailable: a selected device cannot run this script here (it may belong to a different organization than the one shown, or no longer be accessible).",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",
