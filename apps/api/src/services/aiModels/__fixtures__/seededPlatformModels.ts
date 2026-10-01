@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/__fixtures__/seededPlatformModels.ts
 /**
  * AI model registry W01 (#7599) test oracles.
  *

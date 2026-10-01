@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/modelWireOptions.ts
 /**
  * AI model registry W01 (#7599): per-model thinking/effort options for the
  * eight call sites that used W00's aiModelThinking.ts. Synchronous, because

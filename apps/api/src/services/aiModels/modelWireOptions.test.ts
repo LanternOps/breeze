@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/modelWireOptions.test.ts
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearPlatformModelSnapshot, setPlatformModelSnapshot } from './platformModelSnapshot';
 import { SEEDED_PLATFORM_MODELS, seededPlatformModel } from './__fixtures__/seededPlatformModels';

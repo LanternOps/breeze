@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/capabilities.test.ts
 import { describe, expect, it } from 'vitest';
 import type { OptionSupport } from '@breeze/shared';
 import {

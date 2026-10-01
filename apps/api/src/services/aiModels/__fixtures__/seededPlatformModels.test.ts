@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/__fixtures__/seededPlatformModels.test.ts
 import { describe, expect, it } from 'vitest';
 import { deriveCapabilities, deriveOptionSupport, optionSupportErrors } from '../capabilities';
 import { computeInvocationCents, platformRateSnapshot } from '../pricing';

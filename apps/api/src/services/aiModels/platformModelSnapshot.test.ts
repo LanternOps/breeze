@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/platformModelSnapshot.test.ts
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PlatformModel } from './platformModels';
 import {

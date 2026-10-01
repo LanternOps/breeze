@@ -1,4 +1,3 @@
-// packages/shared/src/constants/aiSurfaces.ts
 /**
  * AI model registry (#7598): the features that call a model (spec §4). The
  * W02 `ai_model_assignments.surface` / `role` CHECKs mirror these. Leaf module.

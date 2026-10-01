@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/platformModelAdmin.ts
 /**
  * Pure validation of a /admin/ai-models patch (spec §5.1, §8, §11). The DB
  * CHECKs (offered ⇒ priced, default ⇒ offered, one default) are the backstop.

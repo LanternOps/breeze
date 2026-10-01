@@ -1,4 +1,3 @@
-// packages/shared/src/validators/aiModelOptions.test.ts
 import { describe, expect, it } from 'vitest';
 import {
   EFFORT_LEVELS,

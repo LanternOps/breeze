@@ -1,4 +1,3 @@
-// apps/api/src/__tests__/integration/aiPlatformModels.integration.test.ts
 import './setup';
 import { readFileSync } from 'node:fs';
 import {

@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/discovery.ts
 /**
  * AI model registry (spec §6): Anthropic model discovery. W01 covers the
  * platform key (`syncPlatformModels`); W03 adds `syncConnectionModels` for

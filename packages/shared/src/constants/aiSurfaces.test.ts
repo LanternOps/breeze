@@ -1,4 +1,3 @@
-// packages/shared/src/constants/aiSurfaces.test.ts
 import { describe, expect, it } from 'vitest';
 import { AI_SURFACES, AI_SURFACE_ROLES, TOOL_REQUIRING_SURFACES } from '../index';
 

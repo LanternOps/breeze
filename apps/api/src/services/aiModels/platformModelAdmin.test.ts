@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/platformModelAdmin.test.ts
 import { describe, expect, it } from 'vitest';
 import type { PlatformModel } from './platformModels';
 import { PlatformModelError, validatePlatformModelAdminPatch, type PlatformModelAdminPatch } from './platformModelAdmin';

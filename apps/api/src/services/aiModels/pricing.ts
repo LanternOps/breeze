@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/pricing.ts
 /**
  * AI model registry (spec §8): one cost function over one resolved rate
  * snapshot. W01 introduces it; aiCostTracker's token-based fallback reads it.

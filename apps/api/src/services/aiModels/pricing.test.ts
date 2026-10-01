@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/pricing.test.ts
 import { describe, expect, it } from 'vitest';
 import { UnpricedOptionError, computeInvocationCents, platformRateSnapshot, priceInvocation, type RateSnapshot } from './pricing';
 

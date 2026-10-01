@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/platformModelSnapshot.ts
 /**
  * In-process snapshot of ai_platform_models for synchronous hot paths: the
  * Agent SDK wire options and the cost tracker's token-rate lookup.

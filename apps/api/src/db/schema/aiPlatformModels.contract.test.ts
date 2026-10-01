@@ -1,4 +1,3 @@
-// apps/api/src/db/schema/aiPlatformModels.contract.test.ts
 // AI model registry W01 (#7599): mechanical contract for ai_platform_models.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';

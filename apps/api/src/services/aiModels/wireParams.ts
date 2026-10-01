@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/wireParams.ts
 /**
  * AI model registry (spec §7): the ONLY place a thinking / effort / speed /
  * inference-geo request param is built (index invariant 2). Pure; no I/O.

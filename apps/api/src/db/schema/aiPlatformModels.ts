@@ -1,4 +1,3 @@
-// apps/api/src/db/schema/aiPlatformModels.ts
 import { sql } from 'drizzle-orm';
 import { boolean, check, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import type { ModelLifecycle, OptionRates, OptionSupport, PromptProfile } from '@breeze/shared';

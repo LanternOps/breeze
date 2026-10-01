@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/discovery.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { listMock, constructorOptions, withSystemDbAccessContextMock, sendOpsAlertMock } = vi.hoisted(() => ({

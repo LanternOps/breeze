@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/platformModels.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiPlatformModelRow } from '../../db/schema';
 import { startPlatformModelSnapshotRefresher, toPlatformModel } from './platformModels';

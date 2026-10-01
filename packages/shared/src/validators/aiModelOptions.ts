@@ -1,4 +1,3 @@
-// packages/shared/src/validators/aiModelOptions.ts
 /**
  * AI model registry (#7598) option contract. Shared by the API (registry,
  * wire-param derivation, pricing) and the web (/admin/ai-models). Leaf module:

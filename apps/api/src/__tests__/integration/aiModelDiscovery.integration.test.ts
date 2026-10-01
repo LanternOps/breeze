@@ -1,4 +1,3 @@
-// apps/api/src/__tests__/integration/aiModelDiscovery.integration.test.ts
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

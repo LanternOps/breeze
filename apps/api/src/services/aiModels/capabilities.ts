@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/capabilities.ts
 /**
  * AI model registry (spec §7): turn the raw Anthropic Models API
  * `capabilities` tree into the facts the wire layer needs. Pure; no I/O.

@@ -1,4 +1,3 @@
-// apps/web/src/components/admin/AiModels.tsx
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Pencil, RefreshCw, Sparkles, Star } from 'lucide-react';

@@ -1,4 +1,3 @@
-// apps/api/src/services/aiModels/platformModels.ts
 /**
  * AI model registry W01 (#7599): the platform model catalog
  * (`ai_platform_models`). Task 7 adds the type and the row mapper; Task 9 adds
