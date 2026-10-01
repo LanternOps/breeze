@@ -12,8 +12,8 @@ import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
-import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import { captureAtMostHourly } from './llm/platformKeyAlert';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
 import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
@@ -1852,6 +1852,39 @@ async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerC
 }
 
 /**
+ * Task 15 (#7601): "what will a chat here bill to?" is the funding of the
+ * offering a chat in this org resolves to now (per offering, never inferred
+ * per org). When chat cannot resolve (no eligible model, registry not cut
+ * over yet, no partner), the label of the spend already recorded this month
+ * (the monthly rollup row the ledger settlement stamps), then `platform`.
+ * A display read: it never throws.
+ */
+async function resolveUsageBilledTo(
+  orgId: string,
+  monthlyBillingSource: AiBillingSource | null | undefined,
+): Promise<AiBillingSource> {
+  const rollupLabel: AiBillingSource = monthlyBillingSource === 'partner_key' ? 'partner_key' : 'platform';
+  try {
+    // Lazy: the resolver graph (registry cutover, legacy projection) must not
+    // load with every aiCostTracker importer.
+    const { readOrgPartnerId } = await import('./aiModels/candidateLoader');
+    const partnerId = await readOrgPartnerId(orgId);
+    if (!partnerId) return rollupLabel;
+    const { resolveModel } = await import('./aiModels/resolveModel');
+    const chat = await resolveModel({ partnerId, orgId, surface: 'chat' });
+    return chat.ok ? chat.funding : rollupLabel;
+  } catch (error) {
+    // /ai/usage is polled by the header indicator: one report per org per hour.
+    captureAtMostHourly(`usage-billed-to:${orgId}`, () => {
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        service: 'aiCostTracker.getUsageSummary', orgId,
+      });
+    });
+    return rollupLabel;
+  }
+}
+
+/**
  * Get usage summary for an org.
  *
  * `includeCredits` gates the partner-wide credit pool, which an org-scoped
@@ -1931,7 +1964,7 @@ export async function getUsageSummary(orgId: string, options: { includeCredits?:
     ORDER BY created_at, id
   `);
 
-  const billedTo = await getLlmBillingSourceForOrg(orgId);
+  const billedTo = await resolveUsageBilledTo(orgId, monthlyUsage?.billingSource);
 
   // Only worth a lookup when traffic is actually billed to the partner's own
   // key — platform-key orgs never stamp a catalog_entry_id on their sessions.

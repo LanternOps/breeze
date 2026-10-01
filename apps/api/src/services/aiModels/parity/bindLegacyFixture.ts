@@ -1,4 +1,4 @@
-/** Bind one parity fixture to the legacy mocks (#7600 W02; W03 Task 1 imports it). */
+/** Bind one parity fixture to the legacy mocks (#7600 W02; W03's registrySnapshotDeps imports it). */
 import { organizations, partnerAiConnections, partnerLlmConfigs } from '../../../db/schema';
 import { columnAad, encryptedColumnRegistry } from '../../encryptedColumnRegistry';
 import { encryptSecret } from '../../secretCrypto';

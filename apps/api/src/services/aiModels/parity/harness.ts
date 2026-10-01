@@ -1,8 +1,9 @@
 /**
  * AI model registry parity harness (#7600 W02; reused by W03 with
- * resolveModel as the registry side). The legacy side is computed by the REAL
- * legacy functions (legacyOracle.ts); the registry side by whatever the
- * caller passes (W02: projectSurfaceUse over the materialized projection).
+ * resolveModel as the registry side). The legacy side is a parameter: W02
+ * passed the REAL legacy functions (oracle retired in W03 Task 15); W03 passes
+ * the frozen goldens (w03Goldens.json). The registry side is whatever the
+ * caller passes.
  */
 import type { AiSurface } from '@breeze/shared';
 import type { ListedProvider } from '../../llmProviderCatalog';

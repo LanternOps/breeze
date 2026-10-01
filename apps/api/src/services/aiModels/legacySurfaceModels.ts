@@ -2,10 +2,10 @@
  * The pre-registry (legacy) model choice for every AI surface whose rule is
  * more than "the resolved partner default" (#7600, AI model registry W02).
  *
- * EXTRACTED, not re-implemented: each legacy call site calls the function
- * below, and the W02 parity oracle (parity/legacyOracle.ts) calls the same
- * function. A parity test is only discriminating when its oracle IS the
- * legacy path. It outlives the routing cutover: W03's per-partner cutover
+ * EXTRACTED, not re-implemented: each legacy call site called the function
+ * below, and so did W02's parity oracle (retired in W03 Task 15 once the
+ * legacy routing was frozen into parity/w03Goldens.json). It outlives the
+ * routing cutover: W03's per-partner cutover
  * still runs the W02 projection, which uses these pickers. W08 deletes it.
  */
 

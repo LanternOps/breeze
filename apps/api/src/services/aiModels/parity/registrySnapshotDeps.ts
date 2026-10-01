@@ -27,7 +27,7 @@ import type { ParityFixture } from './harness';
 import { projectionEnvFor } from './projectionEnv';
 import { materializeDesiredState, type RegistrySnapshot } from './storeProjection';
 
-/** The same projection W02's parity.test.ts materializes for this fixture (incl. the sealed legacy key). */
+/** The same projection W02's parity suite materialized for this fixture (incl. the sealed legacy key). */
 export function storeFor(fixture: ParityFixture): RegistrySnapshot {
   const sealed = bindLegacyFixture(fixture);
   const desired = buildDesiredRegistryState(fixture.snapshot, projectionEnvFor(fixture));

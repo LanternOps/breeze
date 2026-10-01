@@ -6,7 +6,6 @@
 import { sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
-import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException } from './sentry';
 
 export const MAX_ALERT_THRESHOLDS = 5;
@@ -74,15 +73,13 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
   const run = async (): Promise<CreatedAlertEvent[]> => {
     const budget = await getEffectiveAiBudget(orgId);
     if (!budget.enabled) return [];
-    // No-cap orgs are the common case: bail before the billing-source lookup
-    // (getLlmBillingSourceForOrg — two queries) so an uncapped org costs one
-    // effective-budget read and nothing else. Same cap-truthiness rule as the
-    // per-period skip below.
+    // No-cap orgs are the common case: bail before any usage read so an
+    // uncapped org costs one effective-budget read and nothing else. Same
+    // cap-truthiness rule as the per-period skip below.
     const hasCap = (cap: number | null | undefined) => !!cap && cap > 0;
     if (!hasCap(budget.dailyBudgetCents) && !hasCap(budget.monthlyBudgetCents)) return [];
     const ladder = budget.alertThresholdPercents;
     const keys = periodKeysFor(now);
-    const billingSource = await getLlmBillingSourceForOrg(orgId);
     const created: CreatedAlertEvent[] = [];
 
     const periods: Array<{ period: AiBudgetPeriod; key: string; cap: number | null }> = [
@@ -92,12 +89,15 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
 
     for (const { period, key, cap } of periods) {
       if (!cap || cap <= 0) continue;
-      const usage = await db.execute<{ total_cost_cents: number }>(sql`
-        SELECT total_cost_cents FROM ai_cost_usage
+      const usage = await db.execute<{ total_cost_cents: number; billing_source: string | null }>(sql`
+        SELECT total_cost_cents, billing_source FROM ai_cost_usage
         WHERE org_id = ${orgId}::uuid AND period = ${period} AND period_key = ${key}
         LIMIT 1
       `);
       const used = Number(usage[0]?.total_cost_cents ?? 0);
+      // The funding of the spend being alerted on: the label the ledger
+      // settlement stamped on this rollup row (spec §5.5), not inferred per org.
+      const billingSource = usage[0]?.billing_source === 'partner_key' ? 'partner_key' : 'platform';
       const pct = computeBudgetPct(used, cap);
       if (pct === null) continue;
       const rung = pickRung(pct, ladder);

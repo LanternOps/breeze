@@ -2,7 +2,8 @@
  * The W02 projection: legacy config + env → the registry state that makes
  * every AI surface keep today's destination, funding source and model
  * (spec §10, quorum #3). Pure. Applied by legacyReconcile.ts; checked against
- * the REAL legacy code by parity/parity.test.ts. Deleted in W08 with the
+ * the REAL legacy code by W02's parity suite (frozen into
+ * parity/w03Goldens.json, retired in W03 Task 15). Deleted in W08 with the
  * legacy tables.
  */
 import { AI_SURFACES, type AiSurface, type ModelRates } from '@breeze/shared';

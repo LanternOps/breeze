@@ -135,12 +135,23 @@ vi.mock('./effectiveSettings', () => ({
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) }));
 
-const { getLlmBillingSourceForOrgMock } = vi.hoisted(() => ({
-  getLlmBillingSourceForOrgMock: vi.fn(),
+// Task 15 (#7601): getUsageSummary's billedTo is the funding a chat in the
+// org would resolve to (resolveModel), falling back to the monthly rollup label.
+const { resolveModelMock, readOrgPartnerIdMock } = vi.hoisted(() => ({
+  resolveModelMock: vi.fn(),
+  readOrgPartnerIdMock: vi.fn(),
 }));
-vi.mock('./llm/llmConfigResolver', () => ({
-  getLlmBillingSourceForOrg: (...args: unknown[]) => getLlmBillingSourceForOrgMock(...args),
+vi.mock('./aiModels/resolveModel', () => ({
+  resolveModel: (...args: unknown[]) => resolveModelMock(...args),
 }));
+vi.mock('./aiModels/candidateLoader', () => ({
+  readOrgPartnerId: (...args: unknown[]) => readOrgPartnerIdMock(...args),
+}));
+
+/** The funding a chat in the org resolves to, for the next getUsageSummary. */
+function chatFundingOnce(funding: 'platform' | 'partner_key') {
+  resolveModelMock.mockResolvedValueOnce({ ok: true, funding });
+}
 
 const { getCatalogEntryNameMock } = vi.hoisted(() => ({
   getCatalogEntryNameMock: vi.fn(),
@@ -250,7 +261,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.BILLING_SERVICE_URL;
   delete process.env.BILLING_SERVICE_API_KEY;
-  getLlmBillingSourceForOrgMock.mockResolvedValue('platform');
+  resolveModelMock.mockReset().mockResolvedValue({ ok: true, funding: 'platform' });
+  readOrgPartnerIdMock.mockReset().mockResolvedValue('partner-1');
   getCatalogEntryNameMock.mockReset();
 });
 
@@ -1137,21 +1149,75 @@ describe('recordSessionlessSdkUsage', () => {
 });
 
 describe('getUsageSummary billing display', () => {
+  /** Route the no-column `db.select()` reads (daily, then monthly rollup row). */
+  function rollupRows(daily: Record<string, unknown> | null, monthly: Record<string, unknown> | null) {
+    setupDbMocks(null);
+    const base = mockDb.select.getMockImplementation() as (cols?: Record<string, unknown>) => unknown;
+    const queue = [daily, monthly];
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
+      if (cols) return base(cols);
+      const row = queue.shift() ?? null;
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) })),
+        })),
+      };
+    });
+  }
+
   it.each([
     ['partner_key', 'partner_key'],
     ['platform', 'platform'],
-  ] as const)('reports billing-source lookup %s as %s', async (source, billedTo) => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce(source);
+  ] as const)('billedTo is the funding a chat in this org would use (%s)', async (funding, billedTo) => {
+    chatFundingOnce(funding);
     setupDbMocks(null);
 
     await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo });
-    expect(getLlmBillingSourceForOrgMock).toHaveBeenCalledWith('org-1');
+    expect(readOrgPartnerIdMock).toHaveBeenCalledWith('org-1');
+    expect(resolveModelMock).toHaveBeenCalledWith({ partnerId: 'partner-1', orgId: 'org-1', surface: 'chat' });
+  });
+
+  it('a chat funding label wins over a contradicting rollup label', async () => {
+    chatFundingOnce('platform');
+    rollupRows(null, { billingSource: 'partner_key', totalCostCents: 5 });
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo: 'platform' });
+  });
+
+  it('billedTo falls back to the monthly rollup label when chat cannot resolve', async () => {
+    resolveModelMock.mockResolvedValueOnce({ ok: false, reason: 'no_eligible_model', recoverable: true, offeringId: null, message: 'm' });
+    rollupRows(null, { billingSource: 'partner_key', totalCostCents: 5 });
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo: 'partner_key' });
+  });
+
+  it('billedTo is platform when chat cannot resolve and there is no monthly rollup', async () => {
+    resolveModelMock.mockResolvedValueOnce({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'm' });
+    rollupRows(null, null);
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo: 'platform' });
+  });
+
+  it('does not resolve a chat model for an org with no partner; uses the rollup label', async () => {
+    readOrgPartnerIdMock.mockResolvedValueOnce(null);
+    rollupRows(null, { billingSource: 'partner_key', totalCostCents: 5 });
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo: 'partner_key' });
+    expect(resolveModelMock).not.toHaveBeenCalled();
+  });
+
+  it('never throws when the chat resolution fails; degrades to the rollup label', async () => {
+    resolveModelMock.mockRejectedValueOnce(new Error('db down'));
+    rollupRows(null, { billingSource: 'partner_key', totalCostCents: 5 });
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({ billedTo: 'partner_key' });
+    expect(captureException).toHaveBeenCalled();
   });
 });
 
 describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
   it('names the endpoint when the org has a recent catalog-routed session', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    chatFundingOnce('partner_key');
     getCatalogEntryNameMock.mockResolvedValueOnce('OpenRouter');
     setupDbMocks(null, 'entry-1');
 
@@ -1162,7 +1228,7 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
   });
 
   it('is null when billed to the partner key but no session ever used a catalog endpoint', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    chatFundingOnce('partner_key');
     setupDbMocks(null, undefined);
 
     await expect(getUsageSummary('org-1')).resolves.toMatchObject({
@@ -1177,7 +1243,7 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
   // tense after the partner has switched back to Anthropic (direct) or to a
   // different endpoint. The lookup must read the org's LATEST session.
   it('is null once the org\'s most recent session ran direct again after a catalog-routed one', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    chatFundingOnce('partner_key');
     setupDbMocks(null, null);
 
     await expect(getUsageSummary('org-1')).resolves.toMatchObject({
@@ -1187,7 +1253,7 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
   });
 
   it('never narrows the lookup to catalog-routed sessions', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    chatFundingOnce('partner_key');
     getCatalogEntryNameMock.mockResolvedValueOnce('OpenRouter');
     const captured = setupDbMocks(null, 'entry-1');
 
@@ -1200,7 +1266,7 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
   });
 
   it('is null without a lookup when billed to the platform key', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     setupDbMocks(null, 'entry-1');
 
     await expect(getUsageSummary('org-1')).resolves.toMatchObject({
@@ -1635,7 +1701,7 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
   });
 
   it('returns the cached credit balance when billed to the platform and a cache entry exists', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
 
     const summary = await getUsageSummary('org1', { includeCredits: true });
@@ -1648,7 +1714,7 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
   // a WARM cache, so a null here is the flag withholding it, not an empty
   // cache: without the gate this same fixture returns the balance above.
   it('is null when the caller did not ask for credits, even with a warm cache', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
 
     const summary = await getUsageSummary('org1');
@@ -1658,7 +1724,7 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
   });
 
   it('is null for BYOK orgs (billedTo partner_key): never even reads the cache', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    chatFundingOnce('partner_key');
 
     const summary = await getUsageSummary('org1', { includeCredits: true });
 
@@ -1667,7 +1733,7 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
   });
 
   it('is null when the org has no partner id', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
       const isPartnerLookup = !!cols && 'partnerId' in cols;
       return {
@@ -1686,7 +1752,7 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
   });
 
   it('is null when uncached and no billing service is configured (self-hosted)', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(null);
 
     const summary = await getUsageSummary('org1', { includeCredits: true });
@@ -1695,14 +1761,14 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
   });
 
   it('never throws when the Redis read fails; degrades to null', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockRejectedValueOnce(new Error('redis down'));
 
     await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
   });
 
   it('is null (not a throw) when the cached value is corrupt/not valid JSON', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce('not-json');
 
     await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
@@ -1728,7 +1794,7 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
 
   it('a cache HIT does not call the billing service at all', async () => {
     const fetchMock = enableBillingService();
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
 
     const summary = await getUsageSummary('org1', { includeCredits: true });
@@ -1744,7 +1810,7 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
     fetchMock.mockResolvedValueOnce(billingCreditsResponse({
       allowed: true, remainingCredits: 777, includedBalance: 200, purchasedBalance: 577, plan: 'pro',
     }));
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(null);
 
     const summary = await getUsageSummary('org1', { includeCredits: true });
@@ -1766,7 +1832,7 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
   it('a billing HTTP failure on the miss path yields credits: null without throwing', async () => {
     const fetchMock = enableBillingService();
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(null);
 
     await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
@@ -1775,7 +1841,7 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
   it('a billing transport failure on the miss path yields credits: null without throwing', async () => {
     const fetchMock = enableBillingService();
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValueOnce(null);
 
     await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
@@ -1795,7 +1861,7 @@ describe('billing internal route prefix (#5591)', () => {
     fetchMock.mockResolvedValueOnce(billingCreditsResponse({
       allowed: true, remainingCredits: 500, plan: 'pro',
     }));
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    chatFundingOnce('platform');
     redisGet.mockResolvedValue(null);
 
     await getUsageSummary('org1', { includeCredits: true });

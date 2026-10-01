@@ -1,6 +1,6 @@
 /**
  * W03 parity (#7601): the REAL resolveModel against the legacy routing frozen
- * by w03Goldens.test.ts, through W02's harness (#7600 Task 11) — same
+ * in w03Goldens.json (W03 Task 1; the live-oracle check retired in Task 15), through W02's harness (#7600 Task 11) — same
  * fixtures, same queries, same comparison rule (`sameUse`), same declared
  * divergences. Only the legacy side changed: a golden lookup instead of the
  * legacy code, which W03 deletes.
