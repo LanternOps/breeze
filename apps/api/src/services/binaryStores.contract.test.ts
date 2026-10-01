@@ -38,7 +38,7 @@ vi.mock('./s3Storage', () => {
         bucket.objects.set(`${prefix}/${entry.name}`, join(dir, entry.name));
         uploaded++;
       }
-      return { uploaded, skipped: 0, errors: [] };
+      return { uploaded, skipped: 0, errors: [], failedKeys: [] };
     },
     getPresignedUrl: async (key: string) => {
       bucket.reads.push(key);
