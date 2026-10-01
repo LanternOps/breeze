@@ -49,6 +49,11 @@ export type AlertRuleOverrides = {
   // #5289 — set by ruleConversionService when this rule is converted to a
   // monitor (the rule itself stays, deactivated, as a historical record).
   convertedToMonitorId?: string;
+  // #7626 — stamped by the built-in rule producers (patchAlerts,
+  // policyAlertBridge, configComplianceAlertBridge); read as `unknown`.
+  source?: unknown;
+  policyName?: unknown;
+  configPolicyComplianceRuleName?: unknown;
 };
 
 export { getPagination } from '../../utils/pagination';
@@ -540,6 +545,15 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
     // #7206 — built-in system anchor rule (services/monitors/systemManagedRules.ts):
     // never offered for conversion.
     systemManaged: template?.isBuiltIn === true,
+    // #7626 — what a built-in rule is about, so the Built-in alerts list can
+    // label `policy-violation:<uuid>` / `config-compliance:<id>:<hash>` rows
+    // by policy / compliance rule instead of their machine names.
+    systemSource: template?.isBuiltIn === true && typeof overrides.source === 'string' ? overrides.source : null,
+    systemSubject: template?.isBuiltIn === true
+      ? (typeof overrides.policyName === 'string' ? overrides.policyName
+        : typeof overrides.configPolicyComplianceRuleName === 'string' ? overrides.configPolicyComplianceRuleName
+          : null)
+      : null,
     // #5289 — lets the Legacy rules list show a "Converted" badge instead of
     // the Convert action for a rule that already went through conversion.
     convertedToMonitorId: overrides.convertedToMonitorId ?? null,

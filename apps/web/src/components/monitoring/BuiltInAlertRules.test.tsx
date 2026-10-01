@@ -34,7 +34,7 @@ describe('BuiltInAlertRules (#7626)', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(json({ data: [rule()] }));
     render(<BuiltInAlertRules orgId="org-1" />);
     await screen.findByTestId('builtin-alert-rules-row-rule-patch');
-    expect(fetchWithAuth).toHaveBeenCalledWith('/alerts/rules?limit=200&systemManaged=true&orgId=org-1');
+    expect(fetchWithAuth).toHaveBeenCalledWith('/alerts/rules?limit=100&systemManaged=true&orgId=org-1');
     expect(screen.getByTestId('builtin-alert-rules-row-rule-patch').textContent).toContain('Acme Dental');
   });
 
@@ -45,7 +45,7 @@ describe('BuiltInAlertRules (#7626)', () => {
     ] }));
     render(<BuiltInAlertRules />);
     await screen.findByTestId('builtin-alert-rules-row-rule-patch');
-    expect(fetchWithAuth).toHaveBeenCalledWith('/alerts/rules?limit=200&systemManaged=true');
+    expect(fetchWithAuth).toHaveBeenCalledWith('/alerts/rules?limit=100&systemManaged=true');
     expect(screen.queryByTestId('builtin-alert-rules-row-rule-custom')).toBeNull();
   });
 
@@ -78,6 +78,42 @@ describe('BuiltInAlertRules (#7626)', () => {
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('walks every page so no rule past the API page cap is left unswitchable', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => rule({ id: `r-${i}` }));
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(json({ data: page1, pagination: { page: 1, limit: 100, total: 101 } }))
+      .mockResolvedValueOnce(json({ data: [rule({ id: 'r-100' })], pagination: { page: 2, limit: 100, total: 101 } }));
+    render(<BuiltInAlertRules />);
+    await screen.findByTestId('builtin-alert-rules-row-r-100');
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(2, '/alerts/rules?limit=100&systemManaged=true&page=2');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('labels policy and compliance rules by what they are about, not their machine names', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(json({ data: [
+      rule({ id: 'r-pol', name: 'policy-violation:5d4c', systemSource: 'policy-evaluation', systemSubject: 'Baseline security' }),
+      rule({ id: 'r-cc', name: 'config-compliance:x:y', systemSource: 'config-policy-compliance', systemSubject: 'BitLocker on' }),
+    ] }));
+    render(<BuiltInAlertRules />);
+    const pol = await screen.findByTestId('builtin-alert-rules-row-r-pol');
+    expect(pol.textContent).toContain('Policy violations: Baseline security');
+    expect(pol.textContent).not.toContain('policy-violation:');
+    expect(screen.getByTestId('builtin-alert-rules-row-r-cc').textContent).toContain('Configuration compliance: BitLocker on');
+  });
+
+  it('drops the previous org\'s rows when the refetch for a new org fails', async () => {
+    vi.mocked(fetchWithAuth)
+      .mockResolvedValueOnce(json({ data: [rule()] }))
+      .mockResolvedValueOnce(json({ error: 'boom' }, 500));
+    const { rerender } = render(<BuiltInAlertRules orgId="org-1" />);
+    await screen.findByTestId('builtin-alert-rules-row-rule-patch');
+
+    rerender(<BuiltInAlertRules orgId="org-2" />);
+
+    await screen.findByText('Failed to load built-in alerts');
+    expect(screen.queryByTestId('builtin-alert-rules-row-rule-patch')).toBeNull();
   });
 
   it('renders nothing when there are no built-in rules yet', async () => {

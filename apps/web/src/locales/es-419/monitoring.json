@@ -384,6 +384,10 @@
       "organization": "Organización",
       "active": "Activa"
     },
+    "kinds": {
+      "policyViolation": "Infracciones de directiva: {{subject}}",
+      "configCompliance": "Cumplimiento de configuración: {{subject}}"
+    },
     "toggle": "Activar o desactivar {{name}}",
     "switchedOn": "{{name}} activada",
     "switchedOff": "{{name}} desactivada",

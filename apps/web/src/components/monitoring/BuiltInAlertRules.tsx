@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -16,7 +16,15 @@ type BuiltInRule = {
   orgId: string | null;
   isActive: boolean;
   systemManaged?: boolean;
+  /** `overrideSettings.source` of a built-in rule (policy-evaluation, …). */
+  systemSource?: string | null;
+  /** The policy / compliance rule a built-in rule is about, when it has one. */
+  systemSubject?: string | null;
 };
+
+/** The API caps a page at 100; walk pages so no rule is left unswitchable. */
+const PAGE_LIMIT = 100;
+const MAX_PAGES = 50;
 
 /**
  * Built-in system alert rules (#7626): patch job failures, reboot pending too
@@ -33,16 +41,32 @@ export default function BuiltInAlertRules({ orgId }: { orgId?: string | null }) 
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState<string | null>(null);
 
+  // A slower response for a previous org must never overwrite the current one.
+  const fetchSeq = useRef(0);
+
   const fetchRules = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     try {
       setError(undefined);
-      const query = `/alerts/rules?limit=200&systemManaged=true${orgId ? `&orgId=${encodeURIComponent(orgId)}` : ''}`;
-      const response = await fetchWithAuth(query);
-      if (!response.ok) throw new Error(stableT('monitoring:builtInRules.errors.fetch'));
-      const data = await response.json();
-      const all: BuiltInRule[] = Array.isArray(data?.data) ? data.data : [];
+      const orgQuery = orgId ? `&orgId=${encodeURIComponent(orgId)}` : '';
+      const all: BuiltInRule[] = [];
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const response = await fetchWithAuth(
+          `/alerts/rules?limit=${PAGE_LIMIT}&systemManaged=true${orgQuery}${page > 1 ? `&page=${page}` : ''}`,
+        );
+        if (!response.ok) throw new Error(stableT('monitoring:builtInRules.errors.fetch'));
+        const data = await response.json();
+        const batch: BuiltInRule[] = Array.isArray(data?.data) ? data.data : [];
+        all.push(...batch);
+        const total = Number(data?.pagination?.total ?? 0);
+        if (batch.length === 0 || all.length >= total) break;
+      }
+      if (seq !== fetchSeq.current) return;
       setRows(all.filter((rule) => rule.systemManaged === true));
     } catch (err) {
+      if (seq !== fetchSeq.current) return;
+      // Never leave another org's rows (with live switches) under the error.
+      setRows([]);
       setError(err instanceof Error ? err.message : stableT('monitoring:builtInRules.errors.fetch'));
     }
   }, [orgId, stableT]);
@@ -50,6 +74,19 @@ export default function BuiltInAlertRules({ orgId }: { orgId?: string | null }) 
   useEffect(() => {
     void fetchRules();
   }, [fetchRules]);
+
+  const orgName = (id: string | null) => organizations.find((org) => org.id === id)?.name ?? '—';
+  // Policy / compliance anchor rules are named `policy-violation:<uuid>` and
+  // `config-compliance:<id>:<hash>`; label them by what they are about.
+  const label = (rule: BuiltInRule) => {
+    if (rule.systemSubject && rule.systemSource === 'policy-evaluation') {
+      return t('monitoring:builtInRules.kinds.policyViolation', { subject: rule.systemSubject });
+    }
+    if (rule.systemSubject && rule.systemSource === 'config-policy-compliance') {
+      return t('monitoring:builtInRules.kinds.configCompliance', { subject: rule.systemSubject });
+    }
+    return rule.name;
+  };
 
   const handleToggle = async (rule: BuiltInRule) => {
     const next = !rule.isActive;
@@ -63,8 +100,8 @@ export default function BuiltInAlertRules({ orgId }: { orgId?: string | null }) 
           }),
         errorFallback: t('monitoring:builtInRules.errors.toggle'),
         successMessage: next
-          ? t('monitoring:builtInRules.switchedOn', { name: rule.name })
-          : t('monitoring:builtInRules.switchedOff', { name: rule.name }),
+          ? t('monitoring:builtInRules.switchedOn', { name: label(rule) })
+          : t('monitoring:builtInRules.switchedOff', { name: label(rule) }),
         onUnauthorized: UNAUTHORIZED,
       });
       const isActive = typeof updated?.isActive === 'boolean' ? updated.isActive : next;
@@ -78,8 +115,6 @@ export default function BuiltInAlertRules({ orgId }: { orgId?: string | null }) 
   };
 
   if (!error && rows.length === 0) return null;
-
-  const orgName = (id: string | null) => organizations.find((org) => org.id === id)?.name ?? '—';
 
   return (
     <div className="space-y-2" data-testid="builtin-alert-rules">
@@ -107,7 +142,7 @@ export default function BuiltInAlertRules({ orgId }: { orgId?: string | null }) 
             <tbody className="divide-y">
               {rows.map((rule) => (
                 <tr key={rule.id} data-testid={`builtin-alert-rules-row-${rule.id}`}>
-                  <td className="px-4 py-3">{rule.name}</td>
+                  <td className="px-4 py-3">{label(rule)}</td>
                   <td className="px-4 py-3">{orgName(rule.orgId)}</td>
                   <td className="px-4 py-3">
                     <Switch
@@ -115,7 +150,7 @@ export default function BuiltInAlertRules({ orgId }: { orgId?: string | null }) 
                       onToggle={() => void handleToggle(rule)}
                       disabled={saving === rule.id}
                       testId={`builtin-alert-rules-active-${rule.id}`}
-                      ariaLabel={t('monitoring:builtInRules.toggle', { name: rule.name })}
+                      ariaLabel={t('monitoring:builtInRules.toggle', { name: label(rule) })}
                     />
                   </td>
                 </tr>

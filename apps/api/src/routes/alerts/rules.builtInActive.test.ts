@@ -160,6 +160,22 @@ describe('PATCH /alerts/rules/:id/active — built-in rule on/off (#7626)', () =
     }));
   });
 
+  it('scopes the UPDATE to the rule id AND its org', async () => {
+    await patch({ isActive: false });
+
+    const where = JSON.stringify(dbState.whereCalls[0]);
+    expect(where).toContain('alert_rules.id');
+    expect(where).toContain('alert_rules.org_id');
+    expect(where).toContain('org-1');
+  });
+
+  it('404s without auditing when the UPDATE matches no row', async () => {
+    dbState.updated = [];
+
+    expect((await patch({ isActive: false })).status).toBe(404);
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
   it('switches a built-in rule back on', async () => {
     getRuleMock.mockResolvedValue(builtInRule({ isActive: false }));
     dbState.updated = [builtInRule({ isActive: true })];

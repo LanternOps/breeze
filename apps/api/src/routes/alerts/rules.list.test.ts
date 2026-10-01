@@ -292,6 +292,26 @@ describe('GET /alerts/rules (dual-axis list, #2128)', () => {
     expect(where).toContain('managedByMonitorId');
   });
 
+  // #7626: the Monitors "Built-in alerts" list — the complement of the above.
+  it('systemManaged=true keeps only built-in anchor rules (EXISTS, not NOT EXISTS) in the WHERE', async () => {
+    authRef.current = {
+      scope: 'organization',
+      partnerId: null,
+      orgId: 'org-1',
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    } as typeof authRef.current;
+    dbQueueRef.current = [[{ count: 0 }], []];
+
+    const res = await makeApp().request('/alerts/rules?systemManaged=true');
+    expect(res.status).toBe(200);
+    const where = JSON.stringify(capturedWhere.current);
+    expect(where).toContain('is_built_in');
+    expect(where).toMatch(/exists/i);
+    expect(where).not.toMatch(/not exists/i);
+    expect(where).toContain('managedByMonitorId');
+  });
+
   it('without needsConversion the list is unchanged (built-in rules still listed)', async () => {
     authRef.current = {
       scope: 'organization',
