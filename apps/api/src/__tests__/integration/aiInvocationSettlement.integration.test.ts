@@ -281,6 +281,55 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(reset);
   });
 
+  it('a deferred re-baseline replayed after a newer turn settled does not move the snapshot back under it (review S10)', async () => {
+    const snap = (input: number, output: number): SdkUsageSnapshot => ({
+      version: 1, models: { [binding.wireModel]: { tokens: { input, output, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0 } },
+    });
+    const own = (input: number, output: number) => [{ model: binding.wireModel, tokens: { input, output, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0, speedServed: 'standard' as const, providerModel: null }];
+    const high = snap(1_000_000, 500_000);
+    await settleInvocation(settleInput(s, binding, await reserve(s, binding), {
+      sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: high, usageConfirmed: true, usageNote: 'first_result' },
+    }));
+
+    // Turn 1: the CLI's counters restarted (regressed) and its settlement is deferred by lock contention.
+    const t1 = await reserve(s, binding);
+    const base1 = await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId });
+    expect(base1).toEqual(high);
+    const blocker = await holdOrganizationLock(s.orgId);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const out = await settleInvocation(settleInput(s, binding, t1, {
+        usage: own(10, 5),
+        sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: snap(10, 5), baseSnapshot: base1, usageConfirmed: false, usageNote: 'snapshot_regressed' },
+      }));
+      expect(out).toMatchObject({ deferred: true });
+      expect(out.unrecorded).toBeFalsy();
+    } finally {
+      await blocker.release();
+      error.mockRestore();
+    }
+
+    // Turn 2 does not bill against turn 1's pending re-baseline; it regresses against
+    // the stored snapshot itself and settles NOW, moving the snapshot to its reading.
+    const base2 = await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId });
+    expect(base2).toEqual(high);
+    await settleInvocation(settleInput(s, binding, await reserve(s, binding), {
+      usage: own(30, 15),
+      sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: snap(40, 20), baseSnapshot: base2, usageConfirmed: false, usageNote: 'snapshot_regressed' },
+    }));
+    expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(snap(40, 20));
+
+    // The late replay of turn 1 settles its ledger row but leaves turn 2's snapshot alone:
+    // writing snap(10, 5) back would bill turn 2's 30/15 tokens again on turn 3.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const replayed = await replayPendingAiSettlements();
+    warn.mockRestore();
+    expect(replayed.filter((r) => r.reservationId === t1)).toMatchObject([{ kind: 'settled' }]);
+    expect(await reservationState(t1)).toMatchObject({ status: 'settled', pending_settlement: null });
+    expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(snap(40, 20));
+    expect(await q(sql`SELECT 1 FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`)).toHaveLength(3);
+  }, 30_000);
+
   it('a stable-key replay after a rate change re-binds the active reservation before dispatch (finding 4)', async () => {
     const agentBinding = await bindingFor(s, 'ai_agents');
     const key = `ai-agent-run:${randomUUID()}`;

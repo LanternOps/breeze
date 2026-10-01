@@ -353,16 +353,30 @@ describe('SDK usage snapshot (W05 spike): advanced in the settlement transaction
     primeWithSnapshot(NEXT);
     await settleAiBudgetReservation({
       orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()],
-      sdkUsage: { sessionId: SESSION_ID, nextSnapshot: PREV, rebaseline: true },
+      sdkUsage: { sessionId: SESSION_ID, nextSnapshot: PREV, rebaseline: true, baseSnapshot: NEXT },
     });
     expect(allSql().some((s) => /SET sdk_usage_snapshot/.test(s))).toBe(true);
   });
 
-  it('readSdkUsageSnapshot takes a pending REBASELINE as-is instead of the high-water merge', async () => {
+  it('a rebaseline whose base is no longer the stored snapshot (a newer turn settled first) leaves it alone (review S10)', async () => {
+    const OTHER: SdkUsageSnapshot = { version: 1, models: { 'claude-sonnet-5-5': { tokens: { input: 3, output: 1, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0 } } };
+    primeWithSnapshot(OTHER);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await settleAiBudgetReservation({
+      orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()],
+      sdkUsage: { sessionId: SESSION_ID, nextSnapshot: PREV, rebaseline: true, baseSnapshot: NEXT },
+    });
+    warn.mockRestore();
+    expect(allSql().some((s) => /SET sdk_usage_snapshot/.test(s))).toBe(false);
+    // The ledger row and the settle itself still go through.
+    expect(allSql().some((s) => /SET status = 'settled'/.test(s))).toBe(true);
+  });
+
+  it('readSdkUsageSnapshot ignores a pending REBASELINE: the next turn bills against the stored snapshot (review S10)', async () => {
     dbMock.execute
       .mockResolvedValueOnce([{ sdk_usage_snapshot: NEXT }])
       .mockResolvedValueOnce([{ snapshot: PREV, rebaseline: true }]);
-    await expect(readSdkUsageSnapshot({ orgId: ORG_ID, sessionId: SESSION_ID })).resolves.toEqual(PREV);
+    await expect(readSdkUsageSnapshot({ orgId: ORG_ID, sessionId: SESSION_ID })).resolves.toEqual(NEXT);
   });
 
   it('readSdkUsageSnapshot merges the stored snapshot with any pending (deferred) settlement for the session', async () => {

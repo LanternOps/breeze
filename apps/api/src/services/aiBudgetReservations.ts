@@ -197,6 +197,14 @@ export interface SettleSdkUsage {
    * Every other advance is a monotone high-water merge.
    */
   rebaseline?: boolean;
+  /**
+   * Review S10: the snapshot a re-baselining turn was computed against. The
+   * re-baseline is written only while the stored snapshot still equals it; a
+   * deferred re-baseline replayed after a newer turn advanced the session
+   * would otherwise move the snapshot back under that turn and bill its tokens
+   * again. Absent = no check (round-A behaviour).
+   */
+  baseSnapshot?: SdkUsageSnapshot | null;
 }
 
 export interface SettleAiBudgetReservationInput {
@@ -923,6 +931,18 @@ async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage):
     return;
   }
   const stored = parseSdkUsageSnapshot(current.sdk_usage_snapshot);
+  if (sdkUsage.rebaseline === true && sdkUsage.baseSnapshot !== undefined) {
+    const base = sdkUsage.baseSnapshot === null ? null : parseSdkUsageSnapshot(sdkUsage.baseSnapshot);
+    if (!sameJson(stored, base)) {
+      // A newer turn settled since this one read its base (typically: this is
+      // a deferred re-baseline replayed late). Its snapshot is the truth now;
+      // the ledger rows of this settlement still land.
+      console.warn('[AI] stale SDK usage re-baseline not applied; the session snapshot moved since the turn read it', {
+        orgId, sessionId: sdkUsage.sessionId,
+      });
+      return;
+    }
+  }
   const merged = stored && sdkUsage.rebaseline !== true ? sdkUsageHighWater(stored, next) : next;
   if (stored && sameJson(stored, merged)) return;
   await db.execute(sql`
@@ -939,7 +959,11 @@ async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage):
  * whose settlement was deferred by lock contention has been priced but not yet
  * applied, and billing the next turn's delta against the older snapshot would
  * bill that usage twice when the sweep replays it. A DEAD pending settlement
- * (finding 5) will never be applied, so it is not merged.
+ * (finding 5) will never be applied, so it is not merged. Nor is a pending
+ * RE-BASELINE (review S10): the next turn bills against the stored snapshot
+ * (it regresses too and re-baselines itself, billing its own usage), and its
+ * settlement moves the stored snapshot, so the late replay of the older
+ * re-baseline sees a changed base and leaves the snapshot alone.
  */
 export async function readSdkUsageSnapshot(input: { orgId: string; sessionId: string }): Promise<SdkUsageSnapshot | null> {
   return inReservationTransaction('aiBudgetReservations.readSdkUsageSnapshot', async () => {
@@ -959,9 +983,9 @@ export async function readSdkUsageSnapshot(input: { orgId: string; sessionId: st
         AND pending_settlement -> 'sdkUsage' ->> 'sessionId' = ${input.sessionId}
     `));
     for (const row of pending) {
+      if (row.rebaseline === true) continue;
       const p = parseSdkUsageSnapshot(row.snapshot);
-      // A pending re-baseline (review finding 3) replaces, as it will when replayed.
-      if (p) snapshot = snapshot && row.rebaseline !== true ? sdkUsageHighWater(snapshot, p) : p;
+      if (p) snapshot = snapshot ? sdkUsageHighWater(snapshot, p) : p;
     }
     return snapshot;
   });
