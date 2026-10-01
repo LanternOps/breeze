@@ -264,6 +264,11 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
   // separate ai_sessions/sites re-points commit together.
   'ai_sessions.breeze_ai_sessions_topology_site_guard': 'fires only on UPDATE OF topology_site_id and blocks a pin change; never reads or blocks org_id',
+  // AI model registry W02 (2026-11-14-100400, #7600): BEFORE UPDATE OF org_id;
+  // never RAISEs. Clears the offering pair (and options) only when the new org
+  // belongs to another partner. Merges are same-partner, so a merge repoint
+  // leaves the binding intact.
+  'ai_sessions.breeze_ai_sessions_offering_partner_guard': 'fires on UPDATE OF org_id but never blocks it; only clears the offering binding on a cross-partner org change, which a same-partner merge never makes',
   // Brokered backup writes (2026-11-08-120000 / 120100): parent-org guards that
   // check only the references (device, job, reservation, session, snapshot,
   // configuration) an INSERT sets or an UPDATE changes. An UPDATE that changes

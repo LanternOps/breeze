@@ -64,3 +64,12 @@ export async function seedOffering(input: {
     RETURNING id`;
   return String(row!.id);
 }
+
+/** Seeds a live ai_agents row (kind 'triage') owned by a partner OR an org. */
+export async function seedAgent(input: { partnerId?: string; orgId?: string; createdBy: string; model?: string | null }): Promise<string> {
+  const [row] = await fixtureSql`
+    INSERT INTO ai_agents (partner_id, org_id, kind, name, created_by, model)
+    VALUES (${input.partnerId ?? null}, ${input.orgId ?? null}, 'triage', 'W02 fixture', ${input.createdBy}, ${input.model ?? null})
+    RETURNING id`;
+  return String(row!.id);
+}

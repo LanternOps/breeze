@@ -122,3 +122,39 @@ describe('ai_invocations contract (#7600 W02)', () => {
     expect(policy?.columns['input_tokens']).toMatchObject({ decision: 'include', reviewedSensitiveName: true });
   });
 });
+
+describe('ai_sessions / ai_agents offering columns (#7600 W02)', () => {
+  const sqlText = readMigration('2026-11-14-100400-ai-model-registry-session-agent-columns.sql');
+
+  it.each(['ai_sessions_offering_org_partner_fk', 'ai_agents_offering_org_partner_fk'])(
+    '%s references organizations(id, partner_id) DEFERRABLE INITIALLY IMMEDIATE',
+    (name) => {
+      expect(sqlText).toMatch(new RegExp(`${name}\\s+FOREIGN KEY \\(org_id, offering_partner_id\\)\\s+REFERENCES public\\.organizations \\(id, partner_id\\)\\s+DEFERRABLE INITIALLY IMMEDIATE`));
+    },
+  );
+
+  it('export policy classifies the new columns (options → excludedOpen)', () => {
+    const sessions = CORE_TENANT_EXPORT_POLICY['ai_sessions']!;
+    expect(sessions.columns['offering_id']?.decision).toBe('include');
+    expect(sessions.columns['offering_partner_id']?.decision).toBe('include');
+    expect(sessions.columns['options']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
+    const agents = CORE_TENANT_EXPORT_POLICY['ai_agents']!;
+    expect(agents.columns['offering_id']?.decision).toBe('include');
+    expect(agents.columns['offering_partner_id']?.decision).toBe('include');
+  });
+
+  it('does not drop the ai_sessions.model default in W02 (deferred to W03)', () => {
+    expect(sqlText).not.toMatch(/ALTER COLUMN model DROP DEFAULT/i);
+  });
+
+  it('adds the ai_sessions constraints NOT VALID, validates them in -100500 and builds the index CONCURRENTLY in -100600', () => {
+    for (const name of ['ai_sessions_offering_shape_chk', 'ai_sessions_offering_fk', 'ai_sessions_offering_org_partner_fk']) {
+      const at = sqlText.indexOf(`ADD CONSTRAINT ${name}`);
+      expect(sqlText.slice(at, sqlText.indexOf(';', at))).toMatch(/NOT VALID$/);
+      expect(readMigration('2026-11-14-100500-ai-model-registry-session-agent-validate.sql')).toContain(`VALIDATE CONSTRAINT ${name}`);
+    }
+    const idx = readMigration('2026-11-14-100600-ai-sessions-offering-idx.sql');
+    expect(idx.startsWith('-- @no-transaction')).toBe(true);
+    expect(idx).toMatch(/CREATE INDEX CONCURRENTLY IF NOT EXISTS ai_sessions_offering_idx/);
+  });
+});

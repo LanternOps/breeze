@@ -12,7 +12,7 @@ import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { columnAad } from '../../services/encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import {
   closeRegistryFixtures,
   fixtureSql as adminSql,
@@ -21,6 +21,7 @@ import {
   partnerContext,
   seedByokConnection,
   seedOffering,
+  seedAgent,
   seedPlatformModel,
 } from './aiModelRegistryFixtures';
 
@@ -255,4 +256,109 @@ describe.skipIf(!RUN)('partner_ai_models (#7600 W02)', () => {
     const [left] = await adminSql`SELECT count(*)::int AS n FROM partner_ai_models WHERE connection_id = ${c}`;
     expect(left!.n).toBe(0);
   });
+});
+
+describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', () => {
+  async function twoPartners() {
+    const [a, b] = [await createPartner(), await createPartner()];
+    const [orgA, orgB] = [await createOrganization({ partnerId: a.id }), await createOrganization({ partnerId: b.id })];
+    const offA = await seedOffering({ partnerId: a.id, platformModelId: await seedPlatformModel() });
+    const offB = await seedOffering({ partnerId: b.id, platformModelId: await seedPlatformModel() });
+    return { a, b, orgA, orgB, offA, offB };
+  }
+  async function seedSession(orgId: string): Promise<string> {
+    const [row] = await adminSql`INSERT INTO ai_sessions (org_id) VALUES (${orgId}) RETURNING id`;
+    return String(row!.id);
+  }
+
+  it('a session cannot bind another partner\'s offering (23503 on either composite FK)', async () => {
+    const t = await twoPartners();
+    const s = await seedSession(t.orgA.id);
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_sessions SET offering_id = ${t.offB}, offering_partner_id = ${t.b.id} WHERE id = ${s}`)))
+      .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'ai_sessions_offering_org_partner_fk' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_sessions SET offering_id = ${t.offB}, offering_partner_id = ${t.a.id} WHERE id = ${s}`)))
+      .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'ai_sessions_offering_fk' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_sessions SET offering_id = ${t.offA} WHERE id = ${s}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('a cross-partner org change (device move) clears the session offering instead of aborting', async () => {
+    const t = await twoPartners();
+    const s = await seedSession(t.orgA.id);
+    await adminSql`UPDATE ai_sessions SET offering_id = ${t.offA}, offering_partner_id = ${t.a.id}, options = '{"effort":"high"}' WHERE id = ${s}`;
+    await withSystemDbAccessContext(() => db.execute(sql`UPDATE ai_sessions SET org_id = ${t.orgB.id} WHERE id = ${s}`));
+    const [row] = await adminSql`SELECT org_id, offering_id, offering_partner_id, options FROM ai_sessions WHERE id = ${s}`;
+    expect(row).toMatchObject({ org_id: t.orgB.id, offering_id: null, offering_partner_id: null, options: null });
+  });
+
+  it('a real cross-partner device move re-stamps the device-bound session through the cascade trigger and clears its offering', async () => {
+    const t = await twoPartners();
+    const [siteA, siteB] = [await createSite({ orgId: t.orgA.id }), await createSite({ orgId: t.orgB.id })];
+    const [device] = await adminSql`
+      INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status)
+      VALUES (${t.orgA.id}, ${siteA!.id}, ${`w02-move-${randomUUID()}`}, 'w02-move-host', 'linux', '22.04', 'x86_64', '0.0.0-test', 'offline')
+      RETURNING id`;
+    const [session] = await adminSql`
+      INSERT INTO ai_sessions (org_id, device_id, offering_id, offering_partner_id, options)
+      VALUES (${t.orgA.id}, ${device!.id}, ${t.offA}, ${t.a.id}, '{"effort":"high"}')
+      RETURNING id`;
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE devices SET org_id = ${t.orgB.id}, site_id = ${siteB!.id} WHERE id = ${device!.id}`));
+    const [row] = await adminSql`SELECT org_id, offering_id, offering_partner_id, options FROM ai_sessions WHERE id = ${session!.id}`;
+    expect(row).toMatchObject({ org_id: t.orgB.id, offering_id: null, offering_partner_id: null, options: null });
+  });
+
+  it('a same-partner org change keeps the binding', async () => {
+    const t = await twoPartners();
+    const orgA2 = await createOrganization({ partnerId: t.a.id });
+    const s = await seedSession(t.orgA.id);
+    await adminSql`UPDATE ai_sessions SET offering_id = ${t.offA}, offering_partner_id = ${t.a.id} WHERE id = ${s}`;
+    await withSystemDbAccessContext(() => db.execute(sql`UPDATE ai_sessions SET org_id = ${orgA2.id} WHERE id = ${s}`));
+    const [row] = await adminSql`SELECT offering_id FROM ai_sessions WHERE id = ${s}`;
+    expect(row!.offering_id).toBe(t.offA);
+  });
+
+  it('removing a connection unbinds sessions on its offerings (ON DELETE SET NULL)', async () => {
+    const p = await createPartner();
+    const org = await createOrganization({ partnerId: p.id });
+    const conn = await seedByokConnection(p.id);
+    const off = await seedOffering({ partnerId: p.id, connectionId: conn, modelId: 'claude-sonnet-5-5' });
+    const s = await seedSession(org.id);
+    await adminSql`UPDATE ai_sessions SET offering_id = ${off}, offering_partner_id = ${p.id} WHERE id = ${s}`;
+    await adminSql`DELETE FROM partner_ai_connections WHERE id = ${conn}`;
+    const [row] = await adminSql`SELECT offering_id, offering_partner_id FROM ai_sessions WHERE id = ${s}`;
+    expect(row).toMatchObject({ offering_id: null, offering_partner_id: null });
+  });
+
+  it('an agent policy cannot bind another partner\'s offering (23514 partner row, 23503 org row)', async () => {
+    const t = await twoPartners();
+    const user = await createUser({ partnerId: t.a.id });
+    const partnerAgent = await seedAgent({ partnerId: t.a.id, createdBy: user.id, model: 'claude-sonnet-5-5' });
+    const orgAgent = await seedAgent({ orgId: t.orgA.id, createdBy: user.id, model: 'claude-haiku-4-5' });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.b.id} WHERE id = ${partnerAgent}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.b.id} WHERE id = ${orgAgent}`)))
+      .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'ai_agents_offering_org_partner_fk' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.a.id} WHERE id = ${orgAgent}`)))
+      .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'ai_agents_offering_fk' } });
+    // The legitimate binding works and leaves the legacy model untouched.
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_agents SET offering_id = ${t.offA}, offering_partner_id = ${t.a.id} WHERE id = ${partnerAgent}`));
+    const [row] = await adminSql`SELECT model FROM ai_agents WHERE id = ${partnerAgent}`;
+    expect(row!.model).toBe('claude-sonnet-5-5');
+  });
+
+  it.each(['ai_sessions_offering_org_partner_fk', 'ai_agents_offering_org_partner_fk'])(
+    '%s is deferrable (merge contract) and validated',
+    async (name) => {
+      const [row] = await adminSql`SELECT condeferrable, condeferred, convalidated FROM pg_constraint WHERE conname = ${name}`;
+      expect(row).toMatchObject({ condeferrable: true, condeferred: false, convalidated: true });
+    },
+  );
 });
