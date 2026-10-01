@@ -32,6 +32,17 @@ const CONNECTIONS_MIGRATION = readFileSync(
   join(__dirname, '../../../migrations', '2026-11-14-100000-ai-model-registry-connections.sql'),
   'utf8',
 );
+// W03 Task 6B drops the W02 mirror trigger; replaying the W02 file alone would
+// re-create it in this shared database, so every replay is followed by the
+// drop, exactly as the two files apply in order on a real database.
+const DROP_MIRROR_MIGRATION = readFileSync(
+  join(__dirname, '../../../migrations', '2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql'),
+  'utf8',
+);
+async function replayConnectionsMigration(): Promise<void> {
+  await adminSql.unsafe(CONNECTIONS_MIGRATION);
+  await adminSql.unsafe(DROP_MIRROR_MIGRATION);
+}
 
 describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
   it('partner A cannot INSERT a connection for partner B (42501)', async () => {
@@ -72,7 +83,7 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
       INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, default_model)
       VALUES (${legacyId}, ${partner.id}, ${sealed!}, '4242', 'fp-legacy', NULL)`;
 
-    await adminSql.unsafe(CONNECTIONS_MIGRATION);
+    await replayConnectionsMigration();
 
     const [row] = await adminSql`SELECT * FROM partner_ai_connections WHERE id = ${legacyId}`;
     expect(row).toMatchObject({
@@ -89,7 +100,7 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
       .toThrow();
 
     // Re-applying is a no-op.
-    await adminSql.unsafe(CONNECTIONS_MIGRATION);
+    await replayConnectionsMigration();
     const [count] = await adminSql`SELECT count(*)::int AS n FROM partner_ai_connections WHERE partner_id = ${partner.id}`;
     expect(count!.n).toBe(1);
   });
@@ -100,17 +111,20 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
     await expect(seedByokConnection(p.id)).rejects.toMatchObject({ code: '23505' });
   });
 
-  it('a legacy UPDATE (e.g. markPartnerLlmError) is mirrored onto the same-id connection in the same statement', async () => {
+  // W03 Task 6B (R3): the W02 legacy-UPDATE mirror is dropped — the connection
+  // is the authority and a stray legacy write no longer reaches it.
+  it('a legacy UPDATE is no longer mirrored onto the same-id connection (mirror trigger dropped)', async () => {
     const partner = await createPartner();
     const legacyId = randomUUID();
     const sealed = encryptSecret('sk-ant-api03-mirror-5151', { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
     await adminSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint)
                    VALUES (${legacyId}, ${partner.id}, ${sealed}, '5151', 'fp')`;
-    await adminSql.unsafe(CONNECTIONS_MIGRATION);
+    await replayConnectionsMigration();
     await withSystemDbAccessContext(() => db.execute(sql`
       UPDATE partner_llm_configs SET status = 'error', last_error = 'auth_rejected' WHERE id = ${legacyId} AND config_version = 1`));
     const [row] = await adminSql`SELECT status, last_error FROM partner_ai_connections WHERE id = ${legacyId}`;
-    expect(row).toEqual({ status: 'error', last_error: 'auth_rejected' });
+    expect(row).toEqual({ status: 'active', last_error: null });
+    expect(await adminSql`SELECT 1 FROM pg_trigger WHERE tgname = 'partner_llm_configs_mirror_to_connection'`).toHaveLength(0);
   });
 
   it('the copy works for a NOSUPERUSER NOBYPASSRLS role under system scope (no role-restricted-policy blind spot)', async () => {

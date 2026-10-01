@@ -18,6 +18,7 @@ import { materializeDesiredState, projectSurfaceUse, type RegistrySnapshot } fro
 import { getLegacyModelRates } from '../../services/aiCostTracker';
 import { deletePartnerLlmConfig, getPartnerLlmStatus, updatePartnerLlmConfig } from '../../services/partnerLlmConfig';
 import { markPartnerLlmError } from '../../services/llm/llmConfigResolver';
+import { cutoverPartner } from '../../services/aiModels/registryCutover';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { closeRegistryFixtures, fixtureSql as adminSql, keySpec, seedAgent } from './aiModelRegistryFixtures';
 
@@ -385,7 +386,7 @@ describe.skipIf(!RUN)('legacy reconcile (#7600 W02)', () => {
   });
 });
 
-describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02)', () => {
+describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-native since #7601 Task 6B)', () => {
   it('PATCH → GET reflects the new pin from the registry, and every partner-default surface moves with it', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
@@ -422,37 +423,29 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02)', () => {
     expect(await withDbAccessContext(asPartner(other.id), () => getPartnerLlmStatus(partner.id))).toMatchObject({ configured: false, status: 'platform' });
   });
 
-  it('a runtime credential failure (markPartnerLlmError) shows as error on GET through the mirror trigger', async () => {
+  // W03 Task 6B (R3): the W02 mirror trigger is gone — markPartnerLlmError
+  // writes the connection itself and the legacy row is never touched.
+  it('a runtime credential failure (markPartnerLlmError) marks the connection directly; the legacy row stays frozen', async () => {
     const partner = await createPartner();
     const configId = await seedLegacyConfig(partner.id);
-    await reconcilePartnerFromLegacy(partner.id);
+    await cutoverPartner(partner.id);
     expect(await markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
     expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
+    const [legacy] = await adminSql`SELECT status, last_error FROM partner_llm_configs WHERE id = ${configId}`;
+    expect(legacy).toEqual({ status: 'active', last_error: null });
   });
 
-  // Review fix (connections exact at all times): a reconcile must not mirror a
-  // legacy status it read before markPartnerLlmError committed. The reconcile
-  // reads the legacy row FOR SHARE, so the runtime error stamp waits for the
-  // reconcile to commit and then mirrors itself through the trigger.
-  it('markPartnerLlmError racing a reconcile waits for it and is not overwritten', async () => {
+  // W03 Task 6B (finding 9): the W02 race (a reconcile mirroring a legacy status
+  // read before the error stamp committed) cannot happen to a cut-over partner —
+  // nothing re-projects it, so a later cutover attempt is a no-op.
+  it('after cutover, a runtime error stamp is never reverted by a later cutover attempt', async () => {
     const partner = await createPartner();
     const configId = await seedLegacyConfig(partner.id);
-    await reconcilePartnerFromLegacy(partner.id);
-    let mark!: Promise<boolean>;
-    let settledWhileReconcileOpen: boolean | undefined;
-    await withSystemDbAccessContext(async () => {
-      await reconcilePartnerFromLegacyInTx(partner.id);
-      mark = markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' });
-      settledWhileReconcileOpen = await Promise.race([
-        mark.then(() => true, () => true),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
-      ]);
-    });
-    expect(settledWhileReconcileOpen).toBe(false);
-    expect(await mark).toBe(true);
+    expect(await cutoverPartner(partner.id)).toBe('done');
+    expect(await markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
+    expect(await cutoverPartner(partner.id)).toBe('already');
     const [conn] = await adminSql`SELECT status, last_error FROM partner_ai_connections WHERE id = ${configId}`;
     expect(conn).toEqual({ status: 'error', last_error: 'auth_rejected' });
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
   });
 
   it('DELETE → GET reports the platform and the registry holds no connection', async () => {
@@ -465,31 +458,30 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02)', () => {
     expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${partner.id}`).toHaveLength(0);
   });
 
-  it('a 409 (no key yet) writes nothing to either store', async () => {
+  // W03 Task 6B: the gate cuts the partner over first (its one projection), so
+  // the platform assignments exist; the 409 itself writes no connection and no
+  // legacy row.
+  it('a 409 (no key yet) writes no connection and no legacy row', async () => {
     const partner = await createPartner();
     await expect(updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: 'claude-haiku-4-5' })).rejects.toMatchObject({ status: 409 });
-    expect(await adminSql`SELECT 1 FROM ai_model_assignments WHERE offering_partner_id = ${partner.id}`).toHaveLength(0);
+    expect(await adminSql`SELECT 1 FROM ai_model_registry_partner_cutover WHERE partner_id = ${partner.id}`).toHaveLength(1);
     expect(await adminSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${partner.id}`).toHaveLength(0);
     expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${partner.id}`).toHaveLength(0);
   });
 
-  // Task 12→13 carry: the facade takes the reconcile advisory lock before its
-  // legacy UPDATE (whose mirror trigger row-locks the connection), so it
-  // serializes behind a concurrent boot-sweep reconcile instead of deadlocking.
-  it('facade writes racing boot-sweep reconciles never deadlock and converge on the last legacy state', async () => {
+  // W03 Task 6B: facade writes and the partner's cutover take the same
+  // per-partner lock, so a write racing the sweep's / a request's cutover never
+  // deadlocks, the partner is projected once, and the last native edit wins.
+  it('facade writes racing the cutover never deadlock and converge on the last native edit', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
     const configId = await seedLegacyConfig(partner.id);
-    await reconcilePartnerFromLegacy(partner.id);
     const models = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-sonnet-4-6'];
     for (const model of models) {
-      // Drift the connection so each sweep must UPDATE (row-lock) it — the
-      // contended row the facade's mirror trigger also locks.
-      await adminSql`UPDATE partner_ai_connections SET key_last4 = 'zzzz' WHERE id = ${configId}`;
       await Promise.all([
-        reconcilePartnerFromLegacy(partner.id),
+        cutoverPartner(partner.id),
         updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: model }),
-        reconcilePartnerFromLegacy(partner.id),
+        cutoverPartner(partner.id),
       ]);
     }
     expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: 'claude-sonnet-4-6' });

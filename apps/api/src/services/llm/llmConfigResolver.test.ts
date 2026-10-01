@@ -77,8 +77,8 @@ vi.mock('../aiModel', async (importOriginal) => ({
   resolveDefaultModel: () => 'claude-sonnet-4-6',
 }));
 
-vi.mock('../partnerLlmConfig', () => ({
-  decryptPartnerLlmApiKey: decryptMock,
+vi.mock('../aiModels/connectionKeys', () => ({
+  decryptConnectionKey: decryptMock,
 }));
 
 vi.mock('../sentry', () => ({
@@ -467,7 +467,7 @@ describe('resolveLlmConfig', () => {
     expect(getListedProviderByEntryIdMock).not.toHaveBeenCalled();
   });
 
-  it('reads catalog_entry_id keyed by partner id', async () => {
+  it('reads catalog_entry_id from the partner\'s compat connection, not partner_llm_configs (Task 6B)', async () => {
     dbState.selectResults.push([row()]);
 
     await resolveLlmConfig(PARTNER_ID);
@@ -476,8 +476,8 @@ describe('resolveLlmConfig', () => {
       'catalogEntryId',
     );
     const compiled = compileWhere(dbState.selectWheres[0]);
-    expect(compiled.sql).toBe('"partner_llm_configs"."partner_id" = $1');
-    expect(compiled.params).toEqual([PARTNER_ID]);
+    expect(compiled.sql).toBe('("partner_ai_connections"."partner_id" = $1 and "partner_ai_connections"."kind" in ($2, $3))');
+    expect(compiled.params).toEqual([PARTNER_ID, 'anthropic_byok', 'catalog']);
   });
 
   it('marks a deterministic decrypt failure by config id and returns unavailable', async () => {
@@ -495,7 +495,7 @@ describe('resolveLlmConfig', () => {
     });
     expect(dbState.updateSets[0]).toMatchObject({ status: 'error', lastError: 'decrypt_failed' });
     const compiled = compileWhere(dbState.updateWheres[0]);
-    expect(compiled.sql).toBe('(\"partner_llm_configs\".\"id\" = $1 and \"partner_llm_configs\".\"config_version\" = $2)');
+    expect(compiled.sql).toBe('("partner_ai_connections"."id" = $1 and "partner_ai_connections"."config_version" = $2)');
     expect(compiled.params).toEqual([CONFIG_ID, 4]);
     expect(captureException).toHaveBeenCalledWith(error, undefined, {
       service: 'llmConfigResolver',
@@ -791,7 +791,7 @@ describe('markPartnerLlmError', () => {
       lastError: 'auth_rejected',
     });
     const compiled = compileWhere(dbState.updateWheres[0]);
-    expect(compiled.sql).toBe('(\"partner_llm_configs\".\"id\" = $1 and \"partner_llm_configs\".\"config_version\" = $2)');
+    expect(compiled.sql).toBe('("partner_ai_connections"."id" = $1 and "partner_ai_connections"."config_version" = $2)');
     expect(compiled.params).toEqual([CONFIG_ID, 3]);
   });
 });

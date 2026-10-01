@@ -31,7 +31,6 @@
  */
 import './setup';
 import { readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, sql } from 'drizzle-orm';
@@ -46,10 +45,9 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { aiCostUsage, partnerLlmConfigs } from '../../db/schema';
+import { aiCostUsage, partnerAiConnections } from '../../db/schema';
+import { createConnection } from '../../services/aiModels/connections';
 import { buildExtensionAiContext } from '../../services/extensionAi';
-import { columnAad, encryptedColumnRegistry } from '../../services/encryptedColumnRegistry';
-import { encryptSecret, hmacFingerprint } from '../../services/secretCrypto';
 import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -288,23 +286,6 @@ function orgContext(orgId: string): DbAccessContext {
   };
 }
 
-const API_KEY_SPEC = encryptedColumnRegistry.find(
-  (entry) => entry.table === 'partner_llm_configs' && entry.column === 'api_key_encrypted',
-);
-if (!API_KEY_SPEC) {
-  throw new Error('partner_llm_configs.api_key_encrypted is missing from encryptedColumnRegistry');
-}
-
-// Real column-level encryption (row-bound AAD), mirroring
-// partnerLlmConfig.ts's private encryptPartnerLlmApiKey — this suite needs a
-// key that DECRYPTS successfully so the resolver actually reaches 'partner'
-// source, unlike the RLS-only fixtures elsewhere that use a literal 'enc:...'
-// string and never exercise decryption.
-function encryptTestApiKey(id: string, apiKey: string): string {
-  const encrypted = encryptSecret(apiKey, { aad: columnAad(API_KEY_SPEC!, id) });
-  if (!encrypted) throw new Error('failed to encrypt test Anthropic API key');
-  return encrypted;
-}
 
 function mockClassificationResponse(text: string) {
   return {
@@ -363,15 +344,16 @@ describe('workspace enrichment honors partner BYOK', () => {
           const partner = await createPartner();
           const org = await createOrganization({ partnerId: partner.id });
 
-          const configId = randomUUID();
-          const apiKey = 'sk-ant-integration-test-key-0000000000';
-          await db.insert(partnerLlmConfigs).values({
-            id: configId,
+          // W03 Task 6B: the partner's AI configuration is its compat
+          // connection (real row-bound encryption via the W02 service, so the
+          // resolver actually decrypts and reaches the 'partner' source).
+          const { id: configId } = await createConnection({
             partnerId: partner.id,
-            apiKeyEncrypted: encryptTestApiKey(configId, apiKey),
-            keyLast4: apiKey.slice(-4),
-            keyFingerprint: hmacFingerprint(apiKey),
-            status: 'active',
+            kind: 'anthropic_byok',
+            name: 'Anthropic API key',
+            apiKey: 'sk-ant-integration-test-key-0000000000',
+            connectedBy: null,
+            verifiedAt: new Date(),
           });
 
           await db.execute(sql`
@@ -448,9 +430,9 @@ describe('workspace enrichment honors partner BYOK', () => {
         // back to the platform key ---
         await withSystemDbAccessContext(() =>
           db
-            .update(partnerLlmConfigs)
+            .update(partnerAiConnections)
             .set({ status: 'error', lastError: 'decrypt_failed' })
-            .where(eq(partnerLlmConfigs.id, configId)),
+            .where(eq(partnerAiConnections.id, configId)),
         );
 
         await expect(

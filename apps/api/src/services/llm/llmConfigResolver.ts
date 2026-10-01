@@ -1,12 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, partnerLlmConfigs } from '../../db/schema';
+import { organizations, partnerAiConnections } from '../../db/schema';
 import type { LlmEgressSurface } from '../../db/schema/llmEgressEvents';
 import type { CatalogPricingSnapshot } from '../aiCostTracker';
 import { resolveDefaultModel } from '../aiModel';
 import { getListedProviderByEntryId, type ListedProvider } from '../llmProviderCatalog';
-import { decryptPartnerLlmApiKey } from '../partnerLlmConfig';
+import { decryptConnectionKey } from '../aiModels/connectionKeys';
 import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException, captureMessage } from '../sentry';
 import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from './guardedLlmFetch';
@@ -118,21 +118,42 @@ async function readOrganizationPartnerId(orgId: string): Promise<string | null |
   );
 }
 
+/**
+ * #7601 W03 Task 6B: the partner's AI configuration is its compat
+ * (anthropic_byok | catalog) connection — the /ai/provider facade writes only
+ * the registry now, and partner_llm_configs is frozen (dropped in W08). The
+ * W02 migration copied every legacy row to a same-id connection and the W02
+ * mirror kept them identical until this wave dropped it, so the connection is
+ * exact for every partner, cut over or not. partner_ai_connections_compat_uq
+ * guarantees at most one row.
+ */
+const compatConnectionOf = (partnerId: string) => and(
+  eq(partnerAiConnections.partnerId, partnerId),
+  inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+);
+
+/**
+ * The legacy row shape the resolver consumes, read from the compat connection.
+ * Built per call (not at module load) so suites that mock the schema without
+ * the registry tables can still import this module.
+ */
+const compatConfigColumns = () => ({
+  id: partnerAiConnections.id,
+  partnerId: partnerAiConnections.partnerId,
+  apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted,
+  defaultModel: partnerAiConnections.legacyDefaultModel,
+  catalogEntryId: partnerAiConnections.catalogEntryId,
+  status: partnerAiConnections.status,
+  configVersion: partnerAiConnections.configVersion,
+});
+
 async function readPartnerLlmConfig(partnerId: string) {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [row] = await db
-        .select({
-          id: partnerLlmConfigs.id,
-          partnerId: partnerLlmConfigs.partnerId,
-          apiKeyEncrypted: partnerLlmConfigs.apiKeyEncrypted,
-          defaultModel: partnerLlmConfigs.defaultModel,
-          catalogEntryId: partnerLlmConfigs.catalogEntryId,
-          status: partnerLlmConfigs.status,
-          configVersion: partnerLlmConfigs.configVersion,
-        })
-        .from(partnerLlmConfigs)
-        .where(eq(partnerLlmConfigs.partnerId, partnerId))
+        .select(compatConfigColumns())
+        .from(partnerAiConnections)
+        .where(compatConnectionOf(partnerId))
         .limit(1);
       return row;
     }),
@@ -143,9 +164,9 @@ async function partnerLlmConfigExists(partnerId: string): Promise<boolean> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [row] = await db
-        .select({ id: partnerLlmConfigs.id })
-        .from(partnerLlmConfigs)
-        .where(eq(partnerLlmConfigs.partnerId, partnerId))
+        .select({ id: partnerAiConnections.id })
+        .from(partnerAiConnections)
+        .where(compatConnectionOf(partnerId))
         .limit(1);
       return row !== undefined;
     }),
@@ -307,7 +328,7 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
 
   let apiKey: string;
   try {
-    apiKey = decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
+    apiKey = decryptConnectionKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
   } catch (error) {
     if (error instanceof SecretKeyMaterialError) {
       captureAtMostHourly(`key-material:${partnerId}`, () => {
@@ -389,20 +410,14 @@ export async function llmUnusableCodeForOrgInSystemContext(orgId: string): Promi
   if (!organization) return 'ai_unavailable';
   if (!organization.partnerId) return platform();
   const [row] = await db
-    .select({
-      id: partnerLlmConfigs.id,
-      apiKeyEncrypted: partnerLlmConfigs.apiKeyEncrypted,
-      defaultModel: partnerLlmConfigs.defaultModel,
-      catalogEntryId: partnerLlmConfigs.catalogEntryId,
-      status: partnerLlmConfigs.status,
-    })
-    .from(partnerLlmConfigs)
-    .where(eq(partnerLlmConfigs.partnerId, organization.partnerId))
+    .select(compatConfigColumns())
+    .from(partnerAiConnections)
+    .where(compatConnectionOf(organization.partnerId))
     .limit(1);
   if (!row) return platform();
   if (row.status === 'error') return 'ai_unavailable';
   try {
-    decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
+    decryptConnectionKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
   } catch {
     return 'ai_unavailable';
   }
@@ -433,9 +448,10 @@ export async function getLlmBillingSourceForOrg(
 export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
 
 /**
- * Marks normalized credential failures only when the exact config row id and
- * version still match. Callers must not invoke this for Anthropic 429, 5xx,
- * network, timeout, or other retryable failures.
+ * Marks normalized credential failures only when the exact connection id and
+ * config version still match (a rotation in between wins). Callers must not
+ * invoke this for Anthropic 429, 5xx, network, timeout, or other retryable
+ * failures. `configId` is the compat connection id (Task 6B).
  */
 export async function markPartnerLlmError(input: {
   configId: string;
@@ -445,17 +461,17 @@ export async function markPartnerLlmError(input: {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [updated] = await db
-        .update(partnerLlmConfigs)
+        .update(partnerAiConnections)
         .set({
           status: 'error',
           lastError: input.reason,
           updatedAt: new Date(),
         })
         .where(and(
-          eq(partnerLlmConfigs.id, input.configId),
-          eq(partnerLlmConfigs.configVersion, input.configVersion),
+          eq(partnerAiConnections.id, input.configId),
+          eq(partnerAiConnections.configVersion, input.configVersion),
         ))
-        .returning({ id: partnerLlmConfigs.id });
+        .returning({ id: partnerAiConnections.id });
       return updated !== undefined;
     }),
   );

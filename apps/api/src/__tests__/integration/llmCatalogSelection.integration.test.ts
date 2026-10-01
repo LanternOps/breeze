@@ -8,7 +8,8 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { llmProviderCatalog, partnerLlmConfigs } from '../../db/schema';
+import { llmProviderCatalog, partnerAiConnections, partnerLlmConfigs } from '../../db/schema';
+import { createConnection } from '../../services/aiModels/connections';
 import { resolveLlmConfig } from '../../services/llm/llmConfigResolver';
 import {
   createCatalogEntry,
@@ -17,8 +18,6 @@ import {
   recordVerification,
   setEntryStatus,
 } from '../../services/llmProviderCatalog';
-import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from '../../services/encryptedColumnRegistry';
-import { encryptSecret } from '../../services/secretCrypto';
 import { __setLookupForTests } from '../../services/urlSafety';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
@@ -45,20 +44,6 @@ function orgContext(orgId: string): DbAccessContext {
 }
 
 const MODEL_ID = 'claude-sonnet-4-6';
-
-const API_KEY_SPEC: EncryptedColumnSpec = (() => {
-  const spec = encryptedColumnRegistry.find(
-    (entry) => entry.table === 'partner_llm_configs' && entry.column === 'api_key_encrypted',
-  );
-  if (!spec) throw new Error('partner_llm_configs.api_key_encrypted is missing from encryptedColumnRegistry');
-  return spec;
-})();
-
-function encryptedApiKey(id: string, apiKey: string): string {
-  const encrypted = encryptSecret(apiKey, { aad: columnAad(API_KEY_SPEC, id) });
-  if (!encrypted) throw new Error('test setup: could not encrypt fixture API key');
-  return encrypted;
-}
 
 /**
  * Builds a fully listed, verified catalog entry a partner could actually
@@ -153,20 +138,21 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
       return { partner, entry };
     });
 
-    const configId = randomUUID();
+    // W03 Task 6B: a partner's AI configuration is its compat connection
+    // (partner_llm_configs is frozen and no longer read by the resolver).
     const apiKey = 'sk-ant-integration-test-key-1234567890';
-    await withSystemDbAccessContext(() =>
-      db.insert(partnerLlmConfigs).values({
-        id: configId,
+    await withSystemDbAccessContext(async () => {
+      const conn = await createConnection({
         partnerId: partner.id,
-        apiKeyEncrypted: encryptedApiKey(configId, apiKey),
-        keyLast4: apiKey.slice(-4),
-        keyFingerprint: `integration-${randomUUID()}`,
-        status: 'active',
-        defaultModel: MODEL_ID,
+        kind: 'catalog',
+        name: 'OpenRouter (integration test)',
+        apiKey,
         catalogEntryId: entry.entryId,
-      }),
-    );
+        connectedBy: null,
+        verifiedAt: new Date(),
+      });
+      await db.update(partnerAiConnections).set({ legacyDefaultModel: MODEL_ID }).where(eq(partnerAiConnections.id, conn.id));
+    });
 
     const beforeDelist = await resolveLlmConfig(partner.id);
     expect(beforeDelist).toMatchObject({

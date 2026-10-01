@@ -3,33 +3,25 @@
  * reached. Reads never select key material; only `getConnectionKeyMaterial`
  * (W03's connection factory) and `decryptConnectionKey` touch it.
  *
- * W02: the only production writer is the legacy reconcile (byte-copy of
- * partner_llm_configs) and the legacy-UPDATE mirror trigger (Task 2 migration);
- * `createConnection` is the W04 entry point, gated at its route.
+ * Writers: the one-time per-partner cutover (legacyReconcile.ts byte-copy of
+ * partner_llm_configs) and, since W03 Task 6B, the /ai/provider facade's
+ * registry-native writes (compatRemap.ts, which uses `createConnection`).
  */
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { partnerAiConnections, type PartnerAiConnectionRow } from '../../db/schema';
-import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from '../encryptedColumnRegistry';
-import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
+import { hmacFingerprint } from '../secretCrypto';
+import { ConnectionKeyError, encryptConnectionKey } from './connectionKeys';
 
-export const PARTNER_AI_CONNECTION_KEY_SPEC: EncryptedColumnSpec = (() => {
-  const spec = encryptedColumnRegistry.find(
-    (entry) => entry.table === 'partner_ai_connections' && entry.column === 'api_key_encrypted',
-  );
-  if (!spec) throw new Error('partner_ai_connections.api_key_encrypted is missing from encryptedColumnRegistry');
-  return spec;
-})();
+export {
+  ConnectionKeyError,
+  decryptConnectionKey,
+  encryptConnectionKey,
+  PARTNER_AI_CONNECTION_KEY_SPEC,
+} from './connectionKeys';
 
 export type PartnerAiConnection = Omit<PartnerAiConnectionRow, 'apiKeyEncrypted' | 'keyFingerprint'>;
-
-export class ConnectionKeyError extends Error {
-  constructor(message: string, readonly code: 'key_missing' | 'key_empty' | 'key_rejected') {
-    super(message);
-    this.name = 'ConnectionKeyError';
-  }
-}
 
 export interface CreateConnectionInput {
   id?: string;
@@ -64,19 +56,6 @@ const PUBLIC_COLUMNS = {
   createdAt: partnerAiConnections.createdAt,
   updatedAt: partnerAiConnections.updatedAt,
 } as const;
-
-export function encryptConnectionKey(id: string, apiKey: string): string {
-  const sealed = encryptSecret(apiKey, { aad: columnAad(PARTNER_AI_CONNECTION_KEY_SPEC, id) });
-  if (!sealed) throw new ConnectionKeyError('Could not encrypt the connection key.', 'key_rejected');
-  return sealed;
-}
-
-export function decryptConnectionKey(conn: { id: string; apiKeyEncrypted: string | null }): string {
-  if (!conn.apiKeyEncrypted) throw new ConnectionKeyError('This connection has no stored key.', 'key_missing');
-  const apiKey = decryptSecret(conn.apiKeyEncrypted, { aad: columnAad(PARTNER_AI_CONNECTION_KEY_SPEC, conn.id) });
-  if (!apiKey) throw new ConnectionKeyError('The stored connection key decrypted to an empty value.', 'key_empty');
-  return apiKey;
-}
 
 export async function listConnections(partnerId: string): Promise<PartnerAiConnection[]> {
   return db
