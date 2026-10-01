@@ -20,11 +20,11 @@
  */
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { SQL, and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { SQL, and, desc, eq, exists, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runAfterDbContextExit, withSystemDbAccessContext } from '../db';
 import {
   approvalRequests,
   authenticatorDevices,
@@ -779,26 +779,39 @@ pamRoutes.post(
     // they vanish from approvers' phones. MUST run in system scope:
     // approval_requests is Shape-6 (user-id-scoped), so those rows belong to the
     // fanned-out approvers and are invisible to THIS user's request context — a
-    // bare context-scoped UPDATE would silently match zero rows. Best-effort,
-    // post-commit; only uac_intercept fans out.
+    // bare context-scoped UPDATE would silently match zero rows. Best-effort;
+    // only uac_intercept fans out.
+    //
+    // #7526: after the request transaction commits, not here. The decision
+    // above is a savepoint inside the request transaction, so the elevation
+    // stays locked until the request ends. Run here, the expiry waited on any
+    // approval row an approvals-inbox decide held while that decide waited on
+    // the elevation this request held: a cycle across two connections that
+    // Postgres cannot detect. One order for both tables: elevation first,
+    // then approval rows (decideApprovalRequest takes the same order).
+    // runAfterDbContextExit also runs the work when the request rolls back, so
+    // the UPDATE only touches rows whose elevation is no longer pending.
     if (result.row.flowType === 'uac_intercept') {
-      try {
-        await runOutsideDbContext(() =>
-          withSystemDbAccessContext(async () => {
-            await db
-              .update(approvalRequests)
-              .set({ status: 'expired' })
-              .where(
-                and(
-                  eq(approvalRequests.elevationRequestId, result.row.id),
-                  eq(approvalRequests.status, 'pending'),
+      const elevationId = result.row.id;
+      runAfterDbContextExit('pam: expire sibling mobile approvals', () =>
+        withSystemDbAccessContext(async () => {
+          await db
+            .update(approvalRequests)
+            .set({ status: 'expired' })
+            .where(
+              and(
+                eq(approvalRequests.elevationRequestId, elevationId),
+                eq(approvalRequests.status, 'pending'),
+                exists(
+                  db
+                    .select({ one: sql`1` })
+                    .from(elevationRequests)
+                    .where(and(eq(elevationRequests.id, elevationId), ne(elevationRequests.status, 'pending'))),
                 ),
-              );
-          }),
-        );
-      } catch (err) {
-        console.error('[pam] Failed to expire sibling mobile approvals:', err);
-      }
+              ),
+            );
+        }),
+      );
     }
 
     await safePublish(

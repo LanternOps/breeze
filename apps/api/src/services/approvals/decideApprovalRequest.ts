@@ -1302,6 +1302,43 @@ export async function decideApprovalRequest(
               .for('update');
           }
 
+          // #7526: the same rule for a PAM elevation — lock the elevation
+          // before any approval_requests row. This transaction used to take
+          // its own approval row first and the elevation second, then the
+          // sibling rows, so two approvers deciding the same elevation at
+          // once each held their own row while waiting for the elevation, and
+          // the winner then waited for the loser's row in the sibling expiry
+          // below: Postgres aborted one with 40P01 (a 500). Elevation first,
+          // then approval rows, is the order every path that touches both
+          // uses (the web console's respond route decides the elevation and
+          // expires the approval rows only after it commits). `no key update`
+          // is the strength the elevation UPDATE below takes anyway, so the
+          // fan-out's approval_requests inserts (an FK key-share lock on the
+          // elevation) are not held up by it.
+          if (existing.elevationRequestId) {
+            const [elevation] = await tx
+              .select({ status: elevationRequests.status })
+              .from(elevationRequests)
+              .where(eq(elevationRequests.id, existing.elevationRequestId))
+              .for('no key update');
+            if (elevation?.status !== 'pending') {
+              // The elevation was already decided or closed elsewhere (the
+              // web console, another approver, the stale-request expirer).
+              // This row can no longer decide anything: store it as expired,
+              // as the sibling expiry would have, never as this approver's
+              // approve or deny, and report the lost race.
+              await tx
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: new Date() })
+                .where(and(
+                  eq(approvalRequests.id, id),
+                  eq(approvalRequests.userId, userId),
+                  eq(approvalRequests.status, 'pending'),
+                ));
+              return { lostRace: true };
+            }
+          }
+
           if (proposalIdForDecision && acknowledgedPatterns.length > 0) {
             // W03: persisted on the PROPOSAL, not on the approval row — dispatch
             // reads the proposal (ScriptDispatchSource { kind: 'proposal' }) and
@@ -1392,77 +1429,83 @@ export async function decideApprovalRequest(
                 subjectUsername: elevationRequests.subjectUsername,
               });
 
-            if (elevationRows.length > 0) {
-              const elevation = elevationRows[0]!;
-              await tx.insert(elevationAudit).values({
-                orgId: elevation.orgId,
-                elevationRequestId: elevation.id,
-                eventType: status === 'approved' ? 'approved' : 'denied',
-                actor: 'technician',
-                actorUserId: userId,
-                details: {
-                  source: 'mobile_approval',
-                  approval_request_id: updated.id,
-                  ...(status === 'denied' && reason ? { reason } : {}),
-                  // Inline literal, not a helper spread: the elevation_audit
-                  // writer inventory (pamAuditExport) reads these keys statically.
-                  ...(assurance.graceDowngrade
-                    ? { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel }
-                    : {}),
-                },
-                occurredAt: now,
-              });
-              const actuation = await createPamDecisionIntent(tx, {
-                request: {
-                  id: elevation.id,
-                  orgId: elevation.orgId,
-                  deviceId: elevation.deviceId,
-                  targetExecutablePath: elevation.targetExecutablePath ?? '',
-                  targetExecutableHash: elevation.targetExecutableHash,
-                  subjectUsername: elevation.subjectUsername,
-                },
-                requestRevision: elevation.revision,
-                decision: status,
-                expiresAt,
-              });
-              enforcementStatus = actuation.refusalReason
-                ? 'refused'
-                : actuation.desiredState === 'active'
-                  ? 'pending_dispatch'
-                  : 'cleanup_pending';
-              refusalReason = actuation.refusalReason ?? null;
-
-              // The approve was refused and the elevation is now denied, so
-              // this row must not read as approved to anyone who reads it (the
-              // mobile app and the inbox's Recent panel read `status`). Same
-              // transaction, and the CAS above already holds this row's lock.
-              // decided_* keep recording the approver's approve;
-              // refusal_reason is what marks it as refused rather than denied
-              // by the approver.
-              if (refusalReason && status === 'approved') {
-                const [refused] = await tx
-                  .update(approvalRequests)
-                  .set({ status: 'denied', refusalReason })
-                  .where(and(eq(approvalRequests.id, updated.id), eq(approvalRequests.status, 'approved')))
-                  .returning();
-                if (!refused) {
-                  // Unreachable: this transaction wrote 'approved' to the row
-                  // and holds its lock. Roll back rather than commit an
-                  // approval row that reads as approved.
-                  throw new Error(`refused approve could not be stored on approval ${updated.id}`);
-                }
-                updated = refused;
-              }
-
-              await tx
-                .update(approvalRequests)
-                .set({ status: 'expired', decidedAt: now })
-                .where(and(
-                  eq(approvalRequests.elevationRequestId, elevation.id),
-                  eq(approvalRequests.status, 'pending'),
-                  ne(approvalRequests.id, updated.id),
-                ));
+            const elevation = elevationRows[0];
+            if (!elevation) {
+              // Unreachable: this transaction locked the elevation above and
+              // saw it pending. Roll back rather than commit an approval row
+              // that says this approver decided an elevation they did not.
+              throw new Error(
+                `elevation ${updated.elevationRequestId} was pending under this transaction's lock but its decision matched no row`,
+              );
             }
+            await tx.insert(elevationAudit).values({
+              orgId: elevation.orgId,
+              elevationRequestId: elevation.id,
+              eventType: status === 'approved' ? 'approved' : 'denied',
+              actor: 'technician',
+              actorUserId: userId,
+              details: {
+                source: 'mobile_approval',
+                approval_request_id: updated.id,
+                ...(status === 'denied' && reason ? { reason } : {}),
+                // Inline literal, not a helper spread: the elevation_audit
+                // writer inventory (pamAuditExport) reads these keys statically.
+                ...(assurance.graceDowngrade
+                  ? { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel }
+                  : {}),
+              },
+              occurredAt: now,
+            });
+            const actuation = await createPamDecisionIntent(tx, {
+              request: {
+                id: elevation.id,
+                orgId: elevation.orgId,
+                deviceId: elevation.deviceId,
+                targetExecutablePath: elevation.targetExecutablePath ?? '',
+                targetExecutableHash: elevation.targetExecutableHash,
+                subjectUsername: elevation.subjectUsername,
+              },
+              requestRevision: elevation.revision,
+              decision: status,
+              expiresAt,
+            });
+            enforcementStatus = actuation.refusalReason
+              ? 'refused'
+              : actuation.desiredState === 'active'
+                ? 'pending_dispatch'
+                : 'cleanup_pending';
+            refusalReason = actuation.refusalReason ?? null;
+
+            // The approve was refused and the elevation is now denied, so
+            // this row must not read as approved to anyone who reads it (the
+            // mobile app and the inbox's Recent panel read `status`). Same
+            // transaction, and the CAS above already holds this row's lock.
+            // decided_* keep recording the approver's approve;
+            // refusal_reason is what marks it as refused rather than denied
+            // by the approver.
+            if (refusalReason && status === 'approved') {
+              const [refused] = await tx
+                .update(approvalRequests)
+                .set({ status: 'denied', refusalReason })
+                .where(and(eq(approvalRequests.id, updated.id), eq(approvalRequests.status, 'approved')))
+                .returning();
+              if (!refused) {
+                // Unreachable: this transaction wrote 'approved' to the row
+                // and holds its lock. Roll back rather than commit an
+                // approval row that reads as approved.
+                throw new Error(`refused approve could not be stored on approval ${updated.id}`);
+              }
+              updated = refused;
+            }
+
+            await tx
+              .update(approvalRequests)
+              .set({ status: 'expired', decidedAt: now })
+              .where(and(
+                eq(approvalRequests.elevationRequestId, elevation.id),
+                eq(approvalRequests.status, 'pending'),
+                ne(approvalRequests.id, updated.id),
+              ));
           }
 
           // If this approval row was created by the AI agent SDK (Breeze AI /

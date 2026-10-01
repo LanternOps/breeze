@@ -55,6 +55,9 @@ vi.mock('../services/pamRuleTierDrift', () => ({
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
+  // #7526: records the deferred work (label, work) so tests can assert it was
+  // registered and run it explicitly; it never runs on its own.
+  runAfterDbContextExit: vi.fn(),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -218,7 +221,7 @@ vi.mock('./softwarePolicies', () => ({
   ),
 }));
 
-import { db } from '../db';
+import { db, runAfterDbContextExit } from '../db';
 import { inArray } from 'drizzle-orm';
 import { pamRoutes } from './pam';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
@@ -1481,6 +1484,21 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
     // The #1254 mobile-approval expiry now runs post-commit via the system-scoped
     // db.update (clears any fanned-out approval_requests rows so a web decision
     // also removes the request from approvers' phones).
+    // #7526: registered via runAfterDbContextExit, NOT run inline — nothing has
+    // touched approval_requests yet.
+    expect(runAfterDbContextExit).toHaveBeenCalledTimes(1);
+    expect(runAfterDbContextExit).toHaveBeenCalledWith(
+      'pam: expire sibling mobile approvals',
+      expect.any(Function),
+    );
+    expect(expireSet).not.toHaveBeenCalled();
+    // Run the recorded work: the expiry write happens, guarded by an exists()
+    // subquery over elevation_requests (db.select chain).
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({})) })),
+    } as any);
+    const work = vi.mocked(runAfterDbContextExit).mock.calls[0]![1] as () => Promise<unknown>;
+    await work();
     expect(expireSet).toHaveBeenCalledWith({ status: 'expired' });
   });
 });

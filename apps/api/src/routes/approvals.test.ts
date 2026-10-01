@@ -1675,6 +1675,20 @@ describe('POST /approvals/:id/deny', () => {
 describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
   let elevationSet = vi.fn();
   let auditValues = vi.fn();
+  // #7526: the locked elevation read (`tx.select().from().where().for()`) the
+  // decide transaction takes BEFORE the approval CAS. Defaults to pending;
+  // a test returns another status via lockedElevationRows.
+  let lockedElevationRows: unknown[] = [{ status: 'pending' }];
+  let lockedFor = vi.fn();
+  let lockedSelect = vi.fn();
+
+  function makeLockedElevationSelect() {
+    lockedFor = vi.fn(async () => lockedElevationRows);
+    lockedSelect = vi.fn(() => ({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ for: lockedFor })) })),
+    }));
+    return lockedSelect;
+  }
 
   function mockElevationTx(elevationUpdateRows: unknown[]) {
     elevationSet = vi.fn().mockReturnValue({
@@ -1741,7 +1755,9 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       ),
     }));
     let updateCall = 0;
+    lockedElevationRows = [{ status: 'pending' }];
     const mainTx = {
+      select: makeLockedElevationSelect(),
       update: vi.fn(() => {
         updateCall += 1;
         if (updateCall === 1) return { set: casSet } as any;
@@ -1751,16 +1767,20 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       insert: vi.fn(() => ({ values: auditValues } as any)),
     };
     vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
-    return { updatedRow, casSet, siblingExpireSet };
+    return { updatedRow, casSet, siblingExpireSet, mainTx };
   }
 
   it('approve mirrors elevation to approved + expires siblings', async () => {
-    const { siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const { siblingExpireSet, casSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(db.transaction).toHaveBeenCalledTimes(1);
+    // #7526: the elevation is locked (`for no key update`) BEFORE the approval
+    // CAS, so every path takes elevation-then-approval-rows.
+    expect(lockedFor).toHaveBeenCalledWith('no key update');
+    expect(lockedFor.mock.invocationCallOrder[0]!).toBeLessThan(casSet.mock.invocationCallOrder[0]!);
     expect(tx.elevationSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedByUserId: TEST_USER.id }),
     );
@@ -1900,17 +1920,53 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     );
   });
 
-  it('elevation already non-pending (CAS 0 rows) -> decide still 200, no audit/sibling write', async () => {
-    const { siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
-    const tx = mockElevationTx([]); // lost the race
+  it.each([
+    ['approve', undefined],
+    ['deny', JSON.stringify({ reason: 'nope' })],
+  ])('elevation already decided elsewhere (%s) -> 409 Already decided, own row expired, nothing else written', async (route, body) => {
+    const { casSet, siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+    lockedElevationRows = [{ status: 'approved' }];
+
+    const res = await buildApp().request(`/approvals/appr-1/${route}`, {
+      method: 'POST',
+      ...(body ? { headers: { 'content-type': 'application/json' }, body } : {}),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Already decided', finalStatus: 'expired' });
+    expect(lockedFor).toHaveBeenCalledWith('no key update');
+    // The decider's own row is stored as expired — never as their approve/deny.
+    expect(casSet).toHaveBeenCalledTimes(1);
+    expect(casSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired', decidedAt: expect.any(Date) }));
+    expect(casSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'approved' }));
+    expect(casSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'denied' }));
+    expect(tx.elevationSet).not.toHaveBeenCalled();
+    expect(tx.auditValues).not.toHaveBeenCalled();
+    expect(siblingExpireSet).not.toHaveBeenCalled();
+  });
+
+  it('locked elevation row missing -> 409 Already decided, own row expired', async () => {
+    const { casSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([]);
+    lockedElevationRows = [];
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Already decided', finalStatus: 'expired' });
+    expect(casSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
+    expect(tx.elevationSet).not.toHaveBeenCalled();
+    expect(tx.auditValues).not.toHaveBeenCalled();
+  });
+
+  it('elevation pending under the lock but its UPDATE matches 0 rows -> 500 decide_failed (rolled back), no audit', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([]); // locked read says pending, UPDATE returns nothing
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'decide_failed', retryable: true });
     expect(tx.elevationSet).toHaveBeenCalled();
     expect(tx.auditValues).not.toHaveBeenCalled();
-    // wonElevation stays false on a lost race, so the post-commit sibling-expiry
-    // db.update is never invoked.
-    expect(siblingExpireSet).not.toHaveBeenCalled();
   });
 
   it('approval without elevationRequestId never opens the mirror transaction', async () => {
@@ -2022,7 +2078,9 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
       const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
       let updateCall = 0;
+      lockedElevationRows = [{ status: 'pending' }];
       const mainTx = {
+        select: makeLockedElevationSelect(),
         update: vi.fn(() => {
           updateCall += 1;
           if (updateCall === 1) return { set: casSet } as any;
