@@ -25,7 +25,9 @@ export type ResolveFailureReason =
   | 'unpriced'
   | 'connection_unavailable'
   | 'model_unavailable'
-  | 'tools_unsupported';
+  | 'tools_unsupported'
+  /** Task 6A: the partner has not been cut over to the registry yet and could not be now. */
+  | 'registry_unavailable';
 
 export type ConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | 'openai_compatible';
 

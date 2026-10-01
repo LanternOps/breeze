@@ -178,7 +178,7 @@ import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
-import { reconcileAllPartnersFromLegacy } from './services/aiModels/legacyReconcile';
+import { reportableCutoverError, runRegistryCutoverSweep } from './services/aiModels/registryCutover';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
@@ -1866,23 +1866,22 @@ async function bootstrap(): Promise<void> {
       captureException(err, undefined, { area: 'settings_secret_backfill' });
     });
 
-  // AI model registry W02 (#7600): keep the registry a projection of the legacy
-  // AI config (connections, offerings, assignments, agent/session bindings).
-  // Detached: nothing in W02 routes on it, and GET /ai/provider reads only
-  // connection rows, which the migration and the facade keep exact. Env changes
-  // need a restart, so a per-boot sweep tracks ANTHROPIC_MODEL-style defaults.
-  // W03 (Task 6A) deletes this block: each partner is projected exactly once,
-  // durably, at its cutover (gated in resolveModel, plus a leased sweep after serve()).
-  void reconcileAllPartnersFromLegacy()
+  // AI model registry W03 (#7601 Task 6A): cut every partner over to the
+  // registry in the background — each partner is projected from legacy config
+  // exactly once, durably (replaces W02's per-boot re-projection). Detached:
+  // /health is never blocked. A singleton lease makes concurrent replicas (and
+  // the split worker, which runs the same sweep) no-ops, and resolveModel cuts
+  // a partner over on demand if its first AI request beats the sweep.
+  void runRegistryCutoverSweep()
     .then((result) => {
-      console.log(`[startup] AI model registry reconciled for ${result.partners} partner(s); ${result.failures.length} failed`);
-      for (const failure of result.failures) {
-        captureException(new Error(failure.error), undefined, { area: 'ai_model_registry_reconcile', partnerId: failure.partnerId });
-      }
+      console.log(
+        `[startup] AI model registry cutover sweep: ${result.outcome}, ${result.processed} partner(s) cut over, ${result.failed.length} failed`,
+      );
     })
     .catch((err) => {
-      console.error('[startup] AI model registry reconcile failed:', safeErrorMessage(err));
-      captureException(err, undefined, { area: 'ai_model_registry_reconcile' });
+      // Scrubbed: a query error's message carries the statement's bound values.
+      console.error('[startup] AI model registry cutover sweep failed:', safeErrorMessage(err));
+      captureException(reportableCutoverError(err), undefined, { area: 'ai_model_registry_cutover' });
     });
 
   // Storage keys that S3 backup destinations used before backups were written

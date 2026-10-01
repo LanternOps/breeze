@@ -26,6 +26,7 @@ import {
   type ResolvedConnection,
 } from './candidateLoader';
 import { checkEligibility, type EligibilityContext, type ResolveFailureReason } from './eligibility';
+import { ensurePartnerCutover } from './registryCutover';
 import type { RateSnapshot } from './pricing';
 import type { PromptProfile } from './promptProfiles';
 import { defaultTransport, transportCarries, type DispatchTransport, type TransportCarriage } from './transport';
@@ -110,6 +111,7 @@ export function unavailableMessage(reason: ResolveFailureReason, displayName?: s
       return 'The AI provider connection for this model is unavailable. Reconnect it under AI Providers & Models.';
     case 'tools_unsupported': return 'This AI model cannot use tools, which this feature needs.';
     case 'no_eligible_model': return 'No AI model is available for this feature. Ask an administrator to enable one.';
+    case 'registry_unavailable': return 'AI configuration is being upgraded. Try again in a moment.';
   }
 }
 
@@ -290,6 +292,9 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
   }
   if (!input.partnerId) throw new Error(`${input.surface} requires a partner to resolve a model`);
   const partnerId = input.partnerId;
+  // Task 6A: no registry-routed dispatch for a partner that has not been cut
+  // over (projected from legacy config once, durably). Cuts it over on demand.
+  if (!(await ensurePartnerCutover(partnerId))) return unavailable('registry_unavailable', null);
 
   // System-context read, like the loader's: getEffectiveAssignment uses the
   // ambient db, and the resolver must never hold a second pooled connection

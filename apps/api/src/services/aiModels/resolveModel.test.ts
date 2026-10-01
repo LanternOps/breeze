@@ -9,7 +9,10 @@ const m = vi.hoisted(() => ({
   loadUserPermissionPredicate: vi.fn(),
   isHosted: vi.fn(() => true),
   transportCarries: vi.fn(() => ({ speed: true, inferenceGeo: true, thinkingDisplayUpdates: true })),
+  ensurePartnerCutover: vi.fn(async (_partnerId: string) => true),
 }));
+// Task 6A: the resolver gates on the partner's registry cutover.
+vi.mock('./registryCutover', () => ({ ensurePartnerCutover: m.ensurePartnerCutover }));
 vi.mock('./assignments', () => ({
   getEffectiveAssignment: m.getEffectiveAssignment,
   isPermitted: (set: { kind: 'all' } | { kind: 'list'; offeringIds: string[] }, id: string) =>
@@ -119,6 +122,24 @@ beforeEach(() => {
   m.loadOfferingCandidate.mockImplementation(async (id: string) => candidates[id] ?? null);
   m.loadPartnerFacts.mockResolvedValue({ plan: 'pro', residencyRequired: false });
   m.loadUserPermissionPredicate.mockResolvedValue(() => false);
+  m.ensurePartnerCutover.mockResolvedValue(true);
+});
+
+describe('resolveModel — registry cutover gate (Task 6A)', () => {
+  it('a partner that could not be cut over refuses (recoverable) before any registry read', async () => {
+    m.ensurePartnerCutover.mockResolvedValue(false);
+    const r = await resolveModel(BASE);
+    expect(r).toMatchObject({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null });
+    expect(r.ok === false && r.message).toBe('AI configuration is being upgraded. Try again in a moment.');
+    expect(m.ensurePartnerCutover).toHaveBeenCalledWith('p1');
+    expect(m.getEffectiveAssignment).not.toHaveBeenCalled();
+    expect(m.loadOfferingCandidate).not.toHaveBeenCalled();
+  });
+
+  it('a cut-over partner resolves normally', async () => {
+    expect(await resolveModel(BASE)).toMatchObject({ ok: true });
+    expect(m.ensurePartnerCutover).toHaveBeenCalledWith('p1');
+  });
 });
 
 describe('resolveModel — candidate selection', () => {

@@ -441,6 +441,7 @@ export async function bootWorker(): Promise<void> {
   // AI model registry W02 (#7600): agents and the script reviewer record AI
   // cost in this process; shadow those records into the invocation ledger.
   const { registerInvocationLedgerShadow } = await import('./services/aiModels/invocationLedger');
+  const { runRegistryCutoverSweep, reportableCutoverError } = await import('./services/aiModels/registryCutover');
   const { registerAllEventSubscribers } = await import('./services/eventSubscribers');
   const { buildWebhookFanoutDeps } = await import('./services/webhookFanoutDeps');
   const { startRegisteredWorkers, buildWorkerShutdownTasks } = await import('./services/workerRegistry');
@@ -681,6 +682,22 @@ export async function bootWorker(): Promise<void> {
   // AI model registry W01 (#7599): same snapshot as the API process. Agent
   // runs and the cost tracker run here too.
   startPlatformModelSnapshotRefresher();
+
+  // AI model registry W03 (#7601 Task 6A): cut every partner over to the
+  // registry in the background, after the workers are up. Never awaited:
+  // readiness and liveness do not wait on it. The singleton lease makes a
+  // concurrent api/worker sweep a no-op, and resolveModel cuts a partner over
+  // on demand if one of its jobs runs before the sweep reaches it.
+  void runRegistryCutoverSweep()
+    .then((r) => console.log(
+      `[worker] AI model registry cutover sweep: ${r.outcome}, ${r.processed} partner(s) cut over, ${r.failed.length} failed`,
+    ))
+    .catch((err) => {
+      console.error('[worker] AI model registry cutover sweep failed');
+      // Scrubbed: a query error's message carries the statement's bound values.
+      const reportable = reportableCutoverError(err);
+      captureException(reportable instanceof Error ? reportable : new Error(String(reportable)), undefined, { area: 'ai_model_registry_cutover' });
+    });
 
   // Step 9: signal handlers → phased shutdown.
   let shutdownStarted = false;

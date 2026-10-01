@@ -122,6 +122,12 @@ export async function seedRegistryPartner(kind: RegistrySeedKind): Promise<Seede
       VALUES (${partner.id}, ${partner.id}, ${surface}, 'default', ${offeringId}, true)`;
   }
 
+  // The seeded registry IS this partner's authority (the post-cutover world,
+  // Task 6A): mark it cut over so resolveModel's gate never re-projects it
+  // from (empty) legacy config over the rows above.
+  await fixtureSql`
+    INSERT INTO ai_model_registry_partner_cutover (partner_id) VALUES (${partner.id}) ON CONFLICT DO NOTHING`;
+
   const [session] = await fixtureSql`
     INSERT INTO ai_sessions (org_id, user_id, type, model, offering_id, offering_partner_id, billing_source)
     VALUES (${org.id}, ${user.id}, 'general', ${modelId}, ${offeringId}, ${partner.id},
