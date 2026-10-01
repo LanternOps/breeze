@@ -15,7 +15,7 @@ tracking_issue: LanternOps/breeze#7598
 | W02 (#7600) schema + backfill + compatibility (no routing change) | `2026-09-30-ai-model-registry-w02-schema-backfill.md` | W01 merged | detailed (18 tasks; Codex xhigh schema pass done; W03-required changes R1–R6 applied) |
 | W03 (#7601) resolver + cost/funding cutover | `2026-09-30-ai-model-registry-w03-resolver-cutover.md` | W02 merged **and** LanternOps/breeze-billing#24 (idempotent credit deduct) deployed | detailed (20 tasks; Codex high review applied: 12 adopted, 1 partial) |
 | W04 (#7602) settings UI + usage page | `2026-10-01-ai-model-registry-w04-settings-ui.md` | W03 (implemented **stacked on the W03 branch**); **ship in the same release as W03** (W03 freezes the legacy reviewer / Office / agent-allowlist editors' effect on routing until W04 replaces them) | detailed (17 tasks; Codex high review applied: 18 adopted, 3 of them modified, 0 rejected; no migration) |
-| W05 (#7603) SDK-resume spike → chat picker + switching | written at `start_wave` | W03 (W04 for admin enablement UX) | outline (spec §9.2, §11) |
+| W05 (#7603) SDK-resume spike → chat picker + switching | `2026-10-01-ai-model-registry-w05-chat-picker-switching.md` (spike: `specs/ai-mcp/2026-10-01-ai-model-registry-w05-resume-spike-findings.md`) | W03 + W04 merged (mounts into W04's `routes/aiModels/index.ts`) | detailed (15 tasks; Codex high review applied: 21 adopted, 2 of them modified, 0 rejected; 3 migrations `2026-11-22-1000xx`) |
 | W06 (#7604) BYO OpenAI-compatible | written at `start_wave` | W03 | outline (spec §6, §12) |
 | W07 (#7605) Bedrock / Vertex / Foundry | written at `start_wave` | W03 | outline (spec §4, §12) |
 | W08 (#7606) cleanup | written at `start_wave` | W04, W05 | outline |
