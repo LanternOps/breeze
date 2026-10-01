@@ -1032,12 +1032,12 @@ to boot when `ANTHROPIC_BASE_URL` is present, and the value is also stripped
 from the SDK subprocess environment — so a stray or unmapped `IS_HOSTED` can
 never redirect platform AI traffic to a third-party endpoint.
 
-Cost tracking is best-effort. The SDK can't price a non-Anthropic model id, so
-it reports `total_cost_usd: 0`; Breeze then falls back to token-based pricing,
-and an **unrecognized model id is priced at conservative Opus-tier
-`DEFAULT_PRICING` ($5/$25 per MTok)** — i.e. likely an *over*-estimate for a
-cheap local model, not `$0`. For accurate accounting, add the served model id to
-`MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
+Cost tracking uses the platform model registry, never the SDK's own cost
+figure. When `ANTHROPIC_MODEL` names a model the registry doesn't list, Breeze
+adds it once (when your partners move to the registry) and prices it at
+conservative Opus-tier rates ($5/$25 per MTok) — likely an *over*-estimate for
+a cheap local model, not `$0`. For accurate accounting, set that model's
+prices on **Admin → AI models**, or use the openai-compatible path's
 `MCP_LLM_PRICE_*` overrides.
 
 ## Warranty lookups
