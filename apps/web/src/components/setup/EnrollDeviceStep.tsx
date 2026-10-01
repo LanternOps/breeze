@@ -477,11 +477,17 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
           {/* Commands */}
           {(() => {
-            const commands: Record<Platform, string> = buildInstallCommands({
-              apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
-              token: onboardingToken || '<TOKEN>',
-              enrollmentSecret: enrollmentSecret || undefined,
-            });
+            // #7628: never render a command without a real key. A "<TOKEN>"
+            // placeholder looked runnable, got copied, and failed enrollment
+            // with enrollment_key_not_found (exit 11).
+            const command =
+              onboardingToken && !tokenLoading && !tokenError
+                ? buildInstallCommands({
+                    apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
+                    token: onboardingToken,
+                    enrollmentSecret: enrollmentSecret || undefined,
+                  })[selectedOS]
+                : null;
 
             return (
               <div>
@@ -505,19 +511,32 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   ))}
                 </div>
                 <div className="rounded-lg border bg-muted/30 p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <code className="text-xs font-mono text-muted-foreground break-all">
-                      {commands[selectedOS]}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyCommand(commands[selectedOS])}
-                      aria-label={t('setup.enroll.cli.copyCommand')}
-                      className="shrink-0 p-1 hover:bg-muted rounded"
+                  {command ? (
+                    <div className="flex items-start justify-between gap-2">
+                      <code
+                        className="text-xs font-mono text-muted-foreground break-all"
+                        data-testid="setup-cli-command"
+                      >
+                        {command}
+                      </code>
+                      <button
+                        type="button"
+                        data-testid="setup-cli-copy-command"
+                        onClick={() => handleCopyCommand(command)}
+                        aria-label={t('setup.enroll.cli.copyCommand')}
+                        className="shrink-0 p-1 hover:bg-muted rounded"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <p
+                      className="text-sm text-muted-foreground"
+                      data-testid="setup-cli-command-needs-token"
                     >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
+                      {t('setup.enroll.cli.commandNeedsToken')}
+                    </p>
+                  )}
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   {selectedOS === 'windows' ? t('setup.enroll.cli.runAsAdmin') : t('setup.enroll.cli.runInTerminal')}
