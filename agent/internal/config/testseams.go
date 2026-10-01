@@ -5,8 +5,8 @@ package config
 // installed agent's machine-wide config without touching the real one. The
 // returned func restores the platform dir. Test use only.
 func SetConfigDirForTest(dir string) (restore func()) {
-	configDirOverride.Store(&dir)
-	return func() { configDirOverride.Store(nil) }
+	prev := configDirOverride.Swap(&dir)
+	return func() { configDirOverride.Store(prev) }
 }
 
 // ResetUserWorkspaceForTest unregisters the process's user workspace (see

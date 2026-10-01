@@ -211,6 +211,21 @@ func TestUserWorkspaceSupportSessionPersistsOnlyToItsWorkspace(t *testing.T) {
 		t.Errorf("reloaded pinned manifest keys = %v, want the one pinned key", reloaded.PinnedManifestPubKeys)
 	}
 
+	// Bound, an explicit outside path is still refused and does not rebind.
+	installedCfg := filepath.Join(installedDir, "agent.yaml")
+	if _, err := Load(installedCfg); !errors.Is(err, ErrConfigOutsideUserWorkspace) {
+		t.Errorf("Load(installed agent.yaml) while bound: err = %v, want ErrConfigOutsideUserWorkspace", err)
+	}
+	if err := BindConfigFile(installedCfg); !errors.Is(err, ErrConfigOutsideUserWorkspace) {
+		t.Errorf("BindConfigFile(installed agent.yaml) while bound: err = %v, want ErrConfigOutsideUserWorkspace", err)
+	}
+	if err := SaveTo(cfg, installedCfg); !errors.Is(err, ErrConfigOutsideUserWorkspace) {
+		t.Errorf("SaveTo(installed agent.yaml) while bound: err = %v, want ErrConfigOutsideUserWorkspace", err)
+	}
+	if got := ActiveConfigFile(); !samePath(got, cfgPath) {
+		t.Errorf("ActiveConfigFile() = %q after refused outside calls, want still %q", got, cfgPath)
+	}
+
 	assertInstalledConfigUntouched(t, installedDir, installed)
 }
 
@@ -241,6 +256,7 @@ func TestUserWorkspaceRefusesConfigWritesOutsideIt(t *testing.T) {
 		{"SetAllAndPersist", func() error { return SetAllAndPersist(map[string]any{"auto_update": false}) }},
 		{"SetSecretAndPersist", func() error { return SetSecretAndPersist("backup_s3_secret_key", "x") }},
 		{"PinManifestKeys(ActiveConfigFile())", func() error { return PinManifestKeys(ActiveConfigFile(), keys) }},
+		{"ReadPersistedCredentials", func() error { _, err := ReadPersistedCredentials(); return err }},
 		{"Reload", func() error { _, err := Reload(); return err }},
 		{"Load(default)", func() error { _, err := Load(""); return err }},
 		{"BindConfigFile(installed agent.yaml)", func() error { return BindConfigFile(filepath.Join(installedDir, "agent.yaml")) }},

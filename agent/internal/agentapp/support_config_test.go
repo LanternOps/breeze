@@ -1,6 +1,9 @@
 package agentapp
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -112,6 +115,44 @@ func TestSupportSessionRotationLeavesInstalledAgentConfigUntouched(t *testing.T)
 		got, err := os.ReadFile(filepath.Join(installedDir, name))
 		if err != nil || string(got) != want {
 			t.Errorf("installed agent's %s changed: %q (err %v), want %q", name, got, err, want)
+		}
+	}
+}
+
+// TestRunSupportSessionEnrollsThroughEnrollSupportSession pins the call site:
+// the test above drives enrollSupportSession directly, so it would stay green
+// if runSupportSession went back to calling enrollWithConfig and skipped the
+// bind. runSupportSession needs a live server, so this checks its source.
+func TestRunSupportSessionEnrollsThroughEnrollSupportSession(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "support.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse support.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "runSupportSession" {
+			fn = f
+		}
+	}
+	if fn == nil {
+		t.Fatal("runSupportSession not found in support.go")
+	}
+	calls := map[string]int{}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			if id, ok := c.Fun.(*ast.Ident); ok {
+				calls[id.Name]++
+			}
+		}
+		return true
+	})
+	if calls["enrollSupportSession"] != 1 {
+		t.Errorf("runSupportSession calls enrollSupportSession %d times, want 1", calls["enrollSupportSession"])
+	}
+	for _, direct := range []string{"enrollWithConfig", "enrollWithConfigFn"} {
+		if calls[direct] != 0 {
+			t.Errorf("runSupportSession calls %s directly, skipping the workspace config bind (#7629)", direct)
 		}
 	}
 }

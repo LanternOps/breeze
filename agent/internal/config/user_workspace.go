@@ -153,7 +153,10 @@ func checkConfigTarget(path string) error {
 // what is on disk before the first SetAndPersist re-serializes it.
 //
 // cfgFile must already exist, and inside a registered user workspace it must
-// lie within it. On failure nothing is bound.
+// lie within it. A path outside the workspace, or a missing file, is refused
+// before anything is bound. A file that exists but fails to read or validate
+// may be left bound (viper binds before it reads); the caller must treat any
+// error as fatal, as runSupportSession does.
 //
 // Load binds as a side effect; this exists for a caller that has just written
 // its config somewhere other than the default path and must make sure the
