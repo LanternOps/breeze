@@ -240,6 +240,17 @@ describe.skipIf(!RUN)('ai_model_registry_partner_cutover RLS (shape 3)', () => {
       db.execute(sql`SELECT partner_id FROM ai_model_registry_partner_cutover WHERE partner_id IN (${a.id}::uuid, ${b.id}::uuid)`));
     expect(seenByB).toHaveLength(1);
 
+    // Writes are system-only: a partner can neither delete nor rewrite its OWN
+    // cutover row (deleting it would re-project the partner from legacy).
+    const deletedByB = await withDbAccessContext(partnerContext(b.id), () =>
+      db.execute(sql`DELETE FROM ai_model_registry_partner_cutover WHERE partner_id = ${b.id}::uuid RETURNING partner_id`));
+    expect(deletedByB).toHaveLength(0);
+    const updatedByB = await withDbAccessContext(partnerContext(b.id), () =>
+      db.execute(sql`UPDATE ai_model_registry_partner_cutover SET cutover_at = now() WHERE partner_id = ${b.id}::uuid RETURNING partner_id`))
+      .catch(() => []);
+    expect(updatedByB).toHaveLength(0);
+    expect(await cutoverRows([b.id])).toHaveLength(1);
+
     // The singleton is system-only: a partner context sees and updates nothing.
     const leased = await withDbAccessContext(partnerContext(a.id), () =>
       db.execute(sql`UPDATE ai_model_registry_state SET lease_owner = 'tenant' WHERE id = 1 RETURNING id`));

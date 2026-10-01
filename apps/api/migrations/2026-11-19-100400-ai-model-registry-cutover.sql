@@ -47,14 +47,48 @@ CREATE TABLE IF NOT EXISTS public.ai_model_registry_partner_cutover (
 
 ALTER TABLE public.ai_model_registry_partner_cutover ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_model_registry_partner_cutover FORCE ROW LEVEL SECURITY;
+-- Reads: system OR the owning partner. Writes (INSERT/UPDATE/DELETE): system
+-- only — a partner deleting its own row would make the next request re-project
+-- it from legacy config. A FOR ALL policy with a partner USING branch would let
+-- exactly that DELETE through (USING governs DELETE row targeting), so the
+-- read and write policies are separate. The write policies are
+-- `system AND breeze_has_partner_access(partner_id)` (the
+-- stripe_connect_credentials shape): the AND is true only in system scope,
+-- and naming the helper keeps the rls-coverage partner-axis contract
+-- (every DML command references breeze_has_partner_access) satisfied.
 DROP POLICY IF EXISTS ai_model_registry_partner_cutover_access ON public.ai_model_registry_partner_cutover;
-CREATE POLICY ai_model_registry_partner_cutover_access ON public.ai_model_registry_partner_cutover
-  FOR ALL
+DROP POLICY IF EXISTS ai_model_registry_partner_cutover_select ON public.ai_model_registry_partner_cutover;
+DROP POLICY IF EXISTS ai_model_registry_partner_cutover_insert ON public.ai_model_registry_partner_cutover;
+DROP POLICY IF EXISTS ai_model_registry_partner_cutover_update ON public.ai_model_registry_partner_cutover;
+DROP POLICY IF EXISTS ai_model_registry_partner_cutover_delete ON public.ai_model_registry_partner_cutover;
+CREATE POLICY ai_model_registry_partner_cutover_select ON public.ai_model_registry_partner_cutover
+  FOR SELECT
   USING (
     public.breeze_current_scope() = 'system'
     OR public.breeze_has_partner_access(partner_id)
+  );
+CREATE POLICY ai_model_registry_partner_cutover_insert ON public.ai_model_registry_partner_cutover
+  FOR INSERT
+  WITH CHECK (
+    public.breeze_current_scope() = 'system'
+    AND public.breeze_has_partner_access(partner_id)
+  );
+CREATE POLICY ai_model_registry_partner_cutover_update ON public.ai_model_registry_partner_cutover
+  FOR UPDATE
+  USING (
+    public.breeze_current_scope() = 'system'
+    AND public.breeze_has_partner_access(partner_id)
   )
-  WITH CHECK (public.breeze_current_scope() = 'system');
+  WITH CHECK (
+    public.breeze_current_scope() = 'system'
+    AND public.breeze_has_partner_access(partner_id)
+  );
+CREATE POLICY ai_model_registry_partner_cutover_delete ON public.ai_model_registry_partner_cutover
+  FOR DELETE
+  USING (
+    public.breeze_current_scope() = 'system'
+    AND public.breeze_has_partner_access(partner_id)
+  );
 GRANT SELECT, INSERT, DELETE ON public.ai_model_registry_partner_cutover TO breeze_app;
 
 DO $$
