@@ -102,6 +102,7 @@ class CapturingInvoke {
         docType: 'payment record', projectKey: null, projectLabel: null,
         docDate: null, confidence: 'low', people: [],
       }),
+      model: 'claude-test-model',
     };
   };
 }

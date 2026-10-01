@@ -56,8 +56,8 @@ export interface ExtensionAiErrorOptions {
  *    being off or the partner being on a plan without AI.
  *  - `ai_unavailable` is transient for a provider outage or a rejected partner
  *    key (an operator must see those stay loud) and PERMANENT when the
- *    configured model id simply is not a priced model — a deployment typo that
- *    every retry will reproduce exactly.
+ *    requested model id is not one the partner has enabled for extension use —
+ *    a configuration error that every retry will reproduce exactly.
  *
  * Callers that retry (job runners, ingest phases) must branch on `permanent`,
  * not on the code. `permanent` defaults to `false`: a host built before this
@@ -87,7 +87,7 @@ export interface ExtensionAiInvokeInput {
   system?: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   maxTokens: number;
-  /** Optional model override; must be a platform-priced model id. Host default applies when omitted. */
+  /** Optional: a model id the partner has enabled for extension use; the host maps it to that offering. Omit to use the partner's `extension_content` default. */
   model?: string;
 }
 

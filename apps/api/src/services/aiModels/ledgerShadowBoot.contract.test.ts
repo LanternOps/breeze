@@ -115,8 +115,12 @@ describe('every AI cost record carries an invocation-ledger context (#7600 W02)'
         at = text.indexOf(callee, at + callee.length);
       }
     }
-    // Guards against a scanner that silently matches nothing.
-    expect(scanned).toBeGreaterThan(0);
+    // W03 Task 13: the last cost-tracker `recordUsage(` callers (catalog
+    // enrichment, extension AI, workspace enrichment) settle through the
+    // registry now, so NO call site remains and a reintroduced one would bill
+    // twice. Task 17 deletes the function. Any call that does reappear must at
+    // least carry the ledger argument.
+    expect(scanned).toBe(0);
     expect(offenders).toEqual([]);
   });
 });

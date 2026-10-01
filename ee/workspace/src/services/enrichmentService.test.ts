@@ -11,6 +11,7 @@ const ORG = '11111111-1111-1111-1111-111111111111';
 function fakeInvoke(reply: string | (() => string)): EnrichmentInvoke {
   return vi.fn(async () => ({
     text: typeof reply === 'function' ? reply() : reply,
+    model: 'claude-served-model',
   }));
 }
 
@@ -143,6 +144,29 @@ describe('run', () => {
     return { execute } as unknown as WorkspaceDatabase;
   }
 
+  it('records the model the host served, not an env-derived label', async () => {
+    const prev = process.env.WORKSPACE_CONTENT_LLM_MODEL;
+    process.env.WORKSPACE_CONTENT_LLM_MODEL = 'env-label-that-must-not-be-recorded';
+    try {
+      const pending = [{ id: 'f1', rel_path: 'a.md', extracted_text: 'text a' }];
+      const db = fakeDb(pending);
+      const invoke: EnrichmentInvoke = vi.fn(async () => ({ text: GOOD, model: 'claude-served-model' }));
+      await createEnrichmentService(db, { invoke }).run(ORG, 8);
+
+      const inserts = (db.execute as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => c[0])
+        .filter((q) => sqlText(q).includes('INSERT INTO workspace_file_enrichment'));
+      expect(inserts).toHaveLength(1);
+      const params = (inserts[0] as { queryChunks: unknown[] }).queryChunks.filter((c) => typeof c === 'string');
+      expect(params).toContain('claude-served-model');
+      expect(params).not.toContain('env-label-that-must-not-be-recorded');
+      expect(params).not.toContain('claude-haiku-4-5');
+    } finally {
+      if (prev === undefined) delete process.env.WORKSPACE_CONTENT_LLM_MODEL;
+      else process.env.WORKSPACE_CONTENT_LLM_MODEL = prev;
+    }
+  });
+
   it('aborts the run when invoke throws ExtensionAiError, wrapping it as TransientIngestError with zero files errored', async () => {
     const pending = [
       { id: 'f1', rel_path: 'a.md', extracted_text: 'text a' },
@@ -230,7 +254,7 @@ describe('run', () => {
     it.each([
       ['budget_exceeded', 'AI features are disabled for this organization'],
       ['budget_exceeded', 'AI assistant requires the Community plan.'],
-      ['ai_unavailable', 'AI model "claude-hiaku-4-5" is not available for metered extension use.'],
+      ['ai_unavailable', 'AI model "claude-hiaku-4-5" is not available for extension use.'],
       ['not_configured', 'AI is not configured on this deployment.'],
     ] as const)('drains the phase on a PERMANENT %s', async (code, message) => {
       const db = drainingDb(pending);

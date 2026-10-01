@@ -164,6 +164,18 @@ describe('W03 parity: script_reviewer', () => {
   });
 });
 
+describe('W03 parity: catalog_enrichment (user-initiated unless systemInitiated; Messages API transport)', () => {
+  surfaceParity('surface queries', async () => {
+    await assertSurfaceParity({ select: surfaceQuery('catalog_enrichment'), bind, registrySide: viaAssignment('catalog_enrichment', true) });
+  });
+});
+
+describe('W03 parity: extension_content (system-initiated host call)', () => {
+  surfaceParity('surface queries — matches legacy except the declared catalog fix (legacy refused catalog partners)', async () => {
+    await assertSurfaceParity({ select: surfaceQuery('extension_content'), bind, registrySide: viaAssignment('extension_content', false) });
+  });
+});
+
 describe('W03 parity: ai_agents (policy offering, permitted set re-checked at run)', () => {
   // The run's request is exactly what admission sends (runService step 3d):
   // the merged policy's bound offering — the org row's binding, else the

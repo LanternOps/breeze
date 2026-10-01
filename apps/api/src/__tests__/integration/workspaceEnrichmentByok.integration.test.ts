@@ -45,10 +45,10 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { aiCostUsage, partnerAiConnections } from '../../db/schema';
-import { createConnection } from '../../services/aiModels/connections';
+import { aiCostUsage, aiInvocations, partnerAiConnections } from '../../db/schema';
 import { buildExtensionAiContext } from '../../services/extensionAi';
-import { createOrganization, createPartner } from './db-utils';
+import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -287,8 +287,10 @@ function orgContext(orgId: string): DbAccessContext {
 }
 
 
-function mockClassificationResponse(text: string) {
+function mockClassificationResponse(text: string, model: string) {
   return {
+    model,
+    stop_reason: 'end_turn' as const,
     content: [{ type: 'text' as const, text }],
     usage: { input_tokens: 120, output_tokens: 40 },
   };
@@ -304,6 +306,10 @@ const CLASSIFICATION_JSON = JSON.stringify({
 });
 
 describe('workspace enrichment honors partner BYOK', () => {
+  // A deployment WITH a platform credential: a broken BYOK connection must then
+  // fail LOUD (transient) rather than read as "no AI on this deployment".
+  usePlatformAiKeyPlaceholder();
+
   beforeAll(async () => {
     if (!process.env.DATABASE_URL) return;
     await ensureWorkspaceSchema();
@@ -321,10 +327,11 @@ describe('workspace enrichment honors partner BYOK', () => {
   runDb(
     'BYOK partner: enrichment bills partner_key and never falls back to the platform key on a broken config',
     async () => {
+      let servedModel = '';
       const createSpy = vi
         .spyOn(Anthropic.Messages.prototype, 'create')
         // @ts-expect-error - real SDK response type is far richer than this test needs
-        .mockResolvedValue(mockClassificationResponse(CLASSIFICATION_JSON));
+        .mockImplementation(async () => mockClassificationResponse(CLASSIFICATION_JSON, servedModel));
 
       const previousBillingUrl = process.env.BILLING_SERVICE_URL;
       const previousBillingKey = process.env.BILLING_SERVICE_API_KEY;
@@ -340,21 +347,16 @@ describe('workspace enrichment honors partner BYOK', () => {
         );
 
       try {
+        // W03 Task 13: a cut-over partner whose `extension_content` assignment
+        // points at an offering on its own BYOK connection (real row-bound
+        // encryption, so the resolver decrypts and dispatches on that key).
+        // Seeded outside the system transaction: the helper writes the offering
+        // over a separate connection that must see the committed connection row.
+        const seeded = await seedRegistryPartner('byok');
+        servedModel = seeded.modelId;
         const { org, configId } = await withSystemDbAccessContext(async () => {
-          const partner = await createPartner();
-          const org = await createOrganization({ partnerId: partner.id });
-
-          // W03 Task 6B: the partner's AI configuration is its compat
-          // connection (real row-bound encryption via the W02 service, so the
-          // resolver actually decrypts and reaches the 'partner' source).
-          const { id: configId } = await createConnection({
-            partnerId: partner.id,
-            kind: 'anthropic_byok',
-            name: 'Anthropic API key',
-            apiKey: 'sk-ant-integration-test-key-0000000000',
-            connectedBy: null,
-            verifiedAt: new Date(),
-          });
+          const org = { id: seeded.orgId };
+          const configId = seeded.connectionId!;
 
           await db.execute(sql`
             INSERT INTO workspace_org_settings (org_id, content_enabled)
@@ -420,6 +422,15 @@ describe('workspace enrichment honors partner BYOK', () => {
             .where(and(eq(aiCostUsage.orgId, org.id), eq(aiCostUsage.period, 'daily'))),
         );
         expect(usageAfterSuccess).toEqual([{ billingSource: 'partner_key' }]);
+
+        // One ledger row, from the registry rate bound at admission, on the
+        // extension_content surface and partner funding.
+        const ledger = await withSystemDbAccessContext(() =>
+          db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+        expect(ledger).toHaveLength(1);
+        expect(ledger[0]).toMatchObject({
+          surface: 'extension_content', sourceRef: 'extension:workspace_enrichment', fundingSource: 'partner_key',
+        });
 
         const deductCalls = fetchSpy.mock.calls.filter(([url]) =>
           String(url).includes('/ai-credits/deduct'),
