@@ -96,6 +96,45 @@ describe('ConnectionDrawer', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('when the key rotated but the PATCH failed: reloads, clears the key draft, and says only the key saved', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonRes({ id: CONN }))
+      .mockResolvedValueOnce(jsonRes({ error: 'boom', code: 'write_failed' }, 500))
+      .mockResolvedValueOnce(jsonRes({ id: CONN }));
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    render(<ConnectionDrawer connection={connection} catalog={[]} catalogEnabled={false} onClose={onClose} onSaved={onSaved} />);
+    fireEvent.change(screen.getByTestId('ai-connection-key'), { target: { value: KEY } });
+    fireEvent.change(screen.getByTestId('ai-connection-name'), { target: { value: 'Prod' } });
+    fireEvent.click(screen.getByTestId('ai-connection-save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('name and region were not') }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect((screen.getByTestId('ai-connection-key') as HTMLInputElement).value).toBe('');
+    // A retry sends only the PATCH: the key is never rotated twice.
+    fireEvent.click(screen.getByTestId('ai-connection-save'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(3));
+    expect(fetchWithAuth.mock.calls[2][0]).toBe(`/ai/models/connections/${CONN}`);
+    expect(fetchWithAuth.mock.calls[2][1].method).toBe('PATCH');
+  });
+
+  it('when the endpoint changed but the PATCH failed: reloads and a retry does not re-post the endpoint', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonRes({ id: CONN }))
+      .mockResolvedValueOnce(jsonRes({ error: 'boom', code: 'write_failed' }, 500))
+      .mockResolvedValueOnce(jsonRes({ id: CONN }));
+    const onSaved = vi.fn();
+    render(<ConnectionDrawer connection={connection} catalog={entry(null)} catalogEnabled onClose={vi.fn()} onSaved={onSaved} />);
+    fireEvent.click(screen.getByTestId('ai-connection-endpoint-e1'));
+    fireEvent.change(screen.getByTestId('ai-connection-name'), { target: { value: 'Prod' } });
+    fireEvent.click(screen.getByTestId('ai-connection-save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    fireEvent.click(screen.getByTestId('ai-connection-save'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(3));
+    expect(fetchWithAuth.mock.calls[2][1].method).toBe('PATCH');
+  });
+
   it('creates a connection (connection=null) with POST /ai/models/connections', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: CONN }, 201));
     const onClose = vi.fn();

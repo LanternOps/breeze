@@ -234,6 +234,7 @@
       "saveFailed": "Não foi possível salvar a conexão.",
       "keyFailed": "Não foi possível substituir a chave de API.",
       "endpointFailed": "Não foi possível alterar o endpoint.",
+      "credentialSavedSettingsFailed": "A chave ou o endpoint foi salvo, mas o nome e a região não. Tente salvá-los novamente.",
       "disconnected": "Conexão removida",
       "disconnectFailed": "Não foi possível remover a conexão.",
       "columns": {

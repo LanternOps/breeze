@@ -234,6 +234,7 @@
       "saveFailed": "Die Verbindung konnte nicht gespeichert werden.",
       "keyFailed": "Der API-Schlüssel konnte nicht ersetzt werden.",
       "endpointFailed": "Der Endpunkt konnte nicht geändert werden.",
+      "credentialSavedSettingsFailed": "Der Schlüssel bzw. Endpunkt wurde gespeichert, Name und Region jedoch nicht. Speichern Sie sie erneut.",
       "disconnected": "Verbindung entfernt",
       "disconnectFailed": "Die Verbindung konnte nicht entfernt werden.",
       "columns": {

@@ -234,6 +234,7 @@
       "saveFailed": "Impossible d'enregistrer la connexion.",
       "keyFailed": "Impossible de remplacer la clé API.",
       "endpointFailed": "Impossible de modifier le point de terminaison.",
+      "credentialSavedSettingsFailed": "La clé ou le point de terminaison a été enregistré, mais pas le nom ni la région. Réessayez de les enregistrer.",
       "disconnected": "Connexion supprimée",
       "disconnectFailed": "Impossible de supprimer la connexion.",
       "columns": {

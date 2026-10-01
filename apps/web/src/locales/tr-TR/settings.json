@@ -234,6 +234,7 @@
       "saveFailed": "Bağlantı kaydedilemedi.",
       "keyFailed": "API anahtarı değiştirilemedi.",
       "endpointFailed": "Uç nokta değiştirilemedi.",
+      "credentialSavedSettingsFailed": "Anahtar veya uç nokta kaydedildi, ancak ad ve bölge kaydedilmedi. Bunları yeniden kaydetmeyi deneyin.",
       "disconnected": "Bağlantı kaldırıldı",
       "disconnectFailed": "Bağlantı kaldırılamadı.",
       "columns": {

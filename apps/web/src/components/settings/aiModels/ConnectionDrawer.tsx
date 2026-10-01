@@ -35,10 +35,13 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const [disconnecting, setDisconnecting] = useState(false);
 
   const [refreshing, setRefreshing] = useState(false);
+  // Set when a Save stored a new endpoint but a later step failed: the prop may
+  // still hold the old value until the parent reloads, and a retry must not re-post it.
+  const [savedEndpoint, setSavedEndpoint] = useState<{ value: string | null } | null>(null);
   const busy = saving || disconnecting || refreshing;
   const friendly = registryFriendly(t);
 
-  const storedEndpoint = connection?.catalogEntryId ?? null;
+  const storedEndpoint = savedEndpoint ? savedEndpoint.value : connection?.catalogEntryId ?? null;
   const keyDirty = apiKey.trim() !== '';
   const endpointDirty = connection !== null && endpoint !== storedEndpoint;
   const nameDirty = connection !== null && name !== connection.name;
@@ -68,6 +71,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const handleSave = async () => {
     if (!canSave || busy) return;
     setSaving(true);
+    // Which credential step (key or endpoint) already committed in THIS Save.
+    let credentialSaved = false;
     try {
       if (connection === null) {
         await runAction({
@@ -94,6 +99,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
             friendly,
             onUnauthorized,
           });
+          credentialSaved = true;
         } else if (endpointDirty) {
           await runAction({
             request: () => fetchWithAuth(`${base}/endpoint`, {
@@ -104,6 +110,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
             friendly,
             onUnauthorized,
           });
+          credentialSaved = true;
         }
         const patch: Record<string, unknown> = {};
         if (nameDirty) patch.name = name.trim();
@@ -125,6 +132,14 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.saveFailed') });
       // non-401 ActionError already toasted by runAction; the drawer stays open
+      if (credentialSaved) {
+        // The key/endpoint step committed before a later step failed: clear that
+        // draft so a retry cannot rotate again, say what did save, and reload.
+        if (keyDirty) setApiKey('');
+        if (endpointDirty) { setSavedEndpoint({ value: endpoint }); setConsent(false); }
+        showToast({ type: 'warning', message: t('aiModels.connections.credentialSavedSettingsFailed') });
+        try { await onSaved(); } catch (reloadErr) { console.error('[ConnectionDrawer] reload after partial save failed', reloadErr); }
+      }
     } finally {
       setSaving(false);
     }
