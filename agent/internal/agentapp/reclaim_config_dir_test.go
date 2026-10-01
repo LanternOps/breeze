@@ -1,0 +1,136 @@
+package agentapp
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"testing"
+
+	"github.com/breeze-rmm/agent/internal/config"
+)
+
+// callOrder lists, in source order, the calls made in funcName's body in
+// main.go: bare identifiers, and pkg.Func selectors as "pkg.Func".
+func callOrder(t *testing.T, funcName string) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	var body *ast.BlockStmt
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == funcName {
+			body = f.Body
+		}
+	}
+	if body == nil {
+		t.Fatalf("%s not found in main.go", funcName)
+	}
+	var order []string
+	ast.Inspect(body, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := c.Fun.(type) {
+		case *ast.Ident:
+			order = append(order, fn.Name)
+		case *ast.SelectorExpr:
+			if x, ok := fn.X.(*ast.Ident); ok {
+				order = append(order, x.Name+"."+fn.Sel.Name)
+			}
+		}
+		return true
+	})
+	return order
+}
+
+func indexOf(order []string, name string) int {
+	for i, n := range order {
+		if n == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestAgentStartReclaimsConfigDirBeforeReadingIt pins where runAgent takes
+// the config folder back: after the instance guard (which already holds the
+// folder by handle on Windows) and before anything reads config, on both the
+// service path (runAsService) and the console path (config.Load).
+func TestAgentStartReclaimsConfigDirBeforeReadingIt(t *testing.T) {
+	order := callOrder(t, "runAgent")
+	guard, reclaim := indexOf(order, "acquireMainAgentGuardFn"), indexOf(order, "reclaimConfigDirFn")
+	service, load := indexOf(order, "runAsService"), indexOf(order, "config.Load")
+	if guard < 0 || reclaim < 0 || service < 0 || load < 0 {
+		t.Fatalf("calls missing: guard=%d reclaim=%d runAsService=%d config.Load=%d", guard, reclaim, service, load)
+	}
+	if guard >= reclaim || reclaim >= service || reclaim >= load {
+		t.Errorf("order guard=%d reclaim=%d runAsService=%d config.Load=%d; want the reclaim after the guard and before both", guard, reclaim, service, load)
+	}
+}
+
+// TestEnrollReclaimsConfigDirBeforeReadingIt: enrollDevice takes the folder
+// back, removing config files another account could have written, before it
+// loads the existing config.
+func TestEnrollReclaimsConfigDirBeforeReadingIt(t *testing.T) {
+	order := callOrder(t, "enrollDevice")
+	reclaim, load := indexOf(order, "reclaimConfigDirFn"), indexOf(order, "config.Load")
+	if reclaim < 0 || load < 0 || reclaim > load {
+		t.Errorf("enrollDevice: reclaim at %d, config.Load at %d; want the reclaim first", reclaim, load)
+	}
+}
+
+func TestConfigFileInMachineDir(t *testing.T) {
+	machine := config.ConfigDir()
+	for _, tc := range []struct {
+		cfgFile string
+		want    bool
+	}{
+		{"", true},
+		{filepath.Join(machine, "agent.yaml"), true},
+		{filepath.Join(t.TempDir(), "agent.yaml"), false},
+		{filepath.Join(machine, "sub", "agent.yaml"), false},
+	} {
+		if got := configFileInMachineDir(tc.cfgFile); got != tc.want {
+			t.Errorf("configFileInMachineDir(%q) = %v, want %v", tc.cfgFile, got, tc.want)
+		}
+	}
+}
+
+type nopGuard struct{}
+
+func (nopGuard) Close() error { return nil }
+
+// TestRunAgentStopsWhenTheConfigFolderCannotBeTrusted: a config folder the
+// agent cannot take back (a link, an owner it cannot replace) stops the agent
+// before it reads config or starts anything.
+func TestRunAgentStopsWhenTheConfigFolderCannotBeTrusted(t *testing.T) {
+	origAcquire, origExit, origReclaim := acquireMainAgentGuardFn, mainAgentExitFn, reclaimConfigDirFn
+	origReconcile, origStart := reconcileServiceUnitIfNeededFn, startAgentFn
+	t.Cleanup(func() {
+		acquireMainAgentGuardFn, mainAgentExitFn, reclaimConfigDirFn = origAcquire, origExit, origReclaim
+		reconcileServiceUnitIfNeededFn, startAgentFn = origReconcile, origStart
+	})
+	acquireMainAgentGuardFn = func(ProcessStartup) (mainAgentGuard, error) { return nopGuard{}, nil }
+	var forEnrollArg []bool
+	reclaimConfigDirFn = func(forEnroll bool) error {
+		forEnrollArg = append(forEnrollArg, forEnroll)
+		return fmt.Errorf("%w: planted link", config.ErrConfigDirUntrusted)
+	}
+	exitCode, reconciled, started := 0, false, false
+	mainAgentExitFn = func(code int) { exitCode = code }
+	reconcileServiceUnitIfNeededFn = func() { reconciled = true }
+	startAgentFn = func(*config.Config) (*agentComponents, error) { started = true; return nil, nil }
+
+	runAgent()
+
+	if exitCode != exitConfigDirUntrusted || reconciled || started {
+		t.Fatalf("exit=%d reconciled=%v started=%v, want exit %d and nothing else", exitCode, reconciled, started, exitConfigDirUntrusted)
+	}
+	if len(forEnrollArg) != 1 || forEnrollArg[0] {
+		t.Errorf("reclaim called with forEnroll=%v, want one call with false (start, not enroll)", forEnrollArg)
+	}
+}

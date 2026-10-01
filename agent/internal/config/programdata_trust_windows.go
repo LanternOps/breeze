@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -163,6 +164,12 @@ func readProgramDataPathSecurity(path string) (programDataPathSecurity, error) {
 // subtrees under entries that failed. It returns the links it could not
 // remove, and the first other error.
 func resetProgramDataTreeContents(dir string, full bool) ([]string, error) {
+	return resetProgramDataTreeContentsSkipping(dir, full, nil)
+}
+
+// resetProgramDataTreeContentsSkipping is resetProgramDataTreeContents that
+// leaves dir's own entries named in skip (lower-case names) to the caller.
+func resetProgramDataTreeContentsSkipping(dir string, full bool, skip map[string]bool) ([]string, error) {
 	var stuck []string
 	var firstErr error
 	note := func(err error) {
@@ -178,6 +185,9 @@ func resetProgramDataTreeContents(dir string, full bool) ([]string, error) {
 			return
 		}
 		for _, e := range entries {
+			if d == dir && skip[strings.ToLower(e.Name())] {
+				continue
+			}
 			p := filepath.Join(d, e.Name())
 			sec, err := readProgramDataPathSecurity(p)
 			if err != nil {

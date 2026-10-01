@@ -1993,6 +1993,28 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
           if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # #7629: the agent re-secures its config folder if another account
+      # created it, before reading anything from it. The tests plant
+      # C:\ProgramData\Breeze-shaped folders as a simulated standard user
+      # (filtered token) and take them back with this elevated runner's token,
+      # as SYSTEM or an elevated `breeze-agent enroll` would; they skip on a
+      # non-elevated token, so assert zero skips. A separate step (not the -run
+      # filter above) so it does not collide with other changes to that one.
+      - name: Run Windows config folder reclaim tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/config -run '^TestReclaimConfigDir' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the reclaim tests SKIPPED - the runner token is not elevated" }
+          if ($passes -ne 5) { throw "expected exactly 5 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
+
       # The helper-scoped token must never sit in a file a standard Windows user
       # can read: it reaches the console-session Breeze Assist over IPC only,
       # and a token an older agent left in agent.yaml is scrubbed and rotated.

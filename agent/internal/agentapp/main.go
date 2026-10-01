@@ -1251,6 +1251,16 @@ func runAgent() {
 	}
 	defer guard.Close()
 
+	// Before anything reads the config: the agent re-secures its config and
+	// data folder if another account created it (a folder pre-created by a
+	// standard user, e.g. through an older Quick Support client), and refuses
+	// one that is a link. Covers both the service and the console path below.
+	if err := reclaimConfigDirFn(false); err != nil {
+		fmt.Fprintf(os.Stderr, "Breeze agent cannot use its config folder: %v\n", err)
+		mainAgentExitFn(exitConfigDirUntrusted)
+		return
+	}
+
 	// Self-heal the installed service unit from older installs (launchd plists on
 	// macOS; systemd unit on Linux) after a binary-only auto-update.
 	reconcileServiceUnitIfNeededFn()
@@ -1472,6 +1482,18 @@ func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
 	)
+
+	// Before reading the existing config: take the config folder back if
+	// another account created it, and remove an agent.yaml / secrets.yaml it
+	// could have written rather than carry their contents into this
+	// enrollment. Only for the machine-wide folder; a --config elsewhere is
+	// the caller's own.
+	if configFileInMachineDir(cfgFile) {
+		if err := reclaimConfigDirFn(true); err != nil {
+			enrollError(catConfig, "the agent config folder "+config.ConfigDir()+" cannot be used", err)
+			return
+		}
+	}
 
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
