@@ -76,6 +76,17 @@ beforeEach(() => {
 });
 
 describe('LlmProviderCatalog', () => {
+  // An expanded provider with no revisions said "No catalog entries yet." —
+  // the page-level empty state — directly under a list showing that entry.
+  it('says the provider has no revisions, not that the catalog is empty', async () => {
+    mockApi([{ ...draftEntry, revisions: [] }]);
+    render(<LlmProviderCatalog />);
+    fireEvent.click(await screen.findByTestId('llm-catalog-row-entry-1-toggle'));
+    const panel = await screen.findByTestId('llm-catalog-revisions-entry-1');
+    expect(panel.textContent).toContain('No revisions yet.');
+    expect(panel.textContent).not.toContain('No catalog entries yet.');
+  });
+
   it('shows a platform-admin-required panel on a 403', async () => {
     mockApi(null);
     fetchWithAuth.mockResolvedValue(jsonRes({ error: 'platform admin access required' }, 403));
