@@ -28,7 +28,10 @@ func validateBackupPath(path string) error {
 // consistencyType controls how the export handles a running VM:
 //   - "application": Uses Hyper-V VSS integration for application-consistent backup.
 //     This is the default Export-VM behavior for running VMs.
-//   - "crash": Saves the VM state before exporting, ensuring a crash-consistent point.
+//   - "crash": Saves a Running VM before exporting (and restarts it after),
+//     ensuring a crash-consistent point. An Off or Saved VM is already
+//     consistent and is exported as-is; a Paused VM is saved and left Saved.
+//     See planCrashExport.
 func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error) {
 	start := time.Now()
 
