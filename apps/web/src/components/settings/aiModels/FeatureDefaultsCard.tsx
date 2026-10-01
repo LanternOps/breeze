@@ -12,7 +12,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { SURFACE_LABEL_KEYS, registryFriendly } from './surfaceLabels';
+import { SURFACE_LABEL_KEYS, registryFriendly, unavailableIds, unavailableModelLabel } from './surfaceLabels';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
@@ -270,6 +270,13 @@ export default function FeatureDefaultsCard({
           const opts = optionChoices(model);
           const invalid = invalidSurface === d.surface;
           const id = d.surface;
+          const nameOf = (offeringId: string) => snapshot.offerings.find((o) => o.id === offeringId)?.displayName;
+          // Stored ids that are no longer enabled/eligible stay listed so they can be unticked (the API accepts them as stored).
+          const stale = unavailableIds(state.base[k]?.permitted ?? [], draft.permitted, new Set(eligible.map((o) => o.id as string)));
+          const staleDefault = draft.defaultOfferingId !== '' && !choices.some((o) => o.id === draft.defaultOfferingId);
+          const togglePermitted = (offeringId: string, on: boolean) => edit(d, {
+            permitted: on ? [...draft.permitted, offeringId] : draft.permitted.filter((p) => p !== offeringId),
+          });
           // W09 (#7607): role sub-rows (triage/analysis/remediation) and the ordered fallback list render here.
           return (
             <li
@@ -312,6 +319,9 @@ export default function FeatureDefaultsCard({
                     className="h-9 w-full rounded-md border bg-background px-2 text-sm font-normal"
                   >
                     {draft.defaultOfferingId === '' && <option value="">{t('aiModels.defaults.chooseDefault')}</option>}
+                    {staleDefault && (
+                      <option value={draft.defaultOfferingId}>{unavailableModelLabel(t, nameOf(draft.defaultOfferingId))}</option>
+                    )}
                     {choices.map((o) => <option key={o.id as string} value={o.id as string}>{o.displayName}</option>)}
                   </select>
                 </label>
@@ -338,13 +348,20 @@ export default function FeatureDefaultsCard({
                         type="checkbox"
                         data-testid={`ai-defaults-permitted-${id}-${o.id}`}
                         checked={draft.permitted.includes(o.id as string)}
-                        onChange={(e) => edit(d, {
-                          permitted: e.target.checked
-                            ? [...draft.permitted, o.id as string]
-                            : draft.permitted.filter((p) => p !== o.id),
-                        })}
+                        onChange={(e) => togglePermitted(o.id as string, e.target.checked)}
                       />
                       {o.displayName}
+                    </label>
+                  ))}
+                  {stale.map((sid) => (
+                    <label key={sid} className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        data-testid={`ai-defaults-permitted-${id}-${sid}`}
+                        checked={draft.permitted.includes(sid)}
+                        onChange={(e) => togglePermitted(sid, e.target.checked)}
+                      />
+                      {unavailableModelLabel(t, nameOf(sid))}
                     </label>
                   ))}
                 </div>

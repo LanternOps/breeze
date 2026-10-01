@@ -485,7 +485,9 @@
       "speedValues": {
         "standard": "Estándar",
         "fast": "Rápido"
-      }
+      },
+      "unavailableModel": "{{model}} (no disponible)",
+      "unavailableUnknown": "Modelo no disponible"
     },
     "usage": {
       "title": "Uso de IA por modelo",

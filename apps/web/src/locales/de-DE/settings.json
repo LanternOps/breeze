@@ -485,7 +485,9 @@
       "speedValues": {
         "standard": "Standard",
         "fast": "Schnell"
-      }
+      },
+      "unavailableModel": "{{model}} (nicht verfügbar)",
+      "unavailableUnknown": "Nicht verfügbares Modell"
     },
     "usage": {
       "title": "KI-Nutzung nach Modell",

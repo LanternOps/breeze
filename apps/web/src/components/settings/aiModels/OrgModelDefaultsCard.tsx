@@ -14,7 +14,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { DEFAULT_SOURCE_KEYS, SURFACE_LABEL_KEYS, registryFriendly } from './surfaceLabels';
+import { DEFAULT_SOURCE_KEYS, SURFACE_LABEL_KEYS, registryFriendly, unavailableIds, unavailableModelLabel } from './surfaceLabels';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
@@ -305,6 +305,12 @@ export default function OrgModelDefaultsCard({ orgId }: { orgId: string }) {
           const lockedByPartner = !d.inherited.allowUserChoice;
           const inhOpts = d.inherited.options;
           const fieldMsg = fieldError?.surface === s && !fieldError.pickDefault;
+          // Stored ids no longer offered (disabled, or dropped by the partner) stay listed so they can be unticked.
+          const stale = unavailableIds(state.base[s]?.permitted ?? [], draft.permitted, new Set(base.map((o) => o.id as string)));
+          const staleDefault = draft.defaultOfferingId !== '' && !choices.some((o) => o.id === draft.defaultOfferingId);
+          const togglePermitted = (offeringId: string, on: boolean) => edit(d, {
+            permitted: on ? [...draft.permitted, offeringId] : draft.permitted.filter((p) => p !== offeringId),
+          });
           return (
             <li
               key={s}
@@ -334,6 +340,9 @@ export default function OrgModelDefaultsCard({ orgId }: { orgId: string }) {
                     className={selectCls + (needsDefault ? ' border-destructive' : errCls(s, 'default'))}
                   >
                     <option value="">{inhModel ? t('aiModels.org.inheritModel', { model: inhModel }) : t('aiModels.org.inheritNone')}</option>
+                    {staleDefault && (
+                      <option value={draft.defaultOfferingId}>{unavailableModelLabel(t, modelName(dto, draft.defaultOfferingId))}</option>
+                    )}
                     {choices.map((o) => <option key={o.id as string} value={o.id as string}>{o.displayName}</option>)}
                   </select>
                 </label>
@@ -367,11 +376,21 @@ export default function OrgModelDefaultsCard({ orgId }: { orgId: string }) {
                         data-testid={`org-model-defaults-permitted-${s}-${o.id}`}
                         checked={draft.permitted.includes(o.id as string)}
                         disabled={disabled}
-                        onChange={(e) => edit(d, {
-                          permitted: e.target.checked ? [...draft.permitted, o.id as string] : draft.permitted.filter((p) => p !== o.id),
-                        })}
+                        onChange={(e) => togglePermitted(o.id as string, e.target.checked)}
                       />
                       {o.displayName}
+                    </label>
+                  ))}
+                  {stale.map((sid) => (
+                    <label key={sid} className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        data-testid={`org-model-defaults-permitted-${s}-${sid}`}
+                        checked={draft.permitted.includes(sid)}
+                        disabled={disabled}
+                        onChange={(e) => togglePermitted(sid, e.target.checked)}
+                      />
+                      {unavailableModelLabel(t, modelName(dto, sid))}
                     </label>
                   ))}
                 </div>

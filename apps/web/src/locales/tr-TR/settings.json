@@ -485,7 +485,9 @@
       "speedValues": {
         "standard": "Standart",
         "fast": "Hızlı"
-      }
+      },
+      "unavailableModel": "{{model}} (kullanılamıyor)",
+      "unavailableUnknown": "Kullanılamayan model"
     },
     "usage": {
       "title": "Modele göre yapay zeka kullanımı",

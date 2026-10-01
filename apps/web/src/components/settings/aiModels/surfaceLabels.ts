@@ -41,6 +41,19 @@ export const REGISTRY_ERROR_KEYS: Record<string, string> = {
   APPROVALS_DECIDE_REQUIRED: 'aiModels.errors.approvals_decide_required',
 };
 
+/**
+ * Label for a stored offering id that is no longer usable (disabled, ineligible
+ * or gone). The defaults cards keep such ids visible so an admin can untick them.
+ */
+export function unavailableModelLabel(t: TFunction, name: string | null | undefined): string {
+  return name ? t('settings:aiModels.defaults.unavailableModel', { model: name }) : t('settings:aiModels.defaults.unavailableUnknown');
+}
+
+/** Ids stored on the row (or still in the draft) that the available list no longer offers. */
+export function unavailableIds(stored: readonly string[], draft: readonly string[], available: ReadonlySet<string>): string[] {
+  return [...new Set([...stored, ...draft])].filter((id) => !available.has(id));
+}
+
 export const DEFAULT_SOURCE_KEYS = {
   org: 'aiModels.org.source.org',
   partner: 'aiModels.org.source.partner',

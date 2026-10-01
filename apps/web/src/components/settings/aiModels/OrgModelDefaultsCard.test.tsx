@@ -176,6 +176,38 @@ describe('OrgModelDefaultsCard', () => {
     expect(screen.getByTestId('org-model-defaults-effort-chat').getAttribute('aria-invalid')).toBe('true');
   });
 
+  describe('stored ids that are no longer available', () => {
+    // D was stored on the override but is no longer an enabled offering (absent from dto.offerings).
+    const D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const orgRow = (over: Partial<AiAssignmentRowDto>): AiAssignmentRowDto => ({
+      surface: 'chat', role: 'default', defaultOfferingId: null, permittedOfferingIds: null, allowUserChoice: null, options: null, updatedAt: T, ...over,
+    });
+
+    it('renders a stored permitted id that is no longer offered as a checked "unavailable" entry that can be unticked', async () => {
+      fetchWithAuth
+        .mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { org: orgRow({ permittedOfferingIds: [A, D] }) } })))
+        .mockResolvedValueOnce(jsonRes({ assignments: [] }))
+        .mockResolvedValueOnce(jsonRes(orgDefaults()));
+      render(<OrgModelDefaultsCard orgId={ORG} />);
+      const box = (await screen.findByTestId(`org-model-defaults-permitted-chat-${D}`)) as HTMLInputElement;
+      expect(box.checked).toBe(true);
+      expect(box.closest('label')?.textContent).toMatch(/unavailable/i);
+      fireEvent.click(box);
+      expect((screen.getByTestId(`org-model-defaults-permitted-chat-${D}`) as HTMLInputElement).checked).toBe(false);
+      fireEvent.click(screen.getByTestId('org-model-defaults-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+      expect(JSON.parse(fetchWithAuth.mock.calls[1][1].body).assignments[0].permittedOfferingIds).toEqual([A]);
+    });
+
+    it('shows a stored org default that is no longer offered as unavailable, not as inherit', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { org: orgRow({ defaultOfferingId: D }) } })));
+      render(<OrgModelDefaultsCard orgId={ORG} />);
+      const select = (await screen.findByTestId('org-model-defaults-default-chat')) as HTMLSelectElement;
+      expect(select.value).toBe(D);
+      expect(select.selectedOptions[0]?.textContent).toMatch(/unavailable/i);
+    });
+  });
+
   it('discard restores the loaded values', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults()));
     render(<OrgModelDefaultsCard orgId={ORG} />);

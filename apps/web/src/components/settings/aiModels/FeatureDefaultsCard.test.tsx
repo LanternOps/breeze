@@ -192,6 +192,41 @@ describe('FeatureDefaultsCard', () => {
     expect(screen.getByTestId('ai-defaults-org-overrides-helper')).toBeTruthy();
   });
 
+  describe('stored ids that are no longer available', () => {
+    const staleSnap = (chat: Partial<AiAssignmentRowDto>, offerings = [off(A), off(B, { enabled: false, displayName: 'Model B' })]): AiModelsSnapshotDto => ({
+      ...SNAPSHOT,
+      offerings,
+      defaults: [{ surface: 'chat', requiresTools: true, partner: { ...assignment('chat', A), ...chat }, orgOverrideCount: 0 }],
+    });
+
+    it('renders a stored-but-disabled permitted id as a checked, labelled "unavailable" entry that can be unticked', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ assignments: [] }));
+      render(<FeatureDefaultsCard snapshot={staleSnap({ permittedOfferingIds: [A, B] })} onSaved={vi.fn()} />);
+      const box = screen.getByTestId(`ai-defaults-permitted-chat-${B}`) as HTMLInputElement;
+      expect(box.checked).toBe(true);
+      expect(box.closest('label')?.textContent).toMatch(/Model B.*unavailable/i);
+      fireEvent.click(box);
+      expect((screen.getByTestId(`ai-defaults-permitted-chat-${B}`) as HTMLInputElement).checked).toBe(false);
+      fireEvent.click(screen.getByTestId('ai-defaults-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+      expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments[0].permittedOfferingIds).toEqual([A]);
+    });
+
+    it('renders a stored permitted id whose offering is gone with a generic unavailable label', () => {
+      render(<FeatureDefaultsCard snapshot={staleSnap({ permittedOfferingIds: [A, C] })} onSaved={vi.fn()} />);
+      const box = screen.getByTestId(`ai-defaults-permitted-chat-${C}`) as HTMLInputElement;
+      expect(box.checked).toBe(true);
+      expect(box.closest('label')?.textContent).toMatch(/unavailable/i);
+    });
+
+    it('shows a stored default that is no longer available as such, not as another model', () => {
+      render(<FeatureDefaultsCard snapshot={staleSnap({ defaultOfferingId: B })} onSaved={vi.fn()} />);
+      const select = screen.getByTestId('ai-defaults-default-chat') as HTMLSelectElement;
+      expect(select.value).toBe(B);
+      expect(select.selectedOptions[0]?.textContent).toMatch(/Model B.*unavailable/i);
+    });
+  });
+
   it('renders no fallback controls (W09)', () => {
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
     expect(screen.queryByText(/fallback/i)).toBeNull();
