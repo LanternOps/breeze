@@ -75,6 +75,7 @@ import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
 import { priceUsage, sumCostCents, type SettleInvocationInput } from './aiModels/settleInvocation';
 import { db } from '../db';
 import { REFUSAL_DOCS_URL } from './aiModels/refusals';
+import { captureException } from './sentry';
 import {
   baseAuth, baseDbSession, HARNESS_ORG, HARNESS_USER, insertedAssistantMessages, scriptedQuery, sdkResult, turnScriptedQuery,
 } from './__testutils__/streamingSessionManagerHarness';
@@ -336,6 +337,14 @@ describe('result → settleInvocation (registry price only)', () => {
     expect(input!.outcome).toMatchObject({ fallbackUsed: true, refusalCategory: 'cyber' });
   });
 
+  it('the settlement carries the snapshot the turn was computed against (review S10)', async () => {
+    m.snapshots.set('s1', snap({ [SONNET]: [5000, 500] }));
+    await runOneTurn('s1', makeResolvedModel(), [
+      sdkResult({ usage: { input_tokens: 10, output_tokens: 1 }, modelUsage: { [SONNET]: { inputTokens: 10, outputTokens: 1 } } }),
+    ], { reservationId: 'r1' });
+    expect(settleCalls()[0]!.sdkUsage).toMatchObject({ usageNote: 'snapshot_regressed', baseSnapshot: snap({ [SONNET]: [5000, 500] }) });
+  });
+
   it('an error result still settles (and releases) the turn reservation', async () => {
     await runOneTurn('s1', makeResolvedModel(), [
       sdkResult({ subtype: 'error_during_execution', usage: { input_tokens: 10, output_tokens: 1 }, modelUsage: { [SONNET]: { inputTokens: 10, outputTokens: 1 } } }),
@@ -381,6 +390,33 @@ describe('aborted / abandoned turns', () => {
   it('a failed zero settlement of an abandoned turn keeps the reservation held (indeterminate), never leaked', async () => {
     m.settleInvocation.mockRejectedValueOnce(new Error('db down'));
     await runOneTurn('s1', makeResolvedModel(), [], { reservationId: 'r1' });
+    expect(m.settleInvocation).toHaveBeenCalledTimes(1);
+    expect(m.markIndeterminate).toHaveBeenCalledWith({ orgId: HARNESS_ORG, reservationId: 'r1' });
+  });
+
+  it('a FAILED settlement of a real result is never re-settled as a $0 no_result; the reservation goes indeterminate (review S5)', async () => {
+    m.settleInvocation.mockRejectedValueOnce(Object.assign(new Error('Failed query: insert … params: sk-secret'), { query: 'insert', params: ['sk-secret'] }));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await runOneTurn('s1', makeResolvedModel(), [
+      sdkResult({ usage: { input_tokens: 1000, output_tokens: 100 }, modelUsage: { [SONNET]: { inputTokens: 1000, outputTokens: 100 } } }),
+    ], { reservationId: 'r1' });
+    const logged = JSON.stringify(error.mock.calls);
+    error.mockRestore();
+    // One settle (the real one). Before the fix the finally re-settled r1 as zero, losing the turn's spend.
+    expect(m.settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleCalls()[0]).toMatchObject({ reservationId: 'r1', sdkUsage: expect.objectContaining({ usageNote: 'first_result' }) });
+    expect(m.markIndeterminate).toHaveBeenCalledWith({ orgId: HARNESS_ORG, reservationId: 'r1' });
+    // S9: scrubbed in logs and in the Sentry report.
+    expect(logged).not.toContain('sk-secret');
+    const reported = vi.mocked(captureException).mock.calls.map(([e]) => String((e as Error).message ?? e));
+    expect(reported.join(' ')).not.toContain('sk-secret');
+  });
+
+  it('an UNRECORDED (deferred, not persisted) settlement keeps the reservation and marks it indeterminate, never re-settles it (review S1/S5)', async () => {
+    m.settleInvocation.mockResolvedValueOnce({ costCents: 0.3, invocationIds: [], deferred: true, unrecorded: true });
+    await runOneTurn('s1', makeResolvedModel(), [
+      sdkResult({ usage: { input_tokens: 1000, output_tokens: 100 }, modelUsage: { [SONNET]: { inputTokens: 1000, outputTokens: 100 } } }),
+    ], { reservationId: 'r1' });
     expect(m.settleInvocation).toHaveBeenCalledTimes(1);
     expect(m.markIndeterminate).toHaveBeenCalledWith({ orgId: HARNESS_ORG, reservationId: 'r1' });
   });

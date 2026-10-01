@@ -516,6 +516,13 @@ export interface ActiveSession {
   /** Durable org-budget reservation for the current provider turn. */
   budgetReservationId?: string;
   /**
+   * Review S5: reservations whose settlement THREW (or came back unrecorded)
+   * on this session. They are never re-settled — a second settle of a failed
+   * real turn would be the abandoned-turn zero, losing its spend — only marked
+   * indeterminate when the processor exits.
+   */
+  unsettledReservationIds?: string[];
+  /**
    * Releases this session's CONNECT-proxy grant. Set for catalog sessions only;
    * invoked by `remove()` so a torn-down, rotated or evicted session stops
    * being able to reach the provider immediately.
@@ -1870,8 +1877,8 @@ export class StreamingSessionManager {
         }
       }
     } catch (err) {
-      captureException(err);
-      console.error('[StreamingSessionManager] Query error:', err);
+      captureException(reportableError(err));
+      console.error('[StreamingSessionManager] Query error:', safeErrorMessage(err));
       await this.abortTopologyTurn(session);
       session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
       session.eventBus.publish({ type: 'done' });
@@ -1894,20 +1901,21 @@ export class StreamingSessionManager {
         await this.settleSdkTurn(session, null);
       }
 
-      // Only when the settlement above (or the result path's) failed.
-      if (session.budgetReservationId) {
+      // Only when a settlement failed AND marking it indeterminate at the time
+      // failed too: retry the mark — never a re-settle (S5).
+      for (const reservationId of session.unsettledReservationIds?.splice(0) ?? []) {
         try {
           // N12: no context wrap. markAiBudgetReservationIndeterminate opens its
           // own short SYSTEM transaction (runOutsideDbContext +
           // withSystemDbAccessContext), so an org context opened here is exited
           // immediately and only costs a pooled connection for the round trip.
-          await markAiBudgetReservationIndeterminate({
-            orgId: session.orgId,
-            reservationId: session.budgetReservationId,
-          });
+          await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
         } catch (err) {
-          captureException(err);
-          console.error('[StreamingSessionManager] Failed to retain indeterminate budget reservation:', err);
+          const message = safeErrorMessage(err);
+          captureException(new Error(`AI budget reservation not retained as indeterminate: ${message}`), undefined, {
+            org_id: session.orgId, ai_reservation_id: reservationId,
+          });
+          console.error('[StreamingSessionManager] Failed to retain indeterminate budget reservation:', { reservationId, error: message });
         }
       }
 
@@ -1987,14 +1995,18 @@ export class StreamingSessionManager {
       try {
         await session.recordExtraUsage({ ...tokens, costCents });
       } catch (err) {
-        captureException(err);
-        console.error('[StreamingSessionManager] recordExtraUsage failed:', err);
+        captureException(reportableError(err));
+        console.error('[StreamingSessionManager] recordExtraUsage failed:', safeErrorMessage(err));
       }
     }
 
+    const reservationId = session.budgetReservationId;
+    // Detached from the session BEFORE settling: whatever happens below, the
+    // finally must never settle this reservation a second time (S5).
+    session.budgetReservationId = undefined;
     try {
       // Self-contexted (reservation / system transaction): no request context.
-      await settleInvocation({
+      const settled = await settleInvocation({
         binding,
         orgId: session.orgId,
         userId: session.ledgerUserId,
@@ -2003,22 +2015,46 @@ export class StreamingSessionManager {
         sourceRef: result ? null : 'abandoned_turn',
         usage: turn.usage,
         outcome: turn.outcome,
-        reservationId: session.budgetReservationId,
+        reservationId,
         toolExecutionCount,
         turnCount: result ? (result.num_turns ?? 0) : 1,
         sdkUsage: {
           sessionId: session.breezeSessionId,
           nextSnapshot: turn.nextSnapshot,
+          baseSnapshot: previousSnapshot,
           usageConfirmed: turn.usageConfirmed,
           usageNote: turn.usageNote,
         },
       });
-      session.budgetReservationId = undefined;
+      // S1: deferred but not persisted — recorded nowhere. Keep the
+      // reservation held (indeterminate); settleInvocation already reported it.
+      if (settled.unrecorded && reservationId) await this.retainUnsettled(session, reservationId);
     } catch (err) {
-      captureException(reportableError(err));
-      console.error('[StreamingSessionManager] Failed to settle SDK turn usage:', safeErrorMessage(err));
+      const message = safeErrorMessage(err);
+      captureException(new Error(`SDK turn settlement failed: ${message}`), undefined, {
+        org_id: session.orgId, ...(reservationId ? { ai_reservation_id: reservationId } : {}),
+      });
+      console.error('[StreamingSessionManager] Failed to settle SDK turn usage:', { reservationId: reservationId ?? null, error: message });
+      if (reservationId) await this.retainUnsettled(session, reservationId);
     }
     return { ...tokens, costCents, outcome: turn.outcome };
+  }
+
+  /**
+   * Hold a reservation whose settlement failed as indeterminate NOW (a live
+   * session can outlast the active TTL, which would otherwise expire the hold
+   * as if nothing was spent). If even that fails, the processor's finally
+   * retries it. Never re-settled (S5).
+   */
+  private async retainUnsettled(session: ActiveSession, reservationId: string): Promise<void> {
+    try {
+      await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
+    } catch (err) {
+      console.error('[StreamingSessionManager] Failed to mark an unsettled reservation indeterminate; retried at teardown:', {
+        reservationId, error: safeErrorMessage(err),
+      });
+      (session.unsettledReservationIds ??= []).push(reservationId);
+    }
   }
 
   /**
