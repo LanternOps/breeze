@@ -192,6 +192,7 @@ export default function OrgModelDefaultsCard({ orgId }: { orgId: string }) {
   const load = useCallback(async () => {
     try {
       const res = await fetchWithAuth(url);
+      if (res.status === 401) { onUnauthorized(); return; }
       // A forged/foreign org (403/404) or a role without organizations:read: the card simply is not there.
       if (res.status === 403 || res.status === 404) { setHidden(true); setDto(null); return; }
       if (!res.ok) throw new Error(String(res.status));
@@ -201,7 +202,8 @@ export default function OrgModelDefaultsCard({ orgId }: { orgId: string }) {
       setLoadFailed(false);
       setDto(body);
       setState(initial(body));
-    } catch {
+    } catch (err) {
+      console.error('[OrgModelDefaultsCard] failed to load the org model defaults', err);
       setLoadFailed(true);
     }
   }, [url]);

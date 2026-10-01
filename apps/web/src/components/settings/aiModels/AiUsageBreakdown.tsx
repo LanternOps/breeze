@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AI_USAGE_GROUP_BYS, type AiSurface, type AiUsageBreakdownDto, type AiUsageRowDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
 import { useHashState } from '@/lib/useHashState';
 import { SURFACE_LABEL_KEYS } from './surfaceLabels';
@@ -60,11 +61,13 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
     (async () => {
       try {
         const res = await fetchWithAuth(`/ai/models/usage?${params.toString()}`);
+        if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
         if (!res.ok) throw new Error(String(res.status));
         const body = (await res.json()) as AiUsageBreakdownDto;
         if (!Array.isArray(body.rows) || !body.totals) throw new Error('malformed');
         if (!cancelled) setData(body);
-      } catch {
+      } catch (err) {
+        console.error('[AiUsageBreakdown] failed to load /ai/models/usage', err);
         if (!cancelled) { setFailed(true); setData(null); }
       } finally {
         if (!cancelled) setLoading(false);

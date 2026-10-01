@@ -9,6 +9,7 @@ const showToast = vi.fn();
 vi.mock('../../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+import { navigateTo } from '@/lib/navigation';
 import OrgModelDefaultsCard from './OrgModelDefaultsCard';
 
 const ORG = '99999999-9999-4999-8999-999999999999';
@@ -120,6 +121,23 @@ describe('OrgModelDefaultsCard', () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'forbidden' }, 403));
     const { container } = render(<OrgModelDefaultsCard orgId={ORG} />);
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(container.textContent).toBe('');
+  });
+
+  it('shows the load-failed state on a 500 and logs the status', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x' }, 500));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    expect((await screen.findByTestId('org-model-defaults-card')).textContent).toMatch(/\S/);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('OrgModelDefaultsCard'), expect.objectContaining({ message: '500' }));
+    log.mockRestore();
+  });
+
+  it('routes a 401 load to login', async () => {
+    vi.mocked(navigateTo).mockClear();
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x' }, 401));
+    const { container } = render(<OrgModelDefaultsCard orgId={ORG} />);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true }));
     expect(container.textContent).toBe('');
   });
 

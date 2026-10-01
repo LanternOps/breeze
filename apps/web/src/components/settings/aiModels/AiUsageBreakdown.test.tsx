@@ -4,7 +4,9 @@ import { jsonRes } from './testFixtures';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+import { navigateTo } from '@/lib/navigation';
 import AiUsageBreakdown from './AiUsageBreakdown';
 
 const A = 'platform:platform:claude-sonnet-x';
@@ -86,9 +88,20 @@ describe('AiUsageBreakdown', () => {
     await screen.findByTestId('ai-usage-breakdown-empty');
   });
 
-  it('shows the error state on a failed load', async () => {
+  it('shows the error state on a failed load and logs the status', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x' }, 500));
     render(<AiUsageBreakdown orgId={null} />);
     await screen.findByTestId('ai-usage-breakdown-error');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('AiUsageBreakdown'), expect.objectContaining({ message: '500' }));
+    log.mockRestore();
+  });
+
+  it('routes a 401 to login instead of the error state', async () => {
+    vi.mocked(navigateTo).mockClear();
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x' }, 401));
+    render(<AiUsageBreakdown orgId={null} />);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true }));
+    expect(screen.queryByTestId('ai-usage-breakdown-error')).toBeNull();
   });
 });
