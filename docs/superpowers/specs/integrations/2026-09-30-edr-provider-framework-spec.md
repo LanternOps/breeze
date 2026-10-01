@@ -1,9 +1,9 @@
 ---
 title: EDR provider framework + Sophos / Bitdefender / Emsisoft adapters
-status: draft (spec — not a plan, nothing implemented)
+status: approved 2026-10-01 (spec — not a plan, nothing implemented)
 date: 2026-09-30
 anchor_issue: LanternOps/breeze#3135
-cluster: [3136, 7436, 4620]
+cluster: [3136, 7436, 4620, 7653, 7654]
 related_not_in_scope: [6960, 3695, 4621, 7139, 4103]
 ---
 
@@ -807,6 +807,14 @@ un-parked; ESET / ThreatDown / WithSecure as demand appears (§3 recommendation)
   "Security agents" auto-deploy feature (#6960) — each only has to *fit* (§4.3, §4.7, §4.13).
 
 ## 9. Open decisions
+
+> **Resolved — Todd, 2026-10-01: framework-first; every recommendation below accepted (D1–D14).**
+> D1 = B (framework built in lockstep with the Sophos adapter, superseding the 2026-08-16
+> Sophos-first sequencing). D2 = leave S1/Huntress on their current tables; port later as a separate
+> feature. D9 = Emsisoft cloud EMC only, pending the requester's confirmation on #7436 (W05 does not
+> start until it lands). §3.3 roadmap accepted: Defender (#4620, un-parked — starts after two framework
+> adapters ship), CrowdStrike (#7653) and ThreatDown (#7654) filed as roadmap issues; ESET/WithSecure stay unfiled.
+> The text below is kept as the decision record.
 
 Each decision: options, trade-offs, recommendation. D1 and D2 reverse or refine recorded decisions
 and need Todd's explicit sign-off; the rest can be settled in the W01 plan.
