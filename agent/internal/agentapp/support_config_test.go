@@ -286,7 +286,7 @@ func TestRunSupportSessionTeardownOrder(t *testing.T) {
 	if release < 0 || schedule < 0 || shutdown < 0 || cleanup < 0 {
 		t.Fatalf("teardown calls missing: release=%d schedule=%d shutdown=%d cleanup=%d (calls: %v)", release, schedule, shutdown, cleanup, order)
 	}
-	if !(release < schedule && schedule < shutdown && shutdown < cleanup) {
+	if release >= schedule || schedule >= shutdown || shutdown >= cleanup {
 		t.Errorf("teardown order = release %d, schedule %d, shutdownAgent %d, RunSupportCleanup %d; want release < schedule < shutdownAgent < RunSupportCleanup", release, schedule, shutdown, cleanup)
 	}
 	if n := index("os.RemoveAll"); n >= 0 {
