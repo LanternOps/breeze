@@ -603,7 +603,7 @@ func SetAllAndPersist(kv map[string]any) error {
 			viper.Set(key, value)
 		}
 	}
-	if err := viper.WriteConfig(); err != nil {
+	if err := writeAgentYAMLFromViperLocked(path); err != nil {
 		return err
 	}
 	if path != "" {
@@ -649,7 +649,7 @@ func SetAndPersist(key string, value any) error {
 	} else {
 		viper.Set(key, value)
 	}
-	if err := viper.WriteConfig(); err != nil {
+	if err := writeAgentYAMLFromViperLocked(path); err != nil {
 		return err
 	}
 	if path != "" {
@@ -659,6 +659,37 @@ func SetAndPersist(key string, value any) error {
 			return err
 		}
 		return enforceConfigFilePermissions(path)
+	}
+	return nil
+}
+
+// writeAgentYAMLFromViperLocked serializes viper's settings to the config file
+// at path with every secret key removed, atomically. viper.Set(key, nil) does
+// NOT hide a value viper loaded from the file — lookups fall through to the
+// config layer — so a secret an older agent left in agent.yaml stays in memory
+// after the startup scrub and a plain WriteConfig would put it straight back
+// in the world-readable file. Callers must hold persistMu.
+func writeAgentYAMLFromViperLocked(path string) error {
+	if path == "" {
+		// No file was loaded, so viper holds no file-sourced secrets.
+		return viper.WriteConfig()
+	}
+	data, err := yaml.Marshal(viper.AllSettings())
+	if err != nil {
+		return fmt.Errorf("marshaling agent config: %w", err)
+	}
+	data, err = stripSecretsFromAgentConfig(data)
+	if err != nil {
+		return fmt.Errorf("writing agent config: %w", err)
+	}
+	if err := atomicWriteFile(path, data, 0644); err != nil {
+		return err
+	}
+	// The rename installs the temp file's private ACL; the content is already
+	// clear of secrets, so restore Helper read access now rather than only
+	// after the caller's follow-up steps succeed (same as saveToLocked).
+	if err := enforceConfigFilePermissions(path); err != nil {
+		log.Warn("failed to enforce config file permissions", "path", path, "error", err.Error())
 	}
 	return nil
 }
@@ -875,12 +906,10 @@ func saveToLocked(cfg *Config, cfgFile string, source credentialSource) error {
 	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
 	viper.Set("hp_warranty_collection_enabled", cfg.HPWarrantyCollectionEnabled)
 	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
-	// Windows only: the helper-scoped token still goes into agent.yaml (see
-	// secretKeyAllowedInAgentYAML). On Unix it is written below to its own
-	// group-scoped file instead, via writeHelperTokenFile.
-	if runtime.GOOS == "windows" && creds.HelperAuthToken != "" {
-		viper.Set("helper_auth_token", creds.HelperAuthToken)
-	}
+	// helper_auth_token is deliberately NOT set here on any platform: agent.yaml
+	// is readable by every local user. It goes to secrets.yaml below; Windows
+	// delivers it to the console-session Breeze Assist over IPC, and Unix also
+	// writes the group-scoped helper token file (writeHelperTokenFileFor).
 
 	// Serialize via viper (same encoder as WriteConfigAs), strip secrets, then
 	// write atomically: tmp file in the same directory → fsync → rename. The
@@ -897,8 +926,8 @@ func saveToLocked(cfg *Config, cfgFile string, source credentialSource) error {
 		return fmt.Errorf("writing agent config: %w", err)
 	}
 	// agent.yaml is world-readable (0644) so the Breeze Helper, running as the
-	// logged-in user, can read it. It carries only the helper-scoped token;
-	// full tokens and mTLS keys are written to root-only secrets.yaml below.
+	// logged-in user, can read its server URL and agent id. It carries no
+	// tokens; every credential and mTLS key goes to root-only secrets.yaml below.
 	if err := atomicWriteFile(cfgPath, cfgYAML, 0644); err != nil {
 		return fmt.Errorf("writing agent config: %w", err)
 	}
@@ -1125,33 +1154,19 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// secretKeyAllowedInAgentYAML lists keys that look secret by suffix rules but
-// must remain in agent.yaml.
-//
-// helper_auth_token is allowed here ONLY on Windows, where the Breeze Helper
-// ("Breeze Assist") runs as the logged-in user and reads agent.yaml directly
-// because no narrower delivery exists there yet. On Unix it is delivered via
-// a separate, breeze-group-scoped helper_token.yaml instead (see
-// helpertoken_unix.go) and must NOT also land in the world-readable
-// agent.yaml, so it is intentionally excluded from this map on that
-// platform — see isSecretYAMLKey.
-var secretKeyAllowedInAgentYAML = map[string]bool{}
-
-func init() {
-	if runtime.GOOS == "windows" {
-		secretKeyAllowedInAgentYAML["helper_auth_token"] = true
-	}
-}
-
 // isSecretYAMLKey reports whether key should be kept out of agent.yaml (i.e.
 // written only to secrets.yaml). It uses a suffix-based predicate so future
 // secret keys like backup_s3_access_key are caught automatically without
-// requiring an explicit list update. Keys in secretKeyAllowedInAgentYAML are
-// explicitly exempted regardless of suffix.
+// requiring an explicit list update.
+//
+// There are no exemptions. helper_auth_token in particular is a secret on
+// every platform even though the Breeze Helper runs as the logged-in user:
+// agent.yaml is readable by every local account, so the Helper gets the token
+// over IPC (Windows: console-session Breeze Assist only) or from the
+// breeze-group-scoped helper token file (Unix, helpertoken_unix.go). Because
+// the rule is suffix-based, FixConfigPermissions' migration also scrubs a
+// token an older agent left in agent.yaml.
 func isSecretYAMLKey(key string) bool {
-	if secretKeyAllowedInAgentYAML[key] {
-		return false
-	}
 	switch key {
 	case "auth_token", "watchdog_auth_token",
 		"mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires",
@@ -1188,15 +1203,25 @@ func GetDataDir() string {
 // Safe to call on every startup — it is a no-op if permissions are already
 // correct or the paths don't exist yet.
 func FixConfigPermissions() {
-	dir := configDir()
+	dir := fixConfigPermissionsDir()
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		if err := enforceConfigDirPermissions(dir); err != nil {
 			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
 		}
 	}
 	cfgPath := filepath.Join(dir, "agent.yaml")
+	removeStaleConfigScratchFiles(cfgPath)
 	if _, err := os.Stat(cfgPath); err == nil {
 		fixAgentYAMLPermissions(cfgPath)
+	}
+	// An agent started with --config elsewhere reads (and SetAndPersist
+	// rewrites) that file instead; scrub it too, exactly as SetAndPersist's
+	// own migration would on its first write there.
+	if active := viper.ConfigFileUsed(); active != "" && !sameConfigPath(active, cfgPath) {
+		if _, err := os.Stat(active); err == nil {
+			removeStaleConfigScratchFiles(active)
+			fixAgentYAMLPermissions(active)
+		}
 	}
 	// Secrets file must remain root-only.
 	sPath := secretsFilePath()
@@ -1208,6 +1233,10 @@ func FixConfigPermissions() {
 	seedHelperTokenFileFromSecretsIfMissing(cfgPath)
 	reapplyHelperTokenFilePermissionsFor(cfgPath)
 }
+
+// fixConfigPermissionsDir is the default config directory FixConfigPermissions
+// works on; a package var so tests can point it at a temp directory.
+var fixConfigPermissionsDir = configDir
 
 // fixAgentYAMLPermissions is the path-parameterized core of
 // FixConfigPermissions' agent.yaml handling (split out so it can be tested
@@ -1223,7 +1252,7 @@ func FixConfigPermissions() {
 // secrets.yaml until a later, successful migration can loosen it.
 func fixAgentYAMLPermissions(cfgPath string) {
 	if err := migrateInlineSecretsToSecretFile(cfgPath); err != nil {
-		log.Warn("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
+		log.Error("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
 	}
 	hasInline, err := agentYAMLHasInlineSecrets(cfgPath)
 	if err != nil {
@@ -1231,7 +1260,9 @@ func fixAgentYAMLPermissions(cfgPath string) {
 		hasInline = true
 	}
 	if hasInline {
-		log.Warn("agent.yaml still contains inline secret material after migration; leaving it locked down instead of widening its permissions", "path", cfgPath)
+		// Error, not Warn: until a later migration succeeds, the Helper cannot
+		// read agent.yaml at all (no server URL or agent id for Breeze Assist).
+		log.Error("agent.yaml still contains inline secret material after migration; leaving it locked down instead of widening its permissions", "path", cfgPath)
 		if err := enforceSecretFilePermissions(cfgPath); err != nil {
 			log.Warn("Failed to lock down config file permissions", "path", cfgPath, "error", err.Error())
 		}
@@ -1293,7 +1324,20 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 
 	var cfgValues map[string]any
 	if err := yaml.Unmarshal(data, &cfgValues); err != nil {
+		if legacyHelperTokenLine.Match(data) {
+			recordHelperTokenRotationOwed(cfgPath)
+		}
 		return err
+	}
+	// Before anything below rewrites the file: a helper token an older agent
+	// left here is rotated, not just moved (see helperTokenRotationMarkerName)
+	// — unless a later rotation has already replaced it.
+	if inline := cfgValues[secretKeyHelperAuthToken]; !isEmptyYAMLValue(inline) {
+		if inlineHelperTokenStillValid(cfgPath, inline) {
+			recordHelperTokenRotationOwed(cfgPath)
+		} else {
+			log.Info("helper token in agent.yaml was already replaced by a rotation; removing it without another rotation", "path", cfgPath)
+		}
 	}
 
 	hasInlineSecretKeys := false

@@ -405,26 +405,16 @@ func TestSaveToPreservesStagedCredentials(t *testing.T) {
 	}
 }
 
-// On Windows, helper_auth_token is deliberately exempted from stripping
-// because the Breeze Helper runs as the logged-in user and reads it from
-// agent.yaml there (no narrower delivery exists yet on that platform — see
-// helpertoken_windows.go). On Unix it is NOT exempted: it lives in its own
-// group-scoped helper_token.yaml instead (helpertoken_unix.go).
-//
-// Either way, its STAGED counterpart must NOT inherit any exemption: a
-// staged credential is not yet the Helper's identity, and putting it in the
-// 0644 agent.yaml would publish an unpromoted token to every local user.
-// This asymmetry is easy to "tidy up" by accident, so pin it.
-func TestPendingHelperTokenIsNotExemptedFromStripping(t *testing.T) {
-	wantExempt := runtime.GOOS == "windows"
-	if secretKeyAllowedInAgentYAML["helper_auth_token"] != wantExempt {
-		t.Fatalf("precondition changed: helper_auth_token agent.yaml exemption = %v, want %v for this platform; "+
-			"revisit whether the Helper still reads it from there", secretKeyAllowedInAgentYAML["helper_auth_token"], wantExempt)
-	}
-	if secretKeyAllowedInAgentYAML[secretKeyPendingHelperAuthToken] {
-		t.Error("pending_helper_auth_token must not be exempted into the world-readable agent.yaml")
-	}
-	if !isSecretYAMLKey(secretKeyPendingHelperAuthToken) {
-		t.Error("isSecretYAMLKey(pending_helper_auth_token) = false, want true")
+// Neither the helper token nor its STAGED counterpart may be exempted from
+// stripping on any platform: agent.yaml is readable by every local user, and
+// the Helper receives the current token over IPC (Windows) or from the
+// group-scoped helper_token.yaml (Unix). A staged credential is not even the
+// Helper's identity yet. Pin both, since "the Helper needs it" is exactly the
+// reasoning that once put the current token there.
+func TestHelperTokensAreNeverExemptedFromStripping(t *testing.T) {
+	for _, key := range []string{secretKeyHelperAuthToken, secretKeyPendingHelperAuthToken} {
+		if !isSecretYAMLKey(key) {
+			t.Errorf("isSecretYAMLKey(%q) = false, want true", key)
+		}
 	}
 }

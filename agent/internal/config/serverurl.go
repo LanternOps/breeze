@@ -81,13 +81,12 @@ func PersistedServerURL(cfgFile string) (string, error) {
 	if parsed.ServerURL == "" {
 		return "", fmt.Errorf("%s: %w", path, ErrNoPersistedServerURL)
 	}
-	// Validate before handing this to a caller that will cache it.
-	// SetAllAndPersist writes agent.yaml through viper.WriteConfig, which
-	// truncates in place rather than doing an atomic temp+rename, so a helper
-	// reading concurrently with a promotion can observe a torn file that still
-	// parses as valid YAML but carries a truncated value
-	// ("server_url: https://ba"). Caching that would pin the shipper to a
-	// garbage host for a full TTL.
+	// Validate before handing this to a caller that will cache it. Agents
+	// before SetAllAndPersist switched to an atomic temp+rename wrote
+	// agent.yaml by truncating it in place, so a file written by one of them
+	// (or damaged some other way) can still parse as valid YAML but carry a
+	// truncated value ("server_url: https://ba"). Caching that would pin the
+	// shipper to a garbage host for a full TTL.
 	if u, err := url.Parse(parsed.ServerURL); err != nil {
 		return "", fmt.Errorf("%s has an unparsable server_url: %w", path, err)
 	} else if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
