@@ -801,6 +801,35 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
       undefined,
     );
   });
+
+  it('keeps pricing every catalog turn from its own usage, untouched by the SDK running total (#7667)', async () => {
+    const gate = deferred();
+    const turn = (total: number) => ({
+      type: 'result',
+      subtype: 'success',
+      total_cost_usd: total,
+      usage: { input_tokens: 1_000_000, output_tokens: 0 },
+      num_turns: 1,
+    });
+    mockSdkQuery([turn(1), turn(3), turn(6)], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-multiturn', { ...DB_SESSION, sdkSessionId: 'sdk-prior' }, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    );
+    gate.resolve();
+    await session.processorPromise;
+
+    // The SDK total is passed through as-is (recordUsageFromSdkResult ignores it
+    // for catalog pricing); no per-turn delta is applied to catalog sessions.
+    const totals = recordUsageMock.mock.calls.map((c: any[]) => c[2].total_cost_usd);
+    expect(totals).toEqual([1, 3, 6]);
+    // Each turn's `done` cost is the catalog price of that turn's own usage.
+    const doneCosts = session.eventBus.getReplayEvents()
+      .filter((e: any) => e.type === 'done')
+      .map((e: any) => e.usage?.costCents);
+    expect(new Set(doneCosts).size).toBe(1);
+    expect(doneCosts).toHaveLength(3);
+  });
 });
 
 // ============================================
