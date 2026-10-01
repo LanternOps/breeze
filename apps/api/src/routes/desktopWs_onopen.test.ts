@@ -1034,6 +1034,23 @@ describe('desktopWs', () => {
       expect(sentBinaryCount(ws)).toBe(0);
     });
 
+    it('tells the viewer the specific consent refusal when the agent reports a detail', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      settleDesktopStreamStart(SESSION_ID, AGENT_ID, publishedStart().id, {
+        outcome: 'denied',
+        reason: 'helper_unreachable',
+        detail: 'prompt_in_progress',
+      });
+      await vi.waitFor(() => expect(finalizeDesktopSessionOnceMock).toHaveBeenCalled());
+
+      const error = sentText(ws).map((m) => JSON.parse(m)).find((m) => m.type === 'error');
+      expect(error).toMatchObject({ code: 'CONSENT_DENIED', message: expect.stringMatching(/already waiting/) });
+    });
+
     it('tells the viewer why the agent could not start, and closes the relay', async () => {
       setupSuccessfulValidation();
       const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');

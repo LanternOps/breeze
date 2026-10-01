@@ -362,6 +362,7 @@ func TestDesktopLeaseRenewalStopsAfterTwoGoneTicks(t *testing.T) {
 // startDesktopViaHelper, takes system+user leases (a consent prompt is
 // configured), and releases everything when consent is denied.
 func TestHandleStartDesktopOnDemandDefaultsTargetAndReleasesOnConsentDenied(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	f := &fakeLifecycle{mode: "on-demand"}
 	h := &Heartbeat{
 		helperLifecycle: f,
@@ -376,7 +377,7 @@ func TestHandleStartDesktopOnDemandDefaultsTargetAndReleasesOnConsentDenied(t *t
 
 	cmd := startDesktopCmd("sess-ondemand", consentModePrompt("block", 10))
 	result := handleStartDesktop(h, cmd)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "helper_unreachable")
 
 	acquired, released, waited, _ := f.snapshot()
 	if len(acquired) != 2 {

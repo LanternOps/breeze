@@ -3512,7 +3512,11 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               }
               // A WebSocket-fallback relay waiting on this exact start tells
               // the viewer why and closes; a no-op for a WebRTC start.
-              settleDesktopStreamStart(sessionId, agentId, fastCommandId, { outcome: 'denied', reason });
+              settleDesktopStreamStart(sessionId, agentId, fastCommandId, {
+                outcome: 'denied',
+                reason,
+                ...(typeof fastResult.consentDetail === 'string' ? { detail: fastResult.consentDetail } : {}),
+              });
             }
           }
 

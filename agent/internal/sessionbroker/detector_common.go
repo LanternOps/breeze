@@ -8,6 +8,11 @@ import (
 	"unicode/utf8"
 )
 
+// MaxDetectedSessions is the cap every detector's ListSessions stops at. A
+// result this long may be truncated, so callers that need the whole picture
+// (the consent gate's occupancy check) treat it as incomplete.
+const MaxDetectedSessions = maxDetectedSessions
+
 const (
 	detectorCommandTimeout  = 5 * time.Second
 	maxDetectedSessions     = 256
