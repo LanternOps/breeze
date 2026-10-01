@@ -100,6 +100,20 @@ describe('OfferingDrawer', () => {
     expect(body()).toEqual({ expectedUpdatedAt: '2026-10-01T00:00:00.000Z', allowedOptions: null, requiredPermission: 'ai_models:premium' });
   });
 
+  it('a legacy fast-capable platform row (no stored restriction or permission) opens with Save disabled', () => {
+    render(<OfferingDrawer offering={row({ id: OFF, funding: 'platform', fastRates: RATES, optionSupport: SUPPORT_FAST, allowedOptions: null, requiredPermission: null })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect((screen.getByTestId('ai-offering-save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('renaming a legacy fast-capable platform row sends only the name (never adds requiredPermission)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: OFF, updatedAt: 'x' }));
+    render(<OfferingDrawer offering={row({ id: OFF, funding: 'platform', fastRates: RATES, optionSupport: SUPPORT_FAST, allowedOptions: null, requiredPermission: null })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('ai-offering-display-name'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('ai-offering-save'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(body()).toEqual({ expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'Renamed' });
+  });
+
   it('lists Fast only when the model has a fast rate', () => {
     render(<OfferingDrawer offering={row({ id: OFF, fastRates: null, optionSupport: SUPPORT_FAST })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect([...(screen.getByTestId('ai-offering-default-speed') as HTMLSelectElement).options].map((o) => o.value)).not.toContain('fast');

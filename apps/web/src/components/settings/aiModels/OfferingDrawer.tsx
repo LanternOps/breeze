@@ -148,8 +148,16 @@ function buildPatch(o: AiOfferingDto, d: Draft, initial: Draft): Record<string, 
   });
   if (JSON.stringify(defaults) !== JSON.stringify(o.defaultOptions ?? null)) patch.defaultOptions = defaults;
 
-  const perm = effectivePremium(o, d) ? PREMIUM_PERMISSION : null;
-  if (perm !== o.requiredPermission) patch.requiredPermission = perm;
+  // Only when the admin changed premium/allowFast, compared with the drawer's
+  // initial EFFECTIVE value. A legacy platform row (allowedOptions null,
+  // requiredPermission null, fast rate) opens with fast already allowed, so its
+  // effective premium is true while the stored value is null; comparing against
+  // the stored value would gate the whole model on any unrelated edit.
+  const premiumNow = effectivePremium(o, d);
+  if (premiumNow !== effectivePremium(o, initial)) {
+    const perm = premiumNow ? PREMIUM_PERMISSION : null;
+    if (perm !== o.requiredPermission) patch.requiredPermission = perm;
+  }
 
   const fb = d.refusalFallback || null;
   if (fb !== o.refusalFallbackOfferingId) patch.refusalFallbackOfferingId = fb;
