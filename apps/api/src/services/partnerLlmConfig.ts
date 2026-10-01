@@ -1,9 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partnerLlmConfigs } from '../db/schema';
+import { partnerAiConnections, partnerLlmConfigs } from '../db/schema';
 import { resolveDefaultModel } from './aiModel';
+import { lockPartnerRegistryReconcile, reconcilePartnerFromLegacyInTx } from './aiModels/legacyReconcile';
 import { isOfferablePlatformModel } from './aiModels/platformModels';
 import {
   columnAad,
@@ -41,6 +42,59 @@ export class PartnerLlmError extends Error {
   ) {
     super(message);
     this.name = 'PartnerLlmError';
+  }
+}
+
+/**
+ * A database failure inside a provider write, reduced to what is safe to log.
+ * A Drizzle query error's message and `params` carry the statement's
+ * parameters — here the key ciphertext and fingerprint — so it must never
+ * reach the route's error handler, the console or Sentry. Only the SQLSTATE
+ * (Sentry tags it from `cause.code`) and the constraint name survive.
+ */
+function toSafeWriteError(error: unknown): PartnerLlmError {
+  const pg = (error as { cause?: unknown } | null)?.cause ?? error;
+  const code = typeof (pg as { code?: unknown } | null)?.code === 'string' ? (pg as { code: string }).code : undefined;
+  const constraint = typeof (pg as { constraint_name?: unknown } | null)?.constraint_name === 'string'
+    ? (pg as { constraint_name: string }).constraint_name
+    : undefined;
+  const kind = error instanceof Error ? error.constructor.name : typeof error;
+  const cause = Object.assign(
+    new Error(`AI provider write failed: ${kind}${code ? ` (SQLSTATE ${code}${constraint ? `, ${constraint}` : ''})` : ''}`),
+    code ? { code } : {},
+  );
+  const safe = new PartnerLlmError('Could not save the AI provider configuration.', 500);
+  Object.defineProperty(safe, 'cause', { value: cause, enumerable: false, writable: true, configurable: true });
+  return safe;
+}
+
+/**
+ * #7600 W02 SCAFFOLDING: the legacy table stays the routing source until W03,
+ * and the registry is its projection. Every /ai/provider mutation runs its
+ * legacy write and the reconcile in ONE system transaction, so both stores
+ * commit or roll back together. W03 Task 6B replaces this with registry-native
+ * remaps and must NOT keep calling the reconcile (it would revert native
+ * edits). Partner pinning comes from the route (BILLING_MANAGE +
+ * canManagePartnerWidePolicies); every statement below filters on partnerId.
+ *
+ * The reconcile's advisory lock is taken FIRST, before the legacy write: the
+ * legacy UPDATE fires the mirror trigger, which row-locks the partner's
+ * connection; holding that row lock while waiting for the advisory lock held
+ * by a concurrent boot-sweep reconcile (which wants the same row) deadlocks.
+ * Probes never run in here — no transaction is held across the network.
+ */
+async function inRegistryWrite<T>(partnerId: string, write: () => Promise<T>): Promise<T> {
+  try {
+    return await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        await lockPartnerRegistryReconcile(partnerId);
+        const result = await write();
+        await reconcilePartnerFromLegacyInTx(partnerId);
+        return result;
+      }, 'aiProvider.registryWrite'));
+  } catch (error) {
+    if (error instanceof PartnerLlmError) throw error;
+    throw toSafeWriteError(error);
   }
 }
 
@@ -235,66 +289,65 @@ export async function savePartnerLlmKey(input: {
   const fingerprint = hmacFingerprint(apiKey);
   const verifiedAt = new Date();
 
-  const stored = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [inserted] = await db
-        .insert(partnerLlmConfigs)
-        .values({
-          id,
-          partnerId: input.partnerId,
-          apiKeyEncrypted: encryptPartnerLlmApiKey(id, apiKey),
-          keyLast4: last4,
-          keyFingerprint: fingerprint,
-          status: 'active',
-          configVersion: 1,
-          lastError: null,
-          verifiedAt,
-          connectedBy: input.userId,
-          updatedAt: verifiedAt,
-        })
-        .onConflictDoNothing({ target: partnerLlmConfigs.partnerId })
-        .returning({ id: partnerLlmConfigs.id, configVersion: partnerLlmConfigs.configVersion });
+  // The legacy write and the registry reconcile commit together (see inRegistryWrite).
+  const stored = await inRegistryWrite(input.partnerId, async () => {
+    const [inserted] = await db
+      .insert(partnerLlmConfigs)
+      .values({
+        id,
+        partnerId: input.partnerId,
+        apiKeyEncrypted: encryptPartnerLlmApiKey(id, apiKey),
+        keyLast4: last4,
+        keyFingerprint: fingerprint,
+        status: 'active',
+        configVersion: 1,
+        lastError: null,
+        verifiedAt,
+        connectedBy: input.userId,
+        updatedAt: verifiedAt,
+      })
+      .onConflictDoNothing({ target: partnerLlmConfigs.partnerId })
+      .returning({ id: partnerLlmConfigs.id, configVersion: partnerLlmConfigs.configVersion });
 
-      if (inserted) {
-        return { configVersion: inserted.configVersion, defaultModel: null as string | null };
-      }
+    if (inserted) {
+      return { configVersion: inserted.configVersion, defaultModel: null as string | null };
+    }
 
-      const [existing] = await db
-        .select({
-          id: partnerLlmConfigs.id,
-          defaultModel: partnerLlmConfigs.defaultModel,
-        })
-        .from(partnerLlmConfigs)
-        .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
-        .limit(1);
-      if (!existing) {
-        throw new PartnerLlmError('Could not replace the Anthropic API key.', 500);
-      }
+    const [existing] = await db
+      .select({
+        id: partnerLlmConfigs.id,
+        defaultModel: partnerLlmConfigs.defaultModel,
+      })
+      .from(partnerLlmConfigs)
+      .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
+      .limit(1);
+    if (!existing) {
+      throw new PartnerLlmError('Could not replace the Anthropic API key.', 500);
+    }
 
-      const [updated] = await db
-        .update(partnerLlmConfigs)
-        .set({
-          apiKeyEncrypted: encryptPartnerLlmApiKey(existing.id, apiKey),
-          keyLast4: last4,
-          keyFingerprint: fingerprint,
-          status: 'active',
-          configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
-          lastError: null,
-          verifiedAt,
-          connectedBy: input.userId,
-          updatedAt: verifiedAt,
-        })
-        .where(and(
-          eq(partnerLlmConfigs.partnerId, input.partnerId),
-          eq(partnerLlmConfigs.id, existing.id),
-        ))
-        .returning({ configVersion: partnerLlmConfigs.configVersion });
-      if (!updated) {
-        throw new PartnerLlmError('Could not replace the Anthropic API key.', 500);
-      }
-      return { configVersion: updated.configVersion, defaultModel: existing.defaultModel };
-    }),
-  );
+    const [updated] = await db
+      .update(partnerLlmConfigs)
+      .set({
+        apiKeyEncrypted: encryptPartnerLlmApiKey(existing.id, apiKey),
+        keyLast4: last4,
+        keyFingerprint: fingerprint,
+        status: 'active',
+        configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
+        lastError: null,
+        verifiedAt,
+        connectedBy: input.userId,
+        updatedAt: verifiedAt,
+      })
+      .where(and(
+        eq(partnerLlmConfigs.partnerId, input.partnerId),
+        eq(partnerLlmConfigs.id, existing.id),
+      ))
+      .returning({ configVersion: partnerLlmConfigs.configVersion });
+    if (!updated) {
+      throw new PartnerLlmError('Could not replace the Anthropic API key.', 500);
+    }
+    return { configVersion: updated.configVersion, defaultModel: existing.defaultModel };
+  });
 
   return {
     last4,
@@ -305,18 +358,23 @@ export async function savePartnerLlmKey(input: {
 }
 
 export async function getPartnerLlmStatus(partnerId: string): Promise<PartnerLlmStatus> {
+  // #7600 W02: read the registry. legacy_default_model is the exact compat
+  // projection of partner_llm_configs.default_model (null = tracks the
+  // deployment default); partner_ai_connections_compat_uq guarantees one row.
   const [row] = await db
     .select({
-      provider: partnerLlmConfigs.provider,
-      keyLast4: partnerLlmConfigs.keyLast4,
-      defaultModel: partnerLlmConfigs.defaultModel,
-      status: partnerLlmConfigs.status,
-      verifiedAt: partnerLlmConfigs.verifiedAt,
-      lastError: partnerLlmConfigs.lastError,
-      catalogEntryId: partnerLlmConfigs.catalogEntryId,
+      keyLast4: partnerAiConnections.keyLast4,
+      defaultModel: partnerAiConnections.legacyDefaultModel,
+      status: partnerAiConnections.status,
+      verifiedAt: partnerAiConnections.verifiedAt,
+      lastError: partnerAiConnections.lastError,
+      catalogEntryId: partnerAiConnections.catalogEntryId,
     })
-    .from(partnerLlmConfigs)
-    .where(eq(partnerLlmConfigs.partnerId, partnerId))
+    .from(partnerAiConnections)
+    .where(and(
+      eq(partnerAiConnections.partnerId, partnerId),
+      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+    ))
     .limit(1);
 
   if (!row) {
@@ -352,18 +410,22 @@ export async function updatePartnerLlmConfig(input: {
     throw new PartnerLlmError('Unsupported Anthropic model.', 400);
   }
 
-  const [updated] = await db
-    .update(partnerLlmConfigs)
-    .set({
-      defaultModel: input.defaultModel,
-      configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
-      updatedAt: new Date(),
-    })
-    .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
-    .returning({ configVersion: partnerLlmConfigs.configVersion });
-  if (!updated) {
-    throw new PartnerLlmError('Connect an Anthropic API key before selecting a model.', 409);
-  }
+  // A throw inside the write rolls the transaction back: a 409 writes nothing.
+  const updated = await inRegistryWrite(input.partnerId, async () => {
+    const [row] = await db
+      .update(partnerLlmConfigs)
+      .set({
+        defaultModel: input.defaultModel,
+        configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
+      .returning({ configVersion: partnerLlmConfigs.configVersion });
+    if (!row) {
+      throw new PartnerLlmError('Connect an Anthropic API key before selecting a model.', 409);
+    }
+    return row;
+  });
 
   return {
     defaultModel: input.defaultModel,
@@ -407,18 +469,21 @@ export async function updatePartnerLlmEndpoint(input: {
   }
 
   if (input.catalogEntryId === null) {
-    const [updated] = await db
-      .update(partnerLlmConfigs)
-      .set({
-        catalogEntryId: null,
-        configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
-      .returning({ configVersion: partnerLlmConfigs.configVersion });
-    if (!updated) {
-      throw new PartnerLlmError('Could not update the endpoint selection.', 500);
-    }
+    const updated = await inRegistryWrite(input.partnerId, async () => {
+      const [row] = await db
+        .update(partnerLlmConfigs)
+        .set({
+          catalogEntryId: null,
+          configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
+        .returning({ configVersion: partnerLlmConfigs.configVersion });
+      if (!row) {
+        throw new PartnerLlmError('Could not update the endpoint selection.', 500);
+      }
+      return row;
+    });
     return { catalogEntryId: null, configVersion: updated.configVersion, slug: null, revision: null };
   }
 
@@ -453,23 +518,27 @@ export async function updatePartnerLlmEndpoint(input: {
   const apiKey = decryptPartnerLlmApiKey({ id: existing.id, apiKeyEncrypted: existing.apiKeyEncrypted });
   await probeAnthropicKey(apiKey, endpoint);
 
-  const [updated] = await db
-    .update(partnerLlmConfigs)
-    .set({
-      catalogEntryId: provider.entryId,
-      // #7587: pin the model just validated against this revision. A catalog
-      // revision serves only the models it mapped AND verified, so a partner
-      // left tracking the moving platform default goes `model_unverified` the
-      // moment that default changes.
-      defaultModel: model,
-      configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
-      updatedAt: new Date(),
-    })
-    .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
-    .returning({ configVersion: partnerLlmConfigs.configVersion });
-  if (!updated) {
-    throw new PartnerLlmError('Could not update the endpoint selection.', 500);
-  }
+  // The probe above ran outside any transaction; only the write is held.
+  const updated = await inRegistryWrite(input.partnerId, async () => {
+    const [row] = await db
+      .update(partnerLlmConfigs)
+      .set({
+        catalogEntryId: provider.entryId,
+        // #7587: pin the model just validated against this revision. A catalog
+        // revision serves only the models it mapped AND verified, so a partner
+        // left tracking the moving platform default goes `model_unverified` the
+        // moment that default changes.
+        defaultModel: model,
+        configVersion: sql`${partnerLlmConfigs.configVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(partnerLlmConfigs.partnerId, input.partnerId))
+      .returning({ configVersion: partnerLlmConfigs.configVersion });
+    if (!row) {
+      throw new PartnerLlmError('Could not update the endpoint selection.', 500);
+    }
+    return row;
+  });
 
   return {
     catalogEntryId: provider.entryId,
@@ -479,10 +548,17 @@ export async function updatePartnerLlmEndpoint(input: {
   };
 }
 
+/**
+ * The reconcile then sees no legacy row: it re-points every surface to
+ * platform offerings, rebinds agents and live sessions, and removes the
+ * connection, in the same transaction as the delete.
+ */
 export async function deletePartnerLlmConfig(partnerId: string): Promise<boolean> {
-  const [deleted] = await db
-    .delete(partnerLlmConfigs)
-    .where(eq(partnerLlmConfigs.partnerId, partnerId))
-    .returning({ id: partnerLlmConfigs.id });
-  return deleted !== undefined;
+  return inRegistryWrite(partnerId, async () => {
+    const [deleted] = await db
+      .delete(partnerLlmConfigs)
+      .where(eq(partnerLlmConfigs.partnerId, partnerId))
+      .returning({ id: partnerLlmConfigs.id });
+    return deleted !== undefined;
+  });
 }
