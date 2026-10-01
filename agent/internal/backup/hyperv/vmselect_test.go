@@ -235,14 +235,36 @@ func TestExportVMWith_CrashRestartsRunningVMWhenExportFails(t *testing.T) {
 			failAt = 3
 		}
 		ps.errs[failAt] = errors.New("disk full")
-		if _, _, err := exportVMWith(ps.run, "web", `D:\Exp`, "crash"); err == nil {
-			t.Fatalf("%s: expected export error", state)
+		_, _, err := exportVMWith(ps.run, "web", `D:\Exp`, "crash")
+		if err == nil || !strings.Contains(err.Error(), "disk full") {
+			t.Fatalf("%s: expected export error, got %v", state, err)
+		}
+		// A Paused VM was saved before the export failed: the error must say
+		// it is now Saved, not Paused.
+		if leftSaved := strings.Contains(err.Error(), "left in the Saved state"); leftSaved != (state == "Paused") {
+			t.Fatalf("%s: error %q mentions left-Saved=%v", state, err, leftSaved)
 		}
 		for _, s := range ps.scripts {
 			if strings.HasSuffix(s, "| Start-VM") {
 				t.Fatalf("%s VM must not be started after a failed export; ran %q", state, ps.scripts)
 			}
 		}
+	}
+}
+
+// A Running VM whose restart fails after a successful export is reported as a
+// warning (the backup itself succeeded), never dropped.
+func TestExportVMWith_CrashRestartFailureAfterExportIsAWarning(t *testing.T) {
+	ps := &fakePS{
+		outputs: []string{testVMID, "Running"},
+		errs:    []error{nil, nil, nil, nil, errors.New("start refused")},
+	}
+	_, warnings, err := exportVMWith(ps.run, "web", `D:\Exp`, "crash")
+	if err != nil {
+		t.Fatalf("exportVMWith: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to restart VM") || !strings.Contains(warnings[0], "start refused") {
+		t.Fatalf("warnings = %v", warnings)
 	}
 }
 

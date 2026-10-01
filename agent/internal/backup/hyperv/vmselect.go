@@ -135,6 +135,9 @@ func exportVMWith(run psRunner, vmName, exportPath, consistencyType string) (str
 			if _, startErr := run(sel + " | Start-VM"); startErr != nil {
 				return id, nil, fmt.Errorf("%w; additionally failed to restart VM %q after the failed export: %v", err, vmName, startErr)
 			}
+		} else if plan.warning != "" {
+			// The VM's state was still changed (Paused → Saved); say so.
+			return id, nil, fmt.Errorf("%w; %s", err, plan.warning)
 		}
 		return id, nil, err
 	}
