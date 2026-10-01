@@ -39,6 +39,7 @@
  */
 
 import { agentSdkWireOptions } from '../aiModels/modelWireOptions';
+import { buildWireParams, toMessagesApiParams } from '../aiModels/wireParams';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { buildGuardedLlmFetch } from './guardedLlmFetch';
@@ -58,6 +59,17 @@ export const FIDELITY_STEP_NAMES = {
   sdkSubprocess: 'sdk_subprocess',
 } as const;
 
+/** Every direct request. Manual (budget) thinking needs >= 1024 and < max_tokens; 512 left no room (spec §7). */
+export const FIDELITY_HARNESS_MAX_TOKENS = 2048;
+
+/** Recorded capability probes. They never affect `passed` (spec §7: params are sent only where verified). */
+export const FIDELITY_PROBE_NAMES = {
+  adaptiveEffort: 'direct_adaptive_effort',
+} as const;
+
+const ADAPTIVE_PROBE_SENTINEL = 'FIDELITY-OK';
+const ADAPTIVE_PROBE_PROMPT = `Reply with exactly ${ADAPTIVE_PROBE_SENTINEL} and nothing else.`;
+
 export interface FidelityCheckInput {
   baseUrl: string;
   authMode: 'x-api-key' | 'bearer';
@@ -74,6 +86,10 @@ export interface FidelityCheckStep {
 export interface FidelityCheckResult {
   passed: boolean;
   steps: FidelityCheckStep[];
+  /** Recorded capability probes; never part of `passed`. */
+  probes: FidelityCheckStep[];
+  /** What W03 may send to this endpoint/model beyond plain tool calling. */
+  verifiedCapabilities: { adaptiveEffort: boolean };
   harnessVersion: string;
 }
 
@@ -289,7 +305,7 @@ async function runDirectStage(input: FidelityCheckInput): Promise<DirectStageOut
   try {
     first = await client.messages.create({
       model: input.providerModel,
-      max_tokens: 512,
+      max_tokens: FIDELITY_HARNESS_MAX_TOKENS,
       tools: [WEATHER_TOOL_SCHEMA],
       messages: [userMessage],
     }) as { content?: unknown; stop_reason?: unknown };
@@ -376,7 +392,7 @@ async function runDirectStage(input: FidelityCheckInput): Promise<DirectStageOut
   try {
     second = await client.messages.create({
       model: input.providerModel,
-      max_tokens: 512,
+      max_tokens: FIDELITY_HARNESS_MAX_TOKENS,
       tools: [WEATHER_TOOL_SCHEMA],
       messages: [
         userMessage,
@@ -509,6 +525,37 @@ async function runSdkSubprocessStage(input: FidelityCheckInput): Promise<Fidelit
   }
 }
 
+async function runAdaptiveEffortProbe(input: FidelityCheckInput): Promise<FidelityCheckStep> {
+  const name = FIDELITY_PROBE_NAMES.adaptiveEffort;
+  // Built by the one wire-param owner (index invariant 2): adaptive thinking
+  // at the lowest effort. thinksWhenOmitted:true so the adapter always emits
+  // the params, because sending them is the point of the probe.
+  const params = toMessagesApiParams(buildWireParams({
+    thinkingMode: 'adaptive',
+    optionSupport: { effort: ['low'], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] },
+    requested: { effort: 'low' },
+    maxTokens: FIDELITY_HARNESS_MAX_TOKENS,
+  }), { thinksWhenOmitted: true });
+  const client = buildAnthropicClient(input);
+  try {
+    const response = await client.messages.create({
+      model: input.providerModel,
+      max_tokens: FIDELITY_HARNESS_MAX_TOKENS,
+      ...params,
+      messages: [{ role: 'user' as const, content: ADAPTIVE_PROBE_PROMPT }],
+    } as Parameters<Anthropic['messages']['create']>[0]) as { content?: unknown; stop_reason?: unknown };
+    if (response.stop_reason !== 'end_turn') {
+      return { name, ok: false, detail: `expected stop_reason 'end_turn', got '${String(response.stop_reason)}'` };
+    }
+    if (!textOf(response.content).includes(ADAPTIVE_PROBE_SENTINEL)) {
+      return { name, ok: false, detail: 'the answer did not contain the probe sentinel' };
+    }
+    return { name, ok: true, detail: 'adaptive thinking with output_config.effort accepted' };
+  } catch (error) {
+    return { name, ok: false, detail: `request rejected: ${describeError(error)}` };
+  }
+}
+
 function sanitizeStep(step: FidelityCheckStep, secret: string): FidelityCheckStep {
   if (step.detail === undefined) return { name: step.name, ok: step.ok };
   const detail = redactSecret(step.detail, secret).slice(0, MAX_DETAIL_CHARS);
@@ -533,9 +580,16 @@ export async function runFidelityCheck(input: FidelityCheckInput): Promise<Fidel
   const steps = [direct.toolUse, direct.toolResult, subprocess]
     .map((step) => sanitizeStep(step, input.apiKey));
 
+  const probe: FidelityCheckStep = directPassed
+    ? await runAdaptiveEffortProbe(input)
+    : { name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: false, detail: 'skipped: the direct SDK stage did not pass' };
+  const probes = [sanitizeStep(probe, input.apiKey)];
+
   return {
     passed: steps.every((step) => step.ok),
     steps,
+    probes,
+    verifiedCapabilities: { adaptiveEffort: probes[0]!.ok },
     harnessVersion: FIDELITY_HARNESS_VERSION,
   };
 }
