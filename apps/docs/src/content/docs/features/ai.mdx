@@ -592,6 +592,20 @@ This list is exposed to external AI clients through the [MCP Server](/features/m
 
 ---
 
+## Model refusals
+
+Some Claude models decline requests that resemble harmful work. The category is reported with the refusal, for example `cyber` for malware analysis or exploit-like scripts. Security triage in an RMM can trigger this even when the work is legitimate.
+
+When a model declines, Breeze:
+
+- records the refusal and its category against the model in AI usage;
+- shows the technician "The model declined this request (category: …)", lists the other models they are allowed to switch to, and links here;
+- ends an AI agent run as **Blocked — model refused**, with the category in the run outcome.
+
+### Configuring a refusal fallback
+
+An administrator can give a model a **refusal fallback** under **Partner Settings → AI Providers & Models**. The fallback must be another enabled model on the **same connection**, so it never changes who pays for the request. On the Claude API, Breeze asks Anthropic to retry the turn on the fallback model in the same request. On a catalog provider, Breeze retries once itself. The turn is billed at the rate of the model that served it.
+
 ## Troubleshooting
 
 **Tier 3 action pending but never executing**

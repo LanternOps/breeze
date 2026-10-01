@@ -212,6 +212,12 @@ export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'vali
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
+   * §9.1a (#7598): the turn's final answer was a model refusal. The same text
+   * also streams as ordinary content so every client renders it; this event
+   * carries the structure W05's picker uses to offer a switch.
+   */
+  | { type: 'model_refusal'; category: string | null; alternatives: Array<{ offeringId: string; displayName: string }>; docsUrl: string }
+  /**
    * Topology M4 (#6000): a topology investigation turn never publishes
    * `content_delta`, tool events or raw assistant text. Clients see only these
    * fixed phases and ONE server-validated, cited `topology_explanation`.

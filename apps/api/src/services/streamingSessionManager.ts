@@ -35,12 +35,14 @@ import {
   type SdkResultLike,
   type SdkTurnObservation,
   type SdkTurnUsageResult,
+  type TurnOutcome,
 } from './aiModels/invocationUsage';
 import { applyPromptProfile } from './aiModels/promptProfiles';
 import type { ResolvedModel } from './aiModels/resolveModel';
 import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
 import { priceUsage, quoteInvocationCents, settleInvocation, sumCostCents } from './aiModels/settleInvocation';
 import { liveQueryKey, turnBindingFrom, type TurnBinding } from './aiModels/turnBinding';
+import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type RefusalAlternative } from './aiModels/refusals';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -1876,6 +1878,13 @@ export class StreamingSessionManager {
             // settlement all read this one number.
             const turn = await this.settleSdkTurn(session, resultMsg);
 
+            // §9.1a: a refused final answer is explained, never a silent empty
+            // turn. Topology turns never stream model text (their gate fails
+            // through finishTopologyTurn); the ledger still records the refusal.
+            if (turn.outcome.refused && !topologyTurn) {
+              await this.publishRefusal(session, turn.outcome.refusalCategory);
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
             // session stays alive for follow-up messages. Carries usage so
             // client surfaces can render turn cost (turn_complete).
@@ -1979,7 +1988,7 @@ export class StreamingSessionManager {
   private async settleSdkTurn(
     session: ActiveSession,
     result: SDKResultMessage | null,
-  ): Promise<{ inputTokens: number; outputTokens: number; costCents: number }> {
+  ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
@@ -2044,7 +2053,48 @@ export class StreamingSessionManager {
       captureException(reportableError(err));
       console.error('[StreamingSessionManager] Failed to settle SDK turn usage:', safeErrorMessage(err));
     }
-    return { ...tokens, costCents };
+    return { ...tokens, costCents, outcome: turn.outcome };
+  }
+
+  /**
+   * §9.1a: persist + stream the refusal explanation as ordinary message events
+   * (every client renders it) plus the structured `model_refusal` event.
+   */
+  private async publishRefusal(session: ActiveSession, category: string | null): Promise<void> {
+    const b = session.turnBinding;
+    let alternatives: RefusalAlternative[] = [];
+    if (b.partnerId) {
+      try {
+        alternatives = await listRefusalAlternatives({
+          partnerId: b.partnerId,
+          orgId: session.orgId,
+          userId: session.ledgerUserId,
+          surface: b.surface,
+          excludeOfferingId: b.offeringId,
+        });
+      } catch (err) {
+        captureException(err); // alternatives are a convenience; the message is not
+      }
+    }
+    const text = refusalMessageText(category, alternatives);
+    try {
+      await withDbAccessContext(
+        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+        () => db.insert(aiMessages).values({
+          sessionId: session.breezeSessionId,
+          role: 'assistant',
+          content: text,
+          contentBlocks: [{ type: 'model_refusal', category, alternatives, docsUrl: REFUSAL_DOCS_URL }] as unknown as Record<string, unknown>[],
+        }),
+      );
+    } catch (err) {
+      captureException(err);
+      console.error('[StreamingSessionManager] Failed to save refusal message:', safeErrorMessage(err));
+    }
+    session.eventBus.publish({ type: 'message_start', messageId: crypto.randomUUID() });
+    session.eventBus.publish({ type: 'content_delta', delta: text });
+    session.eventBus.publish({ type: 'message_end', inputTokens: 0, outputTokens: 0 });
+    session.eventBus.publish({ type: 'model_refusal', category, alternatives, docsUrl: REFUSAL_DOCS_URL });
   }
 
   private async recordDroppedToolResult(

@@ -17,6 +17,7 @@ const m = vi.hoisted(() => ({
   readSdkUsageSnapshot: vi.fn(),
   markIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
   settleOrder: [] as string[],
+  listRefusalAlternatives: vi.fn(),
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -48,6 +49,10 @@ vi.mock('./aiModels/settleInvocation', async (orig) => ({
   ...(await orig<typeof import('./aiModels/settleInvocation')>()),
   settleInvocation: m.settleInvocation,
 }));
+vi.mock('./aiModels/refusals', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/refusals')>()),
+  listRefusalAlternatives: m.listRefusalAlternatives,
+}));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
@@ -68,8 +73,10 @@ import { makeResolvedModel, FIXTURE_STD_RATES } from './aiModels/__fixtures__/re
 import { sdkModelOptions } from './aiModels/connectionFactory';
 import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
 import { priceUsage, sumCostCents, type SettleInvocationInput } from './aiModels/settleInvocation';
+import { db } from '../db';
+import { REFUSAL_DOCS_URL } from './aiModels/refusals';
 import {
-  baseAuth, baseDbSession, HARNESS_ORG, HARNESS_USER, scriptedQuery, sdkResult, turnScriptedQuery,
+  baseAuth, baseDbSession, HARNESS_ORG, HARNESS_USER, insertedAssistantMessages, scriptedQuery, sdkResult, turnScriptedQuery,
 } from './__testutils__/streamingSessionManagerHarness';
 
 const SONNET = 'claude-sonnet-5-5';
@@ -383,5 +390,54 @@ describe('aborted / abandoned turns', () => {
     await session.processorPromise;
     expect(m.settleInvocation).not.toHaveBeenCalled();
     expect(m.markIndeterminate).not.toHaveBeenCalled();
+  });
+});
+
+describe('refused turn', () => {
+  async function runRefused(category: string | undefined, alternatives: Array<{ offeringId: string; displayName: string }>) {
+    m.listRefusalAlternatives.mockResolvedValue(alternatives);
+    const resolved = makeResolvedModel();
+    m.queryImpl = (args) => turnScriptedQuery(args.prompt, [[
+      { type: 'system', subtype: 'model_refusal_no_fallback', ...(category ? { api_refusal_category: category } : {}) },
+      sdkResult({ stop_reason: 'refusal', usage: { input_tokens: 10, output_tokens: 0 } }),
+    ]]);
+    const session = await mgr.getOrCreate('s1', baseDbSession, baseAuth, undefined, 'sys', 1, resolved, undefined, undefined, { ledgerUserId: 'u1' });
+    mgr.tryTransitionToProcessing(session, undefined, { turnBinding: turnBindingFrom(resolved) });
+    session.inputController.pushMessage('hi');
+    await session.processorPromise;
+    return session.eventBus.getReplayEvents() as unknown as Array<Record<string, unknown>>;
+  }
+
+  it('persists and streams the refusal text plus a structured model_refusal event, never an empty answer', async () => {
+    const alternatives = [{ offeringId: 'b', displayName: 'Opus 5.5' }];
+    const events = await runRefused('cyber', alternatives);
+
+    const text = events.filter((e) => e.type === 'content_delta').map((e) => e.delta).join('');
+    expect(text).toContain('The model declined this request (category: cyber).');
+    expect(text).toContain('Opus 5.5');
+    expect(events).toContainEqual({ type: 'model_refusal', category: 'cyber', alternatives, docsUrl: REFUSAL_DOCS_URL });
+    expect(insertedAssistantMessages(vi.mocked(db.insert) as never).at(-1))
+      .toMatchObject({ role: 'assistant', content: expect.stringContaining('category: cyber') });
+    expect(settleCalls()[0]!.outcome).toMatchObject({ refused: true, refusalCategory: 'cyber' });
+    const types = events.map((e) => e.type);
+    expect(types.indexOf('message_end')).toBeLessThan(types.indexOf('done'));
+  });
+
+  it('a null category renders as unspecified and still gives an answer', async () => {
+    const events = await runRefused(undefined, []);
+    const text = events.filter((e) => e.type === 'content_delta').map((e) => e.delta).join('');
+    expect(text).toContain('(category: unspecified)');
+    expect(text).toContain(REFUSAL_DOCS_URL);
+  });
+
+  it('an ordinary turn publishes no refusal', async () => {
+    const resolved = makeResolvedModel();
+    m.queryImpl = (args) => turnScriptedQuery(args.prompt, [[sdkResult({ usage: { input_tokens: 1, output_tokens: 1 } })]]);
+    const session = await mgr.getOrCreate('s1', baseDbSession, baseAuth, undefined, 'sys', 1, resolved, undefined, undefined, { ledgerUserId: 'u1' });
+    mgr.tryTransitionToProcessing(session, undefined, { turnBinding: turnBindingFrom(resolved) });
+    session.inputController.pushMessage('hi');
+    await session.processorPromise;
+    const events = session.eventBus.getReplayEvents() as unknown as Array<Record<string, unknown>>;
+    expect(events.some((e) => e.type === 'model_refusal')).toBe(false);
   });
 });

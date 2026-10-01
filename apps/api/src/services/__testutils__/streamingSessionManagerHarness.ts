@@ -83,3 +83,15 @@ export function sdkResult(input: {
     ...(input.modelUsage ? { modelUsage: input.modelUsage } : {}),
   };
 }
+
+/** Assistant rows written through a mocked `db.insert(aiMessages).values(...)`. */
+export function insertedAssistantMessages(insert: ReturnType<typeof vi.fn>): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const r of insert.mock.results) {
+    const chain = r.value as { values?: ReturnType<typeof vi.fn> } | undefined;
+    for (const [row] of chain?.values?.mock.calls ?? []) {
+      if ((row as { role?: string })?.role === 'assistant') out.push(row as Record<string, unknown>);
+    }
+  }
+  return out;
+}
