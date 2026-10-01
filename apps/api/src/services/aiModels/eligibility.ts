@@ -113,6 +113,10 @@ export function checkEligibility(c: CandidateFacts, ctx: EligibilityContext): Re
 // are not decided at enable time:
 //   enabled            → true            (that is what we are deciding)
 //   connection status  → active/usable   (transient; reported, never blocking)
+//                        — EXCEPT 'disconnected' (W03 soft-disconnect, #7601):
+//                        that connection is gone (keyless, never listed), not
+//                        unhealthy, so its offerings are refused as
+//                        connection_unavailable and can never be re-enabled.
 //   tools              → supported       (decided per surface at assignment)
 //   requiredPermission → null            (decided per user at dispatch)
 //   residency required → false           (decided per partner at dispatch)
@@ -133,13 +137,20 @@ export type EnableGateReason =
   | 'model_unavailable'
   | 'unpriced'
   | 'plan_required'
-  | 'residency_unavailable';
+  | 'residency_unavailable'
+  /** Only for a disconnected connection; every other connection_unavailable cause maps to model_unavailable. */
+  | 'connection_unavailable';
+
+/** W03 soft-disconnect: the connection row is kept as provenance only (status 'disconnected'). */
+function onDisconnectedConnection(c: CandidateFacts): boolean {
+  return c.connection.status === 'disconnected';
+}
 
 function neutralised(c: CandidateFacts): CandidateFacts {
   return {
     ...c,
     enabled: true,
-    connection: { ...c.connection, status: 'active', keyUsable: true },
+    connection: onDisconnectedConnection(c) ? c.connection : { ...c.connection, status: 'active', keyUsable: true },
     supportsTools: true,
     requiredPermission: null,
   };
@@ -158,7 +169,7 @@ function enableContext(ctx: EnableEligibilityContext): EligibilityContext {
   };
 }
 
-/** The enable-time gate. Returns null when the offering may be enabled. Connection health never blocks. */
+/** The enable-time gate. Returns null when the offering may be enabled. Connection health never blocks; a disconnected connection does. */
 export function checkEnableEligibility(c: CandidateFacts, ctx: EnableEligibilityContext): EnableGateReason | null {
   const reason = checkEligibility(neutralised(c), enableContext(ctx));
   if (reason === null) return null;
@@ -170,8 +181,9 @@ export function checkEnableEligibility(c: CandidateFacts, ctx: EnableEligibility
     case 'residency_unavailable':
       return reason;
     default:
-      // connection_unavailable can still come from a non-dispatchable kind
-      // (openai_compatible before W06). Treat it as unavailable for enabling.
+      if (onDisconnectedConnection(c)) return 'connection_unavailable';
+      // Otherwise connection_unavailable can only come from a non-dispatchable
+      // kind (openai_compatible before W06). Treat it as unavailable for enabling.
       return 'model_unavailable';
   }
 }

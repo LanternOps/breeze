@@ -173,6 +173,25 @@ describe('checkEnableEligibility (W04 enable gate; one rule table)', () => {
     expect(enableBlockerFor(f, ctx)).toBe('connection_unavailable');
   });
 
+  // W03 soft-disconnect (#7601): a disconnected connection is not transient
+  // health — it is gone (keyless, never listed). Its offerings must never be
+  // re-enabled, so the gate refuses them as connection_unavailable.
+  it('blocks enabling an offering on a disconnected connection, as connection_unavailable', () => {
+    const f = facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'disconnected', keyUsable: false }, rate: rates });
+    expect(checkEnableEligibility(f, ctx)).toBe('connection_unavailable');
+    expect(enableBlockerFor(f, ctx)).toBe('connection_unavailable');
+  });
+
+  it('blocks a disconnected catalog connection the same way', () => {
+    const f = facts({ platform: null, connection: { kind: 'catalog', status: 'disconnected', keyUsable: false }, catalog: { usable: true }, rate: rates });
+    expect(checkEnableEligibility(f, ctx)).toBe('connection_unavailable');
+  });
+
+  it('a connection in error (key still usable or not) stays enableable (D2: transient health never blocks)', () => {
+    expect(checkEnableEligibility(facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'error', keyUsable: true }, rate: rates }), ctx)).toBeNull();
+    expect(checkEnableEligibility(facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'error', keyUsable: false }, rate: rates }), ctx)).toBeNull();
+  });
+
   // BD-1: W03's platform-geo rule is NOT neutralised (a platform offering the
   // platform key cannot dispatch must not be enableable), and the gate reports
   // the true reason rather than collapsing it to model_unavailable.
