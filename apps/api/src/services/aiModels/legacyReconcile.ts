@@ -81,9 +81,16 @@ export async function loadLegacySnapshot(partnerId: string): Promise<LegacySnaps
   const orgIds = orgRows.map((o) => o.id);
   const inOrgs = (column: AnyPgColumn) => (orgIds.length ? inArray(column, orgIds) : sql`false`);
 
+  // FOR SHARE: connections must be exact at all times. A legacy writer that
+  // does not take the reconcile lock (markPartnerLlmError's runtime error
+  // stamp) waits for this transaction instead of committing between this read
+  // and the mirror write, where the mirror would put the stale status back.
+  // It never deadlocks against the reconcile: that writer holds no lock the
+  // reconcile wants until its own UPDATE on this row is granted.
   const [config] = await db
     .select({ id: partnerLlmConfigs.id, status: partnerLlmConfigs.status, defaultModel: partnerLlmConfigs.defaultModel, catalogEntryId: partnerLlmConfigs.catalogEntryId })
-    .from(partnerLlmConfigs).where(eq(partnerLlmConfigs.partnerId, partnerId)).orderBy(asc(partnerLlmConfigs.id)).limit(1);
+    .from(partnerLlmConfigs).where(eq(partnerLlmConfigs.partnerId, partnerId)).orderBy(asc(partnerLlmConfigs.id)).limit(1)
+    .for('share');
 
   const platformRows = await db
     .select({ id: aiPlatformModels.id, modelId: aiPlatformModels.modelId, input: aiPlatformModels.inputCentsPerM, output: aiPlatformModels.outputCentsPerM, read: aiPlatformModels.cacheReadCentsPerM, write: aiPlatformModels.cacheWriteCentsPerM })
@@ -151,8 +158,10 @@ export async function ensureLegacyPlatformModel(modelId: string): Promise<string
 
 async function mirrorConnection(snapshot: LegacySnapshot): Promise<ReconcileReport['connection']> {
   if (!snapshot.config) return 'none';
+  // FOR SHARE (see loadLegacySnapshot): already held by this transaction; re-stated so the mirror never reads an unlocked row.
   const [legacy] = await db.select().from(partnerLlmConfigs)
-    .where(and(eq(partnerLlmConfigs.id, snapshot.config.id), eq(partnerLlmConfigs.partnerId, snapshot.partnerId))).limit(1);
+    .where(and(eq(partnerLlmConfigs.id, snapshot.config.id), eq(partnerLlmConfigs.partnerId, snapshot.partnerId))).limit(1)
+    .for('share');
   if (!legacy) return 'none';
   const kind = legacy.catalogEntryId ? 'catalog' as const : 'anthropic_byok' as const;
   const mirrored = {

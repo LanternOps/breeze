@@ -392,6 +392,31 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02)', () => {
     expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
   });
 
+  // Review fix (connections exact at all times): a reconcile must not mirror a
+  // legacy status it read before markPartnerLlmError committed. The reconcile
+  // reads the legacy row FOR SHARE, so the runtime error stamp waits for the
+  // reconcile to commit and then mirrors itself through the trigger.
+  it('markPartnerLlmError racing a reconcile waits for it and is not overwritten', async () => {
+    const partner = await createPartner();
+    const configId = await seedLegacyConfig(partner.id);
+    await reconcilePartnerFromLegacy(partner.id);
+    let mark!: Promise<boolean>;
+    let settledWhileReconcileOpen: boolean | undefined;
+    await withSystemDbAccessContext(async () => {
+      await reconcilePartnerFromLegacyInTx(partner.id);
+      mark = markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' });
+      settledWhileReconcileOpen = await Promise.race([
+        mark.then(() => true, () => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]);
+    });
+    expect(settledWhileReconcileOpen).toBe(false);
+    expect(await mark).toBe(true);
+    const [conn] = await adminSql`SELECT status, last_error FROM partner_ai_connections WHERE id = ${configId}`;
+    expect(conn).toEqual({ status: 'error', last_error: 'auth_rejected' });
+    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
+  });
+
   it('DELETE → GET reports the platform and the registry holds no connection', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
@@ -406,6 +431,8 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02)', () => {
     const partner = await createPartner();
     await expect(updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: 'claude-haiku-4-5' })).rejects.toMatchObject({ status: 409 });
     expect(await adminSql`SELECT 1 FROM ai_model_assignments WHERE offering_partner_id = ${partner.id}`).toHaveLength(0);
+    expect(await adminSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${partner.id}`).toHaveLength(0);
+    expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${partner.id}`).toHaveLength(0);
   });
 
   // Task 12→13 carry: the facade takes the reconcile advisory lock before its

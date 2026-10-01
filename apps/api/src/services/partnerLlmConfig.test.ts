@@ -882,6 +882,38 @@ describe('registry facade (#7600 W02)', () => {
     expect(reconcileState.calls).toEqual([]);
   });
 
+  it('keeps the primary Postgres message (no values) on the sanitized cause', async () => {
+    const { db } = await import('../db');
+    class PostgresError extends Error {}
+    const pgError = Object.assign(new PostgresError('deadlock detected'), {
+      code: '40P01',
+      parameters: ['enc:v3:SECRET-CIPHERTEXT'],
+      query: 'insert into partner_llm_configs ... SECRET',
+    });
+    vi.mocked(db.insert).mockImplementationOnce(() => { throw pgError; });
+    const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e) as PartnerLlmError;
+    expect(error).toBeInstanceOf(PartnerLlmError);
+    const cause = error.cause as Error & { code?: unknown };
+    expect(cause.code).toBe('40P01');
+    expect(cause.message).toContain('deadlock detected');
+    const { inspect } = await import('node:util');
+    expect(inspect(error, { showHidden: true, depth: 10 })).not.toContain('SECRET');
+  });
+
+  // Review fix: a bug in the reconcile/projection carries no SQL values, so it
+  // must surface with its own message and stack, not a sanitized shell.
+  it('surfaces a non-query error from the reconcile with its message and stack intact', async () => {
+    const { reconcilePartnerFromLegacyInTx } = await import('./aiModels/legacyReconcile');
+    const bug = new Error('projection: x');
+    vi.mocked(reconcilePartnerFromLegacyInTx).mockRejectedValueOnce(bug);
+    isOfferablePlatformModelMock.mockResolvedValue(true);
+    dbState.updateResults.push([{ configVersion: 2 }]);
+    const error = await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }).catch((e: unknown) => e);
+    expect(error).toBe(bug);
+    expect((error as Error).message).toBe('projection: x');
+    expect((error as Error).stack).toContain('projection: x');
+  });
+
   it('passes a PartnerLlmError thrown inside the write through unchanged (a 409 reconciles nothing)', async () => {
     isOfferablePlatformModelMock.mockResolvedValue(true);
     dbState.updateResults.push([]);
