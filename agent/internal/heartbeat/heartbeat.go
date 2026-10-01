@@ -126,18 +126,22 @@ type HeartbeatPayload struct {
 	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
 	// BackupReadProtocolVersion is the brokered storage-read protocol the
 	// INSTALLED backup helper reports (breeze-backup --protocol-info), never
-	// inferred from this agent's own version. Omitted when the helper is
-	// absent, predates the flag, or reports 0. The server treats omission as
-	// 0 on every heartbeat (non-sticky), so a helper downgrade is reflected
-	// on the next beat.
-	BackupReadProtocolVersion int `json:"backupReadProtocolVersion,omitempty"`
+	// inferred from this agent's own version. Always present, set through
+	// setBackupProtocols:
+	//   - a number (including 0) when the helper answered. A helper that
+	//     predates the flag answers 0.
+	//   - JSON null when the probe got no answer (helper not installed yet,
+	//     crashed, timed out, unreadable output). The server then keeps what
+	//     it last stored instead of reading a drop to 0.
+	// An agent older than this contract omits the fields entirely, which the
+	// server reads as 0. A server older than this contract reads null as
+	// absent, i.e. 0, which is what this agent used to send.
+	BackupReadProtocolVersion *int `json:"backupReadProtocolVersion"`
 	// BackupIntegrityProtocolVersion and BackupWriteProtocolVersion are the
 	// snapshot integrity and brokered storage-write protocols the same
-	// installed helper reports, under the same rules: never inferred,
-	// omitted at 0, and read by the server as 0 on every heartbeat that
-	// omits them.
-	BackupIntegrityProtocolVersion int `json:"backupIntegrityProtocolVersion,omitempty"`
-	BackupWriteProtocolVersion     int `json:"backupWriteProtocolVersion,omitempty"`
+	// installed helper reports, under the same rules.
+	BackupIntegrityProtocolVersion *int `json:"backupIntegrityProtocolVersion"`
+	BackupWriteProtocolVersion     *int `json:"backupWriteProtocolVersion"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -875,10 +879,26 @@ type Heartbeat struct {
 	// (readInstalledBackupProtocols); nil in production. The cache fields
 	// below are guarded by backupVersionMu and cleared by
 	// invalidateBackupVersionCache, exactly like the version cache.
-	backupProtocolReader   func() (backupipc.ProtocolInfo, backupProbeOutcome)
-	backupProtocolValue    backupipc.ProtocolInfo
-	backupProtocolRead     bool
-	backupProtocolFailedAt time.Time
+	backupProtocolReader func() backupProtocolProbe
+	backupProtocolValue  backupipc.ProtocolInfo
+	backupProtocolRead   bool
+	// backupProtocolRetryAt and backupProtocolFailures drive the short
+	// backoff after a probe that ran but got no answer; see backupProtocols.
+	backupProtocolRetryAt  time.Time
+	backupProtocolFailures int
+	// backupProtocolGen is bumped by invalidateBackupVersionCache; a probe
+	// that started before a helper swap does not cache its answer.
+	backupProtocolGen uint64
+	// backupProtocolLogState is the last reported/unknown state logged, so
+	// the log fires once per state change rather than once per heartbeat.
+	// Cleared by invalidateBackupVersionCache so a new helper's first answer
+	// is always logged.
+	backupProtocolLogState string
+	// backupProtocolStateLogger and backupProtocolTimeout are test seams (nil
+	// / zero in production: log via the package logger, and
+	// backupVersionReadTimeout).
+	backupProtocolStateLogger func(state string, probe backupProtocolProbe)
+	backupProtocolTimeout     time.Duration
 
 	// backupHelperDownloader is an optional test seam: when non-nil,
 	// prefetchBackupHelper / reconcileBackupHelper call this instead of
@@ -4707,11 +4727,9 @@ func (h *Heartbeat) sendHeartbeat() {
 		SecurityCapabilities: compiledSecurityCapabilities(),
 	}
 	// Read from the installed helper at startup and again after any helper
-	// install (invalidateBackupVersionCache).
-	backupProtocols := h.backupProtocols()
-	payload.BackupReadProtocolVersion = backupProtocols.BackupReadProtocolVersion
-	payload.BackupIntegrityProtocolVersion = backupProtocols.BackupIntegrityProtocolVersion
-	payload.BackupWriteProtocolVersion = backupProtocols.BackupWriteProtocolVersion
+	// install (invalidateBackupVersionCache); unknown while the probe gets
+	// no answer.
+	payload.setBackupProtocols(h.backupProtocols())
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
 	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation

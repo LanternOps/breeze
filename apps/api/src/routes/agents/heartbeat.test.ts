@@ -5258,6 +5258,122 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       expect(regressed).not.toHaveBeenCalled();
     });
 
+    // The agent sends explicit nulls when its probe of the installed helper
+    // got no answer. That is unknown, not a drop: the last known value is
+    // kept (a stored 0 or NULL reads as not reported yet) and nothing is
+    // audited as a regression.
+    describe('helper protocols reported as unknown (explicit null)', () => {
+      const UNKNOWN = { backupReadProtocolVersion: null, backupIntegrityProtocolVersion: null, backupWriteProtocolVersion: null };
+
+      function arrangeCapturing(deviceOverrides: Record<string, unknown>) {
+        arrange(deviceOverrides);
+        const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning([{ id: 'device-1' }])) }));
+        updateMock.mockReturnValue({ set: setSpy });
+        return () => (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+      }
+
+      it('keeps the last known protocols and is not a regression', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN });
+        expect(resp.status).toBe(200);
+
+        const updateArg = update();
+        expect(updateArg).toBeDefined();
+        expect(Object.hasOwn(updateArg, 'backupReadProtocolVersion')).toBe(false);
+        expect(Object.hasOwn(updateArg, 'backupIntegrityProtocolVersion')).toBe(false);
+        expect(Object.hasOwn(updateArg, 'backupWriteProtocolVersion')).toBe(false);
+        expect(await regressionAudits()).toEqual([]);
+        expect(regressed).not.toHaveBeenCalled();
+        const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+        expect(changes.filter((ch) => String(ch.field).startsWith('backup'))).toEqual([]);
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('backup read protocol'), expect.anything());
+        warn.mockRestore();
+      });
+
+      it('a device that has never reported stays unreported', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: null, backupIntegrityProtocolVersion: null, backupWriteProtocolVersion: null });
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN });
+        expect(resp.status).toBe(200);
+
+        const updateArg = update();
+        for (const field of ['backupReadProtocolVersion', 'backupIntegrityProtocolVersion', 'backupWriteProtocolVersion']) {
+          expect(updateArg[field] ?? null).toBeNull();
+        }
+        expect(await regressionAudits()).toEqual([]);
+        expect(regressed).not.toHaveBeenCalled();
+      });
+
+      it('a stored 0 becomes unreported, and a stored positive value is kept', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 0, backupWriteProtocolVersion: 0 });
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN });
+        expect(resp.status).toBe(200);
+
+        const updateArg = update();
+        expect(Object.hasOwn(updateArg, 'backupReadProtocolVersion')).toBe(false);
+        expect(updateArg.backupIntegrityProtocolVersion).toBeNull();
+        expect(updateArg.backupWriteProtocolVersion).toBeNull();
+        expect(await regressionAudits()).toEqual([]);
+        expect(regressed).not.toHaveBeenCalled();
+        // The move to "not reported yet" is still visible per device.
+        const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+        expect(changes.filter((ch) => String(ch.field).startsWith('backup'))).toEqual([
+          { field: 'backupIntegrityProtocolVersion', before: 0, after: null },
+          { field: 'backupWriteProtocolVersion', before: 0, after: null },
+        ]);
+      });
+
+      it('an unknown report from a helper older than a stored protocol leaves that protocol unreported', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN, backupVersion: '0.118.2' });
+        expect(resp.status).toBe(200);
+
+        const updateArg = update();
+        // 0.118 implements brokered reads, not snapshot integrity or brokered writes.
+        expect(Object.hasOwn(updateArg, 'backupReadProtocolVersion')).toBe(false);
+        expect(updateArg.backupIntegrityProtocolVersion).toBeNull();
+        expect(updateArg.backupWriteProtocolVersion).toBeNull();
+        expect(await regressionAudits()).toEqual([]);
+        const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
+        expect(changes.filter((ch) => String(ch.field).startsWith('backup') && ch.field !== 'backupVersion')).toEqual([
+          { field: 'backupIntegrityProtocolVersion', before: 2, after: null },
+          { field: 'backupWriteProtocolVersion', before: 1, after: null },
+        ]);
+      });
+
+      it('an unknown report from a current helper keeps the stored protocols', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+        const resp = await beat({ ...minimalHeartbeatBody, ...UNKNOWN, backupVersion: '0.120.0' });
+        expect(resp.status).toBe(200);
+        const updateArg = update();
+        expect(Object.hasOwn(updateArg, 'backupIntegrityProtocolVersion')).toBe(false);
+        expect(Object.hasOwn(updateArg, 'backupWriteProtocolVersion')).toBe(false);
+      });
+
+      it('a helper that answers 0 is still a real drop and is audited', async () => {
+        const update = arrangeCapturing({ backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2, backupWriteProtocolVersion: 1 });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const resp = await beat({
+          ...minimalHeartbeatBody,
+          backupReadProtocolVersion: 0,
+          backupIntegrityProtocolVersion: 0,
+          backupWriteProtocolVersion: 0,
+        });
+        expect(resp.status).toBe(200);
+
+        const updateArg = update();
+        expect(updateArg.backupReadProtocolVersion).toBe(0);
+        expect(updateArg.backupIntegrityProtocolVersion).toBe(0);
+        expect(updateArg.backupWriteProtocolVersion).toBe(0);
+        expect((await regressionAudits()).map((a) => a.details)).toEqual([
+          { capability: 'read', before: 1, after: 0 },
+          { capability: 'integrity', before: 2, after: 0 },
+          { capability: 'write', before: 1, after: 0 },
+        ]);
+        warn.mockRestore();
+      });
+    });
+
     it('a write the status guard rejected is never audited as a regression', async () => {
       arrange({ backupIntegrityProtocolVersion: 2 });
       updateMock.mockReturnValue({
