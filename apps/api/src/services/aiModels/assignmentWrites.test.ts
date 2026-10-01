@@ -64,11 +64,12 @@ vi.mock('../../db', () => {
   };
 });
 
-import { putPartnerAssignments } from './assignmentWrites';
+import { putOrgAssignments, putPartnerAssignments, touchesSurface } from './assignmentWrites';
 
 const P = '22222222-2222-4222-8222-222222222222';
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const RATES = { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 };
 
 function cand(factsOver: Record<string, unknown> = {}, over: Record<string, unknown> = {}) {
@@ -213,5 +214,113 @@ describe('putPartnerAssignments', () => {
     const err = await putPartnerAssignments({ partnerId: P, rows: [row(), row({ surface: 'helper', defaultOfferingId: B })] }).catch((e) => e);
     expect([err.code, err.details.surface]).toEqual(['not_eligible', 'helper']);
     expect(h.upserts).toHaveLength(0);
+  });
+});
+
+describe('putOrgAssignments — the org write rejects every widening', () => {
+  const ORG = '55555555-5555-4555-8555-555555555555';
+  const orgRow = (over: Record<string, unknown> = {}) => ({
+    surface: 'chat' as const, role: 'default' as const, defaultOfferingId: null as string | null,
+    permittedOfferingIds: null as string[] | null, allowUserChoice: null as false | null,
+    options: null as Record<string, unknown> | null, expectedUpdatedAt: null as string | null, ...over,
+  });
+  beforeEach(() => {
+    for (const id of [A, B, C]) h.candidates.set(id, cand());
+    h.partnerRows = [{ surface: 'chat', role: 'default', orgId: null, defaultOfferingId: A, permittedOfferingIds: [A, B], allowUserChoice: true, options: { effort: 'medium' }, updatedAt: new Date() }];
+  });
+
+  it.each([
+    ['a permitted id outside the partner set', { permittedOfferingIds: [A, C] }, 'permittedOfferingIds'],
+    ['a default outside the partner set', { defaultOfferingId: C }, 'defaultOfferingId'],
+    ['a default outside its own narrowed set', { permittedOfferingIds: [A], defaultOfferingId: B }, 'defaultOfferingId'],
+    ['a narrowed set that excludes the inherited partner default', { permittedOfferingIds: [B] }, 'defaultOfferingId'],
+    ['an effort above the partner', { options: { effort: 'high' } }, 'options'],
+    ['fast when the partner has no fast', { options: { speed: 'fast' } }, 'options'],
+    ['user choice the partner did not lock (runtime guard behind zod)', { allowUserChoice: true }, 'allowUserChoice'],
+  ])('rejects %s', async (_l, over, field) => {
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow(over) as never] }).catch((e) => e);
+    expect([err.status, err.code, err.details.field, err.details.surface]).toEqual([422, 'widens_partner', field, 'chat']);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('names the offending permitted id and option key', async () => {
+    const e1 = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [A, C] })] }).catch((e) => e);
+    expect(e1.details.offeringId).toBe(C);
+    const e2 = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ options: { effort: 'max' } })] }).catch((e) => e);
+    expect(e2.details.key).toBe('effort');
+    const e3 = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ options: { speed: 'fast' } })] }).catch((e) => e);
+    expect(e3.details.key).toBe('speed');
+  });
+
+  it('accepts a narrowing (subset, default inside it, lower effort, user choice locked)', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [B], defaultOfferingId: B, options: { effort: 'low' }, allowUserChoice: false })] });
+    expect(h.upserts[0]!.values).toMatchObject({ orgId: ORG, partnerId: null, offeringPartnerId: P, permittedOfferingIds: [B], defaultOfferingId: B, allowUserChoice: false });
+    expect(h.upserts[0]!.values).not.toHaveProperty('fallbackOfferingIds');
+  });
+
+  it('accepts a narrowed set that keeps the inherited partner default', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [A] })] });
+    expect(h.upserts[0]!.values).toMatchObject({ permittedOfferingIds: [A], defaultOfferingId: null });
+  });
+
+  it('reads, validates and writes inside one system transaction behind the partner registry lock', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ allowUserChoice: false })] });
+    expect(h.systemContexts).toBe(1);
+    expect(h.calls[0]).toBe(`lock:${P}`);
+    expect(h.calls.slice(-1)).toEqual(['insert']);
+  });
+
+  it('a permitted id the partner allows still has to be usable (disabled → not_eligible)', async () => {
+    h.candidates.set(B, cand({ enabled: false }));
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [B] , defaultOfferingId: B })] }).catch((e) => e);
+    expect([err.code, err.details.field, err.details.offeringId]).toEqual(['not_eligible', 'permittedOfferingIds', B]);
+  });
+
+  it('checks set options against the inherited partner default', async () => {
+    h.candidates.set(A, cand({}, { optionSupport: { effort: ['medium'], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] } }));
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ options: { effort: 'low' } })] }).catch((e) => e);
+    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', field: 'options', key: 'effort' }]);
+  });
+
+  it('an all-blank row deletes the override (blank = inherit)', async () => {
+    h.existingRows = [{ id: 'o1', surface: 'chat', role: 'default', orgId: ORG, updatedAt: new Date('2026-10-01T10:00:00Z') }];
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ expectedUpdatedAt: '2026-10-01T10:00:00.000Z' })] });
+    expect(h.deletes).toHaveLength(1);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('an all-blank row with no override is a no-op', async () => {
+    await expect(putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow()] })).resolves.toEqual([]);
+    expect([h.deletes.length, h.upserts.length]).toEqual([0, 0]);
+  });
+
+  it('409s a blank row whose version does not match the stored override', async () => {
+    h.existingRows = [{ id: 'o1', surface: 'chat', role: 'default', orgId: ORG, updatedAt: new Date('2026-10-01T10:00:00Z') }];
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow()] }).catch((e) => e);
+    expect([err.status, err.code]).toEqual([409, 'stale_write']);
+    expect(h.deletes).toHaveLength(0);
+  });
+
+  it('refuses a default when the partner has no row for the surface', async () => {
+    h.partnerRows = [];
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ defaultOfferingId: A })] }).catch((e) => e);
+    expect([err.code, err.details.field]).toEqual(['widens_partner', 'defaultOfferingId']);
+  });
+
+  it('may narrow permitted when the partner has no row for the surface', async () => {
+    h.partnerRows = [];
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [C] })] });
+    expect(h.upserts[0]!.values).toMatchObject({ permittedOfferingIds: [C], defaultOfferingId: null });
+  });
+
+  it('writes nothing when any row widens (all-or-nothing)', async () => {
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ allowUserChoice: false }), orgRow({ surface: 'helper', defaultOfferingId: A })] }).catch((e) => e);
+    expect([err.code, err.details.surface]).toEqual(['widens_partner', 'helper']);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('touchesSurface detects the reviewer surface', () => {
+    expect(touchesSurface([{ surface: 'chat' }, { surface: 'script_reviewer' }], 'script_reviewer')).toBe(true);
+    expect(touchesSurface([{ surface: 'chat' }], 'script_reviewer')).toBe(false);
   });
 });

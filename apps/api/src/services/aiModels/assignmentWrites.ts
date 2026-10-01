@@ -12,13 +12,14 @@
  * with W03's compatRemap. Every statement is pinned to input.partnerId (auth).
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
-import { TOOL_REQUIRING_SURFACES, type AiSurface, type OfferingOptions, type PartnerAssignmentInput } from '@breeze/shared';
+import { TOOL_REQUIRING_SURFACES, type AiSurface, type OfferingOptions, type OrgAssignmentInput, type PartnerAssignmentInput } from '@breeze/shared';
 import { db } from '../../db';
 import { aiModelAssignments, type AiModelAssignmentRow } from '../../db/schema';
 import { loadOfferingCandidate, type LoadedCandidate } from './candidateLoader';
 import { checkEnableEligibility, type EnableEligibilityContext } from './eligibility';
 import { enableEligibilityContext, inPartnerRegistryWrite, OPTION_KEYS, sameVersion, supportedOptionValues } from './offeringWrites';
 import { listAssignmentRows } from './assignmentRows';
+import { clampOrgOptions } from './assignments';
 import { RegistryWriteError } from './registryWriteErrors';
 
 export { listAssignmentRows };
@@ -185,4 +186,105 @@ export async function conditionalDeleteOrgRow(orgId: string, partnerId: string, 
     ))
     .returning({ id: aiModelAssignments.id });
   if (deleted.length === 0) throw new RegistryWriteError(STALE_MESSAGE, 'stale_write', 409, { surface: row.surface });
+}
+
+/** True when any row in the batch writes `surface` (routes gate script_reviewer on approvals:decide). */
+export function touchesSurface(rows: Array<{ surface: string }>, surface: AiSurface): boolean {
+  return rows.some((r) => r.surface === surface);
+}
+
+function widens(surface: AiSurface, field: string, extra: Record<string, unknown> = {}): never {
+  throw new RegistryWriteError('An organization can only narrow the partner’s defaults.', 'widens_partner', 422, { surface, field, ...extra });
+}
+
+function isBlank(row: OrgAssignmentInput): boolean {
+  return row.defaultOfferingId === null && row.permittedOfferingIds === null && row.allowUserChoice === null && row.options === null;
+}
+
+/**
+ * Writes one org's override rows (spec §5.4 tighten-only). An all-null row
+ * deletes the override (blank = inherit). Every widening is a 422
+ * widens_partner — never a silent clamp — so an admin never saves a value the
+ * read-time merge would ignore. `partnerId` is the org's partner (the route
+ * resolves it with readOrgPartnerId); every org statement is pinned to it via
+ * offering_partner_id, and the composite FK (org_id, offering_partner_id) →
+ * organizations(id, partner_id) refuses a mismatched insert.
+ */
+export async function putOrgAssignments(input: { partnerId: string; orgId: string; rows: OrgAssignmentInput[] }): Promise<AiModelAssignmentRow[]> {
+  const { partnerId, orgId } = input;
+  return inPartnerRegistryWrite(partnerId, 'aiModels.putOrgAssignments', 'Could not save the organization’s model defaults.', async () => {
+    const partnerRows = await listAssignmentRows({ partnerId });
+    const orgRows = await listAssignmentRows({ partnerId, orgId });
+    const ctx = await enableEligibilityContext(partnerId);
+    const cache = new Map<string, LoadedCandidate | null>();
+
+    // Validate every row before writing anything.
+    for (const row of input.rows) {
+      assertNotStale(row.surface, orgRows.find((r) => r.surface === row.surface && r.role === row.role), row.expectedUpdatedAt);
+      if (isBlank(row)) continue;
+      await assertOrgRowNarrows(row, partnerRows.find((r) => r.surface === row.surface && r.role === row.role), { partnerId, ctx, cache });
+    }
+
+    // A stale row throws and rolls back the whole transaction.
+    const out: AiModelAssignmentRow[] = [];
+    for (const row of input.rows) {
+      if (isBlank(row)) {
+        await conditionalDeleteOrgRow(orgId, partnerId, row);
+        continue;
+      }
+      out.push(await conditionalUpsert({ kind: 'org', orgId, partnerId }, row, {
+        defaultOfferingId: row.defaultOfferingId,
+        permittedOfferingIds: row.permittedOfferingIds,
+        allowUserChoice: row.allowUserChoice,
+        options: row.options as Record<string, unknown> | null,
+      }));
+    }
+    return out;
+  });
+}
+
+/** Throws 422 widens_partner on any widening of the partner row `p` (absent = no partner default for the surface). */
+async function assertOrgRowNarrows(
+  row: OrgAssignmentInput,
+  p: AiModelAssignmentRow | undefined,
+  env: { partnerId: string; ctx: EnableEligibilityContext; cache: Map<string, LoadedCandidate | null> },
+): Promise<void> {
+  const { surface } = row;
+  const usable = (offeringId: string, field: string) =>
+    assertOfferingUsableForSurface({ partnerId: env.partnerId, offeringId, surface, field, ctx: env.ctx, cache: env.cache });
+  const partnerSet = p?.permittedOfferingIds ?? null; // null = every enabled offering
+  const inEffectiveSet = (id: string) =>
+    (!partnerSet || partnerSet.includes(id)) && (!row.permittedOfferingIds || row.permittedOfferingIds.includes(id));
+
+  // zod admits only false|null; guard the service boundary anyway.
+  if ((row.allowUserChoice as boolean | null) === true) widens(surface, 'allowUserChoice');
+
+  for (const id of row.permittedOfferingIds ?? []) {
+    if (partnerSet && !partnerSet.includes(id)) widens(surface, 'permittedOfferingIds', { offeringId: id });
+    await usable(id, 'permittedOfferingIds');
+  }
+
+  let effectiveDefault: LoadedCandidate | null = null;
+  if (row.defaultOfferingId !== null) {
+    if (!p || !inEffectiveSet(row.defaultOfferingId)) widens(surface, 'defaultOfferingId');
+    effectiveDefault = await usable(row.defaultOfferingId, 'defaultOfferingId');
+  } else if (p?.defaultOfferingId) {
+    // A narrowed set that drops the inherited default would leave the org on a
+    // model outside its own permitted list (the merge keeps the partner default).
+    if (!inEffectiveSet(p.defaultOfferingId)) widens(surface, 'defaultOfferingId', { reason: 'inherited_default_not_permitted' });
+    let inherited = env.cache.get(p.defaultOfferingId);
+    if (inherited === undefined) {
+      inherited = await loadOfferingCandidate(p.defaultOfferingId, env.partnerId);
+      env.cache.set(p.defaultOfferingId, inherited);
+    }
+    effectiveDefault = inherited;
+  }
+
+  if (row.options) {
+    // clampOrgOptions only emits the two clamp warnings; zod already rejected malformed options.
+    const { warnings } = clampOrgOptions((p?.options ?? {}) as OfferingOptions, row.options);
+    if (warnings.includes('org_effort_clamped')) widens(surface, 'options', { key: 'effort' });
+    if (warnings.includes('org_speed_clamped')) widens(surface, 'options', { key: 'speed' });
+    if (effectiveDefault) assertOptionsSupported(surface, effectiveDefault, row.options);
+  }
 }
