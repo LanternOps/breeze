@@ -398,14 +398,14 @@ func runSupportSession() {
 	}
 
 	if err := gateSupportServer(server); err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
 		return
 	}
 
 	resp, err := api.RedeemSupportCode(server, code, hostname, osType)
 	if err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		if errors.Is(err, api.ErrSupportCodeInvalid) {
 			// The person reading this is not technical and did not choose the
 			// code — name the remedy, not the status.
@@ -423,7 +423,7 @@ func runSupportSession() {
 	// non-allowlisted host any more than it may redeem against one.
 	if strings.TrimSpace(resp.ServerURL) != "" {
 		if err := gateSupportServer(resp.ServerURL); err != nil {
-			_ = os.RemoveAll(workDir)
+			discardSupportWorkDir(workDir)
 			supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
 			return
 		}
@@ -444,7 +444,7 @@ func runSupportSession() {
 	defer stop()
 
 	if err := enrollSupportSession(cfg, supportCfgFile, resp.EnrollmentKey, resp.EnrollmentSecret); err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		supportFail("Could not start the support session. Ask your technician for a new code.", err)
 		return
 	}
@@ -452,18 +452,20 @@ func runSupportSession() {
 	if ctx.Err() != nil {
 		// Interrupted during enrollment — stop at the first point where doing
 		// so is clean, rather than bringing an agent up just to tear it down.
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		fmt.Println("Cancelled. Nothing was left installed.")
 		return
 	}
 
 	comps, err := startAgentFn(cfg)
 	if err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		supportFail("Could not start the support session on this computer.", err)
 		return
 	}
 	defer logging.StopShipper()
+	// supportCleanup closes the session log before removing the folder.
+	comps.hb.SetSupportFileReleaser(releaseLogFiles)
 
 	// Console status lines on session start/stop. Chained (not replaced) onto
 	// the heartbeat's own desktop callbacks so the server still receives the
@@ -485,9 +487,15 @@ func runSupportSession() {
 		fmt.Println("Ending the support session…")
 	}
 
-	// Teardown order: stop sharing and drop the connection first, then remove
-	// the workspace. RunSupportCleanup also schedules the self-delete of this
-	// executable on Windows.
+	// Teardown order:
+	//  1. Start the post-exit cleanup (delete this executable, remove the
+	//     folder) first. Closing the console window allows about five seconds
+	//     before Windows ends the process, and shutdownAgent can take longer;
+	//     the cleanup runs after exit either way.
+	//  2. Stop sharing and drop the connection.
+	//  3. Release the log and remove the folder now (RunSupportCleanup);
+	//     anything still held is removed by step 1 after exit.
+	comps.hb.ScheduleSupportSelfCleanup()
 	shutdownAgent(comps)
 	comps.hb.RunSupportCleanup()
 	fmt.Println("Support session ended. Nothing was left installed.")

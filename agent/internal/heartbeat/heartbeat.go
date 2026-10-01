@@ -481,6 +481,14 @@ type Heartbeat struct {
 	// like isService/isHeadless.
 	supportMode    bool
 	supportWorkDir string
+	// supportReleaseFiles closes the files a support session holds open in
+	// its folder (its log); set by runSupportSession, called by
+	// supportCleanup before the folder is removed.
+	supportReleaseFiles func()
+	// supportSelfCleanupOnce guards the post-exit cleanup (delete the
+	// executable, remove the folder), which teardown and supportCleanup both
+	// start.
+	supportSelfCleanupOnce sync.Once
 	// headlessCachedAt memoizes the Linux resolver-backed headless probe used by
 	// currentHeadless() for the outgoing heartbeat payload. Stores a
 	// headlessCache; an atomic.Value so the heartbeat and command-handler

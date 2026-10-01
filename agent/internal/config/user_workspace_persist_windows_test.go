@@ -3,7 +3,10 @@
 package config
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -66,4 +69,37 @@ func TestUserWorkspaceStandardUserRotationPersistsToWorkspace(t *testing.T) {
 	assertUserPrivate(t, cfgPath, user, nil, userWorkspaceFileSDDLFormat)
 	assertUserPrivate(t, filepath.Join(ws, "secrets.yaml"), user, nil, userWorkspaceFileSDDLFormat)
 	assertInstalledConfigUntouched(t, installedDir, installed)
+}
+
+// TestUserWorkspaceCodecTrustRealFolderAsStandardUser: with real ACLs, a file
+// a standard user's support session writes into its data dir (where the
+// H.264 codec is downloaded) passes VerifyProgramDataPath, so the codec can
+// load. The same folder made writable by BUILTIN\Users is refused.
+func TestUserWorkspaceCodecTrustRealFolderAsStandardUser(t *testing.T) {
+	plantInstalledAgentConfig(t)
+	t.Cleanup(resetUserWorkspaceForTest)
+	ws := filepath.Join(t.TempDir(), "breeze-support-7629")
+	var dll string
+	asStandardUser(t, func() {
+		if err := SecureUserWorkspace(ws); err != nil {
+			t.Fatalf("SecureUserWorkspace: %v", err)
+		}
+		if err := os.MkdirAll(GetDataDir(), 0o700); err != nil {
+			t.Fatalf("create the data dir: %v", err)
+		}
+		dll = filepath.Join(GetDataDir(), "openh264-2.4.1-win64.dll")
+		if err := os.WriteFile(dll, []byte("codec"), 0o600); err != nil {
+			t.Fatalf("write the codec: %v", err)
+		}
+		if err := VerifyProgramDataPath(dll); err != nil {
+			t.Fatalf("VerifyProgramDataPath on the support folder's codec: %v", err)
+		}
+	})
+
+	if out, err := exec.Command("icacls", GetDataDir(), "/grant", "*S-1-5-32-545:(M)").CombinedOutput(); err != nil {
+		t.Fatalf("icacls grant Users modify: %v: %s", err, out)
+	}
+	if err := VerifyProgramDataPath(dll); err == nil || !strings.Contains(err.Error(), "grants write") {
+		t.Fatalf("data dir writable by Users: err = %v, want a write refusal", err)
+	}
 }

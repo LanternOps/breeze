@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/spf13/viper"
 )
@@ -201,5 +202,97 @@ func TestSupportSessionPathsStayInItsFolder(t *testing.T) {
 				t.Errorf("%s = %q resolves under the machine location %q", name, p, m)
 			}
 		}
+	}
+}
+
+// TestSupportLogReleaseLetsTheFolderGo: the support log is opened twice
+// (enrollment logging, then startAgent's), and on Windows an open file keeps
+// its folder from being removed. releaseLogFiles closes both and discards
+// logging from then on, so the folder can be removed and a later log line
+// does not re-create support.log.
+func TestSupportLogReleaseLetsTheFolderGo(t *testing.T) {
+	t.Cleanup(func() { logging.Init("text", "info", os.Stdout); log = logging.L("main") })
+	ws := filepath.Join(t.TempDir(), "breeze-support-4242")
+	if err := os.MkdirAll(ws, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogFile = filepath.Join(ws, "support.log")
+	cfg.SupportMode = true
+	initEnrollLogging(cfg, true)
+	initLogging(cfg)
+	log.Info("support session log line")
+	if _, err := os.Stat(cfg.LogFile); err != nil {
+		t.Fatalf("support.log was not written: %v", err)
+	}
+
+	releaseLogFiles()
+	if err := os.RemoveAll(ws); err != nil {
+		t.Fatalf("remove the support folder after releasing its log: %v", err)
+	}
+	log.Info("a line after the release")
+	logging.L("heartbeat").Warn("another component's line after the release")
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Fatalf("support folder exists again after logging (stat err %v): the log was re-opened", err)
+	}
+}
+
+// TestRunSupportSessionTeardownOrder pins runSupportSession's teardown:
+// the session's log is registered for release, the post-exit cleanup is
+// started before the agent shuts down (a closed console window allows only
+// a few seconds), and every early exit removes the folder through
+// discardSupportWorkDir, which releases the log first.
+func TestRunSupportSessionTeardownOrder(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "support.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse support.go: %v", err)
+	}
+	var body *ast.BlockStmt
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "runSupportSession" {
+			body = f.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("runSupportSession not found")
+	}
+	var order []string
+	ast.Inspect(body, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := c.Fun.(type) {
+		case *ast.Ident:
+			order = append(order, fn.Name)
+		case *ast.SelectorExpr:
+			if x, ok := fn.X.(*ast.Ident); ok {
+				order = append(order, x.Name+"."+fn.Sel.Name)
+			} else {
+				order = append(order, fn.Sel.Name)
+			}
+		}
+		return true
+	})
+	index := func(name string) int {
+		for i, n := range order {
+			if n == name {
+				return i
+			}
+		}
+		return -1
+	}
+	release, schedule, shutdown, cleanup := index("SetSupportFileReleaser"), index("ScheduleSupportSelfCleanup"), index("shutdownAgent"), index("RunSupportCleanup")
+	if release < 0 || schedule < 0 || shutdown < 0 || cleanup < 0 {
+		t.Fatalf("teardown calls missing: release=%d schedule=%d shutdown=%d cleanup=%d (calls: %v)", release, schedule, shutdown, cleanup, order)
+	}
+	if !(release < schedule && schedule < shutdown && shutdown < cleanup) {
+		t.Errorf("teardown order = release %d, schedule %d, shutdownAgent %d, RunSupportCleanup %d; want release < schedule < shutdownAgent < RunSupportCleanup", release, schedule, shutdown, cleanup)
+	}
+	if n := index("os.RemoveAll"); n >= 0 {
+		t.Errorf("runSupportSession calls os.RemoveAll directly; use discardSupportWorkDir, which releases the open log first")
+	}
+	if index("discardSupportWorkDir") < 0 {
+		t.Errorf("runSupportSession never calls discardSupportWorkDir")
 	}
 }
