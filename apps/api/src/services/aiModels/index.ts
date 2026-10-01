@@ -16,3 +16,17 @@ export * from './legacyProjection';
 export * from './legacyReconcile';
 export * from './legacyCostEvents';
 export { recordInvocation, registerInvocationLedgerShadow, recordShadowInvocation, surfaceFromSession, buildShadowRateSnapshot, shadowCostDiff, type NewInvocation } from './invocationLedger';
+export {
+  resolveModel,
+  unavailableMessage,
+  PLATFORM_ONLY_SURFACES,
+  type ResolveModelInput,
+  type ResolveModelResult,
+  type ResolvedModel,
+  type ModelUnavailable,
+  type ResolvedOffering,
+  type ResolvedRefusalFallback,
+  type RequestOrigin,
+} from './resolveModel';
+export { defaultTransport, transportCarries, type DispatchTransport, type TransportCarriage } from './transport';
+export type { ResolveFailureReason } from './eligibility';

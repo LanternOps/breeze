@@ -1,11 +1,12 @@
 /**
  * AI model registry W03 (#7601): the candidate loader against real rows.
- * Task 3 appends the resolver half.
+ * The resolver half (Task 3) runs resolveModel end to end on the same seeds.
  */
 import './setup';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { activateRevision } from '../../services/llmProviderCatalog';
 import { findOfferingIdByModel, loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
+import { resolveModel } from '../../services/aiModels/resolveModel';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
 import { seedCatalogRevision, seedPricedPlatformModel, seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 
@@ -70,5 +71,67 @@ describe.skipIf(!RUN)('candidate loader against real rows', () => {
        WHERE partner_id = ${b.partnerId} AND org_id IS NULL AND surface = 'chat' AND role = 'default'`;
     expect(await find()).toBe(platformTwin);
     expect(await findOfferingIdByModel({ partnerId: b.partnerId, orgId: b.orgId, surface: 'chat', modelId: 'claude-not-offered' })).toBeNull();
+  });
+});
+
+describe.skipIf(!RUN)('resolveModel against real assignments, plans and settings', () => {
+  // The platform candidate is dispatchable only with platform credentials;
+  // set a placeholder so the gate under test (not "unconfigured") decides.
+  const saved = { key: process.env.ANTHROPIC_API_KEY, hosted: process.env.IS_HOSTED };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  };
+  beforeEach(() => { process.env.ANTHROPIC_API_KEY = 'sk-ant-w03-integration-placeholder'; });
+  afterEach(() => { restore('ANTHROPIC_API_KEY', saved.key); restore('IS_HOSTED', saved.hosted); });
+
+  it('resolves the seeded platform default end to end (control for the refusals below)', async () => {
+    const a = await seedRegistryPartner('platform');
+    expect(await resolveModel({ partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat' }))
+      .toMatchObject({
+        ok: true, funding: 'platform', wireModel: a.modelId, offering: { id: a.offeringId }, fellBack: false,
+        rateSnapshot: { source: 'platform', standard: { inputCentsPerM: 200, outputCentsPerM: 1000 } },
+      });
+  });
+
+  it('a user cannot request another partner\'s offering', async () => {
+    const a = await seedRegistryPartner('platform');
+    const b = await seedRegistryPartner('byok');
+    expect(await resolveModel({
+      partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat',
+      requested: { offeringId: b.offeringId, origin: 'user' },
+    })).toEqual({
+      ok: false, reason: 'not_permitted', recoverable: true, offeringId: b.offeringId,
+      message: 'This AI model is not available here. Choose another model.',
+    });
+  });
+
+  it('hosted plan below the platform row\'s min_plan → plan_required (real partners.plan)', async () => {
+    const a = await seedRegistryPartner('platform');
+    await fixtureSql`UPDATE ai_platform_models SET min_plan = 'enterprise' WHERE id = ${a.platformModelId}`;
+    await fixtureSql`UPDATE partners SET plan = 'community' WHERE id = ${a.partnerId}`;
+    process.env.IS_HOSTED = 'true';
+    expect(await resolveModel({ partnerId: a.partnerId, orgId: a.orgId, surface: 'chat' }))
+      .toMatchObject({ ok: false, reason: 'plan_required' });
+  });
+
+  it('residency required with no geography → residency_unavailable (fails closed, real partners.settings)', async () => {
+    const a = await seedRegistryPartner('platform');
+    await fixtureSql`
+      UPDATE partners SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{ai}', '{"residencyRequired": true}'::jsonb)
+       WHERE id = ${a.partnerId}`;
+    expect(await resolveModel({ partnerId: a.partnerId, orgId: a.orgId, surface: 'chat' }))
+      .toMatchObject({ ok: false, reason: 'residency_unavailable' });
+  });
+
+  it('a stored BYOK choice whose key flipped to error refuses instead of crossing to the platform key', async () => {
+    const b = await seedRegistryPartner('byok');
+    const platformDefault = await seedOffering({ partnerId: b.partnerId, platformModelId: b.platformModelId, enabled: true });
+    await fixtureSql`
+      UPDATE ai_model_assignments SET default_offering_id = ${platformDefault}, fallback_may_cross_funding = true
+       WHERE partner_id = ${b.partnerId} AND org_id IS NULL AND surface = 'chat' AND role = 'default'`;
+    await fixtureSql`UPDATE partner_ai_connections SET status = 'error' WHERE id = ${b.connectionId}`;
+    expect(await resolveModel({
+      partnerId: b.partnerId, orgId: b.orgId, surface: 'chat', requested: { offeringId: b.offeringId, origin: 'session' },
+    })).toMatchObject({ ok: false, reason: 'connection_unavailable', offeringId: b.offeringId });
   });
 });
