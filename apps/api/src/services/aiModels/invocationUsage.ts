@@ -177,8 +177,13 @@ function readModelUsage(modelUsage: unknown): SdkUsageSnapshot | 'invalid' | nul
 /**
  * Component-wise high-water mark of two snapshots (union of keys). Used after
  * a regression so a one-off low reading can never make a later turn re-bill
- * tokens that were already billed: under-billing beats double-billing.
+ * tokens that were already billed: under-billing beats double-billing. Also
+ * how settlement stores a snapshot (monotone, so replay order cannot regress it).
  */
+export function sdkUsageHighWater(a: SdkUsageSnapshot, b: SdkUsageSnapshot): SdkUsageSnapshot {
+  return highWater(a, b);
+}
+
 function highWater(a: SdkUsageSnapshot, b: SdkUsageSnapshot): SdkUsageSnapshot {
   const keys = new Set([...Object.keys(a.models), ...Object.keys(b.models)]);
   const entries: Array<[string, Entry]> = [];

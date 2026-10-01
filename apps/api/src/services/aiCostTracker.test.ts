@@ -11,6 +11,7 @@ import {
   checkBudget,
   checkBudgetDetailed,
   checkSystemAiRateLimit,
+  debitBillingCredits,
   deductBillingCredits,
   getUsageSummary,
   recordSessionlessSdkUsage,
@@ -2006,6 +2007,112 @@ describe('billing telemetry', () => {
     // A deployment mode, not a failure — reporting it would be pure noise.
     expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// Keyed credit debit (W03 #7601 Step 8a; billing-service PR #25)
+// ============================================
+//
+// The billing service dedupes a debit by (partner, idempotency key). Its zod
+// schema STRIPS unknown body fields, so a misspelled key field silently
+// becomes an unkeyed, un-deduplicated debit: the field name is pinned here.
+// 4xx is terminal (the same key can never succeed); 5xx and transport errors
+// are retried by the caller under the SAME key.
+
+describe('debitBillingCredits (keyed)', () => {
+  const KEY = 'ai-settlement:11111111-1111-4111-8111-111111111111';
+
+  function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+  }
+
+  it('sends the key as the body field `idempotencyKey` AND the Idempotency-Key header', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(json(200, { success: true }));
+    setupDbMocks(null);
+
+    await debitBillingCredits('org-key-1', 12.345678, { idempotencyKey: KEY });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
+    expect(url).toMatch(/\/billing\/api\/internal\/partners\/[^/]+\/ai-credits\/deduct$/);
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(['costCents', 'idempotencyKey']);
+    expect(body).toEqual({ costCents: 12.345678, idempotencyKey: KEY });
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(KEY);
+  });
+
+  it('200 → debited; a replay (Idempotent-Replayed: true) is also success', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock
+      .mockResolvedValueOnce(json(200, { success: true }))
+      .mockResolvedValueOnce(json(200, { success: true }, { 'Idempotent-Replayed': 'true' }));
+    setupDbMocks(null);
+
+    await expect(debitBillingCredits('org-key-2', 5, { idempotencyKey: KEY })).resolves.toEqual({ kind: 'debited', replayed: false });
+    await expect(debitBillingCredits('org-key-2', 5, { idempotencyKey: KEY })).resolves.toEqual({ kind: 'debited', replayed: true });
+  });
+
+  it.each([
+    [400, { error: 'invalid_idempotency_key', message: 'idempotencyKey: bad value ai-settlement:x' }, 'http_400:invalid_idempotency_key'],
+    [409, { error: 'idempotency_key_reused', message: 'nothing was deducted' }, 'http_409:idempotency_key_reused'],
+    [403, 'forbidden', 'http_403'],
+  ])('%i is TERMINAL: rejected with a short code, never the response message', async (status, body, code) => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(typeof body === 'string' ? new Response(body, { status }) : json(status, body));
+    setupDbMocks(null);
+
+    const result = await debitBillingCredits('org-key-3', 5, { idempotencyKey: KEY });
+    expect(result).toEqual({ kind: 'rejected', status, code });
+  });
+
+  it.each([
+    [503, { error: 'deduct_unconfirmed' }, 'http_503:deduct_unconfirmed'],
+    [500, { error: 'internal_error' }, 'http_500:internal_error'],
+    [502, 'bad gateway', 'http_502'],
+    [429, { error: 'rate_limited' }, 'http_429:rate_limited'],
+    [408, 'timeout', 'http_408'],
+  ])('%i is RETRYABLE under the same key', async (status, body, code) => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(typeof body === 'string' ? new Response(body, { status }) : json(status, body));
+    setupDbMocks(null);
+
+    await expect(debitBillingCredits('org-key-4', 5, { idempotencyKey: KEY })).resolves.toEqual({ kind: 'retryable', status, code });
+  });
+
+  it('a transport failure or timeout is RETRYABLE', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockRejectedValueOnce(new Error('ECONNRESET'));
+    setupDbMocks(null);
+
+    await expect(debitBillingCredits('org-key-5', 5, { idempotencyKey: KEY })).resolves.toEqual({ kind: 'retryable', status: null, code: 'transport' });
+  });
+
+  it('an org with no partner to bill is TERMINAL (org_partner_missing)', async () => {
+    enableBillingService();
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })) })),
+    }));
+    await expect(debitBillingCredits('org-key-6', 5, { idempotencyKey: KEY }))
+      .resolves.toEqual({ kind: 'rejected', status: null, code: 'org_partner_missing' });
+  });
+
+  it('no billing service configured → not_configured, no request', async () => {
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(debitBillingCredits('org-key-7', 5, { idempotencyKey: KEY })).resolves.toEqual({ kind: 'not_configured' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty key or a non-positive amount before any request', async () => {
+    const fetchMock = enableBillingService();
+    setupDbMocks(null);
+    await expect(debitBillingCredits('org-key-8', 5, { idempotencyKey: '' })).rejects.toThrow(/idempotencyKey/);
+    await expect(debitBillingCredits('org-key-8', Number.NaN, { idempotencyKey: KEY })).rejects.toThrow(/costCents/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

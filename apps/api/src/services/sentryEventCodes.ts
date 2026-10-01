@@ -187,6 +187,21 @@ export const SENTRY_EVENT_CODES = [
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
   /**
+   * AI model registry W03 (#7601): the billing service refused a KEYED credit
+   * debit with a 4xx (bad input, key reused with another amount, auth). The
+   * reservation is stamped credits_debit_failed_at for an operator; the sweep
+   * does not retry it (listFailedCreditDebits / clearCreditDebitFailure).
+   */
+  'ai_credit_debit_rejected',
+  /** W03 (#7601): a keyed credit debit stayed unconfirmed (5xx / transport) through every retry. */
+  'ai_credit_debit_retries_exhausted',
+  /**
+   * W03 (#7601, W05 spike): an Agent SDK cumulative modelUsage component went
+   * DOWN against the session's snapshot. The turn billed zero (under-bill over
+   * double-bill) and the snapshot kept its high-water mark.
+   */
+  'ai_usage_snapshot_regressed',
+  /**
    * AI model registry W01 (#7599): usage reached calculateCostCents with a
    * NaN, infinite or negative token count. It was priced as 0, so that spend
    * went unbilled; the upstream usage parser is wrong.
