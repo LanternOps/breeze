@@ -23,5 +23,12 @@
     "  reason   why it is unreachable from production, and the tracking issue as #<number>",
     "  expires  YYYY-MM-DD (UTC), the last day the exception is honoured"
   ],
-  "exceptions": []
+  "exceptions": [
+    {
+      "id": "GHSA-86w9-cpqp-85rv",
+      "package": "node-forge",
+      "reason": "No fixed release (<=1.4.0 affected; 1.4.0 is latest). Build tooling, dev/EAS build hosts only: breeze-mobile → expo → @expo/cli / @expo/code-signing-certificates (Expo CLI, declared as an expo runtime dependency), and mkcert ← office-addin-dev-certs (Office add-in devDependency). Not shipped: 0 node-forge in the Android/iOS Hermes bundles and 0 in every production Docker deps stage (api, web, portal, m365 executors). Gate owner ruling A (security-playbook). Tracking: #7703",
+      "expires": "2026-10-31"
+    }
+  ]
 }
