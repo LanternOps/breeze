@@ -115,6 +115,20 @@ test('an expired entry hard-fails even when the advisory no longer appears', () 
   assert.match(res.stdout + res.stderr, new RegExp(`EXPIRED ${FORGE_ID} on node-forge`), out(res));
 });
 
+test('an expired or out-of-policy entry suppresses nothing', () => {
+  // The run fails on the bad entry either way; this pins that the advisory is
+  // ALSO still counted as blocking, so the log never presents it as excepted.
+  for (const expires of [day(-1), day(31)]) {
+    const res = runGate({
+      osvReport: report(finding('node-forge', FORGE_ID)),
+      exceptions: { exceptions: [entry({ expires })] },
+    });
+    assert.equal(res.status, 1, out(res));
+    assert.doesNotMatch(res.stdout, /\(excepted\)/, out(res));
+    assert.match(res.stderr, /found 1 unexcepted advisory/, out(res));
+  }
+});
+
 test('every active exception is printed on every run, matched or not', () => {
   const second = entry({ id: 'GHSA-aaaa-bbbb-cccc', package: '@scope/other', reason: 'other. Tracking: #99' });
   for (const osvReport of [report(finding('node-forge', FORGE_ID)), CLEAN]) {
@@ -144,6 +158,30 @@ test('an unknown HIGH still fails while another advisory is excepted', () => {
   });
   assert.equal(other.status, 1, out(other));
   assert.match(other.stderr, /found 1 advisory/, out(other));
+});
+
+test('matching is exact: superstrings, prefixes and aliases never match', () => {
+  // Each finding is one edit away from the entry (node-forge / FORGE_ID), in
+  // both directions, so a startswith/contains/regex/alias regression in the
+  // gate's matcher lets at least one of them through and turns this red.
+  const nearMisses = [
+    finding('node-forge-extra', FORGE_ID), // entry package is a prefix of it
+    finding('@scope/node-forge', FORGE_ID), // entry package is a suffix of it
+    finding('node', FORGE_ID), // it is a prefix of the entry package
+    finding('node-forge', `${FORGE_ID}-x`), // entry id is a prefix of it
+    finding('node-forge', 'GHSA-86w9'), // it is a prefix of the entry id
+    finding('node-forge', 'GHSA-86W9-CPQP-85RV'), // differs only in case
+  ];
+  for (const f of nearMisses) {
+    const res = runGate({ osvReport: report(f), exceptions: { exceptions: [entry()] } });
+    assert.equal(res.status, 1, `${f.package.name} ${f.vulnerabilities[0].id} must not be excepted\n${out(res)}`);
+  }
+
+  // The entry id appears only as an alias of a different primary id.
+  const aliased = finding('node-forge', 'CVE-2026-85393');
+  aliased.vulnerabilities[0].aliases = [FORGE_ID];
+  const res = runGate({ osvReport: report(aliased), exceptions: { exceptions: [entry()] } });
+  assert.equal(res.status, 1, `alias must not be excepted\n${out(res)}`);
 });
 
 // --- boundaries and fail-closed parsing --------------------------------------
