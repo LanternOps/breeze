@@ -90,6 +90,7 @@ func (m *WsSessionManager) stopExact(id string, session *WsStreamSession) bool {
 	}
 	delete(m.sessions, id)
 	session.Stop()
+	m.notifyActivityLocked()
 	return true
 }
 

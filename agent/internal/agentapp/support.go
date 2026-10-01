@@ -450,13 +450,11 @@ func runSupportSession() {
 	}
 	defer logging.StopShipper()
 
-	// Console status lines on session start/stop. Chained (not replaced) onto
-	// the heartbeat's own desktop callbacks so the server still receives the
-	// peer-disconnect notification.
-	comps.hb.SetSupportSessionNotifier(
-		func(string) { fmt.Println("Technician connected.") },
-		func(string, string) { fmt.Println("Technician disconnected.") },
-	)
+	// "A technician is viewing your screen" (#7684): an always-on-top pill
+	// plus a console line for as long as any capture runs, hidden on every
+	// stop path. Chained onto (never replacing) the heartbeat's own desktop
+	// callbacks, so the server still receives the peer-disconnect report.
+	stopIndicator := startSupportIndicator(comps.hb)
 
 	fmt.Print(supportBanner)
 
@@ -475,6 +473,7 @@ func runSupportSession() {
 	// executable on Windows.
 	shutdownAgent(comps)
 	comps.hb.RunSupportCleanup()
+	stopIndicator()
 	fmt.Println("Support session ended. Nothing was left installed.")
 }
 

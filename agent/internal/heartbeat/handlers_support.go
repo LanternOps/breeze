@@ -128,32 +128,6 @@ func (h *Heartbeat) RunSupportCleanup() {
 	supportCleanupFn(h)
 }
 
-// SetSupportSessionNotifier wires console callbacks fired when a remote
-// desktop session connects/disconnects. The stop callback is CHAINED onto
-// whatever the heartbeat already registered (the peer-disconnect notification
-// to the API) rather than replacing it.
-//
-// Must be called right after startAgent returns and before any session can
-// start; the desktop manager's hooks are plain fields set at construction.
-//
-// onStop takes (sessionID, reason string) — reason mirrors Session's
-// LastStopReason() (#5300) and is "" for a routine disconnect.
-func (h *Heartbeat) SetSupportSessionNotifier(onStart func(sessionID string), onStop func(sessionID, reason string)) {
-	if h == nil || h.desktopMgr == nil {
-		return
-	}
-	previousStop := h.desktopMgr.OnSessionStopped
-	h.desktopMgr.OnSessionStarted = onStart
-	h.desktopMgr.OnSessionStopped = func(sessionID, reason string) {
-		if previousStop != nil {
-			previousStop(sessionID, reason)
-		}
-		if onStop != nil {
-			onStop(sessionID, reason)
-		}
-	}
-}
-
 // buildSupportSelfDeleteCmdLine renders the Windows trampoline command line.
 // Extracted (like buildWindowsUninstallScript) so the exact text is
 // unit-testable on any host without spawning cmd.exe.

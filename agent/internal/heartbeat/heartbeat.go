@@ -497,6 +497,11 @@ type Heartbeat struct {
 	// like isService/isHeadless.
 	supportMode    bool
 	supportWorkDir string
+	// supportViewer is who the Quick Support "is viewing your screen"
+	// indicator names, from the latest desktop start's prompt block. Only set
+	// in support mode; see handlers_support_viewing.go.
+	supportViewerMu sync.Mutex
+	supportViewer   string
 	// headlessCachedAt memoizes the Linux resolver-backed headless probe used by
 	// currentHeadless() for the outgoing heartbeat payload. Stores a
 	// headlessCache; an atomic.Value so the heartbeat and command-handler

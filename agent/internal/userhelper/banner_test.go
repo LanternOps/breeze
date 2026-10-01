@@ -112,3 +112,33 @@ func TestBannerConcurrentShowsSerialized(t *testing.T) {
 		t.Fatalf("bannerOpMu failed to serialize handleBannerShow: observed %d concurrent showBannerFn calls, want at most 1", maxObserved)
 	}
 }
+
+// The in-process entry points the Quick Support client uses (#7684) follow the
+// same ownership rules as the IPC path, and never force-hide.
+func TestSessionBannerExportsShowAndHideByOwner(t *testing.T) {
+	var shown []string
+	hidden := 0
+	origShow, origHide := showBannerFn, hideBannerFn
+	defer func() {
+		showBannerFn, hideBannerFn = origShow, origHide
+		bannerOpMu.Lock()
+		bannerSessionID = ""
+		bannerOpMu.Unlock()
+	}()
+	showBannerFn = func(label string, _ int64) bool { shown = append(shown, label); return true }
+	hideBannerFn = func() { hidden++ }
+
+	ShowSessionBanner("quick-support", "Billy is viewing your screen", 1)
+	HideSessionBanner("")
+	if hidden != 0 {
+		t.Fatal("an empty session id must not force-hide from the in-process API")
+	}
+	HideSessionBanner("other")
+	if hidden != 0 {
+		t.Fatal("a non-owner must not hide the banner")
+	}
+	HideSessionBanner("quick-support")
+	if hidden != 1 || len(shown) != 1 || shown[0] != "Billy is viewing your screen" {
+		t.Fatalf("shown=%v hidden=%d", shown, hidden)
+	}
+}

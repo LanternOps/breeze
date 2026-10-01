@@ -80,3 +80,20 @@ func (c *Client) handleBannerHideEnvelope(env *ipc.Envelope) {
 	}
 	handleBannerHide(payload.SessionID)
 }
+
+// ShowSessionBanner shows (or relabels) the on-screen session pill from inside
+// this process. For a process that already runs in the user's desktop session
+// and has no helper to ask — the Quick Support client (#7684). Same single
+// banner and ownership rules as banner_show over IPC. No-op where the
+// platform has no native banner (macOS/Linux).
+func ShowSessionBanner(sessionID, label string, startedAtUnixMs int64) {
+	handleBannerShow(ipc.BannerShowRequest{SessionID: sessionID, Label: label, StartedAtUnixMs: startedAtUnixMs})
+}
+
+// HideSessionBanner hides the pill if sessionID owns it. See ShowSessionBanner.
+func HideSessionBanner(sessionID string) {
+	if sessionID == "" {
+		return // "" would force-hide someone else's banner; never from here
+	}
+	handleBannerHide(sessionID)
+}

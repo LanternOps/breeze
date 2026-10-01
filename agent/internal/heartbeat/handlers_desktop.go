@@ -213,6 +213,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// `consent_denied` marker the API ingests to finalize the session as
 	// `denied`. An older API that sends no prompt leaves this path untouched.
 	prompt := parseDesktopPrompt(cmd.Payload)
+	h.noteSupportViewer(prompt)
 
 	// On-demand (RDS) hosts run zero helpers at rest: the helper this connect
 	// needs does not exist yet and is only spawned while a lease is held on its
@@ -710,6 +711,7 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	// party positioned to ask the end user and to refuse before capture
 	// starts). Only "consent" mode blocks; "notify" is informational.
 	prompt := parseDesktopPrompt(cmd.Payload)
+	h.noteSupportViewer(prompt)
 	var consent consentVerdict
 	consentGated := prompt != nil && prompt.Mode == "consent"
 	if consentGated {
