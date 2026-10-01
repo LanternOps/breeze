@@ -171,7 +171,8 @@
     "signedAgreements": "İmzalı anlaşmalar",
     "settingsTicketing": "Bilet Ayarları",
     "securityScans": "IOC Taramaları",
-    "devicesTime": "Saat eşitleme"
+    "devicesTime": "Saat eşitleme",
+    "adminAiModels": "Yapay zeka modelleri"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

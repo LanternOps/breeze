@@ -322,7 +322,8 @@ const namespaceDuplicateBaselines = {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 34,
+    // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
+    'admin.json': 37,
     'ai.json': 9,
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-FR.
@@ -499,7 +500,8 @@ const namespaceDuplicateBaselines = {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 34,
+    // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
+    'admin.json': 37,
     'ai.json': 9,
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-CA.
@@ -672,7 +674,8 @@ const namespaceDuplicateBaselines = {
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
     // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 31,
+    // W01 #7599 admin.aiModels.*: +4 identical cognates (Status, Budget, Frontier, Standard).
+    'admin.json': 35,
     'ai.json': 5,
     // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
     // "chat" and waitReason "information" are identical cognates in de-DE.
@@ -841,7 +844,9 @@ const namespaceDuplicateBaselines = {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
     // are identical cognates in it-IT; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 38,
+    // W01 #7599 admin.aiModels.*: +5 identical cognates (Budget, Standard, Input, Output,
+    // "Input / output per MTok"; "No" duplicates an existing counted string).
+    'admin.json': 43,
     'ai.json': 12,
     // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
     // identical cognates in it-IT.

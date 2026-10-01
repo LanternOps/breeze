@@ -171,7 +171,8 @@
     "signedAgreements": "Signed agreements",
     "settingsTicketing": "Ticketing Settings",
     "securityScans": "IOC Scans",
-    "devicesTime": "Time synchronization"
+    "devicesTime": "Time synchronization",
+    "adminAiModels": "AI Models"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
