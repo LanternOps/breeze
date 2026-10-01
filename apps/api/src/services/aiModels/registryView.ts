@@ -12,8 +12,10 @@
  */
 import { eq } from 'drizzle-orm';
 import {
+  AI_ASSIGNMENT_WRITE_ROLES,
   CONFIGURABLE_AI_SURFACES,
   TOOL_REQUIRING_SURFACES,
+  type AiAssignmentRowDto,
   type AiConnectionDto,
   type AiModelsSnapshotDto,
   type AiOfferingDto,
@@ -158,10 +160,13 @@ function unionGeos(offerings: AiOfferingDto[], connectionId: string | null): str
   return [...new Set(offerings.filter((o) => o.connectionId === connectionId).flatMap((o) => o.optionSupport.inferenceGeo))].sort();
 }
 
-function assignmentRowDto(r: AiModelAssignmentRow) {
+/** Callers pass only role-'default' rows; a role outside the shared list is a programming error, never a DTO. */
+function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
+  const role = AI_ASSIGNMENT_WRITE_ROLES.find((known) => known === r.role);
+  if (!role) throw new Error(`assignmentRowDto: unexpected assignment role '${r.role}'`);
   return {
     surface: r.surface,
-    role: r.role,
+    role,
     defaultOfferingId: r.defaultOfferingId,
     permittedOfferingIds: r.permittedOfferingIds,
     allowUserChoice: r.allowUserChoice,

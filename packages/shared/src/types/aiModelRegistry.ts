@@ -5,6 +5,7 @@
  */
 import type { AiSurface } from '../constants/aiSurfaces';
 import type { EffortLevel, ModelLifecycle, ModelRates, OfferingOptions, OptionSupport } from '../validators/aiModelOptions';
+import type { AiAssignmentWriteRole, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
 
 export type AiConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | 'openai_compatible';
 
@@ -77,7 +78,7 @@ export interface AiOfferingDto {
 
 export interface AiAssignmentRowDto {
   surface: AiSurface;
-  role: string;
+  role: AiAssignmentWriteRole;
   defaultOfferingId: string | null;
   permittedOfferingIds: string[] | null;
   allowUserChoice: boolean | null;
@@ -141,7 +142,7 @@ export interface AiUsageRowDto {
 }
 
 export interface AiUsageBreakdownDto {
-  groupBy: 'model' | 'surface' | 'user' | 'org';
+  groupBy: AiUsageGroupBy;
   from: string;
   to: string;
   orgId: string | null;

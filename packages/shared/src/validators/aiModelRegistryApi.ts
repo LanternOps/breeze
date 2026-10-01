@@ -80,8 +80,10 @@ export const offeringDetailsPatchSchema = z.object({
 export type OfferingDetailsPatch = z.infer<typeof offeringDetailsPatchSchema>;
 
 const configurableSurface = z.enum(CONFIGURABLE_AI_SURFACES as unknown as [AiSurface, ...AiSurface[]]);
-/** W09 (#7607) widens this to AI_SURFACE_ROLES. */
-const assignmentRole = z.enum(['default']);
+/** The assignment roles a write may target. W09 (#7607) widens this one list to AI_SURFACE_ROLES. */
+export const AI_ASSIGNMENT_WRITE_ROLES = ['default'] as const;
+export type AiAssignmentWriteRole = (typeof AI_ASSIGNMENT_WRITE_ROLES)[number];
+const assignmentRole = z.enum(AI_ASSIGNMENT_WRITE_ROLES);
 const permittedIds = z.array(uuid).min(1).max(200)
   .refine((ids) => new Set(ids).size === ids.length, { message: 'Duplicate model in the permitted list.' });
 
@@ -138,13 +140,15 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((s) => {
   const d = new Date(`${s}T00:00:00.000Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }, { message: 'Enter a valid date (YYYY-MM-DD).' });
-export const aiUsageQuerySchema = z.object({
+/** The usage query fields without the range rules: later waves `.extend()` this, then re-apply the refines below. */
+export const aiUsageQueryBaseSchema = z.object({
   groupBy: z.enum(AI_USAGE_GROUP_BYS),
   /** Inclusive UTC dates, BOTH or NEITHER (neither = the first of the current month → today, applied by the route). */
   from: isoDate.optional(),
   to: isoDate.optional(),
   orgId: uuid.optional(),
-}).refine((q) => (q.from === undefined) === (q.to === undefined), { message: 'Give both `from` and `to`, or neither.' })
+});
+export const aiUsageQuerySchema = aiUsageQueryBaseSchema.refine((q) => (q.from === undefined) === (q.to === undefined), { message: 'Give both `from` and `to`, or neither.' })
   .refine((q) => !q.from || !q.to || q.from <= q.to, { message: '`from` must not be after `to`.' })
   .refine((q) => {
     if (!q.from || !q.to) return true;

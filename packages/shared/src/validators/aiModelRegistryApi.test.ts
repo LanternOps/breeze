@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import { z } from 'zod';
+import type { AiAssignmentRowDto, AiUsageBreakdownDto } from '../types/aiModelRegistry';
 import {
+  AI_ASSIGNMENT_WRITE_ROLES,
   AI_USAGE_GROUP_BYS,
+  aiUsageQueryBaseSchema,
+  type AiAssignmentWriteRole,
+  type AiUsageGroupBy,
   CONFIGURABLE_AI_SURFACES,
   MAX_AI_USAGE_RANGE_DAYS,
   aiUsageQuerySchema,
@@ -133,5 +139,28 @@ describe('aiUsageQuerySchema', () => {
   });
   it('rejects impossible calendar dates', () => {
     expect(aiUsageQuerySchema.safeParse({ groupBy: 'model', from: '2026-02-30', to: '2026-03-01' }).success).toBe(false);
+  });
+});
+
+describe('aiUsageQueryBaseSchema', () => {
+  it('is a plain object schema later waves can extend; the refined schema keeps the range rules', () => {
+    const extended = aiUsageQueryBaseSchema.extend({ extra: z.string().optional() });
+    expect(Object.keys(extended.shape)).toEqual(['groupBy', 'from', 'to', 'orgId', 'extra']);
+    // The base carries no refines; the exported query schema does.
+    expect(aiUsageQueryBaseSchema.safeParse({ groupBy: 'model', from: '2020-01-01' }).success).toBe(true);
+    expect(aiUsageQuerySchema.safeParse({ groupBy: 'model', from: '2020-01-01' }).success).toBe(false);
+  });
+  it('the breakdown DTO groupBy is the validator union', () => {
+    expectTypeOf<AiUsageBreakdownDto['groupBy']>().toEqualTypeOf<AiUsageGroupBy>();
+  });
+});
+
+describe('AI_ASSIGNMENT_WRITE_ROLES', () => {
+  it('is the one role list the assignment input schemas accept', () => {
+    expect(AI_ASSIGNMENT_WRITE_ROLES).toEqual(['default']);
+    const row = { surface: 'chat', defaultOfferingId: OFF_A, permittedOfferingIds: null, allowUserChoice: true, options: null, expectedUpdatedAt: null };
+    expect(partnerAssignmentsPutSchema.safeParse({ assignments: [{ ...row, role: 'default' }] }).success).toBe(true);
+    expect(partnerAssignmentsPutSchema.safeParse({ assignments: [{ ...row, role: 'fallback' }] }).success).toBe(false);
+    expectTypeOf<AiAssignmentRowDto['role']>().toEqualTypeOf<AiAssignmentWriteRole>();
   });
 });

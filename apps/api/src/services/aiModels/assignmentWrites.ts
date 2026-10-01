@@ -12,7 +12,7 @@
  * with W03's compatRemap. Every statement is pinned to input.partnerId (auth).
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
-import { TOOL_REQUIRING_SURFACES, type AiSurface, type OfferingOptions, type OrgAssignmentInput, type PartnerAssignmentInput } from '@breeze/shared';
+import { TOOL_REQUIRING_SURFACES, type AiAssignmentWriteRole, type AiSurface, type OfferingOptions, type OrgAssignmentInput, type PartnerAssignmentInput } from '@breeze/shared';
 import { db } from '../../db';
 import { aiModelAssignments, type AiModelAssignmentRow } from '../../db/schema';
 import { loadOfferingCandidate, type LoadedCandidate } from './candidateLoader';
@@ -27,8 +27,8 @@ export { listAssignmentRows };
 const TOOL_SURFACES = new Set<AiSurface>(TOOL_REQUIRING_SURFACES);
 const STALE_MESSAGE = 'These defaults were changed by someone else. Reload and try again.';
 
-/** W09 (#7607) widens this to AI_SURFACE_ROLES. */
-type AssignmentRole = 'default';
+/** The shared write-role list (AI_ASSIGNMENT_WRITE_ROLES); W09 (#7607) widens it there. */
+type AssignmentRole = AiAssignmentWriteRole;
 
 /**
  * The offering must belong to the partner, be enabled, pass the shared rule
