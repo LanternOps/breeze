@@ -12,6 +12,7 @@ export * from './discovery';
 export * from './connections';
 export * from './offerings';
 export * from './registryWriteErrors';
+export * from './offeringWrites';
 export * from './assignments';
 export * from './legacyProjection';
 export * from './legacyReconcile';
