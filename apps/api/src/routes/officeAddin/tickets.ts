@@ -4,15 +4,7 @@ import { db, runOutsideDbContext } from '../../db';
 import { partners, tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
-import {
-  calculateCatalogCostCents,
-  calculateCostCents,
-  checkBudgetDetailed,
-  deductBillingCredits,
-  recordUsage,
-  type AiBillingSource,
-  type CatalogPricingSnapshot,
-} from '../../services/aiCostTracker';
+import { checkBudgetDetailed } from '../../services/aiCostTracker';
 import {
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
@@ -27,11 +19,13 @@ import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreadin
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { resolveConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
-import {
-  getAnthropicClientForPartner,
-  LlmUnavailableError,
-  resolveWireModel,
-} from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError } from '../../services/llm/llmUnavailableError';
+import { anthropicClientFor, type MessageAttempt } from '../../services/aiModels/connectionFactory';
+import { messagesUsage } from '../../services/aiModels/invocationUsage';
+import { oneShotUnavailableAnswer } from '../../services/aiModels/oneShotUnavailable';
+import { resolveModel } from '../../services/aiModels/resolveModel';
+import { settleInvocation } from '../../services/aiModels/settleInvocation';
+import { turnBindingFrom, type TurnBinding } from '../../services/aiModels/turnBinding';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
   addTicketComment,
@@ -283,60 +277,43 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * Settle one draft's spend: organization usage aggregates plus, for platform
- * billing, the prepaid credit draw-down (SEC-111). When a budget reservation is
- * supplied, `recordUsage` closes it and writes both aggregates in ONE
- * transaction (SEC-142/143) — so a failure there leaves a known provider
- * outcome unaccounted, and the reservation must go indeterminate (keep
- * consuming capacity) rather than silently free the cap it was holding.
+ * Settle one draft's spend through the single billing path: the invocation
+ * ledger rows, the organization usage aggregates, the reservation close and,
+ * for platform funding, the prepaid credit draw-down all happen inside
+ * `settleInvocation` (SEC-111/142/143). Each attempt is billed under the model
+ * it requested, from the rate snapshot the resolver bound before admission.
  *
  * Best effort throughout: the pane already has its draft, and a metering
- * failure must never turn a good draft into a 503.
+ * failure must never turn a good draft into a 503. A failure here leaves a
+ * known provider outcome unaccounted, so the reservation goes indeterminate
+ * (keeps consuming capacity) rather than silently freeing the cap it held.
  */
-async function recordDraftUsage(input: {
+async function settleDraftUsage(input: {
+  binding: TurnBinding;
   orgId: string;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  billingSource: AiBillingSource;
-  catalogPricing?: CatalogPricingSnapshot;
-  reservationId?: string;
-  /** Invocation-ledger attribution only (#7600 W02); does not affect metering. */
   userId: string | null;
+  reservationId: string;
+  attempts: MessageAttempt[];
 }): Promise<void> {
   try {
-    await recordUsage(
-      null,
-      input.orgId,
-      input.model,
-      input.inputTokens,
-      input.outputTokens,
-      false,
-      input.billingSource,
-      input.catalogPricing,
-      input.reservationId,
-      0,
-      { surface: 'office_ticket', userId: input.userId },
-    );
+    const { usage, outcome } = messagesUsage(input.binding, input.attempts);
+    await settleInvocation({
+      binding: input.binding,
+      orgId: input.orgId,
+      userId: input.userId,
+      sessionId: null,
+      agentRunId: null,
+      sourceRef: 'office_email_draft',
+      usage,
+      outcome,
+      reservationId: input.reservationId,
+    });
   } catch (err) {
     console.error('[office-addin] draft usage accounting failed', err);
-    if (input.reservationId) {
-      await markAiBudgetReservationIndeterminate({
-        orgId: input.orgId,
-        reservationId: input.reservationId,
-      }).catch((markError) => captureException(markError));
-    }
-  }
-
-  if (input.billingSource === 'platform' && (input.inputTokens > 0 || input.outputTokens > 0)) {
-    const costCents = input.catalogPricing
-      ? calculateCatalogCostCents(input.catalogPricing, input.inputTokens, input.outputTokens)
-      : calculateCostCents(input.model, input.inputTokens, input.outputTokens);
-    if (costCents > 0) {
-      await deductBillingCredits(input.orgId, costCents).catch((err) => {
-        console.error('[office-addin] draft usage accounting failed', err);
-      });
-    }
+    await markAiBudgetReservationIndeterminate({
+      orgId: input.orgId,
+      reservationId: input.reservationId,
+    }).catch((markError) => captureException(markError));
   }
 }
 
@@ -387,39 +364,29 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'ai_not_enabled' }, 403);
     }
 
-    let llm: Awaited<ReturnType<typeof getAnthropicClientForPartner>>;
+    const resolved = await resolveModel({
+      partnerId: auth.partnerId, orgId: input.orgId, userId: auth.userId, surface: 'office_ticket', maxTokens: 1024,
+    });
+    if (!resolved.ok) {
+      const answer = oneShotUnavailableAnswer(resolved);
+      return c.json(answer.body, answer.status);
+    }
+    let client;
     try {
-      llm = await getAnthropicClientForPartner(auth.partnerId, {
-        surface: 'one_shot_email_draft',
-        orgId: input.orgId,
-      });
+      client = anthropicClientFor(resolved, { surface: 'one_shot_email_draft', orgId: input.orgId });
     } catch (err) {
       if (err instanceof LlmUnavailableError) {
         return c.json({ error: 'ai_unavailable' }, 503);
       }
       throw err;
     }
-    const { client, resolved: llmConfig } = llm;
-
-    // `model` stays the platform-logical id for metering/budgets; `wire.model`
-    // is what the resolved endpoint speaks (a catalog endpoint 404s on the
-    // platform id), and `wire.catalogPricing` is what meters catalog traffic.
-    const model = llmConfig.model;
-    let wire;
-    try {
-      wire = resolveWireModel(llmConfig, model);
-    } catch (err) {
-      if (err instanceof LlmUnavailableError) {
-        return c.json({ error: 'ai_unavailable' }, 503);
-      }
-      throw err;
-    }
-    const billingSource: AiBillingSource = llmConfig.source === 'partner' ? 'partner_key' : 'platform';
+    const binding = turnBindingFrom(resolved);
     // Admission first (SEC-111): the configured budget AND the prepaid platform
     // credit balance, answered as the established 402 before any DLP evaluation
-    // or provider contact. The reservation below is the separate atomic
-    // organization-cap fence (SEC-142/143) — this check does not replace it.
-    const budgetDenial = await checkBudgetDetailed(input.orgId, billingSource);
+    // or provider contact, for the funding the resolver chose. The reservation
+    // below is the separate atomic organization-cap fence (SEC-142/143) — this
+    // check does not replace it.
+    const budgetDenial = await checkBudgetDetailed(input.orgId, resolved.funding);
     if (budgetDenial) {
       return c.json({ error: budgetDenial.message }, 402);
     }
@@ -446,7 +413,8 @@ officeAddinTicketRoutes.post(
       reservation = await reserveAiBudget({
         orgId: input.orgId,
         idempotencyKey: `office-email-draft:${crypto.randomUUID()}`,
-        billingSource,
+        billingSource: resolved.funding,
+        binding,
       });
     } catch (err) {
       if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
@@ -460,39 +428,21 @@ officeAddinTicketRoutes.post(
     const draftPromise = draftTicketFromEmail({
       subject: input.subject,
       bodyText: dlpResult.text ?? input.bodyText,
-      model: wire.model,
-      partnerId: auth.partnerId,
-      orgId: input.orgId,
+      resolved,
       client,
-      ...(reservation.kind === 'reserved'
-        ? {
-          budgetCents: reservation.reservedCostCents,
-          calculateCostCents: wire.catalogPricing
-            ? (inputTokens: number, outputTokens: number) =>
-              calculateCatalogCostCents(wire.catalogPricing!, inputTokens, outputTokens)
-            : (inputTokens: number, outputTokens: number) =>
-              calculateCostCents(model, inputTokens, outputTokens),
-        }
-        : {}),
+      ...(reservation.kind === 'reserved' ? { budgetCents: reservation.reservedCostCents } : {}),
+    });
+    const settle = (attempts: MessageAttempt[]) => settleDraftUsage({
+      binding, orgId: input.orgId, userId: auth.userId, reservationId, attempts,
     });
     try {
       const draft = await withTimeout(draftPromise, DRAFT_TIMEOUT_MS);
       // Usage accounting (spec §6). This one-shot draft has no `ai_sessions`
-      // row, so settlement closes the reservation and writes the per-org
-      // aggregates in one transaction and, for platform billing, draws down the
-      // same prepaid balance checked above. Token counts are accumulated across
-      // retry attempts, so a failed-then-recovered attempt 1 is metered too.
-      await recordDraftUsage({
-        orgId: input.orgId,
-        model,
-        inputTokens: draft.inputTokens,
-        outputTokens: draft.outputTokens,
-        billingSource,
-        catalogPricing: wire.catalogPricing,
-        reservationId,
-        userId: auth.userId,
-      });
-      return c.json({ draft }, 200);
+      // row; every attempt (a failed-then-recovered attempt 1 included) is
+      // billed in the one settlement.
+      await settle(draft.attempts);
+      const { attempts: _attempts, ...prefill } = draft;
+      return c.json({ draft: prefill }, 200);
     } catch (err) {
       // Blanket 503 for the pane's deterministic fallback, but never silent —
       // a model/timeout/parse failure here is otherwise invisible in prod.
@@ -508,49 +458,20 @@ officeAddinTicketRoutes.post(
         await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
           .catch((markError) => captureException(markError));
         void runOutsideDbContext(() => draftPromise.then(
-          (lateDraft) => recordDraftUsage({
-            orgId: input.orgId,
-            model,
-            inputTokens: lateDraft.inputTokens,
-            outputTokens: lateDraft.outputTokens,
-            billingSource,
-            catalogPricing: wire.catalogPricing,
-            reservationId,
-            userId: auth.userId,
-          }),
-          (lateErr) => lateErr instanceof EmailDraftFailedError
-            && (lateErr.inputTokens > 0 || lateErr.outputTokens > 0)
-            ? recordDraftUsage({
-                orgId: input.orgId,
-                model,
-                inputTokens: lateErr.inputTokens,
-                outputTokens: lateErr.outputTokens,
-                billingSource,
-                catalogPricing: wire.catalogPricing,
-                reservationId,
-                userId: auth.userId,
-              })
+          (lateDraft) => settle(lateDraft.attempts),
+          (lateErr) => lateErr instanceof EmailDraftFailedError && lateErr.attempts.length > 0
+            ? settle(lateErr.attempts)
             : undefined,
         )).catch((meterErr) => {
           console.error('[office-addin] draft usage accounting failed', meterErr);
         });
-      } else if (err instanceof EmailDraftFailedError
-        && !err.providerOutcomeUnknown
-        && (err.inputTokens > 0 || err.outputTokens > 0)) {
-        // Failed attempts still burned tokens — meter them (same best-effort
+      } else if (err instanceof EmailDraftFailedError && err.attempts.length > 0) {
+        // Failed attempts still burned tokens — bill them (same best-effort
         // posture as the success path), which also settles the reservation.
-        await recordDraftUsage({
-          orgId: input.orgId,
-          model,
-          inputTokens: err.inputTokens,
-          outputTokens: err.outputTokens,
-          billingSource,
-          catalogPricing: wire.catalogPricing,
-          reservationId,
-          userId: auth.userId,
-        });
+        await settle(err.attempts);
       } else if (err instanceof EmailDraftFailedError && !err.providerOutcomeUnknown) {
-        // The provider answered and nothing was spent: the ONLY case where
+        // The provider was never reached with billable work (nothing sent, or
+        // the prompt exceeded the reserved budget): the ONLY case where
         // reserved capacity may be handed back.
         await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId })
           .catch((releaseError) => captureException(releaseError));

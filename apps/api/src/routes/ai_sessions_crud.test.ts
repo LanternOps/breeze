@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// routes/ai.ts reaches the model registry (ticket-draft) -> candidateLoader,
+// which this file's partial schema mock does not cover. Not under test here.
+vi.mock('../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: vi.fn(),
+}));
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { Hono } from 'hono';
 

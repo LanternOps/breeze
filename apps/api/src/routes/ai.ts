@@ -28,7 +28,6 @@ import {
   isIntentBackedExecution,
   searchSessions,
   listM365Connections,
-  resolveDefaultModel,
   sanitizeErrorForClient,
 } from '../services/aiAgent';
 import { InvalidSessionModelError } from '../services/aiModels/invalidSessionModelError';
@@ -38,13 +37,10 @@ import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
-  calculateCatalogCostCents,
-  calculateCostCents,
+  checkBudgetDetailed,
   getUsageSummary,
   updateBudget,
   getSessionHistory,
-  recordUsage,
-  type CatalogPricingSnapshot,
 } from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
 import { createTimeEntry, TimeEntryServiceError } from '../services/timeEntryService';
@@ -80,7 +76,12 @@ import {
   ThinTranscriptError,
   TicketDraftFailedError,
 } from '../services/aiTicketDraft';
-import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { anthropicClientFor, type MessageAttempt } from '../services/aiModels/connectionFactory';
+import { messagesUsage } from '../services/aiModels/invocationUsage';
+import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailable';
+import { settleInvocation } from '../services/aiModels/settleInvocation';
+import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom } from '../services/aiModels/turnBinding';
@@ -508,7 +509,6 @@ aiRoutes.post(
     const { session, messages } = loaded;
 
     const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(session.createdAt).getTime()) / 60000));
-    const model = session.model ?? resolveDefaultModel();
     const [org] = await db
       .select({ name: organizations.name, partnerId: organizations.partnerId })
       .from(organizations)
@@ -516,89 +516,85 @@ aiRoutes.post(
       .limit(1);
     if (!org) return c.json({ error: 'ai_unavailable' }, 503);
 
-    let draft;
-    let billingSource: 'platform' | 'partner_key' = 'platform';
-    let catalogPricing: CatalogPricingSnapshot | undefined;
-    let reservationId: string | undefined;
+    // The ticket draft inherits the chat session's offering (spec §4) but is a
+    // Messages API one-shot, so it resolves for that transport's carriage.
+    const turn = await resolveSessionTurn({
+      sessionId, surface: 'chat', userId: auth.user.id, maxTokens: 1024, transport: 'messages_api',
+    });
+    if (!turn.ok) {
+      const answer = oneShotUnavailableAnswer(turn);
+      return c.json(answer.body, answer.status);
+    }
+    let client;
     try {
-      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null, {
-        surface: 'one_shot_ticket_draft',
+      client = anthropicClientFor(turn, { surface: 'one_shot_ticket_draft', orgId: session.orgId });
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      throw err;
+    }
+    // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
+    // check them with the resolved funding before reserving.
+    const denial = await checkBudgetDetailed(session.orgId, turn.funding);
+    if (denial) return c.json({ error: denial.message }, 402);
+
+    const binding = turnBindingFrom(turn);
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
         orgId: session.orgId,
+        idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
+        billingSource: turn.funding,
+        sessionId,
+        binding,
       });
-      billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
-      // The session's model translated to what the resolved endpoint speaks —
-      // a catalog endpoint 404s on the platform-logical id. Throws
-      // LlmUnavailableError (handled below as a 503) when the pinned revision
-      // has no verified mapping for this session's model.
-      const wire = resolveWireModel(resolved, model);
-      catalogPricing = wire.catalogPricing;
-      // S8: no stable request identity reaches this surface — the client sends
-      // no message/draft id — so the key is random per dispatch. The unique
-      // (org_id, idempotency_key) index is therefore a structural guarantee
-      // that two dispatches never share a reservation row, NOT a replay guard.
-      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
-      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
-      // the request schema starts carrying a client-generated id.
-      let reservation;
-      try {
-        reservation = await reserveAiBudget({
-          orgId: session.orgId,
-          idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
-          billingSource,
-          sessionId,
-        });
-      } catch (err) {
-        // Same fail-fast answer as the other admission sites: contention on the
-        // org row is a 503 the client can retry, not a 500.
-        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
-        throw err;
-      }
-      if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
-      reservationId = reservation.reservationId;
+    } catch (err) {
+      // Same fail-fast answer as the other admission sites: contention on the
+      // org row is a 503 the client can retry, not a 500.
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
+    const reservationId = reservation.reservationId;
+
+    // Ledger rows carry sessionId null deliberately: a ticket draft is not a
+    // chat turn, and its cost in the chat session's total_cost_cents would
+    // double-attribute it in the session list. The ledger keeps it as
+    // surface 'chat', source_ref 'ticket_draft'.
+    const settle = (attempts: MessageAttempt[]) => {
+      const { usage, outcome } = messagesUsage(binding, attempts);
+      return settleInvocation({
+        binding, orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null,
+        sourceRef: 'ticket_draft', usage, outcome, reservationId,
+      });
+    };
+
+    let draft;
+    try {
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
-        model: wire.model,
-        partnerId: org.partnerId ?? null,
-        orgId: session.orgId,
+        resolved: turn,
         client,
-        ...(reservation.kind === 'reserved'
-          ? {
-            budgetCents: reservation.reservedCostCents,
-            calculateCostCents: catalogPricing
-              ? (inputTokens, outputTokens) => calculateCatalogCostCents(catalogPricing!, inputTokens, outputTokens)
-              : (inputTokens, outputTokens) => calculateCostCents(model, inputTokens, outputTokens),
-          }
-          : {}),
+        ...(reservation.kind === 'reserved' ? { budgetCents: reservation.reservedCostCents } : {}),
       });
     } catch (err) {
-      if (reservationId) {
-        try {
-          if (err instanceof ThinTranscriptError
-            || (err instanceof TicketDraftFailedError
-              && !err.providerOutcomeUnknown && err.inputTokens === 0 && err.outputTokens === 0)) {
-            await releaseUnusedAiBudgetReservation({ orgId: session.orgId, reservationId });
-          } else if (err instanceof TicketDraftFailedError && !err.providerOutcomeUnknown) {
-            await recordUsage(
-              sessionId,
-              session.orgId,
-              model,
-              err.inputTokens,
-              err.outputTokens,
-              false,
-              billingSource,
-              catalogPricing,
-              reservationId,
-              0,
-              { surface: 'chat', sourceRef: 'ticket_draft', userId: auth.user.id },
-            );
-          } else {
-            await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
-          }
-        } catch (budgetError) {
-          captureException(budgetError);
+      try {
+        if (err instanceof TicketDraftFailedError && err.attempts.length > 0) {
+          // The provider answered (at least once): the burned tokens bill.
+          await settle(err.attempts);
+        } else if (err instanceof TicketDraftFailedError && err.providerOutcomeUnknown) {
+          await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
+        } else {
+          // Thin transcript / prompt over budget / nothing sent: hand it back.
+          await releaseUnusedAiBudgetReservation({ orgId: session.orgId, reservationId });
         }
+      } catch (budgetError) {
+        captureException(budgetError);
       }
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
@@ -609,26 +605,10 @@ aiRoutes.post(
 
     // Best-effort cost accounting; never fails the request.
     try {
-      await recordUsage(
-        sessionId,
-        session.orgId,
-        model,
-        draft.inputTokens,
-        draft.outputTokens,
-        false,
-        billingSource,
-        // Catalog traffic meters from the revision snapshot, never Anthropic
-        // list rates.
-        catalogPricing,
-        reservationId,
-        0,
-        { surface: 'chat', sourceRef: 'ticket_draft', userId: auth.user.id },
-      );
+      await settle(draft.attempts);
     } catch (err) {
       captureException(err);
-      if (reservationId) {
-        await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId }).catch(captureException);
-      }
+      await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId }).catch(captureException);
     }
 
     let deviceHostname: string | null = null;

@@ -135,6 +135,29 @@ describe('W03 parity: office_chat', () => {
   });
 });
 
+describe('W03 parity: ticket draft (inherits the chat session offering; Messages API transport)', () => {
+  it('session queries', async () => {
+    // The legacy ticket draft dispatched session.model through the chat session's
+    // resolved config, so its golden IS the session golden.
+    await assertSurfaceParity({
+      select: (q) => q.kind === 'session',
+      bind,
+      registrySide: async (_f, q) => {
+        if (q.kind !== 'session') throw new Error('expected a session query');
+        return toSurfaceUse(await resolveSessionTurn({
+          sessionId: q.sessionId, surface: 'chat', userId: 'parity-user', maxTokens: 1024, transport: 'messages_api',
+        }));
+      },
+    });
+  });
+});
+
+describe('W03 parity: office_ticket', () => {
+  surfaceParity('surface queries', async () => {
+    await assertSurfaceParity({ select: surfaceQuery('office_ticket'), bind, registrySide: viaAssignment('office_ticket', true) });
+  });
+});
+
 describe('W03 parity harness discriminates (mutations that MUST fail)', () => {
   const chatSide = viaAssignment('chat', true);
 
