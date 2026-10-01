@@ -1065,4 +1065,61 @@ describe('DevicePatchStatusTab', () => {
     // ring-aware evaluator; the badge says why the two disagree.
     expect(screen.getByTestId('device-patch-otherring-approval').getAttribute('title')).toContain('different update ring');
   });
+  // #7637 option B: the install poll skips the ring-aware evaluation
+  // (approvalView=0) and the tab keeps the last known badges instead of
+  // flashing the manual-only fallback mid-install.
+  it('polls with approvalView=0 during an install and keeps the last ring-aware badges', async () => {
+    const ring = { id: 'ring-1', name: 'Workstations Ring' };
+    const approved = {
+      id: 'appr-1', title: 'Approved Update (KB10)', source: 'microsoft', category: 'security', status: 'pending',
+      approvalStatus: 'approved', effectiveApproval: { state: 'approved', reason: 'manual', holdUntil: null }, installFailure: null
+    };
+    const auto = {
+      id: 'auto-1', title: 'Auto Update (KB11)', source: 'microsoft', category: 'security', status: 'pending',
+      approvalStatus: 'pending', effectiveApproval: { state: 'auto_approved', reason: 'ring_auto_approve', holdUntil: null }, installFailure: null
+    };
+    const fresh = {
+      id: 'new-1', title: 'Newly Seen Update (KB12)', source: 'microsoft', category: 'security', status: 'pending',
+      approvalStatus: 'pending', effectiveApproval: null, installFailure: null
+    };
+    const fullLoad = { data: { compliancePercent: 0, approvalEvaluation: { available: true, ring }, pending: [approved, auto], installed: [] } };
+    // What the server returns when the evaluation is skipped: no verdicts. A
+    // third pending patch keeps the count from dropping, so polling continues,
+    // and proves the poll response was applied.
+    const pollLoad = {
+      data: {
+        compliancePercent: 0,
+        approvalEvaluation: null,
+        pending: [{ ...approved, effectiveApproval: null }, { ...auto, effectiveApproval: null }, fresh],
+        installed: []
+      }
+    };
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/patches/install')) {
+        return makeJsonResponse({ success: true, commandId: 'cmd-1', patchCount: 1 });
+      }
+      if (typeof url === 'string' && url.startsWith(`/devices/${deviceId}/patches`) && !url.includes('/history')) {
+        return makeJsonResponse(url.includes('approvalView=0') ? pollLoad : fullLoad);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    expect((await screen.findByTestId('device-patch-auto-1-approval')).textContent).toBe('Auto-approved');
+    // A normal load does not skip the evaluation.
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${deviceId}/patches`);
+
+    fireEvent.click(screen.getByRole('button', { name: /Install pending Windows patches|Install pending OS patches/i }));
+    fireEvent.click(await screen.findByTestId('confirm-install-patches'));
+    await screen.findByText(/Installing patches/i);
+
+    // First poll tick (5 s): the request skips the evaluation...
+    await screen.findByText('Newly Seen Update (KB12)', {}, { timeout: 8000 });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${deviceId}/patches?approvalView=0`);
+    // ...and the badges and ring line from the last full load stay put.
+    expect(screen.getByTestId('device-patch-auto-1-approval').textContent).toBe('Auto-approved');
+    expect(screen.getByTestId('device-patch-appr-1-approval').textContent).toBe('Approved');
+    expect(screen.getByTestId('device-patch-approval-ring').textContent).toContain('Workstations Ring');
+  }, 15000);
 });

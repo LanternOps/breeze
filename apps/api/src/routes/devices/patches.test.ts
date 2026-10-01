@@ -405,6 +405,46 @@ describe('device patch routes', () => {
     errorSpy.mockRestore();
   });
 
+  // Todd's decision on #7637 (option B): the install poller passes
+  // approvalView=0 so the 5 s poll does not open the second pooled connection
+  // (runOutsideDbContext + withSystemDbAccessContext) on every tick.
+  it('skips the ring-aware evaluation when approvalView=0 (install polling)', async () => {
+    const PID = '11111111-1111-4111-8111-111111111111';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([{
+        id: 'dp-1', patchId: PID, status: 'pending', installedAt: null,
+        lastCheckedAt: '2026-02-09T10:00:00.000Z', failureCount: 0, lastError: null,
+        externalId: 'KB1', title: 'One', description: null, severity: 'critical',
+        category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches?approvalView=0`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(loadDevicePatchApprovalView).not.toHaveBeenCalled();
+    expect(body.data.approvalEvaluation).toBeNull();
+    expect(body.data.pending[0].effectiveApproval).toBeNull();
+    expect(body.data.patches[0].effectiveApproval).toBeNull();
+    // The manual-approval field is still served.
+    expect(body.data.pending[0].approvalStatus).toBe('pending');
+  });
+
+  it('rejects an unrecognised approvalView value', async () => {
+    const res = await app.request(`/devices/${DEVICE_ID}/patches?approvalView=maybe`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(res.status).toBe(400);
+    expect(loadDevicePatchApprovalView).not.toHaveBeenCalled();
+  });
+
   it('skips the ring evaluation when the device has nothing pending', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select)

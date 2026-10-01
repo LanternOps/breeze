@@ -234,6 +234,34 @@ function getNativePatchSource(osType: OSType): 'microsoft' | 'apple' | 'linux' {
   return 'apple';
 }
 
+const PATCH_LIST_KEYS = ['pending', 'pendingPatches', 'missing', 'missingPatches', 'available', 'installed', 'installedPatches', 'applied', 'patches'] as const;
+
+// #7637: the install poll asks the API to skip the ring-aware evaluation
+// (`approvalView=0`), which comes back as null verdicts. Carry the last known
+// verdicts (by patch id) and ring context forward so the badges don't flash
+// the manual-only fallback mid-install. A patch first seen during the poll
+// has no prior verdict and shows the fallback until the next full load.
+function carryApprovalView(previous: PatchPayload | null, next: PatchPayload): PatchPayload {
+  if (!previous) return next;
+  const known = new Map<string, DevicePatchEffectiveApproval>();
+  for (const key of PATCH_LIST_KEYS) {
+    for (const patch of previous[key] ?? []) {
+      if (patch.id && patch.effectiveApproval) known.set(patch.id, patch.effectiveApproval);
+    }
+  }
+  const merged: PatchPayload = { ...next, approvalEvaluation: previous.approvalEvaluation ?? null };
+  for (const key of PATCH_LIST_KEYS) {
+    const list = next[key];
+    if (!list) continue;
+    merged[key] = list.map((patch) =>
+      patch.effectiveApproval == null && patch.id && known.has(patch.id)
+        ? { ...patch, effectiveApproval: known.get(patch.id) }
+        : patch
+    );
+  }
+  return merged;
+}
+
 function getNativePatchProviderLabel(osType: OSType): string {
   if (osType === 'windows') return 'Windows';
   if (osType === 'linux') return 'Linux';
@@ -808,17 +836,24 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const normalizedOsType: OSType = osType ?? 'macos';
 
-  const fetchPatchStatus = useCallback(async (silent = false) => {
+  // `skipApprovalView` is for the install poller only (#7637): the API skips
+  // the ring-aware evaluation, and the last known badges are carried forward.
+  const fetchPatchStatus = useCallback(async (silent = false, skipApprovalView = false) => {
     if (!silent) {
       setLoading(true);
     }
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/patches`);
+      const url = skipApprovalView ? `/devices/${deviceId}/patches?approvalView=0` : `/devices/${deviceId}/patches`;
+      const response = await fetchWithAuth(url);
       if (!response.ok) throw new Error('Failed to fetch patch status');
       const json = await response.json();
       const data = json?.data ?? json;
-      setPayload(data);
+      if (skipApprovalView) {
+        setPayload((previous) => carryApprovalView(previous, data));
+      } else {
+        setPayload(data);
+      }
       if (json?.timezone || json?.siteTimezone) {
         setSiteTimezone(json.timezone ?? json.siteTimezone);
       }
@@ -1045,7 +1080,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         return;
       }
 
-      const freshData = await fetchPatchStatus(true);
+      // Skip the ring-aware evaluation on every tick (#7637): it costs a second
+      // pooled connection per request, and approval can't change mid-install.
+      const freshData = await fetchPatchStatus(true, true);
       if (!freshData) return;
 
       const freshPending = freshData.pending ?? freshData.pendingPatches ?? freshData.available ?? [];
@@ -1060,6 +1097,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         setIsPolling(false);
         setInstallingPatchIds(new Set());
         const installed = priorPendingCountRef.current - currentPendingCount;
+        // One full load at the end so the remaining patches' badges are current.
+        await fetchPatchStatus(true);
         await fetchRecentLinuxInstalls(false);
         setControlNotice({
           kind: 'success',

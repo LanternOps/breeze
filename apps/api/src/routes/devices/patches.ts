@@ -37,6 +37,13 @@ const patchHistoryQuerySchema = z.object({
   completedAfter: z.string().datetime({ offset: true }).optional()
 });
 
+// #7637: `approvalView=0` skips the ring-aware approval evaluation. The web
+// Patches tab's install poller (every 5 s, up to 30 min) sets it, so the poll
+// does not open a second pooled connection per tick; see the GET route.
+const devicePatchStatusQuerySchema = z.object({
+  approvalView: z.enum(['0', '1']).optional()
+});
+
 const PATCH_COMMAND_TYPES = ['install_patches', 'patch_scan', 'rollback_patches', 'download_patches'] as const;
 const LINUX_SOFTWARE_UPDATE_COMMAND_TYPE = 'software_update';
 
@@ -296,9 +303,11 @@ patchesRoutes.get(
   '/:id/patches',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', devicePatchStatusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
+    const { approvalView: approvalViewParam } = c.req.valid('query');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -402,9 +411,16 @@ patchesRoutes.get(
     // cannot see; deviceId/orgId are server-derived from the access-checked
     // device. A failure degrades to `available: false` (the tab falls back to
     // approvalStatus) rather than failing the whole patch list.
+    //
+    // KNOWN DEBT: that escape holds a SECOND pooled connection while this
+    // request's own withDbAccessContext transaction still holds one — the
+    // hold-and-wait shape behind the 09-22 pool deadlock. `approvalView=0`
+    // (set by the install poller) skips it; normal tab loads still pay it.
+    // Follow-up #7647: compute this without a second connection.
+    // Skipped → both fields null; the web tab keeps its last-known badges.
     let approvalView: DevicePatchApprovalView | null = null;
     let approvalEvaluation: DevicePatchApprovalEvaluation | null = null;
-    if (devicePatchList.some((p) => p.status === 'pending')) {
+    if (approvalViewParam !== '0' && devicePatchList.some((p) => p.status === 'pending')) {
       try {
         approvalView = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() => loadDevicePatchApprovalView(deviceId, device.orgId))
