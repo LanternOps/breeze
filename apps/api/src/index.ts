@@ -285,7 +285,7 @@ import {
 } from './jobs/agentCommandRelayWorker';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
-import { startPlatformModelSnapshotRefresher } from './services/aiModels/platformModels';
+import { startPlatformModelSnapshotRefresher, warnOnUnsupportedPlatformInferenceGeo } from './services/aiModels/platformModels';
 import { registerInvocationLedgerShadow } from './services/aiModels/invocationLedger';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
@@ -1779,6 +1779,10 @@ async function bootstrap(): Promise<void> {
   // token-price fallback). Not awaited; until the first load lands, those
   // paths use the W00 bootstrap rules.
   startPlatformModelSnapshotRefresher();
+  // AI model registry W03 (#7601): the platform key serves only us/global
+  // (W01 D3). Non-fatal: an unsupported AI_PLATFORM_INFERENCE_GEO takes
+  // platform models offline (residency_unavailable), so say so at boot.
+  warnOnUnsupportedPlatformInferenceGeo();
   // AI model registry W02 (#7600): shadow every legacy AI cost record into the
   // invocation ledger (after the caller's transaction exits; never affects billing).
   registerInvocationLedgerShadow();
