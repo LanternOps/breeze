@@ -20,7 +20,7 @@ tracking_issue: LanternOps/breeze#7598
 | W07 (#7605) Bedrock / Vertex / Foundry | written at `start_wave` | W03 | outline (spec §4, §12) |
 | W08 (#7606) cleanup | written at `start_wave` | W04, W05 | outline |
 | W09 (#7607) failover + escalation | written at `start_wave` | W03 | outline (spec §5.4, §9.1) |
-| W10 (#7608) chargeback | written at `start_wave` | W03 | outline (spec §8) |
+| W10 (#7608) chargeback | `2026-10-01-ai-model-registry-w10-chargeback.md` | W03 merged (implemented on `main`, not stacked; touches no W04 file) | detailed (21 tasks; Codex high review applied: 15 adopted, 2 of them modified, 1 as documentation; migrations `2026-11-26-100000…100400`) |
 | W11 (#7609) quality view + prompt profiles | written at `start_wave` | W03, W04 | outline (spec §5.5, §7) |
 
 Waves W04–W11 get their detailed plans when the wave starts. They consume interfaces W01–W03 define, and a plan written against interfaces that haven't shipped yet goes stale. Each later-wave plan must re-read this contract plus the merged code.
