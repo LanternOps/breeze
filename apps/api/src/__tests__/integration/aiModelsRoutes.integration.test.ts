@@ -664,6 +664,48 @@ describe.skipIf(!RUN)('/ai/models routes refuse another partner’s ids (#7602 W
     expect(await assignmentCount({ orgId: w.orgB })).toBe(0);
   });
 
+  it('disabling an in-use default: 409 offering_in_use lists only this offering’s partner + org uses; force disables', async () => {
+    const w = await seedWorld();
+    await seedPartnerDefault(w.pA, 'extension_content', w.offA);
+    await seedOrgOverride(w.orgA, w.pA, 'catalog_enrichment', w.offA);
+    // Not uses of offA: A's org default on another offering, and partner B's own defaults.
+    const orgA2 = (await createOrganization({ partnerId: w.pA })).id;
+    await seedOrgOverride(orgA2, w.pA, 'extension_content', w.offA2);
+    await seedPartnerDefault(w.pB, 'extension_content', w.offB);
+    await seedOrgOverride(w.orgB, w.pB, 'catalog_enrichment', w.offB);
+    // Defence in depth: a partner-B row naming offA (only reachable past the
+    // (default_offering_id, offering_partner_id) FK, forged here with triggers
+    // off) is still never reported as A's use — the offering_partner_id pin.
+    await fixtureSql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`
+        INSERT INTO ai_model_assignments (partner_id, offering_partner_id, surface, role, default_offering_id, allow_user_choice)
+        VALUES (${w.pB}, ${w.pB}, 'catalog_enrichment', 'default', ${w.offA}, true)`;
+    });
+    const req = await partnerAdmin(w.pA);
+
+    const blocked = await req('POST', `/api/v1/ai/models/offerings/${w.offA}/enabled`, { enabled: false });
+    expect(blocked.status).toBe(409);
+    const body = await blocked.json() as { code: string; details: { inUse: Array<{ surface: string; level: string; orgId: string | null }> } };
+    expect(body.code).toBe('offering_in_use');
+    const byKey = (u: { surface: string; level: string }) => `${u.level}/${u.surface}`;
+    expect([...body.details.inUse].sort((a, b) => byKey(a).localeCompare(byKey(b)))).toEqual([
+      { surface: 'catalog_enrichment', level: 'org', orgId: w.orgA },
+      { surface: 'extension_content', level: 'partner', orgId: null },
+    ]);
+    const [still] = await fixtureSql`SELECT enabled FROM partner_ai_models WHERE id = ${w.offA}`;
+    expect(still).toEqual({ enabled: true });
+
+    const forced = await req('POST', `/api/v1/ai/models/offerings/${w.offA}/enabled`, { enabled: false, force: true });
+    expect(forced.status).toBe(200);
+    expect((await forced.json() as { enabled: boolean }).enabled).toBe(false);
+    const [after] = await fixtureSql`SELECT enabled FROM partner_ai_models WHERE id = ${w.offA}`;
+    expect(after).toEqual({ enabled: false });
+    // Partner B's offering is untouched.
+    const [offB] = await fixtureSql`SELECT enabled FROM partner_ai_models WHERE id = ${w.offB}`;
+    expect(offB).toEqual({ enabled: true });
+  });
+
   it('PUT /orgs/:orgId/assignments for its own org succeeds (control)', async () => {
     const w = await seedWorld();
     await seedPartnerDefault(w.pA, 'extension_content', w.offA);
