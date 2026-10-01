@@ -418,6 +418,18 @@ x-api-env: &api-env
   DEVICE_COMMAND_QUEUE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_TTL_HOURS:-}
   DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS:-}
   DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS:-}
+  # Audit chain (#916 / #1240 / #915; mapped by #7470). Empty === unset for
+  # every reader: anchoring and nightly verification stay ON, verification
+  # stays incremental, anchors stay unsigned, and retention keeps the legacy
+  # shared-credential path. AUDIT_ANCHOR_SIGNING_KEY is a base64 32-byte
+  # Ed25519 seed (`openssl rand -base64 32`); AUDIT_ADMIN_DATABASE_URL is the
+  # breeze_audit_admin login used only by audit retention. Both are secrets.
+  AUDIT_ANCHOR_SIGNING_KEY: ${AUDIT_ANCHOR_SIGNING_KEY:-}
+  AUDIT_CHAIN_ANCHOR_ENABLED: ${AUDIT_CHAIN_ANCHOR_ENABLED:-}
+  AUDIT_CHAIN_VERIFY_ENABLED: ${AUDIT_CHAIN_VERIFY_ENABLED:-}
+  AUDIT_CHAIN_VERIFY_MODE: ${AUDIT_CHAIN_VERIFY_MODE:-}
+  AUDIT_CHAIN_VERIFY_RESCAN_SLICES: ${AUDIT_CHAIN_VERIFY_RESCAN_SLICES:-}
+  AUDIT_ADMIN_DATABASE_URL: ${AUDIT_ADMIN_DATABASE_URL:-}
   # Email — SMTP extras + Mailgun provider
   SMTP_FROM: ${SMTP_FROM:-}
   SMTP_SECURE: ${SMTP_SECURE:-}
