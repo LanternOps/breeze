@@ -612,9 +612,13 @@ export async function syncDirectory(
     const filePath = join(localDir, entry.name);
     const s3Key = `${s3Prefix}/${entry.name}`;
 
+    // Boot awaits this sync. Once one file has exhausted its retries, S3 is
+    // probably down rather than flaky: give the rest a single attempt so an
+    // outage costs one retry cycle per prefix, not one per file.
+    const fileAttempts = result.failedKeys.length > 0 ? 1 : attempts;
     let lastError: unknown;
     let synced = false;
-    for (let attempt = 1; attempt <= attempts && !synced; attempt++) {
+    for (let attempt = 1; attempt <= fileAttempts && !synced; attempt++) {
       if (attempt > 1 && retryDelayMs > 0) {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, retryDelayMs));
       }
@@ -651,7 +655,7 @@ export async function syncDirectory(
         `previous object NOT deleted (${err instanceof Error ? err.message : String(err)}); ` +
         'other API replicas may still serve it until a sync succeeds';
     }
-    result.errors.push(`${entry.name}: upload failed after ${attempts} attempt(s): ${reason}; ${deleteNote}`);
+    result.errors.push(`${entry.name}: upload failed after ${fileAttempts} attempt(s): ${reason}; ${deleteNote}`);
   }
 
   return result;

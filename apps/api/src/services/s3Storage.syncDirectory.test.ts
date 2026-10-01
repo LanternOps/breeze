@@ -171,6 +171,21 @@ describe('syncDirectory: a failed upload never leaves the stale object servable 
     );
   });
 
+  it('after one file exhausts its retries, later files get a single attempt (bounded boot delay)', async () => {
+    failPutFor.set('agent/breeze-agent-linux-amd64', Infinity);
+    failPutFor.set('agent/breeze-watchdog-linux-amd64', Infinity);
+    const s3 = await import('./s3Storage');
+
+    const result = await s3.syncDirectory(dir, 'agent', { retryDelayMs: 0 });
+
+    expect([...result.failedKeys].sort()).toEqual([
+      'agent/breeze-agent-linux-amd64',
+      'agent/breeze-watchdog-linux-amd64',
+    ]);
+    const puts = s3SendMock.mock.calls.filter(([c]) => c.kind === 'put').length;
+    expect(puts).toBe(3 + 1);
+  });
+
   it('a later successful upload of the key makes it servable again', async () => {
     failPutFor.set('agent/breeze-agent-linux-amd64', Infinity);
     failDelete = true;
