@@ -915,7 +915,7 @@ async function applyUsageRollups(input: {
  * turn, review finding 3), stored as-is so the counters' restart sticks. A session that is gone is logged, not fatal:
  * failing here would lose the whole settlement over a billing aid.
  */
-async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage): Promise<void> {
+async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage, reservationId: string | null = null): Promise<void> {
   if (!sdkUsage.nextSnapshot) return;
   const next = parseSdkUsageSnapshot(sdkUsage.nextSnapshot);
   if (!next) throw new Error('Malformed SDK usage snapshot');
@@ -931,6 +931,31 @@ async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage):
     return;
   }
   const stored = parseSdkUsageSnapshot(current.sdk_usage_snapshot);
+  if (sdkUsage.rebaseline === true && reservationId) {
+    // Several deferred re-baselines on one session (each regressed against the
+    // same stored snapshot) replay oldest first. Only the NEWEST may land: an
+    // older one would leave the snapshot below a reading that was already
+    // billed, and the next turn's delta would bill it again.
+    const newer = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
+      SELECT other.id FROM ai_budget_reservations other, ai_budget_reservations me
+      WHERE me.id = ${reservationId}::uuid
+        AND other.org_id = ${orgId}::uuid
+        AND other.id <> me.id
+        AND other.pending_settlement IS NOT NULL
+        AND other.pending_settlement_dead_at IS NULL
+        AND other.status <> 'settled'
+        AND other.pending_settlement -> 'sdkUsage' ->> 'sessionId' = ${sdkUsage.sessionId}
+        AND (other.pending_settlement -> 'sdkUsage' ->> 'rebaseline')::boolean IS TRUE
+        AND other.created_at > me.created_at
+      LIMIT 1
+    `));
+    if (newer.length > 0) {
+      console.warn('[AI] SDK usage re-baseline superseded by a newer pending re-baseline; not applied', {
+        orgId, sessionId: sdkUsage.sessionId,
+      });
+      return;
+    }
+  }
   if (sdkUsage.rebaseline === true && sdkUsage.baseSnapshot !== undefined) {
     const base = sdkUsage.baseSnapshot === null ? null : parseSdkUsageSnapshot(sdkUsage.baseSnapshot);
     if (!sameJson(stored, base)) {
@@ -1101,7 +1126,7 @@ export async function settleAiBudgetReservation(
       at: settledAt,
     });
 
-    if (input.sdkUsage) await advanceSdkUsageSnapshot(input.orgId, input.sdkUsage);
+    if (input.sdkUsage) await advanceSdkUsageSnapshot(input.orgId, input.sdkUsage, input.reservationId);
 
     // Only a LEDGER settlement of platform spend owes a keyed debit; the legacy
     // recorders deduct for themselves, so their settlements never set this.

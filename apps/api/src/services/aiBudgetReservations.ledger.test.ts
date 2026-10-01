@@ -311,6 +311,19 @@ describe('SDK usage snapshot (W05 spike): advanced in the settlement transaction
       .mockResolvedValueOnce([{ id: RESERVATION_ID }]);
   }
 
+  /** A rebaseline also asks whether a NEWER pending re-baseline exists for the session. */
+  function primeRebaseline(stored: unknown, newerPending: Array<{ id: string }> = []) {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([reservationRow({ model_binding: BINDING })])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ sdk_usage_snapshot: stored }])   // session snapshot FOR UPDATE
+      .mockResolvedValueOnce(newerPending)                       // newer pending re-baseline?
+      .mockResolvedValueOnce([{ id: SESSION_ID }])               // snapshot UPDATE (if any)
+      .mockResolvedValueOnce([{ id: RESERVATION_ID }]);
+  }
+
   it('writes the next snapshot before the reservation is marked settled', async () => {
     primeWithSnapshot(PREV);
     await settleAiBudgetReservation({
@@ -350,7 +363,7 @@ describe('SDK usage snapshot (W05 spike): advanced in the settlement transaction
   });
 
   it('a rebaseline (snapshot_regressed turn) DOES move the stored snapshot down (review finding 3)', async () => {
-    primeWithSnapshot(NEXT);
+    primeRebaseline(NEXT);
     await settleAiBudgetReservation({
       orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()],
       sdkUsage: { sessionId: SESSION_ID, nextSnapshot: PREV, rebaseline: true, baseSnapshot: NEXT },
@@ -358,9 +371,21 @@ describe('SDK usage snapshot (W05 spike): advanced in the settlement transaction
     expect(allSql().some((s) => /SET sdk_usage_snapshot/.test(s))).toBe(true);
   });
 
+  it('a rebaseline superseded by a NEWER pending re-baseline on the session leaves the snapshot alone (re-review)', async () => {
+    primeRebaseline(NEXT, [{ id: 'newer-reservation' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await settleAiBudgetReservation({
+      orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()],
+      sdkUsage: { sessionId: SESSION_ID, nextSnapshot: PREV, rebaseline: true, baseSnapshot: NEXT },
+    });
+    warn.mockRestore();
+    expect(allSql().some((s) => /SET sdk_usage_snapshot/.test(s))).toBe(false);
+    expect(allSql().some((s) => /SET status = 'settled'/.test(s))).toBe(true);
+  });
+
   it('a rebaseline whose base is no longer the stored snapshot (a newer turn settled first) leaves it alone (review S10)', async () => {
     const OTHER: SdkUsageSnapshot = { version: 1, models: { 'claude-sonnet-5-5': { tokens: { input: 3, output: 1, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0 } } };
-    primeWithSnapshot(OTHER);
+    primeRebaseline(OTHER);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await settleAiBudgetReservation({
       orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()],
