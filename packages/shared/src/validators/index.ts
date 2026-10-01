@@ -1287,3 +1287,4 @@ export * from './companyIdentity';
 
 // AI model registry W01 (#7599): option / support / rate schemas.
 export * from './aiModelOptions';
+export * from './aiModelRegistryApi';
