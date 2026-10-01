@@ -71,7 +71,10 @@ export const aiAgents = pgTable('ai_agents', {
   cooldownSeconds: integer('cooldown_seconds').notNull().default(900),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),
   disabledBy: uuid('disabled_by').references(() => users.id),
-  createdBy: uuid('created_by').notNull().references(() => users.id),
+  // AI Suggested Fixes W2: nullable only for system-provisioned rows, which
+  // must set provisionedBy instead (ai_agents_creator_chk).
+  createdBy: uuid('created_by').references(() => users.id),
+  provisionedBy: varchar('provisioned_by', { length: 64 }),
   lastUpdatedBy: uuid('last_updated_by').references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
