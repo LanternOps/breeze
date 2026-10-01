@@ -420,6 +420,24 @@ x-api-env: &api-env
   READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
   # Offline-detector mark-worker concurrency (1-20, code default 5). Empty === unset.
   OFFLINE_DETECTOR_WORKER_CONCURRENCY: ${OFFLINE_DETECTOR_WORKER_CONCURRENCY:-}
+  # Offline work queue (#5128). TTL vars are per delivery class, in hours;
+  # left empty so services/commandOfflinePolicy.ts owns the defaults
+  # (168 / 24 / 24) in exactly one place.
+  DEVICE_COMMAND_QUEUE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_TTL_HOURS:-}
+  DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS:-}
+  DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS:-}
+  # Audit chain (#916 / #1240 / #915; mapped by #7470). Empty === unset for
+  # every reader: anchoring and nightly verification stay ON, verification
+  # stays incremental, anchors stay unsigned, and retention keeps the legacy
+  # shared-credential path. AUDIT_ANCHOR_SIGNING_KEY is a base64 32-byte
+  # Ed25519 seed (`openssl rand -base64 32`); AUDIT_ADMIN_DATABASE_URL is the
+  # breeze_audit_admin login used only by audit retention. Both are secrets.
+  AUDIT_ANCHOR_SIGNING_KEY: ${AUDIT_ANCHOR_SIGNING_KEY:-}
+  AUDIT_CHAIN_ANCHOR_ENABLED: ${AUDIT_CHAIN_ANCHOR_ENABLED:-}
+  AUDIT_CHAIN_VERIFY_ENABLED: ${AUDIT_CHAIN_VERIFY_ENABLED:-}
+  AUDIT_CHAIN_VERIFY_MODE: ${AUDIT_CHAIN_VERIFY_MODE:-}
+  AUDIT_CHAIN_VERIFY_RESCAN_SLICES: ${AUDIT_CHAIN_VERIFY_RESCAN_SLICES:-}
+  AUDIT_ADMIN_DATABASE_URL: ${AUDIT_ADMIN_DATABASE_URL:-}
   # Outbox / anomaly-incident retention (#4210). Read by the three daily
   # prune jobs (jobs/*Retention.ts), which are `global` placement and so run
   # in the worker role — the worker service inherits this same *api-env

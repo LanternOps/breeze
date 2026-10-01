@@ -64,6 +64,7 @@ import {
   anchorDigest,
   signAnchorPayload,
   getAnchorSigningKeyId,
+  getAnchorSigningPublicKey,
   isAnchorSigningEnabled,
 } from '../services/auditAnchorSigning';
 import { jobSchedule } from './scheduleRegistry';
@@ -182,7 +183,7 @@ async function readHead(orgId: string | null): Promise<HeadRow> {
 async function writeAnchor(
   orgId: string | null,
   head: HeadRow,
-): Promise<{ row: AnchorWriteRow; payload: AnchorPayload }> {
+): Promise<{ row: AnchorWriteRow; payload: AnchorPayload; signature: string | null }> {
   const anchoredAt = new Date().toISOString();
   const payload: AnchorPayload = {
     orgId,
@@ -215,7 +216,7 @@ async function writeAnchor(
     return r;
   });
 
-  return { row, payload };
+  return { row, payload, signature };
 }
 
 /**
@@ -236,7 +237,7 @@ async function writeAnchor(
 function emitAnchorLog(
   row: AnchorWriteRow,
   payload: AnchorPayload,
-  signed: boolean,
+  signature: string | null,
   signingKeyId: string | null,
 ): void {
   const record = {
@@ -249,7 +250,10 @@ function emitAnchorLog(
     anchoredAt: payload.anchoredAt,
     digest: anchorDigest(payload),
     canonical: canonicalAnchorPayload(payload),
-    signed,
+    signed: signature !== null,
+    // Base64 Ed25519 over `canonical`. Without it an off-box copy could only
+    // say "this was signed", never prove it against the published key (#7470).
+    signature,
     signingKeyId,
   };
   // Single-line JSON for forwarder ingestion.
@@ -395,10 +399,43 @@ async function anchorAndVerifyOrg(
 
   // (2) Write the new forward anchor reflecting the current head.
   const head = await readHead(orgId);
-  const { row, payload } = await writeAnchor(orgId, head);
+  const { row, payload, signature } = await writeAnchor(orgId, head);
   stats.orgsAnchored += 1;
   if (row.signed) stats.anchorsSigned += 1;
-  emitAnchorLog(row, payload, row.signed, row.signed ? getAnchorSigningKeyId() : null);
+  // The DB stamps the signature only when the re-read head still matches what
+  // was signed; an unstamped row must not be logged as carrying one.
+  const storedSignature = row.signed ? signature : null;
+  emitAnchorLog(row, payload, storedSignature, storedSignature ? getAnchorSigningKeyId() : null);
+}
+
+/**
+ * Say, once per sweep (and once at boot when a key is set), whether anchors
+ * will be signed and with which key. The public key is printed so an operator
+ * can pin it in the off-box verifier without deriving it from the seed by hand
+ * (#7470). Neither value is secret.
+ */
+function logAnchorSigningStatus(): void {
+  if (!isAnchorSigningEnabled()) {
+    console.warn(
+      '[AuditChainAnchor] AUDIT_ANCHOR_SIGNING_KEY is NOT set — anchors are written UNSIGNED. ' +
+        'The append-only in-DB anchor still detects forged-chain-after-DELETE, but off-box ' +
+        'verification has no signature to check. Set AUDIT_ANCHOR_SIGNING_KEY to a base64 ' +
+        '32-byte Ed25519 seed (e.g. `openssl rand -base64 32`) to enable signing.',
+    );
+    return;
+  }
+  const publicKey = getAnchorSigningPublicKey();
+  if (!publicKey) {
+    console.error(
+      '[AuditChainAnchor] AUDIT_ANCHOR_SIGNING_KEY is set but is not a base64 32-byte Ed25519 seed — ' +
+        'every anchor write fails until it is fixed or unset.',
+    );
+    return;
+  }
+  console.log(
+    `[AuditChainAnchor] Anchor signing enabled: keyId=${getAnchorSigningKeyId()} ` +
+      `publicKey(SPKI DER, base64)=${publicKey}`,
+  );
 }
 
 /**
@@ -416,13 +453,7 @@ export async function runAnchorSweep(): Promise<AnchorSweepStats> {
     durationMs: 0,
   };
 
-  if (!isAnchorSigningEnabled()) {
-    console.warn(
-      '[AuditChainAnchor] AUDIT_ANCHOR_SIGNING_KEY is NOT set — anchors are written UNSIGNED. ' +
-        'The append-only in-DB anchor still detects forged-chain-after-DELETE, but off-box ' +
-        'verification has no signature to check. Provision an Ed25519 seed (base64) to enable signing.',
-    );
-  }
+  logAnchorSigningStatus();
 
   const orgs = await runWithSystemDbAccess(async () => {
     const rows = (await dbModule.db.execute(sql`
@@ -538,6 +569,8 @@ export async function initializeAuditChainAnchorWorker(): Promise<void> {
     });
 
     await scheduleAuditChainAnchor();
+    // Surface the key (or a malformed one) at boot rather than at 04:45 UTC.
+    if (isAnchorSigningEnabled()) logAnchorSigningStatus();
     console.log('[AuditChainAnchor] Worker initialized');
   } catch (error) {
     console.error('[AuditChainAnchor] Failed to initialize:', error);

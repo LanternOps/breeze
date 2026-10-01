@@ -355,15 +355,59 @@ Before this change, each month was one partition that held all three resolutions
 
 Each compaction runs in its own transaction and only blocks writes to the month being rewritten; reads continue throughout. The final switch takes a short exclusive lock on `metric_rollups`, `devices` and `organizations`, waits at most 5 seconds for it, and only changes catalog entries. If it cannot get the lock in time it rolls back, and the next nightly run retries it. A failed step fails the `metric-rollup-maintenance` job with the month named, so it shows up in job monitoring.
 
-### Audit-chain verification
+### Audit chain
 
-The nightly job that re-verifies the tamper-evident audit chain is bounded rather than walking the whole table every night.
+Two nightly jobs protect the tamper-evident audit chain described in [Audit Logs → Tamper Evidence](/reference/audit-logs/#tamper-evidence). The verifier (04:15 UTC) re-checks the chain. It is bounded rather than walking the whole table every night. The anchor job (04:45 UTC) records each organization's chain head in the append-only `audit_chain_anchors` table, so a chain rebuilt after rows were deleted is caught. Both jobs are on by default.
 
 | Variable | Default | Description |
 |---|---|---|
 | `AUDIT_CHAIN_VERIFY_ENABLED` | `true` | Set to `false` to turn nightly verification off. From v0.110.0 this also stops a sweep that is already running, not just the schedule — previously, restarting the API with the flag off could hand the in-flight sweep to the fresh container and re-run it from the beginning |
 | `AUDIT_CHAIN_VERIFY_MODE` | `incremental` | `incremental` verifies new rows since the last anchor plus one rolling slice of history per night. Set to `full` to restore the old whole-table walk — expect substantially more database I/O |
 | `AUDIT_CHAIN_VERIFY_RESCAN_SLICES` | `30` | How many nightly slices the historical portion of the chain is divided into. At the default, every historical row is re-verified at least once a month |
+| `AUDIT_CHAIN_ANCHOR_ENABLED` | `true` | Set to `false` to stop scheduling the daily anchor job. Leave it on: the anchor is the only check that catches a chain rebuilt after a `DELETE`. |
+| `AUDIT_ANCHOR_SIGNING_KEY` | — | Signs each anchor with Ed25519. The value is a **base64-encoded 32-byte seed**. When unset, anchors are still written but unsigned: `signature` and `signing_key_id` are `NULL`. A value that does not decode to exactly 32 bytes makes every anchor write fail and is logged as an error. See [Anchor signing](#anchor-signing) below. |
+| `AUDIT_ADMIN_DATABASE_URL` | — | `postgres://` URL for a `breeze_audit_admin` login, used only by audit retention. This keeps the delete permission off the API's request connection. When unset, retention falls back to the legacy shared-credential path and the API logs a `SECURITY` warning at boot. Set the role's password first (`ALTER ROLE breeze_audit_admin PASSWORD '…'`). The full runbook is in `apps/api/migrations/2026-06-11-e-audit-retention-revoke-breeze-app.sql`. |
+
+Up to and including v0.119.0, the shipped compose files did not pass these six variables to the API container, so setting them in `.env` had no effect. If you set any of them before, they take effect once you upgrade, so check them first.
+
+#### Anchor signing
+
+An unsigned anchor guards against the API's own database role, which can insert anchors but never change or delete them. It does not guard against someone who can write to the database directly, because that person can also rewrite the anchors. A signed anchor that you keep **outside** the database closes that gap: nobody can forge one without the seed, and the seed is not stored in the database.
+
+1. Generate a seed and add it to `.env`:
+
+   ```bash
+   echo "AUDIT_ANCHOR_SIGNING_KEY=$(openssl rand -base64 32)" >> .env
+   ```
+
+   Treat it like `JWT_SECRET`. Keep a copy somewhere other than the server, because a new seed means a new public key.
+
+2. Restart the API (and the worker, if you run one). At boot the API logs the key id and the public key:
+
+   ```text
+   [AuditChainAnchor] Anchor signing enabled: keyId=anchor-1a2b3c4d5e6f7a8b publicKey(SPKI DER, base64)=MCowBQYDK2VwAyEA…
+   ```
+
+   Record the public key with whatever verifies your anchors. You can read it again from any later boot log.
+
+3. Keep the anchors off the server. Each anchor is also written to the API container's stdout as one JSON line tagged `"evt":"audit_chain_anchor"`. The line contains `canonical` (the exact signed message), `signature` (base64) and `signingKeyId`. Breeze does not ship these lines anywhere by itself. To keep a copy outside the server, forward the API container's stdout with a log shipper such as Vector, Fluent Bit or promtail.
+
+The in-database check (`audit_chain_verify_anchor`) compares chain heads only and does not read the signature. The signature is useful only for a copy you keep somewhere else. To check a forwarded line, verify `signature` over the `canonical` string with the public key you recorded:
+
+```js
+// verify-anchor.mjs: node verify-anchor.mjs '<anchor JSON line>' '<public key, base64>'
+import { createPublicKey, verify } from 'node:crypto';
+
+const [line, publicKeyB64] = process.argv.slice(2);
+const anchor = JSON.parse(line);
+const key = createPublicKey({ key: Buffer.from(publicKeyB64, 'base64'), format: 'der', type: 'spki' });
+const ok = verify(null, Buffer.from(anchor.canonical, 'utf8'), key, Buffer.from(anchor.signature, 'base64'));
+console.log(ok ? 'valid' : 'INVALID');
+```
+
+Verify the `canonical` string exactly as it was forwarded. Do not rebuild it from a database row, because the timestamp formatting can differ. A line with `"signed":false` has no signature. This happens when no key was set, or when the chain head moved while the anchor was being signed. The next day's anchor covers that case.
+
+A signature proves that the anchor came from a server that held the seed. It does not protect you if the whole host is compromised, because the seed is in the API's environment. If you change the key, older anchors keep their old `signingKeyId`, so keep the old public keys to check older anchors.
 
 ### Event-loop lag monitor
 
@@ -679,7 +723,7 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |
 
 <Aside type="note" title="Queue deadlines are per action type">
-  All three deadlines are read per queued action when it is created, in hours, and any value that is not a positive number falls back to the default. Lowering one does not shorten rows that are already queued — the deadline is stamped at queue time. A row that reaches its deadline without the device coming back expires **undelivered**, and the action reports as expired rather than sitting pending forever. See [Devices → Queued actions](/features/devices/) for what a technician sees.
+  All three deadlines are read per queued action when it is created, in hours, and any value that is not a positive number falls back to the default. Each one is fleet-wide: it applies to every queued action in its class, for every organization, and there is no per-organization or per-action override. `DEVICE_COMMAND_QUEUE_TTL_HOURS` covers most queued work, so raising it keeps every queued script, patch and install waiting longer, not just one kind. Lowering one does not shorten rows that are already queued — the deadline is stamped at queue time. A row that reaches its deadline without the device coming back expires **undelivered**, and the action reports as expired rather than sitting pending forever. See [Devices → Queued actions](/features/devices/) for what a technician sees.
 </Aside>
 
 <Aside>
