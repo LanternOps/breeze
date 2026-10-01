@@ -658,6 +658,41 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery, (result, c) =>
         reason: probe.reason,
       });
       captureException(new Error(`Mailbox probe failed during consent callback: ${probe.reason ?? 'unknown'}`), c);
+      if (probe.kind !== 'auth') {
+        // #7569: consent + admin identity were verified, only the app-only mailbox
+        // read failed (typically the Application Access Policy is not applied or
+        // has not propagated yet). Bind the verified tenant in `error` so the card
+        // shows the policy snippet + Re-test, instead of `reauth_required`, which
+        // hides that step and loops the admin through re-consent.
+        try {
+          await callbackDb(() => bindVerifiedTenant(
+            session.connectionId,
+            session.partnerId,
+            session.consentAttemptId,
+            claims.tid,
+            { microsoftOid: claims.oid, breezeUserId: session.userId },
+            { status: 'error', lastError: failureMessage(probe.reason) },
+          ));
+          console.warn('[ticketMailbox] consent callback failed', {
+            connectionId: session.connectionId,
+            phase: session.phase,
+            outcome: 'probe_failed',
+            step: 'mailbox_probe',
+            probeKind: probe.kind,
+            rowUpdated: true,
+          });
+          writeCallbackAudit(
+            c,
+            session,
+            'ticket_mailbox.verification_failed',
+            auditDetails(session, connection, 'probe_failed', claims.tid, probe.reason),
+          );
+          return c.redirect('/settings/ticketing?ticketMailbox=needs_policy#email');
+        } catch (error) {
+          captureException(error instanceof Error ? error : new Error('Mailbox tenant binding failed'), c);
+          // fall through to the re-consent failure path
+        }
+      }
       return fail('probe_failed', 'needs_policy', { step: 'mailbox_probe' }, claims.tid, probe.reason);
     }
 
