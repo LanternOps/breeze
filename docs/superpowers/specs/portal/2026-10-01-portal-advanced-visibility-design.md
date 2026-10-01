@@ -40,7 +40,7 @@ Each family gets one boolean column on `portal_branding` (`notNull`, `default(fa
 1. Migration (checked by `check:migrations`) and schema column in `db/schema/portal.ts`. Add each new column to the `portal_branding` entry in `services/tenantExportPolicyRegistry.ts`, which the export-policy contract tests check. The table already exists, so no new tenancy, RLS or cascade entry is needed.
 2. Flag list in `services/portal/portalFlags.ts`: `PORTAL_VISIBILITY_FLAG_KEYS` for families inside "Enable all", `PORTAL_SENSITIVE_FLAG_KEYS` (new, see section 4) for families outside it.
 3. Defaults and types in `routes/orgPortalSettings.ts`, and the key in `updatePortalSettingsSchema` (`packages/shared/src/validators/portal.ts`). The schema is `.strict()`, so a new key returns 400 until it is added there.
-4. Entry in `STRICT_PORTAL_FEATURES` (`error`, `code`) and a `createPortalFeatureGateStrict('<flag>')` line in `routes/portal/index.ts`, mounted by prefix.
+4. Entry in `STRICT_PORTAL_FEATURES` (`error`, `code`) and a `createPortalFeatureGateStrict('<flag>')` line in `routes/portal/index.ts`, mounted by prefix after `portalAuthMiddleware` on the same prefix, as the existing gated prefixes are.
 5. Field in the `select` of the authenticated `GET /portal/branding`, since portal clients read flags from there, and the matching branding type in the portal app (`apps/portal/src/lib/api.ts`) plus page and navigation gating.
 6. Toggle in `OrgPortalSettingsEditor.tsx` (including its `PortalSettings` type), labels in the `settings.json` locale files. For sensitive families the toggle description says plainly who will see the data (see section 4). A hand-written "Enable all" entry is added only for families inside "Enable all".
 7. Read model, route and tests.
@@ -88,7 +88,7 @@ Flag names are proposals.
 ### Wave 1: Hardware health
 
 **Include**
-- Device-level: overall `health` (`ok`, `warning`, `critical`, `unknown`), counts per state (`summary.counts`), `lastCollectedAt`.
+- Device-level: overall `health` (`ok`, `warning`, `critical`, `unknown`), counts per state computed from the returned components, and `lastCollectedAt`.
 - Per component (`deviceHardwareComponents`, current rows only): type (`controller`, `virtual_disk`, `physical_disk`, `cache_battery`, `enclosure`), name, model, `health`, `state`, `sizeBytes`, `temperatureC`, `predictiveFailure`, `progressPercent` (rebuild).
 - Events (`deviceHardwareEvents`): `eventType`, `fromHealth`, `toHealth`, `occurredAt`.
 - File systems (`deviceDisks`): `mountPoint`, `totalGb`, `usedGb`, `freeGb`, `usedPercent`, `health`.
@@ -102,6 +102,7 @@ Flag names are proposals.
 **Notes**
 - `cache_battery` is the RAID controller cache battery, not the notebook battery.
 - `BatteryStatus` carries charge level and state only. There is no wear or cycle count, so the portal cannot say whether a battery is degraded.
+- `device_hardware_health.summary` is not passed through. Its `counts` are keyed by component type and health and also count `bmc` and `collector` components, and `controllerNames` sits in an open jsonb. The portal computes its own counts from the filtered component rows.
 - There is no health signal for memory or CPU. Memory capacity and slots are inventory (wave 2), usage is performance (wave 3).
 
 ### Wave 2: Hardware inventory
@@ -249,4 +250,5 @@ Open for the maintainer:
 
 - **Flag names.** All names in section 5 are proposals.
 - **Gate typing.** Whether the strict gate type includes only the 403-gated sensitive flags (section 3).
+- **Overall health (wave 1).** The device-level `health` is the stored value, as in the console, and can reflect a component the portal does not list (such as `bmc`). The alternative is the worst state among the components returned. Default: the stored value.
 - **Listening ports (wave 2).** Whether connections should also expose local listening ports, which point at exposed services. Currently out.
