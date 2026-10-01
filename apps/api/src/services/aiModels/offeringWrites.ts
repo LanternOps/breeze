@@ -29,11 +29,13 @@ export interface OfferingInUse { surface: AiSurface; level: 'partner' | 'org'; o
 
 /**
  * Runs `write` in a fresh system transaction holding the partner's registry
- * lock. Internal helpers below assume they are already inside it and never
+ * lock, mapping any failure through toRegistryWriteError. Shared by every W04
+ * registry write (offerings here, assignments in assignmentWrites.ts).
+ * Internal helpers below assume they are already inside it and never
  * open a second one: a nested runOutsideDbContext would take a new connection
  * and block on the advisory lock this transaction holds.
  */
-async function inOfferingWrite<T>(partnerId: string, label: string, fallbackMessage: string, write: () => Promise<T>): Promise<T> {
+export async function inPartnerRegistryWrite<T>(partnerId: string, label: string, fallbackMessage: string, write: () => Promise<T>): Promise<T> {
   try {
     return await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
@@ -93,7 +95,7 @@ function platformFastSelectable(pm: PlatformModel): boolean {
  * behind the premium permission (updateOfferingDetails).
  */
 export async function ensurePlatformOffering(input: { partnerId: string; platformModelId: string; enabled: boolean }): Promise<Offering> {
-  return inOfferingWrite(input.partnerId, 'aiModels.ensurePlatformOffering', 'Could not add the model.', async () => {
+  return inPartnerRegistryWrite(input.partnerId, 'aiModels.ensurePlatformOffering', 'Could not add the model.', async () => {
     const platform = await getPlatformModelById(input.platformModelId);
     if (!platform || !platform.platformOffered || platform.lifecycle !== 'available') {
       throw new RegistryWriteError('This model is not offered on the platform.', 'not_eligible', 409, { reason: 'model_unavailable' });
@@ -140,7 +142,7 @@ export async function ensurePlatformOffering(input: { partnerId: string; platfor
 export async function setOfferingEnabled(input: {
   partnerId: string; offeringId: string; enabled: boolean; force: boolean;
 }): Promise<{ offering: Offering; inUse: OfferingInUse[] }> {
-  return inOfferingWrite(input.partnerId, 'aiModels.setOfferingEnabled', 'Could not change the model.',
+  return inPartnerRegistryWrite(input.partnerId, 'aiModels.setOfferingEnabled', 'Could not change the model.',
     () => setOfferingEnabledLocked(input));
 }
 
@@ -263,7 +265,7 @@ export function sameVersion(stored: Date, expectedIso: string): boolean {
 export async function updateOfferingDetails(input: {
   partnerId: string; offeringId: string; patch: OfferingDetailsPatch;
 }): Promise<Offering> {
-  return inOfferingWrite(input.partnerId, 'aiModels.updateOfferingDetails', 'Could not save the model.',
+  return inPartnerRegistryWrite(input.partnerId, 'aiModels.updateOfferingDetails', 'Could not save the model.',
     () => updateOfferingDetailsLocked(input));
 }
 
