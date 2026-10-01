@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -46,5 +47,25 @@ func TestInUserWorkspaceOnlyAfterRegistration(t *testing.T) {
 	}
 	if inUserWorkspace(filepath.Join(filepath.Dir(ws), "agent.yaml")) {
 		t.Error("file outside the registered workspace recognised")
+	}
+}
+
+// TestUserWorkspaceRefusesRegularFile: a file sitting where the workspace
+// directory should be is refused (not replaced, not re-permissioned) and
+// nothing is registered.
+func TestUserWorkspaceRefusesRegularFile(t *testing.T) {
+	t.Cleanup(resetUserWorkspaceForTest)
+	ws := filepath.Join(t.TempDir(), "breeze-support-1")
+	if err := os.WriteFile(ws, []byte("planted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SecureUserWorkspace(ws); err == nil {
+		t.Fatal("SecureUserWorkspace must refuse a regular file at the workspace path")
+	}
+	if inUserWorkspace(ws) {
+		t.Error("a refused workspace must not be registered")
+	}
+	if got, err := os.ReadFile(ws); err != nil || string(got) != "planted" {
+		t.Errorf("planted file changed: %q, %v", got, err)
 	}
 }

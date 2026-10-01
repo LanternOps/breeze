@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -268,8 +269,8 @@ func TestUserWorkspaceRefusesJunction(t *testing.T) {
 
 	var err error
 	asStandardUser(t, func() { err = SecureUserWorkspace(ws) })
-	if err == nil {
-		t.Fatal("SecureUserWorkspace must refuse a junction at the workspace path")
+	if err == nil || !strings.Contains(err.Error(), "refuse reparse-point") {
+		t.Fatalf("SecureUserWorkspace on a junction = %v, want a reparse-point refusal", err)
 	}
 	if inUserWorkspace(ws) {
 		t.Error("a refused workspace must not be registered")
@@ -289,10 +290,11 @@ func sddlOf(t *testing.T, path string) string {
 	return sd.String()
 }
 
-// TestUserWorkspaceElevatedCallerOwnsWorkspace: the same policy works from an
-// elevated token (an administrator who ran Quick Support from an elevated
-// prompt): the owner is still the caller's own user, no privilege needed.
-func TestUserWorkspaceElevatedCallerOwnsWorkspace(t *testing.T) {
+// TestUserWorkspaceCallerTokenOwnsWorkspace: run with the process token as
+// is (elevated on the CI runner, i.e. an administrator who ran Quick Support
+// from an elevated prompt), the same policy applies: the owner is still the
+// caller's own user, no privilege needed, and the workspace is registered.
+func TestUserWorkspaceCallerTokenOwnsWorkspace(t *testing.T) {
 	t.Cleanup(resetUserWorkspaceForTest)
 	user := currentUserSID(t)
 	ws := filepath.Join(t.TempDir(), "breeze-support-7620")
@@ -300,6 +302,54 @@ func TestUserWorkspaceElevatedCallerOwnsWorkspace(t *testing.T) {
 		t.Fatalf("SecureUserWorkspace: %v", err)
 	}
 	assertUserPrivate(t, ws, user, user, userWorkspaceDirSDDLFormat)
+	if !inUserWorkspace(filepath.Join(ws, "secrets.yaml")) {
+		t.Error("secured workspace not registered")
+	}
+}
+
+// TestUserWorkspaceRefusesForeignOwnedDir: a pre-existing directory another
+// principal owns is refused even when its DACL would let this user take it
+// over, and is left exactly as found.
+func TestUserWorkspaceRefusesForeignOwnedDir(t *testing.T) {
+	t.Cleanup(resetUserWorkspaceForTest)
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		t.Skip("needs an elevated token holding SeRestorePrivilege to plant a foreign owner")
+	}
+	ws := filepath.Join(t.TempDir(), "breeze-support-7620")
+	if err := os.Mkdir(ws, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	// Owner BUILTIN\Users stands in for "another account": not the caller,
+	// not SYSTEM, not Administrators. Everyone-FA so access is not what
+	// stops the takeover.
+	foreign, err := windows.SecurityDescriptorFromString("O:BUD:(A;OICI;FA;;;WD)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fOwner, _, _ := foreign.Owner()
+	fDACL, _, _ := foreign.DACL()
+	release, err := enableRestorePrivilege()
+	if err != nil {
+		t.Fatalf("enable SeRestorePrivilege: %v", err)
+	}
+	err = windows.SetNamedSecurityInfo(ws, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION, fOwner, nil, fDACL, nil)
+	release()
+	if err != nil {
+		t.Fatalf("plant foreign owner: %v", err)
+	}
+	before := sddlOf(t, ws)
+
+	asStandardUser(t, func() { err = SecureUserWorkspace(ws) })
+	if err == nil || !strings.Contains(err.Error(), "not the current user") {
+		t.Fatalf("SecureUserWorkspace on a foreign-owned dir = %v, want an owner refusal", err)
+	}
+	if inUserWorkspace(ws) {
+		t.Error("a refused workspace must not be registered")
+	}
+	if after := sddlOf(t, ws); after != before {
+		t.Errorf("foreign-owned dir security changed:\nbefore %s\nafter  %s", before, after)
+	}
 }
 
 // TestUserWorkspaceLeavesMachineConfigPolicyAlone: registering a workspace

@@ -75,6 +75,13 @@ func secureUserWorkspaceDir(path string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, path)
 	}
+	// A directory that already existed is adopted only if it is ours (or
+	// SYSTEM's / Administrators'): one another account created must not be
+	// taken over just because its DACL happens to let us, the same refusal
+	// the Unix variant makes on a foreign uid.
+	if err := checkUserWorkspaceOriginalOwner(h, owner, label); err != nil {
+		return fmt.Errorf("%w: %s", err, path)
+	}
 	if err := setMainAgentSecurityInfoFn(
 		h,
 		windows.SE_FILE_OBJECT,
@@ -93,6 +100,24 @@ func secureUserWorkspaceDir(path string) error {
 		return fmt.Errorf("%w: %s", err, path)
 	}
 	return nil
+}
+
+func checkUserWorkspaceOriginalOwner(h windows.Handle, user *windows.SID, label string) error {
+	sd, err := getMainAgentSecurityInfoFn(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read original %s owner through handle: %w", label, err)
+	}
+	if sd == nil {
+		return fmt.Errorf("original %s has no security descriptor", label)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("read original %s owner: %w", label, err)
+	}
+	if owner != nil && (owner.Equals(user) || trustedMainAgentOwner(owner)) {
+		return nil
+	}
+	return fmt.Errorf("refuse %s owned by %v: not the current user, SYSTEM or Administrators", label, owner)
 }
 
 func verifyUserWorkspaceSecurity(h windows.Handle, wantOwner *windows.SID, wantDACL *windows.ACL, label string) error {

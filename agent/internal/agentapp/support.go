@@ -194,6 +194,20 @@ func supportWorkDir() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("breeze-support-%d", os.Getpid()))
 }
 
+// prepareSupportWorkDir creates supportWorkDir private to the user running
+// the client (owner = that user, protected DACL with no BUILTIN\Users; 0700
+// off Windows) and registers it with config, so every config write inside it
+// keeps that policy instead of the machine-wide ProgramData one, which a
+// standard user may not assign (#7620). A planted junction, symlink or file
+// at the path is refused, not followed.
+func prepareSupportWorkDir() (string, error) {
+	workDir := supportWorkDir()
+	if err := config.SecureUserWorkspace(workDir); err != nil {
+		return "", err
+	}
+	return workDir, nil
+}
+
 // configDirForSupportGuard exposes the real agent config dir to the guard
 // test that pins supportWorkDir away from it.
 func configDirForSupportGuard() string { return config.ConfigDir() }
@@ -331,13 +345,8 @@ func runSupportSession() {
 	fmt.Println("Breeze Quick Support")
 	fmt.Println("Connecting…")
 
-	// Created private to this user (owner = the user, protected DACL, no
-	// BUILTIN\Users; 0700 off Windows) and registered so every config write
-	// inside it keeps that policy instead of the machine-wide ProgramData one,
-	// which a standard user may not assign (#7620). A planted junction or
-	// symlink at this path is refused, not followed.
-	workDir := supportWorkDir()
-	if err := config.SecureUserWorkspace(workDir); err != nil {
+	workDir, err := prepareSupportWorkDir()
+	if err != nil {
 		supportFail("Could not create a temporary working folder for this session.", err)
 		return
 	}
