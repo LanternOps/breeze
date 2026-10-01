@@ -143,6 +143,43 @@ describe('AiModels admin page', () => {
       expect((screen.getByTestId('ai-models-rate-inputCentsPerM') as HTMLInputElement).value).toBe('400');
     });
 
+    it('clearing all prices on a priced model needs confirm and shows Unpriced', async () => {
+      await openOpus();
+      for (const key of ['inputCentsPerM', 'outputCentsPerM', 'cacheReadCentsPerM', 'cacheWriteCentsPerM']) type(`ai-models-rate-${key}`, '');
+      fireEvent.click(screen.getByTestId('ai-models-save'));
+      const confirm = await screen.findByTestId('ai-models-price-confirm');
+      expect(confirm.textContent).toContain('Unpriced');
+      expect(patched()).toBe(false);
+    });
+
+    it('a drop to zero needs confirm; exactly 10× does not', async () => {
+      await openOpus();
+      type('ai-models-rate-inputCentsPerM', '0');
+      fireEvent.click(screen.getByTestId('ai-models-save'));
+      await screen.findByTestId('ai-models-price-confirm');
+      type('ai-models-rate-inputCentsPerM', '40'); // exactly 10× of $4
+      expect(screen.queryByTestId('ai-models-price-confirm')).toBeNull();
+      fireEvent.click(screen.getByTestId('ai-models-save'));
+      await waitFor(() => expect(patched()).toBe(true));
+    });
+
+    it('editing a field after the confirm appears dismisses it so a stale confirm cannot approve new values', async () => {
+      await openOpus();
+      type('ai-models-rate-inputCentsPerM', '0.025');
+      fireEvent.click(screen.getByTestId('ai-models-save'));
+      await screen.findByTestId('ai-models-price-confirm');
+      type('ai-models-rate-inputCentsPerM', '3');
+      expect(screen.queryByTestId('ai-models-price-confirm')).toBeNull();
+      expect(patched()).toBe(false);
+    });
+
+    it('saving without touching prices round-trips the stored cents exactly (0.2 → 20)', async () => {
+      await openOpus();
+      fireEvent.click(screen.getByTestId('ai-models-save'));
+      await waitFor(() => expect(patched()).toBe(true));
+      expect(patchBody().rates).toEqual(RATES);
+    });
+
     it('applies the same unit and guard to speed:fast option rates', async () => {
       const withFast = { ...OPUS, optionRates: { 'speed:fast': { inputCentsPerM: 800, outputCentsPerM: 4000, cacheReadCentsPerM: 40, cacheWriteCentsPerM: 1000 } } };
       fetchWithAuth.mockImplementation((_url: string, options?: RequestInit) => {

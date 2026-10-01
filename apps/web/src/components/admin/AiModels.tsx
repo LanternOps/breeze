@@ -73,7 +73,8 @@ function dollarsToCents(dollars: number): number {
 /** More than 10× apart in either direction (a drop to zero counts). */
 const PRICE_JUMP_FACTOR = 10;
 function isLargePriceChange(storedCents: number, nextCents: number): boolean {
-  if (storedCents === nextCents || storedCents === 0) return false;
+  if (storedCents === nextCents) return false;
+  if (storedCents === 0) return true; // 0 → anything is an unbounded jump
   return nextCents > storedCents * PRICE_JUMP_FACTOR || nextCents < storedCents / PRICE_JUMP_FACTOR;
 }
 
@@ -101,7 +102,8 @@ interface PriceChange {
   group: 'standard' | 'fast';
   key: RateKey;
   storedCents: number;
-  nextCents: number;
+  /** null = the whole group was cleared (model becomes unpriced for it). */
+  nextCents: number | null;
 }
 
 /** Fields whose new price is >10× away from the stored one. Invalid/blank drafts yield none (save rejects those first). */
@@ -110,8 +112,9 @@ function findLargePriceChanges(model: AdminPlatformModel, draft: Draft): PriceCh
     { group: 'standard' as const, stored: model.rates, next: draftToRates(draft.rates) },
     { group: 'fast' as const, stored: model.optionRates?.['speed:fast'] ?? null, next: draftToRates(draft.fastRates) },
   ];
-  return groups.flatMap(({ group, stored, next }) => {
-    if (!stored || !next || next === 'invalid') return [];
+  return groups.flatMap(({ group, stored, next }): PriceChange[] => {
+    if (!stored || next === 'invalid') return [];
+    if (next === null) return RATE_KEYS.map((key) => ({ group, key, storedCents: stored[key], nextCents: null }));
     return RATE_KEYS.filter((key) => isLargePriceChange(stored[key], next[key]))
       .map((key) => ({ group, key, storedCents: stored[key], nextCents: next[key] }));
   });
@@ -571,7 +574,7 @@ export default function AiModels() {
                         group: change.group === 'fast' ? t('admin.aiModels.drawer.priceGroupFast') : t('admin.aiModels.drawer.priceGroupStandard'),
                         field: t(/* i18n-dynamic */ `admin.aiModels.drawer.${change.key}`),
                         stored: dollarsPerM(change.storedCents),
-                        next: dollarsPerM(change.nextCents),
+                        next: change.nextCents === null ? t('admin.aiModels.unpriced') : dollarsPerM(change.nextCents),
                       })}
                     </li>
                   ))}
