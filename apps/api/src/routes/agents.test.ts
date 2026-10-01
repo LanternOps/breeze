@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { agentRoutes } from './agents';
 
 // Public download routes (routes/agents/download.ts) take their per-IP
@@ -816,7 +817,7 @@ describe('agent routes', () => {
 
       expect(res.status).toBe(401);
       const body = await res.json() as { code?: string; expected?: string; declared?: string };
-      expect(body.code).toBe('re_enrollment_required');
+      expect(body.code).toBe(ERROR_CODES.RE_ENROLLMENT_REQUIRED);
       expect(body.expected).toBe('agent');
       expect(body.declared).toBe('watchdog');
       expect(claimPendingCommandsForDevice).not.toHaveBeenCalled();

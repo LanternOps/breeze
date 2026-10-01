@@ -1,4 +1,5 @@
 import { Hono, type Context, type Next } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { HTTPException } from 'hono/http-exception';
 import { and, eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
@@ -250,7 +251,7 @@ customFieldValuesRoutes.patch(
       return c.json(
         {
           error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
-          code: 'invalid-custom-field-value',
+          code: ERROR_CODES.INVALID_CUSTOM_FIELD_VALUE,
           fields: validation.rejected,
         },
         400,
