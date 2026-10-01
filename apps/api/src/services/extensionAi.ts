@@ -37,8 +37,8 @@ import {
   releaseUnusedAiBudgetReservation,
   reserveAiBudget,
 } from './aiBudgetReservations';
+import { EXTENSION_AI_DEFAULT_MODEL, legacyExtensionModel } from './aiModels/legacySurfaceModels';
 
-const EXTENSION_AI_DEFAULT_MODEL = 'claude-haiku-4-5';
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -127,9 +127,7 @@ async function classifyProviderFailure(
 export function buildExtensionAiContext(): ExtensionAiContext {
   return {
     async invoke(input: ExtensionAiInvokeInput) {
-      const model = input.model
-        ?? process.env.WORKSPACE_CONTENT_LLM_MODEL
-        ?? EXTENSION_AI_DEFAULT_MODEL;
+      const model = legacyExtensionModel(input.model);
       if (!isPricedModel(model)) {
         // PERMANENT: the model id is a deployment constant (a
         // WORKSPACE_CONTENT_LLM_MODEL typo, or an id retired from the pricing
@@ -263,6 +261,8 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           billingSource,
           wire.catalogPricing,
           reservationId,
+          0,
+          { surface: 'extension_content' },
         );
       } catch (error) {
         await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })

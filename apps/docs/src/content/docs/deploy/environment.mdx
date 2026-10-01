@@ -306,6 +306,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `AGENT_LOG_RETENTION_DAYS` | `7` | Days to keep uploaded agent diagnostic logs, clamped to 1–365 |
 | `AGENT_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `AGENT_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `AI_INVOCATIONS_RETENTION_DAYS` | `400` | Days to keep AI invocation ledger rows, capped at 3650 |
+| `AI_INVOCATIONS_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `AI_INVOCATIONS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per daily run |
 | `CHANGE_LOG_RETENTION_DAYS` | `90` | Days to keep processed device change-log entries, clamped to 1–365 |
 | `CHANGE_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `CHANGE_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |

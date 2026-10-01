@@ -1447,6 +1447,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #7600 W02: daily prune of the append-only `ai_invocations` ledger as
+    // breeze_audit_admin. No route graph / socket import in its closure.
+    name: 'aiInvocationRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiInvocationRetention');
+      return { init: m.initializeAiInvocationRetention, shutdown: m.shutdownAiInvocationRetention };
+    },
+  },
+  {
     // Phase 2 wave P2-1 (alert verdicts), task 13: delayed BullMQ job that
     // admits a verdict run for an alert that stays open and uncorrelated for
     // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches

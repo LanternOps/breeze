@@ -178,6 +178,8 @@ import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
+import { reconcileAllPartnersFromLegacy } from './services/aiModels/legacyReconcile';
+import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
@@ -284,6 +286,7 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { startPlatformModelSnapshotRefresher } from './services/aiModels/platformModels';
+import { registerInvocationLedgerShadow } from './services/aiModels/invocationLedger';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -1776,6 +1779,9 @@ async function bootstrap(): Promise<void> {
   // token-price fallback). Not awaited; until the first load lands, those
   // paths use the W00 bootstrap rules.
   startPlatformModelSnapshotRefresher();
+  // AI model registry W02 (#7600): shadow every legacy AI cost record into the
+  // invocation ledger (after the caller's transaction exits; never affects billing).
+  registerInvocationLedgerShadow();
 
   // Boot-time self-test for every deployment that signs its own update
   // manifests: round-trip a synthetic manifest through sign + validate. If this
@@ -1854,6 +1860,25 @@ async function bootstrap(): Promise<void> {
     .catch((err) => {
       console.error('[startup] Sealing stored settings secrets failed:', err);
       captureException(err, undefined, { area: 'settings_secret_backfill' });
+    });
+
+  // AI model registry W02 (#7600): keep the registry a projection of the legacy
+  // AI config (connections, offerings, assignments, agent/session bindings).
+  // Detached: nothing in W02 routes on it, and GET /ai/provider reads only
+  // connection rows, which the migration and the facade keep exact. Env changes
+  // need a restart, so a per-boot sweep tracks ANTHROPIC_MODEL-style defaults.
+  // W03 (Task 6A) deletes this block: each partner is projected exactly once,
+  // durably, at its cutover (gated in resolveModel, plus a leased sweep after serve()).
+  void reconcileAllPartnersFromLegacy()
+    .then((result) => {
+      console.log(`[startup] AI model registry reconciled for ${result.partners} partner(s); ${result.failures.length} failed`);
+      for (const failure of result.failures) {
+        captureException(new Error(failure.error), undefined, { area: 'ai_model_registry_reconcile', partnerId: failure.partnerId });
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] AI model registry reconcile failed:', safeErrorMessage(err));
+      captureException(err, undefined, { area: 'ai_model_registry_reconcile' });
     });
 
   // Storage keys that S3 backup destinations used before backups were written

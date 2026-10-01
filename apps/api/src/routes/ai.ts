@@ -583,6 +583,8 @@ aiRoutes.post(
               billingSource,
               catalogPricing,
               reservationId,
+              0,
+              { surface: 'chat', sourceRef: 'ticket_draft', userId: auth.user.id },
             );
           } else {
             await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
@@ -612,6 +614,8 @@ aiRoutes.post(
         // list rates.
         catalogPricing,
         reservationId,
+        0,
+        { surface: 'chat', sourceRef: 'ticket_draft', userId: auth.user.id },
       );
     } catch (err) {
       captureException(err);

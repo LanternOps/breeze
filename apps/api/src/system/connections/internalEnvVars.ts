@@ -42,6 +42,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_WS_UPDATE_STATUS_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
   // AI_*
   AI_COMPUTE_PRICE_MULTIPLIER: 'AI billing price multiplier',
+  AI_INVOCATIONS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  AI_INVOCATIONS_RETENTION_DAYS: 'data retention window',
+  AI_INVOCATIONS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*

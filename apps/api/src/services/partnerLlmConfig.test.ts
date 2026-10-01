@@ -62,6 +62,16 @@ vi.mock('./aiModels/platformModels', () => ({
   isOfferablePlatformModel: (...args: unknown[]) => isOfferablePlatformModelMock(...args),
 }));
 
+const reconcileState = vi.hoisted(() => ({ calls: [] as string[] }));
+const lockPartnerRegistryReconcileMock = vi.hoisted(() => vi.fn(async (_partnerId: string) => undefined));
+vi.mock('./aiModels/legacyReconcile', () => ({
+  lockPartnerRegistryReconcile: lockPartnerRegistryReconcileMock,
+  reconcilePartnerFromLegacyInTx: vi.fn(async (partnerId: string) => {
+    reconcileState.calls.push(partnerId);
+    return { partnerId };
+  }),
+}));
+
 vi.mock('./sentry', () => ({
   captureException: captureExceptionMock,
 }));
@@ -181,6 +191,7 @@ function compileSql(expression: unknown): { sql: string; params: unknown[] } {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reconcileState.calls.length = 0;
   anthropicState.constructorOptions.length = 0;
   dbState.insertResults.length = 0;
   dbState.selectResults.length = 0;
@@ -756,5 +767,158 @@ describe('updatePartnerLlmEndpoint', () => {
     });
 
     expect(dbState.updateSets[0]).not.toHaveProperty('defaultModel');
+  });
+});
+
+describe('registry facade (#7600 W02)', () => {
+  it('getPartnerLlmStatus reads the registry connection, not partner_llm_configs', async () => {
+    const { db } = await import('../db');
+    const fromTables: unknown[] = [];
+    vi.mocked(db.select).mockImplementationOnce(() => ({
+      from: vi.fn((table: unknown) => {
+        fromTables.push(table);
+        return { where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ keyLast4: '1234', defaultModel: null, status: 'active', verifiedAt: null, lastError: null, catalogEntryId: null }])) })) };
+      }),
+    }) as never);
+    const { partnerAiConnections } = await import('../db/schema');
+    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ configured: true, keyLast4: '1234', defaultModel: null });
+    expect(fromTables).toEqual([partnerAiConnections]);
+  });
+
+  it('every successful write reconciles the partner inside the write transaction', async () => {
+    isOfferablePlatformModelMock.mockResolvedValue(true);
+    dbState.insertResults.push([{ id: CONFIG_ID, configVersion: 1 }]);
+    dbState.selectResults.push([]); // resolveProbeEndpointForPartner: no catalog pin
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+    dbState.updateResults.push([{ configVersion: 2 }]);
+    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
+    dbState.deleteResults.push([{ id: CONFIG_ID }]);
+    await deletePartnerLlmConfig(PARTNER_ID);
+    expect(reconcileState.calls).toEqual([PARTNER_ID, PARTNER_ID, PARTNER_ID]);
+  });
+
+  it('a rejected probe or validation reconciles nothing', async () => {
+    isOfferablePlatformModelMock.mockResolvedValue(false);
+    anthropicState.create.mockRejectedValueOnce(new anthropicState.apiErrorClass('bad key', 401));
+    dbState.selectResults.push([]);
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 400 });
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-made-up-model' })).rejects.toMatchObject({ status: 400 });
+    expect(reconcileState.calls).toEqual([]);
+    expect(lockPartnerRegistryReconcileMock).not.toHaveBeenCalled();
+  });
+
+  // Task 12→13 carry: the reconcile lock must be the FIRST statement of the
+  // write transaction. Taken after the legacy write, the mirror trigger's row
+  // lock on partner_ai_connections would be held while waiting on a boot sweep
+  // that holds the advisory lock and wants that row (40P01).
+  it('takes the reconcile advisory lock before the legacy write, on every write path', async () => {
+    const { db } = await import('../db');
+    const firstCall = (fn: unknown) => (fn as { mock: { invocationCallOrder: number[] } }).mock.invocationCallOrder[0]!;
+    isOfferablePlatformModelMock.mockResolvedValue(true);
+
+    dbState.insertResults.push([{ id: CONFIG_ID, configVersion: 1 }]);
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+    expect(lockPartnerRegistryReconcileMock).toHaveBeenCalledWith(PARTNER_ID);
+    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.insert));
+
+    vi.clearAllMocks();
+    dbState.updateResults.push([{ configVersion: 2 }]);
+    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
+    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.update));
+
+    vi.clearAllMocks();
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: null }]);
+    dbState.updateResults.push([{ configVersion: 3 }]);
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
+    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.update));
+
+    vi.clearAllMocks();
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+    dbState.updateResults.push([{ configVersion: 4 }]);
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
+    // The probe ran before the transaction opened: no lock is held across the network call.
+    expect(firstCall(anthropicState.create)).toBeLessThan(firstCall(lockPartnerRegistryReconcileMock));
+    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.update));
+
+    vi.clearAllMocks();
+    dbState.deleteResults.push([{ id: CONFIG_ID }]);
+    await deletePartnerLlmConfig(PARTNER_ID);
+    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.delete));
+    expect(reconcileState.calls).toEqual([PARTNER_ID, PARTNER_ID, PARTNER_ID, PARTNER_ID, PARTNER_ID]);
+  });
+
+  // Task 12→13 carry: a Drizzle query error's message and params carry the SQL
+  // parameters (here: key ciphertext and fingerprint). It must never reach the
+  // route's error handler, the console or Sentry.
+  it('maps a raw database failure inside the write to a safe 500 that keeps only the SQLSTATE', async () => {
+    const { db } = await import('../db');
+    const pgCause = Object.assign(new Error('duplicate key value violates unique constraint "x"'), {
+      code: '23505',
+      detail: 'Key (api_key_encrypted)=(enc:v3:SECRET-CIPHERTEXT) already exists.',
+    });
+    const drizzleError = Object.assign(
+      new Error('Failed query: insert into "partner_llm_configs" params: enc:v3:SECRET-CIPHERTEXT,fp1:SECRET-FINGERPRINT'),
+      { cause: pgCause, params: ['enc:v3:SECRET-CIPHERTEXT', 'fp1:SECRET-FINGERPRINT'] },
+    );
+    vi.mocked(db.insert).mockImplementationOnce(() => { throw drizzleError; });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(PartnerLlmError);
+      expect(error).toMatchObject({ status: 500 });
+      const err = error as PartnerLlmError;
+      const cause = err.cause as Error & { code?: unknown };
+      expect(cause.code).toBe('23505');
+      const { inspect } = await import('node:util');
+      const surfaces = [
+        inspect(err, { showHidden: true, depth: 10 }),
+        ...consoleError.mock.calls.map((args) => args.map((a) => inspect(a, { showHidden: true, depth: 10 })).join(' ')),
+      ].join('\n');
+      expect(surfaces).not.toContain('SECRET');
+    } finally {
+      consoleError.mockRestore();
+    }
+    expect(reconcileState.calls).toEqual([]);
+  });
+
+  it('keeps the primary Postgres message (no values) on the sanitized cause', async () => {
+    const { db } = await import('../db');
+    class PostgresError extends Error {}
+    const pgError = Object.assign(new PostgresError('deadlock detected'), {
+      code: '40P01',
+      parameters: ['enc:v3:SECRET-CIPHERTEXT'],
+      query: 'insert into partner_llm_configs ... SECRET',
+    });
+    vi.mocked(db.insert).mockImplementationOnce(() => { throw pgError; });
+    const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e) as PartnerLlmError;
+    expect(error).toBeInstanceOf(PartnerLlmError);
+    const cause = error.cause as Error & { code?: unknown };
+    expect(cause.code).toBe('40P01');
+    expect(cause.message).toContain('deadlock detected');
+    const { inspect } = await import('node:util');
+    expect(inspect(error, { showHidden: true, depth: 10 })).not.toContain('SECRET');
+  });
+
+  // Review fix: a bug in the reconcile/projection carries no SQL values, so it
+  // must surface with its own message and stack, not a sanitized shell.
+  it('surfaces a non-query error from the reconcile with its message and stack intact', async () => {
+    const { reconcilePartnerFromLegacyInTx } = await import('./aiModels/legacyReconcile');
+    const bug = new Error('projection: x');
+    vi.mocked(reconcilePartnerFromLegacyInTx).mockRejectedValueOnce(bug);
+    isOfferablePlatformModelMock.mockResolvedValue(true);
+    dbState.updateResults.push([{ configVersion: 2 }]);
+    const error = await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }).catch((e: unknown) => e);
+    expect(error).toBe(bug);
+    expect((error as Error).message).toBe('projection: x');
+    expect((error as Error).stack).toContain('projection: x');
+  });
+
+  it('passes a PartnerLlmError thrown inside the write through unchanged (a 409 reconciles nothing)', async () => {
+    isOfferablePlatformModelMock.mockResolvedValue(true);
+    dbState.updateResults.push([]);
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }))
+      .rejects.toMatchObject({ name: 'PartnerLlmError', status: 409, message: 'Connect an Anthropic API key before selecting a model.' });
+    expect(reconcileState.calls).toEqual([]);
   });
 });

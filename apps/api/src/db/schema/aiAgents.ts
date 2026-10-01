@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -29,6 +30,7 @@ import type {
 } from '@breeze/shared';
 import { alertCorrelationGroups, alerts } from './alerts';
 import { aiSessions } from './ai';
+import { partnerAiModels } from './aiModelRegistry';
 import { aiAgentSchedules } from './aiAgentSchedules';
 import { devices } from './devices';
 import { metricAnomalyIncidents } from './metricAnomalyIncidents';
@@ -51,6 +53,10 @@ export const aiAgents = pgTable('ai_agents', {
   enabled: boolean('enabled').notNull().default(false),
   mode: text('mode').$type<AiAgentMode>().notNull().default('off'),
   model: varchar('model', { length: 100 }),
+  // AI model registry W02 (#7600): the offering this policy is bound to
+  // (backfilled from `model` by the boot reconcile; runs read `model` until W03).
+  offeringId: uuid('offering_id'),
+  offeringPartnerId: uuid('offering_partner_id'),
   toolAllowlist: jsonb('tool_allowlist').$type<string[]>().notNull().default([]),
   protectedResources: jsonb('protected_resources').$type<Partial<AiAgentProtectedResources>>().notNull().default({}),
   limits: jsonb('limits').$type<Partial<AiAgentLimits>>().notNull().default({}),
@@ -76,6 +82,17 @@ export const aiAgents = pgTable('ai_agents', {
     .where(sql`${table.disabledAt} IS NULL`),
   partnerIdx: index('ai_agents_partner_id_idx').on(table.partnerId),
   orgIdx: index('ai_agents_org_id_idx').on(table.orgId),
+  offeringFk: foreignKey({
+    columns: [table.offeringId, table.offeringPartnerId],
+    foreignColumns: [partnerAiModels.id, partnerAiModels.partnerId],
+    name: 'ai_agents_offering_fk',
+  }).onDelete('set null'),
+  offeringOrgPartnerFk: foreignKey({
+    columns: [table.orgId, table.offeringPartnerId],
+    foreignColumns: [organizations.id, organizations.partnerId],
+    name: 'ai_agents_offering_org_partner_fk',
+  }),
+  offeringIdx: index('ai_agents_offering_idx').on(table.offeringId).where(sql`${table.offeringId} IS NOT NULL`),
 }));
 
 // Ledger (spec §4.2). org_id is ALWAYS the target org (the device's org), even

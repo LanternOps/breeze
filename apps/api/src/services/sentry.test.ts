@@ -15,12 +15,14 @@ const captureMessageMock = vi.fn();
 const setLevelMock = vi.fn();
 const setExtrasMock = vi.fn();
 const setContextMock = vi.fn();
+const setFingerprintMock = vi.fn();
 const withScopeMock = vi.fn((cb: (scope: unknown) => void) =>
   cb({
     setTag: setTagMock,
     setContext: setContextMock,
     setLevel: setLevelMock,
     setExtras: setExtrasMock,
+    setFingerprint: setFingerprintMock,
   }),
 );
 
@@ -48,6 +50,7 @@ describe('sentry service', () => {
     setLevelMock.mockClear();
     setExtrasMock.mockClear();
     setContextMock.mockClear();
+    setFingerprintMock.mockClear();
     process.env = { ...ORIGINAL_ENV };
   });
 
@@ -187,6 +190,20 @@ describe('sentry service', () => {
     expect(setTagMock).toHaveBeenCalledWith('connect_timeout_cause', 'unknown');
     expect(setTagMock).toHaveBeenCalledWith('event_loop_lag_bucket', 'unknown');
     setConnectTimeoutClassifier(null);
+  });
+
+  // #7600 W02: a bursty call site (the ledger shadow listener) groups its
+  // events under one fixed, bounded fingerprint instead of per-message.
+  it('captureException applies an explicit fingerprint, and sets none by default', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    captureException(new Error('shadow failed'), undefined, undefined, { fingerprint: ['ai_invocation_shadow', '42501'] });
+    expect(setFingerprintMock).toHaveBeenCalledWith(['ai_invocation_shadow', '42501']);
+    setFingerprintMock.mockClear();
+    captureException(new Error('other'));
+    expect(setFingerprintMock).not.toHaveBeenCalled();
   });
 
   it('captureException leaves non-timeout errors untagged by the #3022 classifier', async () => {

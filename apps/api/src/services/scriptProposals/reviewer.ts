@@ -25,6 +25,7 @@ import {
 import { transitionProposal } from './proposals';
 import { resolveEffectiveScriptPolicy, type EffectiveScriptPolicy } from './policy';
 import type { ScriptReviewJobData } from './reviewQueue';
+import { legacyReviewerModel } from '../aiModels/legacySurfaceModels';
 
 export const SCRIPT_REVIEW_TIMEOUT_MS = 60_000;
 export const SCRIPT_REVIEW_MAX_OUTPUT_TOKENS = 2_000;
@@ -145,7 +146,7 @@ export function buildReviewerPrompt(args: {
  */
 export async function resolveReviewerModel(orgId: string): Promise<string> {
   const effective = await resolveReviewerPolicy(orgId);
-  return effective.reviewerModel ?? AI_SCRIPT_REVIEWER_MODEL;
+  return legacyReviewerModel(effective.reviewerModel, AI_SCRIPT_REVIEWER_MODEL);
 }
 
 /** The effective lane policy as the worker sees it (system context — there
@@ -337,6 +338,8 @@ function errorMessage(error: unknown): string {
  * call, never around it.
  */
 export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptProposalReviewRow> {
+  // Invocation-ledger attribution for every cost record below (#7600 W02).
+  const ledger = { surface: 'script_reviewer' } as const;
   const proposal = await loadProposalForReview(job.orgId, job.proposalId);
   if (!proposal) {
     throw new ProposalNotReviewableError(job.proposalId, 'missing');
@@ -367,11 +370,11 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   }
   const reservationId = reservation.reservationId;
 
-  const model = effectivePolicy.reviewerModel ?? AI_SCRIPT_REVIEWER_MODEL;
+  const model = legacyReviewerModel(effectivePolicy.reviewerModel, AI_SCRIPT_REVIEWER_MODEL);
 
   // Settle-at-zero helper for the branches where no tokens were ever spent.
   const settleAtZero = (catalogPricing?: CatalogPricing) =>
-    recordUsage(null, job.orgId, model, 0, 0, false, billingSource, catalogPricing, reservationId);
+    recordUsage(null, job.orgId, model, 0, 0, false, billingSource, catalogPricing, reservationId, 0, ledger);
 
   // From here on a reservation is open: every exit must settle it and fail
   // closed, including the prompt-input reads (an org erased mid-flight, a
@@ -447,7 +450,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
 
   if (!parsed || !parsed.success) {
     // Tokens really were spent: settle at the REAL counts, then fail closed.
-    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId);
+    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId, 0, ledger);
     const reason = !parsed
       ? 'Reviewer returned no parseable JSON verdict'
       : `Malformed reviewer verdict: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`;
@@ -497,7 +500,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     });
   } catch (error) {
     if (error instanceof ProposalAlreadyReviewedError) {
-      await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId);
+      await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId, 0, ledger);
       console.warn('[scriptReview] lost the transition race for a proposal already reviewed by a concurrent attempt', {
         proposalId: job.proposalId,
       });
@@ -513,7 +516,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   // only lose the audit row on top of the spend. Capture loudly instead —
   // the reservation's 30-minute TTL sweep still reclaims the cap.
   try {
-    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId);
+    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId, 0, ledger);
   } catch (error) {
     console.error('[scriptReview] budget settlement failed after the review committed', {
       proposalId: job.proposalId, orgId: job.orgId, reservationId, inputTokens, outputTokens,
