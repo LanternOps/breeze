@@ -14,6 +14,7 @@
  */
 import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { ModelRates } from '@breeze/shared';
 import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -155,11 +156,23 @@ export async function loadLegacySnapshot(partnerId: string): Promise<LegacySnaps
   };
 }
 
-export async function ensureLegacyPlatformModel(modelId: string): Promise<string> {
+/**
+ * Bootstrap the platform row for a DEPLOYMENT-sourced id (the env default /
+ * reviewer / extension model) that has none. Legacy served that id on the
+ * platform key and billed it at `rates` (getLegacyModelRates: its listed rate,
+ * else the default-rate fallback), so the row is created OFFERED at exactly
+ * those rates (#7601 gap A: otherwise a self-hosted gateway model loses AI at
+ * cutover). Capabilities stay null; the candidate loader resolves unknown
+ * capabilities on the platform key as legacy ran the id. An existing row is
+ * never touched (ON CONFLICT DO NOTHING): seeded and operator-edited rows win.
+ */
+export async function ensureLegacyPlatformModel(modelId: string, rates: ModelRates): Promise<string> {
   assertSystemContext();
   await db.execute(sql`
-    INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle)
-    VALUES ('anthropic', ${modelId}, ${modelId}, false, false, 'available')
+    INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle,
+                                    input_cents_per_m, output_cents_per_m, cache_read_cents_per_m, cache_write_cents_per_m)
+    VALUES ('anthropic', ${modelId}, ${modelId}, true, false, 'available',
+            ${rates.inputCentsPerM}, ${rates.outputCentsPerM}, ${rates.cacheReadCentsPerM}, ${rates.cacheWriteCentsPerM})
     ON CONFLICT (model_id) DO NOTHING`);
   const [row] = await db.select({ id: aiPlatformModels.id }).from(aiPlatformModels).where(eq(aiPlatformModels.modelId, modelId)).limit(1);
   if (!row) throw new Error(`could not bootstrap ai_platform_models row for ${modelId}`);
@@ -218,8 +231,8 @@ async function upsertOfferings(desired: DesiredRegistryState, partnerId: string,
       if (!platformModelId) {
         // Only deployment-sourced ids reach here (projection invariant): a
         // tenant-typed id must never create a global catalog row.
-        if (!o.needsBootstrapPlatformRow) throw new Error(`legacyReconcile: platform offering ${o.key} has no platform row and is not bootstrappable`);
-        platformModelId = await ensureLegacyPlatformModel(o.modelId);
+        if (!o.needsBootstrapPlatformRow || !o.price) throw new Error(`legacyReconcile: platform offering ${o.key} has no platform row and is not bootstrappable`);
+        platformModelId = await ensureLegacyPlatformModel(o.modelId, o.price);
         report.bootstrapPlatformModels.push(o.modelId);
       }
       const [row] = await db.insert(partnerAiModels)

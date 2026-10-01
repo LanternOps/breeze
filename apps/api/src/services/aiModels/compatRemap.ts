@@ -151,7 +151,7 @@ async function ensureOffering(partnerId: string, target: Target, modelId: string
       // A tenant-typed id never creates a global platform row (W02 bootstrap
       // provenance): fall back to the deployment default, which may.
       if (modelId !== deploymentDefault) return ensureOffering(partnerId, target, deploymentDefault);
-      platform = { id: await ensureLegacyPlatformModel(modelId) };
+      platform = { id: await ensureLegacyPlatformModel(modelId, getLegacyModelRates(modelId).rates) };
     }
     const [row] = await rows<{ id: string }>(sql`INSERT INTO partner_ai_models (partner_id, platform_model_id, source, enabled)
       VALUES (${partnerId}::uuid, ${platform.id}::uuid, 'platform', true)

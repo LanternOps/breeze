@@ -89,7 +89,18 @@ describe('buildDesiredRegistryState (#7600 W02, spec §10)', () => {
     const byok = buildDesiredRegistryState(snapshot({ config: { id: CONN, status: 'active', defaultModel: 'my-gateway-model', catalogEntryId: null } }), env);
     expect(offering(byok, `conn:${CONN}:my-gateway-model`)).toMatchObject({ source: 'manual', platformModelId: null, price: RATES });
     const platform = buildDesiredRegistryState(snapshot(), { ...env, defaultModel: 'my-gateway-model' });
-    expect(offering(platform, 'platform:my-gateway-model')).toMatchObject({ source: 'platform', platformModelId: null, needsBootstrapPlatformRow: true, price: null });
+    // The bootstrapped platform row is priced exactly as legacy billing priced the env id (#7601 gap A).
+    expect(offering(platform, 'platform:my-gateway-model')).toMatchObject({ source: 'platform', platformModelId: null, needsBootstrapPlatformRow: true, price: RATES });
+  });
+
+  it('bootstrap price is the legacy rate for THAT id; an existing platform row (priced or not) carries no price', () => {
+    const perModel = (m: string): ModelRates => ({ ...RATES, inputCentsPerM: m.length });
+    const s = buildDesiredRegistryState(snapshot({ liveSessions: [{ id: 's1', orgId: ORG_A, model: 'claude-sonnet-4-5-20250929' }] }),
+      { ...env, defaultModel: 'gw-a', extensionModel: 'gateway-bb', legacyRates: perModel });
+    expect(offering(s, 'platform:gw-a').price).toEqual(perModel('gw-a'));
+    expect(offering(s, 'platform:gateway-bb').price).toEqual(perModel('gateway-bb'));
+    expect(offering(s, 'platform:claude-sonnet-5-5').price).toBeNull();
+    expect(offering(s, 'platform:claude-sonnet-4-5-20250929')).toMatchObject({ needsBootstrapPlatformRow: false, price: null });
   });
 
   describe('bootstrap provenance: only deployment (env) ids may create a global platform row', () => {

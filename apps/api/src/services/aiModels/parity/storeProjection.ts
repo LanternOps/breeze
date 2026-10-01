@@ -5,6 +5,7 @@
  * status, and catalog binding. Pure. W02 feeds it the materialized projection;
  * W03 swaps in resolveModel.
  */
+import type { ModelRates } from '@breeze/shared';
 import type { ListedProvider } from '../../llmProviderCatalog';
 import { decryptConnectionKey } from '../connections';
 import { mergeEffectiveAssignment, isPermitted, type AssignmentRowInput } from '../assignments';
@@ -15,7 +16,8 @@ export interface RegistrySnapshot {
   partnerId: string;
   connections: ReadonlyArray<{ id: string; kind: 'anthropic_byok' | 'catalog'; status: 'active' | 'error'; apiKeyEncrypted: string | null }>;
   offerings: ReadonlyArray<{ id: string; connectionId: string | null; modelId: string | null; platformModelId: string | null; enabled: boolean }>;
-  platformModels: ReadonlyArray<{ id: string; modelId: string }>;
+  /** `bootstrapRates`: set only on a row the reconcile BOOTSTRAPS (created offered at these legacy rates). */
+  platformModels: ReadonlyArray<{ id: string; modelId: string; bootstrapRates?: ModelRates }>;
   assignments: ReadonlyArray<AssignmentRowInput & { orgId: string | null; surface: string }>;
   agents: ReadonlyArray<{ id: string; kind: string; orgId: string | null; offeringId: string | null }>;
   sessions: ReadonlyArray<{ id: string; offeringId: string | null }>;
@@ -33,7 +35,9 @@ export function materializeDesiredState(desired: DesiredRegistryState, fixture: 
   const config = fixture.snapshot.config;
   const platformModels = [
     ...fixture.snapshot.platformModels.map((m) => ({ id: m.id, modelId: m.modelId })),
-    ...desired.offerings.filter((o) => o.needsBootstrapPlatformRow).map((o) => ({ id: `bootstrap:${o.modelId}`, modelId: o.modelId })),
+    ...desired.offerings.filter((o) => o.needsBootstrapPlatformRow).map((o) => ({
+      id: `bootstrap:${o.modelId}`, modelId: o.modelId, ...(o.price ? { bootstrapRates: o.price } : {}),
+    })),
   ];
   return {
     partnerId: desired.partnerId,

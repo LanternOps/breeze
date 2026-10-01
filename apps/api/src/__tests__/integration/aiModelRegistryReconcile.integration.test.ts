@@ -224,15 +224,19 @@ describe.skipIf(!RUN)('legacy reconcile (#7600 W02)', () => {
     for (const r of rows) expect(r.connection_id).toBe(r.surface === 'patch_test' ? null : configId);
   });
 
-  it('an unknown platform default bootstraps one unpriced platform row, reused by every partner', async () => {
+  it('an unknown platform default bootstraps one platform row, offered at the legacy rate, reused by every partner', async () => {
     const modelId = `w02-gateway-${randomUUID()}`;
     const [p, q] = [await createPartner(), await createPartner()];
     const r1 = await reconcilePartnerFromLegacy(p.id, { ...env, defaultModel: modelId });
     const r2 = await reconcilePartnerFromLegacy(q.id, { ...env, defaultModel: modelId });
     expect(r1.bootstrapPlatformModels).toEqual([modelId]);
     expect(r2.bootstrapPlatformModels).toEqual([]);
-    const rows = await adminSql`SELECT platform_offered, input_cents_per_m FROM ai_platform_models WHERE model_id = ${modelId}`;
-    expect(rows).toEqual([{ platform_offered: false, input_cents_per_m: null }]);
+    // #7601 gap A: priced and offered exactly as legacy billed the env id (default-rate fallback), else self-host loses AI.
+    const rows = await adminSql`SELECT platform_offered, input_cents_per_m::float8 AS input, output_cents_per_m::float8 AS output,
+                                       cache_read_cents_per_m::float8 AS read, cache_write_cents_per_m::float8 AS write
+                                  FROM ai_platform_models WHERE model_id = ${modelId}`;
+    const legacy = getLegacyModelRates(modelId).rates;
+    expect(rows).toEqual([{ platform_offered: true, input: legacy.inputCentsPerM, output: legacy.outputCentsPerM, read: legacy.cacheReadCentsPerM, write: legacy.cacheWriteCentsPerM }]);
   });
 
   // Final review (I): ai_platform_models is a global catalog. A tenant-typed id

@@ -16,6 +16,7 @@ import {
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiSessions, organizations, partners } from '../../db/schema';
+import { legacyWireProfile } from '../aiModel';
 import { isPlatformLlmConfigured } from '../llm/llmAvailability';
 import {
   buildCatalogEndpointSnapshot,
@@ -92,6 +93,35 @@ const UNVERIFIED_CAPABILITIES: DerivedCapabilities = {
   supportsVision: false,
 };
 
+/** The thinking options the W00 rules made selectable; null when the tree itself decided. */
+type LegacyThinkingSupport = Pick<OptionSupport, 'effort' | 'thinkingDisplay'> | null;
+
+/**
+ * Capabilities of a candidate on an ANTHROPIC connection (platform key,
+ * anthropic_byok, catalog; never openai_compatible). A tree that derives to
+ * `unknown` (null on a manual offering, an Office-allowlisted dated id, or the
+ * env-bootstrapped platform row) is resolved exactly as legacy ran that id:
+ *  - tool use: true (W01 D4: every Claude model the Models API lists has it;
+ *    legacy sent tools to every Anthropic destination);
+ *  - thinking/effort: the W00 rules keyed on the WIRE id (legacyWireProfile),
+ *    which is what agentSdkWireOptions sent for an unregistered id.
+ * A recognisable tree always wins, including an explicit `tool_use: false`.
+ */
+function anthropicCapabilities(raw: unknown, wireModel: string): { capabilities: DerivedCapabilities; legacySupport: LegacyThinkingSupport } {
+  const derived = deriveCapabilities(raw);
+  if (derived.thinkingMode !== 'unknown') return { capabilities: derived, legacySupport: null };
+  const legacy = legacyWireProfile(wireModel);
+  return {
+    capabilities: {
+      thinkingMode: legacy.thinkingMode,
+      effortLevels: [...legacy.optionSupport.effort],
+      supportsTools: true,
+      supportsVision: derived.supportsVision,
+    },
+    legacySupport: { effort: [...legacy.optionSupport.effort], thinkingDisplay: [...legacy.optionSupport.thinkingDisplay] },
+  };
+}
+
 function systemRead<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
@@ -143,12 +173,16 @@ async function platformCandidate(
   const configured = isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk');
   const standard = platformRate(row);
   const config: UsableLlmConfig = { source: 'platform', apiKey: process.env.ANTHROPIC_API_KEY, model: row.modelId };
-  const capabilities = deriveCapabilities(row.capabilities);
+  const { capabilities, legacySupport } = anthropicCapabilities(row.capabilities, row.modelId);
   const optionRates = row.optionRates ?? null;
   // W01 D3: the platform key serves only PLATFORM_KEY_INFERENCE_GEOS; the
   // same effective list feeds eligibility AND wire params, so they agree.
   const inferenceGeos = effectivePlatformInferenceGeos(row.optionSupport.inferenceGeo);
-  const optionSupport: OptionSupport = { ...withPricedSpeeds(row.optionSupport, optionRates), inferenceGeo: inferenceGeos };
+  const optionSupport: OptionSupport = {
+    ...withPricedSpeeds(row.optionSupport, optionRates),
+    ...(legacySupport ?? {}),
+    inferenceGeo: inferenceGeos,
+  };
   return {
     facts: {
       ownerPartnerId: offering?.partnerId ?? null,
@@ -249,10 +283,12 @@ async function connectionCandidate(offering: Offering, conn: PartnerAiConnection
         };
       }
     }
-    // A catalog revision's harness pass proves tool-call fidelity; thinking and
-    // effort stay `unknown` (nothing sent) unless W01 recorded a probe pass.
-    capabilities = { ...UNVERIFIED_CAPABILITIES, supportsTools: endpoint !== null };
-    optionSupport = EMPTY_OPTION_SUPPORT;
+    // A catalog revision's harness pass proves tool-call fidelity. Thinking and
+    // effort follow the W00 rules on the catalog WIRE id, as legacy sent them
+    // (an id they do not know stays `unknown`: nothing sent).
+    const legacyThinking = anthropicCapabilities(null, wireModel);
+    capabilities = { ...legacyThinking.capabilities, supportsTools: endpoint !== null };
+    optionSupport = { ...EMPTY_OPTION_SUPPORT, ...legacyThinking.legacySupport };
     const sameIdRow = await systemRead(() => getPlatformModelByModelId(logicalModel));
     promptProfile = toPromptProfile(sameIdRow?.promptProfile);
   } else {
@@ -261,16 +297,20 @@ async function connectionCandidate(offering: Offering, conn: PartnerAiConnection
       const linkedStandard = platformRate(linked);
       if (linkedStandard) rate = { source: 'linked_platform', standard: linkedStandard };
     }
-    capabilities = linked ? deriveCapabilities(linked.capabilities) : offering.capabilities
-      ? deriveCapabilities(offering.capabilities)
-      : UNVERIFIED_CAPABILITIES;
+    const raw = linked ? linked.capabilities : offering.capabilities;
+    let legacySupport: LegacyThinkingSupport = null;
+    if (conn.kind === 'anthropic_byok') {
+      ({ capabilities, legacySupport } = anthropicCapabilities(raw, wireModel));
+    } else {
+      capabilities = raw ? deriveCapabilities(raw) : UNVERIFIED_CAPABILITIES;
+    }
     // Option rates only when the standard rate is the linked platform row's:
     // an admin-entered offering price has no fast-mode variant, so fast is not
     // selectable on it (§8 "a variant with no rate is not selectable").
     optionRates = rate?.source === 'linked_platform' ? linked?.optionRates ?? null : null;
-    optionSupport = withPricedSpeeds(linked ? linked.optionSupport : {
-      ...EMPTY_OPTION_SUPPORT,
-      effort: capabilities.effortLevels,
+    optionSupport = withPricedSpeeds({
+      ...(linked ? linked.optionSupport : { ...EMPTY_OPTION_SUPPORT, effort: capabilities.effortLevels }),
+      ...(legacySupport ?? {}),
     }, optionRates);
     promptProfile = toPromptProfile(linked?.promptProfile);
     if (apiKey !== null && conn.kind === 'anthropic_byok') {

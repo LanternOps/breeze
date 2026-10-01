@@ -94,19 +94,12 @@ const viaAssignment = (surface: AiSurface, userInitiated: boolean) => async (fix
 };
 
 /**
- * BLOCKED — W02 projection gaps found by this suite (W03 Task 7, reported to
- * the orchestrator; NOT declared divergences, and the fill values in
- * registrySnapshotDeps.ts deliberately mirror what reconcile writes):
- *  1. `self_host_gateway_model`: the env default model with no platform row is
- *     bootstrapped by `ensureLegacyPlatformModel` as platform_offered=false and
- *     unpriced → `model_unavailable` on every surface, where legacy served it.
- *  2. `byok_unknown_model`, `office_and_reviewer_overrides` (org A, office_chat):
- *     a manual BYOK offering keeps `capabilities` null → `tools_unsupported`
- *     on tool-requiring surfaces, where legacy served it.
- * The fix belongs in the projection/reconcile or the resolver. Flip this back
- * to `it` when it lands; the session queries and the mutation self-tests run.
+ * Surface queries. Were blocked on two W02 projection gaps, fixed in #7601:
+ * the env-bootstrapped platform row is offered at the legacy rate
+ * (ensureLegacyPlatformModel), and unknown capabilities on an Anthropic
+ * connection resolve to tool use + the W00 thinking rules (candidateLoader).
  */
-const surfaceParity = it.skip;
+const surfaceParity = it;
 
 describe('W03 parity: chat + topology (assignment route and stored sessions)', () => {
   surfaceParity('surface queries', async () => {

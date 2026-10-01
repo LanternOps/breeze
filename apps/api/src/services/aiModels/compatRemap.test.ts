@@ -201,6 +201,20 @@ describe('disconnectCompat', () => {
     const repoint = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id =') && !s.text.includes('CASE'))!;
     expect(repoint.params).toEqual(expect.arrayContaining(['env-platform', 'old-platform', P]));
   });
+
+  it('a deployment default with no platform row is bootstrapped at its legacy rates (#7601 gap A)', async () => {
+    m.ensureLegacyPlatformModel.mockResolvedValue('pm-boot');
+    m.respond = baseRespond((text, params) => {
+      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: 'm-pinned', config_version: 3, connected_by: null, verified_at: null }];
+      if (text.startsWith('SELECT m.id FROM partner_ai_models m JOIN ai_platform_models')) return params.includes('m-pinned') ? [{ id: 'old-platform' }] : [];
+      if (text.startsWith('SELECT id FROM ai_platform_models')) return [];
+      if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: 'env-platform' }];
+      return undefined;
+    });
+    await disconnectCompat(P);
+    expect(m.ensureLegacyPlatformModel).toHaveBeenCalledWith('env-default',
+      { inputCentsPerM: 1, outputCentsPerM: 2, cacheReadCentsPerM: 3, cacheWriteCentsPerM: 4 });
+  });
 });
 
 describe('changeCompatDefaultModel', () => {

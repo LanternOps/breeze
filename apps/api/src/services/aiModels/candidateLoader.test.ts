@@ -354,3 +354,68 @@ describe('platform-key inference geographies (W01 D3: us + global only)', () => 
     expect((await loadOfferingCandidate('off-1', 'p1'))!.facts.supportedInferenceGeos).toEqual([]);
   });
 });
+
+describe('unknown capabilities on an Anthropic connection (W01 D4 + W00 wire parity, #7601)', () => {
+  const PRICE = { priceInputCentsPerM: 100, priceOutputCentsPerM: 500, priceCacheReadCentsPerM: 10, priceCacheWriteCentsPerM: 125 };
+  const toolCtx: EligibilityContext = { ...ELIGIBILITY_CTX, surface: 'office_chat' };
+
+  it('BYOK manual offering with null capabilities (dated Office id) supports tools and thinks exactly as legacy did (budget → off)', async () => {
+    m.getOffering.mockResolvedValue({
+      ...BASE_OFFERING, connectionId: 'conn-1', platformModelId: null, source: 'manual', modelId: 'claude-haiku-4-5-20251001', ...PRICE,
+    });
+    m.getConnection.mockResolvedValue(BYOK_CONN);
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.capabilities).toEqual({ thinkingMode: 'budget', effortLevels: [], supportsTools: true, supportsVision: false });
+    expect(c.facts.supportsTools).toBe(true);
+    expect(checkEligibility(c.facts, toolCtx)).toBeNull();
+  });
+
+  it('BYOK manual adaptive id with null capabilities → legacy adaptive profile (effort + displays selectable)', async () => {
+    m.getOffering.mockResolvedValue({
+      ...BASE_OFFERING, connectionId: 'conn-1', platformModelId: null, source: 'manual', modelId: 'claude-sonnet-4-6', ...PRICE,
+    });
+    m.getConnection.mockResolvedValue(BYOK_CONN);
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.capabilities.thinkingMode).toBe('adaptive');
+    expect(c.capabilities.supportsTools).toBe(true);
+    expect(c.optionSupport.effort).toEqual(['low', 'medium', 'high', 'max']);
+    expect(c.optionSupport.thinkingDisplay).toEqual(['omitted', 'summarized']);
+  });
+
+  it('platform row with null capabilities (env-bootstrapped) supports tools and uses the legacy wire profile', async () => {
+    m.getOffering.mockResolvedValue(BASE_OFFERING);
+    m.getPlatformModelById.mockResolvedValue({
+      ...PLATFORM_ROW, modelId: 'claude-sonnet-4-6', capabilities: null,
+      optionSupport: { effort: [], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] },
+    });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.capabilities).toEqual({ thinkingMode: 'adaptive', effortLevels: ['low', 'medium', 'high', 'max'], supportsTools: true, supportsVision: false });
+    expect(c.optionSupport.effort).toEqual(['low', 'medium', 'high', 'max']);
+    // D3: the platform key's geos still come from the platform rule, not the legacy profile.
+    expect(c.optionSupport.inferenceGeo).toEqual(c.facts.supportedInferenceGeos);
+    expect(checkEligibility(c.facts, toolCtx)).toBeNull();
+  });
+
+  it('platform gateway id the W00 rules do not know stays thinking-unknown but supports tools', async () => {
+    m.getPlatformDefaultModel.mockResolvedValue({ ...PLATFORM_ROW, modelId: 'my-gateway-model', capabilities: null });
+    const d = (await loadPlatformDefaultCandidate())!;
+    expect(d.capabilities).toEqual({ thinkingMode: 'unknown', effortLevels: [], supportsTools: true, supportsVision: false });
+  });
+
+  it('a recognised tree that says no tools still wins (D4 default applies only to unknown)', async () => {
+    m.getOffering.mockResolvedValue(BASE_OFFERING);
+    m.getPlatformModelById.mockResolvedValue({ ...PLATFORM_ROW, capabilities: { tools: false } });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.capabilities.supportsTools).toBe(false);
+    expect(checkEligibility(c.facts, toolCtx)).toBe('tools_unsupported');
+  });
+
+  it('openai_compatible is NOT an Anthropic connection: unknown stays unverified (no tools)', async () => {
+    m.getOffering.mockResolvedValue({
+      ...BASE_OFFERING, connectionId: 'conn-9', platformModelId: null, source: 'manual', modelId: 'claude-sonnet-4-6', ...PRICE,
+    });
+    m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible' });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.capabilities).toEqual({ thinkingMode: 'unknown', effortLevels: [], supportsTools: false, supportsVision: false });
+  });
+});

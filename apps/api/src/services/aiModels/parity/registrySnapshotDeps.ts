@@ -6,7 +6,8 @@
  *  - a platform row the fixture lists is a seeded row: offered iff priced,
  *    priced at the legacy rate table, a Models API tree with tool use;
  *  - a platform row the projection BOOTSTRAPS (no fixture row) is what
- *    ensureLegacyPlatformModel inserts: not offered, unpriced, no capabilities;
+ *    ensureLegacyPlatformModel inserts: offered, priced at the projection's
+ *    bootstrap rates (legacy rates for the env id), no capabilities;
  *  - a connection offering carries the reconcile's price (legacy rates when
  *    no priced platform row links it, else none) and no capabilities;
  *  - offerings are available, need no permission and have no refusal fallback.
@@ -55,13 +56,14 @@ export function snapshotDeps(store: RegistrySnapshot, fixture: ParityFixture): S
   const platformRow = (pm: RegistrySnapshot['platformModels'][number]): PlatformModel => {
     const seed = seeded.get(pm.modelId);
     const priced = seed?.priced === true;
+    const rates = seed ? (priced ? getLegacyModelRates(pm.modelId).rates : null) : pm.bootstrapRates ?? null;
     return {
       id: pm.id, provider: 'anthropic', modelId: pm.modelId, displayName: pm.modelId,
       maxInputTokens: null, maxOutputTokens: null,
       capabilities: seed ? SEEDED_CAPABILITIES : null,
-      rates: priced ? getLegacyModelRates(pm.modelId).rates : null,
+      rates,
       optionRates: null, optionSupport: emptyOptionSupport(),
-      minPlan: null, promptProfile: 'generic', platformOffered: priced, isPlatformDefault: false,
+      minPlan: null, promptProfile: 'generic', platformOffered: rates !== null, isPlatformDefault: false,
       lifecycle: 'available', missedSyncCount: 0, operatorNotifiedAt: null,
       firstSeenAt: EPOCH, lastSeenAt: null, updatedAt: EPOCH,
     };

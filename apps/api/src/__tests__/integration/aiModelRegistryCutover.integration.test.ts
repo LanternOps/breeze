@@ -180,6 +180,48 @@ describe.skipIf(!RUN)('stale enabled offerings are disabled at cutover (W02 hand
   });
 });
 
+describe.skipIf(!RUN)('self-hosted env model with no platform row keeps AI after cutover (#7601 gap A)', () => {
+  it('the env-bootstrapped platform row is offered and priced at the legacy rate; tool surfaces resolve it on the platform', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const gatewayModel = `w03-selfhost-gw-${crypto.randomUUID()}`;
+    expect(await cutoverPartner(partner.id, {
+      reconcileInTx: (id) => reconcilePartnerFromLegacyInTx(id, envFor(gatewayModel)),
+    })).toBe('done');
+
+    const legacy = getLegacyModelRates(gatewayModel);
+    expect(legacy.source).toBe('default_pricing');   // legacy billed an unknown id at the default rate
+    const [row] = await fixtureSql`
+      SELECT platform_offered, input_cents_per_m::float8 AS input_cents_per_m, output_cents_per_m::float8 AS output_cents_per_m,
+             cache_read_cents_per_m::float8 AS cache_read_cents_per_m, cache_write_cents_per_m::float8 AS cache_write_cents_per_m, capabilities
+        FROM ai_platform_models WHERE model_id = ${gatewayModel}`;
+    expect(row).toEqual({
+      platform_offered: true,
+      input_cents_per_m: legacy.rates.inputCentsPerM, output_cents_per_m: legacy.rates.outputCentsPerM,
+      cache_read_cents_per_m: legacy.rates.cacheReadCentsPerM, cache_write_cents_per_m: legacy.rates.cacheWriteCentsPerM,
+      capabilities: null,
+    });
+    for (const surface of ['chat', 'helper', 'script_builder', 'office_chat'] as const) {
+      expect(await resolveModel({ partnerId: partner.id, orgId: org.id, surface })).toMatchObject({
+        ok: true, funding: 'platform', logicalModel: gatewayModel, wireModel: gatewayModel,
+        rateSnapshot: { source: 'platform', standard: legacy.rates },
+      });
+    }
+  });
+
+  it('an existing platform row is never re-priced or re-offered by the bootstrap', async () => {
+    const partner = await createPartner();
+    const modelId = `w03-existing-${crypto.randomUUID()}`;
+    await fixtureSql`INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle)
+                     VALUES ('anthropic', ${modelId}, ${modelId}, false, false, 'available')`;
+    expect(await cutoverPartner(partner.id, {
+      reconcileInTx: (id) => reconcilePartnerFromLegacyInTx(id, envFor(modelId)),
+    })).toBe('done');
+    const [row] = await fixtureSql`SELECT platform_offered, input_cents_per_m FROM ai_platform_models WHERE model_id = ${modelId}`;
+    expect(row).toEqual({ platform_offered: false, input_cents_per_m: null });
+  });
+});
+
 describe.skipIf(!RUN)('ai_model_registry_partner_cutover RLS (shape 3)', () => {
   it('a partner context cannot write a cutover row (cross-partner or its own), and reads only its own', async () => {
     const a = await createPartner();

@@ -50,6 +50,11 @@ export interface DesiredOffering {
   source: 'platform' | 'discovered' | 'manual' | 'catalog';
   platformModelId: string | null;
   needsBootstrapPlatformRow: boolean;
+  /**
+   * Connection offering: its own price (null = priced elsewhere). Platform
+   * offering: the rates a BOOTSTRAPPED platform row is created with (legacy
+   * rates for the env id); null when the platform row already exists.
+   */
   price: ModelRates | null;
 }
 
@@ -124,7 +129,10 @@ export function buildDesiredRegistryState(s: LegacySnapshot, env: LegacyProjecti
       }
       offerings.set(key, {
         key, connectionId: null, modelId, source: 'platform',
-        platformModelId: row?.id ?? null, needsBootstrapPlatformRow: !row, price: null,
+        platformModelId: row?.id ?? null, needsBootstrapPlatformRow: !row,
+        // The bootstrapped row is offered at exactly the rate legacy billing
+        // charged for this env id (incl. its default-rate fallback, #7601 gap A).
+        price: row ? null : env.legacyRates(modelId),
       });
     }
     return key;
