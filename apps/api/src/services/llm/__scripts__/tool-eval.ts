@@ -25,7 +25,8 @@ import { pathToFileURL } from 'node:url';
 import { closeDb } from '../../../db';
 import { resolveDefaultModel } from '../../aiModel';
 import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
-import { calculateCostCents } from '../../aiCostTracker';
+import { getPlatformModelByModelId } from '../../aiModels/platformModels';
+import { platformRateSnapshot, priceInvocation } from '../../aiModels/pricing';
 import { buildAgentRunSystemPrompt, buildAgentRunTaskPrompt } from '../../aiAgents/runnerPrompt';
 import type { CaptureSurface } from '../toolCapture/surfaces';
 import { AGENT_GOLDEN_TASKS } from '../toolEval/agentGoldenTasks';
@@ -125,6 +126,16 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     const surfaceSearch = args.surfaceSearch === 'on' ? true : undefined;
     const contextTokens = (call: { inputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number }) =>
       call.inputTokens + call.cacheReadInputTokens + call.cacheCreationInputTokens;
+    // Priced at the model's platform registry rate (the one cost function).
+    // Dev script: an unpriced model reports NaN rather than a guessed rate.
+    const platformRow = await getPlatformModelByModelId(args.model);
+    const rate = platformRow ? platformRateSnapshot(platformRow) : null;
+    const callCents = (call: { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number }) =>
+      rate
+        ? priceInvocation(rate, {
+          input: call.inputTokens, output: call.outputTokens, cacheRead: call.cacheReadInputTokens, cacheWrite: call.cacheCreationInputTokens,
+        }, {})
+        : Number.NaN;
 
     async function evaluate(job: EvalJob): Promise<EvalCaseResult> {
       const { golden: c, surface } = job;
@@ -154,8 +165,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
             apiCallsToFirstTool: throughFirstTool.length,
             contextTokensToFirstTool: throughFirstTool.reduce((sum, call) => sum + contextTokens(call), 0),
             contextTokensAtFirstTool: firstToolCall ? contextTokens(firstToolCall) : 0,
-            costCentsToFirstTool: throughFirstTool.reduce((sum, call) => sum + calculateCostCents(
-              args.model, call.inputTokens, call.outputTokens, call.cacheReadInputTokens, call.cacheCreationInputTokens), 0),
+            costCentsToFirstTool: throughFirstTool.reduce((sum, call) => sum + callCents(call), 0),
           };
         } catch (error) {
           if (attempt === 0) continue;

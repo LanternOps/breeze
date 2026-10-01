@@ -29,7 +29,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { AiSurface } from '@breeze/shared';
 import { db, getCurrentDbAccessContext } from '../../db';
-import { getLegacyModelRates } from '../aiCostTracker';
+import { getLegacyModelRates } from './legacySurfaceModels';
 import { resolveDefaultModel } from '../aiModel';
 import { hmacFingerprint } from '../secretCrypto';
 import { createConnection, encryptConnectionKey } from './connections';

@@ -1,7 +1,7 @@
 /**
- * The ONLY place an Anthropic client is constructed (aiModelRegistry.contract
- * .test.ts enforces it from W03 Task 17; the legacy builders in
- * llmConfigResolver.ts remain until their last caller is cut over). Credential
+ * The ONLY place an Anthropic client is constructed (enforced by
+ * aiModelRegistry.contract.test.ts; the legacy builders in
+ * llmConfigResolver.ts were deleted in W03 Task 17). Credential
  * pinning is a security control and moved here verbatim from
  * llmConfigResolver.ts:
  *   platform → SDK defaults (env-driven, #1412 self-host base URL)

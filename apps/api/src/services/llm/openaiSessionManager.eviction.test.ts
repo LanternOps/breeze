@@ -107,7 +107,7 @@ vi.mock('../aiCostTracker', () => ({ deductBillingCredits: vi.fn() }));
 vi.mock('../../config/validate', () => ({
   getConfig: () => ({ MCP_LLM_MODEL: 'test-model' }),
 }));
-vi.mock('../aiCostTracker', () => ({ recordOpenAIUsage: vi.fn(async () => undefined) }));
+vi.mock('../aiCostTracker', () => ({ deductBillingCredits: vi.fn(async () => undefined) }));
 vi.mock('../aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 
 vi.mock('../sentry', () => ({

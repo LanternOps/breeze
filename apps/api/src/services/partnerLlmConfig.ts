@@ -222,7 +222,7 @@ async function probeAnthropicKey(apiKey: string, endpoint: ResolvedLlmEndpoint =
  * A key-verification probe is a partner-level action — there is no
  * organization in scope to attribute an `llm_egress_events` row to (the
  * table's `org_id` is `NOT NULL` behind a composite FK; see
- * `buildCatalogEgressRecorder` in `llm/llmConfigResolver.ts` for the same
+ * `catalogEgressRecorder` in `aiModels/connectionFactory.ts` for the same
  * no-org posture). The guarded fetch's security controls — origin pinning,
  * connect-time SSRF pinning, no redirects — are unaffected by whether the
  * attempt is audited. Warns once per probe rather than once per HTTP attempt.

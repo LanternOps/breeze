@@ -69,11 +69,6 @@ const { resolveSessionTurnMock } = vi.hoisted(() => ({ resolveSessionTurnMock: v
 vi.mock('../../services/aiModels/sessionModel', () => ({
   resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
 }));
-vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
-  resolveClientLlmConfig: vi.fn(() =>
-    Promise.resolve({ source: 'platform', apiKey: 'test-platform-key', model: 'claude-sonnet-4-6' })),
-}));
 vi.mock('../../services/streamingSessionManager', () => ({ streamingSessionManager: managerMock }));
 vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: writeAuditEventMock }));
 vi.mock('../../services/clientAiUsage', () => ({

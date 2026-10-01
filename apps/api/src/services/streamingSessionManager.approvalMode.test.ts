@@ -43,7 +43,6 @@ vi.mock('./aiApprovalTimeout', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
   sumInputTokens: () => 0,
 }));
 vi.mock('./aiBudgetReservations', () => ({

@@ -31,7 +31,7 @@ export type AiBudgetReservationStatus =
  * the organization's AI budget.
  *
  * Settled spend is shared — a client turn already writes `ai_cost_usage`
- * through `recordUsageFromSdkResult` — so the organization cap is GLOBAL and
+ * through `settleInvocation` — so the organization cap is GLOBAL and
  * its held-sum predicates stay deliberately cross-namespace. The namespace only
  * selects the extra client sub-cap and the holds that count against it. Making
  * the org cap namespace-filtered would let client spend settle into a cap its

@@ -71,7 +71,6 @@ vi.mock('../services/aiCostTracker', () => ({
   getSessionHistory: vi.fn().mockResolvedValue([]),
   getUsageSummary: vi.fn(),
   updateBudget: vi.fn(),
-  recordUsage: vi.fn(),
 }));
 
 vi.mock('../services/streamingSessionManager', () => ({

@@ -31,7 +31,7 @@ export interface EvalReport {
     contextTokensToFirstTool: number;
     /** Context of the response that made the first real call — what every later turn re-sends (mostly as cache reads). */
     contextTokensAtFirstTool: number;
-    /** `calculateCostCents` summed over those responses, output included. */
+    /** `priceInvocation` at the platform registry rate, summed over those responses, output included (NaN when unpriced). */
     costCentsToFirstTool: number;
   }>;
   summary: ReturnType<typeof summarize>;

@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partnerAiConnections } from '../../db/schema';
@@ -9,11 +8,9 @@ import { getListedProviderByEntryId, type ListedProvider } from '../llmProviderC
 import { decryptConnectionKey } from '../aiModels/connectionKeys';
 import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException } from '../sentry';
-import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from './guardedLlmFetch';
 import { isPlatformLlmConfigured, type LlmUnusableCode } from './llmAvailability';
-import { recordLlmEgressEvent } from './llmEgressRecorder';
 import { LlmUnavailableError } from './llmUnavailableError';
-import { captureAtMostHourly, PLATFORM_KEY_MISSING_MESSAGE, reportPlatformKeyMissing } from './platformKeyAlert';
+import { captureAtMostHourly } from './platformKeyAlert';
 
 /**
  * Where a partner's traffic actually goes (#3922 phase 2).
@@ -52,7 +49,7 @@ export type ResolvedLlmEndpoint =
        * one-shot surface can be handed a session's model — neither is the
        * default, and neither is covered by the resolver's `model_unverified`
        * gate, which keys on the partner default alone. Carrying the whole map
-       * on the snapshot lets {@link resolveWireModel} translate (or fail
+       * on the snapshot lets the connection's wire-model mapping translate (or fail
        * closed on) any of them without re-reading the catalog and without
        * risking a half-rotated mixture of two revisions.
        */
@@ -217,8 +214,8 @@ export function buildCatalogEndpointSnapshot(
   // plain literal that fails OPEN three ways: `modelMap['constructor']`
   // registers a binding whose wire id and every price are `undefined`;
   // `models['__proto__'] = …` silently REPLACES the map's prototype instead of
-  // adding a key; and the `models[logicalModel]` gate below (and in
-  // `resolveWireModel`) skips its fail-closed throw.
+  // adding a key; and a `models[logicalModel]` lookup downstream skips its
+  // fail-closed throw.
   const models: Record<string, CatalogModelBinding> = Object.create(null);
   for (const modelId of provider.verifiedModels) {
     if (!Object.hasOwn(provider.modelMap, modelId)) continue;
@@ -250,42 +247,6 @@ export function buildCatalogEndpointSnapshot(
     pricing: defaultBinding.pricing,
     models,
   };
-}
-
-/**
- * Translates a logical (platform) model id into what actually goes on the wire
- * for this resolved config, plus the pricing that must be used to meter it.
- *
- * Every surface that sends a model id to the provider MUST route it through
- * here. A catalog endpoint speaks its own ids (`anthropic/claude-sonnet-4-6`
- * on OpenRouter, a deployment name on a self-hosted gateway), so sending the
- * platform id verbatim 404s at the provider; and the returned
- * `catalogPricing` is what keeps catalog traffic metered from the revision
- * snapshot instead of Anthropic list rates.
- *
- * Fails CLOSED for a model the pinned revision has not mapped AND verified —
- * silently re-pointing such a request at the partner's default model would run
- * a model nobody asked for while the ledger recorded the one that never ran.
- */
-export function resolveWireModel(
-  resolved: UsableLlmConfig,
-  logicalModel: string,
-): { model: string; catalogPricing?: CatalogPricingSnapshot } {
-  if (resolved.source !== 'partner' || resolved.endpoint.kind !== 'catalog') {
-    return { model: logicalModel };
-  }
-  // `Object.hasOwn` first: `logicalModel` is free-form client input, and a
-  // snapshot that crossed a serialization boundary may have regained
-  // Object.prototype even though the builder gives it a null one.
-  const binding = Object.hasOwn(resolved.endpoint.models, logicalModel)
-    ? resolved.endpoint.models[logicalModel]
-    : undefined;
-  if (!binding) {
-    throw new LlmUnavailableError(
-      `The selected AI provider endpoint has no verified mapping for model "${logicalModel}".`,
-    );
-  }
-  return { model: binding.providerModel, catalogPricing: binding.pricing };
 }
 
 export async function resolveLlmConfig(partnerId: string | null): Promise<ResolvedLlmConfig> {
@@ -440,130 +401,11 @@ export async function markPartnerLlmError(input: {
  * that made the outbound call. `orgId` is the audit's tenant axis: the table's
  * `org_id` is NOT NULL behind a composite `(org_id, partner_id)` FK, so a
  * caller with no org in hand (a partner-scoped actor enriching a catalog item,
- * for instance) cannot be attributed and is handled by
- * {@link buildCatalogEgressRecorder} rather than silently writing a wrong org.
+ * for instance) cannot be attributed and is handled by the connection
+ * factory's egress recorder (aiModels/connectionFactory.ts) rather than
+ * silently writing a wrong org.
  */
 export interface LlmClientCallerContext {
   surface: LlmEgressSurface;
   orgId: string | null;
-}
-
-/**
- * Bridges the guarded fetch's synchronous, fire-and-forget attempt callback to
- * the queued egress recorder, stamping the caller's surface and the endpoint's
- * catalog provenance onto every attempt.
- *
- * With no `orgId` the attempt cannot be persisted (see the FK note above). It
- * warns ONCE per client rather than per request — a partner-scoped caller
- * makes many calls and a per-request warning would bury the signal — and lets
- * the request proceed: the security controls (origin pin, connect-time SSRF
- * pin, no redirects) are enforced inside the guarded fetch itself and are
- * entirely unaffected by whether the audit row lands. Refusing the call here
- * would take AI away from a legitimate partner for a bookkeeping gap.
- */
-function buildCatalogEgressRecorder(input: {
-  caller: LlmClientCallerContext;
-  partnerId: string;
-  catalogEntryId: string;
-  revisionId: string;
-}): (attempt: GuardedLlmFetchAttempt) => void {
-  let warnedAboutMissingOrg = false;
-  return (attempt) => {
-    if (!input.caller.orgId) {
-      if (!warnedAboutMissingOrg) {
-        warnedAboutMissingOrg = true;
-        console.warn(
-          '[llmConfigResolver] catalog LLM egress could not be audited: no organization in ' +
-            `context for partner ${input.partnerId} (surface ${input.caller.surface}).`,
-        );
-      }
-      return;
-    }
-    recordLlmEgressEvent({
-      orgId: input.caller.orgId,
-      partnerId: input.partnerId,
-      surface: input.caller.surface,
-      host: attempt.host,
-      resolvedIp: attempt.resolvedIp,
-      blocked: attempt.blocked,
-      catalogEntryId: input.catalogEntryId,
-      revisionId: input.revisionId,
-    });
-  };
-}
-
-export async function getAnthropicClientForPartner(
-  partnerId: string | null,
-  caller: LlmClientCallerContext,
-): Promise<{
-  client: Anthropic;
-  resolved: UsableLlmConfig;
-}> {
-  const resolved = await resolveLlmConfig(partnerId);
-  if (resolved.source === 'unavailable') {
-    throw new LlmUnavailableError();
-  }
-  if (!resolved.apiKey?.trim()) {
-    const error = new LlmUnavailableError(PLATFORM_KEY_MISSING_MESSAGE);
-    reportPlatformKeyMissing();
-    throw error;
-  }
-
-  if (resolved.source === 'partner' && resolved.endpoint.kind === 'catalog') {
-    const { endpoint } = resolved;
-    return {
-      client: new Anthropic({
-        baseURL: endpoint.baseUrl,
-        // Exactly one credential header, and the other explicitly nulled so the
-        // SDK cannot fall back to an inherited ANTHROPIC_API_KEY /
-        // ANTHROPIC_AUTH_TOKEN and leak the platform's credential to a third
-        // party.
-        ...(endpoint.authMode === 'x-api-key'
-          ? { apiKey: resolved.apiKey, authToken: null }
-          : { authToken: resolved.apiKey, apiKey: null }),
-        fetch: buildGuardedLlmFetch({
-          allowedOrigin: new URL(endpoint.baseUrl).origin,
-          recordEgress: buildCatalogEgressRecorder({
-            caller,
-            partnerId: resolved.partnerId,
-            catalogEntryId: endpoint.catalogEntryId,
-            revisionId: endpoint.revisionId,
-          }),
-        }),
-      }),
-      resolved,
-    };
-  }
-
-  return { client: buildAnthropicClient(resolved), resolved };
-}
-
-/**
- * Construct the Anthropic client for an already-resolved config. The partner
- * branch pins `baseURL` and clears `authToken` so a partner key can never be
- * sent through a proxy base URL or alongside an ambient bearer token — that
- * pinning is a security control, so callers that resolve for themselves
- * (`resolveLlmConfigForOrg`) MUST come back through here rather than
- * constructing their own client.
- *
- * A catalog-routed partner is REFUSED rather than served here (#3922 W3): that
- * partner's stored key belongs to a third-party provider, so pinning it at
- * api.anthropic.com would ship someone else's credential to Anthropic, and the
- * catalog path additionally needs the guarded fetch + egress audit that only
- * {@link getAnthropicClientForPartner} can wire (it needs the caller's
- * surface/orgId). Callers wanting catalog support must go through that.
- */
-export function buildAnthropicClient(resolved: UsableLlmConfig): Anthropic {
-  if (resolved.source === 'partner' && resolved.endpoint.kind !== 'anthropic') {
-    throw new LlmUnavailableError(
-      'This AI surface does not yet support a custom provider endpoint.',
-    );
-  }
-  return resolved.source === 'partner'
-    ? new Anthropic({
-        apiKey: resolved.apiKey,
-        authToken: null,
-        baseURL: 'https://api.anthropic.com',
-      })
-    : new Anthropic({ apiKey: resolved.apiKey });
 }

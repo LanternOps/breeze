@@ -17,7 +17,7 @@ import {
   recordInvocationsWithRollups,
   settleAiBudgetReservationDurably,
 } from '../aiBudgetReservations';
-import { debitBillingCredits } from '../aiCostTracker';
+import { checkCostAnomalies, debitBillingCredits } from '../aiCostTracker';
 import { captureException, captureMessage } from '../sentry';
 import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutcome } from './invocationUsage';
 import type { NewInvocation } from './invocationLedgerWrite';
@@ -263,6 +263,20 @@ function reportUsageConfidence(input: SettleInvocationInput): void {
   }
 }
 
+/**
+ * Budget threshold rungs + the per-session anomaly warning, after spend landed
+ * (moved here from the deleted legacy recorders, W03 Task 17). Fire-and-forget:
+ * the turn already happened and settled, so a failing check never fails it.
+ */
+function checkSpendThresholds(orgId: string, sessionId: string | null, costCents: number): void {
+  if (!(costCents > 0)) return;
+  // Outside any ambient (request) context: the check opens its own short
+  // system context instead of riding a transaction that may already be closing.
+  runOutsideDbContext(() => checkCostAnomalies(sessionId, orgId, costCents)).catch((err: unknown) => {
+    console.error('[settleInvocation] cost threshold check failed:', safeErrorMessage(err));
+  });
+}
+
 export async function settleInvocation(input: SettleInvocationInput): Promise<SettledInvocation> {
   reportUsageConfidence(input);
   const platformRates = await loadUnboundPlatformRates(input.binding, input.usage);
@@ -292,6 +306,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     if (result.kind === 'settled' && result.creditsDebitDue) {
       await debitSettledCredits({ orgId: input.orgId, reservationId: input.reservationId, costCents: result.actualCostCents });
     }
+    if (result.kind === 'settled') checkSpendThresholds(input.orgId, input.sessionId, result.actualCostCents);
     return { costCents, invocationIds: result.invocationIds, deferred: false };
   }
 
@@ -307,6 +322,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
   if (input.binding.funding === 'platform' && costCents > 0 && invocationIds[0]) {
     await debitUnreservedCredits(input.orgId, costCents, `ai-invocation:${invocationIds[0]}`);
   }
+  checkSpendThresholds(input.orgId, input.sessionId, costCents);
   return { costCents, invocationIds, deferred: false };
 }
 

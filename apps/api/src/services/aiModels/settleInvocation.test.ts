@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
   getPlatformModelByModelId: vi.fn(),
   captureMessage: vi.fn(),
   captureException: vi.fn(),
+  checkCostAnomalies: vi.fn(),
 }));
 vi.mock('../aiBudgetReservations', () => ({
   settleAiBudgetReservationDurably: m.settleDurably,
@@ -19,7 +20,7 @@ vi.mock('../aiBudgetReservations', () => ({
   recordCreditDebitRetry: m.recordRetry,
   creditDebitIdempotencyKey: (id: string) => `ai-settlement:${id}`,
 }));
-vi.mock('../aiCostTracker', () => ({ debitBillingCredits: m.debit }));
+vi.mock('../aiCostTracker', () => ({ debitBillingCredits: m.debit, checkCostAnomalies: m.checkCostAnomalies }));
 vi.mock('./platformModels', () => ({ getPlatformModelByModelId: m.getPlatformModelByModelId }));
 vi.mock('../sentry', () => ({ captureMessage: m.captureMessage, captureException: m.captureException }));
 vi.mock('../../db', () => ({ runOutsideDbContext: (fn: () => unknown) => fn() }));
@@ -72,6 +73,42 @@ beforeEach(() => {
   m.debit.mockResolvedValue({ kind: 'debited', replayed: false });
   m.recordRetry.mockResolvedValue({ attempts: 1, exhausted: false });
   m.getPlatformModelByModelId.mockResolvedValue(null);
+  m.checkCostAnomalies.mockResolvedValue(undefined);
+});
+
+// W03 Task 17: the deleted legacy recorders were the only trigger of the
+// per-spend budget threshold / anomaly check; the registry path keeps it.
+describe('budget threshold check after spend', () => {
+  it('fires once per settled spend, with the session, for either funding source', async () => {
+    await settleInvocation(base({ sessionId: 's1' }));
+    expect(m.checkCostAnomalies).toHaveBeenCalledWith('s1', 'o1', 300);
+    m.checkCostAnomalies.mockClear();
+    m.settleDurably.mockResolvedValue({ kind: 'settled', reservationId: 'r1', actualCostCents: 300, invocationIds: ['i1'], billingSource: 'partner_key', creditsDebitDue: false });
+    await settleInvocation(base({ binding: { ...B, funding: 'partner_key', connectionId: 'c1', connectionKind: 'anthropic_byok' } }));
+    expect(m.checkCostAnomalies).toHaveBeenCalledWith(null, 'o1', 300);
+  });
+
+  it('fires on the unreserved path too', async () => {
+    await settleInvocation(base({ reservationId: undefined }));
+    expect(m.checkCostAnomalies).toHaveBeenCalledWith(null, 'o1', 300);
+  });
+
+  it('does not fire for a zero-cost turn, a deferred settlement, or a replayed one', async () => {
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    m.settleDurably.mockResolvedValueOnce({ kind: 'settled', reservationId: 'r1', actualCostCents: 0, invocationIds: ['i1'], billingSource: 'platform', creditsDebitDue: false });
+    await settleInvocation(base({ usage: [use('claude-sonnet-5-5', { tokens: zero })] }));
+    await settleInvocation(base({ reservationId: undefined, usage: [use('claude-sonnet-5-5', { tokens: zero })] }));
+    m.settleDurably.mockResolvedValueOnce({ kind: 'deferred_indeterminate', reservationId: 'r1', persisted: true });
+    await settleInvocation(base());
+    m.settleDurably.mockResolvedValueOnce({ kind: 'already_settled', reservationId: 'r1', actualCostCents: 300, invocationIds: [], billingSource: 'platform', creditsDebitDue: false });
+    await settleInvocation(base());
+    expect(m.checkCostAnomalies).not.toHaveBeenCalled();
+  });
+
+  it('a failing check never fails the settlement', async () => {
+    m.checkCostAnomalies.mockRejectedValue(new Error('db down'));
+    await expect(settleInvocation(base())).resolves.toMatchObject({ costCents: 300, deferred: false });
+  });
 });
 
 describe('priceUsage', () => {

@@ -40,7 +40,6 @@ vi.mock('./effectiveSettings', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
   sumInputTokens: () => 0,
 }));
 vi.mock('./aiBudgetReservations', () => ({

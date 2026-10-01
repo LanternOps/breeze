@@ -382,10 +382,7 @@ const buildClaudeSdkChildEnv = vi.hoisted(() =>
   vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
 vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
-const recordSessionlessSdkUsage = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
-const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
-vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
+vi.mock('../aiCostTracker', () => ({}));
 
 const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
@@ -2557,9 +2554,8 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     // One settlement through the registry billing path, cache tokens included
-    // (the SDK's own $0.40 is telemetry only) — and the legacy recorder is
-    // gone, so nothing is recorded twice.
-    expect(recordSessionlessSdkUsage).not.toHaveBeenCalled();
+    // (the SDK's own $0.40 is telemetry only). The legacy recorder was
+    // deleted (W03 Task 17), so nothing can record the run twice.
     expect(settleInvocation).toHaveBeenCalledTimes(1);
     const input = settleInvocation.mock.calls[0]![0] as Record<string, unknown>;
     expect(input).toMatchObject({

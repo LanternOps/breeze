@@ -15,7 +15,7 @@
  */
 import { emptyOptionSupport } from '@breeze/shared';
 import { resolveDefaultModel } from '../../aiModel';
-import { getLegacyModelRates } from '../../aiCostTracker';
+import { getLegacyModelRates } from '../legacySurfaceModels';
 import type { ListedProvider } from '../../llmProviderCatalog';
 import { mergeEffectiveAssignment, type EffectiveAssignment } from '../assignments';
 import type { PartnerAiConnection } from '../connections';

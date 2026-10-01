@@ -10,7 +10,7 @@ import './setup';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { getLegacyModelRates } from '../../services/aiCostTracker';
+import { getLegacyModelRates } from '../../services/aiModels/legacySurfaceModels';
 import type { LegacyProjectionEnv } from '../../services/aiModels/legacyProjection';
 import { reconcilePartnerFromLegacy, reconcilePartnerFromLegacyInTx } from '../../services/aiModels/legacyReconcile';
 import { resolveModel } from '../../services/aiModels/resolveModel';

@@ -1,10 +1,13 @@
 /**
- * Dependency-free bridge from the legacy cost tracker to the invocation
- * ledger (#7600 W02). aiCostTracker emits AFTER it has computed the legacy
- * cost; listeners are registered only at process boot
- * (registerInvocationLedgerShadow), so every unit test that exercises the
- * tracker without booting sees exactly today's behaviour. emit never throws.
- * W03 deletes this file when the ledger becomes the cost path.
+ * Dependency-free bridge from a legacy cost path to the invocation ledger
+ * (#7600 W02). Listeners are registered only at process boot
+ * (registerInvocationLedgerShadow), so a unit test that does not boot sees
+ * no listener. emit never throws.
+ *
+ * W03 Task 17 deleted the cost tracker's recorders, so the ONLY remaining
+ * emitter is the env-only OpenAI-compatible chat path
+ * (llm/openaiSessionManager.ts), which W06 moves onto resolveModel /
+ * settleInvocation. W06 deletes this file and the shadow listener with it.
  */
 import type { AiSurface } from '@breeze/shared';
 import type { AiBillingSource, CatalogPricingSnapshot } from '../aiCostTracker';

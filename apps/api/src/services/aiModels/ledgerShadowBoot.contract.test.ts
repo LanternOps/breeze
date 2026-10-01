@@ -56,8 +56,8 @@ function argCount(text: string, open: number): number {
  */
 const NOT_THE_TRACKER: Record<string, string> = {
   // A local `const recordUsage = async () => …` closure that settles the
-  // topology token reservation. Topology's model cost is recorded by
-  // recordUsageFromSdkResult on the session path.
+  // topology token reservation. Topology's model cost is settled by
+  // settleInvocation on the session path.
   'services/topology/aiInvestigation.ts': 'local closure named recordUsage',
 };
 
@@ -79,7 +79,7 @@ describe('every AI cost record carries an invocation-ledger context (#7600 W02)'
   });
 
   // W03 Task 12: agent runs (the last caller) settle through settleInvocation;
-  // a reintroduced call would bill a run twice. Task 17 deletes the function.
+  // Task 17 deleted the function. A reintroduced one would bill a run twice.
   it('recordSessionlessSdkUsage has no callers left (agent runs settle through the registry)', () => {
     const callers: string[] = [];
     for (const file of files) {
@@ -118,8 +118,7 @@ describe('every AI cost record carries an invocation-ledger context (#7600 W02)'
     // W03 Task 13: the last cost-tracker `recordUsage(` callers (catalog
     // enrichment, extension AI, workspace enrichment) settle through the
     // registry now, so NO call site remains and a reintroduced one would bill
-    // twice. Task 17 deletes the function. Any call that does reappear must at
-    // least carry the ledger argument.
+    // twice. Task 17 deleted the function.
     expect(scanned).toBe(0);
     expect(offenders).toEqual([]);
   });

@@ -9,18 +9,13 @@ const CATALOG_REVISION_ID = '44444444-4444-4444-8444-444444444444';
 const ORG_ID = '99999999-9999-4999-8999-999999999999';
 
 const {
-  anthropicOptions,
   captureExceptionMock,
   captureMessageMock,
   dbState,
   decryptMock,
   contextState,
   getListedProviderByEntryIdMock,
-  buildGuardedLlmFetchMock,
-  guardedFetchOptions,
-  recordLlmEgressEventMock,
 } = vi.hoisted(() => ({
-  anthropicOptions: [] as Array<Record<string, unknown>>,
   captureExceptionMock: vi.fn(),
   captureMessageMock: vi.fn(),
   dbState: {
@@ -36,40 +31,10 @@ const {
   decryptMock: vi.fn(),
   contextState: { outsideCalls: 0, systemCalls: 0, ambientScope: undefined as string | undefined },
   getListedProviderByEntryIdMock: vi.fn(),
-  buildGuardedLlmFetchMock: vi.fn(),
-  guardedFetchOptions: [] as Array<{
-    allowedOrigin: string;
-    recordEgress: (attempt: { host: string; resolvedIp: string | null; blocked: boolean }) => void;
-  }>,
-  recordLlmEgressEventMock: vi.fn(),
-}));
-
-/**
- * Stable identity so a test can assert the Anthropic client was handed exactly
- * the guarded fetch (and that a direct/platform client was handed none).
- */
-const GUARDED_FETCH_SENTINEL = function guardedFetchSentinel() {
-  return Promise.resolve(new Response(null));
-};
-
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: class MockAnthropic {
-    constructor(options: Record<string, unknown>) {
-      anthropicOptions.push(options);
-    }
-  },
 }));
 
 vi.mock('../llmProviderCatalog', () => ({
   getListedProviderByEntryId: getListedProviderByEntryIdMock,
-}));
-
-vi.mock('./guardedLlmFetch', () => ({
-  buildGuardedLlmFetch: buildGuardedLlmFetchMock,
-}));
-
-vi.mock('./llmEgressRecorder', () => ({
-  recordLlmEgressEvent: recordLlmEgressEventMock,
 }));
 
 vi.mock('../aiModel', async (importOriginal) => ({
@@ -135,42 +100,19 @@ vi.mock('../../db', () => ({
 
 import {
   buildCatalogEndpointSnapshot,
-  getAnthropicClientForPartner,
   LlmOrgResolutionError,
-  LlmUnavailableError,
   markPartnerLlmError,
   resolveLlmConfig,
   resolveLlmConfigForOrg,
-  resolveWireModel,
   llmUnusableCodeForOrgInSystemContext,
-  type UsableLlmConfig,
 } from './llmConfigResolver';
 import { SecretKeyMaterialError } from '../secretCrypto';
-import { captureException, captureMessage } from '../sentry';
+import { captureException } from '../sentry';
 
 const originalPlatformKey = process.env.ANTHROPIC_API_KEY;
 const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
 const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
 const originalCatalogFlag = process.env.LLM_PROVIDER_CATALOG_ENABLED;
-
-/**
- * Frozen copies of what `getAnthropicClientForPartner` constructed BEFORE the
- * catalog work (#3922 W3 Task 3.2). Catalog support must not perturb either of
- * these by a single key: a partner with no `catalog_entry_id` still gets the
- * #1412-pinned public endpoint with environment auth-token inheritance
- * disabled, and the platform client stays fully environment-aware. Asserted
- * with `toEqual` against these constants so an extra option (a stray `fetch`,
- * a `baseURL` on the platform path) fails loudly rather than passing a
- * `toMatchObject`.
- */
-const PRE_CHANGE_DIRECT_PARTNER_CLIENT_OPTIONS = Object.freeze({
-  apiKey: 'partner-plaintext-key',
-  authToken: null,
-  baseURL: 'https://api.anthropic.com',
-});
-const PRE_CHANGE_PLATFORM_CLIENT_OPTIONS = Object.freeze({ apiKey: 'platform-key' });
-
-const ONE_SHOT_SURFACE = { surface: 'one_shot_ticket_draft', orgId: ORG_ID } as const;
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -216,7 +158,6 @@ function compileWhere(condition: unknown): { sql: string; params: unknown[] } {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  anthropicOptions.length = 0;
   dbState.selectResults.length = 0;
   dbState.selectErrors.length = 0;
   dbState.selectFields.length = 0;
@@ -229,11 +170,6 @@ beforeEach(() => {
   contextState.systemCalls = 0;
   contextState.ambientScope = undefined;
   decryptMock.mockReturnValue('partner-plaintext-key');
-  guardedFetchOptions.length = 0;
-  buildGuardedLlmFetchMock.mockImplementation((opts: (typeof guardedFetchOptions)[number]) => {
-    guardedFetchOptions.push(opts);
-    return GUARDED_FETCH_SENTINEL;
-  });
   getListedProviderByEntryIdMock.mockResolvedValue(null);
   process.env.ANTHROPIC_API_KEY = 'platform-key';
   delete process.env.ANTHROPIC_BASE_URL;
@@ -713,304 +649,6 @@ describe('markPartnerLlmError', () => {
     const compiled = compileWhere(dbState.updateWheres[0]);
     expect(compiled.sql).toBe('("partner_ai_connections"."id" = $1 and "partner_ai_connections"."config_version" = $2)');
     expect(compiled.params).toEqual([CONFIG_ID, 3]);
-  });
-});
-
-describe('getAnthropicClientForPartner', () => {
-  it('pins partner clients to public Anthropic and disables environment auth-token inheritance', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'https://operator-proxy.example';
-    process.env.ANTHROPIC_AUTH_TOKEN = 'operator-bearer-token';
-    dbState.selectResults.push([row()]);
-
-    const result = await getAnthropicClientForPartner(PARTNER_ID, ONE_SHOT_SURFACE);
-
-    expect(result.resolved).toMatchObject({ source: 'partner', apiKey: 'partner-plaintext-key' });
-    // Byte-identical to the pre-catalog construction: no `fetch`, no egress
-    // recorder, no proxy — a direct partner must not pay for catalog wiring.
-    expect(anthropicOptions).toEqual([PRE_CHANGE_DIRECT_PARTNER_CLIENT_OPTIONS]);
-    expect(anthropicOptions[0]?.apiKey).not.toBe('platform-key');
-    expect(buildGuardedLlmFetchMock).not.toHaveBeenCalled();
-    expect(recordLlmEgressEventMock).not.toHaveBeenCalled();
-  });
-
-  it('leaves platform client endpoint and auth-token selection environment-aware', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'https://operator-proxy.example';
-    process.env.ANTHROPIC_AUTH_TOKEN = 'operator-bearer-token';
-
-    const result = await getAnthropicClientForPartner(null, ONE_SHOT_SURFACE);
-
-    expect(result.resolved).toMatchObject({ source: 'platform', apiKey: 'platform-key' });
-    expect(anthropicOptions).toEqual([PRE_CHANGE_PLATFORM_CLIENT_OPTIONS]);
-    expect(buildGuardedLlmFetchMock).not.toHaveBeenCalled();
-  });
-
-  it('throws LlmUnavailableError instead of constructing a client for unavailable config', async () => {
-    dbState.selectResults.push([row({ status: 'error' })]);
-
-    await expect(getAnthropicClientForPartner(PARTNER_ID, ONE_SHOT_SURFACE))
-      .rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(anthropicOptions).toHaveLength(0);
-  });
-
-  it('reports a deployment configuration error when the platform key is blank', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
-    process.env.ANTHROPIC_API_KEY = '   ';
-
-    await expect(getAnthropicClientForPartner(null, ONE_SHOT_SURFACE)).rejects.toMatchObject({
-      name: 'LlmUnavailableError',
-      message: 'AI is not configured on this deployment.',
-    });
-    await expect(getAnthropicClientForPartner(null, ONE_SHOT_SURFACE))
-      .rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(captureMessage).toHaveBeenCalledTimes(1);
-    expect(captureMessage).toHaveBeenCalledWith(
-      'AI is not configured on this deployment.',
-      { eventCode: 'llm_platform_key_missing' },
-    );
-
-    vi.advanceTimersByTime(60 * 60 * 1000);
-    await expect(getAnthropicClientForPartner(null, ONE_SHOT_SURFACE))
-      .rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(captureMessage).toHaveBeenCalledTimes(2);
-    expect(anthropicOptions).toHaveLength(0);
-  });
-});
-
-describe('getAnthropicClientForPartner — catalog clients (#3922 W3)', () => {
-  beforeEach(() => {
-    process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true';
-    getListedProviderByEntryIdMock.mockResolvedValue(listedProvider());
-  });
-
-  it('builds an x-api-key catalog client on the guarded fetch pinned to the endpoint origin', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'https://operator-proxy.example';
-    process.env.ANTHROPIC_AUTH_TOKEN = 'operator-bearer-token';
-    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
-
-    await getAnthropicClientForPartner(PARTNER_ID, ONE_SHOT_SURFACE);
-
-    expect(anthropicOptions).toEqual([{
-      baseURL: 'https://openrouter.ai/api/v1',
-      apiKey: 'partner-plaintext-key',
-      authToken: null,
-      fetch: GUARDED_FETCH_SENTINEL,
-    }]);
-    // Origin, not the full base URL — the pin is on scheme+host+port.
-    expect(guardedFetchOptions[0]?.allowedOrigin).toBe('https://openrouter.ai');
-  });
-
-  it('builds a bearer catalog client that scrubs apiKey', async () => {
-    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
-    getListedProviderByEntryIdMock.mockResolvedValue(listedProvider({ authMode: 'bearer' }));
-
-    await getAnthropicClientForPartner(PARTNER_ID, ONE_SHOT_SURFACE);
-
-    expect(anthropicOptions).toEqual([{
-      baseURL: 'https://openrouter.ai/api/v1',
-      authToken: 'partner-plaintext-key',
-      apiKey: null,
-      fetch: GUARDED_FETCH_SENTINEL,
-    }]);
-  });
-
-  it('records every guarded-fetch attempt against the caller surface and catalog provenance', async () => {
-    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
-
-    await getAnthropicClientForPartner(PARTNER_ID, {
-      surface: 'one_shot_catalog_enrichment',
-      orgId: ORG_ID,
-    });
-
-    guardedFetchOptions[0]?.recordEgress({
-      host: 'openrouter.ai',
-      resolvedIp: '104.18.0.1',
-      blocked: false,
-    });
-    guardedFetchOptions[0]?.recordEgress({
-      host: 'evil.example',
-      resolvedIp: null,
-      blocked: true,
-    });
-
-    expect(recordLlmEgressEventMock).toHaveBeenNthCalledWith(1, {
-      orgId: ORG_ID,
-      partnerId: PARTNER_ID,
-      surface: 'one_shot_catalog_enrichment',
-      host: 'openrouter.ai',
-      resolvedIp: '104.18.0.1',
-      blocked: false,
-      catalogEntryId: CATALOG_ENTRY_ID,
-      revisionId: CATALOG_REVISION_ID,
-    });
-    expect(recordLlmEgressEventMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      host: 'evil.example',
-      resolvedIp: null,
-      blocked: true,
-    }));
-  });
-
-  it('warns once instead of throwing when there is no org to attribute egress to', async () => {
-    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
-    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    await getAnthropicClientForPartner(PARTNER_ID, {
-      surface: 'one_shot_catalog_enrichment',
-      orgId: null,
-    });
-
-    guardedFetchOptions[0]?.recordEgress({ host: 'openrouter.ai', resolvedIp: '1.1.1.1', blocked: false });
-    guardedFetchOptions[0]?.recordEgress({ host: 'openrouter.ai', resolvedIp: '1.1.1.1', blocked: false });
-
-    expect(recordLlmEgressEventMock).not.toHaveBeenCalled();
-    expect(consoleWarn).toHaveBeenCalledTimes(1);
-    consoleWarn.mockRestore();
-  });
-
-  it('throws LlmUnavailableError for a delisted endpoint instead of falling back to direct Anthropic', async () => {
-    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
-    getListedProviderByEntryIdMock.mockResolvedValue(null);
-
-    await expect(getAnthropicClientForPartner(PARTNER_ID, ONE_SHOT_SURFACE))
-      .rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(anthropicOptions).toHaveLength(0);
-    expect(buildGuardedLlmFetchMock).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * The wire-model translation every outbound surface must go through
- * (#3922 W3 review). Two properties are load-bearing: a catalog endpoint never
- * receives a platform-logical model id, and a model the pinned revision has
- * not mapped AND verified fails CLOSED rather than being silently re-pointed
- * at the partner's default — which would run a model nobody asked for while
- * the usage ledger recorded one that never ran.
- */
-describe('resolveWireModel', () => {
-  const DIRECT_PARTNER: UsableLlmConfig = {
-    source: 'partner',
-    partnerId: PARTNER_ID,
-    apiKey: 'partner-plaintext-key',
-    model: 'claude-sonnet-4-6',
-    configId: CONFIG_ID,
-    configVersion: 4,
-    endpoint: { kind: 'anthropic' },
-  };
-
-  async function catalogConfig(): Promise<UsableLlmConfig> {
-    process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true';
-    dbState.selectResults.push([row({ catalogEntryId: CATALOG_ENTRY_ID })]);
-    getListedProviderByEntryIdMock.mockResolvedValue(listedProvider({
-      modelMap: {
-        'claude-sonnet-4-6': {
-          providerModel: 'anthropic/claude-sonnet-4-6',
-          inputCentsPerM: 300,
-          outputCentsPerM: 1500,
-          cacheReadCentsPerM: 30,
-          cacheWriteCentsPerM: 375,
-        },
-        'claude-haiku-4-5': {
-          providerModel: 'anthropic/claude-haiku-4-5',
-          inputCentsPerM: 100,
-          outputCentsPerM: 500,
-          cacheReadCentsPerM: 10,
-          cacheWriteCentsPerM: 125,
-        },
-      },
-      verifiedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
-    }));
-    const resolved = await resolveLlmConfig(PARTNER_ID);
-    if (resolved.source === 'unavailable') throw new Error('fixture did not resolve');
-    return resolved;
-  }
-
-  it('passes the logical id straight through for the platform path', () => {
-    expect(resolveWireModel(
-      { source: 'platform', apiKey: 'platform-key', model: 'claude-sonnet-4-6' },
-      'claude-sonnet-4-6',
-    )).toEqual({ model: 'claude-sonnet-4-6' });
-  });
-
-  it('passes the logical id straight through for a direct-Anthropic partner, with no pricing', () => {
-    expect(resolveWireModel(DIRECT_PARTNER, 'claude-opus-4-8')).toEqual({ model: 'claude-opus-4-8' });
-  });
-
-  it('translates the partner default model to the revision wire id and its pricing', async () => {
-    const resolved = await catalogConfig();
-
-    expect(resolveWireModel(resolved, 'claude-sonnet-4-6')).toEqual({
-      model: 'anthropic/claude-sonnet-4-6',
-      catalogPricing: {
-        catalogEntryId: CATALOG_ENTRY_ID,
-        revisionId: CATALOG_REVISION_ID,
-        inputCentsPerM: 300,
-        outputCentsPerM: 1500,
-        cacheReadCentsPerM: 30,
-        cacheWriteCentsPerM: 375,
-      },
-    });
-  });
-
-  it('translates a NON-default verified model to its own wire id and its own pricing', async () => {
-    const resolved = await catalogConfig();
-
-    // The resolver's model_unverified gate only ever looked at the partner
-    // default; a session or one-shot surface running haiku must still get
-    // haiku's wire id AND haiku's rates, not sonnet's.
-    expect(resolveWireModel(resolved, 'claude-haiku-4-5')).toEqual({
-      model: 'anthropic/claude-haiku-4-5',
-      catalogPricing: {
-        catalogEntryId: CATALOG_ENTRY_ID,
-        revisionId: CATALOG_REVISION_ID,
-        inputCentsPerM: 100,
-        outputCentsPerM: 500,
-        cacheReadCentsPerM: 10,
-        cacheWriteCentsPerM: 125,
-      },
-    });
-  });
-
-  it('fails closed for a model the pinned revision has not mapped and verified', async () => {
-    const resolved = await catalogConfig();
-
-    expect(() => resolveWireModel(resolved, 'claude-opus-4-8')).toThrow(LlmUnavailableError);
-    // Never silently substituted with the partner default.
-    expect(() => resolveWireModel(resolved, 'claude-opus-4-8')).toThrow(/claude-opus-4-8/);
-  });
-
-  /**
-   * Prototype-named logical models (#3922 W3 review round 2). `ai_sessions.model`
-   * is free-form client input (`createAiSessionSchema`: `z.string().max(100)`),
-   * so `constructor`, `__proto__`, `toString` and friends all reach here. Looked
-   * up on a plain object literal every one of them is TRUTHY by inheritance,
-   * which skipped the fail-closed throw and returned `{ model: undefined }`. On
-   * the SDK path `query({ options: { model: undefined } })` lets the SDK CLI
-   * substitute its OWN default id on the wire to the third-party endpoint, and
-   * the session then meters at Anthropic list rates instead of the revision's —
-   * a fail-OPEN that the pre-map `Array#includes` gate did not have.
-   */
-  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
-    'fails closed for the prototype-named model %s instead of returning an inherited binding',
-    async (logicalModel) => {
-      const resolved = await catalogConfig();
-
-      expect(() => resolveWireModel(resolved, logicalModel)).toThrow(LlmUnavailableError);
-    },
-  );
-
-  it('never yields an undefined wire model for any prototype-named model', async () => {
-    const resolved = await catalogConfig();
-
-    for (const logicalModel of ['constructor', '__proto__', 'toString', 'valueOf']) {
-      let wire: { model: string } | undefined;
-      try {
-        wire = resolveWireModel(resolved, logicalModel);
-      } catch {
-        continue;
-      }
-      // Reaching here at all is the bug; assert the shape that made it dangerous.
-      expect(wire?.model).toBeTypeOf('string');
-    }
   });
 });
 

@@ -15,7 +15,7 @@ import { buildDesiredRegistryState, type LegacyProjectionEnv } from '../../servi
 import { loadLegacySnapshot, lockPartnerRegistryReconcile, reconcilePartnerFromLegacy, reconcilePartnerFromLegacyInTx } from '../../services/aiModels/legacyReconcile';
 import { parityQueries, type ParityFixture } from '../../services/aiModels/parity/harness';
 import { materializeDesiredState, projectSurfaceUse, type RegistrySnapshot } from '../../services/aiModels/parity/storeProjection';
-import { getLegacyModelRates } from '../../services/aiCostTracker';
+import { getLegacyModelRates } from '../../services/aiModels/legacySurfaceModels';
 import { deletePartnerLlmConfig, getPartnerLlmStatus, updatePartnerLlmConfig } from '../../services/partnerLlmConfig';
 import { markPartnerLlmError } from '../../services/llm/llmConfigResolver';
 import { cutoverPartner } from '../../services/aiModels/registryCutover';

@@ -1,9 +1,10 @@
 /**
  * The invocation ledger (#7600, spec §5.5). recordInvocation inserts one
- * append-only row in the caller's context. In W02 the only producer is the
- * SHADOW listener below: it re-prices every legacy cost record with the
- * registry (priceInvocation) and logs a structured diff — it never feeds
- * billing, budgets or credits. W03 makes recordInvocation the cost path.
+ * append-only row in the caller's context; since W03 it is the cost path
+ * (settleInvocation). The SHADOW listener below re-prices a legacy cost
+ * record with the registry and logs a structured diff — it never feeds
+ * billing, budgets or credits. After W03 Task 17 its only producer is the
+ * env-only OpenAI-compatible chat path; W06 deletes the listener.
  */
 import { eq } from 'drizzle-orm';
 import type { AiSurface, ModelRates } from '@breeze/shared';

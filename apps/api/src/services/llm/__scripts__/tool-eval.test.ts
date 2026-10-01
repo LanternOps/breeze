@@ -16,9 +16,12 @@ vi.mock('../../streamingSessionManager', () => ({
 }));
 vi.mock('../llmConfigResolver', () => ({ resolveLlmConfig: async () => ({ source: 'env' }) }));
 // 1 cent per 1k context-equivalent tokens: input×1, cache write×1.25, cache read×0.1, output×5.
-vi.mock('../../aiCostTracker', () => ({
-  calculateCostCents: (_model: string, input: number, output: number, read = 0, write = 0) =>
-    (input + output * 5 + read * 0.1 + write * 1.25) / 1000,
+// Priced from the registry row (W03 Task 17), rates in cents per MTok.
+vi.mock('../../aiModels/platformModels', () => ({
+  getPlatformModelByModelId: async () => ({
+    rates: { inputCentsPerM: 1000, outputCentsPerM: 5000, cacheReadCentsPerM: 100, cacheWriteCentsPerM: 1250 },
+    optionRates: null,
+  }),
 }));
 vi.mock('../toolCapture/runSurface', () => ({
   runSurfaceCapture: vi.fn(),

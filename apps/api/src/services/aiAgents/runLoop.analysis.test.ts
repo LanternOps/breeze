@@ -242,8 +242,6 @@ const buildClaudeSdkChildEnv = vi.hoisted(() =>
   vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
 vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
-const recordSessionlessSdkUsage = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
-const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 const settleComputeCents = vi.hoisted(() =>
   vi.fn<(orgId: string, runId: string, cents: number, source: 'platform' | 'partner_key') => Promise<void>>(
     async () => undefined,
@@ -251,7 +249,7 @@ const settleComputeCents = vi.hoisted(() =>
 const calculateComputeCents = vi.hoisted(() =>
   vi.fn<(backend: string, usage: unknown, memGb: number) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({
-  recordSessionlessSdkUsage, calculateCostCents, settleComputeCents, calculateComputeCents,
+  settleComputeCents, calculateComputeCents,
 }));
 const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());

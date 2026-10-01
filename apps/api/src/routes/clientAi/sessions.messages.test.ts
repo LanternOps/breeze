@@ -17,7 +17,6 @@ const {
   checkBillingCreditsMock, rateLimiterMock,
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
-  resolveClientLlmConfigMock,
   reserveAiBudgetMock, releaseUnusedAiBudgetReservationMock, FakeAiBudgetLockTimeoutError,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
@@ -43,7 +42,6 @@ const {
   resolveToolResultMock: vi.fn(() => true),
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
-  resolveClientLlmConfigMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetReservationMock: vi.fn(
     (_input: { orgId: string; reservationId: string }) => Promise.resolve({ kind: 'released' }),
@@ -127,11 +125,6 @@ const { resolveSessionTurnMock } = vi.hoisted(() => ({ resolveSessionTurnMock: v
 vi.mock('../../services/aiModels/sessionModel', () => ({
   resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
 }));
-vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
-  resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
-}));
-
 import { clientAiSessionRoutes } from './sessions';
 import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
@@ -166,14 +159,6 @@ beforeEach(() => {
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
-  resolveClientLlmConfigMock.mockResolvedValue({
-    source: 'partner',
-    partnerId: 'partner-from-org',
-    apiKey: 'partner-key',
-    model: 'claude-opus-4-6',
-    configId: 'config-1',
-    configVersion: 2,
-  });
   resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'office_chat' }));
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
   reserveAiBudgetMock.mockResolvedValue({
@@ -309,7 +294,6 @@ describe('POST /client-ai/sessions/:id/messages', () => {
     expect((activeSession.inputController as { pushMessage: ReturnType<typeof vi.fn> }).pushMessage)
       .toHaveBeenCalledWith('sum column B please');
     expect(managerMock.startTurnTimeout).toHaveBeenCalledWith(activeSession);
-    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
     expect(managerMock.getOrCreate).toHaveBeenCalledWith(
       SESSION_ID,
       expect.anything(),

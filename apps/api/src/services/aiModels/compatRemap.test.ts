@@ -27,7 +27,7 @@ vi.mock('../../db', () => ({
   },
 }));
 vi.mock('../aiModel', () => ({ resolveDefaultModel: () => 'env-default' }));
-vi.mock('../aiCostTracker', () => ({
+vi.mock('./legacySurfaceModels', () => ({
   getLegacyModelRates: () => ({ rates: { inputCentsPerM: 1, outputCentsPerM: 2, cacheReadCentsPerM: 3, cacheWriteCentsPerM: 4 }, source: 'priced' }),
 }));
 vi.mock('./connections', () => ({

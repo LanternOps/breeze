@@ -35,7 +35,6 @@ import {
 // The leaf module, not aiAgentSdk.ts: that one drags the chat route graph into
 // every importer (worker entrypoint closure, partnerLlmConfig cycle).
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from '../aiAgentSessionLimits';
-import { getLegacyModelRates } from '../aiCostTracker';
 import { resolveDefaultModel } from '../aiModel';
 import {
   buildDesiredRegistryState,
@@ -44,7 +43,7 @@ import {
   type LegacySnapshot,
   type OfferingKey,
 } from './legacyProjection';
-import { legacyExtensionModel } from './legacySurfaceModels';
+import { getLegacyModelRates, legacyExtensionModel } from './legacySurfaceModels';
 import { safeErrorMessage } from './safeDbError';
 
 export interface ReconcileReport {

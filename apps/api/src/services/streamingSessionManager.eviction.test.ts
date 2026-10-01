@@ -96,9 +96,6 @@ vi.mock('./sentry', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
-  calculateCostCents: vi.fn(() => 0),
-  calculateCatalogCostCents: vi.fn(() => 0),
   sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
     (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
 }));

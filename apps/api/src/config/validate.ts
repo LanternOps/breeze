@@ -2746,8 +2746,8 @@ export function validateConfig(): AppConfig {
     }
     console.warn(
       `[config] AI Agent routed to a custom Anthropic-compatible backend (ANTHROPIC_BASE_URL host=${host}). `
-      + 'Cost tracking is best-effort: an unrecognized model id is priced at conservative '
-      + 'DEFAULT_PRICING (Opus-tier), not actual backend cost.',
+      + 'An unrecognized model id is billed at a conservative Opus-tier rate until it is '
+      + 'priced on /admin/ai-models, not at actual backend cost.',
     );
   }
 
