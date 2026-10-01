@@ -38,6 +38,10 @@ vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
     BILLING_MANAGE: { resource: 'billing', action: 'manage' },
     APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },
+    // Read at import by the Task 9 org/usage routers mounted in the same hub.
+    ORGS_READ: { resource: 'organizations', action: 'read' },
+    ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    AI_SESSIONS_READ_ALL: { resource: 'ai_sessions', action: 'read_all' },
   },
   hasPermission: vi.fn((_p: unknown, resource: string, action: string) =>
     resource === 'approvals' && action === 'decide' ? permissionsState.approvalsDecide : true),
