@@ -192,7 +192,7 @@ afterEach(async () => {
 });
 
 describe('#2822 premise — partner-axis rows really are invisible to an org-scoped context', () => {
-  runDb('raw SELECTs on partners / authenticator_policies / patch_policies return ZERO rows, without raising', async () => {
+  runDb('raw SELECTs on partners / authenticator_policies return ZERO rows, without raising (patch_policies: own partner visible, #7647)', async () => {
     await withDbAccessContext(orgContext(fx.orgId, fx.partnerId), async () => {
       // Sanity: the org row itself IS visible, so a zero result below is RLS on
       // the partner axis and not a broken fixture or a dead connection.
@@ -213,12 +213,18 @@ describe('#2822 premise — partner-axis rows really are invisible to an org-sco
           .where(eq(authenticatorPolicies.partnerId, fx.partnerId)),
       ).toHaveLength(0);
 
+      // patch_policies is the exception since #7647: it (and patch_approvals)
+      // carries an additive SELECT-only own-partner branch
+      // (2026-11-13-140000-patch-partner-axis-own-partner-select.sql), so the
+      // org session's OWN partner's ring IS legible in place. The
+      // resolvePatchPolicyReference tests below therefore no longer depend on
+      // an escape; the cross-partner one still proves reach did not widen.
       expect(
         await db
           .select({ id: patchPolicies.id })
           .from(patchPolicies)
           .where(eq(patchPolicies.id, fx.ringId)),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
     });
   });
 });
@@ -336,7 +342,7 @@ describe('#2822 — resolvePatchPolicyReference', () => {
     expect(resolution.ringId).toBe(fx.ringId);
   });
 
-  runDb('a ring belonging to ANOTHER partner is still rejected — the escape did not widen reach', async () => {
+  runDb('a ring belonging to ANOTHER partner is still rejected — neither the escape nor the own-partner branch widened reach', async () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const other = await withSystemDbAccessContext(async () => {
       const [p] = await db

@@ -9,6 +9,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
 }));
 
 vi.mock('./sentry', () => ({
@@ -61,6 +62,7 @@ vi.mock('../db/schema', () => ({
 
 import {
   loadPolicyLocalPatchConfig,
+  resolvePatchPolicyReference,
   listAllPatchInventory,
   normalizePatchInlineSettings,
   tryNormalizePatchInlineSettings,
@@ -68,7 +70,7 @@ import {
   type PatchInventoryRow,
   type PatchReferenceClassification,
 } from './configPolicyPatching';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { captureException } from './sentry';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
@@ -670,5 +672,47 @@ describe('ring resolution classification values', () => {
 
     const summary = summarizePatchInventory([row]);
     expect(summary.needsRepair).toBe(1);
+  });
+});
+
+// #7647: the ring read runs in the caller's own connection whenever its RLS
+// context can see the partner (own-partner SELECT branch on patch_policies),
+// so the device Patches tab never holds a second pooled connection.
+describe('resolvePatchPolicyReference — connection discipline (#7647)', () => {
+  const RING_ROW = {
+    id: 'ring-1', kind: 'ring', name: 'Pilot', categoryRules: [],
+    categories: [], excludeCategories: [], autoApprove: {},
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCurrentDbAccessContext).mockReset();
+  });
+
+  it('reads in place for an org-scoped context whose own partner is the ring partner', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [], currentPartnerId: 'partner-1',
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([RING_ROW]) as any);
+
+    const result = await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(result).toMatchObject({ classification: 'valid_ring', ringId: 'ring-1', ringName: 'Pilot' });
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('keeps the system escape when the context cannot see the ring partner', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [], currentPartnerId: 'partner-OTHER',
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([RING_ROW]) as any);
+
+    await resolvePatchPolicyReference('partner-1', 'ring-1');
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
   });
 });

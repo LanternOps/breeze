@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { eq, desc, inArray, and, sql, gte } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
+import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
 import { patches, devicePatches, patchApprovals, deviceCommands, users } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -200,24 +201,20 @@ function normalizePatchHistoryResult(
 async function getApprovedPatchIdsForPartner(partnerId: string, patchIds: string[]): Promise<Set<string>> {
   if (patchIds.length === 0) return new Set();
 
-  // patch_approvals is partner-axis RLS. An org-scoped caller's DB context has
-  // accessiblePartnerIds=[] → the table returns 0 rows in request context.
-  // Escape to system context: the partnerId is SERVER-DERIVED from the device's
-  // org (already access-checked), so reading their approvals does not leak
-  // cross-partner data (#rls_silent_zero_row_read_sdk_poll).
-  const approvals = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ patchId: patchApprovals.patchId })
-        .from(patchApprovals)
-        .where(
-          and(
-            eq(patchApprovals.partnerId, partnerId),
-            inArray(patchApprovals.patchId, patchIds),
-            eq(patchApprovals.status, 'approved')
-          )
+  // patch_approvals is partner-axis RLS; org-scoped callers read it through
+  // the own-partner SELECT branch, in the request's own connection (#7647).
+  // partnerId is SERVER-DERIVED from the device's org (already access-checked).
+  const approvals = await readOwnPartnerAxisRows(partnerId, () =>
+    db
+      .select({ patchId: patchApprovals.patchId })
+      .from(patchApprovals)
+      .where(
+        and(
+          eq(patchApprovals.partnerId, partnerId),
+          inArray(patchApprovals.patchId, patchIds),
+          eq(patchApprovals.status, 'approved')
         )
-    )
+      )
   );
 
   return new Set(approvals.map((approval) => approval.patchId));
@@ -405,26 +402,28 @@ patchesRoutes.get(
     // each outstanding patch (manual / ring auto-approved / deferred until a
     // date / needs approval / excluded by policy). Additive: `approvalStatus`
     // keeps its manual-only meaning because the Install action below is still
-    // gated on it. Same system-context escape as getApprovedPatchIdsForPartner
-    // and for the same reason: the evaluator reads partner-axis tables
-    // (patch_policies, patch_approvals) that an org-scoped request context
-    // cannot see; deviceId/orgId are server-derived from the access-checked
-    // device. A failure degrades to `available: false` (the tab falls back to
-    // approvalStatus) rather than failing the whole patch list.
-    //
-    // KNOWN DEBT: that escape holds a SECOND pooled connection while this
-    // request's own withDbAccessContext transaction still holds one — the
-    // hold-and-wait shape behind the 09-22 pool deadlock. `approvalView=0`
-    // (set by the install poller) skips it; normal tab loads still pay it.
-    // Follow-up #7647: compute this without a second connection.
-    // Skipped → both fields null; the web tab keeps its last-known badges.
+    // gated on it. The evaluator reads partner-axis tables (patch_policies,
+    // patch_approvals); #7647 gave both an own-partner SELECT branch, so it
+    // runs in THIS request's connection — no second pooled connection, which
+    // was the hold-and-wait shape behind the 09-22 pool deadlock.
+    // readOwnPartnerAxisRows only escapes for a context that cannot see the
+    // device-org's partner (none here unless the org is partner-less, which
+    // the evaluator short-circuits anyway). deviceId/orgId are server-derived
+    // from the access-checked device. A failure degrades to
+    // `available: false` (the tab falls back to approvalStatus) rather than
+    // failing the whole patch list. `approvalView=0` (install poller) still
+    // skips the evaluation; skipped → both fields null and the web tab keeps
+    // its last-known badges.
     let approvalView: DevicePatchApprovalView | null = null;
     let approvalEvaluation: DevicePatchApprovalEvaluation | null = null;
     if (approvalViewParam !== '0' && devicePatchList.some((p) => p.status === 'pending')) {
       try {
-        approvalView = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() => loadDevicePatchApprovalView(deviceId, device.orgId))
-        );
+        const evaluate = () => loadDevicePatchApprovalView(deviceId, device.orgId);
+        approvalView = partnerId
+          ? await readOwnPartnerAxisRows(partnerId, evaluate)
+          // Partner-less org: the evaluator reads no partner-axis rows (it
+          // stops at the org's missing partner), so the request context suffices.
+          : await evaluate();
         approvalEvaluation = approvalView.evaluation;
         // A pending row the evaluator did not classify (status changed between
         // the two reads, or an org with no partner) keeps the manual-only

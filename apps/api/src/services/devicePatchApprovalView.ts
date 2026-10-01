@@ -12,10 +12,12 @@
  * job (`resolveApprovedPatchesForDevice`), because the question the tab
  * answers is "what will the next scheduled run do with this patch?".
  *
- * Read-only. PRECONDITION: the caller runs in a system DB context — the same
- * precondition as `resolvePatchInstallEligibility` (partner-axis
- * `patch_policies` / `patch_approvals` reads). The caller must also have
- * access-checked `deviceId` against `orgId`.
+ * Read-only. PRECONDITION: the caller's DB context can SELECT the device-org
+ * partner's `patch_policies` / `patch_approvals` rows — a system context, or
+ * (#7647) any context whose own partner is that partner, via those tables'
+ * own-partner SELECT branch. Wrap the call in `readOwnPartnerAxisRows` so a
+ * context that cannot see them escapes instead of silently reading zero rows.
+ * The caller must also have access-checked `deviceId` against `orgId`.
  */
 import type {
   DevicePatchApprovalEvaluation,

@@ -71,3 +71,40 @@ export async function readWithPartnerAxisVisibility<T>(fn: () => Promise<T>): Pr
   if (ambientScope === 'system') return fn();
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
+
+/**
+ * Read ONE partner's rows of an OWN-PARTNER-READABLE partner-axis table on the
+ * caller's own connection whenever the ambient RLS context can already see
+ * them (#7647). Own-partner-readable means the table carries the additive,
+ * SELECT-only policy `partner_id = public.breeze_current_partner_id()`
+ * (writes stay on `breeze_has_partner_access`). Today that is ONLY
+ * `patch_policies` and `patch_approvals`
+ * (2026-11-13-140000-patch-partner-axis-own-partner-select.sql); do not route
+ * any other table through here until it has the same branch, or the in-place
+ * read returns zero rows silently — the #2822 failure.
+ *
+ * In place when the context is system scope, or its `currentPartnerId` is
+ * `partnerId` (the own-partner branch — org-scoped users, agents, API keys),
+ * or its `accessiblePartnerIds` include `partnerId` (breeze_has_partner_access).
+ * Anything else (no ambient context, the portal's null own partner, another
+ * partner) falls back to `readWithPartnerAxisVisibility`, which still costs a
+ * second pooled connection — the deadlock shape the in-place path exists to
+ * avoid, so that fallback should only be reachable by partner-less callers.
+ *
+ * Same obligation as `readWithPartnerAxisVisibility`: `partnerId` must be
+ * server-derived from an access-checked row (e.g. the device's org), never
+ * client-supplied, and every query inside `fn` must stay pinned to it.
+ */
+export async function readOwnPartnerAxisRows<T>(partnerId: string, fn: () => Promise<T>): Promise<T> {
+  if (ambientContextSeesOwnPartnerRows(partnerId)) return fn();
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+/** Whether the ambient context can SELECT `partnerId`'s rows of an own-partner-readable table in place. */
+export function ambientContextSeesOwnPartnerRows(partnerId: string): boolean {
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx) return false;
+  if (ctx.scope === 'system') return true;
+  if (ctx.currentPartnerId != null && ctx.currentPartnerId === partnerId) return true;
+  return Array.isArray(ctx.accessiblePartnerIds) && ctx.accessiblePartnerIds.includes(partnerId);
+}

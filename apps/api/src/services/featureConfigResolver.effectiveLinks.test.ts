@@ -12,6 +12,7 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  resolvePatchConfigPolicyForDevice,
   scanScheduledAutomations,
   scanDueComplianceChecks,
   resolveAutomationsForDeviceWithPolicy,
@@ -27,10 +28,11 @@ import {
   resolveBackupProtectionForDevice,
   resolveAllBackupAssignedDevices,
 } from './featureConfigResolver';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   configPolicyEffectiveFeatureLinks,
   configPolicyFeatureLinks,
+  partners,
 } from '../db/schema';
 
 // Records the first argument of every join so a test can ask "which tables did
@@ -138,6 +140,7 @@ describe('featureConfigResolver reads effective feature links', () => {
   // in lockstep with the source. These assert against the REAL schema exports.
   const deviceResolvers: Array<[string, (id: string) => Promise<unknown>, number]> = [
     ['resolvePatchConfigDetailsForDevice', resolvePatchConfigDetailsForDevice, 3],
+    ['resolvePatchConfigPolicyForDevice', resolvePatchConfigPolicyForDevice, 3],
     ['resolveBackupConfigForDevice', resolveBackupConfigForDevice, 3],
     ['resolveMaintenanceConfigForDevice', resolveMaintenanceConfigForDevice, 3],
     ['resolveComplianceRulesForDevice', resolveComplianceRulesForDevice, 3],
@@ -223,4 +226,36 @@ it('a converted child still wins; only its legacy executable rows disappear', as
   expect(await resolveAutomationsForDeviceWithPolicy('dev-1')).toEqual({ configPolicyId: 'child', automations: [] });
   queueHierarchy(rows.slice(0, 1));
   expect((await resolveAutomationsForDeviceWithPolicy('dev-1'))?.automations.map((a) => a.id)).toEqual(['parent-auto']);
+});
+
+// #7647: the ring-aware approval evaluator only needs WHICH config policy won.
+// The timezone half of resolvePatchConfigDetailsForDevice reads the
+// partner-axis `partners` row through a system escape (a second pooled
+// connection under a request context), so the evaluator's resolver must not
+// pay it.
+describe('resolvePatchConfigPolicyForDevice (#7647)', () => {
+  it('resolves the winning policy without the partner timezone read or any system escape', async () => {
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [], currentPartnerId: 'ptr-1',
+    } as any);
+    queueHierarchy([{
+      patchSettings: { id: 'ps-1' }, featureLinkId: 'fl-1', configPolicyId: 'cp-1', configPolicyName: 'P',
+      featurePolicyId: 'ring-1', assignmentTargetId: 'org-1', assignmentLevel: 'organization',
+      assignmentPriority: 0, assignmentCreatedAt: new Date(), assignmentId: 'a-1',
+    }]);
+    queueSpares(3);
+    try {
+      const resolved = await resolvePatchConfigPolicyForDevice('dev-1');
+      expect(resolved).toMatchObject({ configPolicyId: 'cp-1', featurePolicyId: 'ring-1' });
+      expect(resolved).not.toHaveProperty('resolvedTimezone');
+      expect(rec.joined).not.toContain(partners);
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as any);
+    }
+  });
 });

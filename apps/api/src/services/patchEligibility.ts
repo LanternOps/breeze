@@ -24,12 +24,13 @@
  *
  * Read-only. This module never writes.
  *
- * PRECONDITION for the live path: the caller runs in a system DB context
- * (`resolvePatchPolicyReference` reads the partner-axis `patch_policies`
- * through `readWithPartnerAxisVisibility`, which is a pass-through there and
- * an escape — a second pooled connection — anywhere else). All three callers
- * (the run finalizer, `createActionIntent`'s transaction, the release worker)
- * already are.
+ * PRECONDITION for the live path: the caller's DB context can SELECT the
+ * device-org partner's `patch_policies` / `patch_approvals` rows — the bare
+ * reads below rely on it. A system context can (the run finalizer,
+ * `createActionIntent`'s transaction, the release worker); so can, since
+ * #7647, any context whose own partner is that partner, via those tables'
+ * own-partner SELECT branch (the device Patches tab, through
+ * `readOwnPartnerAxisRows`). Anything else reads zero rows, silently.
  */
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -40,7 +41,7 @@ import {
   OUTSTANDING_DEVICE_PATCH_STATUSES,
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
-import { resolvePatchConfigDetailsForDevice } from './featureConfigResolver';
+import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
 import {
@@ -395,7 +396,7 @@ const NO_POLICY_CONFIG: ApprovalEvaluationConfig = { ringId: null, categoryRules
 
 /**
  * The device's CURRENT effective patch config, resolved through the same
- * hierarchy the scheduler uses (`resolvePatchConfigDetailsForDevice` →
+ * hierarchy the scheduler uses (`resolvePatchConfigPolicyForDevice` →
  * `loadPolicyLocalPatchConfig`), in the shape the evaluator takes. No policy
  * → manual approvals only. An invalid ring reference → no ring, but the
  * policy's own sources / app rules still apply.
@@ -412,7 +413,9 @@ export async function resolveDevicePatchEvaluationConfig(deviceId: string): Prom
 export async function resolveDevicePatchEvaluation(
   deviceId: string
 ): Promise<{ config: ApprovalEvaluationConfig; ringName: string | null }> {
-  const resolved = await resolvePatchConfigDetailsForDevice(deviceId);
+  // Timezone-free on purpose (#7647): the evaluator needs only the winning
+  // policy, and the timezone read would open a second pooled connection.
+  const resolved = await resolvePatchConfigPolicyForDevice(deviceId);
   if (!resolved) return { config: NO_POLICY_CONFIG, ringName: null };
   const policyLocal = await loadPolicyLocalPatchConfig(resolved.configPolicyId);
   if (!policyLocal) return { config: NO_POLICY_CONFIG, ringName: null };
