@@ -391,20 +391,38 @@ export default function AccountingMappingWorkbench({
     for (let attempt = 0; attempt < SETTLE_POLL_ATTEMPTS; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_INTERVAL_MS));
       if (!mountedRef.current) return;
-      const res = await runAction<{ data: MappingProposal[] }>({
-        request: () => fetchWithAuth(accountingPath(provider, `/mappings?entityType=${p.breezeEntityType}`)),
-        errorFallback: t("accountingMapping.failedToLoadMappings", { provider: providerName }),
-        onUnauthorized,
-      });
+      let res: { data: MappingProposal[] };
+      try {
+        res = await runAction<{ data: MappingProposal[] }>({
+          request: () => fetchWithAuth(accountingPath(provider, `/mappings?entityType=${p.breezeEntityType}`)),
+          errorFallback: t("accountingMapping.failedToLoadMappings", { provider: providerName }),
+          // A transient poll failure must not paint an error on a row whose
+          // sync is fine; the row stays as saved and the next poll retries.
+          suppressErrorToast: () => true,
+          onUnauthorized,
+        });
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) throw err;
+        continue;
+      }
+      if (!mountedRef.current) return;
       const fresh = res.data.find((row) => row.breezeEntityId === p.breezeEntityId);
       if (!fresh || fresh.syncStatus === "pending") continue;
       setProposals((prev) => prev?.map((row) => (row.breezeEntityId === fresh.breezeEntityId ? { ...row, ...fresh } : row)) ?? prev);
-      setRowError((prev) => ({ ...prev, [fresh.breezeEntityId]: fresh.lastError }));
+      setRowError((prev) => ({
+        ...prev,
+        [fresh.breezeEntityId]:
+          fresh.lastError ??
+          (fresh.syncStatus === "error" ? t("accountingMapping.failedToSyncEntity", { provider: providerName }) : null),
+      }));
       if (fresh.syncStatus !== "error") {
         showToast({ message: t("accountingMapping.entitySynced", { provider: providerName }), type: "success" });
       }
       return;
     }
+    // Still pending after the poll window: don't leave the click without an
+    // outcome. The row is saved; the worker (or "Sync now") finishes it.
+    showToast({ message: t("accountingMapping.mappingSaved", { provider: providerName }), type: "success" });
   }
 
   async function decide(p: MappingProposal, decision: MappingDecision, remoteEntityId?: string) {
