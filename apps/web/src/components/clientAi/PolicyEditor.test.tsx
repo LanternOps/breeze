@@ -133,6 +133,9 @@ describe('PolicyEditor', () => {
     expect(screen.queryByTestId(/^ai-office-policy-model-/)).toBeNull();
     expect(await screen.findByTestId('model-defaults-link-office_chat')).toBeTruthy();
     expect(screen.getByTestId('model-defaults-link-org').getAttribute('href')).toBe(`/settings/organizations/${ORG_ID}#ai`);
+    // The link leads to one model default, not an allow-list.
+    expect(screen.getByText('AI model')).toBeTruthy();
+    expect(screen.queryByText('Allowed models')).toBeNull();
   });
 
   it('does not send allowedModels on save, even when the loaded policy carries some', async () => {

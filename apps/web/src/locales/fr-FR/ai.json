@@ -256,7 +256,7 @@
       "allowAuto": "Autoriser l’application automatique (l’utilisateur final peut choisir en automatique)"
     },
     "autoApplyHint": "L’application automatique est désactivée par défaut et n’est possible que lorsqu’elle est autorisée ici.",
-    "allowedModels": "Modèles autorisés",
+    "aiModel": "Modèle IA",
     "whoCanUse": "Qui peut utiliser l’assistant",
     "userAccessOptions": {
       "all": "Tous les utilisateurs dans le tenant mappé",

@@ -81,7 +81,6 @@
   "ai.orgsTab.status.notProvisioned",
   "ai.orgsTab.wizard.openPolicyEditor",
   "ai.policyEditor.addRule",
-  "ai.policyEditor.allowedModels",
   "ai.policyEditor.customRules",
   "ai.policyEditor.displayName",
   "ai.policyEditor.keepForever",

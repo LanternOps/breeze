@@ -256,7 +256,7 @@
       "allowAuto": "Otomatik uygulamaya izin ver (son kullanıcı otomatik uygulamayı tercih edebilir)"
     },
     "autoApplyHint": "Otomatik uygulama varsayılan olarak kapalıdır ve yalnızca burada izin verildiğinde mümkündür.",
-    "allowedModels": "İzin verilen modeller",
+    "aiModel": "Yapay zeka modeli",
     "whoCanUse": "Asistanı kimler kullanabilir?",
     "userAccessOptions": {
       "all": "Eşlenen kiracıdaki tüm kullanıcılar",

@@ -415,7 +415,7 @@ export default function PolicyEditor({
           </label>
           <div className="text-sm">
             <span className="text-muted-foreground">
-              {t("policyEditor.allowedModels")}
+              {t("policyEditor.aiModel")}
             </span>
             <div className="mt-1">
               <ModelDefaultsLink surface="office_chat" orgId={orgId} level="org" />

@@ -256,7 +256,7 @@
       "allowAuto": "Permitir aplicação automática (o usuário final pode optar por ela)"
     },
     "autoApplyHint": "A aplicação automática fica desativada por padrão e só é possível quando permitida aqui.",
-    "allowedModels": "Modelos permitidos",
+    "aiModel": "Modelo de IA",
     "whoCanUse": "Quem pode usar o assistente",
     "userAccessOptions": {
       "all": "Todos os usuários do locatário mapeado",

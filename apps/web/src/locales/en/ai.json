@@ -256,7 +256,7 @@
       "allowAuto": "Allow auto-apply (end user may opt into auto)"
     },
     "autoApplyHint": "Auto-apply is off by default and only possible when allowed here.",
-    "allowedModels": "Allowed models",
+    "aiModel": "AI model",
     "whoCanUse": "Who can use the assistant",
     "userAccessOptions": {
       "all": "All users in the mapped tenant",
