@@ -33,7 +33,13 @@ export interface AiConnectionDto {
 }
 
 /** Why the enable switch is disabled (the subset of ResolveFailureReason the enable gate can return). */
-export type OfferingEnableBlocker = 'model_unavailable' | 'unpriced' | 'plan_required' | 'connection_unavailable';
+export type OfferingEnableBlocker =
+  | 'model_unavailable'
+  | 'unpriced'
+  | 'plan_required'
+  | 'connection_unavailable'
+  /** A platform offering the configured platform inference geography cannot serve (W03 platform-geo rule). */
+  | 'residency_unavailable';
 
 export interface AiOfferingDto {
   /** null for a platform model the partner has not added yet (row is synthesized). */
