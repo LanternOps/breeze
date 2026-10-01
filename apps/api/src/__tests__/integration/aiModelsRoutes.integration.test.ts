@@ -91,19 +91,33 @@ const orgRow = (surface: PartnerSurface, o: Partial<OrgAssignmentInput> = {}): O
   allowUserChoice: null, options: null, expectedUpdatedAt: null, ...o,
 });
 
+/** The single row a fixture query returns; throws (instead of a TypeError) when it returned none. */
+function firstRow<T>(rows: readonly unknown[]): T {
+  if (rows.length === 0) throw new Error('fixture query returned no row');
+  return rows[0] as T;
+}
+
+/** A row's stored updated_at as the Date the DTO would carry (ms precision). */
+async function versionToken(table: 'ai_model_assignments' | 'partner_ai_models', id: string): Promise<string> {
+  const rows = table === 'ai_model_assignments'
+    ? await fixtureSql`SELECT updated_at AS v FROM ai_model_assignments WHERE id = ${id}`
+    : await fixtureSql`SELECT updated_at AS v FROM partner_ai_models WHERE id = ${id}`;
+  return firstRow<{ v: Date }>(rows).v.toISOString();
+}
+
 async function assignmentCount(where: { orgId?: string; partnerId?: string }): Promise<number> {
-  const [{ n }] = where.orgId
+  const rows = where.orgId
     ? await fixtureSql`SELECT count(*)::int n FROM ai_model_assignments WHERE org_id = ${where.orgId}`
     : await fixtureSql`SELECT count(*)::int n FROM ai_model_assignments WHERE partner_id = ${where.partnerId!}`;
-  return n as number;
+  return firstRow<{ n: number }>(rows).n;
 }
 
 /** updated_at as stored (µs), for "unchanged" assertions. */
 async function rawUpdatedAt(table: 'ai_model_assignments' | 'partner_ai_models', id: string): Promise<string> {
-  const [{ v }] = table === 'ai_model_assignments'
+  const rows = table === 'ai_model_assignments'
     ? await fixtureSql`SELECT updated_at::text v FROM ai_model_assignments WHERE id = ${id}`
     : await fixtureSql`SELECT updated_at::text v FROM partner_ai_models WHERE id = ${id}`;
-  return String(v);
+  return firstRow<{ v: string }>(rows).v;
 }
 
 /** Seeds an org override row directly (superuser) and returns its id. */
@@ -159,10 +173,10 @@ describe.skipIf(!RUN)('cross-tenant offering ids never write (#7602 W04)', () =>
   it('a refusal fallback cannot be another partner’s offering, and the offering is unchanged', async () => {
     const w = await seedWorld();
     const before = await rawUpdatedAt('partner_ai_models', w.offA);
-    const [{ v }] = await fixtureSql`SELECT updated_at AS v FROM partner_ai_models WHERE id = ${w.offA}`;
+    const token = await versionToken('partner_ai_models', w.offA);
     const err = await caught(asPartner(w.pA, [w.orgA], () => updateOfferingDetails({
       partnerId: w.pA, offeringId: w.offA,
-      patch: { expectedUpdatedAt: (v as Date).toISOString(), refusalFallbackOfferingId: w.offB },
+      patch: { expectedUpdatedAt: token, refusalFallbackOfferingId: w.offB },
     })));
     expect([err.status, err.code, err.details?.field, err.details?.reason])
       .toEqual([422, 'not_eligible', 'refusalFallbackOfferingId', 'not_found']);
@@ -202,15 +216,14 @@ describe.skipIf(!RUN)('org overrides for another partner’s org never write (#7
       partnerId: w.pA, orgId: w.orgB, rows: [orgRow('extension_content', { allowUserChoice: false })],
     })));
     // The composite FK (org_id, offering_partner_id) → organizations(id, partner_id) refuses it.
-    expect(err.status).toBe(422);
+    expect([err.status, err.code, err.details?.constraint]).toEqual([422, 'invalid', 'ai_model_assignments_org_partner_fk']);
     expect(await assignmentCount({ orgId: w.orgB })).toBe(0);
   });
 
   it('a forged org write cannot update or delete partner B’s existing org override (pinned → stale)', async () => {
     const w = await seedWorld();
     const rowB = await seedOrgOverride(w.orgB, w.pB, 'extension_content', w.offB);
-    const [{ v }] = await fixtureSql`SELECT updated_at AS v FROM ai_model_assignments WHERE id = ${rowB}`;
-    const token = (v as Date).toISOString();
+    const token = await versionToken('ai_model_assignments', rowB);
     const before = await rawUpdatedAt('ai_model_assignments', rowB);
 
     // Through the service: B's row is invisible to the pinned read → stale.
@@ -241,9 +254,9 @@ describe.skipIf(!RUN)('org overrides for another partner’s org never write (#7
   it('a partner-owner conditional update is pinned to its partner (B’s partner row survives in system scope)', async () => {
     const w = await seedWorld();
     const rowB = await seedPartnerDefault(w.pB, 'extension_content', w.offB);
-    const [{ v }] = await fixtureSql`SELECT updated_at AS v FROM ai_model_assignments WHERE id = ${rowB}`;
+    const token = await versionToken('ai_model_assignments', rowB);
     const err = await caught(inSystem(() => conditionalUpsert({ kind: 'partner', partnerId: w.pA },
-      { surface: 'extension_content', role: 'default', expectedUpdatedAt: (v as Date).toISOString() },
+      { surface: 'extension_content', role: 'default', expectedUpdatedAt: token },
       { defaultOfferingId: w.offA, permittedOfferingIds: null, allowUserChoice: false, options: null })));
     expect([err.status, err.code]).toEqual([409, 'stale_write']);
     const [row] = await fixtureSql`SELECT default_offering_id, allow_user_choice FROM ai_model_assignments WHERE id = ${rowB}`;
@@ -269,6 +282,15 @@ describe.skipIf(!RUN)('tighten-only + ownership trigger, under an org token (#76
     const [row] = await fixtureSql`SELECT permitted_offering_ids FROM ai_model_assignments WHERE id = ${narrowed!.id}`;
     expect(row!.permitted_offering_ids).toEqual([w.offA2]);
     expect(await rawUpdatedAt('ai_model_assignments', narrowed!.id)).toBe(before);
+  });
+
+  it('against a partner row with permitted = null (every enabled model), an org narrows to any enabled offering', async () => {
+    const w = await seedWorld();
+    await seedPartnerDefault(w.pA, 'catalog_enrichment', w.offA, null);
+    const [row] = await asOrg(w.orgA, w.pA, () => putOrgAssignments({ partnerId: w.pA, orgId: w.orgA, rows: [
+      orgRow('catalog_enrichment', { defaultOfferingId: w.offA2, permittedOfferingIds: [w.offA2] }),
+    ] }));
+    expect(row).toMatchObject({ orgId: w.orgA, offeringPartnerId: w.pA, defaultOfferingId: w.offA2, permittedOfferingIds: [w.offA2] });
   });
 
   it('an org cannot reference a disabled offering: the write check refuses it, and so does the trigger under org RLS', async () => {
@@ -376,16 +398,20 @@ describe.skipIf(!RUN)('residency writer (#7602 W04)', () => {
 });
 
 describe.skipIf(!RUN)('usage breakdown against real ledger rows (#7602 W04)', () => {
-  const today = () => new Date().toISOString().slice(0, 10);
+  // Fixed UTC day, set explicitly on every row: no flake near midnight.
+  const DAY = '2026-09-15';
+  const today = () => DAY;
 
   async function seedLedger(w: World & { orgA2: string }) {
     await fixtureSql`
-      INSERT INTO ai_invocations (org_id, surface, funding_source, requested_model, served_model, ledger_mode, rate_snapshot, cost_cents, offering_id, stop_reason, fallback_used)
-      VALUES (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 5, ${w.offA}, 'refusal', false),
-             (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-fallback', 'authoritative', '{}'::jsonb, 11, ${w.offA}, 'end_turn', true),
-             (${w.orgA2}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 3, ${w.offA}, 'end_turn', false),
-             (${w.orgB}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 7, ${w.offB}, 'end_turn', false),
-             (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-primary', 'shadow', NULL, NULL, ${w.offA}, 'end_turn', false)`;
+      INSERT INTO ai_invocations (org_id, surface, funding_source, requested_model, served_model, ledger_mode, rate_snapshot, cost_cents, offering_id, stop_reason, fallback_used, created_at)
+      VALUES (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 5, ${w.offA}, 'refusal', false, ${`${DAY}T12:00:00Z`}::timestamptz),
+             (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-fallback', 'authoritative', '{}'::jsonb, 11, ${w.offA}, 'end_turn', true, ${`${DAY}T12:00:00Z`}::timestamptz),
+             (${w.orgA2}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 3, ${w.offA}, 'end_turn', false, ${`${DAY}T00:00:00Z`}::timestamptz),
+             (${w.orgB}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 7, ${w.offB}, 'end_turn', false, ${`${DAY}T23:59:59Z`}::timestamptz),
+             (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-primary', 'shadow', NULL, NULL, ${w.offA}, 'end_turn', false, ${`${DAY}T12:00:00Z`}::timestamptz),
+             -- outside the range (next UTC day): never counted
+             (${w.orgA}, 'chat', 'platform', 'm-primary', 'm-primary', 'authoritative', '{}'::jsonb, 1000, ${w.offA}, 'end_turn', false, ${`2026-09-16T00:00:00Z`}::timestamptz)`;
   }
 
   async function world2() {
@@ -429,6 +455,41 @@ describe.skipIf(!RUN)('usage breakdown against real ledger rows (#7602 W04)', ()
     }));
     expect(forged.rows).toEqual([]);
     expect(forged.totals.invocations).toBe(0);
+  });
+
+  // System scope (platform admin): RLS does not bound ai_invocations, so the
+  // app-layer org list is the ONLY tenant guard. queryAiUsageBreakdown has no
+  // partnerId parameter — the route passes auth.accessibleOrgIds, which is the
+  // only filter there is (Task 9 deferred item, closed here).
+  it('system scope: the caller org list is the only guard, and it excludes partner B’s org', async () => {
+    const w = await world2();
+    await seedLedger(w);
+    const r = await inSystem(() => queryAiUsageBreakdown({
+      groupBy: 'org', from: today(), to: today(), orgId: null, accessibleOrgIds: [w.orgA, w.orgA2],
+    }));
+    expect(r.rows.map((x) => x.key).sort()).toEqual([w.orgA, w.orgA2].sort());
+    expect(r.rows.map((x) => x.key)).not.toContain(w.orgB);
+    expect(r.totals.costCents).toBe(19);
+
+    // orgId of partner B's org outside the caller's list: still nothing.
+    const forged = await inSystem(() => queryAiUsageBreakdown({
+      groupBy: 'org', from: today(), to: today(), orgId: w.orgB, accessibleOrgIds: [w.orgA, w.orgA2],
+    }));
+    expect(forged.totals.invocations).toBe(0);
+  });
+
+  it('system scope with an unrestricted org list (accessibleOrgIds null) is platform-wide by design', async () => {
+    const w = await world2();
+    await seedLedger(w);
+    const r = await inSystem(() => queryAiUsageBreakdown({
+      groupBy: 'org', from: today(), to: today(), orgId: null, accessibleOrgIds: null,
+    }));
+    const keys = r.rows.map((x) => x.key);
+    expect(keys).toEqual(expect.arrayContaining([w.orgA, w.orgA2, w.orgB]));
+    const onlyB = await inSystem(() => queryAiUsageBreakdown({
+      groupBy: 'org', from: today(), to: today(), orgId: w.orgB, accessibleOrgIds: null,
+    }));
+    expect(onlyB.rows.map((x) => [x.key, x.costCents])).toEqual([[w.orgB, 7]]);
   });
 
   it('groupBy=model books a refusal-fallback leg under the model that served it', async () => {
@@ -479,10 +540,28 @@ describe.skipIf(!RUN)('/ai/models routes refuse another partner’s ids (#7602 W
     const role = await createRole({ scope: 'partner', partnerId });
     await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
     await assignUserToPartner(user.id, partnerId, role.id, 'all');
-    const token = await createAccessToken({
+    return client(await createAccessToken({
       sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId, scope: 'partner',
       mfa: true, aep: 1, mep: 1, sid: randomUUID(),
-    });
+    }));
+  }
+
+  /**
+   * A platform admin's system-scope token, as login issues it: no partnerId,
+   * no orgId (permissions come from users.is_platform_admin). The route must
+   * take the org's partner from the org row — auth carries none.
+   */
+  async function systemAdmin(homePartnerId: string) {
+    const user = await createUser({ partnerId: homePartnerId, orgId: null, email: `w04-sys-${randomUUID()}@example.com` });
+    await fixtureSql`UPDATE users SET is_platform_admin = true WHERE id = ${user.id}`;
+    const role = await createRole({ scope: 'system' });
+    return client(await createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: null, scope: 'system',
+      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    }));
+  }
+
+  function client(token: string) {
     const app = buildApp();
     return (method: string, path: string, body?: unknown): Promise<Response> => Promise.resolve(app.request(path, {
       method,
@@ -516,6 +595,19 @@ describe.skipIf(!RUN)('/ai/models routes refuse another partner’s ids (#7602 W
 
     const read = await req('GET', `/api/v1/ai/models/orgs/${w.orgB}/assignments`);
     expect(read.status).toBe(403);
+  });
+
+  it('system scope: PUT /orgs/:orgId/assignments takes the partner from the org row, never from auth', async () => {
+    const w = await seedWorld();
+    await seedPartnerDefault(w.pA, 'extension_content', w.offA);
+    const req = await systemAdmin(w.pB);
+    const res = await req('PUT', `/api/v1/ai/models/orgs/${w.orgA}/assignments`, {
+      assignments: [orgRow('extension_content', { allowUserChoice: false })],
+    });
+    expect({ status: res.status, body: res.status === 200 ? null : await res.text() }).toEqual({ status: 200, body: null });
+    const rows = await fixtureSql`SELECT offering_partner_id, partner_id, allow_user_choice FROM ai_model_assignments WHERE org_id = ${w.orgA}`;
+    expect(rows).toEqual([{ offering_partner_id: w.pA, partner_id: null, allow_user_choice: false }]);
+    expect(await assignmentCount({ orgId: w.orgB })).toBe(0);
   });
 
   it('PUT /orgs/:orgId/assignments for its own org succeeds (control)', async () => {
