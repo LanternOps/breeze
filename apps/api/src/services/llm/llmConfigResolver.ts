@@ -12,6 +12,7 @@ import { captureException, captureMessage } from '../sentry';
 import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from './guardedLlmFetch';
 import { isPlatformLlmConfigured, type LlmUnusableCode } from './llmAvailability';
 import { recordLlmEgressEvent } from './llmEgressRecorder';
+import { LlmUnavailableError } from './llmUnavailableError';
 
 const SENTRY_CAPTURE_THROTTLE_MS = 60 * 60 * 1000;
 const sentryCaptureTimestamps = new Map<string, number>();
@@ -92,15 +93,7 @@ export type ResolvedLlmConfig =
 
 export type UsableLlmConfig = Exclude<ResolvedLlmConfig, { source: 'unavailable' }>;
 
-export class LlmUnavailableError extends Error {
-  readonly status = 503;
-  readonly code = 'ai_unavailable';
-
-  constructor(message = 'AI is unavailable until the Anthropic API key is reconnected.') {
-    super(message);
-    this.name = 'LlmUnavailableError';
-  }
-}
+export { LlmUnavailableError };
 
 export class LlmOrgResolutionError extends Error {
   readonly orgId: string;

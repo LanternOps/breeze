@@ -327,7 +327,9 @@ describe('savePartnerLlmKey', () => {
       userId: USER_ID,
     });
 
-    expect(anthropicState.constructorOptions).toEqual([{ apiKey: API_KEY }]);
+    // Pinned to the public API through the connection factory: a partner key
+    // never follows an ambient ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN.
+    expect(anthropicState.constructorOptions).toEqual([{ apiKey: API_KEY, authToken: null, baseURL: 'https://api.anthropic.com' }]);
     expect(anthropicState.create).toHaveBeenCalledWith({
       model: 'claude-sonnet-4-6',
       max_tokens: 1,

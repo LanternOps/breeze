@@ -6,13 +6,14 @@ import { partnerAiConnections, partnerLlmConfigs } from '../db/schema';
 import { resolveDefaultModel } from './aiModel';
 import { lockPartnerRegistryReconcile, reconcilePartnerFromLegacyInTx } from './aiModels/legacyReconcile';
 import { isOfferablePlatformModel } from './aiModels/platformModels';
+import { createAnthropicClient } from './aiModels/connectionFactory';
 import { carriesQueryValues, formatSafeDbErrorDetail, safeDbErrorDetail } from './aiModels/safeDbError';
 import {
   columnAad,
   encryptedColumnRegistry,
   type EncryptedColumnSpec,
 } from './encryptedColumnRegistry';
-import { buildGuardedLlmFetch, LlmEgressViolationError } from './llm/guardedLlmFetch';
+import { LlmEgressViolationError } from './llm/guardedLlmFetch';
 // Type-only: `llmConfigResolver.ts` imports `decryptPartnerLlmApiKey` (a value)
 // from this file. Importing only the type + the flag *function* back keeps the
 // two modules mutually referential at the type/declaration level without a
@@ -167,20 +168,17 @@ function mapProbeError(error: unknown): unknown {
  */
 async function probeAnthropicKey(apiKey: string, endpoint: ResolvedLlmEndpoint = { kind: 'anthropic' }): Promise<void> {
   const model = endpoint.kind === 'catalog' ? endpoint.providerModel : resolveDefaultModel();
-  const client = endpoint.kind === 'catalog'
-    ? new Anthropic({
-        baseURL: endpoint.baseUrl,
-        // Exactly one credential header, the other explicitly nulled — same
-        // invariant as the resolved catalog client in llmConfigResolver.ts.
-        ...(endpoint.authMode === 'x-api-key'
-          ? { apiKey, authToken: null }
-          : { authToken: apiKey, apiKey: null }),
-        fetch: buildGuardedLlmFetch({
-          allowedOrigin: new URL(endpoint.baseUrl).origin,
-          recordEgress: buildProbeEgressRecorder(),
-        }),
-      })
-    : new Anthropic({ apiKey });
+  // Probe through the connection factory, against the target the key will be
+  // used with: a partner key is pinned to the public API (previously
+  // `{ apiKey }`, which honoured an ambient ANTHROPIC_BASE_URL and could send
+  // a partner key to a self-host gateway); a catalog key goes through the
+  // guarded fetch with exactly one credential header.
+  const client = createAnthropicClient({
+    apiKey,
+    target: endpoint.kind === 'catalog'
+      ? { kind: 'endpoint', baseUrl: endpoint.baseUrl, authMode: endpoint.authMode, recordEgress: buildProbeEgressRecorder() }
+      : { kind: 'anthropic' },
+  });
   try {
     await runOutsideDbContext(() => client.messages.create({
       model,

@@ -6,13 +6,13 @@
  * Discovery NEVER enables, prices, deletes, or changes an assignment. New ids
  * land unpriced and unoffered, and the operator is alerted.
  */
-import Anthropic from '@anthropic-ai/sdk';
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { ModelLifecycle } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiPlatformModels } from '../../db/schema';
 import { sendOpsAlert } from '../opsAlerts';
 import { captureException } from '../sentry';
+import { createAnthropicClient, type AnthropicClientTarget } from './connectionFactory';
 import { refreshPlatformModelSnapshot, upsertDiscoveredPlatformModel, type DiscoveredModelInput } from './platformModels';
 
 export const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
@@ -21,12 +21,16 @@ export type AnthropicModelInfo = DiscoveredModelInput;
 /** A plain model identifier; anything else is skipped rather than shown to operators. */
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
 
-export async function discoverAnthropicModels(apiKey: string | undefined): Promise<AnthropicModelInfo[]> {
+export async function discoverAnthropicModels(
+  apiKey: string | undefined,
+  target: AnthropicClientTarget = { kind: 'anthropic' },
+): Promise<AnthropicModelInfo[]> {
   const key = apiKey?.trim();
   if (!key) throw new Error('discoverAnthropicModels: an API key is required');
-  // Forced origin and no auth token: the SDK would otherwise pick up
-  // ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN from the environment.
-  const client = new Anthropic({ apiKey: key, authToken: null, baseURL: ANTHROPIC_API_ORIGIN, timeout: 30_000, maxRetries: 2 });
+  // Default target pins the public origin with no auth token: the SDK would
+  // otherwise pick up ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN from the
+  // environment. Built through the connection factory (the only constructor).
+  const client = createAnthropicClient({ apiKey: key, target, timeout: 30_000, maxRetries: 2 });
   const models: AnthropicModelInfo[] = [];
   for await (const model of client.models.list({ limit: 100 })) {
     if (typeof model.id !== 'string' || !MODEL_ID_PATTERN.test(model.id)) {

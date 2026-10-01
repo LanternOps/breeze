@@ -54,7 +54,7 @@ describe('discoverAnthropicModels', () => {
       { id: 'model-a', display_name: 'Model A', max_input_tokens: 1000, max_tokens: 100, capabilities: { thinking: {} } },
     ]));
     const models = await discoverAnthropicModels(' key-1 ');
-    expect(constructorOptions[0]).toMatchObject({ apiKey: 'key-1', authToken: null, baseURL: ANTHROPIC_API_ORIGIN });
+    expect(constructorOptions).toEqual([{ apiKey: 'key-1', authToken: null, baseURL: ANTHROPIC_API_ORIGIN, timeout: 30_000, maxRetries: 2 }]);
     expect(models).toEqual([{ id: 'model-a', displayName: 'Model A', maxInputTokens: 1000, maxOutputTokens: 100, capabilities: { thinking: {} } }]);
   });
 
