@@ -58,6 +58,17 @@ describe('org merge — report runs cited as deliverable evidence (#7443)', () =
     const deliverableL = randomUUID();
     const occurrenceL = randomUUID();
     const evidenceL = randomUUID();
+    // Controls: a loser definition with NO survivor twin (an ordinary report of
+    // the same type — the portal pass only matches flagged definitions on both
+    // sides) and the survivor's own evidence. Neither may be re-pointed.
+    const reportOnlyL = randomUUID();
+    const runOnlyL = randomUUID();
+    const deliverableOnlyL = randomUUID();
+    const occurrenceOnlyL = randomUUID();
+    const evidenceOnlyL = randomUUID();
+    const deliverableS = randomUUID();
+    const occurrenceS = randomUUID();
+    const evidenceS = randomUUID();
 
     await withSystemDbAccessContext(async () => {
       await db.execute(sql`
@@ -76,27 +87,36 @@ describe('org merge — report runs cited as deliverable evidence (#7443)', () =
           (${reportL}::uuid, ${loser}::uuid,    'Executive summary', 'executive_summary', true),
           (${reportS}::uuid, ${survivor}::uuid, 'Executive summary', 'executive_summary', true)`);
       await db.execute(sql`
+        INSERT INTO reports (id, org_id, name, type, portal_self_service)
+        VALUES (${reportOnlyL}::uuid, ${loser}::uuid, 'Board pack', 'executive_summary', false)`);
+      await db.execute(sql`
         INSERT INTO report_runs (id, report_id, status) VALUES
           (${runL}::uuid, ${reportL}::uuid, 'completed'),
-          (${runS}::uuid, ${reportS}::uuid, 'completed')`);
+          (${runS}::uuid, ${reportS}::uuid, 'completed'),
+          (${runOnlyL}::uuid, ${reportOnlyL}::uuid, 'completed')`);
 
-      // A loser deliverable bound to the loser's definition, with one delivered
-      // occurrence that cites the loser's run as its evidence.
+      // Each deliverable is bound to a definition and has one delivered
+      // occurrence citing that definition's run as its evidence. deliverableL
+      // is the case under test: bound to the loser's colliding definition.
       await db.execute(sql`
         INSERT INTO service_deliverables
           (id, org_id, name, cadence, anchor_due_date, effective_from, auto_evidence_report_id)
         VALUES
-          (${deliverableL}::uuid, ${loser}::uuid, 'Monthly executive summary', 'monthly',
-           '2026-09-30', '2026-09-01', ${reportL}::uuid)`);
+          (${deliverableL}::uuid,     ${loser}::uuid,    'Monthly executive summary', 'monthly', '2026-09-30', '2026-09-01', ${reportL}::uuid),
+          (${deliverableOnlyL}::uuid, ${loser}::uuid,    'Monthly board pack',        'monthly', '2026-09-30', '2026-09-01', ${reportOnlyL}::uuid),
+          (${deliverableS}::uuid,     ${survivor}::uuid, 'Survivor summary',          'monthly', '2026-09-30', '2026-09-01', ${reportS}::uuid)`);
       await db.execute(sql`
         INSERT INTO service_deliverable_occurrences
           (id, org_id, deliverable_id, name_snapshot, period_start, period_end, due_at, original_due_at, status)
         VALUES
-          (${occurrenceL}::uuid, ${loser}::uuid, ${deliverableL}::uuid, 'Monthly executive summary',
-           '2026-09-01', '2026-09-30', '2026-09-30', '2026-09-30', 'delivered')`);
+          (${occurrenceL}::uuid,     ${loser}::uuid,    ${deliverableL}::uuid,     'Monthly executive summary', '2026-09-01', '2026-09-30', '2026-09-30', '2026-09-30', 'delivered'),
+          (${occurrenceOnlyL}::uuid, ${loser}::uuid,    ${deliverableOnlyL}::uuid, 'Monthly board pack',        '2026-09-01', '2026-09-30', '2026-09-30', '2026-09-30', 'delivered'),
+          (${occurrenceS}::uuid,     ${survivor}::uuid, ${deliverableS}::uuid,     'Survivor summary',          '2026-09-01', '2026-09-30', '2026-09-30', '2026-09-30', 'delivered')`);
       await db.execute(sql`
-        INSERT INTO service_deliverable_evidence (id, org_id, occurrence_id, kind, report_id, report_run_id)
-        VALUES (${evidenceL}::uuid, ${loser}::uuid, ${occurrenceL}::uuid, 'report_run', ${reportL}::uuid, ${runL}::uuid)`);
+        INSERT INTO service_deliverable_evidence (id, org_id, occurrence_id, kind, report_id, report_run_id) VALUES
+          (${evidenceL}::uuid,     ${loser}::uuid,    ${occurrenceL}::uuid,     'report_run', ${reportL}::uuid,     ${runL}::uuid),
+          (${evidenceOnlyL}::uuid, ${loser}::uuid,    ${occurrenceOnlyL}::uuid, 'report_run', ${reportOnlyL}::uuid, ${runOnlyL}::uuid),
+          (${evidenceS}::uuid,     ${survivor}::uuid, ${occurrenceS}::uuid,     'report_run', ${reportS}::uuid,     ${runS}::uuid)`);
     });
 
     const result = await executeOrgMerge({
@@ -110,38 +130,60 @@ describe('org merge — report runs cited as deliverable evidence (#7443)', () =
 
     const testDb = getTestDb();
 
-    // The survivor's canonical definition is the only one left.
+    // The loser's colliding portal definition is gone; the survivor's and the
+    // loser's twin-less ordinary definition both remain, under the survivor.
     const definitions = rows<{ id: string; org_id: string }>(await testDb.execute(sql`
-      SELECT id, org_id FROM reports WHERE id IN (${reportL}::uuid, ${reportS}::uuid)`));
-    expect(definitions).toEqual([{ id: reportS, org_id: survivor }]);
+      SELECT id, org_id FROM reports
+       WHERE id IN (${reportL}::uuid, ${reportS}::uuid, ${reportOnlyL}::uuid) ORDER BY id`));
+    expect(definitions).toEqual(
+      [{ id: reportS, org_id: survivor }, { id: reportOnlyL, org_id: survivor }].sort((a, b) => a.id.localeCompare(b.id)),
+    );
 
-    // Both runs continue under the survivor's definition.
+    // Runs of the colliding definition continue under the survivor's; the
+    // twin-less definition keeps its own run.
     const runs = rows<{ id: string; report_id: string }>(await testDb.execute(sql`
-      SELECT id, report_id FROM report_runs WHERE id IN (${runL}::uuid, ${runS}::uuid) ORDER BY id`));
-    expect(runs).toHaveLength(2);
-    expect(runs.every((r) => r.report_id === reportS)).toBe(true);
+      SELECT id, report_id FROM report_runs
+       WHERE id IN (${runL}::uuid, ${runS}::uuid, ${runOnlyL}::uuid)`));
+    expect(new Map(runs.map((r) => [r.id, r.report_id]))).toEqual(
+      new Map([[runL, reportS], [runS, reportS], [runOnlyL, reportOnlyL]]),
+    );
 
-    // The evidence row survived, moved with its run, and is re-tenanted.
+    // Every evidence row survived and is under the survivor. Only the one
+    // citing the dropped definition's run was re-pointed.
     const evidence = rows<{ id: string; org_id: string; occurrence_id: string; report_id: string; report_run_id: string }>(
       await testDb.execute(sql`
         SELECT id, org_id, occurrence_id, report_id, report_run_id
-          FROM service_deliverable_evidence WHERE id = ${evidenceL}::uuid`),
+          FROM service_deliverable_evidence
+         WHERE id IN (${evidenceL}::uuid, ${evidenceOnlyL}::uuid, ${evidenceS}::uuid)`),
     );
-    expect(evidence).toEqual([{
-      id: evidenceL,
-      org_id: survivor,
-      occurrence_id: occurrenceL,
-      report_id: reportS,
-      report_run_id: runL,
-    }]);
+    expect(new Map(evidence.map((e) => [e.id, e]))).toEqual(new Map([
+      [evidenceL, { id: evidenceL, org_id: survivor, occurrence_id: occurrenceL, report_id: reportS, report_run_id: runL }],
+      [evidenceOnlyL, {
+        id: evidenceOnlyL, org_id: survivor, occurrence_id: occurrenceOnlyL, report_id: reportOnlyL, report_run_id: runOnlyL,
+      }],
+      [evidenceS, { id: evidenceS, org_id: survivor, occurrence_id: occurrenceS, report_id: reportS, report_run_id: runS }],
+    ]));
 
-    // The deliverable still auto-produces evidence, now from the survivor's definition.
-    const deliverables = rows<{ org_id: string; auto_evidence_report_id: string | null }>(await testDb.execute(sql`
-      SELECT org_id, auto_evidence_report_id FROM service_deliverables WHERE id = ${deliverableL}::uuid`));
-    expect(deliverables).toEqual([{ org_id: survivor, auto_evidence_report_id: reportS }]);
+    // deliverableL still auto-produces evidence, now from the survivor's
+    // definition; the other bindings are unchanged.
+    const deliverables = rows<{ id: string; org_id: string; auto_evidence_report_id: string | null }>(
+      await testDb.execute(sql`
+        SELECT id, org_id, auto_evidence_report_id FROM service_deliverables
+         WHERE id IN (${deliverableL}::uuid, ${deliverableOnlyL}::uuid, ${deliverableS}::uuid)`),
+    );
+    expect(new Map(deliverables.map((d) => [d.id, [d.org_id, d.auto_evidence_report_id]]))).toEqual(new Map([
+      [deliverableL, [survivor, reportS]],
+      [deliverableOnlyL, [survivor, reportOnlyL]],
+      [deliverableS, [survivor, reportS]],
+    ]));
 
     const occurrences = rows<{ org_id: string; status: string }>(await testDb.execute(sql`
-      SELECT org_id, status FROM service_deliverable_occurrences WHERE id = ${occurrenceL}::uuid`));
-    expect(occurrences).toEqual([{ org_id: survivor, status: 'delivered' }]);
+      SELECT org_id, status FROM service_deliverable_occurrences
+       WHERE id IN (${occurrenceL}::uuid, ${occurrenceOnlyL}::uuid, ${occurrenceS}::uuid)`));
+    expect(occurrences).toEqual([
+      { org_id: survivor, status: 'delivered' },
+      { org_id: survivor, status: 'delivered' },
+      { org_id: survivor, status: 'delivered' },
+    ]);
   }, 120_000);
 });

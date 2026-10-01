@@ -1396,10 +1396,12 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 //    (referential actions fire immediately even when deferred), so a binding
 //    left on the doomed definition would silently stop the deliverable
 //    producing evidence.
-// Both FKs pair the definition with the row's org_id, which still names the
-// loser here (parents-first: reports runs before the service_deliverable*
-// repoints); the deferred composite check passes at commit, after those
-// repoints land.
+// The re-pointed rows' org_id still names the loser here (parents-first:
+// reports runs before the service_deliverable* repoints), so
+// sd_evidence_report_org_fk (report_id, org_id) and
+// service_deliverables_auto_report_org_fk (auto_evidence_report_id, org_id)
+// are mismatched too until those repoints land; both are DEFERRABLE and pass
+// at commit.
 // ---------------------------------------------------------------------------
 const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
 // Mirrors reports_portal_self_service_org_type_uniq (org_id, type)
@@ -1515,9 +1517,9 @@ function rehomedChildrenSummary(pass: Awaited<ReturnType<typeof rehomeReportChil
 // report_runs(id, report_id) was then NOT deferrable, so moving a run aborted
 // the merge with 23503. That FK is DEFERRABLE since 2026-11-12-110000 (#7443)
 // and the dedupe passes below now re-home evidence-linked runs, but this pass
-// keeps archive-in-place: it touches no run or evidence row at all. The
-// archived child then repoints into the
-// survivor org with its history intact (the generic repoint below). Its
+// keeps archive-in-place: this pass itself touches no run or evidence row.
+// The archived child then repoints into the survivor org with its history
+// intact (the generic repoint below). Its
 // recipient overrides are unioned onto the survivor's child; a 'remove' on
 // either side wins over an 'add'.
 // ---------------------------------------------------------------------------
