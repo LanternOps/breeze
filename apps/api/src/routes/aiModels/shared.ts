@@ -4,6 +4,7 @@
  */
 import type { Context, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
 import { requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, userCanDecideApprovals } from '../../services/permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
@@ -39,6 +40,10 @@ export function canDecideApprovals(c: Context): boolean {
   const perms = c.get('permissions');
   return Boolean(perms) && userCanDecideApprovals(perms);
 }
+
+/** Path params: a malformed id is a 400, never a uuid cast error from the DB. */
+export const idParamSchema = z.object({ id: z.string().uuid() });
+export const platformModelIdParamSchema = z.object({ platformModelId: z.string().uuid() });
 
 export const APPROVALS_DECIDE_REQUIRED = {
   error: 'approvals:decide is required to change the script reviewer’s model',

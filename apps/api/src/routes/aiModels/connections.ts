@@ -12,7 +12,7 @@ import { getCompatConnection } from '../../services/aiModels/connections';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { isLlmProviderCatalogEnabled } from '../../services/llm/llmConfigResolver';
 import { deletePartnerLlmConfig, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
-import { partnerWrite, registryWrite, requirePartnerWide } from './shared';
+import { idParamSchema, partnerWrite, registryWrite, requirePartnerWide } from './shared';
 
 // POST /:id/refresh (enqueueConnectionSync, W03 Task 16) lands in W04 Task 8b.
 
@@ -59,9 +59,9 @@ aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connection
   });
 });
 
-aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('json', connectionRotateKeySchema), async (c) => {
+aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionRotateKeySchema), async (c) => {
   const { partnerId, userId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   return registryWrite(c, partnerId, async () => {
     const result = await savePartnerLlmKey({ partnerId, apiKey: c.req.valid('json').apiKey, userId });
     audit(c, partnerId, 'key_rotated', { connectionId: id, last4: result.last4, configVersion: result.configVersion });
@@ -69,9 +69,9 @@ aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('json', con
   });
 });
 
-aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('json', connectionEndpointSchema), async (c) => {
+aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionEndpointSchema), async (c) => {
   const { partnerId, userId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   const { catalogEntryId, acknowledgeDataNote } = c.req.valid('json');
   // Same rule as routes/aiProvider.ts: the flag gates SELECTING an endpoint, never clearing one.
   if (catalogEntryId !== null && !isLlmProviderCatalogEnabled()) {
@@ -90,9 +90,9 @@ aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('json'
   });
 });
 
-aiModelConnectionRoutes.patch('/:id', ...partnerWrite, zValidator('json', connectionSettingsPatchSchema), async (c) => {
+aiModelConnectionRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionSettingsPatchSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   const patch = c.req.valid('json');
   return registryWrite(c, partnerId, async () => {
     const conn = await updateConnectionSettings({ partnerId, connectionId: id, patch });
@@ -101,9 +101,9 @@ aiModelConnectionRoutes.patch('/:id', ...partnerWrite, zValidator('json', connec
   });
 });
 
-aiModelConnectionRoutes.delete('/:id', ...partnerWrite, async (c) => {
+aiModelConnectionRoutes.delete('/:id', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   return registryWrite(c, partnerId, async () => {
     const deleted = await deletePartnerLlmConfig(partnerId);
     if (deleted) audit(c, partnerId, 'deleted', { connectionId: id });

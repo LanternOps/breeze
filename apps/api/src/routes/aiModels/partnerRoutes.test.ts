@@ -55,6 +55,7 @@ vi.mock('../../services/aiModels/offeringWrites', () => ({
   ensurePlatformOffering: vi.fn(),
   setOfferingEnabled: vi.fn(),
   updateOfferingDetails: vi.fn(),
+  listOfferingDefaultUses: vi.fn(),
 }));
 vi.mock('../../services/aiModels/assignmentWrites', () => ({
   putPartnerAssignments: vi.fn(),
@@ -87,7 +88,7 @@ import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { getCompatConnection } from '../../services/aiModels/connections';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
-import { ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
+import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { putPartnerAssignments } from '../../services/aiModels/assignmentWrites';
 import { previewResidencyImpact, setResidencyRequired } from '../../services/aiModels/residency';
 import { deletePartnerLlmConfig, PartnerLlmError, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
@@ -147,6 +148,7 @@ beforeEach(() => {
   vi.mocked(ensurePlatformOffering).mockResolvedValue(offeringRow as any);
   vi.mocked(setOfferingEnabled).mockResolvedValue({ offering: offeringRow as any, inUse: [] });
   vi.mocked(updateOfferingDetails).mockResolvedValue(offeringRow as any);
+  vi.mocked(listOfferingDefaultUses).mockResolvedValue([]);
   vi.mocked(putPartnerAssignments).mockResolvedValue([{ surface: 'chat', role: 'default', updatedAt: T }] as any);
   vi.mocked(previewResidencyImpact).mockResolvedValue({ unavailableSurfaces: [], affectedOrgOverrides: [] });
   vi.mocked(setResidencyRequired).mockResolvedValue({ residencyRequired: false, impact: { unavailableSurfaces: [], affectedOrgOverrides: [] } });
@@ -335,5 +337,65 @@ describe('/ai/models partner routes — behaviour', () => {
     const res = await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' });
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain('registry_unavailable');
+  });
+});
+
+describe('/ai/models partner routes — script reviewer offering gate', () => {
+  const OPTS_PATCHES: Array<[string, Record<string, unknown>]> = [
+    ['defaultOptions', { defaultOptions: { effort: 'low' } }],
+    ['allowedOptions', { allowedOptions: { effort: ['low'] } }],
+    ['refusalFallbackOfferingId', { refusalFallbackOfferingId: PM }],
+  ];
+  const patch = (body: Record<string, unknown>) =>
+    call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', ...body });
+
+  it.each([
+    ['partner', { surface: 'script_reviewer' as const, level: 'partner' as const, orgId: null }],
+    ['org', { surface: 'script_reviewer' as const, level: 'org' as const, orgId: 'o1' }],
+  ])('reviewer default (%s row) + options patch without approvals:decide → 403, no write', async (_l, use) => {
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'chat', level: 'partner', orgId: null }, use]);
+    permissionsState.approvalsDecide = false;
+    for (const [, body] of OPTS_PATCHES) {
+      const res = await patch(body);
+      expect([res.status, (await res.json()).code]).toEqual([403, 'APPROVALS_DECIDE_REQUIRED']);
+    }
+    expect(listOfferingDefaultUses).toHaveBeenCalledWith(P, A);
+    expect(updateOfferingDetails).not.toHaveBeenCalled();
+  });
+  it('reviewer default + options patch with approvals:decide → 200', async () => {
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'script_reviewer', level: 'partner', orgId: null }]);
+    expect((await patch({ defaultOptions: { effort: 'low' } })).status).toBe(200);
+    expect(updateOfferingDetails).toHaveBeenCalled();
+  });
+  it('non-reviewer offering options patch without approvals:decide → 200', async () => {
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'chat', level: 'partner', orgId: null }]);
+    permissionsState.approvalsDecide = false;
+    expect((await patch({ allowedOptions: { effort: ['low'] } })).status).toBe(200);
+    expect(updateOfferingDetails).toHaveBeenCalled();
+  });
+  it('reviewer default rename / price patch without approvals:decide → 200', async () => {
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'script_reviewer', level: 'partner', orgId: null }]);
+    permissionsState.approvalsDecide = false;
+    expect((await patch({ displayName: 'x' })).status).toBe(200);
+    expect((await patch({ prices: { inputCentsPerM: 1, outputCentsPerM: 2, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 1 } })).status).toBe(200);
+    expect(updateOfferingDetails).toHaveBeenCalledTimes(2);
+  });
+  it('reviewer default enable/disable (incl. force) without approvals:decide → 200', async () => {
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'script_reviewer', level: 'partner', orgId: null }]);
+    permissionsState.approvalsDecide = false;
+    expect((await call('POST', `/offerings/${A}/enabled`, { enabled: false, force: true })).status).toBe(200);
+  });
+});
+
+describe('/ai/models partner routes — malformed ids', () => {
+  it.each<[string, string, unknown?]>([
+    ['POST', '/offerings/platform/not-a-uuid', { enabled: true }],
+    ['POST', '/offerings/not-a-uuid/enabled', { enabled: true }],
+    ['PATCH', '/offerings/not-a-uuid', { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' }],
+    ['PATCH', '/connections/not-a-uuid', { name: 'x' }],
+    ['DELETE', '/connections/not-a-uuid'],
+  ])('%s %s → 400, no write', async (method, path, body) => {
+    expect((await call(method, path, body)).status).toBe(400);
+    for (const write of ALL_WRITE_SERVICE_MOCKS) expect(write).not.toHaveBeenCalled();
   });
 });
