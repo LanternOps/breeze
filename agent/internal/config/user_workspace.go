@@ -72,12 +72,17 @@ func resetUserWorkspaceForTest() {
 	userWorkspace.mu.Unlock()
 }
 
+// registeredUserWorkspace returns the registered workspace root, or "".
+func registeredUserWorkspace() string {
+	userWorkspace.mu.RLock()
+	defer userWorkspace.mu.RUnlock()
+	return userWorkspace.root
+}
+
 // inUserWorkspace reports whether path is the registered workspace or lies
 // inside it.
 func inUserWorkspace(path string) bool {
-	userWorkspace.mu.RLock()
-	root := userWorkspace.root
-	userWorkspace.mu.RUnlock()
+	root := registeredUserWorkspace()
 	if root == "" {
 		return false
 	}
@@ -129,9 +134,7 @@ var ErrConfigOutsideUserWorkspace = errors.New("refusing to use an agent config 
 // With no workspace registered (the installed agent, and every other command)
 // it allows everything, so their behaviour is unchanged.
 func checkConfigTarget(path string) error {
-	userWorkspace.mu.RLock()
-	root := userWorkspace.root
-	userWorkspace.mu.RUnlock()
+	root := registeredUserWorkspace()
 	if root == "" {
 		return nil
 	}
@@ -180,3 +183,10 @@ func BindConfigFile(cfgFile string) error {
 	}
 	return nil
 }
+
+// UserWorkspaceActive reports whether this process has registered a user
+// workspace, i.e. is a support session keeping all its files in its private
+// folder. ConfigDir, GetDataDir and LogDir already resolve there; code that
+// would otherwise pick a location of its own (such as the per-user ~/.breeze
+// dir) checks this instead.
+func UserWorkspaceActive() bool { return registeredUserWorkspace() != "" }

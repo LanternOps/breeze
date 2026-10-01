@@ -229,14 +229,14 @@ func TestUserWorkspaceSupportSessionPersistsOnlyToItsWorkspace(t *testing.T) {
 	assertInstalledConfigUntouched(t, installedDir, installed)
 }
 
-// TestUserWorkspaceRefusesConfigWritesOutsideIt: once a process has registered
-// a user workspace, a persist that would land anywhere else fails closed
-// instead. This is the state the support session was in before #7629 (no
-// active file bound), so each of these calls used to fall back to the
-// machine-wide config dir.
-func TestUserWorkspaceRefusesConfigWritesOutsideIt(t *testing.T) {
+// TestUserWorkspaceRefusesConfigOutsideIt: once a process has registered a
+// user workspace, a load or persist aimed at a path outside it fails closed,
+// and a load with nothing bound is refused rather than searched for. The
+// installed agent's config is left byte-for-byte as it was.
+func TestUserWorkspaceRefusesConfigOutsideIt(t *testing.T) {
 	installedDir, installed := plantInstalledAgentConfig(t)
 	cfgPath, cfg := enrollIntoSupportWorkspace(t)
+	installedCfg := filepath.Join(installedDir, "agent.yaml")
 	elsewhere := filepath.Join(t.TempDir(), "agent.yaml")
 	keys := []ManifestTrustKey{{KeyID: "deploy-a", PublicKeyB64: testPubKey(7)}}
 
@@ -244,30 +244,25 @@ func TestUserWorkspaceRefusesConfigWritesOutsideIt(t *testing.T) {
 		name string
 		op   func() error
 	}{
-		{"StagePendingCredentials", func() error { return StagePendingCredentials("brz_a", "brz_w", "brz_h") }},
-		{"PromotePendingCredentials", func() error { return PromotePendingCredentials("brz_a", "brz_w", "brz_h") }},
-		{"ClearPendingCredentials", ClearPendingCredentials},
-		{"SaveTo(ActiveConfigFile())", func() error { return SaveTo(cfg, ActiveConfigFile()) }},
-		{"Save", func() error { return Save(cfg) }},
 		{"SaveTo(another dir)", func() error { return SaveTo(cfg, elsewhere) }},
-		{"SaveEnrollment(installed agent.yaml)", func() error { return SaveEnrollment(cfg, filepath.Join(installedDir, "agent.yaml")) }},
-		{"PrepareSaveDir(default)", func() error { return PrepareSaveDir("") }},
-		{"SetAndPersist", func() error { return SetAndPersist("auto_update", false) }},
-		{"SetAllAndPersist", func() error { return SetAllAndPersist(map[string]any{"auto_update": false}) }},
-		{"SetSecretAndPersist", func() error { return SetSecretAndPersist("backup_s3_secret_key", "x") }},
-		{"PinManifestKeys(ActiveConfigFile())", func() error { return PinManifestKeys(ActiveConfigFile(), keys) }},
-		{"ReadPersistedCredentials", func() error { _, err := ReadPersistedCredentials(); return err }},
-		{"Reload", func() error { _, err := Reload(); return err }},
+		{"SaveTo(installed agent.yaml)", func() error { return SaveTo(cfg, installedCfg) }},
+		{"SaveEnrollment(installed agent.yaml)", func() error { return SaveEnrollment(cfg, installedCfg) }},
+		{"PrepareSaveDir(installed agent.yaml)", func() error { return PrepareSaveDir(installedCfg) }},
+		{"PinManifestKeys(installed agent.yaml)", func() error { return PinManifestKeys(installedCfg, keys) }},
+		{"Load(installed agent.yaml)", func() error { _, err := Load(installedCfg); return err }},
+		{"BindConfigFile(installed agent.yaml)", func() error { return BindConfigFile(installedCfg) }},
+		// Nothing bound: a load must be explicit, not a search.
 		{"Load(default)", func() error { _, err := Load(""); return err }},
-		{"BindConfigFile(installed agent.yaml)", func() error { return BindConfigFile(filepath.Join(installedDir, "agent.yaml")) }},
+		{"Reload (unbound)", func() error { _, err := Reload(); return err }},
+		{"SetAndPersist (unbound)", func() error { return SetAndPersist("auto_update", false) }},
+		{"SetAllAndPersist (unbound)", func() error { return SetAllAndPersist(map[string]any{"auto_update": false}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.op(); !errors.Is(err, ErrConfigOutsideUserWorkspace) {
 				t.Errorf("err = %v, want ErrConfigOutsideUserWorkspace", err)
 			}
 			// A refused load must not rebind the process to the installed
-			// agent's agent.yaml either: that is what would redirect every
-			// later write there.
+			// agent's agent.yaml: every later write would follow it there.
 			if got := ActiveConfigFile(); got != "" {
 				t.Errorf("ActiveConfigFile() = %q after a refused call, want still unbound", got)
 			}
@@ -279,6 +274,47 @@ func TestUserWorkspaceRefusesConfigWritesOutsideIt(t *testing.T) {
 	}
 	if got := readCreds(t, cfgPath); got.AuthToken != "brz_support_agent" || got.PendingAuthToken != "" {
 		t.Errorf("refused calls changed the workspace creds: current %q pending %q", got.AuthToken, got.PendingAuthToken)
+	}
+	assertInstalledConfigUntouched(t, installedDir, installed)
+}
+
+// TestUserWorkspaceUnboundDefaultsLandInIt is the state the support session
+// was in before #7629: enrolled into its folder, nothing bound. Every persist
+// that resolves the default path used to land in the machine-wide config dir.
+// The default paths now resolve inside the support folder, so these land in
+// the session's own files, and the installed agent's config is untouched.
+func TestUserWorkspaceUnboundDefaultsLandInIt(t *testing.T) {
+	installedDir, installed := plantInstalledAgentConfig(t)
+	cfgPath, cfg := enrollIntoSupportWorkspace(t)
+
+	if err := StagePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper"); err != nil {
+		t.Fatalf("StagePendingCredentials (unbound): %v", err)
+	}
+	if got := readCreds(t, cfgPath); got.PendingAuthToken != "brz_new_agent" {
+		t.Errorf("staged token in the support folder = %q, want brz_new_agent", got.PendingAuthToken)
+	}
+	if err := ClearPendingCredentials(); err != nil {
+		t.Fatalf("ClearPendingCredentials (unbound): %v", err)
+	}
+	if err := SetSecretAndPersist("backup_s3_secret_key", "support-s3-secret"); err != nil {
+		t.Fatalf("SetSecretAndPersist (unbound): %v", err)
+	}
+	cfg.MtlsCertPEM = "renewed-cert"
+	if err := SaveTo(cfg, ActiveConfigFile()); err != nil {
+		t.Fatalf("SaveTo(cfg, ActiveConfigFile()) unbound: %v", err)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save (unbound): %v", err)
+	}
+	if err := PrepareSaveDir(""); err != nil {
+		t.Fatalf("PrepareSaveDir(default): %v", err)
+	}
+	creds, err := ReadPersistedCredentials()
+	if err != nil {
+		t.Fatalf("ReadPersistedCredentials (unbound): %v", err)
+	}
+	if creds.AuthToken != "brz_support_agent" || creds.PendingAuthToken != "" {
+		t.Errorf("support folder creds = current %q pending %q, want the enrolled token and none pending", creds.AuthToken, creds.PendingAuthToken)
 	}
 	assertInstalledConfigUntouched(t, installedDir, installed)
 }

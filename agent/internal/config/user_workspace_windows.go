@@ -164,3 +164,13 @@ func applyUserWorkspaceFileDACL(path string) error {
 	}
 	return applyWindowsDACL(path, sddl)
 }
+
+// workspaceOwnerSID returns the SID of the user this process runs as (the
+// process token, not an impersonation token), or "" if it cannot be read.
+func workspaceOwnerSID() string {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return ""
+	}
+	return user.User.Sid.String()
+}

@@ -319,6 +319,10 @@ func IsEnrolled(cfg *Config) bool {
 
 // defaultLogFile returns the platform-specific default log file path.
 func defaultLogFile() string {
+	// A support session logs inside its private folder (#7629).
+	if root := registeredUserWorkspace(); root != "" {
+		return filepath.Join(root, "logs", "agent.log")
+	}
 	switch runtime.GOOS {
 	case "windows":
 		return filepath.Join(configDir(), "logs", "agent.log")
@@ -1192,6 +1196,11 @@ func isSecretConfigKey(key string) bool {
 
 // GetDataDir returns the platform-specific data directory for the agent
 func GetDataDir() string {
+	// A support session keeps its data (audit log, state stores, the
+	// downloaded codec) inside its private folder (#7629).
+	if root := registeredUserWorkspace(); root != "" {
+		return filepath.Join(root, "data")
+	}
 	switch runtime.GOOS {
 	case "windows":
 		return filepath.Join(configDir(), "data")

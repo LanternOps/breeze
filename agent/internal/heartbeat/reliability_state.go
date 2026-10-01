@@ -39,8 +39,8 @@ type reliabilityState struct {
 // reliabilityStatePath mirrors ipStatePath: prefer the per-user ~/.breeze dir,
 // fall back to the configured data dir, then a temp dir as a last resort.
 func (h *Heartbeat) reliabilityStatePath() string {
-	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
-		return filepath.Join(homeDir, ".breeze", reliabilityStateFileName)
+	if homeDir := perUserStateDir(); homeDir != "" {
+		return filepath.Join(homeDir, reliabilityStateFileName)
 	}
 
 	dataDir := strings.TrimSpace(config.GetDataDir())

@@ -44,3 +44,7 @@ func secureUserWorkspaceDir(path string) error {
 	}
 	return nil
 }
+
+// workspaceOwnerSID is Windows-only: off Windows the ProgramData trust check
+// reads no owners, so there is no extra principal to accept.
+func workspaceOwnerSID() string { return "" }

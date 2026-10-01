@@ -208,9 +208,10 @@ func prepareSupportWorkDir() (string, error) {
 	return workDir, nil
 }
 
-// configDirForSupportGuard exposes the real agent config dir to the guard
-// test that pins supportWorkDir away from it.
-func configDirForSupportGuard() string { return config.ConfigDir() }
+// configDirForSupportGuard exposes the machine-wide agent config dir to the
+// guard test that pins supportWorkDir away from it. MachineConfigDir, not
+// ConfigDir: once the support folder is registered, ConfigDir is that folder.
+func configDirForSupportGuard() string { return config.MachineConfigDir() }
 
 const (
 	// supportDisconnectGrace is how long the WebSocket may report

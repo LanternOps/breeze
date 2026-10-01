@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/spf13/viper"
 )
 
@@ -153,6 +154,52 @@ func TestRunSupportSessionEnrollsThroughEnrollSupportSession(t *testing.T) {
 	for _, direct := range []string{"enrollWithConfig", "enrollWithConfigFn"} {
 		if calls[direct] != 0 {
 			t.Errorf("runSupportSession calls %s directly, skipping the workspace config bind (#7629)", direct)
+		}
+	}
+}
+
+// TestSupportSessionPathsStayInItsFolder enumerates, after the real
+// registration (prepareSupportWorkDir), every path helper a support session
+// derives a persisted file from: config dir, data dir (audit log, state
+// stores, the downloaded H.264 codec), log dir, agent.state, and the default
+// log file. Each must resolve inside the session's private folder and none
+// under the machine-wide Breeze folder (#7629).
+func TestSupportSessionPathsStayInItsFolder(t *testing.T) {
+	machineDir := filepath.Join(t.TempDir(), "ProgramData-Breeze")
+	t.Cleanup(config.SetConfigDirForTest(machineDir))
+	workDir, err := prepareSupportWorkDir()
+	t.Cleanup(config.ResetUserWorkspaceForTest)
+	if err != nil {
+		t.Fatalf("prepareSupportWorkDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workDir) })
+
+	within := func(root, p string) bool {
+		rel, err := filepath.Rel(root, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	machine := []string{
+		machineDir,
+		filepath.FromSlash("/Library/Application Support/Breeze"),
+		filepath.FromSlash("/etc/breeze"),
+		filepath.FromSlash("/var/lib/breeze"),
+		filepath.FromSlash("/var/log/breeze"),
+		filepath.Join(os.Getenv("ProgramData"), "Breeze"),
+	}
+	for name, p := range map[string]string{
+		"config.ConfigDir()":       config.ConfigDir(),
+		"config.GetDataDir()":      config.GetDataDir(),
+		"config.LogDir()":          config.LogDir(),
+		"agent.state":              state.PathInDir(config.ConfigDir()),
+		"config.Default().LogFile": config.Default().LogFile,
+	} {
+		if !within(workDir, p) {
+			t.Errorf("%s = %q, want inside the support folder %q", name, p, workDir)
+		}
+		for _, m := range machine {
+			if m != "" && within(m, p) {
+				t.Errorf("%s = %q resolves under the machine location %q", name, p, m)
+			}
 		}
 	}
 }
