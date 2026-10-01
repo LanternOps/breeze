@@ -12,7 +12,7 @@ import { withSystemDbAccessContext } from '../../db';
 import { columnAad } from '../../services/encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { buildDesiredRegistryState, type LegacyProjectionEnv } from '../../services/aiModels/legacyProjection';
-import { loadLegacySnapshot, reconcilePartnerFromLegacy, reconcilePartnerFromLegacyInTx } from '../../services/aiModels/legacyReconcile';
+import { loadLegacySnapshot, lockPartnerRegistryReconcile, reconcilePartnerFromLegacy, reconcilePartnerFromLegacyInTx } from '../../services/aiModels/legacyReconcile';
 import { parityQueries, type ParityFixture } from '../../services/aiModels/parity/harness';
 import { materializeDesiredState, projectSurfaceUse, type RegistrySnapshot } from '../../services/aiModels/parity/storeProjection';
 import { getLegacyModelRates } from '../../services/aiCostTracker';
@@ -285,6 +285,48 @@ describe.skipIf(!RUN)('legacy reconcile (#7600 W02)', () => {
     const [after] = await adminSql`SELECT refusal_fallback_offering_id FROM partner_ai_models WHERE id = ${platformOffering!.id}`;
     expect(after!.refusal_fallback_offering_id).toBeNull();
     expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${t.partner.id}`).toHaveLength(0);
+  });
+
+  it('an agent / live session whose org moved to another partner mid-reconcile is skipped, not a 23503 abort', async () => {
+    const t = await seedRichPartner();
+    const other = await createPartner();
+    const foreignOrg = await createOrganization({ partnerId: other.id });
+    const [orgAgent] = await adminSql`SELECT id FROM ai_agents WHERE org_id = ${t.orgA.id}`;
+    // After the snapshot is taken (the first offering upsert), move the live
+    // session and the org agent into another partner's org, in the same
+    // transaction, before the rebind step runs.
+    await adminSql.unsafe(`
+      CREATE OR REPLACE FUNCTION w02_test_move_mid_reconcile() RETURNS trigger LANGUAGE plpgsql AS $f$
+      BEGIN
+        UPDATE ai_sessions SET org_id = '${foreignOrg.id}' WHERE id = '${t.liveSessionId}' AND org_id <> '${foreignOrg.id}';
+        UPDATE ai_agents SET org_id = '${foreignOrg.id}' WHERE id = '${orgAgent!.id}' AND org_id <> '${foreignOrg.id}';
+        RETURN NULL;
+      END $f$;
+      DROP TRIGGER IF EXISTS w02_test_move_mid_reconcile ON partner_ai_models;
+      CREATE TRIGGER w02_test_move_mid_reconcile AFTER INSERT ON partner_ai_models
+        FOR EACH ROW WHEN (NEW.partner_id = '${t.partner.id}') EXECUTE FUNCTION w02_test_move_mid_reconcile();`);
+    try {
+      const report = await reconcilePartnerFromLegacy(t.partner.id, env);
+      expect(report.sessionsRebound).toBe(0);
+      const [session] = await adminSql`SELECT org_id, offering_id FROM ai_sessions WHERE id = ${t.liveSessionId}`;
+      expect(session).toEqual({ org_id: foreignOrg.id, offering_id: null });
+      const [agent] = await adminSql`SELECT org_id, offering_id FROM ai_agents WHERE id = ${orgAgent!.id}`;
+      expect(agent).toEqual({ org_id: foreignOrg.id, offering_id: null });
+    } finally {
+      await adminSql.unsafe(`DROP TRIGGER IF EXISTS w02_test_move_mid_reconcile ON partner_ai_models;
+                             DROP FUNCTION IF EXISTS w02_test_move_mid_reconcile();`);
+    }
+  });
+
+  it('a caller that already holds the partner lock can reconcile in the same transaction (xact advisory locks are re-entrant)', async () => {
+    const t = await seedRichPartner();
+    const report = await withSystemDbAccessContext(async () => {
+      await lockPartnerRegistryReconcile(t.partner.id);
+      return reconcilePartnerFromLegacyInTx(t.partner.id, env);
+    });
+    expect(report.connection).toBe('created');
+    // Released at commit: a fresh transaction takes it again without waiting.
+    await expect(reconcilePartnerFromLegacy(t.partner.id, env)).resolves.toMatchObject({ connection: 'unchanged' });
   });
 
   it('a BYOK→catalog switch updates offerings in place (same ids)', async () => {

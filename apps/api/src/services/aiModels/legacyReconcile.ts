@@ -11,7 +11,7 @@
  * plus a leased post-serve() sweep), deletes the boot sweep below, and never
  * re-projects a cut-over partner.
  */
-import { and, asc, eq, gt, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -109,15 +109,15 @@ export async function loadLegacySnapshot(partnerId: string): Promise<LegacySnaps
     .select({ orgId: aiBudgets.orgId, allowedModels: aiBudgets.allowedModels })
     .from(aiBudgets).where(inOrgs(aiBudgets.orgId)).orderBy(asc(aiBudgets.orgId));
 
-  const now = Date.now();
+  // Cutoffs on the DB clock (the same clock that stamped the rows).
   const sessionRows = await db
     .select({ id: aiSessions.id, orgId: aiSessions.orgId, model: aiSessions.model })
     .from(aiSessions)
     .where(and(
       inOrgs(aiSessions.orgId),
       eq(aiSessions.status, 'active'),
-      gt(aiSessions.createdAt, new Date(now - SESSION_MAX_AGE_MS)),
-      gt(aiSessions.lastActivityAt, new Date(now - SESSION_IDLE_TIMEOUT_MS)),
+      sql`${aiSessions.createdAt} > now() - make_interval(secs => ${SESSION_MAX_AGE_MS / 1000})`,
+      sql`${aiSessions.lastActivityAt} > now() - make_interval(secs => ${SESSION_IDLE_TIMEOUT_MS / 1000})`,
     ))
     .orderBy(asc(aiSessions.id));
 
@@ -269,12 +269,23 @@ async function applyAssignments(desired: DesiredRegistryState, partnerId: string
   report.assignmentsDeleted += deleted.length;
 }
 
-async function rebind(desired: DesiredRegistryState, partnerId: string, ids: ReadonlyMap<OfferingKey, string>, report: ReconcileReport): Promise<void> {
+/**
+ * Rebind statements pin the partner (agents: partner rows of this partner or
+ * rows of its orgs; sessions: rows of its orgs). A row that moved to another
+ * partner after the snapshot is skipped instead of tripping the composite
+ * (org_id, offering_partner_id) FK and aborting the whole reconcile.
+ */
+async function rebind(desired: DesiredRegistryState, partnerId: string, orgIds: readonly string[], ids: ReadonlyMap<OfferingKey, string>, report: ReconcileReport): Promise<void> {
+  const agentOwned = or(
+    and(isNull(aiAgents.orgId), eq(aiAgents.partnerId, partnerId)),
+    orgIds.length ? inArray(aiAgents.orgId, [...orgIds]) : sql`false`,
+  );
+  const sessionOwned = orgIds.length ? inArray(aiSessions.orgId, [...orgIds]) : sql`false`;
   for (const [agentId, key] of Object.entries(desired.agentOfferingKeys)) {
     const bound = key === null ? null : offeringId(ids, key);
     const updated = await db.update(aiAgents)
       .set({ offeringId: bound, offeringPartnerId: bound ? partnerId : null })
-      .where(and(eq(aiAgents.id, agentId), sql`${aiAgents.offeringId} IS DISTINCT FROM ${bound}::uuid`))
+      .where(and(eq(aiAgents.id, agentId), agentOwned, sql`${aiAgents.offeringId} IS DISTINCT FROM ${bound}::uuid`))
       .returning({ id: aiAgents.id });
     report.agentsRebound += updated.length;
   }
@@ -282,7 +293,7 @@ async function rebind(desired: DesiredRegistryState, partnerId: string, ids: Rea
     const bound = offeringId(ids, key);
     const updated = await db.update(aiSessions)
       .set({ offeringId: bound, offeringPartnerId: partnerId })
-      .where(and(eq(aiSessions.id, sessionId), sql`${aiSessions.offeringId} IS DISTINCT FROM ${bound}::uuid`))
+      .where(and(eq(aiSessions.id, sessionId), sessionOwned, sql`${aiSessions.offeringId} IS DISTINCT FROM ${bound}::uuid`))
       .returning({ id: aiSessions.id });
     report.sessionsRebound += updated.length;
   }
@@ -310,13 +321,25 @@ async function deleteOrphanConnections(partnerId: string, orphanIds: readonly st
 }
 
 /**
+ * Take the per-partner reconcile lock (transaction-scoped) on the held
+ * context's transaction. A legacy writer (the /ai/provider facade) calls this
+ * BEFORE its legacy write, then reconcilePartnerFromLegacyInTx in the same
+ * transaction: pg_advisory_xact_lock is re-entrant within a session, so the
+ * second acquisition returns immediately and both release at commit/rollback.
+ */
+export async function lockPartnerRegistryReconcile(partnerId: string): Promise<void> {
+  assertSystemContext();
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ai_model_registry_reconcile:${partnerId}`}, 0))`);
+}
+
+/**
  * Throws on any failure and never returns a partial report. It never opens,
  * commits or rolls back a transaction: a failure aborts the CALLER's
  * transaction (W03 inserts its cutover row in that same transaction).
  */
 export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: LegacyProjectionEnv = readLegacyProjectionEnv()): Promise<ReconcileReport> {
   assertSystemContext();
-  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ai_model_registry_reconcile:${partnerId}`}, 0))`);
+  await lockPartnerRegistryReconcile(partnerId);
   const report: ReconcileReport = { partnerId, connection: 'none', offeringsUpserted: 0, assignmentsUpserted: 0, assignmentsDeleted: 0, agentsRebound: 0, sessionsRebound: 0, bootstrapPlatformModels: [] };
 
   const snapshot = await loadLegacySnapshot(partnerId);
@@ -348,7 +371,7 @@ export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: Leg
 
   const ids = await upsertOfferings(desired, partnerId, report);
   await applyAssignments(desired, partnerId, snapshot.orgIds, ids, report);
-  await rebind(desired, partnerId, ids, report);
+  await rebind(desired, partnerId, snapshot.orgIds, ids, report);
   return report;
 }
 
