@@ -37,6 +37,7 @@ import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import OrgMlFeaturesCard from './OrgMlFeaturesCard';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgModelDefaultsCard from './aiModels/OrgModelDefaultsCard';
 import OrgAiBudgetSettings from './OrgAiBudgetSettings';
 import OrgAiApprovalTimeoutCard from './OrgAiApprovalTimeoutCard';
 import type { AiApprovalSettings, ResolvedAiApprovalTimeout } from '@breeze/shared';
@@ -679,6 +680,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         // (#3432).
         return (
           <>
+            {/* AI model registry W04 (#7602): org override of the partner's per-feature model defaults (tighten-only). */}
+            <OrgModelDefaultsCard orgId={effectiveOrgId} />
             <OrgAiBudgetSettings orgId={effectiveOrgId} />
             {/* #6475 — a separate card, not folded into OrgAiBudgetSettings:
                 that one saves through PUT /ai/budget with different

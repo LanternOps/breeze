@@ -60,6 +60,15 @@ vi.mock('./OrgAiBudgetSettings', () => ({
     return <div data-testid="org-ai-budget" />;
   },
 }));
+// AI model registry W04 (#7602): the org model-defaults override card self-fetches; stub it and
+// capture the org it is handed.
+const modelDefaultsProps: Array<Record<string, unknown>> = [];
+vi.mock('./aiModels/OrgModelDefaultsCard', () => ({
+  default: (props: Record<string, unknown>) => {
+    modelDefaultsProps.push(props);
+    return <div data-testid="org-model-defaults-card" />;
+  },
+}));
 // #6475: the interactive AI-approval timeout card. Capture its props (the
 // resolved `effective` value it's handed) and expose a button that fires
 // onSave with a fixed payload, mirroring the 'security' stub above.
@@ -483,6 +492,9 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(link.getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('org-ai-budget')).not.toBeNull();
     expect(aiBudgetProps.at(-1)).toMatchObject({ orgId: 'org-1' });
+    // W04 (#7602): the model-defaults override card mounts first on this tab, for this org.
+    expect(screen.getByTestId('org-model-defaults-card')).not.toBeNull();
+    expect(modelDefaultsProps.at(-1)).toMatchObject({ orgId: 'org-1' });
   });
 
   it.each([
