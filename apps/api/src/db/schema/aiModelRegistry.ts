@@ -2,11 +2,15 @@
 // (#7600) ships the tables; W03 cuts routing over. ai_platform_models (W01)
 // is the system-wide half and lives in its own schema file.
 import { sql } from 'drizzle-orm';
+import type { ModelLifecycle } from '@breeze/shared';
 import {
+  boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -14,6 +18,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { aiPlatformModels } from './aiPlatformModels';
 import { llmProviderCatalog } from './llmProviderCatalog';
 import { partners } from './orgs';
 import { users } from './users';
@@ -62,3 +67,57 @@ export const partnerAiConnections = pgTable('partner_ai_connections', {
 ]);
 
 export type PartnerAiConnectionRow = typeof partnerAiConnections.$inferSelect;
+
+export const PARTNER_AI_MODEL_SOURCES = ['platform', 'discovered', 'manual', 'catalog'] as const;
+export type PartnerAiModelSource = (typeof PARTNER_AI_MODEL_SOURCES)[number];
+
+const priceColumn = (name: string) => numeric(name, { precision: 20, scale: 6, mode: 'number' });
+
+/**
+ * Shape 3 (partner axis) + a SELECT-only org-token branch on enabled rows
+ * (`partner_ai_models_org_read_enabled`). Platform offerings carry only
+ * `platformModelId`; catalog offerings carry only `modelId` (spec §5.3).
+ */
+export const partnerAiModels = pgTable('partner_ai_models', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  connectionId: uuid('connection_id'),
+  platformModelId: uuid('platform_model_id').references(() => aiPlatformModels.id),
+  modelId: text('model_id'),
+  source: text('source').$type<PartnerAiModelSource>().notNull(),
+  displayName: text('display_name'),
+  capabilities: jsonb('capabilities').$type<Record<string, unknown>>(),
+  priceInputCentsPerM: priceColumn('price_input_cents_per_m'),
+  priceOutputCentsPerM: priceColumn('price_output_cents_per_m'),
+  priceCacheReadCentsPerM: priceColumn('price_cache_read_cents_per_m'),
+  priceCacheWriteCentsPerM: priceColumn('price_cache_write_cents_per_m'),
+  enabled: boolean('enabled').notNull().default(false),
+  defaultOptions: jsonb('default_options').$type<Record<string, unknown>>(),
+  allowedOptions: jsonb('allowed_options').$type<Record<string, unknown>>(),
+  requiredPermission: text('required_permission'),
+  refusalFallbackOfferingId: uuid('refusal_fallback_offering_id'),
+  lifecycle: text('lifecycle').$type<ModelLifecycle>().notNull().default('available'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('partner_ai_models_id_partner_uq').on(t.id, t.partnerId),
+  foreignKey({
+    columns: [t.connectionId, t.partnerId],
+    foreignColumns: [partnerAiConnections.id, partnerAiConnections.partnerId],
+    name: 'partner_ai_models_connection_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.refusalFallbackOfferingId, t.partnerId],
+    foreignColumns: [t.id, t.partnerId],
+    name: 'partner_ai_models_refusal_fallback_fk',
+  }),
+  uniqueIndex('partner_ai_models_platform_uq').on(t.partnerId, t.platformModelId).where(sql`${t.connectionId} IS NULL`),
+  uniqueIndex('partner_ai_models_connection_model_uq').on(t.connectionId, t.modelId).where(sql`${t.connectionId} IS NOT NULL`),
+  index('partner_ai_models_partner_idx').on(t.partnerId),
+  index('partner_ai_models_platform_model_idx').on(t.platformModelId).where(sql`${t.platformModelId} IS NOT NULL`),
+  index('partner_ai_models_refusal_fallback_idx').on(t.refusalFallbackOfferingId).where(sql`${t.refusalFallbackOfferingId} IS NOT NULL`),
+  check('partner_ai_models_source_chk', sql`${t.source} IN ('platform', 'discovered', 'manual', 'catalog')`),
+  check('partner_ai_models_lifecycle_chk', sql`${t.lifecycle} IN ('available', 'missing', 'retired')`),
+]);
+
+export type PartnerAiModelRow = typeof partnerAiModels.$inferSelect;

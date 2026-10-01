@@ -20,6 +20,8 @@ import {
   orgContext,
   partnerContext,
   seedByokConnection,
+  seedOffering,
+  seedPlatformModel,
 } from './aiModelRegistryFixtures';
 
 const RUN = !!process.env.DATABASE_URL;
@@ -133,5 +135,124 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
     });
     const [row] = await adminSql`SELECT api_key_encrypted FROM partner_ai_connections WHERE id = ${legacyId}`;
     expect(row?.api_key_encrypted).toBe(sealed);
+  });
+});
+
+describe.skipIf(!RUN)('partner_ai_models (#7600 W02)', () => {
+  it('an offering cannot point at another partner\'s connection (23503 composite FK)', async () => {
+    const [a, b] = [await createPartner(), await createPartner()];
+    const connB = await seedByokConnection(b.id);
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source)
+      VALUES (${a.id}, ${connB}, 'claude-sonnet-5-5', 'manual')`)))
+      .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'partner_ai_models_connection_fk' } });
+  });
+
+  it('partner A cannot INSERT an offering for partner B (42501)', async () => {
+    const [a, b] = [await createPartner(), await createPartner()];
+    const platformModelId = await seedPlatformModel();
+    await expect(withDbAccessContext(partnerContext(a.id), () => db.execute(sql`
+      INSERT INTO partner_ai_models (partner_id, platform_model_id, source)
+      VALUES (${b.id}, ${platformModelId}, 'platform')`)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  it.each([
+    ['a connection offering claiming source platform', (p: string, c: string, pm: string) => sql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, platform_model_id, source) VALUES (${p}, ${c}, ${pm}, 'platform')`],
+    ['a platform offering with a copied price', (p: string, _c: string, pm: string) => sql`
+      INSERT INTO partner_ai_models (partner_id, platform_model_id, source, price_input_cents_per_m, price_output_cents_per_m, price_cache_read_cents_per_m, price_cache_write_cents_per_m)
+      VALUES (${p}, ${pm}, 'platform', 1, 1, 1, 1)`],
+    ['a platform offering with a wire id', (p: string, _c: string, pm: string) => sql`
+      INSERT INTO partner_ai_models (partner_id, platform_model_id, model_id, source) VALUES (${p}, ${pm}, 'claude-x', 'platform')`],
+    ['a connection offering without a model id', (p: string, c: string) => sql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, source) VALUES (${p}, ${c}, 'manual')`],
+    ['a partial price', (p: string, c: string) => sql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source, price_input_cents_per_m) VALUES (${p}, ${c}, 'm', 'manual', 1)`],
+    ['a catalog offering with a price', (p: string, c: string) => sql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source, price_input_cents_per_m, price_output_cents_per_m, price_cache_read_cents_per_m, price_cache_write_cents_per_m)
+      VALUES (${p}, ${c}, 'claude-x', 'catalog', 1, 1, 1, 1)`],
+  ])('rejects %s (23514)', async (_label, statement) => {
+    const p = await createPartner();
+    const c = await seedByokConnection(p.id);
+    const pm = await seedPlatformModel();
+    await expect(withSystemDbAccessContext(() => db.execute(statement(p.id, c, pm))))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('a refusal fallback must belong to the same partner (23503) and sit on the same connection (23514)', async () => {
+    const [a, b] = [await createPartner(), await createPartner()];
+    const connA = await seedByokConnection(a.id);
+    const byokA = await seedOffering({ partnerId: a.id, connectionId: connA, modelId: 'claude-opus-5-5' });
+    const platformA = await seedOffering({ partnerId: a.id, platformModelId: await seedPlatformModel() });
+    const platformB = await seedOffering({ partnerId: b.id, platformModelId: await seedPlatformModel() });
+
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_ai_models SET refusal_fallback_offering_id = ${platformB} WHERE id = ${byokA}`)))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_ai_models SET refusal_fallback_offering_id = ${platformA} WHERE id = ${byokA}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_ai_models SET refusal_fallback_offering_id = ${byokA} WHERE id = ${byokA}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('rejects a fallback forward-referenced within one multi-row INSERT (fail-closed, 23503)', async () => {
+    const p = await createPartner();
+    const conn = await seedByokConnection(p.id);
+    const pm = await seedPlatformModel();
+    const [byokId, platformId] = [randomUUID(), randomUUID()];
+    // Row 1 (BYOK) names row 2 (platform) as its fallback: different connections.
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO partner_ai_models (id, partner_id, connection_id, model_id, source, refusal_fallback_offering_id, platform_model_id)
+      VALUES (${byokId}, ${p.id}, ${conn}, 'claude-opus-5-5', 'manual', ${platformId}, NULL),
+             (${platformId}, ${p.id}, NULL, NULL, 'platform', NULL, ${pm})`)))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  it('id and partner_id are immutable (23514), so an offering can never move partners under an assignment array', async () => {
+    const [p, q] = [await createPartner(), await createPartner()];
+    const off = await seedOffering({ partnerId: p.id, platformModelId: await seedPlatformModel() });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`UPDATE partner_ai_models SET partner_id = ${q.id} WHERE id = ${off}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+    await expect(withSystemDbAccessContext(() => db.execute(sql`UPDATE partner_ai_models SET id = ${randomUUID()} WHERE id = ${off}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('connection_id is immutable (23514)', async () => {
+    const p = await createPartner();
+    const c = await seedByokConnection(p.id);
+    const offering = await seedOffering({ partnerId: p.id, connectionId: c, modelId: 'claude-haiku-4-5' });
+    const pm = await seedPlatformModel();
+    await expect(withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE partner_ai_models SET connection_id = NULL, source = 'platform', model_id = NULL,
+             platform_model_id = ${pm} WHERE id = ${offering}`)))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('an org token reads only ENABLED offerings of its own partner and can modify none', async () => {
+    const [p, q] = [await createPartner(), await createPartner()];
+    const org = await createOrganization({ partnerId: p.id });
+    const enabledP = await seedOffering({ partnerId: p.id, platformModelId: await seedPlatformModel(), enabled: true });
+    await seedOffering({ partnerId: p.id, platformModelId: await seedPlatformModel(), enabled: false });
+    await seedOffering({ partnerId: q.id, platformModelId: await seedPlatformModel(), enabled: true });
+
+    const visible = await withDbAccessContext(orgContext(org.id, p.id), () =>
+      db.execute(sql`SELECT id FROM partner_ai_models ORDER BY id`));
+    expect([...visible].map((r) => (r as { id: string }).id)).toEqual([enabledP]);
+
+    const updated = await withDbAccessContext(orgContext(org.id, p.id), () =>
+      db.execute(sql`UPDATE partner_ai_models SET enabled = false WHERE id = ${enabledP} RETURNING id`));
+    expect([...updated]).toEqual([]);
+  });
+
+  it('deleting a connection cascades its offerings', async () => {
+    const p = await createPartner();
+    const c = await seedByokConnection(p.id);
+    await seedOffering({ partnerId: p.id, connectionId: c, modelId: 'claude-sonnet-5-5' });
+    await adminSql`DELETE FROM partner_ai_connections WHERE id = ${c}`;
+    const [left] = await adminSql`SELECT count(*)::int AS n FROM partner_ai_models WHERE connection_id = ${c}`;
+    expect(left!.n).toBe(0);
   });
 });

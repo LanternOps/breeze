@@ -38,3 +38,29 @@ export async function seedByokConnection(partnerId: string, id: string = randomU
     VALUES (${id}, ${partnerId}, 'anthropic_byok', 'Fixture key', ${sealed!}, '0000', 'fp-fixture')`;
   return id;
 }
+
+/** Seeds an ai_platform_models row with a per-test unique model id (W01 defaults fill the rest). */
+export async function seedPlatformModel(modelId = `w02-test-${randomUUID()}`): Promise<string> {
+  const [row] = await fixtureSql`
+    INSERT INTO ai_platform_models (provider, model_id, display_name)
+    VALUES ('anthropic', ${modelId}, ${modelId})
+    RETURNING id`;
+  return String(row!.id);
+}
+
+export async function seedOffering(input: {
+  partnerId: string;
+  connectionId?: string | null;
+  platformModelId?: string | null;
+  modelId?: string | null;
+  source?: 'platform' | 'discovered' | 'manual' | 'catalog';
+  enabled?: boolean;
+}): Promise<string> {
+  const [row] = await fixtureSql`
+    INSERT INTO partner_ai_models (partner_id, connection_id, platform_model_id, model_id, source, enabled)
+    VALUES (${input.partnerId}, ${input.connectionId ?? null}, ${input.platformModelId ?? null},
+            ${input.modelId ?? null}, ${input.source ?? (input.connectionId ? 'manual' : 'platform')},
+            ${input.enabled ?? true})
+    RETURNING id`;
+  return String(row!.id);
+}
