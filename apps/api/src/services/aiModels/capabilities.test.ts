@@ -147,3 +147,28 @@ describe('optionSupportErrors', () => {
     expect(optionSupportErrors(deriveCapabilities(raw), support(over as unknown as Partial<OptionSupport>))).toEqual([message]);
   });
 });
+
+// Reference behaviour a differential fuzz run found unpinned (orchestrator review, W01 #7599).
+describe('reference behaviour pins', () => {
+  const ADAPTIVE_TREE = { thinking: { supported: true, types: { adaptive: { supported: true }, enabled: { supported: false } } } };
+  const BUDGET_TREE = { thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } } };
+
+  it('an explicit tools leaf set to false gives supportsTools false', () => {
+    expect(deriveCapabilities({ ...ADAPTIVE_TREE, tools: { supported: false } }).supportsTools).toBe(false);
+  });
+
+  it('mergeDiscoveredOptionSupport always keeps standard speed', () => {
+    const merged = mergeDiscoveredOptionSupport(
+      { effort: [], thinkingDisplay: [], speed: ['fast'] as unknown as OptionSupport['speed'], inferenceGeo: [] },
+      deriveCapabilities(BUDGET_TREE),
+    );
+    expect(merged.speed).toEqual(['standard', 'fast']);
+  });
+
+  it('optionSupportErrors reports one message per category, not per offending level', () => {
+    expect(optionSupportErrors(
+      deriveCapabilities({ thinking: { supported: false } }),
+      { effort: ['low', 'medium', 'xhigh'], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] },
+    )).toEqual(['Effort applies only to models with adaptive thinking.']);
+  });
+});

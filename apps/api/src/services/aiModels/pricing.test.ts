@@ -49,3 +49,19 @@ describe('platformRateSnapshot', () => {
     expect(platformRateSnapshot({ rates: STANDARD, optionRates: { 'speed:fast': FAST } })).toEqual(RATE);
   });
 });
+
+// Reference behaviour a differential fuzz run found unpinned (orchestrator review, W01 #7599).
+describe('reference rounding pins', () => {
+  const rate = (input: number, output: number, cacheRead: number, cacheWrite: number) => ({
+    source: 'platform' as const,
+    standard: { inputCentsPerM: input, outputCentsPerM: output, cacheReadCentsPerM: cacheRead, cacheWriteCentsPerM: cacheWrite },
+  });
+
+  it('priceInvocation rounds the float sum to 6 dp exactly as the reference does', () => {
+    expect(priceInvocation(rate(300, 500, 2.5, 125), { input: 1_000_000, output: 1, cacheRead: 3, cacheWrite: 0 }, {})).toBe(300.000507);
+  });
+
+  it('computeInvocationCents returns the unrounded sum Task 11 rounds once to 2 dp', () => {
+    expect(computeInvocationCents(rate(0, 2000, 30, 250), { input: 999, output: 0, cacheRead: 3, cacheWrite: 11 }, {})).toBeCloseTo(0.00284, 10);
+  });
+});

@@ -155,3 +155,17 @@ describe('toMessagesApiParams', () => {
     expect(() => toMessagesApiParams(wire, { thinksWhenOmitted: true })).toThrow(UnsupportedWireOptionError);
   });
 });
+
+// Reference behaviour a differential fuzz run found unpinned (orchestrator review, W01 #7599).
+describe('reference behaviour pins', () => {
+  it.each(['budget', 'none'] as const)('records an explicit standard speed in applied on a %s model', (thinkingMode) => {
+    const wire = buildWireParams({
+      thinkingMode,
+      optionSupport: { effort: [], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] },
+      requested: { speed: 'standard' },
+      maxTokens: 1024,
+    });
+    expect(wire.applied).toEqual({ speed: 'standard' });
+    expect(wire.speed).toBeUndefined();
+  });
+});
