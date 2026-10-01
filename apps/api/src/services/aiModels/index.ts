@@ -9,3 +9,4 @@ export * from './platformModelAdmin';
 export * from './platformModels';
 export * from './modelWireOptions';
 export * from './discovery';
+export * from './connections';
