@@ -99,9 +99,11 @@ func TestUserWorkspaceCodecTrustRealFolderAsStandardUser(t *testing.T) {
 	if out, err := exec.Command("icacls", GetDataDir(), "/grant", "*S-1-5-32-545:(M)").CombinedOutput(); err != nil {
 		t.Fatalf("icacls grant Users modify: %v: %s", err, out)
 	}
-	if err := VerifyProgramDataPath(dll); err == nil || !strings.Contains(err.Error(), "grants write") {
-		t.Fatalf("data dir writable by Users: err = %v, want a write refusal", err)
-	}
+	asStandardUser(t, func() {
+		if err := VerifyProgramDataPath(dll); err == nil || !strings.Contains(err.Error(), "grants write") {
+			t.Fatalf("data dir writable by Users: err = %v, want a write refusal", err)
+		}
+	})
 }
 
 // TestUserWorkspaceCodecTrustRefusesAnElevatedSession: in a session running
