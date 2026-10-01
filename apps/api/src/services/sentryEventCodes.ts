@@ -197,8 +197,10 @@ export const SENTRY_EVENT_CODES = [
   'ai_credit_debit_retries_exhausted',
   /**
    * W03 (#7601, W05 spike): an Agent SDK cumulative modelUsage component went
-   * DOWN against the session's snapshot. The turn billed zero (under-bill over
-   * double-bill) and the snapshot kept its high-water mark.
+   * DOWN against the session's snapshot (the CLI's counters restarted, or a
+   * glitch). The snapshot is re-baselined to the current reading and the turn
+   * bills its own result.usage capped by modelUsage, unconfirmed (#7700
+   * review finding 3).
    */
   'ai_usage_snapshot_regressed',
   /**

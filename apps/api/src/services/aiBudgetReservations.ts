@@ -191,6 +191,12 @@ export interface SettleSdkUsage {
   sessionId: string;
   /** null = leave the stored snapshot as it is. */
   nextSnapshot: SdkUsageSnapshot | null;
+  /**
+   * The turn re-baselined a regressed snapshot (usageNote `snapshot_regressed`,
+   * review finding 3): store `nextSnapshot` as-is, even below the stored one.
+   * Every other advance is a monotone high-water merge.
+   */
+  rebaseline?: boolean;
 }
 
 export interface SettleAiBudgetReservationInput {
@@ -897,7 +903,8 @@ async function applyUsageRollups(input: {
  * Advance the session's SDK usage snapshot inside the caller's transaction, as
  * a component-wise high-water mark: an unchanged snapshot (Task 5 returns the
  * previous one for an aborted/empty turn) writes nothing, and an older replay
- * can never move it backwards. A session that is gone is logged, not fatal:
+ * can never move it backwards. The exception is a `rebaseline` (a regressed
+ * turn, review finding 3), stored as-is so the counters' restart sticks. A session that is gone is logged, not fatal:
  * failing here would lose the whole settlement over a billing aid.
  */
 async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage): Promise<void> {
@@ -916,7 +923,7 @@ async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage):
     return;
   }
   const stored = parseSdkUsageSnapshot(current.sdk_usage_snapshot);
-  const merged = stored ? sdkUsageHighWater(stored, next) : next;
+  const merged = stored && sdkUsage.rebaseline !== true ? sdkUsageHighWater(stored, next) : next;
   if (stored && sameJson(stored, merged)) return;
   await db.execute(sql`
     UPDATE ai_sessions SET sdk_usage_snapshot = ${JSON.stringify(merged)}::jsonb
@@ -940,8 +947,9 @@ export async function readSdkUsageSnapshot(input: { orgId: string; sessionId: st
       WHERE id = ${input.sessionId}::uuid AND org_id = ${input.orgId}::uuid
     `))[0];
     let snapshot = parseSdkUsageSnapshot(session?.sdk_usage_snapshot);
-    const pending = rows<{ snapshot: unknown }>(await db.execute<{ snapshot: unknown }>(sql`
-      SELECT pending_settlement -> 'sdkUsage' -> 'nextSnapshot' AS snapshot
+    const pending = rows<{ snapshot: unknown; rebaseline: boolean | null }>(await db.execute<{ snapshot: unknown; rebaseline: boolean | null }>(sql`
+      SELECT pending_settlement -> 'sdkUsage' -> 'nextSnapshot' AS snapshot,
+             (pending_settlement -> 'sdkUsage' ->> 'rebaseline')::boolean AS rebaseline
       FROM ai_budget_reservations
       WHERE org_id = ${input.orgId}::uuid
         AND pending_settlement IS NOT NULL
@@ -950,7 +958,8 @@ export async function readSdkUsageSnapshot(input: { orgId: string; sessionId: st
     `));
     for (const row of pending) {
       const p = parseSdkUsageSnapshot(row.snapshot);
-      if (p) snapshot = snapshot ? sdkUsageHighWater(snapshot, p) : p;
+      // A pending re-baseline (review finding 3) replaces, as it will when replayed.
+      if (p) snapshot = snapshot && row.rebaseline !== true ? sdkUsageHighWater(snapshot, p) : p;
     }
     return snapshot;
   });

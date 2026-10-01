@@ -346,6 +346,22 @@ describe('SDK usage snapshot (W05 spike): advanced in the settlement transaction
     expect(allSql().some((s) => /SET sdk_usage_snapshot/.test(s))).toBe(false);
   });
 
+  it('a rebaseline (snapshot_regressed turn) DOES move the stored snapshot down (review finding 3)', async () => {
+    primeWithSnapshot(NEXT);
+    await settleAiBudgetReservation({
+      orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()],
+      sdkUsage: { sessionId: SESSION_ID, nextSnapshot: PREV, rebaseline: true },
+    });
+    expect(allSql().some((s) => /SET sdk_usage_snapshot/.test(s))).toBe(true);
+  });
+
+  it('readSdkUsageSnapshot takes a pending REBASELINE as-is instead of the high-water merge', async () => {
+    dbMock.execute
+      .mockResolvedValueOnce([{ sdk_usage_snapshot: NEXT }])
+      .mockResolvedValueOnce([{ snapshot: PREV, rebaseline: true }]);
+    await expect(readSdkUsageSnapshot({ orgId: ORG_ID, sessionId: SESSION_ID })).resolves.toEqual(PREV);
+  });
+
   it('readSdkUsageSnapshot merges the stored snapshot with any pending (deferred) settlement for the session', async () => {
     dbMock.execute
       .mockResolvedValueOnce([{ sdk_usage_snapshot: PREV }])

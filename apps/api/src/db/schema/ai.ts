@@ -101,7 +101,8 @@ export const aiSessions = pgTable('ai_sessions', {
   options: jsonb('options').$type<Record<string, unknown>>(),
   // AI model registry W03 (#7601, W05 spike): the last cumulative Agent SDK
   // modelUsage billed for this session (SdkUsageSnapshot). Advanced only in a
-  // settlement transaction, as a component-wise high-water mark.
+  // settlement transaction, as a component-wise high-water mark — except a
+  // regressed turn's re-baseline, which is stored as-is (#7700 finding 3).
   sdkUsageSnapshot: jsonb('sdk_usage_snapshot').$type<Record<string, unknown> | null>(),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),

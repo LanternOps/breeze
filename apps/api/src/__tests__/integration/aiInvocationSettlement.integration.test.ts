@@ -256,11 +256,26 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     }));
     expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(first);
 
+    // An ordinary (delta) settlement carrying a lower snapshot — e.g. an older replay — never moves it backwards.
     const lower: SdkUsageSnapshot = { version: 1, models: { [binding.wireModel]: { tokens: { ...T, output: 1 }, webSearchRequests: 0 } } };
     await settleInvocation(settleInput(s, binding, await reserve(s, binding), {
-      usage: [], sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: lower, usageConfirmed: false, usageNote: 'snapshot_regressed' },
+      usage: [], sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: lower, usageConfirmed: true, usageNote: 'delta' },
     }));
     expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(first);
+  });
+
+  it('a snapshot_regressed settlement re-baselines the stored snapshot DOWN to the current reading (review finding 3)', async () => {
+    const first: SdkUsageSnapshot = { version: 1, models: { [binding.wireModel]: { tokens: T, webSearchRequests: 0 } } };
+    await settleInvocation(settleInput(s, binding, await reserve(s, binding), {
+      sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: first, usageConfirmed: true, usageNote: 'first_result' },
+    }));
+    const reset: SdkUsageSnapshot = { version: 1, models: { [binding.wireModel]: { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0 } } };
+    const out = await settleInvocation(settleInput(s, binding, await reserve(s, binding), {
+      usage: [{ model: binding.wireModel, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0, speedServed: 'standard', providerModel: null }],
+      sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: reset, usageConfirmed: false, usageNote: 'snapshot_regressed' },
+    }));
+    expect(out.costCents).toBeGreaterThan(0);
+    expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(reset);
   });
 
   it('a stable-key replay after a rate change re-binds the active reservation before dispatch (finding 4)', async () => {

@@ -379,14 +379,15 @@ describe('per-turn registry cost (supersedes the #7667 running-total hotfix)', (
     expect(settles()[1]!.outcome.sdkReportedCostUsd).toBe(9.99); // telemetry only
   });
 
-  it('a decreased modelUsage component bills ZERO for the turn (snapshot_regressed), never a negative or double bill', async () => {
+  it('a decreased modelUsage component re-baselines and bills the turn\'s own usage (snapshot_regressed), never a negative bill', async () => {
     m.snapshots.set('sess-decreasing', snap(500, 50));
     const { doneUsage } = await runSession('sess-decreasing', [result(400, 40, { total_cost_usd: 0.04 })]);
 
     expect(settles()[0]).toMatchObject({
-      usage: [], sdkUsage: { usageNote: 'snapshot_regressed', usageConfirmed: false },
+      usage: [{ model: SONNET, tokens: { input: 400, output: 40 } }],
+      sdkUsage: { usageNote: 'snapshot_regressed', usageConfirmed: false, nextSnapshot: snap(400, 40) },
     });
-    expect(doneUsage[0]!.costCents).toBe(0);
+    expect(doneUsage[0]!.costCents).toBeGreaterThan(0);
   });
 
   it('bills deltas across error-subtype results on the same query', async () => {

@@ -258,7 +258,7 @@ function reportUsageConfidence(input: SettleInvocationInput): void {
   console.warn(`[settleInvocation] ${detail.eventCode} ${JSON.stringify(detail)}`);
   if (s.usageNote === 'snapshot_regressed') {
     if (shouldReport('ai_usage_snapshot_regressed')) {
-      captureMessage('AI SDK usage snapshot regressed; the turn billed zero', { eventCode: 'ai_usage_snapshot_regressed' });
+      captureMessage('AI SDK usage snapshot regressed; re-baselined and billed the turn\'s own usage (unconfirmed)', { eventCode: 'ai_usage_snapshot_regressed' });
     }
   }
 }
@@ -284,7 +284,11 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
   const rows = toNewInvocations(input, priced);
   const costCents = sumCostCents(priced);
   const sdkUsage = input.sdkUsage
-    ? { sessionId: input.sdkUsage.sessionId, nextSnapshot: input.sdkUsage.nextSnapshot }
+    ? {
+      sessionId: input.sdkUsage.sessionId,
+      nextSnapshot: input.sdkUsage.nextSnapshot,
+      ...(input.sdkUsage.usageNote === 'snapshot_regressed' ? { rebaseline: true } : {}),
+    }
     : undefined;
 
   if (input.reservationId) {

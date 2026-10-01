@@ -143,7 +143,7 @@ export function parseSdkUsageSnapshot(raw: unknown): SdkUsageSnapshot | null {
 export type SdkUsageNote =
   | 'delta'               // snapshot present, nothing decreased: per-key deltas billed
   | 'first_result'        // no snapshot: result.usage billed, capped by modelUsage
-  | 'snapshot_regressed'  // a component decreased: billed ZERO, snapshot kept at its high-water mark (Sentry: ai_usage_snapshot_regressed)
+  | 'snapshot_regressed'  // a component decreased (counters restarted): snapshot re-baselined to the current reading, this turn's result.usage billed capped by modelUsage, unconfirmed (Sentry: ai_usage_snapshot_regressed)
   | 'no_result'           // aborted / untrustworthy result: billed ZERO, snapshot unchanged
   | 'empty_usage';        // the turn made no model call: nothing billed, snapshot unchanged
 
@@ -184,10 +184,10 @@ function readModelUsage(modelUsage: unknown): SdkUsageSnapshot | 'invalid' | nul
 }
 
 /**
- * Component-wise high-water mark of two snapshots (union of keys). Used after
- * a regression so a one-off low reading can never make a later turn re-bill
- * tokens that were already billed: under-billing beats double-billing. Also
- * how settlement stores a snapshot (monotone, so replay order cannot regress it).
+ * Component-wise high-water mark of two snapshots (union of keys). How
+ * settlement stores an ordinary (non-regressed) snapshot: monotone, so replay
+ * order cannot regress it. A `snapshot_regressed` turn's re-baselined snapshot
+ * is the one exception and is stored as-is (aiBudgetReservations).
  */
 export function sdkUsageHighWater(a: SdkUsageSnapshot, b: SdkUsageSnapshot): SdkUsageSnapshot {
   return highWater(a, b);
@@ -327,10 +327,19 @@ export function sdkTurnUsage(input: {
       else if (!isZero(d)) deltas.push([key, d]);
     }
     if (regressed) {
+      // Review finding 3 (#7700): a decrease means the CLI's counters restarted
+      // (a redeploy without ~/.claude, a resumed transcript…). Keeping the old
+      // high-water mark would bill every later turn $0 until the new counters
+      // overtook it. Re-baseline to what the CLI reports NOW — a key it no
+      // longer reports keeps its last total — and bill this turn's own
+      // result.usage the way a first result is billed (capped by modelUsage).
+      // Unconfirmed: the reading may also be a glitch (Sentry: ai_usage_snapshot_regressed).
+      const rebaselined: SdkUsageSnapshot = { version: 1, models: { ...prev.models, ...current.models } };
+      const turn = thisTurnUsage(binding, obs, result, entries);
       return {
-        usage: [],
-        outcome: sdkOutcome(binding, obs, result, obs.refusalFallback?.fallbackModel ?? binding.wireModel),
-        nextSnapshot: highWater(prev, current),
+        usage: turn.usage,
+        outcome: sdkOutcome(binding, obs, result, turn.servedModel),
+        nextSnapshot: rebaselined,
         usageConfirmed: false,
         usageNote: 'snapshot_regressed',
       };
@@ -349,6 +358,27 @@ export function sdkTurnUsage(input: {
   // No snapshot: the first result of a query (or a session from before
   // snapshots). modelUsage may carry earlier turns from the transcript, so it
   // is only a ceiling; result.usage is this turn's main loop.
+  const turn = thisTurnUsage(binding, obs, result, entries);
+  return {
+    usage: turn.usage,
+    outcome: sdkOutcome(binding, obs, result, turn.servedModel),
+    nextSnapshot: current,
+    usageConfirmed: turn.turnValid && !errored && turn.nonZeroKeys <= 1,
+    usageNote: 'first_result',
+  };
+}
+
+/**
+ * This turn's main-loop usage from result.usage, capped componentwise by the
+ * summed modelUsage, attributed to the served model. The billing rule when no
+ * trustworthy previous snapshot exists (first result, or a regressed one).
+ */
+function thisTurnUsage(
+  binding: TurnBinding,
+  obs: SdkTurnObservation,
+  result: SdkResultLike,
+  entries: ReadonlyArray<[string, Entry]>,
+): { usage: BilledUsage[]; servedModel: string; turnValid: boolean; nonZeroKeys: number } {
   const nonZero = entries.filter(([, e]) => !isZero(e));
   const servedModel = servedModelOf(binding, obs, nonZero, null);
   const sum = entries.reduce<Entry>((acc, [, e]) => ({
@@ -380,13 +410,7 @@ export function sdkTurnUsage(input: {
     };
     if (!isZero(capped)) usage = [billed(servedModel, capped)];
   }
-  return {
-    usage,
-    outcome: sdkOutcome(binding, obs, result, servedModel),
-    nextSnapshot: current,
-    usageConfirmed: turnValid && !errored && nonZero.length <= 1,
-    usageNote: 'first_result',
-  };
+  return { usage, servedModel, turnValid, nonZeroKeys: nonZero.length };
 }
 
 // ---------------------------------------------------------------------------
