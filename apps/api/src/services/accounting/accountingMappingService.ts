@@ -1284,6 +1284,10 @@ function providerRefusal(
  * id, an unparseable payload) and every transient (5xx, timeout, 429) keep the
  * retryable 502. The message carries the fault CLASS only (`providerFaultSuffix`),
  * the same text invoice-push already persists — never a raw provider body.
+ * The payment/invoice-only refusal codes `providerRefusal` does not handle
+ * (remote_locked, amount_exceeds_due, remote_deleted, remote_batched) are not
+ * produced by customer/item upserts; if one ever were, it lands here — still
+ * terminal, with this generic advice.
  */
 function providerRejection(
   err: unknown, entityType: MappingEntityType, providerLabel: string,
@@ -1545,8 +1549,9 @@ async function syncMappedEntityUnderLease(
       // Still best-effort: markMappingError swallows a failed UPDATE, but
       // OPENING the context can fail too, and that must not replace the typed
       // 409/502/429 below with a raw error. On the failure path Sentry already
-      // has the original; on the refusal and throttle paths it does not (neither
-      // is ever reported), so this marker failure is the only event for it.
+      // has the original (so does a #7292 rejection); on the refusal and throttle
+      // paths it does not (neither is ever reported), so this marker failure is
+      // the only event for it.
       captureException(markErr instanceof Error ? markErr : new Error(String(markErr)), undefined, {
         service: 'accountingMappingService', accounting_mapping_id: mapping.id, partner_id: partnerId,
       });
