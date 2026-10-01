@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { AI_USAGE_GROUP_BYS, type AiSurface, type AiUsageBreakdownDto, type AiUsageRowDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
+import { useHashState } from '@/lib/useHashState';
 import { SURFACE_LABEL_KEYS } from './surfaceLabels';
 
 type GroupBy = (typeof AI_USAGE_GROUP_BYS)[number];
@@ -18,11 +19,12 @@ const GROUP_LABEL_KEYS: Record<GroupBy, string> = {
   org: 'aiModels.usage.groupBy.org',
 };
 
-const groupFromHash = (): GroupBy => {
-  const raw = typeof window === 'undefined' ? '' : window.location.hash;
-  if (!raw.startsWith(HASH_PREFIX)) return DEFAULT_GROUP;
-  const g = raw.slice(HASH_PREFIX.length);
-  return (AI_USAGE_GROUP_BYS as readonly string[]).includes(g) ? (g as GroupBy) : DEFAULT_GROUP;
+/** useHashState parser: the raw hash arrives without its leading '#'; anything else falls back to the default. */
+const groupFromHash = (hash: string): GroupBy | undefined => {
+  const prefix = HASH_PREFIX.slice(1);
+  if (!hash.startsWith(prefix)) return undefined;
+  const g = hash.slice(prefix.length);
+  return (AI_USAGE_GROUP_BYS as readonly string[]).includes(g) ? (g as GroupBy) : undefined;
 };
 
 const formatRefusals = (r: Pick<AiUsageRowDto, 'refusals' | 'refusalRate'>) =>
@@ -36,7 +38,8 @@ const formatRefusals = (r: Pick<AiUsageRowDto, 'refusals' | 'refusalRate'>) =>
  */
 export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
   const { t } = useTranslation('settings');
-  const [groupBy, setGroupBy] = useState<GroupBy>(groupFromHash);
+  // SSR-safe: starts at the default, adopts the hash pre-paint and follows hashchange.
+  const [groupBy, setGroupBy] = useHashState<GroupBy>(DEFAULT_GROUP, groupFromHash);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [data, setData] = useState<AiUsageBreakdownDto | null>(null);
@@ -44,12 +47,9 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    const onHash = () => setGroupBy(groupFromHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-
-  useEffect(() => {
+    // The first commit renders the SSR default before useHashState adopts a
+    // deep-linked #usage-by-*; skip that request rather than fire a wasted one.
+    if ((groupFromHash(window.location.hash.replace(/^#/, '')) ?? DEFAULT_GROUP) !== groupBy) return;
     let cancelled = false;
     const params = new URLSearchParams({ groupBy });
     if (orgId) params.set('orgId', orgId);
