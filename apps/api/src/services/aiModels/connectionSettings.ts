@@ -18,7 +18,11 @@ export async function updateConnectionSettings(input: {
 }): Promise<PartnerAiConnection> {
   return inPartnerRegistryWrite(input.partnerId, 'aiModels.updateConnectionSettings', 'Could not save the connection.', async () => {
     const conn = await getConnection(input.connectionId);
-    if (!conn || conn.partnerId !== input.partnerId) throw new RegistryWriteError('Connection not found.', 'not_found', 404);
+    // getConnection still returns a W03 soft-disconnected row (ledger
+    // provenance); it is not the partner's connection any more.
+    if (!conn || conn.partnerId !== input.partnerId || conn.status === 'disconnected') {
+      throw new RegistryWriteError('Connection not found.', 'not_found', 404);
+    }
     const geoChanged = input.patch.inferenceGeo !== undefined && input.patch.inferenceGeo !== conn.inferenceGeo;
     const set: Record<string, unknown> = { updatedAt: new Date() };
     if (input.patch.name !== undefined) set.name = input.patch.name;

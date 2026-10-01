@@ -17,6 +17,9 @@ export type RegistryWriteCode =
 
 export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 
+/** W03 soft-disconnect: the offering's connection is kept as provenance only; nothing may edit, verify or re-enable it. */
+export const CONNECTION_DISCONNECTED_MESSAGE = "This model's connection is disconnected.";
+
 export class RegistryWriteError extends Error {
   constructor(
     message: string,

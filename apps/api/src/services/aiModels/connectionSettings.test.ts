@@ -70,6 +70,20 @@ describe('updateConnectionSettings', () => {
     expect(h.set).toBeUndefined();
   });
 
+  // W03 soft-disconnect: getConnection still returns the provenance row.
+  it('404s a disconnected connection and writes nothing', async () => {
+    h.conn = { id: C, partnerId: P, inferenceGeo: null, configVersion: 2, status: 'disconnected' };
+    const err = await updateConnectionSettings({ partnerId: P, connectionId: C, patch: { name: 'x', inferenceGeo: 'eu' } }).catch((e) => e);
+    expect([err.status, err.code]).toEqual([404, 'not_found']);
+    expect(h.set).toBeUndefined();
+  });
+
+  it('a connection in error is still editable', async () => {
+    h.conn = { id: C, partnerId: P, inferenceGeo: null, configVersion: 2, status: 'error' };
+    await updateConnectionSettings({ partnerId: P, connectionId: C, patch: { name: 'x' } });
+    expect(h.set).toMatchObject({ name: 'x' });
+  });
+
   it('404s a missing connection', async () => {
     const err = await updateConnectionSettings({ partnerId: P, connectionId: C, patch: { name: 'x' } }).catch((e) => e);
     expect([err.status, err.code]).toEqual([404, 'not_found']);

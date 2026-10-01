@@ -53,7 +53,7 @@ vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbA
 
 vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn() }));
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn() }));
-vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.fn() }));
+vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.fn(), getConnection: vi.fn() }));
 vi.mock('../../services/aiModels/offerings', () => ({ getOffering: vi.fn() }));
 vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn() }));
 vi.mock('../../services/aiModels/connectionSettings', () => ({ updateConnectionSettings: vi.fn() }));
@@ -92,7 +92,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
-import { getCompatConnection } from '../../services/aiModels/connections';
+import { getCompatConnection, getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
 import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
@@ -159,6 +159,7 @@ beforeEach(() => {
   vi.mocked(updateOfferingDetails).mockResolvedValue(offeringRow as any);
   vi.mocked(listOfferingDefaultUses).mockResolvedValue([]);
   vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: C } as any);
+  vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: P, status: 'active' } as any);
   vi.mocked(enqueueConnectionSync).mockResolvedValue(undefined);
   vi.mocked(putPartnerAssignments).mockResolvedValue([{ surface: 'chat', role: 'default', updatedAt: T }] as any);
   vi.mocked(previewResidencyImpact).mockResolvedValue({ unavailableSurfaces: [], affectedOrgOverrides: [] });
@@ -496,6 +497,36 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
     expect((await call('POST', `/offerings/${A}/verify`)).status).toBe(404);
     expect(enqueueConnectionSync).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  // W03 soft-disconnect: the row stays as provenance (getConnection still
+  // returns it) but the compat reader is live-only, so :id never binds to it.
+  it.each([
+    ['not reconnected', null],
+    ['reconnected (a NEW live connection)', { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', partnerId: P }],
+  ])('PATCH /connections/:id and /refresh on a disconnected id → 404 (%s), nothing written or queued', async (_l, live) => {
+    vi.mocked(getCompatConnection).mockResolvedValue(live as any);
+    expect((await call('PATCH', `/connections/${C}`, { name: 'x' })).status).toBe(404);
+    expect((await call('POST', `/connections/${C}/refresh`)).status).toBe(404);
+    expect(updateConnectionSettings).not.toHaveBeenCalled();
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['disconnected', { id: C, partnerId: P, status: 'disconnected' }],
+    ['missing', null],
+  ])('POST /offerings/:id/verify when the offering’s connection is %s → 409 connection_unavailable, nothing queued', async (_l, conn) => {
+    vi.mocked(getConnection).mockResolvedValue(conn as any);
+    const res = await call('POST', `/offerings/${A}/verify`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "This model's connection is disconnected.", code: 'connection_unavailable' });
+    expect(getConnection).toHaveBeenCalledWith(C);
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  it('POST /offerings/:id/verify on a connection in error still queues (transient health never blocks)', async () => {
+    vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: P, status: 'error' } as any);
+    expect((await call('POST', `/offerings/${A}/verify`)).status).toBe(202);
+    expect(enqueueConnectionSync).toHaveBeenCalledWith(C);
   });
   it.each([
     ['POST', `/connections/${C}/refresh`],

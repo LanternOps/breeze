@@ -2,7 +2,9 @@ import { Hono, type Context } from 'hono';
 import { offeringDetailsPatchSchema, offeringEnableSchema } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
+import { CONNECTION_DISCONNECTED_MESSAGE } from '../../services/aiModels/registryWriteErrors';
 import {
   ensurePlatformOffering,
   listOfferingDefaultUses,
@@ -84,6 +86,12 @@ aiModelOfferingRoutes.post('/:id/verify', ...partnerWrite, zValidator('param', i
     if (!offering || offering.partnerId !== partnerId) return c.json({ error: 'Model not found.', code: 'not_found' }, 404);
     if (!offering.connectionId) {
       return c.json({ error: 'Platform models are verified by the Breeze operator.', code: 'conflict' }, 409);
+    }
+    // W03 soft-disconnect: the offering outlives its connection as ledger
+    // provenance. Discovery would skip it anyway; never queue it.
+    const conn = await getConnection(offering.connectionId);
+    if (!conn || conn.partnerId !== partnerId || conn.status === 'disconnected') {
+      return c.json({ error: CONNECTION_DISCONNECTED_MESSAGE, code: 'connection_unavailable' }, 409);
     }
     const failed = await queueConnectionSync(c, offering.connectionId);
     if (failed) return failed;

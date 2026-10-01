@@ -24,12 +24,9 @@ import { checkEnableEligibility, onDisconnectedConnection, type EnableEligibilit
 import { tryLockPartnerRegistryWrite } from './registryWriteLock';
 import { enableOffering, getOffering, offeringPriceSource, type Offering } from './offerings';
 import { getPlatformInferenceGeo, getPlatformModelById, type PlatformModel } from './platformModels';
-import { REGISTRY_BUSY_MESSAGE, RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
+import { CONNECTION_DISCONNECTED_MESSAGE, REGISTRY_BUSY_MESSAGE, RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
 
 export interface OfferingInUse { surface: AiSurface; level: 'partner' | 'org'; orgId: string | null }
-
-/** W03 soft-disconnect: the offering's connection is kept as provenance only; nothing may edit or re-enable it. */
-export const CONNECTION_DISCONNECTED_MESSAGE = "This model's connection is disconnected.";
 
 /**
  * Runs `write` in a fresh system transaction holding the partner's registry
