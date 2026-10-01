@@ -38,7 +38,7 @@
  * child's own egress.
  */
 
-import { resolveModelThinking } from '../aiModelThinking';
+import { agentSdkWireOptions } from '../aiModels/modelWireOptions';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { buildGuardedLlmFetch } from './guardedLlmFetch';
@@ -469,9 +469,10 @@ async function runSdkSubprocessStage(input: FidelityCheckInput): Promise<Fidelit
         },
         settingSources: [],
         persistSession: false,
-        // #7587: same per-model thinking/effort as production chat, keyed on
-        // the catalog wire id (an unrecognised id keeps `disabled`).
-        ...resolveModelThinking(input.providerModel),
+        // #7587, #7599: same per-model thinking/effort as production chat
+        // (agentSdkWireOptions), keyed on the catalog wire id (an id the
+        // registry and the bootstrap rules don't know keeps `disabled`).
+        ...agentSdkWireOptions(input.providerModel),
         abortController,
         env: buildFidelityChildEnv(input),
       },

@@ -52,7 +52,8 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
-vi.mock('./aiModel', () => ({
+vi.mock('./aiModel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiModel')>()),
   resolveDefaultModel: () => 'claude-sonnet-4-6',
 }));
 
