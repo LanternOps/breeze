@@ -23,9 +23,24 @@ export type OneShotUnavailableAnswer =
   | { status: 503; body: { error: 'ai_unavailable' } }
   | { status: 503 | 409; body: { error: string; code: string; recoverable: true } };
 
+/**
+ * True (and the shared hourly platform-key alert raised) when an unresolved
+ * model is `connection_unavailable` on a deployment with NO platform
+ * credential at all. Every registry caller that can hit that path routes the
+ * alert through here (one-shot routes, AI agent admission and dispatch), since
+ * the resolver answers before any client is built and the factory's own alert
+ * never fires.
+ */
+export function reportIfPlatformKeyMissing(turn: Pick<ModelUnavailable, 'reason'>): boolean {
+  if (turn.reason !== 'connection_unavailable' || isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk')) {
+    return false;
+  }
+  reportPlatformKeyMissing();
+  return true;
+}
+
 export function oneShotUnavailableAnswer(turn: ModelUnavailable): OneShotUnavailableAnswer {
-  if (turn.reason === 'connection_unavailable' && !isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk')) {
-    reportPlatformKeyMissing();
+  if (reportIfPlatformKeyMissing(turn)) {
     return { status: 503, body: { error: 'ai_unavailable' } };
   }
   return {

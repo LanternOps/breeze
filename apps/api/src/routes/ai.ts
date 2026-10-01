@@ -78,7 +78,7 @@ import {
 } from '../services/aiTicketDraft';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { anthropicClientFor, type MessageAttempt } from '../services/aiModels/connectionFactory';
-import { messagesUsage } from '../services/aiModels/invocationUsage';
+import { messagesUsage, messagesUsageAfterDispatchError } from '../services/aiModels/invocationUsage';
 import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailable';
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
@@ -542,13 +542,18 @@ aiRoutes.post(
     // no message/draft id — so the key is random per dispatch. The unique
     // (org_id, idempotency_key) index is therefore a structural guarantee
     // that two dispatches never share a reservation row, NOT a replay guard.
+    // SESSIONLESS on purpose: a ticket draft is not a session turn. Passing
+    // the chat session here would stamp this one-shot's binding onto the chat
+    // session and bind the reservation to it, which the sessionless
+    // settlement below then refuses (session-bound reservations require a
+    // session settlement). Authorization against the session already happened
+    // in getSessionMessages above.
     let reservation;
     try {
       reservation = await reserveAiBudget({
         orgId: session.orgId,
         idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
         billingSource: turn.funding,
-        sessionId,
         binding,
       });
     } catch (err) {
@@ -564,8 +569,10 @@ aiRoutes.post(
     // chat turn, and its cost in the chat session's total_cost_cents would
     // double-attribute it in the session list. The ledger keeps it as
     // surface 'chat', source_ref 'ticket_draft'.
-    const settle = (attempts: MessageAttempt[]) => {
-      const { usage, outcome } = messagesUsage(binding, attempts);
+    const settle = (attempts: MessageAttempt[], dispatchFailed = false) => {
+      const { usage, outcome } = dispatchFailed
+        ? messagesUsageAfterDispatchError(binding, attempts)
+        : messagesUsage(binding, attempts);
       return settleInvocation({
         binding, orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null,
         sourceRef: 'ticket_draft', usage, outcome, reservationId,
@@ -585,8 +592,9 @@ aiRoutes.post(
     } catch (err) {
       try {
         if (err instanceof TicketDraftFailedError && err.attempts.length > 0) {
-          // The provider answered (at least once): the burned tokens bill.
-          await settle(err.attempts);
+          // The provider answered (at least once): the burned tokens bill —
+          // including a refused attempt whose fallback call then threw.
+          await settle(err.attempts, err.providerOutcomeUnknown);
         } else if (err instanceof TicketDraftFailedError && err.providerOutcomeUnknown) {
           await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
         } else {

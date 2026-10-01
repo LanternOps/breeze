@@ -21,7 +21,7 @@ import { resolveConfirmedContact, findPortalUserByEmail } from '../../services/o
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
 import { LlmUnavailableError } from '../../services/llm/llmUnavailableError';
 import { anthropicClientFor, type MessageAttempt } from '../../services/aiModels/connectionFactory';
-import { messagesUsage } from '../../services/aiModels/invocationUsage';
+import { messagesUsage, messagesUsageAfterDispatchError } from '../../services/aiModels/invocationUsage';
 import { oneShotUnavailableAnswer } from '../../services/aiModels/oneShotUnavailable';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { settleInvocation } from '../../services/aiModels/settleInvocation';
@@ -294,9 +294,13 @@ async function settleDraftUsage(input: {
   userId: string | null;
   reservationId: string;
   attempts: MessageAttempt[];
+  /** The draft died mid-dispatch (e.g. a refusal's fallback call threw): bill the completed attempts as an error. */
+  dispatchFailed?: boolean;
 }): Promise<void> {
   try {
-    const { usage, outcome } = messagesUsage(input.binding, input.attempts);
+    const { usage, outcome } = input.dispatchFailed
+      ? messagesUsageAfterDispatchError(input.binding, input.attempts)
+      : messagesUsage(input.binding, input.attempts);
     await settleInvocation({
       binding: input.binding,
       orgId: input.orgId,
@@ -432,8 +436,8 @@ officeAddinTicketRoutes.post(
       client,
       ...(reservation.kind === 'reserved' ? { budgetCents: reservation.reservedCostCents } : {}),
     });
-    const settle = (attempts: MessageAttempt[]) => settleDraftUsage({
-      binding, orgId: input.orgId, userId: auth.userId, reservationId, attempts,
+    const settle = (attempts: MessageAttempt[], dispatchFailed = false) => settleDraftUsage({
+      binding, orgId: input.orgId, userId: auth.userId, reservationId, attempts, dispatchFailed,
     });
     try {
       const draft = await withTimeout(draftPromise, DRAFT_TIMEOUT_MS);
@@ -460,15 +464,16 @@ officeAddinTicketRoutes.post(
         void runOutsideDbContext(() => draftPromise.then(
           (lateDraft) => settle(lateDraft.attempts),
           (lateErr) => lateErr instanceof EmailDraftFailedError && lateErr.attempts.length > 0
-            ? settle(lateErr.attempts)
+            ? settle(lateErr.attempts, lateErr.providerOutcomeUnknown)
             : undefined,
         )).catch((meterErr) => {
           console.error('[office-addin] draft usage accounting failed', meterErr);
         });
       } else if (err instanceof EmailDraftFailedError && err.attempts.length > 0) {
         // Failed attempts still burned tokens — bill them (same best-effort
-        // posture as the success path), which also settles the reservation.
-        await settle(err.attempts);
+        // posture as the success path), which also settles the reservation —
+        // including a refused attempt whose fallback call then threw.
+        await settle(err.attempts, err.providerOutcomeUnknown);
       } else if (err instanceof EmailDraftFailedError && !err.providerOutcomeUnknown) {
         // The provider was never reached with billable work (nothing sent, or
         // the prompt exceeded the reserved budget): the ONLY case where

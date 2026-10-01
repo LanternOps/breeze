@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { maxOutputTokensForAiBudget } from '../aiBudgetReservations';
-import { createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
+import { attemptsOf, createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
 import type { ResolvedModel } from '../aiModels/resolveModel';
 import { costEstimator } from '../aiModels/settleInvocation';
 
@@ -129,6 +129,8 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
       // API/network error: same no-retry behavior as before (the pane has a
       // deterministic fallback), but wrapped so prior attempts' spend bills.
       attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);
+      // A refused attempt completed before its fallback threw: billed, keep it.
+      attempts.push(...attemptsOf(err));
       return fail(err, true);
     }
     attempts.push(...outcome.attempts);

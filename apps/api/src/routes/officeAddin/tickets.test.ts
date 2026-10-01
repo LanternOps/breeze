@@ -1084,6 +1084,21 @@ describe('POST /tickets/draft', () => {
     errSpy.mockRestore();
   });
 
+  it('a refused attempt whose fallback then threw (outcome unknown) is settled with an error outcome, not left indeterminate', async () => {
+    const refused = { ...(msgFixture as object), stop_reason: 'refusal', stop_details: { category: 'cyber' } };
+    hoisted.draftTicketFromEmail.mockRejectedValue(failed([{ wireModel: 'claude-sonnet-5-5', message: refused }], true));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'office_email_draft', reservationId: RESERVATION_ID,
+      usage: [expect.objectContaining({ model: 'claude-sonnet-5-5', tokens: expect.objectContaining({ input: 100, output: 50 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
+    errSpy.mockRestore();
+  });
+
   it('failure-path settlement stays best-effort: a settlement throw still returns the 503', async () => {
     hoisted.draftTicketFromEmail.mockRejectedValue(failed(attemptsFixture));
     hoisted.settleInvocation.mockRejectedValue(new Error('meter down'));

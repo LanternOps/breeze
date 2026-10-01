@@ -162,6 +162,13 @@ vi.mock('../aiCostTracker', () => ({
 // its funding (not a per-org guess) feeds every budget gate and the run row.
 const resolveModel = vi.hoisted(() => vi.fn());
 vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+// Gap 3: a keyless deployment raises the shared hourly platform-key alert, like the one-shot surfaces.
+const reportPlatformKeyMissing = vi.hoisted(() => vi.fn());
+vi.mock('../llm/platformKeyAlert', () => ({
+  reportPlatformKeyMissing,
+  PLATFORM_KEY_MISSING_MESSAGE: 'AI is not configured on this deployment.',
+}));
+
 const readOrgPartnerId = vi.hoisted(() => vi.fn());
 vi.mock('../aiModels/candidateLoader', () => ({ readOrgPartnerId }));
 const notifyModelBlocked = vi.hoisted(() => vi.fn(async () => undefined));
@@ -868,6 +875,21 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       resolveModel.mockResolvedValue({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'x', message: 'm' });
       notifyModelBlocked.mockRejectedValueOnce(new Error('smtp down'));
       expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+    });
+
+    it('connection_unavailable on a deployment with NO platform key raises the platform-key alert at admission', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm' });
+      const savedEnv = { ...process.env };
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      try {
+        expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+      } finally {
+        process.env = savedEnv;
+      }
+      expect(reportPlatformKeyMissing).toHaveBeenCalledTimes(1);
     });
 
     it('registry_unavailable (cutover not done yet) skips WITHOUT telling an admin the model is gone', async () => {

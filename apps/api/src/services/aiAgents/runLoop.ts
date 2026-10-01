@@ -100,6 +100,7 @@ import {
 } from '../aiModels/invocationUsage';
 import { applyPromptProfile } from '../aiModels/promptProfiles';
 import { refusalHeadline } from '../aiModels/refusals';
+import { reportIfPlatformKeyMissing } from '../aiModels/oneShotUnavailable';
 import { resolveModel } from '../aiModels/resolveModel';
 import { priceUsage, settleInvocation, sumCostCents } from '../aiModels/settleInvocation';
 import { safeErrorMessage } from '../aiModels/safeDbError';
@@ -1859,6 +1860,8 @@ async function driveSdkLoop(
     ...(requestedOfferingId ? { requested: { offeringId: requestedOfferingId, origin: 'policy' as const } } : {}),
   });
   if (!agentModel.ok) {
+    // A keyless deployment raises the hourly platform-key alert (as the one-shot surfaces do).
+    reportIfPlatformKeyMissing(agentModel);
     throw new AgentRunBlockedError(
       'model_unavailable',
       blockedOutcome('model_unavailable', { message: agentModel.message, offeringId: requestedOfferingId }),

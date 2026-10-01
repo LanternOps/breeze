@@ -352,6 +352,13 @@ vi.mock('./opEvidence', async (importOriginal) => {
 // REAL so the per-run budget guard is asserted on the registry price.
 const resolveModel = vi.hoisted(() => vi.fn());
 vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+// Gap 3: a keyless deployment raises the shared hourly platform-key alert, like the one-shot surfaces.
+const reportPlatformKeyMissing = vi.hoisted(() => vi.fn());
+vi.mock('../llm/platformKeyAlert', () => ({
+  reportPlatformKeyMissing,
+  PLATFORM_KEY_MISSING_MESSAGE: 'AI is not configured on this deployment.',
+}));
+
 const settleInvocation = vi.hoisted(() =>
   vi.fn<(input: Record<string, unknown>) => Promise<{ costCents: number; invocationIds: string[]; deferred: boolean }>>(
     async () => ({ costCents: 0, invocationIds: [], deferred: false })));
@@ -894,6 +901,36 @@ describe('executeAgentRun', () => {
     }));
     // Automations waiting on this run still hear that it ended.
     expect(publishEvent.mock.calls.map((c) => c[0])).toContain('ai.agent.run.failed');
+  });
+
+  it('connection_unavailable on a deployment with NO platform key raises the platform-key alert (same as the one-shot surfaces)', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue({ ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm' });
+    const savedEnv = { ...process.env };
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    try {
+      await executeAgentRun(RUN_ID);
+    } finally {
+      process.env = savedEnv;
+    }
+
+    expect(reportPlatformKeyMissing).toHaveBeenCalledTimes(1);
+    expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({ errorCode: 'model_unavailable' }));
+  });
+
+  it('connection_unavailable with a platform key configured (a broken BYOK key) raises no platform-key alert', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue({ ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm' });
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    try {
+      await executeAgentRun(RUN_ID);
+    } finally {
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+    expect(reportPlatformKeyMissing).not.toHaveBeenCalled();
   });
 
   it('registry_unavailable at dispatch blocks the run WITHOUT telling an admin the model is gone', async () => {

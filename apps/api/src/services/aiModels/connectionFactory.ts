@@ -167,6 +167,31 @@ export interface MessageAttempt { wireModel: string; message: Anthropic.Message 
 export interface MessageOutcome { message: Anthropic.Message; attempts: MessageAttempt[] }
 
 /**
+ * A dispatch that failed AFTER at least one provider call completed — today
+ * only the client-side refusal retry (catalog connections): the first, refused
+ * attempt was billed by the provider and must still be settled. `attempts` are
+ * the completed calls; `cause` is the original error of the call that threw.
+ * A failure before anything completed is rethrown unwrapped (no attempts).
+ */
+export class MessageDispatchError extends Error {
+  constructor(public readonly attempts: MessageAttempt[], cause: unknown) {
+    super(`Messages API dispatch failed after ${attempts.length} completed attempt(s): ${
+      cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'MessageDispatchError';
+  }
+}
+
+/** The completed (billable) attempts a createMessage failure carries; empty for any other error. */
+export function attemptsOf(err: unknown): MessageAttempt[] {
+  return err instanceof MessageDispatchError ? [...err.attempts] : [];
+}
+
+/** The provider/transport error behind a createMessage failure, for status/timeout classification. */
+export function dispatchCause(err: unknown): unknown {
+  return err instanceof MessageDispatchError ? err.cause : err;
+}
+
+/**
  * One Messages API call for a resolved model. A refusal fallback is sent
  * server-side (array form only — `fallbacks: "default"` could serve a model we
  * cannot price, spec §14) on Claude API connections, and as exactly one
@@ -196,15 +221,24 @@ export async function createMessage(
       betas: [...wireBetas, ...(serverSide ? [SERVER_SIDE_FALLBACK_BETA] : [])],
       ...(fbParams ? { fallbacks: [fbParams] } : {}),
     } as never, ...(requestOptions ? [requestOptions] : [])) as unknown as Anthropic.Message;
+    // Server-side fallback is ONE request: a refusal and its fallback come back
+    // (with combined usage/iterations) in a single response, so a throw here
+    // means no response at all — nothing completed to settle.
     return { message, attempts: [{ wireModel: resolved.wireModel, message }] };
   }
 
   const first = await client.messages.create(params as never, ...(requestOptions ? [requestOptions] : [])) as Anthropic.Message;
   if (fb && first.stop_reason === 'refusal') {
-    const second = await client.messages.create({
-      ...capped,
-      ...messagesModelParams(fb),
-    } as never, ...(requestOptions ? [requestOptions] : [])) as Anthropic.Message;
+    let second: Anthropic.Message;
+    try {
+      second = await client.messages.create({
+        ...capped,
+        ...messagesModelParams(fb),
+      } as never, ...(requestOptions ? [requestOptions] : [])) as Anthropic.Message;
+    } catch (error) {
+      // The refused first attempt is billed by the provider: never lose it.
+      throw new MessageDispatchError([{ wireModel: resolved.wireModel, message: first }], error);
+    }
     return {
       message: second,
       attempts: [{ wireModel: resolved.wireModel, message: first }, { wireModel: fb.wireModel, message: second }],

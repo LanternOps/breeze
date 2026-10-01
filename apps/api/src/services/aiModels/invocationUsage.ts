@@ -484,3 +484,18 @@ export function messagesUsage(
     },
   };
 }
+
+/**
+ * Usage for a Messages API dispatch that FAILED after some provider calls
+ * completed (createMessage's MessageDispatchError, or a caller's own retry
+ * loop dying part-way): the completed attempts bill at their real counts (the
+ * provider charged for them) and the turn's outcome is an error, not the last
+ * completed answer.
+ */
+export function messagesUsageAfterDispatchError(
+  binding: TurnBinding,
+  attempts: ReadonlyArray<{ wireModel: string; message: MessageLike }>,
+): { usage: BilledUsage[]; outcome: TurnOutcome } {
+  const billed = messagesUsage(binding, attempts);
+  return { usage: billed.usage, outcome: { ...billed.outcome, stopReason: 'error' } };
+}

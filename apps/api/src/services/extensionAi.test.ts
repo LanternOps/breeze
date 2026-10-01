@@ -301,6 +301,31 @@ describe('buildExtensionAiContext', () => {
     expect(settleInvocation).not.toHaveBeenCalled();
   });
 
+  it('a refused attempt whose client-side fallback then throws is settled (billed) as an error, not left indeterminate', async () => {
+    const base = makeResolvedModel('catalog', { surface: 'extension_content' });
+    resolveModel.mockResolvedValue(makeResolvedModel('catalog', {
+      surface: 'extension_content',
+      refusalFallback: {
+        offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+        wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+      } as never,
+    }));
+    create
+      .mockResolvedValueOnce({ ...response(''), model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' } })
+      .mockRejectedValueOnce(apiError(503, 'overloaded'));
+
+    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+      name: 'ExtensionAiError', code: 'ai_unavailable', message: 'overloaded',
+    });
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      reservationId: RESERVATION_ID, sourceRef: 'extension:workspace_enrichment',
+      usage: [expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5', tokens: expect.objectContaining({ input: 17, output: 9 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
+  });
+
   it('does not resolve until settlement has completed', async () => {
     // Discriminating by construction: settleInvocation is held open on a deferred, so
     // `void settleInvocation(...)` (accounting skipped) resolves invoke early and fails.

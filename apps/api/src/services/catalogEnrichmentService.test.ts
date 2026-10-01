@@ -65,6 +65,21 @@ function aiMessage(json: object, webSearchRequests = 0) {
   };
 }
 
+function catalogWithFallback() {
+  const base = makeResolvedModel('catalog', { surface: 'catalog_enrichment' });
+  return makeResolvedModel('catalog', {
+    surface: 'catalog_enrichment',
+    refusalFallback: {
+      offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+      wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+    } as never,
+  });
+}
+const REFUSED = {
+  model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' },
+  content: [], usage: { input_tokens: 70, output_tokens: 3 },
+};
+
 beforeEach(() => {
   create.mockReset();
   resolveModel.mockReset().mockResolvedValue(byok());
@@ -179,6 +194,20 @@ describe('enrichCatalogItem', () => {
       orgId: 'o1',
       reservationId: '55555555-5555-4555-8555-555555555555',
     });
+  });
+
+  it('a refused attempt whose client-side fallback then throws is settled (billed) as an error, not left indeterminate', async () => {
+    resolveModel.mockResolvedValue(catalogWithFallback());
+    create.mockResolvedValueOnce(REFUSED).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toThrow('connection reset');
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'catalog_enrich',
+      usage: [expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5', tokens: expect.objectContaining({ input: 70, output: 3 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
   });
 
   it('maps AI fields to a draft + price guidance and never sets unitPrice', async () => {
@@ -543,6 +572,34 @@ describe('polishCatalogText', () => {
     const settled = settleInvocation.mock.calls[0]![0] as { binding: { rateSnapshot: { source: string } }; sourceRef: string };
     expect(settled.binding.rateSnapshot.source).toBe('catalog');
     expect(settled.sourceRef).toBe('catalog_polish');
+  });
+
+  it('polish: a refused attempt whose client-side fallback then throws is settled (billed) as an error, not left indeterminate', async () => {
+    resolveModel.mockResolvedValue(catalogWithFallback());
+    create.mockResolvedValueOnce(REFUSED).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(polishCatalogText({ name: 'apc back-ups 600va' }, actor)).rejects.toThrow('connection reset');
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'catalog_polish',
+      usage: [expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5', tokens: expect.objectContaining({ input: 70, output: 3 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
+  });
+
+  it('polish: a budget stop before any dispatch releases the reservation (nothing to settle)', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved', reservationId: RESERVATION_ID, reservedCostCents: 0,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    resolveModel.mockResolvedValue(outputOnlyPricing());
+
+    await expect(polishCatalogText({ name: 'apc back-ups 600va' }, actor)).rejects.toBeDefined();
+    expect(create).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: 'o1', reservationId: RESERVATION_ID });
   });
 
   it('settles the stricter RETRY turn too (every attempt, one settlement)', async () => {

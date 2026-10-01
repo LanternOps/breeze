@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { maxOutputTokensForAiBudget } from './aiBudgetReservations';
-import { createMessage, type MessageAttempt } from './aiModels/connectionFactory';
+import { attemptsOf, createMessage, type MessageAttempt } from './aiModels/connectionFactory';
 import type { ResolvedModel } from './aiModels/resolveModel';
 import { costEstimator } from './aiModels/settleInvocation';
 
@@ -102,6 +102,8 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
         messages: [{ role: 'user', content: userContent }],
       });
     } catch (error) {
+      // A refused attempt completed before its fallback threw: billed, keep it.
+      attempts.push(...attemptsOf(error));
       throw new TicketDraftFailedError(
         'Ticket draft provider outcome is unknown',
         attempts,

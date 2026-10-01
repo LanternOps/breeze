@@ -28,8 +28,9 @@ import {
 import { isPlatformLlmConfigured } from './llm/llmAvailability';
 import { reportPlatformKeyMissing } from './llm/platformKeyAlert';
 import { findOfferingIdByModel, readOrgPartnerId } from './aiModels/candidateLoader';
-import { anthropicClientFor, createMessage, type MessageOutcome } from './aiModels/connectionFactory';
-import { messagesUsage } from './aiModels/invocationUsage';
+import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageOutcome } from './aiModels/connectionFactory';
+import { messagesUsage, messagesUsageAfterDispatchError } from './aiModels/invocationUsage';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import { ensurePartnerCutover } from './aiModels/registryCutover';
 import { resolveModel } from './aiModels/resolveModel';
 import { costEstimator, settleInvocation } from './aiModels/settleInvocation';
@@ -229,9 +230,31 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           messages: input.messages,
         });
       } catch (error) {
-        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-          .catch((markError) => captureException(markError));
-        throw await classifyProviderFailure(error, resolved.connection.config);
+        // A refused attempt that completed before its fallback threw was
+        // billed by the provider: settle it. Nothing completed → the outcome
+        // is unknown and the reservation stays indeterminate.
+        const completed = attemptsOf(error);
+        let settled = false;
+        if (completed.length > 0) {
+          try {
+            await settleInvocation({
+              binding, orgId: input.orgId, userId: ledgerUserId,
+              sessionId: null, agentRunId: null, sourceRef: `extension:${input.surface}`,
+              ...messagesUsageAfterDispatchError(binding, completed), reservationId, toolExecutionCount: 1,
+            });
+            settled = true;
+          } catch (settleError) {
+            // Settlement errors are DB errors: scrubbed before any log or report.
+            const scrubbed = safeErrorMessage(settleError);
+            console.error('[extension-ai] settling a failed dispatch failed', { error: scrubbed });
+            captureException(new Error(scrubbed));
+          }
+        }
+        if (!settled) {
+          await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+            .catch((markError) => captureException(markError));
+        }
+        throw await classifyProviderFailure(dispatchCause(error), resolved.connection.config);
       }
 
       const text = outcome.message.content

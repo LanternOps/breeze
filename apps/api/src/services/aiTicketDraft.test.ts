@@ -16,6 +16,21 @@ const transcript = [
   { role: 'assistant', content: 'I rebuilt your mail profile; it is working now.' },
 ];
 
+
+const REFUSED = {
+  model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' },
+  content: [], usage: { input_tokens: 70, output_tokens: 3 },
+};
+function catalogWithFallback() {
+  const base = makeResolvedModel('catalog');
+  return makeResolvedModel('catalog', {
+    refusalFallback: {
+      offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+      wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+    } as never,
+  });
+}
+
 beforeEach(() => {
   createMock.mockReset();
 });
@@ -56,6 +71,17 @@ describe('draftTicketFromTranscript', () => {
     await expect(draftTicketFromTranscript({
       messages: transcript, contextSnapshot: null, elapsedMinutes: 10, ...base,
     })).rejects.toMatchObject({ name: 'TicketDraftFailedError', attempts: [], providerOutcomeUnknown: true });
+  });
+
+  it('a refusal whose client-side fallback THROWS still hands back the refused (billed) attempt', async () => {
+    createMock.mockResolvedValueOnce(REFUSED).mockRejectedValueOnce(new Error('socket'));
+    const err = await draftTicketFromTranscript({
+      messages: transcript, contextSnapshot: null, elapsedMinutes: 10, ...base, resolved: catalogWithFallback(),
+    }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'TicketDraftFailedError', providerOutcomeUnknown: true });
+    expect((err as { attempts: unknown[] }).attempts).toEqual([
+      { wireModel: 'anthropic/claude-sonnet-5.5', message: REFUSED },
+    ]);
   });
 
   it('returns a structured draft and maps wasFixed', async () => {

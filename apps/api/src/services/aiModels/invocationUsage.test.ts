@@ -3,6 +3,7 @@ import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { BetaMessage } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import {
   messagesUsage,
+  messagesUsageAfterDispatchError,
   newSdkTurnObservation,
   observeSdkMessage,
   parseSdkUsageSnapshot,
@@ -405,6 +406,15 @@ function msg(over: Partial<MessageLike> = {}): MessageLike {
 }
 const mstd = (model: string, tokens: Tok, providerModel: string | null, webSearchRequests = 0) =>
   ({ model, tokens, webSearchRequests, speedServed: 'standard' as const, providerModel });
+
+describe('messagesUsageAfterDispatchError', () => {
+  it('bills the completed attempts at their real counts with an error outcome (refused leg keeps its category)', () => {
+    const attempts = [{ wireModel: SONNET, message: msg({ stop_reason: 'refusal', stop_details: { category: 'cyber' } }) }];
+    const out = messagesUsageAfterDispatchError(B, attempts);
+    expect(out.usage).toEqual(messagesUsage(B, attempts).usage);
+    expect(out.outcome).toMatchObject({ stopReason: 'error', refused: true, refusalCategory: 'cyber', fallbackUsed: false });
+  });
+});
 
 describe('messagesUsage', () => {
   it('a plain response: one usage at the requested wire model', () => {

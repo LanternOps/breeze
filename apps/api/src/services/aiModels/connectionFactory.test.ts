@@ -44,6 +44,9 @@ import {
   clientForConnection,
   createAnthropicClient,
   createMessage,
+  MessageDispatchError,
+  attemptsOf,
+  dispatchCause,
   describeDispatch,
   grantCatalogSdkEgress,
   messagesModelParams,
@@ -244,6 +247,41 @@ describe('createMessage', () => {
       { max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }, opts);
     expect(m.create.mock.calls[0]![1]).toBe(opts);
     expect(m.create.mock.calls[1]![1]).toBe(opts);
+  });
+
+  it('catalog refusal fallback that THROWS: MessageDispatchError carries the refused (billed) first attempt and the cause', async () => {
+    const refused = reply('refusal');
+    const cause = new Error('socket hang up');
+    m.create.mockResolvedValueOnce(refused).mockRejectedValueOnce(cause);
+    const fb = { ...FALLBACK, wireModel: 'anthropic/claude-haiku-4.5' };
+    const err = await createMessage({ messages: { create: m.create } } as never, r('catalog', { refusalFallback: fb }),
+      { max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MessageDispatchError);
+    expect((err as MessageDispatchError).cause).toBe(cause);
+    expect(attemptsOf(err)).toEqual([{ wireModel: 'anthropic/claude-sonnet-5.5', message: refused }]);
+    expect(dispatchCause(err)).toBe(cause);
+  });
+
+  it('a throw before any reply (first call, or the single server-side-fallback call) is rethrown as is: nothing completed', async () => {
+    const cause = new Error('down');
+    m.create.mockRejectedValueOnce(cause);
+    const err = await createMessage({ messages: { create: m.create } } as never, r('platform'),
+      { max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }).catch((e: unknown) => e);
+    // Unwrapped, so callers' provider-error classification (status, timeout) still sees the SDK error.
+    expect(err).toBe(cause);
+    expect(dispatchCause(err)).toBe(cause);
+    expect(attemptsOf(err)).toEqual([]);
+
+    m.betaCreate.mockRejectedValueOnce(cause);
+    const client = { messages: { create: m.create }, beta: { messages: { create: m.betaCreate } } };
+    const err2 = await createMessage(client as never, r('anthropic_byok', { refusalFallback: FALLBACK }),
+      { max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }).catch((e: unknown) => e);
+    expect(attemptsOf(err2)).toEqual([]);
+  });
+
+  it('attemptsOf is empty for any other error', () => {
+    expect(attemptsOf(new Error('x'))).toEqual([]);
+    expect(attemptsOf(undefined)).toEqual([]);
   });
 
   it('catalog refusal with no fallback: one call, refusal returned as is', async () => {

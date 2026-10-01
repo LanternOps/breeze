@@ -15,8 +15,8 @@ import {
 import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../aiBudgetReservations';
 import { checkBudgetDetailed } from '../aiCostTracker';
 import { readOrgPartnerId } from '../aiModels/candidateLoader';
-import { anthropicClientFor, createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
-import { messagesUsage } from '../aiModels/invocationUsage';
+import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageAttempt } from '../aiModels/connectionFactory';
+import { messagesUsage, messagesUsageAfterDispatchError } from '../aiModels/invocationUsage';
 import { refusalHeadline } from '../aiModels/refusals';
 import { resolveModel } from '../aiModels/resolveModel';
 import { safeErrorMessage } from '../aiModels/safeDbError';
@@ -368,11 +368,11 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   // The ONE billing path: the registry rate bound above, written to the ledger
   // and rolled into the session/org totals by settleInvocation. With no
   // attempts (nothing came back) the reservation settles at zero.
-  const settle = (attempts: MessageAttempt[]) => settleInvocation({
+  const settle = (attempts: MessageAttempt[], dispatchFailed = false) => settleInvocation({
     binding, orgId: job.orgId, userId: null, sessionId: null, agentRunId: null,
     sourceRef: `script-review:${job.proposalId}`,
     ...(attempts.length > 0
-      ? messagesUsage(binding, attempts)
+      ? (dispatchFailed ? messagesUsageAfterDispatchError(binding, attempts) : messagesUsage(binding, attempts))
       : {
           usage: [],
           outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: binding.wireModel, providerModel: null, sdkReportedCostUsd: null },
@@ -420,11 +420,14 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
       { signal: AbortSignal.timeout(SCRIPT_REVIEW_TIMEOUT_MS), maxRetries: 0 },
     );
   } catch (error) {
-    const timedOut = isTimeoutError(error);
-    await settle([]);
+    const cause = dispatchCause(error);
+    const timedOut = isTimeoutError(cause);
+    // A refused attempt that completed before its fallback threw was billed by
+    // the provider: settle it. Nothing completed → settles at zero.
+    await settle(attemptsOf(error), true);
     return failReview(
       job,
-      `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(error)}`,
+      `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`,
       timedOut ? 'timeout' : 'failed',
       { reservationId, model },
     );

@@ -9,8 +9,9 @@ import { captureException, captureMessage } from './sentry';
 import { assertOutsideHeldDbContext } from '../db';
 import { LlmUnavailableError } from './llm/llmUnavailableError';
 import { readOrgPartnerId } from './aiModels/candidateLoader';
-import { anthropicClientFor, createMessage, type MessageAttempt } from './aiModels/connectionFactory';
-import { messagesUsage } from './aiModels/invocationUsage';
+import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageAttempt } from './aiModels/connectionFactory';
+import { messagesUsage, messagesUsageAfterDispatchError } from './aiModels/invocationUsage';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import { resolveModel, type ResolvedModel } from './aiModels/resolveModel';
 import { costEstimator, priceUsage, settleInvocation, sumCostCents, WEB_SEARCH_COST_CENTS } from './aiModels/settleInvocation';
 import { turnBindingFrom } from './aiModels/turnBinding';
@@ -28,6 +29,7 @@ import {
 import {
   markAiBudgetReservationIndeterminate,
   maxOutputTokensForAiBudget,
+  releaseUnusedAiBudgetReservation,
   reserveAiBudget,
 } from './aiBudgetReservations';
 
@@ -324,10 +326,10 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
     // Every provider attempt of every turn; settled once, from the registry
     // rate bound above (web-search fees are priced as ledger server-tool fees).
     const attempts: MessageAttempt[] = [];
-    const settle = (sourceRef: string) => settleInvocation({
+    const settle = (sourceRef: string, dispatchFailed = false) => settleInvocation({
       binding, orgId: actor.orgId!, userId: actor.systemInitiated ? null : actor.userId ?? null,
       sessionId: null, agentRunId: null, sourceRef,
-      ...messagesUsage(binding, attempts),
+      ...(dispatchFailed ? messagesUsageAfterDispatchError(binding, attempts) : messagesUsage(binding, attempts)),
       reservationId, toolExecutionCount: 1,
     });
     let finalText: string | null = null;
@@ -365,19 +367,20 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
         break;
       }
     } catch (error) {
-      if (actor.orgId && reservationId && error instanceof EnrichmentBudgetStopError) {
-        try {
-          await settle('catalog_enrich');
-        } catch (settleError) {
-          await markAiBudgetReservationIndeterminate({ orgId: actor.orgId, reservationId })
-            .catch((markError) => captureException(markError));
-          captureException(settleError);
-        }
-      } else if (actor.orgId && reservationId) {
-        await markAiBudgetReservationIndeterminate({ orgId: actor.orgId, reservationId })
-          .catch((markError) => captureException(markError));
+      // A refused attempt that completed before its fallback threw was billed
+      // by the provider: it joins the turns already spent.
+      attempts.push(...attemptsOf(error));
+      const budgetStop = error instanceof EnrichmentBudgetStopError;
+      if (actor.orgId && reservationId) {
+        await settleAfterFailure({
+          orgId: actor.orgId, reservationId, attempts,
+          // A budget stop is a known outcome (nothing in flight); a dispatch
+          // error leaves the in-flight call's outcome unknown.
+          outcomeKnown: budgetStop,
+          settle: () => settle('catalog_enrich', !budgetStop),
+        });
       }
-      throw error;
+      throw dispatchCause(error);
     }
 
     if (actor.orgId) {
@@ -709,6 +712,40 @@ function factsPreserved(
   return multisetsEqual(before, after);
 }
 
+/**
+ * Close a one-shot's reservation on an exit that did not produce a normal
+ * settlement. Completed attempts always bill (the provider charged for them,
+ * including a refused attempt whose fallback call threw). With none: a known
+ * outcome (nothing was dispatched) hands the capacity back; an unknown one
+ * (a call was in flight) keeps the reservation indeterminate. A settlement
+ * failure also leaves it indeterminate, never released. Best effort: never
+ * throws, DB errors scrubbed before any log or report.
+ */
+async function settleAfterFailure(input: {
+  orgId: string;
+  reservationId: string;
+  attempts: readonly MessageAttempt[];
+  outcomeKnown: boolean;
+  settle: () => Promise<unknown>;
+}): Promise<void> {
+  const keepIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId: input.reservationId })
+    .catch((markError) => captureException(new Error(safeErrorMessage(markError))));
+  try {
+    if (input.attempts.length > 0) {
+      await input.settle();
+    } else if (input.outcomeKnown) {
+      await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId: input.reservationId });
+    } else {
+      await keepIndeterminate();
+    }
+  } catch (err) {
+    const scrubbed = safeErrorMessage(err);
+    console.error('[catalog-enrich] closing the reservation failed:', scrubbed);
+    captureException(new Error(scrubbed));
+    await keepIndeterminate();
+  }
+}
+
 async function runPolishTurn(
   client: Anthropic,
   resolved: ResolvedModel,
@@ -834,7 +871,10 @@ export async function polishCatalogText(
         );
       } catch (error) {
         providerOutcomeUnknown = true;
-        throw error;
+        // A refused attempt that completed before its fallback threw was
+        // billed by the provider: it joins the attempts already spent.
+        attempts.push(...attemptsOf(error));
+        throw dispatchCause(error);
       }
       const { raw } = turn;
       attempts.push(...turn.attempts);
@@ -872,23 +912,16 @@ export async function polishCatalogText(
     // transport throw on the retry turn — so spend can't escape the org budget
     // (issue #1949 class). Best-effort; never blocks or masks the outcome.
     if (actor.orgId && reservationId) {
-      try {
-        if (providerOutcomeUnknown) {
-          await markAiBudgetReservationIndeterminate({ orgId: actor.orgId, reservationId });
-        } else {
-          await settleInvocation({
-            binding, orgId: actor.orgId, userId: actor.systemInitiated ? null : actor.userId ?? null,
-            sessionId: null, agentRunId: null, sourceRef: 'catalog_polish',
-            ...messagesUsage(binding, attempts),
-            reservationId, toolExecutionCount: 1,
-          });
-        }
-      } catch (err) {
-        console.error('[catalog-polish] settleInvocation failed:', err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-        await markAiBudgetReservationIndeterminate({ orgId: actor.orgId, reservationId })
-          .catch((markError) => captureException(markError));
-      }
+      await settleAfterFailure({
+        orgId: actor.orgId, reservationId, attempts,
+        outcomeKnown: !providerOutcomeUnknown,
+        settle: () => settleInvocation({
+          binding, orgId: actor.orgId!, userId: actor.systemInitiated ? null : actor.userId ?? null,
+          sessionId: null, agentRunId: null, sourceRef: 'catalog_polish',
+          ...(providerOutcomeUnknown ? messagesUsageAfterDispatchError(binding, attempts) : messagesUsage(binding, attempts)),
+          reservationId, toolExecutionCount: 1,
+        }),
+      });
     }
   }
 

@@ -416,6 +416,49 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     }));
   });
 
+  it('a ticket draft is NOT a session turn: the reservation is sessionless, so it never stamps or claims the chat session', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: '11111111-1111-4111-8111-111111111111', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'fixed' }],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockResolvedValueOnce({
+      subject: 's', problemSummary: 'p', resolutionSummary: '', wasFixed: false, suggestedTimeMinutes: 3,
+      attempts: attemptsFixture,
+    });
+
+    const res = await postDraft('11111111-1111-4111-8111-111111111111', partnerAuth);
+
+    expect(res.status).toBe(200);
+    // Session authorization still happened first (org + owner via getSessionMessages).
+    expect(getSessionMessages).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', partnerAuth);
+    const reserveInput = routeMocks.reserveAiBudget.mock.calls[0]![0] as Record<string, unknown>;
+    // reserveAiBudget stamps the session binding whenever a sessionId is passed.
+    expect(reserveInput.sessionId ?? null).toBeNull();
+    // Reservation and settlement agree: both sessionless.
+    expect(routeMocks.settleInvocationMock).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+  });
+
+  it('a refused attempt whose fallback then threw is settled (billed) with an error outcome, not left indeterminate', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'fixed' }],
+    } as any);
+    const refused = { ...(msgFixture as object), stop_reason: 'refusal', stop_details: { category: 'cyber' } };
+    vi.mocked(draftTicketFromTranscript).mockRejectedValueOnce(
+      new TicketDraftFailedError('fallback socket', [{ wireModel: 'claude-sonnet-5-5', message: refused as never }], true),
+    );
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(502);
+    expect(routeMocks.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(routeMocks.settleInvocationMock).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'ticket_draft', sessionId: null,
+      usage: [expect.objectContaining({ model: 'claude-sonnet-5-5', tokens: expect.objectContaining({ input: 10, output: 5 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
+  });
+
   it('exhausted platform credits refuse the ticket draft before any reservation or provider call', async () => {
     routeMocks.resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('platform'));
     routeMocks.checkBudgetDetailedMock.mockResolvedValue({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });

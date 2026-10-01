@@ -1043,9 +1043,10 @@ async function resolveAgentModelForAdmission(orgId: string, offeringId: string |
   // barrel, the registry cutover) is only needed on the admission path, and
   // runService is imported — via transitionRunStatus — by many modules that
   // never admit a run.
-  const [{ readOrgPartnerId }, { resolveModel }] = await Promise.all([
+  const [{ readOrgPartnerId }, { resolveModel }, { reportIfPlatformKeyMissing }] = await Promise.all([
     import('../aiModels/candidateLoader'),
     import('../aiModels/resolveModel'),
+    import('../aiModels/oneShotUnavailable'),
   ]);
   const partnerId = await readOrgPartnerId(orgId);
   if (!partnerId) {
@@ -1057,6 +1058,8 @@ async function resolveAgentModelForAdmission(orgId: string, offeringId: string |
     ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
   });
   if (result.ok) return { ok: true, resolved: result };
+  // A keyless deployment raises the hourly platform-key alert (as the one-shot surfaces do).
+  reportIfPlatformKeyMissing(result);
   return { ok: false, message: result.message, notify: result.reason !== 'registry_unavailable' };
 }
 

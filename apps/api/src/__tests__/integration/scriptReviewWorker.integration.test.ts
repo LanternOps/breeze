@@ -20,7 +20,12 @@ import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
  */
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const { messagesCreateMock } = vi.hoisted(() => ({ messagesCreateMock: vi.fn() }));
+const { messagesCreateMock, createMessageOverride } = vi.hoisted(() => ({
+  messagesCreateMock: vi.fn(),
+  // Set by one case to fail the dispatch the way createMessage does when a
+  // refusal's client-side fallback throws; null = the real createMessage.
+  createMessageOverride: { fn: null as null | ((...args: unknown[]) => Promise<never>) },
+}));
 
 vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/aiModels/connectionFactory')>();
@@ -29,6 +34,8 @@ vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => {
     // Only the client is faked; resolveModel, createMessage, settlement and the
     // reservation are the real ones.
     anthropicClientFor: vi.fn(() => ({ messages: { create: messagesCreateMock } })),
+    createMessage: (...args: Parameters<typeof actual.createMessage>) =>
+      createMessageOverride.fn ? createMessageOverride.fn(...args) : actual.createMessage(...args),
   };
 });
 
@@ -87,6 +94,7 @@ beforeEach(() => {
   // The seeded platform connection is only usable on a deployment with a platform key.
   process.env.ANTHROPIC_API_KEY = 'sk-ant-script-review-integration-placeholder';
   messagesCreateMock.mockReset();
+  createMessageOverride.fn = null;
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
@@ -182,6 +190,33 @@ runDb('an unparseable verdict fails closed: model row failed, proposal review_fa
   // The failed model row is what the inline wait reports — never the scan row.
   const awaited = await waitForReviewCompletion(proposal.id, 5_000);
   expect(awaited).toMatchObject({ reviewerKind: 'model', status: 'failed' });
+});
+
+runDb('a refused attempt whose fallback call then fails is BILLED: reservation settled at its real cost, one ledger row', async () => {
+  const { org, modelId } = await seedOrg();
+  const proposal = await seedProposedProposal(org.id);
+  const { MessageDispatchError } = await import('../../services/aiModels/connectionFactory');
+  const timeout = new Error('The operation was aborted due to timeout');
+  timeout.name = 'TimeoutError';
+  createMessageOverride.fn = async () => {
+    throw new MessageDispatchError([{ wireModel: modelId, message: {
+      model: modelId, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [],
+      usage: { input_tokens: 420, output_tokens: 90 },
+    } as never }], timeout);
+  };
+
+  const review = await runScriptReview({ proposalId: proposal.id, orgId: org.id, attempt: 1 });
+
+  // Classified on the underlying cause, as before.
+  expect(review).toMatchObject({ reviewerKind: 'model', status: 'timeout' });
+  const [reservation] = await reservationsFor(org.id);
+  expect(reservation).toMatchObject({ status: 'settled' });
+  // 420 in + 90 out at the registry rate (200/1000 cents per M) — not zero.
+  expect(Number(reservation!.actualCostCents)).toBeCloseTo(0.174, 4);
+  const ledger = await withSystemDbAccessContext(() =>
+    db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+  expect(ledger).toHaveLength(1);
+  expect(ledger[0]).toMatchObject({ stopReason: 'error', refusalCategory: 'cyber' });
 });
 
 runDb('a provider timeout fails closed with a timeout-classified row and the reservation settled at zero', async () => {
