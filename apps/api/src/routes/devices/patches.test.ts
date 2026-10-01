@@ -110,11 +110,27 @@ vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn()
 }));
 
+// #7625 ring-aware approval view — the real evaluator composition is covered
+// by services/devicePatchApprovalView.test.ts; here only the route plumbing.
+vi.mock('../../services/devicePatchApprovalView', () => ({
+  loadDevicePatchApprovalView: vi.fn(async () => ({
+    evaluation: { available: true, ring: null },
+    byPatchId: new Map()
+  }))
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn()
+}));
+
 import { db } from '../../db';
 import { devicePatches, patches } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
+import { loadDevicePatchApprovalView } from '../../services/devicePatchApprovalView';
+import { captureException } from '../../services/sentry';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -288,6 +304,162 @@ describe('device patch routes', () => {
     expect(body.data.compliancePercent).toBe(50);
     expect(body.data.lastPatchScanAt).toBe('2026-02-09T10:00:00.000Z');
     expect(body.data.lastPatchScanStatus).toBe('completed');
+  });
+
+  // #7625 — a patch the linked update ring auto-approves used to read
+  // "Pending approval" because approvalStatus only reflects manual
+  // partner-wide approvals. effectiveApproval carries the ring-aware verdict;
+  // approvalStatus keeps its manual-only meaning (the Install gate uses it).
+  it('reports the ring-aware effectiveApproval for a patch the linked ring auto-approves', async () => {
+    const RING_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    const HELD = '44444444-4444-4444-8444-444444444444';
+    const INSTALLED = '55555555-5555-4555-8555-555555555555';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    const pendingRow = (patchId: string, title: string) => ({
+      id: `dp-${patchId}`, patchId, status: 'pending', installedAt: null,
+      lastCheckedAt: '2026-02-09T10:00:00.000Z', failureCount: 0, lastError: null,
+      externalId: `KB-${title}`, title, description: null, severity: 'critical',
+      category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([
+        pendingRow(AUTO, 'Auto'),
+        pendingRow(HELD, 'Held'),
+        { ...pendingRow(INSTALLED, 'Done'), status: 'installed', installedAt: '2026-02-05T00:00:00.000Z' }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      // no manual approvals
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+    // Record whether the view ran INSIDE the system-context escape. A bare
+    // toHaveBeenCalled() on the db mocks would be vacuous here: the manual
+    // approvals read above already calls both.
+    let inSystemContext = false;
+    let viewRanInSystemContext: boolean | null = null;
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => any) => {
+      inSystemContext = true;
+      try { return await fn(); } finally { inSystemContext = false; }
+    });
+    vi.mocked(loadDevicePatchApprovalView).mockImplementationOnce(async () => {
+      viewRanInSystemContext = inSystemContext;
+      return {
+      evaluation: { available: true, ring: { id: RING_ID, name: 'Workstations Ring' } },
+      byPatchId: new Map([
+        [AUTO, { state: 'auto_approved', reason: 'ring_auto_approve', holdUntil: null }],
+        [HELD, { state: 'deferred', reason: 'held_by_deferral', holdUntil: '2026-02-08T00:00:00.000Z' }]
+      ])
+      } as any;
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const byId = new Map<string, any>(body.data.pending.map((p: any) => [p.id, p]));
+    expect(byId.get(AUTO).effectiveApproval).toEqual({ state: 'auto_approved', reason: 'ring_auto_approve', holdUntil: null });
+    expect(byId.get(HELD).effectiveApproval).toEqual({ state: 'deferred', reason: 'held_by_deferral', holdUntil: '2026-02-08T00:00:00.000Z' });
+    // Back-compat: the manual-approval field is unchanged.
+    expect(byId.get(AUTO).approvalStatus).toBe('pending');
+    expect(body.data.approvalEvaluation).toEqual({ available: true, ring: { id: RING_ID, name: 'Workstations Ring' } });
+    const combined = body.data.patches.find((p: any) => p.id === AUTO);
+    expect(combined.effectiveApproval.state).toBe('auto_approved');
+    // Only outstanding patches carry a verdict.
+    expect(body.data.patches.find((p: any) => p.id === INSTALLED).effectiveApproval).toBeNull();
+    // Evaluated for THIS device+org, through the existing system-context escape.
+    expect(loadDevicePatchApprovalView).toHaveBeenCalledWith(DEVICE_ID, '11111111-1111-1111-1111-111111111111');
+    expect(viewRanInSystemContext).toBe(true);
+    expect(runOutsideDbContext).toHaveBeenCalled();
+  });
+
+  it('degrades to approvalEvaluation.available=false (not a 500) when the ring evaluation throws', async () => {
+    const PID = '11111111-1111-4111-8111-111111111111';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([{
+        id: 'dp-1', patchId: PID, status: 'pending', installedAt: null,
+        lastCheckedAt: '2026-02-09T10:00:00.000Z', failureCount: 0, lastError: null,
+        externalId: 'KB1', title: 'One', description: null, severity: 'critical',
+        category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+    const boom = new Error('ring config read failed');
+    vi.mocked(loadDevicePatchApprovalView).mockRejectedValueOnce(boom);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.approvalEvaluation).toEqual({ available: false, ring: null });
+    expect(body.data.pending[0].effectiveApproval).toBeNull();
+    expect(body.data.pending[0].approvalStatus).toBe('pending');
+    expect(captureException).toHaveBeenCalledWith(boom, expect.anything(), expect.objectContaining({ deviceId: DEVICE_ID }));
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  // Todd's decision on #7637 (option B): the install poller passes
+  // approvalView=0 so the 5 s poll does not open the second pooled connection
+  // (runOutsideDbContext + withSystemDbAccessContext) on every tick.
+  it('skips the ring-aware evaluation when approvalView=0 (install polling)', async () => {
+    const PID = '11111111-1111-4111-8111-111111111111';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([{
+        id: 'dp-1', patchId: PID, status: 'pending', installedAt: null,
+        lastCheckedAt: '2026-02-09T10:00:00.000Z', failureCount: 0, lastError: null,
+        externalId: 'KB1', title: 'One', description: null, severity: 'critical',
+        category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches?approvalView=0`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(loadDevicePatchApprovalView).not.toHaveBeenCalled();
+    expect(body.data.approvalEvaluation).toBeNull();
+    expect(body.data.pending[0].effectiveApproval).toBeNull();
+    expect(body.data.patches[0].effectiveApproval).toBeNull();
+    // The manual-approval field is still served.
+    expect(body.data.pending[0].approvalStatus).toBe('pending');
+  });
+
+  it('rejects an unrecognised approvalView value', async () => {
+    const res = await app.request(`/devices/${DEVICE_ID}/patches?approvalView=maybe`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(res.status).toBe(400);
+    expect(loadDevicePatchApprovalView).not.toHaveBeenCalled();
+  });
+
+  it('skips the ring evaluation when the device has nothing pending', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.approvalEvaluation).toBeNull();
+    expect(loadDevicePatchApprovalView).not.toHaveBeenCalled();
   });
 
   // #2727 — the "per-user apps were not scanned" signal.

@@ -995,7 +995,12 @@
     "level": "Nivel",
     "policy2": "Política",
     "features": "Características",
-    "inheritedFrom": "Heredado de {{name}}"
+    "inheritedFrom": "Heredado de {{name}}",
+    "patchApproval": {
+      "label": "aprobación",
+      "byRing": "definida por el anillo de actualización vinculado",
+      "manualOnly": "solo aprobaciones manuales (sin anillo de actualización vinculado)"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",
@@ -1915,7 +1920,31 @@
       "badge": "La instalación falló",
       "noReason": "El agente no informó ningún motivo",
       "failedAt": "El último intento de instalación falló: {{when}}"
-    }
+    },
+    "approval": {
+      "approved": "Aprobado",
+      "approvedTitle": "Aprobado manualmente.",
+      "autoApproved": "Aprobado automáticamente",
+      "autoApprovedTitle": "Aprobado por el anillo de actualización {{ring}}. La próxima ejecución programada de parches lo instala.",
+      "deferred": "Aplazado",
+      "deferredNoDateTitle": "El anillo de actualización {{ring}} tiene un período de aplazamiento, pero este parche no tiene fecha de publicación para medirlo, así que sigue retenido. Apruébelo manualmente para instalarlo.",
+      "deferredUntil": "Se aprueba automáticamente el {{date}}",
+      "deferredUntilTitle": "El anillo de actualización {{ring}} retiene los parches nuevos durante su período de aplazamiento. Este se aprueba el {{date}} y se instala en la siguiente ejecución programada de parches.",
+      "excluded": "Excluido por la directiva",
+      "excludedSourceTitle": "Los orígenes de la directiva de parches no incluyen este parche, así que las ejecuciones programadas lo omiten.",
+      "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
+      "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación de la directiva de parches retiene este parche, así que las ejecuciones programadas lo omiten.",
+      "pending": "Aprobación pendiente",
+      "needsApprovalRingTitle": "El anillo de actualización {{ring}} no aprueba este parche automáticamente. Apruébelo manualmente para instalarlo.",
+      "needsApprovalNoRingTitle": "La directiva de parches de este dispositivo no tiene un anillo de actualización vinculado, así que este parche solo se instala tras una aprobación manual.",
+      "unnamedRing": "el anillo de actualización vinculado",
+      "ringLine": "Las aprobaciones siguen el anillo de actualización: {{ring}}",
+      "noRingLine": "Ningún anillo de actualización se aplica a este dispositivo. Los parches solo se instalan tras una aprobación manual.",
+      "unavailable": "No se pudieron evaluar las aprobaciones del anillo de actualización. Las insignias solo muestran aprobaciones manuales.",
+      "autoApprovedUserScopeTitle": "{{ring}} aprueba este parche, pero es una instalación por usuario que Breeze aún no puede aplicar.",
+      "otherRingApprovalTitle": "Este parche tiene una aprobación manual para otro anillo de actualización, que no se aplica a {{ring}}. Las ejecuciones programadas lo omiten aquí; el botón Instalar sí lo acepta."
+    },
+    "installPatchRingManagedTitle": "{{name}} lo gestiona el anillo de actualización {{ring}} y se instala en la próxima ejecución programada de parches. Instalarlo ahora requiere una aprobación manual."
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, uso del disco y ancho de banda de la red a lo largo del tiempo",

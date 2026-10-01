@@ -995,7 +995,12 @@
     "priority": "Priority",
     "level": "Level",
     "policy2": "Policy",
-    "features": "Features"
+    "features": "Features",
+    "patchApproval": {
+      "label": "approval",
+      "byRing": "set by the linked update ring",
+      "manualOnly": "manual approvals only (no update ring linked)"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",
@@ -1915,7 +1920,31 @@
       "badge": "Install failed",
       "noReason": "No reason reported by the agent",
       "failedAt": "Last install attempt failed: {{when}}"
-    }
+    },
+    "approval": {
+      "approved": "Approved",
+      "approvedTitle": "Manually approved.",
+      "autoApproved": "Auto-approved",
+      "autoApprovedTitle": "Approved by update ring {{ring}}. The next scheduled patch run installs it.",
+      "deferred": "Deferred",
+      "deferredNoDateTitle": "Update ring {{ring}} has a deferral window, but this patch has no release date to measure it from, so it stays held. Approve it manually to install it.",
+      "deferredUntil": "Auto-approves {{date}}",
+      "deferredUntilTitle": "Update ring {{ring}} holds new patches for its deferral window. This one is approved on {{date}} and installs with the next scheduled patch run after that.",
+      "excluded": "Excluded by policy",
+      "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
+      "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
+      "excludedAppRuleTitle": "An app block or pin rule in the patch policy holds this patch, so scheduled patch runs skip it.",
+      "pending": "Pending Approval",
+      "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
+      "needsApprovalNoRingTitle": "No update ring is linked to this device's patch policy, so this patch installs only after a manual approval.",
+      "unnamedRing": "the linked update ring",
+      "ringLine": "Approvals follow update ring: {{ring}}",
+      "noRingLine": "No update ring applies to this device. Patches install only after a manual approval.",
+      "unavailable": "Could not evaluate update ring approvals. Badges show manual approvals only.",
+      "autoApprovedUserScopeTitle": "{{ring}} approves this patch, but it is a per-user install that Breeze cannot apply yet.",
+      "otherRingApprovalTitle": "This patch has a manual approval for a different update ring, which does not apply to {{ring}}. Scheduled runs skip it here; the Install button still accepts it."
+    },
+    "installPatchRingManagedTitle": "{{name}} is handled by update ring {{ring}} and installs with the next scheduled patch run. Installing it now requires a manual approval."
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, disk usage and network bandwidth over time",

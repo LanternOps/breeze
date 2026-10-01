@@ -6,7 +6,6 @@
  *  - manual approvals (partner-wide or ring-scoped)
  *  - ring category rules (exact OS category match; terminal on match)
  *  - ring-level auto-approve (enabled + severities + deferral window) — #1317
- *  - ring-less policy-level auto-approve (severity list + deferral window)
  *  - policy source filtering ('os' vs 'third_party', ...)
  *  - per-app block/pin rules
  *
@@ -86,7 +85,13 @@ export interface ApprovalEvaluationConfig {
   excludeCategories?: string[];
   /** Policy-level source selections ('os', 'third_party', ...). Absent/empty = no filtering (legacy). */
   sources?: string[];
-  /** Policy-level auto-approve, consulted only when ringId is null. Absent means disabled. */
+  /**
+   * Policy-level auto-approve. Still snapshotted and threaded, but NOT
+   * consulted by `decidePatchApproval`: with a ring the ring decides, and with
+   * no ring only manual approvals apply (see the evaluator test "ring-less
+   * path: only manual approvals apply"). The device Config tab labels it as
+   * unused for that reason (#7625).
+   */
   policyAutoApprove?: PolicyAutoApproveConfig;
   /**
    * Policy-level per-app block/pin rules. Applied to every job approval path;
@@ -350,7 +355,13 @@ export interface PatchCandidate {
  */
 export type PatchApprovalDecision =
   | { approved: ApprovalReason }
-  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org'> };
+  /**
+   * `holdUntil` is when the deferral window ends (#7625 — the device Patches
+   * tab shows it); null when the patch cannot prove its age, in which case it
+   * is held until it can.
+   */
+  | { denied: 'held_by_deferral'; holdUntil: Date | null }
+  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org' | 'held_by_deferral'> };
 
 export function evaluatePatchApproval(
   patch: PatchCandidate,
@@ -373,7 +384,6 @@ export function decidePatchApproval(
   now: Date
 ): PatchApprovalDecision {
   const MANUAL: PatchApprovalDecision = { denied: 'awaiting_manual_approval' };
-  const DEFERRED: PatchApprovalDecision = { denied: 'held_by_deferral' };
 
   // Priority 1: Manual approval
   if (manualApprovalSet.has(patch.patchId)) {
@@ -428,8 +438,9 @@ export function decidePatchApproval(
       }
     }
     const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
-    if (isHeldByDeferral(patch, deferralDays, now, 'category')) {
-      return DEFERRED;
+    const hold = deferralHold(patch, deferralDays, now, 'category');
+    if (hold.held) {
+      return { denied: 'held_by_deferral', holdUntil: hold.until };
     }
     return { approved: 'category_rule' };
   }
@@ -457,9 +468,9 @@ export function decidePatchApproval(
       if (!ringAutoApprove.thirdPartyApps) {
         return MANUAL;
       }
-      const hold = ringAutoApprove.thirdPartyDeferralDays ?? ringAutoApprove.deferralDays;
-      if (isHeldByDeferral(patch, hold, now, 'ring')) {
-        return DEFERRED;
+      const tpHold = deferralHold(patch, ringAutoApprove.thirdPartyDeferralDays ?? ringAutoApprove.deferralDays, now, 'ring');
+      if (tpHold.held) {
+        return { denied: 'held_by_deferral', holdUntil: tpHold.until };
       }
       return { approved: 'ring_auto_approve' };
     }
@@ -477,8 +488,9 @@ export function decidePatchApproval(
     } else if (!ringAutoApprove.severities.includes(patch.severity as string)) {
       return MANUAL;
     }
-    if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
-      return DEFERRED;
+    const osHold = deferralHold(patch, ringAutoApprove.deferralDays, now, 'ring');
+    if (osHold.held) {
+      return { denied: 'held_by_deferral', holdUntil: osHold.until };
     }
     return { approved: 'ring_auto_approve' };
   }
@@ -492,7 +504,22 @@ export function isHeldByDeferral(
   now: Date,
   source: 'policy' | 'category' | 'ring'
 ): boolean {
-  if (deferralDays <= 0) return false;
+  return deferralHold(patch, deferralDays, now, source).held;
+}
+
+/**
+ * The deferral rule, once. `until` is when the window ends — null when the
+ * patch is held because it cannot prove its age (fail closed, logged).
+ * `isHeldByDeferral` is the boolean view of this; never re-derive the window
+ * anywhere else.
+ */
+export function deferralHold(
+  patch: PatchCandidate,
+  deferralDays: number,
+  now: Date,
+  source: 'policy' | 'category' | 'ring'
+): { held: false } | { held: true; until: Date | null } {
+  if (deferralDays <= 0) return { held: false };
 
   // CAREFUL: new Date('garbage') is a truthy Invalid Date — validity is
   // decided by the Number.isNaN check below, never by `!ageAnchor` alone. A
@@ -527,11 +554,11 @@ export function isHeldByDeferral(
     console.warn(
       `[PatchApproval] patch ${patch.patchId} held: ${source} deferral of ${deferralDays} day(s) configured but ${reason}, so it cannot prove its age`
     );
-    return true;
+    return { held: true, until: null };
   }
 
   const deferralEnd = new Date(ageAnchor.getTime() + deferralDays * 24 * 60 * 60 * 1000);
-  return deferralEnd > now;
+  return deferralEnd > now ? { held: true, until: deferralEnd } : { held: false };
 }
 
 export interface RingAutoApproveConfig {
