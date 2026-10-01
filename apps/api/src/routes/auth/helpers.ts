@@ -542,7 +542,9 @@ export async function enforceExistingFactorStepUp(
 // ============================================
 
 /**
- * The single decision point for "may this caller install a FIRST MFA factor?".
+ * The "user at the keyboard" leg of installing an MFA factor: the FIRST one,
+ * or (#7369) an additional one on a passwordless account. It is never the
+ * whole gate for an account that already holds a factor — see below.
  *
  * Two roads, never both:
  *   - password — the historical path, unchanged, and evaluated FIRST.
@@ -554,17 +556,24 @@ export async function enforceExistingFactorStepUp(
  * The SSO road is refused outright for an account that HAS a password: two
  * roads of differing strength to the same door is how a step-up gets bypassed.
  *
- * It is ALSO refused for a passwordless account that already holds any factor.
- * The grant's operation is `enroll_first_factor` and that is all it may ever
- * do: without this check a passwordless account with a TOTP secret or a
- * registered passkey could re-auth at its IdP and use the resulting grant to
- * install a SECOND factor, side-stepping {@link enforceExistingFactorStepUp}
- * (SR2-20), which exists precisely to require proving an EXISTING factor
- * before adding a new one. The predicate is {@link userIsMfaProtected} — the
- * same one SR2-20 uses — so the two gates can never drift apart. A protected
- * passwordless account is REFUSED this road outright; it does not fall
- * through to any other step-up here. Its route back in is the SR2-20 path,
- * proving the factor it already holds.
+ * Which grant the SSO road accepts follows the account's factor state, via
+ * {@link userIsMfaProtected} — the same predicate the callback uses to pick
+ * the purpose it mints, and the one SR2-20 uses — so the three can never
+ * drift apart:
+ *   - no factor yet: only `enroll_first_factor`. That grant installs a FIRST
+ *     factor and nothing else; an account that already holds one can never
+ *     spend it (bindsMatch compares the operation, and the factor write bumped
+ *     `mfa_epoch` anyway), so it cannot be used to side-step
+ *     {@link enforceExistingFactorStepUp} (SR2-20).
+ *   - already protected: only `sso_reauth_manage_factor` (#4045), and ONLY as
+ *     the stand-in for the PASSWORD leg — exactly the role the password plays
+ *     for a password account adding a second factor. The existing-factor leg
+ *     is not decided here: every caller also runs
+ *     {@link enforceExistingFactorStepUp}, which for a protected account
+ *     demands a fresh `add_factor` grant proving the factor it already holds.
+ *     Before #7369 this road refused a protected passwordless account outright,
+ *     and with no password to take the other road it could never add a second
+ *     factor at all — SR2-20 was never reached.
  *
  * Every rejection is the same opaque `Invalid credentials` response the
  * password path already returns — SAME status, same body, whichever road was
@@ -661,11 +670,16 @@ export async function resolveEnrollmentStepUp(
     return c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, rejectionStatus);
   }
 
-  // FIRST factor only — see the doc comment above. Checked BEFORE the grant is
-  // consumed so a refused enrollment never burns the caller's grant.
-  if (await userIsMfaProtected(auth.user.id)) {
-    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
-  }
+  // The grant's PURPOSE follows the account's factor state — see the doc
+  // comment above. Same predicate the mint site in `routes/sso.ts` uses to
+  // pick the purpose, so a grant can only ever match the road it was minted
+  // for: `enroll_first_factor` for a first factor, `sso_reauth_manage_factor`
+  // (the password leg ONLY) once the account holds one. The existing-factor
+  // leg for a protected account is NOT decided here; every enrollment route
+  // enforces it separately via enforceExistingFactorStepUp (SR2-20).
+  const operation = (await userIsMfaProtected(auth.user.id))
+    ? 'sso_reauth_manage_factor' as const
+    : 'enroll_first_factor' as const;
 
   const epochs = await getUserEpochs(auth.user.id);
   const sid = auth.token?.sid;
@@ -678,7 +692,7 @@ export async function resolveEnrollmentStepUp(
   // divergence here would silently reject every legitimate grant.
   const bind = {
     userId: auth.user.id,
-    operation: 'enroll_first_factor' as const,
+    operation,
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
     sid,

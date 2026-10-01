@@ -706,7 +706,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
   // #4018: terminal burn for the passwordless SSO road. This is the confirm
   // half of the /mfa/setup flow whose gate validated the grant non-consumingly,
-  // so ONE enroll_first_factor grant installs exactly one factor.
+  // so ONE SSO re-auth grant (#7369: of either purpose) installs exactly one factor.
   // `passwordAlreadyProven` because this branch never had a password gate of
   // its own — /mfa/setup holds it — and must stay unchanged for password
   // accounts.
@@ -1133,7 +1133,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
   if (stepUpConsumeError) return stepUpConsumeError;
 
   // #4018: same terminal burn for the passwordless SSO road — one
-  // enroll_first_factor grant installs exactly one factor. `passwordAlreadyProven`
+  // SSO re-auth grant (#7369: of either purpose) installs exactly one factor. `passwordAlreadyProven`
   // because the password road was already satisfied at the gate above.
   //
   // Deliberately omit `currentPassword` here (unlike the gate call above,

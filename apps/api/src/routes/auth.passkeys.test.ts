@@ -2143,6 +2143,147 @@ describe('passkey MFA auth routes', () => {
     });
   });
 
+  // #7369: a passwordless SSO account that already holds a passkey could not
+  // add a second one. resolveEnrollmentStepUp refused its SSO grant outright
+  // once the account was protected, and it has no password for the other road,
+  // so the SR2-20 existing-factor proof was never even reached. The grant the
+  // callback mints for a protected account (`sso_reauth_manage_factor`) now
+  // stands in for the password leg; the `add_factor` existing-factor grant
+  // stays mandatory and must be fresh.
+  describe('#7369 passwordless account holding a passkey adds a second one', () => {
+    const SSO_GRANT = '11111111-1111-4111-8111-111111111111';
+    const FACTOR_GRANT = '10000000-0000-4000-8000-000000000009';
+    const opOf = (call: unknown[]) => (call[1] as { operation: string }).operation;
+    const callsFor = (fn: typeof validateStepUpGrant, op: string) =>
+      vi.mocked(fn).mock.calls.filter((call) => opOf(call) === op);
+
+    // Grant store keyed by id -> minted operation; mirrors bindsMatch, which
+    // fails closed on any operation mismatch.
+    function useGrants(grants: Record<string, string>) {
+      const store = new Map(Object.entries(grants));
+      vi.mocked(validateStepUpGrant).mockImplementation(async (id, bind) => store.get(id) === bind.operation);
+      vi.mocked(consumeStepUpGrant).mockImplementation(async (id, bind) => {
+        const op = store.get(id);
+        store.delete(id);
+        return op === bind.operation;
+      });
+      return store;
+    }
+
+    const PROTECTED = { mfaEnabled: true, passkeyCount: 1 };
+    const post = (path: string, body: Record<string, unknown>) => app.request(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify(body),
+    });
+
+    function queueOptionsReads(factorState: Record<string, unknown> = PROTECTED) {
+      dbState.selectQueue.push(
+        [{ passwordHash: null }], // resolveEnrollmentStepUp road probe
+        [factorState], // its userIsMfaProtected
+        [factorState], // enforceExistingFactorStepUp's userIsMfaProtected
+        [], // listActivePasskeys
+      );
+    }
+
+    function queueVerifyReads() {
+      dbState.selectQueue.push(
+        [PROTECTED], // enforceExistingFactorStepUp's userIsMfaProtected (consume)
+        [{ passwordHash: null }], // resolveEnrollmentStepUp road probe
+        [PROTECTED], // its userIsMfaProtected
+        [{ mfaEnabled: true, mfaSecret: null, mfaMethod: 'passkey' }], // live enrollment state
+      );
+    }
+
+    it('register/options SUCCEEDS with the SSO manage grant PLUS a fresh add_factor grant (validates both, spends neither)', async () => {
+      queueOptionsReads();
+      useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor', [FACTOR_GRANT]: 'add_factor' });
+
+      const res = await post('/auth/passkeys/register/options', { ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(200);
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(callsFor(validateStepUpGrant, 'sso_reauth_manage_factor')).toEqual([
+        [SSO_GRANT, expect.objectContaining({ userId: 'user-123', sid: 'session-123' })],
+      ]);
+      expect(callsFor(validateStepUpGrant, 'add_factor')).toEqual([
+        [FACTOR_GRANT, expect.objectContaining({ userId: 'user-123', sid: 'session-123' })],
+      ]);
+      expect(callsFor(validateStepUpGrant, 'enroll_first_factor')).toHaveLength(0);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
+    });
+
+    it('register/options still demands the existing-factor proof — the SSO grant alone gets the SR2-20 step-up 403', async () => {
+      queueOptionsReads();
+      useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor' });
+
+      const res = await post('/auth/passkeys/register/options', { ssoReauthGrantId: SSO_GRANT });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+
+    it('register/options refuses a stale add_factor proof (expired, replayed, or minted before a factor change)', async () => {
+      queueOptionsReads();
+      useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor' }); // FACTOR_GRANT is no longer live
+
+      const res = await post('/auth/passkeys/register/options', { ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+
+    it('register/verify writes the second passkey, spending each grant exactly once', async () => {
+      queueVerifyReads();
+      const grants = useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor', [FACTOR_GRANT]: 'add_factor' });
+
+      const res = await post('/auth/passkeys/register/verify', {
+        credential: { id: 'credential-1', response: {} },
+        ssoReauthGrantId: SSO_GRANT,
+        stepUpGrantId: FACTOR_GRANT,
+      });
+
+      expect(res.status).toBe(200);
+      expect(callsFor(consumeStepUpGrant, 'add_factor')).toHaveLength(1);
+      expect(callsFor(consumeStepUpGrant, 'sso_reauth_manage_factor')).toHaveLength(1);
+      expect(grants.size).toBe(0);
+      expect(completeAdditionalMfaFactorEnrollment).toHaveBeenCalledTimes(1);
+      expect(completeInitialMfaEnrollment).not.toHaveBeenCalled();
+    });
+
+    it('register/verify writes nothing when the add_factor proof went stale between options and verify', async () => {
+      dbState.selectQueue.push([PROTECTED]); // enforceExistingFactorStepUp's userIsMfaProtected (consume)
+      const grants = useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor' });
+
+      const res = await post('/auth/passkeys/register/verify', {
+        credential: { id: 'credential-1', response: {} },
+        ssoReauthGrantId: SSO_GRANT,
+        stepUpGrantId: FACTOR_GRANT,
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      // The SSO grant is not burned by a request that never reached the write.
+      expect(grants.has(SSO_GRANT)).toBe(true);
+      expect(completeAdditionalMfaFactorEnrollment).not.toHaveBeenCalled();
+    });
+
+    it('a passwordless account with NO factor is unchanged: its manage grant is refused, only enroll_first_factor works', async () => {
+      queueOptionsReads({ mfaEnabled: false, passkeyCount: 0 });
+      useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor' });
+
+      const res = await post('/auth/passkeys/register/options', { ssoReauthGrantId: SSO_GRANT });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'enrollment_grant_expired' });
+      expect(callsFor(validateStepUpGrant, 'enroll_first_factor')).toHaveLength(1);
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+  });
+
   // #5038: adding a passkey to an ALREADY-PROTECTED account and deleting a
   // passkey both used to run through invalidateMfaAssuranceAfterFactorChange,
   // which bumps mfa_epoch and revokes every refresh family WITHOUT re-issuing

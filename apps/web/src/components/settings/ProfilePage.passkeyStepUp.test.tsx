@@ -178,6 +178,67 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(mintStepUpGrantMock).not.toHaveBeenCalled();
   });
 
+  // #7369: a passwordless SSO account that already holds a passkey comes back
+  // from the IdP with a `sso_reauth_manage_factor` grant (the callback picks
+  // the purpose from the factor state). That grant is its password leg; the
+  // SR2-20 existing-factor step-up is still demanded and resolved with the
+  // passkey it already holds. Both proofs must reach BOTH registration calls.
+  it('a passwordless account holding a passkey sends its SSO grant AND a passkey step-up grant to options and verify', async () => {
+    const SSO_GRANT = '11111111-1111-4111-8111-111111111111';
+    const STEP_UP_GRANT = 'a1e6c9c0-9e2b-4a2b-8e2c-6c9c0e9e2b4a';
+    window.history.replaceState(null, '', `${window.location.pathname}#ssoReauthGrant=${SSO_GRANT}`);
+    sessionStorage.setItem('breeze.ssoReauth.intent', 'passkey');
+    let optionsCallCount = 0;
+    const optionsBodies: Array<Record<string, unknown>> = [];
+    const verifyBodies: Array<Record<string, unknown>> = [];
+
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [{ id: 'pk-1', name: 'Laptop', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null }] });
+      }
+      if (u === '/auth/passkeys/register/options') {
+        optionsCallCount += 1;
+        optionsBodies.push(init?.body ? JSON.parse(String(init.body)) : {});
+        if (optionsCallCount === 1) {
+          return makeJsonResponse({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, false, 403);
+        }
+        return makeJsonResponse({ options: REGISTRATION_OPTIONS });
+      }
+      if (u === '/auth/passkeys/register/verify') {
+        verifyBodies.push(init?.body ? JSON.parse(String(init.body)) : {});
+        return makeJsonResponse({
+          passkey: { id: 'credential-1', name: 'YubiKey' },
+          tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
+        });
+      }
+      return makeJsonResponse({});
+    });
+    createPasskeyCredentialMock.mockResolvedValueOnce(CREDENTIAL);
+    mintStepUpGrantMock.mockResolvedValueOnce(STEP_UP_GRANT);
+
+    render(
+      <ProfilePage
+        initialUser={{ ...mfaProtectedUser, mfaMethod: 'passkey' as const, hasPassword: false }}
+      />,
+    );
+
+    await screen.findByText('Laptop');
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
+    await waitFor(() => expect(optionsCallCount).toBe(1));
+    fireEvent.click(await screen.findByTestId('passkey-add'));
+
+    await screen.findByText('Passkey added');
+
+    expect(mintStepUpGrantMock).toHaveBeenCalledWith({ operation: 'add_factor', reauth: { method: 'passkey' } });
+    expect(optionsBodies[0]).toMatchObject({ ssoReauthGrantId: SSO_GRANT });
+    expect(optionsBodies[0]).not.toHaveProperty('stepUpGrantId');
+    expect(optionsBodies[1]).toMatchObject({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: STEP_UP_GRANT });
+    expect(optionsBodies[1]).not.toHaveProperty('currentPassword');
+    expect(verifyBodies).toEqual([expect.objectContaining({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: STEP_UP_GRANT })]);
+  });
+
   // Sweep paper cut #13: `#passkey-factor-code` ("Current MFA code") proves
   // the DELETE flow only — handleAddPasskey never reads it — but it used to
   // render unlabeled inside the "Add a passkey" card next to the Add button,

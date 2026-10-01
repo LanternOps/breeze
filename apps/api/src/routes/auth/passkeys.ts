@@ -331,7 +331,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   if (stepUpError) return stepUpError;
 
   // #4018: terminal burn for the passwordless SSO road — one
-  // enroll_first_factor grant registers exactly one passkey. `passwordAlreadyProven`
+  // SSO re-auth grant (#7369: of either purpose) registers exactly one passkey. `passwordAlreadyProven`
   // because this endpoint carries no password field at all: the password road
   // was satisfied at /passkeys/register/options, and re-demanding it here would
   // break every existing password-account registration.
