@@ -43,7 +43,7 @@ func asStandardUser(t *testing.T, fn func()) {
 		windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY|windows.TOKEN_ASSIGN_PRIMARY|windows.TOKEN_IMPERSONATE, &proc); err != nil {
 		t.Fatalf("open process token: %v", err)
 	}
-	defer proc.Close()
+	defer func() { _ = proc.Close() }()
 
 	disable := []windows.SIDAndAttributes{{Sid: admins}}
 	var restricted windows.Token
@@ -58,7 +58,7 @@ func asStandardUser(t *testing.T, fn func()) {
 	if r == 0 {
 		t.Fatalf("CreateRestrictedToken: %v", callErr)
 	}
-	defer restricted.Close()
+	defer func() { _ = restricted.Close() }()
 
 	var imp windows.Token
 	if err := windows.DuplicateTokenEx(restricted,
@@ -66,7 +66,7 @@ func asStandardUser(t *testing.T, fn func()) {
 		nil, windows.SecurityImpersonation, windows.TokenImpersonation, &imp); err != nil {
 		t.Fatalf("duplicate impersonation token: %v", err)
 	}
-	defer imp.Close()
+	defer func() { _ = imp.Close() }()
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

@@ -69,7 +69,7 @@ func secureUserWorkspaceDir(path string) error {
 	if err != nil {
 		return fmt.Errorf("secure %s: %w", label, err)
 	}
-	defer closeMainAgentDirectoryHandleFn(h)
+	defer func() { _ = closeMainAgentDirectoryHandleFn(h) }()
 
 	identity, err := inspectMainAgentDirectory(h, label)
 	if err != nil {

@@ -27,7 +27,7 @@ func secureUserWorkspaceDir(path string) error {
 		}
 		return fmt.Errorf("open workspace %s: %w", path, err)
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 
 	var st syscall.Stat_t
 	if err := syscall.Fstat(fd, &st); err != nil {
