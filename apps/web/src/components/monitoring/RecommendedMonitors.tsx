@@ -104,11 +104,17 @@ export default function RecommendedMonitors({
         }
       }
       const inlineSettings = { ...settings, inheritance: settings.inheritance ?? 'cumulative', items };
+      // Create (POST) expresses "no linked feature policy" by omitting the key —
+      // its schema rejects null (#7627). Update (PATCH) accepts null to unlink,
+      // matching useFeatureLink's save().
+      const writeBody = link
+        ? { featureType: 'monitors', featurePolicyId: null, inlineSettings }
+        : { featureType: 'monitors', inlineSettings };
       await runAction({
         request: () =>
           fetchWithAuth(`/configuration-policies/${policyId}/features${link ? `/${link.id}` : ''}`, {
             method: link ? 'PATCH' : 'POST',
-            body: JSON.stringify({ featureType: 'monitors', featurePolicyId: null, inlineSettings }),
+            body: JSON.stringify(writeBody),
           }),
         errorFallback: t('monitoring:deploy.errors.attach'),
         successMessage: t('monitoring:deploy.attached'),

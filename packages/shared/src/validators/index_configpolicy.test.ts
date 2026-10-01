@@ -104,6 +104,27 @@ describe('addFeatureLinkSchema', () => {
     }
   });
 
+  // Create is deliberately stricter than update: "no linked feature policy"
+  // is expressed by omitting the key. Clients must not send null here
+  // (useFeatureLink strips it; RecommendedMonitors did not, #7627).
+  it('rejects a null featurePolicyId on create even with inlineSettings (#7627)', () => {
+    const result = addFeatureLinkSchema.safeParse({
+      featureType: 'monitors',
+      featurePolicyId: null,
+      inlineSettings: { items: [], inheritance: 'cumulative' },
+    });
+    expect(result.success).toBe(false);
+    expect(result.success ? [] : result.error.issues.map((i) => i.path.join('.'))).toContain('featurePolicyId');
+  });
+
+  it('accepts the same create body with featurePolicyId omitted (#7627)', () => {
+    const result = addFeatureLinkSchema.safeParse({
+      featureType: 'monitors',
+      inlineSettings: { items: [], inheritance: 'cumulative' },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('should reject without featurePolicyId and inlineSettings', () => {
     const result = addFeatureLinkSchema.safeParse({
       featureType: 'patch',
