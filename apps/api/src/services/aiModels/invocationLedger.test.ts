@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   inserted: [] as Array<Record<string, unknown>>,
@@ -39,6 +39,7 @@ import { __resetLegacyCostListenersForTests, emitLegacyCostRecorded, type Legacy
 import {
   __resetInvocationLedgerShadowForTests,
   buildShadowRateSnapshot,
+  getInvocationLedgerShadowCounters,
   recordShadowInvocation,
   registerInvocationLedgerShadow,
   shadowCostDiff,
@@ -198,9 +199,75 @@ describe('registerInvocationLedgerShadow', () => {
     expect(logged).not.toContain('leaky-param-value');
     const sent = vi.mocked(captureException).mock.calls.at(-1)![0] as Error & { code?: string };
     expect(sent).not.toBe(leaky);
-    expect(sent.message).toBe('permission denied for table ai_invocations');
+    expect(sent.message).toBe('Error (SQLSTATE 42501, permission denied for table ai_invocations)');
     expect(sent.code).toBe('42501');
     expect(JSON.stringify(sent)).not.toContain('leaky-param-value');
     error.mockRestore();
+  });
+
+  describe('failure noise control', () => {
+    const pgFailure = (code: string) => Object.assign(new Error('Failed query: insert … params: secret-param'), {
+      cause: Object.assign(new Error(`pg failure ${code}`), { code }),
+    });
+    let consoleError: ReturnType<typeof vi.spyOn>;
+    beforeEach(async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-01T00:00:00Z'));
+      consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { captureException } = await import('../sentry');
+      vi.mocked(captureException).mockClear();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      consoleError.mockRestore();
+    });
+
+    async function failOnce(code: string): Promise<void> {
+      const { getCompatConnection } = await import('./connections');
+      vi.mocked(getCompatConnection).mockRejectedValueOnce(pgFailure(code));
+      emitLegacyCostRecorded(event({ billingSource: 'partner_key' }));
+      await state.afterExit.at(-1)!.work();
+    }
+
+    it('captures under a fixed fingerprint per SQLSTATE: the first failure, then at most one per minute', async () => {
+      const { captureException } = await import('../sentry');
+      registerInvocationLedgerShadow();
+      await failOnce('42501');
+      await failOnce('42501');
+      await failOnce('42501');
+      await failOnce('23503'); // a different fingerprint is reported on its own
+      expect(vi.mocked(captureException).mock.calls.map((c) => c[3])).toEqual([
+        { fingerprint: ['ai_invocation_shadow', '42501'] },
+        { fingerprint: ['ai_invocation_shadow', '23503'] },
+      ]);
+      vi.advanceTimersByTime(60_001);
+      await failOnce('42501');
+      expect(vi.mocked(captureException)).toHaveBeenCalledTimes(3);
+      // The throttled log line carries how many were suppressed in between.
+      const lastLog = JSON.stringify(consoleError.mock.calls.at(-1));
+      expect(lastLog).toContain('"suppressedSinceLastReport":2');
+      expect(consoleError).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain('secret-param');
+    });
+
+    it('an error with no SQLSTATE is fingerprinted as unknown', async () => {
+      const { captureException } = await import('../sentry');
+      registerInvocationLedgerShadow();
+      state.partnerId = null; // org lookup fails with a plain Error
+      emitLegacyCostRecorded(event());
+      await state.afterExit[0]!.work();
+      expect(vi.mocked(captureException).mock.calls[0]![3]).toEqual({ fingerprint: ['ai_invocation_shadow', 'unknown'] });
+    });
+
+    it('keeps process counters of shadow outcomes by reason and logs them with each reported failure', async () => {
+      registerInvocationLedgerShadow();
+      emitLegacyCostRecorded(event({ ledger: null }));
+      await state.afterExit.at(-1)!.work();
+      emitLegacyCostRecorded(event({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, legacyCostCents: 0 }));
+      await state.afterExit.at(-1)!.work();
+      await failOnce('42501');
+      expect(getInvocationLedgerShadowCounters()).toEqual({ written: 0, failed: 1, skipped_no_context: 1, skipped_zero: 1 });
+      expect(JSON.stringify(consoleError.mock.calls.at(-1))).toContain('"counters":{"written":0,"failed":1,"skipped_no_context":1,"skipped_zero":1}');
+    });
   });
 });

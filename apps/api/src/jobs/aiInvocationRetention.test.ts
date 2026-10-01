@@ -32,9 +32,19 @@ describe('pruneAiInvocations (#7600 W02)', () => {
     expect(recordRetentionRun).toHaveBeenCalledWith('ai_invocation_retention', { rowsDeleted: 7 });
   });
 
-  it('reports a backlog when the batch cap stops a full batch', async () => {
-    state.batches.push(3, 3);
-    expect(await pruneAiInvocations({ retentionDays: 30, batchSize: 3, maxBatches: 2 })).toMatchObject({ batches: 2, hasMore: true });
+  it('reports a backlog when the batch cap stops a full batch, and warns about it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      state.batches.push(3, 3);
+      expect(await pruneAiInvocations({ retentionDays: 30, batchSize: 3, maxBatches: 2 })).toMatchObject({ batches: 2, hasMore: true });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/\[AiInvocationRetention\].*backlog/));
+      warn.mockClear();
+      state.batches.push(3, 1);
+      await pruneAiInvocations({ retentionDays: 30, batchSize: 3, maxBatches: 2 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('falls back to the default window on a nonsense env value', async () => {

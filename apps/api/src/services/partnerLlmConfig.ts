@@ -6,6 +6,7 @@ import { partnerAiConnections, partnerLlmConfigs } from '../db/schema';
 import { resolveDefaultModel } from './aiModel';
 import { lockPartnerRegistryReconcile, reconcilePartnerFromLegacyInTx } from './aiModels/legacyReconcile';
 import { isOfferablePlatformModel } from './aiModels/platformModels';
+import { carriesQueryValues, formatSafeDbErrorDetail, safeDbErrorDetail } from './aiModels/safeDbError';
 import {
   columnAad,
   encryptedColumnRegistry,
@@ -45,31 +46,9 @@ export class PartnerLlmError extends Error {
   }
 }
 
-/** The error and its cause chain, outermost first (bounded; cycle-safe). */
-function causeChain(error: unknown): unknown[] {
-  const chain: unknown[] = [];
-  let current: unknown = error;
-  while (current && typeof current === 'object' && chain.length < 8 && !chain.includes(current)) {
-    chain.push(current);
-    current = (current as { cause?: unknown }).cause;
-  }
-  return chain;
-}
-
-const QUERY_BEARING_KEYS = ['params', 'query', 'parameters'] as const;
-
-/** True when the error (or anything it wraps) carries a statement's SQL or bound values. */
-function carriesQueryValues(error: unknown): boolean {
-  return causeChain(error).some((e) => {
-    const name = (e as { constructor?: { name?: unknown } }).constructor?.name;
-    return name === 'DrizzleQueryError' || name === 'PostgresError'
-      || QUERY_BEARING_KEYS.some((k) => k in (e as object));
-  });
-}
-
 /**
- * A database failure inside a provider write, reduced to what is safe to log.
- * A Drizzle query error's message and `params` (and a postgres.js error's
+ * A database failure inside a provider write, reduced to what is safe to log
+ * (the shared scrubber: aiModels/safeDbError.ts). A Drizzle query error's message and `params` (and a postgres.js error's
  * `query` / `parameters`) carry the statement's values — here the key
  * ciphertext and fingerprint — so they must never reach the route's error
  * handler, the console or Sentry. What survives: the class, the SQLSTATE
@@ -78,15 +57,9 @@ function carriesQueryValues(error: unknown): boolean {
  * message can quote the offending input value.
  */
 function toSafeWriteError(error: unknown): PartnerLlmError {
-  const chain = causeChain(error);
-  const pg = [...chain].reverse().find((e) => typeof (e as { code?: unknown }).code === 'string') as
-    | { code: string; message?: unknown; constraint_name?: unknown }
-    | undefined;
-  const code = pg?.code;
-  const constraint = typeof pg?.constraint_name === 'string' ? pg.constraint_name : undefined;
-  const primary = pg && typeof pg.message === 'string' && !code?.startsWith('22') ? pg.message : undefined;
-  const kind = error instanceof Error ? error.constructor.name : typeof error;
-  const detail = [code && `SQLSTATE ${code}`, constraint, primary].filter(Boolean).join(', ');
+  const safeDetail = safeDbErrorDetail(error);
+  const { code, kind } = safeDetail;
+  const detail = formatSafeDbErrorDetail(safeDetail);
   const cause = Object.assign(new Error(`AI provider write failed: ${kind}${detail ? ` (${detail})` : ''}`), code ? { code } : {});
   const safe = new PartnerLlmError('Could not save the AI provider configuration.', 500);
   safe.cause = cause;

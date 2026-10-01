@@ -179,6 +179,7 @@ import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reconcileAllPartnersFromLegacy } from './services/aiModels/legacyReconcile';
+import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
@@ -1876,7 +1877,7 @@ async function bootstrap(): Promise<void> {
       }
     })
     .catch((err) => {
-      console.error('[startup] AI model registry reconcile failed:', err);
+      console.error('[startup] AI model registry reconcile failed:', safeErrorMessage(err));
       captureException(err, undefined, { area: 'ai_model_registry_reconcile' });
     });
 

@@ -8,6 +8,7 @@
  */
 import type { AiSurface } from '@breeze/shared';
 import type { AiBillingSource, CatalogPricingSnapshot } from '../aiCostTracker';
+import { safeErrorMessage } from './safeDbError';
 
 export interface InvocationLedgerContext {
   surface: AiSurface;
@@ -47,7 +48,8 @@ export function emitLegacyCostRecorded(event: LegacyCostEvent): void {
     try {
       listener(event);
     } catch (error) {
-      console.error('[ai-ledger] legacy cost listener threw (ignored; billing unaffected):', error);
+      // Message only, scrubbed: a raw query error carries its SQL params.
+      console.error('[ai-ledger] legacy cost listener threw (ignored; billing unaffected):', safeErrorMessage(error));
     }
   }
 }

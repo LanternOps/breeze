@@ -57,7 +57,7 @@ async function seedLegacyConfig(partnerId: string, over: { defaultModel?: string
 /** Read the registry back from the DB in the storeProjection shape. */
 async function registryFromDb(partnerId: string): Promise<RegistrySnapshot> {
   const [connections, offerings, platformModels, assignments, agents, sessions] = await Promise.all([
-    adminSql`SELECT id, kind, status FROM partner_ai_connections WHERE partner_id = ${partnerId}`,
+    adminSql`SELECT id, kind, status, api_key_encrypted FROM partner_ai_connections WHERE partner_id = ${partnerId}`,
     adminSql`SELECT id, connection_id, model_id, platform_model_id, enabled FROM partner_ai_models WHERE partner_id = ${partnerId}`,
     adminSql`SELECT id, model_id FROM ai_platform_models`,
     adminSql`SELECT * FROM ai_model_assignments WHERE offering_partner_id = ${partnerId}`,
@@ -67,7 +67,7 @@ async function registryFromDb(partnerId: string): Promise<RegistrySnapshot> {
   ]);
   return {
     partnerId,
-    connections: connections.map((c) => ({ id: c.id, kind: c.kind, status: c.status })),
+    connections: connections.map((c) => ({ id: c.id, kind: c.kind, status: c.status, apiKeyEncrypted: c.api_key_encrypted })),
     offerings: offerings.map((o) => ({ id: o.id, connectionId: o.connection_id, modelId: o.model_id, platformModelId: o.platform_model_id, enabled: o.enabled })),
     platformModels: platformModels.map((m) => ({ id: m.id, modelId: m.model_id })),
     assignments: assignments.map((a) => ({
@@ -98,10 +98,11 @@ async function seedRichPartner() {
 }
 
 /** Every parity query resolves identically over the DB and over the pure projection of the CURRENT legacy state. */
-async function expectDbMatchesProjection(partnerId: string): Promise<void> {
+async function expectDbMatchesProjection(partnerId: string, projectionEnv: LegacyProjectionEnv = env): Promise<void> {
   const snapshot = await withSystemDbAccessContext(() => loadLegacySnapshot(partnerId));
   const fixture: ParityFixture = { name: 'db', env: {}, snapshot, legacyApiKey: null, catalogProvider: null };
-  const fromProjection = materializeDesiredState(buildDesiredRegistryState(snapshot, env), fixture);
+  const [legacyRow] = snapshot.config ? await adminSql`SELECT api_key_encrypted FROM partner_llm_configs WHERE id = ${snapshot.config.id}` : [];
+  const fromProjection = materializeDesiredState(buildDesiredRegistryState(snapshot, projectionEnv), fixture, legacyRow?.api_key_encrypted ?? null);
   const fromDb = await registryFromDb(partnerId);
   const queries = parityQueries(fixture);
   expect(queries.length).toBeGreaterThan(0);
@@ -231,6 +232,43 @@ describe.skipIf(!RUN)('legacy reconcile (#7600 W02)', () => {
     expect(r2.bootstrapPlatformModels).toEqual([]);
     const rows = await adminSql`SELECT platform_offered, input_cents_per_m FROM ai_platform_models WHERE model_id = ${modelId}`;
     expect(rows).toEqual([{ platform_offered: false, input_cents_per_m: null }]);
+  });
+
+  // Final review (I): ai_platform_models is a global catalog. A tenant-typed id
+  // must never create a row there (cross-tenant pollution; it would squat an id
+  // a later seed migration's ON CONFLICT (model_id) DO NOTHING then skips).
+  it('a tenant-typed unknown platform id never creates an ai_platform_models row; a deployment id still does (once)', async () => {
+    const tenantModel = `w02-tenant-${randomUUID()}`;
+    const envModel = `w02-env-${randomUUID()}`;
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id });
+    const allow = JSON.stringify([tenantModel, 'claude-haiku-4-5']);
+    await adminSql`INSERT INTO client_ai_org_policies (org_id, allowed_models) VALUES (${org.id}, ${allow}::jsonb)`;
+    await adminSql`INSERT INTO ai_budgets (org_id, allowed_models) VALUES (${org.id}, ${allow}::jsonb)`;
+    const agentId = await seedAgent({ orgId: org.id, createdBy: user.id, model: tenantModel });
+    const [session] = await adminSql`INSERT INTO ai_sessions (org_id, model, status) VALUES (${org.id}, ${tenantModel}, 'active') RETURNING id`;
+    const projectionEnv = { ...env, defaultModel: envModel };
+
+    const first = await reconcilePartnerFromLegacy(partner.id, projectionEnv);
+    expect(first.bootstrapPlatformModels).toEqual([envModel]);
+    expect(first.unknownPlatformModelsSkipped).toBe(1);
+    const second = await reconcilePartnerFromLegacy(partner.id, projectionEnv);
+    expect(second.bootstrapPlatformModels).toEqual([]);
+    expect(second.unknownPlatformModelsSkipped).toBe(1);
+
+    expect(await adminSql`SELECT 1 FROM ai_platform_models WHERE model_id = ${tenantModel}`).toHaveLength(0);
+    expect(await adminSql`SELECT 1 FROM ai_platform_models WHERE model_id = ${envModel}`).toHaveLength(1);
+    expect(await adminSql`SELECT 1 FROM partner_ai_models m JOIN ai_platform_models p ON p.id = m.platform_model_id
+                          WHERE m.partner_id = ${partner.id} AND p.model_id = ${tenantModel}`).toHaveLength(0);
+    const [agent] = await adminSql`SELECT offering_id FROM ai_agents WHERE id = ${agentId}`;
+    expect(agent!.offering_id).toBeNull();
+    const [bound] = await adminSql`SELECT offering_id, offering_partner_id FROM ai_sessions WHERE id = ${session!.id}`;
+    expect(bound).toEqual({ offering_id: null, offering_partner_id: null });
+    const [office] = await adminSql`SELECT default_offering_id, cardinality(permitted_offering_ids) AS permitted
+                                    FROM ai_model_assignments WHERE org_id = ${org.id} AND surface = 'office_chat'`;
+    expect(office).toEqual({ default_offering_id: null, permitted: 1 });
+    await expectDbMatchesProjection(partner.id, projectionEnv);
   });
 
   it('deleting the legacy config moves every surface and binding back to the platform and removes the connection', async () => {

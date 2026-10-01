@@ -60,7 +60,11 @@ export async function pruneAiInvocations(opts: { retentionDays?: number; batchSi
   }
   recordRetentionRun('ai_invocation_retention', { rowsDeleted: deleted });
   console.log(`${LOG} Pruned ${deleted} ledger row(s) older than ${retentionDays}d in ${batches} batch(es)`);
-  return { deleted, batches, hasMore: batches >= maxBatches && last >= batchSize, retentionDays };
+  const hasMore = batches >= maxBatches && last >= batchSize;
+  if (hasMore) {
+    console.warn(`${LOG} Stopped at the ${maxBatches}-batch cap with rows still past the ${retentionDays}d window: retention backlog (raise AI_INVOCATIONS_RETENTION_MAX_BATCHES or _BATCH_SIZE if it persists)`);
+  }
+  return { deleted, batches, hasMore, retentionDays };
 }
 
 let queue: Queue | null = null;

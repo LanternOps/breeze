@@ -6,13 +6,14 @@
  * W03 swaps in resolveModel.
  */
 import type { ListedProvider } from '../../llmProviderCatalog';
+import { decryptConnectionKey } from '../connections';
 import { mergeEffectiveAssignment, isPermitted, type AssignmentRowInput } from '../assignments';
 import type { DesiredRegistryState } from '../legacyProjection';
 import type { ParityFixture, ParityQuery, SurfaceUse } from './harness';
 
 export interface RegistrySnapshot {
   partnerId: string;
-  connections: ReadonlyArray<{ id: string; kind: 'anthropic_byok' | 'catalog'; status: 'active' | 'error' }>;
+  connections: ReadonlyArray<{ id: string; kind: 'anthropic_byok' | 'catalog'; status: 'active' | 'error'; apiKeyEncrypted: string | null }>;
   offerings: ReadonlyArray<{ id: string; connectionId: string | null; modelId: string | null; platformModelId: string | null; enabled: boolean }>;
   platformModels: ReadonlyArray<{ id: string; modelId: string }>;
   assignments: ReadonlyArray<AssignmentRowInput & { orgId: string | null; surface: string }>;
@@ -23,8 +24,12 @@ export interface RegistrySnapshot {
 
 const unavailable = (reason: string): SurfaceUse => ({ outcome: 'unavailable', reason });
 
-/** Desired state → a snapshot shaped like the DB (ids = offering keys; bootstrap platform rows get synthetic ids). */
-export function materializeDesiredState(desired: DesiredRegistryState, fixture: ParityFixture): RegistrySnapshot {
+/**
+ * Desired state → a snapshot shaped like the DB (ids = offering keys; bootstrap
+ * platform rows get synthetic ids). `legacyKeyCiphertext` is the legacy row's
+ * api_key_encrypted: the reconcile mirrors it byte-for-byte onto the connection.
+ */
+export function materializeDesiredState(desired: DesiredRegistryState, fixture: ParityFixture, legacyKeyCiphertext: string | null): RegistrySnapshot {
   const config = fixture.snapshot.config;
   const platformModels = [
     ...fixture.snapshot.platformModels.map((m) => ({ id: m.id, modelId: m.modelId })),
@@ -32,7 +37,7 @@ export function materializeDesiredState(desired: DesiredRegistryState, fixture: 
   ];
   return {
     partnerId: desired.partnerId,
-    connections: config ? [{ id: config.id, kind: config.catalogEntryId ? 'catalog' : 'anthropic_byok', status: config.status }] : [],
+    connections: config ? [{ id: config.id, kind: config.catalogEntryId ? 'catalog' : 'anthropic_byok', status: config.status, apiKeyEncrypted: legacyKeyCiphertext }] : [],
     offerings: desired.offerings.map((o) => ({
       id: o.key,
       connectionId: o.connectionId,
@@ -63,6 +68,14 @@ function resolveOffering(store: RegistrySnapshot, offeringId: string | null): Su
   }
   const connection = store.connections.find((c) => c.id === offering.connectionId);
   if (!connection || connection.status !== 'active') return unavailable('key_error');
+  // An ACTIVE connection whose key does not decrypt is unusable (legacy:
+  // resolveLlmConfig → key_error). The destination stays the connection —
+  // never a silent fall-through to the platform key.
+  try {
+    decryptConnectionKey(connection);
+  } catch {
+    return unavailable('key_error');
+  }
   const model = offering.modelId!;
   let wireModel = model;
   if (connection.kind === 'catalog') {

@@ -43,6 +43,7 @@ import {
   type OfferingKey,
 } from './legacyProjection';
 import { legacyExtensionModel } from './legacySurfaceModels';
+import { safeErrorMessage } from './safeDbError';
 
 export interface ReconcileReport {
   partnerId: string;
@@ -53,6 +54,8 @@ export interface ReconcileReport {
   agentsRebound: number;
   sessionsRebound: number;
   bootstrapPlatformModels: string[];
+  /** Tenant-typed ids with no platform row, dropped instead of bootstrapped (legacyProjection onPlatform). */
+  unknownPlatformModelsSkipped: number;
 }
 
 export function readLegacyProjectionEnv(): LegacyProjectionEnv {
@@ -206,6 +209,9 @@ async function upsertOfferings(desired: DesiredRegistryState, partnerId: string,
     if (o.connectionId === null) {
       let platformModelId = o.platformModelId;
       if (!platformModelId) {
+        // Only deployment-sourced ids reach here (projection invariant): a
+        // tenant-typed id must never create a global catalog row.
+        if (!o.needsBootstrapPlatformRow) throw new Error(`legacyReconcile: platform offering ${o.key} has no platform row and is not bootstrappable`);
         platformModelId = await ensureLegacyPlatformModel(o.modelId);
         report.bootstrapPlatformModels.push(o.modelId);
       }
@@ -299,9 +305,9 @@ async function rebind(desired: DesiredRegistryState, partnerId: string, orgIds: 
     report.agentsRebound += updated.length;
   }
   for (const [sessionId, key] of Object.entries(desired.sessionOfferingKeys)) {
-    const bound = offeringId(ids, key);
+    const bound = key === null ? null : offeringId(ids, key);
     const updated = await db.update(aiSessions)
-      .set({ offeringId: bound, offeringPartnerId: partnerId })
+      .set({ offeringId: bound, offeringPartnerId: bound ? partnerId : null })
       .where(and(eq(aiSessions.id, sessionId), sessionOwned, sql`${aiSessions.offeringId} IS DISTINCT FROM ${bound}::uuid`))
       .returning({ id: aiSessions.id });
     report.sessionsRebound += updated.length;
@@ -349,7 +355,7 @@ export async function lockPartnerRegistryReconcile(partnerId: string): Promise<v
 export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: LegacyProjectionEnv = readLegacyProjectionEnv()): Promise<ReconcileReport> {
   assertSystemContext();
   await lockPartnerRegistryReconcile(partnerId);
-  const report: ReconcileReport = { partnerId, connection: 'none', offeringsUpserted: 0, assignmentsUpserted: 0, assignmentsDeleted: 0, agentsRebound: 0, sessionsRebound: 0, bootstrapPlatformModels: [] };
+  const report: ReconcileReport = { partnerId, connection: 'none', offeringsUpserted: 0, assignmentsUpserted: 0, assignmentsDeleted: 0, agentsRebound: 0, sessionsRebound: 0, bootstrapPlatformModels: [], unknownPlatformModelsSkipped: 0 };
 
   const snapshot = await loadLegacySnapshot(partnerId);
   // A compat connection whose id has no legacy row is an orphan (the legacy
@@ -365,6 +371,7 @@ export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: Leg
     .orderBy(asc(partnerAiConnections.id));
 
   const desired = buildDesiredRegistryState(snapshot, env);
+  report.unknownPlatformModelsSkipped = desired.skippedUnknownPlatformModels.length;
   if (orphans.length > 0) {
     // Interim pass: every assignment onto platform offerings (no connection),
     // so no assignment references an orphan offering when it cascades away.
@@ -400,11 +407,8 @@ export async function reconcileAllPartnersFromLegacy(opts: { env?: LegacyProject
       await reconcilePartnerFromLegacy(id, env);
     } catch (error) {
       // A Drizzle query error's own message embeds the SQL params (here: key
-      // ciphertext, fingerprints). Record the Postgres cause instead.
-      const message = error instanceof Error
-        ? (error.cause instanceof Error ? error.cause.message : error.message)
-        : String(error);
-      failures.push({ partnerId: id, error: message });
+      // ciphertext, fingerprints): the shared scrubber keeps only safe fields.
+      failures.push({ partnerId: id, error: safeErrorMessage(error) });
     }
   }
   return { partners: partnerIds.length, failures };

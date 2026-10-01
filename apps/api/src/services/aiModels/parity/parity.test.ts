@@ -23,9 +23,9 @@ beforeAll(() => {
 });
 
 async function parityFor(f: ParityFixture, snapshotOverride?: ParityFixture['snapshot']): Promise<ParityRow[]> {
-  bindLegacyFixture(f);
+  const sealed = bindLegacyFixture(f);
   const projected: ParityFixture = snapshotOverride ? { ...f, snapshot: snapshotOverride } : f;
-  const store = materializeDesiredState(buildDesiredRegistryState(projected.snapshot, projectionEnvFor(f)), projected);
+  const store = materializeDesiredState(buildDesiredRegistryState(projected.snapshot, projectionEnvFor(f)), projected, projected.snapshot.config ? sealed : null);
   return withFixtureEnv(f.env, () =>
     runParity(f, parityQueries(f), legacySurfaceUse, (_f, q) => projectSurfaceUse(store, q)));
 }
@@ -88,6 +88,23 @@ describe('AI model registry parity: projection vs the real legacy path (#7600 W0
       .filter((r) => r.query.kind === 'agent');
     expect(catalogAgents.length).toBeGreaterThan(0);
     for (const r of catalogAgents) expect(r.legacy).toEqual({ outcome: 'unavailable', reason: 'catalog_refused' });
+  });
+
+  it('an ACTIVE BYOK config whose key fails to decrypt is unavailable on BOTH sides and never re-pointed to the platform', async () => {
+    const f = PARITY_FIXTURES.find((x) => x.name === 'byok_active_key_undecryptable')!;
+    const rows = await parityFor(f);
+    const nonPatch = rows.filter((r) => !(r.query.kind === 'surface' && r.query.surface === 'patch_test'));
+    expect(nonPatch.length).toBeGreaterThan(0);
+    for (const r of nonPatch) {
+      expect(r.legacy).toMatchObject({ outcome: 'unavailable' });
+      expect(r.registry).toEqual({ outcome: 'unavailable', reason: 'key_error' });
+      expect(r.divergence).toBeNull();
+    }
+    // The projection kept every partner-destination surface on the connection.
+    const desired = buildDesiredRegistryState(f.snapshot, projectionEnvFor(f));
+    for (const a of desired.assignments.filter((x) => x.orgId === null && x.surface !== 'patch_test')) {
+      expect(a.defaultOfferingKey).toMatch(/^conn:/);
+    }
   });
 
   it('projectionEnvFor reads the fixture env, never process.env (W03 reuses it)', () => {

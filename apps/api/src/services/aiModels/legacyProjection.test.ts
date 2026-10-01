@@ -92,6 +92,68 @@ describe('buildDesiredRegistryState (#7600 W02, spec §10)', () => {
     expect(offering(platform, 'platform:my-gateway-model')).toMatchObject({ source: 'platform', platformModelId: null, needsBootstrapPlatformRow: true, price: null });
   });
 
+  describe('bootstrap provenance: only deployment (env) ids may create a global platform row', () => {
+    const UNKNOWN = 'tenant-typed-model';
+    const tenantEverywhere = snapshot({
+      partnerReviewerModel: UNKNOWN,
+      orgReviewerModels: { [ORG_B]: UNKNOWN },
+      officeAllowedModels: { [ORG_A]: [UNKNOWN, 'claude-haiku-4-5'] },
+      agents: [
+        { id: 'agent-partner-triage', kind: 'triage', orgId: null, model: UNKNOWN },
+        { id: 'agent-orgA-triage', kind: 'triage', orgId: ORG_A, model: UNKNOWN },
+      ],
+      budgetAllowedModels: { [ORG_A]: [UNKNOWN, 'claude-haiku-4-5'] },
+      liveSessions: [{ id: 'sess-unknown', orgId: ORG_A, model: UNKNOWN }, { id: 'sess-known', orgId: ORG_A, model: 'claude-opus-5-5' }],
+    });
+
+    it('a tenant-sourced unknown platform id produces no offering, no binding, and is reported as skipped', () => {
+      const s = buildDesiredRegistryState(tenantEverywhere, env);
+      expect(s.offerings.some((o) => o.modelId === UNKNOWN)).toBe(false);
+      expect(s.offerings.some((o) => o.needsBootstrapPlatformRow)).toBe(false);
+      expect(s.skippedUnknownPlatformModels).toEqual([UNKNOWN]);
+      // Partner reviewer override was the only source of the partner script_reviewer default.
+      expect(partnerRow(s, 'script_reviewer').defaultOfferingKey).toBeNull();
+      // An org override onto it is not projected (no row to point at).
+      expect(s.assignments.find((a) => a.surface === 'script_reviewer' && a.orgId === ORG_B)).toBeUndefined();
+      const office = s.assignments.find((a) => a.surface === 'office_chat' && a.orgId === ORG_A)!;
+      expect(office.defaultOfferingKey).toBeNull();
+      expect(office.permittedOfferingKeys).toEqual(['platform:claude-haiku-4-5']);
+      const agentsRow = s.assignments.find((a) => a.surface === 'ai_agents' && a.orgId === ORG_A)!;
+      expect(agentsRow.permittedOfferingKeys).not.toContain(`platform:${UNKNOWN}`);
+      expect([...agentsRow.permittedOfferingKeys!].sort()).toEqual(['platform:claude-haiku-4-5', 'platform:claude-sonnet-5-5']);
+      expect(s.agentOfferingKeys).toEqual({ 'agent-partner-triage': null, 'agent-orgA-triage': null });
+      expect(s.sessionOfferingKeys).toEqual({ 'sess-unknown': null, 'sess-known': 'platform:claude-opus-5-5' });
+    });
+
+    it('the same id coming from the deployment env still bootstraps, and tenant references to it then bind', () => {
+      const s = buildDesiredRegistryState(tenantEverywhere, { ...env, extensionModel: UNKNOWN });
+      expect(offering(s, `platform:${UNKNOWN}`)).toMatchObject({ needsBootstrapPlatformRow: true, platformModelId: null });
+      expect(s.skippedUnknownPlatformModels).toEqual([]);
+      expect(s.sessionOfferingKeys['sess-unknown']).toBe(`platform:${UNKNOWN}`);
+      expect(s.agentOfferingKeys['agent-partner-triage']).toBe(`platform:${UNKNOWN}`);
+    });
+
+    it('every env-sourced id (default, reviewer, extension) may bootstrap', () => {
+      const s = buildDesiredRegistryState(snapshot(), { ...env, defaultModel: 'env-default-x', reviewerModel: 'env-reviewer-x', extensionModel: 'env-ext-x' });
+      expect(s.offerings.filter((o) => o.needsBootstrapPlatformRow).map((o) => o.modelId).sort()).toEqual(['env-default-x', 'env-ext-x', 'env-reviewer-x']);
+      expect(s.skippedUnknownPlatformModels).toEqual([]);
+    });
+
+    it('a tenant-sourced unknown id on a BYOK connection is unaffected (manual offering at the legacy rate)', () => {
+      const s = buildDesiredRegistryState({ ...tenantEverywhere, config: { id: CONN, status: 'active', defaultModel: null, catalogEntryId: null } }, env);
+      expect(offering(s, `conn:${CONN}:${UNKNOWN}`)).toMatchObject({ source: 'manual', platformModelId: null, price: RATES, needsBootstrapPlatformRow: false });
+      expect(s.sessionOfferingKeys['sess-unknown']).toBe(`conn:${CONN}:${UNKNOWN}`);
+      expect(s.skippedUnknownPlatformModels).toEqual([]);
+    });
+  });
+
+  it('an ACTIVE BYOK config is projected onto its connection whatever its key decrypts to (the projection never reads the key)', () => {
+    const s = buildDesiredRegistryState(snapshot({ config: { id: CONN, status: 'active', defaultModel: 'claude-opus-5-5', catalogEntryId: null } }), env);
+    for (const a of s.assignments.filter((x) => x.orgId === null && x.surface !== 'patch_test')) {
+      expect(a.defaultOfferingKey).toMatch(new RegExp(`^conn:${CONN}:`));
+    }
+  });
+
   it('a BYOK offering linked to an UNPRICED platform row is priced at the legacy rate (never left unpriced)', () => {
     const s = buildDesiredRegistryState(snapshot({ config: { id: CONN, status: 'active', defaultModel: 'claude-sonnet-4-5-20250929', catalogEntryId: null } }), env);
     expect(offering(s, `conn:${CONN}:claude-sonnet-4-5-20250929`)).toMatchObject({ source: 'discovered', platformModelId: 'pm-legacy', price: RATES });

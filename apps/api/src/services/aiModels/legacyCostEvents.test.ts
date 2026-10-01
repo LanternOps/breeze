@@ -30,4 +30,18 @@ describe('legacyCostEvents (#7600 W02)', () => {
     expect(error).toHaveBeenCalled();
     error.mockRestore();
   });
+
+  it('logs only the scrubbed message of a listener error, never the raw error object', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const leaky = Object.assign(new Error('Failed query: insert … params: leaky-param-value'), {
+      cause: Object.assign(new Error('permission denied'), { code: '42501' }),
+    });
+    onLegacyCostRecorded(() => { throw leaky; });
+    emitLegacyCostRecorded(event);
+    const args = error.mock.calls[0]!;
+    expect(args.some((a) => a === leaky || a instanceof Error)).toBe(false);
+    expect(JSON.stringify(args)).not.toContain('leaky-param-value');
+    expect(JSON.stringify(args)).toContain('SQLSTATE 42501');
+    error.mockRestore();
+  });
 });

@@ -10,11 +10,13 @@ import type { AiSurface, ModelRates, OfferingOptions } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiInvocations, aiSessions, organizations } from '../../db/schema';
 import { captureException } from '../sentry';
+import { throttledReporter } from '../sentryThrottle';
 import { getCompatConnection } from './connections';
 import { onLegacyCostRecorded, type LegacyCostEvent } from './legacyCostEvents';
 import { findOfferingIdForModel, getOffering, type Offering } from './offerings';
 import { getPlatformModelByModelId, type PlatformModel } from './platformModels';
 import { platformRateSnapshot, priceInvocation, type RateSnapshot, type TokenComponents } from './pricing';
+import { errorSqlstate, safeErrorMessage } from './safeDbError';
 
 export interface NewInvocation {
   orgId: string;
@@ -215,20 +217,57 @@ export async function recordShadowInvocation(event: LegacyCostEvent): Promise<'w
   return 'written';
 }
 
-/**
- * A shadow-write failure reduced to what is safe to log. A DrizzleQueryError's
- * own message embeds the SQL and its bound params (ids, model, token counts),
- * so neither it nor the raw error may reach the console or Sentry: keep the
- * driver's cause message and SQLSTATE only.
- */
-function shadowFailure(error: unknown): Error {
-  const cause = (error as { cause?: unknown } | null)?.cause;
-  const source = cause instanceof Error ? cause : error instanceof Error ? error : null;
-  const code = (cause as { code?: unknown } | null)?.code;
-  const safe = new Error(source ? source.message : String(error));
+/** A shadow-write failure reduced to what is safe to log (the shared scrubber: safeDbError.ts). */
+function shadowFailure(error: unknown): Error & { code?: string } {
+  const safe: Error & { code?: string } = new Error(safeErrorMessage(error));
   safe.name = 'AiInvocationShadowError';
-  if (typeof code === 'string') Object.assign(safe, { code });
+  const code = errorSqlstate(error);
+  if (code) safe.code = code;
   return safe;
+}
+
+type ShadowOutcome = 'written' | 'failed' | 'skipped_no_context' | 'skipped_zero';
+const SHADOW_FAILURE_REPORT_WINDOW_MS = 60_000;
+const shadowCounters: Record<ShadowOutcome, number> = { written: 0, failed: 0, skipped_no_context: 0, skipped_zero: 0 };
+/** One reporter per fingerprint: the first failure, then at most one per window. */
+const shadowFailureReporters = new Map<string, { latest: { orgId: string; safe: Error }; report: () => void }>();
+
+/** Process-lifetime counts of shadow outcomes (they never feed billing). */
+export function getInvocationLedgerShadowCounters(): Readonly<Record<ShadowOutcome, number>> {
+  return { ...shadowCounters };
+}
+
+/**
+ * A shadow-write failure is logged and sent to Sentry THROTTLED: a broken
+ * ledger fails on every AI call, and an unthrottled capture would turn one
+ * fault into a storm. The fingerprint is fixed + the SQLSTATE (bounded), so
+ * Sentry groups every occurrence into one issue per cause.
+ */
+function reportShadowFailure(orgId: string, error: unknown): void {
+  const safe = shadowFailure(error);
+  const fingerprint = ['ai_invocation_shadow', safe.code ?? 'unknown'];
+  const key = fingerprint.join(':');
+  let entry = shadowFailureReporters.get(key);
+  if (!entry) {
+    const created: { latest: { orgId: string; safe: Error }; report: () => void } = {
+      latest: { orgId, safe },
+      report: throttledReporter(SHADOW_FAILURE_REPORT_WINDOW_MS, (suppressedSinceLastReport) => {
+        const { orgId: latestOrgId, safe: latestSafe } = created.latest;
+        console.error('[ai-ledger] ai_invocation_shadow_failed (billing unaffected)', {
+          orgId: latestOrgId,
+          error: latestSafe.message,
+          sqlstate: fingerprint[1],
+          suppressedSinceLastReport,
+          counters: getInvocationLedgerShadowCounters(),
+        });
+        captureException(latestSafe, undefined, { area: 'ai_invocation_shadow' }, { fingerprint });
+      }),
+    };
+    entry = created;
+    shadowFailureReporters.set(key, entry);
+  }
+  entry.latest = { orgId, safe };
+  entry.report();
 }
 
 let registered = false;
@@ -240,11 +279,11 @@ export function registerInvocationLedgerShadow(): void {
   onLegacyCostRecorded((event) => {
     runAfterDbContextExit('aiInvocationLedger.shadow', async () => {
       try {
-        await runOutsideDbContext(() => withSystemDbAccessContext(() => recordShadowInvocation(event), 'aiInvocationLedger.shadow'));
+        const outcome = await runOutsideDbContext(() => withSystemDbAccessContext(() => recordShadowInvocation(event), 'aiInvocationLedger.shadow'));
+        shadowCounters[outcome] += 1;
       } catch (error) {
-        const safe = shadowFailure(error);
-        console.error('[ai-ledger] ai_invocation_shadow_failed (billing unaffected)', { orgId: event.orgId, error: safe.message });
-        captureException(safe, undefined, { area: 'ai_invocation_shadow' });
+        shadowCounters.failed += 1;
+        reportShadowFailure(event.orgId, error);
       }
     });
   });
@@ -252,4 +291,6 @@ export function registerInvocationLedgerShadow(): void {
 
 export function __resetInvocationLedgerShadowForTests(): void {
   registered = false;
+  shadowFailureReporters.clear();
+  for (const k of Object.keys(shadowCounters) as ShadowOutcome[]) shadowCounters[k] = 0;
 }

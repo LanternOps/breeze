@@ -56,6 +56,11 @@ export const PARITY_FIXTURES: readonly ParityFixture[] = [
   { name: 'byok_direct_pinned', env: {}, snapshot: base({ config: byok({ defaultModel: 'claude-opus-5-5' }) }), legacyApiKey: KEY, catalogProvider: null },
   { name: 'byok_direct_tracking_env', env: { ANTHROPIC_MODEL: 'claude-sonnet-4-6' }, snapshot: base({ config: byok() }), legacyApiKey: KEY, catalogProvider: null },
   { name: 'byok_errored', env: {}, snapshot: base({ config: byok({ status: 'error' }) }), legacyApiKey: KEY, catalogProvider: null },
+  {
+    name: 'byok_active_key_undecryptable', env: {},
+    snapshot: base({ config: byok({ defaultModel: 'claude-opus-5-5' }), agents }),
+    legacyApiKey: KEY, legacyKeyUndecryptable: true, catalogProvider: null,
+  },
   { name: 'byok_unknown_model', env: {}, snapshot: base({ config: byok({ defaultModel: 'my-gateway-model' }) }), legacyApiKey: KEY, catalogProvider: null },
   {
     name: 'byok_catalog_verified', env: {},

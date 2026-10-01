@@ -23,6 +23,8 @@ export interface ParityFixture {
   snapshot: LegacySnapshot;
   /** Plaintext BYOK key; the test seals it under the legacy AAD for snapshot.config.id. */
   legacyApiKey: string | null;
+  /** Seal the key under ANOTHER row's AAD, so the stored ciphertext fails to decrypt (an active config with an unreadable key). */
+  legacyKeyUndecryptable?: boolean;
   catalogProvider: ListedProvider | null;
 }
 
