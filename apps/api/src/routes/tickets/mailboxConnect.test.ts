@@ -775,6 +775,19 @@ describe('M365 mailbox lifecycle routes', () => {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
     });
     expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('ticketMailbox=error');
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalled();
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ outcome: 'ownership_conflict' }),
+    }));
+  });
+
+  it('#7569: an absent probe kind fails closed to reauth_required (no tenant bind)', async () => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, error: 'x' });
+    await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
     expect(mocks.markPendingConsentFailed).toHaveBeenCalled();
   });
 

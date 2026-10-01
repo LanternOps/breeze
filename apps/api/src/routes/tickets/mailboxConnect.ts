@@ -658,12 +658,13 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery, (result, c) =>
         reason: probe.reason,
       });
       captureException(new Error(`Mailbox probe failed during consent callback: ${probe.reason ?? 'unknown'}`), c);
-      if (probe.kind !== 'auth') {
+      if (probe.kind === 'policy' || probe.kind === 'transient') {
         // #7569: consent + admin identity were verified, only the app-only mailbox
         // read failed (typically the Application Access Policy is not applied or
         // has not propagated yet). Bind the verified tenant in `error` so the card
         // shows the policy snippet + Re-test, instead of `reauth_required`, which
         // hides that step and loops the admin through re-consent.
+        let bound = false;
         try {
           await callbackDb(() => bindVerifiedTenant(
             session.connectionId,
@@ -673,6 +674,19 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery, (result, c) =>
             { microsoftOid: claims.oid, breezeUserId: session.userId },
             { status: 'error', lastError: failureMessage(probe.reason) },
           ));
+          bound = true;
+        } catch (error) {
+          captureException(error instanceof Error ? error : new Error('Mailbox tenant binding failed'), c);
+          console.warn('[ticketMailbox] tenant bind failed after probe failure', {
+            connectionId: session.connectionId,
+            errorName: errorClassName(error),
+          });
+          if (isOwnershipConflict(error)) {
+            return fail('ownership_conflict', 'error', { step: 'tenant_binding' }, claims.tid);
+          }
+          // anything else: fall through to the re-consent failure path
+        }
+        if (bound) {
           console.warn('[ticketMailbox] consent callback failed', {
             connectionId: session.connectionId,
             phase: session.phase,
@@ -688,9 +702,6 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery, (result, c) =>
             auditDetails(session, connection, 'probe_failed', claims.tid, probe.reason),
           );
           return c.redirect('/settings/ticketing?ticketMailbox=needs_policy#email');
-        } catch (error) {
-          captureException(error instanceof Error ? error : new Error('Mailbox tenant binding failed'), c);
-          // fall through to the re-consent failure path
         }
       }
       return fail('probe_failed', 'needs_policy', { step: 'mailbox_probe' }, claims.tid, probe.reason);

@@ -697,7 +697,9 @@ export async function probeMailbox(tenantId: string, mailboxAddress: string): Pr
   let res: Response;
   try {
     res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' });
-  } catch {
+  } catch (err) {
+    // Name only — messages can echo URL fragments.
+    console.warn('[ticketMailbox] Graph probe request failed', { errorName: err instanceof Error ? err.name : typeof err });
     return { ok: false, kind: 'transient', error: 'Graph request failed', reason: 'Graph request failed' };
   }
   if (res.ok) return { ok: true };
