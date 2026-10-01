@@ -251,6 +251,8 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'prov-crowdstrike':
       return 'crowdstrike';
     case 'malwarebytes':
+    // ThreatDown is Malwarebytes' business rebrand (#7551).
+    case 'threatdown':
       return 'malwarebytes';
     case 'eset':
       return 'eset';
@@ -261,6 +263,16 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'elastic_agent':
     case 'elastic':
       return 'elastic_defend';
+    case 'emsisoft':
+      return 'emsisoft';
+    case 'webroot':
+      return 'webroot';
+    // WithSecure is F-Secure's business brand (#7551).
+    case 'withsecure':
+    case 'f-secure':
+    case 'f_secure':
+    case 'fsecure':
+      return 'withsecure';
     default:
       return 'other';
   }

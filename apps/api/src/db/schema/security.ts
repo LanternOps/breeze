@@ -26,6 +26,9 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'eset',
   'kaspersky',
   'elastic_defend',
+  'emsisoft',
+  'webroot',
+  'withsecure',
   'other'
 ]);
 

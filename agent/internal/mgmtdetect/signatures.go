@@ -249,7 +249,7 @@ func AllSignatures() []Signature {
 		},
 
 		// =====================================================================
-		// Endpoint Security — AV/EDR (8 tools)
+		// Endpoint Security — AV/EDR (13 tools)
 		// =====================================================================
 
 		// CrowdStrike Falcon
@@ -315,6 +315,75 @@ func AllSignatures() []Signature {
 				{Type: CheckProcessRunning, Value: "RTProtectionDaemon", OS: "darwin"},
 				{Type: CheckFileExists, Value: `C:\Program Files\Malwarebytes\Anti-Malware\MBAMService.exe`, OS: "windows"},
 				{Type: CheckFileExists, Value: "/Library/Application Support/Malwarebytes/MBAM/Engine/RTProtectionDaemon", OS: "darwin"},
+			},
+		},
+
+		// ThreatDown (Malwarebytes' business brand — Nebula / OneView). The cloud
+		// Endpoint Agent is what distinguishes a managed ThreatDown endpoint; it
+		// also runs MBAMService as its protection engine, so the Malwarebytes
+		// signature above matches on these devices too (#7551).
+		{
+			Name: "ThreatDown", Category: CategoryEndpointSecurity,
+			OS: []string{"windows", "darwin"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "MBEndpointAgent", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "MBCloudEA.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "EndpointAgentDaemon", OS: "darwin"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Malwarebytes Endpoint Agent\MBCloudEA.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Library/Application Support/Malwarebytes/Malwarebytes Endpoint Agent", OS: "darwin"},
+			},
+		},
+
+		// ESET Endpoint Security / Endpoint Antivirus (ESET PROTECT managed)
+		{
+			Name: "ESET", Category: CategoryEndpointSecurity,
+			OS: []string{"windows", "darwin"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "ekrn", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "ekrn.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "esets_daemon", OS: "darwin"},
+				{Type: CheckFileExists, Value: `C:\Program Files\ESET\ESET Security\ekrn.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Library/Application Support/ESET", OS: "darwin"},
+			},
+		},
+
+		// Emsisoft Anti-Malware / Enterprise Security / Business Security
+		// (Windows only — Emsisoft ships no macOS endpoint agent).
+		{
+			Name: "Emsisoft", Category: CategoryEndpointSecurity,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "a2AntiMalware", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "a2service.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Emsisoft Anti-Malware\a2service.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Emsisoft Anti-Malware\a2service.exe`, OS: "windows"},
+			},
+		},
+
+		// Webroot SecureAnywhere (OpenText)
+		{
+			Name: "Webroot SecureAnywhere", Category: CategoryEndpointSecurity,
+			OS: []string{"windows", "darwin"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "WRSVC", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "WRSA.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Webroot\WRSA.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Webroot\WRSA.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Applications/Webroot SecureAnywhere.app", OS: "darwin"},
+			},
+		},
+
+		// WithSecure Elements (formerly F-Secure Elements / Computer Protection).
+		// Service names changed in Elements Agent 22.7, so detection keys on the
+		// plugin-host process and the install folder, which kept the F-Secure
+		// name. macOS omitted until verified on a lab host.
+		{
+			Name: "WithSecure Elements", Category: CategoryEndpointSecurity,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckProcessRunning, Value: "fshoster64.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "fshoster32.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\F-Secure\PSB`, OS: "windows"},
 			},
 		},
 

@@ -57,3 +57,102 @@ func TestSignatureChecksHaveFirstActiveCheck(t *testing.T) {
 		}
 	}
 }
+
+// TestEndpointSecuritySignatures_AVProviders locks the endpoint-security
+// signatures for the AV/EDR products added in #7551. Each row names the
+// signature and the probes that identify it; a probe is matched on type, value
+// and OS so a typo in a service or process name fails here, not on a fleet.
+func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
+	cases := []struct {
+		name   string
+		os     []string
+		probes []Check
+	}{
+		{
+			name: "ESET",
+			os:   []string{"windows", "darwin"},
+			probes: []Check{
+				{Type: CheckServiceRunning, Value: "ekrn", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "ekrn.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\ESET\ESET Security\ekrn.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Library/Application Support/ESET", OS: "darwin"},
+			},
+		},
+		{
+			name: "Emsisoft",
+			os:   []string{"windows"},
+			probes: []Check{
+				{Type: CheckServiceRunning, Value: "a2AntiMalware", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "a2service.exe", OS: "windows"},
+			},
+		},
+		{
+			name: "Webroot SecureAnywhere",
+			os:   []string{"windows", "darwin"},
+			probes: []Check{
+				{Type: CheckServiceRunning, Value: "WRSVC", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "WRSA.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: "/Applications/Webroot SecureAnywhere.app", OS: "darwin"},
+			},
+		},
+		{
+			name: "ThreatDown",
+			os:   []string{"windows", "darwin"},
+			probes: []Check{
+				{Type: CheckServiceRunning, Value: "MBEndpointAgent", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "MBCloudEA.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Malwarebytes Endpoint Agent\MBCloudEA.exe`, OS: "windows"},
+				{Type: CheckProcessRunning, Value: "EndpointAgentDaemon", OS: "darwin"},
+			},
+		},
+		{
+			name: "WithSecure Elements",
+			os:   []string{"windows"},
+			probes: []Check{
+				{Type: CheckProcessRunning, Value: "fshoster64.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\F-Secure\PSB`, OS: "windows"},
+			},
+		},
+	}
+
+	byName := map[string]Signature{}
+	for _, sig := range AllSignatures() {
+		byName[sig.Name] = sig
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sig, ok := byName[tc.name]
+			if !ok {
+				t.Fatalf("no signature named %q", tc.name)
+			}
+			if sig.Category != CategoryEndpointSecurity {
+				t.Errorf("category = %q, want %q", sig.Category, CategoryEndpointSecurity)
+			}
+			for _, goos := range tc.os {
+				if !sig.MatchesOS(goos) {
+					t.Errorf("signature does not cover %s", goos)
+				}
+			}
+			for _, probe := range tc.probes {
+				found := false
+				for _, c := range sig.Checks {
+					if c.Type == probe.Type && c.Value == probe.Value && c.OS == probe.OS {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("missing probe %s %q (os %q)", probe.Type, probe.Value, probe.OS)
+				}
+			}
+			// Every per-check OS must be one the signature declares, or the
+			// probe can never run.
+			for _, c := range sig.Checks {
+				if c.OS != "" && !sig.MatchesOS(c.OS) {
+					t.Errorf("probe %q targets %s, which the signature does not cover", c.Value, c.OS)
+				}
+			}
+		})
+	}
+}

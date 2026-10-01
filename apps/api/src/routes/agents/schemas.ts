@@ -543,6 +543,9 @@ export const securityProviderValues = [
   'eset',
   'kaspersky',
   'elastic_defend',
+  'emsisoft',
+  'webroot',
+  'withsecure',
   'other'
 ] as const;
 

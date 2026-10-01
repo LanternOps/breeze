@@ -11,6 +11,9 @@ export const providerCatalog = {
   eset: { id: 'eset', name: 'ESET', vendor: 'ESET' },
   kaspersky: { id: 'kaspersky', name: 'Kaspersky', vendor: 'Kaspersky' },
   elastic_defend: { id: 'elastic_defend', name: 'Elastic Defend', vendor: 'Elastic' },
+  emsisoft: { id: 'emsisoft', name: 'Emsisoft', vendor: 'Emsisoft' },
+  webroot: { id: 'webroot', name: 'Webroot SecureAnywhere', vendor: 'OpenText' },
+  withsecure: { id: 'withsecure', name: 'WithSecure Elements', vendor: 'WithSecure' },
   other: { id: 'other', name: 'Other', vendor: 'Other' }
 } as const;
 
