@@ -128,7 +128,7 @@ The callback origin is selected in this precedence order: `PUBLIC_URL`, `PUBLIC_
 | `M365_GRAPH_READ_EXECUTOR_ISSUER` | Exactly `breeze-api`. |
 | `M365_GRAPH_READ_EXECUTOR_AUDIENCE` | Exactly `m365-graph-read-executor`. |
 | `M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE` | `managed-identity` or `workload-identity`; there is no default/CLI credential fallback. |
-| `M365_GRAPH_READ_EXECUTOR_BIND_HOST` | A private RFC1918 or RFC 6598 shared-space (`100.64.0.0/10`, e.g. the Azure Container Apps replica overlay) IPv4 or unique-local IPv6 interface, not a hostname or public/loopback/link-local address. |
+| `M365_GRAPH_READ_EXECUTOR_BIND_HOST` | A private RFC1918 or RFC 6598 shared-space (`100.64.0.0/10`) IPv4 or unique-local IPv6 interface, or exactly `127.0.0.1` / `::1`; not a hostname, wildcard, other `127/8` address, or public/link-local address. On Azure Container Apps set it to `127.0.0.1`: ingress and health probes arrive from the in-pod Envoy sidecar over loopback, so a replica bound to its overlay IP never becomes healthy. Elsewhere, bind the private interface the TLS proxy reaches. |
 | `M365_GRAPH_READ_EXECUTOR_PORT` | Integer from 1 through 65535. |
 | `M365_SYNC_MAX_IN_FLIGHT` | Optional, default `4`. Concurrent whole-domain sync actions per replica. Must be ≤ `M365_MAX_IN_FLIGHT`; boot refuses otherwise. |
 | `M365_MAX_IN_FLIGHT` | Optional, default `32`. Total concurrent operations per replica across all four routes. The difference between the two caps is the headroom reserved for interactive AI-tool reads. |

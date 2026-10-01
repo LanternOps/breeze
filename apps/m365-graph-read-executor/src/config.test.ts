@@ -104,9 +104,9 @@ describe('M365 Graph-read executor config', () => {
   it.each([
     ['the wildcard IPv4 interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '0.0.0.0' }],
     ['the wildcard IPv6 interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '::' }],
-    ['IPv4 loopback', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '127.0.0.1' }],
     ['another IPv4 loopback address', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '127.42.0.9' }],
-    ['IPv6 loopback', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '::1' }],
+    ['an IPv4-mapped IPv6 loopback', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '::ffff:127.0.0.1' }],
+    ['a non-canonical IPv6 loopback', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '0:0:0:0:0:0:0:1' }],
     ['IPv6 link-local', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'fe80::1' }],
     ['zone-scoped IPv6 link-local', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'fe80::1%eth0' }],
     ['IPv4 multicast', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '239.1.2.3' }],
@@ -144,6 +144,18 @@ describe('M365 Graph-read executor config', () => {
     '100.100.197.88',
     '100.127.255.255',
   ])('accepts the RFC 6598 shared address %s', (bindHost) => {
+    expect(loadExecutorConfig(validEnv({
+      M365_GRAPH_READ_EXECUTOR_BIND_HOST: bindHost,
+    })).bindHost).toBe(bindHost);
+  });
+
+  // Azure Container Apps' in-pod Envoy sidecar delivers ingress and probes to
+  // the app over loopback only, so the canonical loopback literals are allowed.
+  // Other 127/8 addresses stay rejected (see the reject list above).
+  it.each([
+    '127.0.0.1',
+    '::1',
+  ])('accepts the loopback address %s', (bindHost) => {
     expect(loadExecutorConfig(validEnv({
       M365_GRAPH_READ_EXECUTOR_BIND_HOST: bindHost,
     })).bindHost).toBe(bindHost);
