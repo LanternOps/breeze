@@ -35,6 +35,15 @@ export interface BilledUsage {
   speedServed: SpeedServed;
   /** The model id the provider reported serving, when it reports one (Messages API). Null for the SDK. */
   providerModel: string | null;
+  /**
+   * Set only when ONE settlement spans several separate Messages API calls
+   * (a retry loop): the 0-based call this row belongs to, and that call's own
+   * outcome. Refusal / fallback labels are a property of a single call's
+   * attempts, so the ledger labels the row from `callOutcome`, never from the
+   * merged turn outcome. Plain data: it survives the pending-settlement JSON.
+   */
+  call?: number;
+  callOutcome?: TurnOutcome;
 }
 
 export interface TurnOutcome {
@@ -424,16 +433,15 @@ function addTokens(a: TokenComponents, b: TokenComponents): TokenComponents {
 }
 
 /**
- * One entry per attempt (client-side fallback = several attempts). Without
+ * ONE createMessage call's attempts (client-side fallback = several attempts). Without
  * `usage.iterations` an attempt is billed under the model it REQUESTED (the
  * id the binding's rates are keyed by) and the response's `model` is kept as
  * `providerModel`, so a mismatch is recorded rather than silently priced.
  */
-export function messagesUsage(
+function singleCallUsage(
   binding: TurnBinding,
-  attempts: ReadonlyArray<{ wireModel: string; message: MessageLike }>,
+  attempts: ReadonlyArray<MessageAttemptLike>,
 ): { usage: BilledUsage[]; outcome: TurnOutcome } {
-  if (attempts.length === 0) throw new Error('messagesUsage needs at least one attempt');
   const usage: BilledUsage[] = [];
   for (const attempt of attempts) {
     const u = attempt.message.usage;
@@ -485,6 +493,59 @@ export function messagesUsage(
   };
 }
 
+export interface MessageAttemptLike {
+  wireModel: string;
+  message: MessageLike;
+  /** Which createMessage call produced this attempt (retry loops); undefined = the only call. */
+  call?: number;
+}
+
+/**
+ * Usage + outcome for Messages API attempts. `attempts` may span several
+ * separate createMessage calls (a JSON-parse retry): attempts with the same
+ * `call` index (undefined = call 0) are ONE call, and fallback / refusal
+ * semantics apply only within a call. A single call is returned exactly as
+ * interpreted on its own; several calls are billed as ordinary separate
+ * usage rows, each labelled from its own call, and the turn outcome is the
+ * LAST call's (the answer delivered), with fallbackUsed true if any call fell back.
+ */
+export function messagesUsage(
+  binding: TurnBinding,
+  attempts: ReadonlyArray<MessageAttemptLike>,
+): { usage: BilledUsage[]; outcome: TurnOutcome } {
+  return callsUsage(binding, attempts, false);
+}
+
+function callsUsage(
+  binding: TurnBinding,
+  attempts: ReadonlyArray<MessageAttemptLike>,
+  errored: boolean,
+): { usage: BilledUsage[]; outcome: TurnOutcome } {
+  if (attempts.length === 0) throw new Error('messagesUsage needs at least one attempt');
+  const groups = new Map<number, MessageAttemptLike[]>();
+  for (const a of attempts) {
+    const k = a.call ?? 0;
+    groups.set(k, [...(groups.get(k) ?? []), a]);
+  }
+  const ordered = [...groups.entries()].sort((x, y) => x[0] - y[0]);
+  const withError = (o: TurnOutcome, last: boolean): TurnOutcome => (errored && last ? { ...o, stopReason: 'error' } : o);
+  if (ordered.length === 1) {
+    const one = singleCallUsage(binding, ordered[0]![1]);
+    return { usage: one.usage, outcome: withError(one.outcome, true) };
+  }
+  const usage: BilledUsage[] = [];
+  let outcome!: TurnOutcome;
+  let anyFallback = false;
+  ordered.forEach(([call, group], i) => {
+    const one = singleCallUsage(binding, group);
+    const callOutcome = withError(one.outcome, i === ordered.length - 1);
+    anyFallback ||= callOutcome.fallbackUsed;
+    usage.push(...one.usage.map((u) => ({ ...u, call, callOutcome })));
+    outcome = callOutcome;
+  });
+  return { usage, outcome: { ...outcome, fallbackUsed: anyFallback } };
+}
+
 /**
  * Usage for a Messages API dispatch that FAILED after some provider calls
  * completed (createMessage's MessageDispatchError, or a caller's own retry
@@ -494,8 +555,7 @@ export function messagesUsage(
  */
 export function messagesUsageAfterDispatchError(
   binding: TurnBinding,
-  attempts: ReadonlyArray<{ wireModel: string; message: MessageLike }>,
+  attempts: ReadonlyArray<MessageAttemptLike>,
 ): { usage: BilledUsage[]; outcome: TurnOutcome } {
-  const billed = messagesUsage(binding, attempts);
-  return { usage: billed.usage, outcome: { ...billed.outcome, stopReason: 'error' } };
+  return callsUsage(binding, attempts, true);
 }

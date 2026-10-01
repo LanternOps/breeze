@@ -168,6 +168,38 @@ describe('settleInvocation', () => {
     ]);
   });
 
+  it('a plain two-call retry writes two ordinary rows (no refusal / fallback labels), one settlement', async () => {
+    const { messagesUsage } = await import('./invocationUsage');
+    const msg = { model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [], usage: { input_tokens: 1_000_000, output_tokens: 100_000 } } as never;
+    const billed = messagesUsage(B, [
+      { wireModel: 'claude-sonnet-5-5', call: 0, message: msg },
+      { wireModel: 'claude-sonnet-5-5', call: 1, message: msg },
+    ]);
+    await settleInvocation(base({ usage: billed.usage, outcome: billed.outcome }));
+    expect(m.settleDurably).toHaveBeenCalledTimes(1);
+    const rows = m.settleDurably.mock.calls[0]![0].invocations as Array<{ stopReason: string; fallbackUsed: boolean; costCents: number; refusalCategory: string | null }>;
+    expect(rows.map((r) => [r.stopReason, r.fallbackUsed, r.costCents, r.refusalCategory])).toEqual([
+      ['end_turn', false, 300, null], ['end_turn', false, 300, null],
+    ]);
+  });
+
+  it('a genuine refusal fallback in call 0 stays labelled while the retry call 1 row is ordinary', async () => {
+    const { messagesUsage } = await import('./invocationUsage');
+    const ok = { model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [], usage: { input_tokens: 1_000_000, output_tokens: 100_000 } } as never;
+    const refused = { ...(ok as object), stop_reason: 'refusal', stop_details: { category: 'bio' } } as never;
+    const fb = { ...(ok as object), model: 'claude-haiku-4-5' } as never;
+    const billed = messagesUsage(B, [
+      { wireModel: 'claude-sonnet-5-5', call: 0, message: refused },
+      { wireModel: 'claude-haiku-4-5', call: 0, message: fb },
+      { wireModel: 'claude-sonnet-5-5', call: 1, message: ok },
+    ]);
+    await settleInvocation(base({ usage: billed.usage, outcome: billed.outcome }));
+    const rows = m.settleDurably.mock.calls[0]![0].invocations as Array<{ stopReason: string; fallbackUsed: boolean; refusalCategory: string | null }>;
+    expect(rows.map((r) => [r.stopReason, r.fallbackUsed, r.refusalCategory])).toEqual([
+      ['refusal', false, 'bio'], ['end_turn', true, 'bio'], ['end_turn', false, null],
+    ]);
+  });
+
   it('a provider-reported model that differs from the billed id keeps both visible', async () => {
     await settleInvocation(base({ usage: [use('claude-haiku-4-5', { providerModel: 'claude-haiku-4-5-20251001' })] }));
     expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({

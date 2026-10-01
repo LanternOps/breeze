@@ -4,6 +4,10 @@ const createMock = vi.fn();
 
 import { draftTicketFromEmail, EmailDraftFailedError } from './aiEmailDraft';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
+import { messagesUsage } from '../aiModels/invocationUsage';
+import { turnBindingFrom } from '../aiModels/turnBinding';
+
+const binding = turnBindingFrom(makeResolvedModel('platform'));
 
 function reply(json: object, inTok = 100, outTok = 50) {
   return { model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(json) }], usage: { input_tokens: inTok, output_tokens: outTok } };
@@ -87,7 +91,7 @@ describe('draftTicketFromEmail', () => {
     expect(err).toBeInstanceOf(EmailDraftFailedError);
     expect((err as EmailDraftFailedError).providerOutcomeUnknown).toBe(true);
     expect((err as EmailDraftFailedError).attempts).toEqual([
-      { wireModel: 'anthropic/claude-sonnet-5.5', message: REFUSED },
+      { wireModel: 'anthropic/claude-sonnet-5.5', message: REFUSED, call: 0 },
     ]);
   });
 
@@ -112,6 +116,10 @@ describe('draftTicketFromEmail', () => {
     // Attempt 1's burned 30/10 must not be dropped when attempt 2 succeeds.
     expect(r.attempts.map((a) => a.message.usage.input_tokens)).toEqual([30, 100]);
     expect(r.attempts.map((a) => a.message.usage.output_tokens)).toEqual([10, 50]);
+    // Two separate calls: a plain parse retry, NOT a refusal fallback.
+    expect(r.attempts.map((a) => a.call)).toEqual([0, 1]);
+    const billed = messagesUsage(binding, r.attempts);
+    expect(billed.outcome).toMatchObject({ fallbackUsed: false, refused: false, refusalCategory: null });
   });
 
   it('retries once on malformed JSON then throws', async () => {

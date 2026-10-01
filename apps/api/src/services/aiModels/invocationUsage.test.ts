@@ -494,3 +494,41 @@ describe('messagesUsage', () => {
     expect(out.usage).toEqual([{ model: SONNET, tokens: tok(2, 2), webSearchRequests: 0, speedServed: 'fast', providerModel: SONNET }]);
   });
 });
+
+describe('messagesUsage across separate createMessage calls (a retry loop)', () => {
+  const plain = (call: number, over: Partial<MessageLike> = {}) => ({ wireModel: SONNET, call, message: msg(over) });
+
+  it('a plain retry is two ordinary calls: no fallback, no refusal, both billed', () => {
+    const out = messagesUsage(B, [plain(0), plain(1)]);
+    expect(out.usage.map((u) => [u.model, u.call, u.callOutcome?.fallbackUsed])).toEqual([[SONNET, 0, false], [SONNET, 1, false]]);
+    expect(out.usage.map((u) => u.tokens)).toEqual([T, T]);
+    expect(out.outcome).toMatchObject({ stopReason: 'end_turn', refused: false, fallbackUsed: false, refusalCategory: null, servedModel: SONNET });
+  });
+
+  it('a genuine client-side refusal fallback inside ONE call is still labelled', () => {
+    const out = messagesUsage(B, [
+      { wireModel: SONNET, call: 0, message: msg({ stop_reason: 'refusal', stop_details: { category: 'bio' } }) },
+      { wireModel: HAIKU, call: 0, message: msg() },
+      plain(1),
+    ]);
+    expect(out.usage.map((u) => [u.model, u.call, u.callOutcome?.fallbackUsed])).toEqual([[SONNET, 0, true], [HAIKU, 0, true], [SONNET, 1, false]]);
+    expect(out.usage[2]!.callOutcome).toMatchObject({ refused: false, refusalCategory: null });
+    expect(out.outcome).toMatchObject({ servedModel: SONNET, fallbackUsed: true });
+  });
+
+  it('a single call (no call tags) is interpreted exactly as before', () => {
+    const out = messagesUsage(B, [
+      { wireModel: SONNET, message: msg({ stop_reason: 'refusal', stop_details: { category: 'bio' } }) },
+      { wireModel: HAIKU, message: msg() },
+    ]);
+    expect(out.usage.every((u) => u.call === undefined && u.callOutcome === undefined)).toBe(true);
+    expect(out.outcome).toMatchObject({ fallbackUsed: true, refusalCategory: 'bio', servedModel: HAIKU });
+  });
+
+  it('after a dispatch error the LAST call is the errored one', () => {
+    const out = messagesUsageAfterDispatchError(B, [plain(0), plain(1, { stop_reason: 'refusal', stop_details: { category: 'cyber' } })]);
+    expect(out.outcome).toMatchObject({ stopReason: 'error', refused: true });
+    expect(out.usage[0]!.callOutcome).toMatchObject({ stopReason: 'end_turn' });
+    expect(out.usage[1]!.callOutcome).toMatchObject({ stopReason: 'error' });
+  });
+});

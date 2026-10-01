@@ -4,6 +4,10 @@ const createMock = vi.fn();
 
 import { draftTicketFromTranscript, ThinTranscriptError } from './aiTicketDraft';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { messagesUsage } from './aiModels/invocationUsage';
+import { turnBindingFrom } from './aiModels/turnBinding';
+
+const binding = turnBindingFrom(makeResolvedModel('catalog'));
 
 const base = { resolved: makeResolvedModel('platform'), client: { messages: { create: createMock } } as never };
 
@@ -64,6 +68,11 @@ describe('draftTicketFromTranscript', () => {
     });
     expect(createMock.mock.calls[0]![0]).toMatchObject({ model: 'anthropic/claude-sonnet-5.5', max_tokens: 1024 });
     expect(out.attempts).toHaveLength(2);
+    // Two separate calls: a plain parse retry, NOT a refusal fallback.
+    expect(out.attempts.map((a) => a.call)).toEqual([0, 1]);
+    const billed = messagesUsage(binding, out.attempts);
+    expect(billed.outcome).toMatchObject({ fallbackUsed: false, refused: false, refusalCategory: null });
+    expect(billed.usage.map((u) => u.callOutcome?.fallbackUsed)).toEqual([false, false]);
   });
 
   it('a provider throw carries the attempts made so far and marks the outcome unknown', async () => {
@@ -80,7 +89,7 @@ describe('draftTicketFromTranscript', () => {
     }).catch((e: unknown) => e);
     expect(err).toMatchObject({ name: 'TicketDraftFailedError', providerOutcomeUnknown: true });
     expect((err as { attempts: unknown[] }).attempts).toEqual([
-      { wireModel: 'anthropic/claude-sonnet-5.5', message: REFUSED },
+      { wireModel: 'anthropic/claude-sonnet-5.5', message: REFUSED, call: 0 },
     ]);
   });
 

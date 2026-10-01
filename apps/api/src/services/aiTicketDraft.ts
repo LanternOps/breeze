@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { maxOutputTokensForAiBudget } from './aiBudgetReservations';
-import { attemptsOf, createMessage, type MessageAttempt } from './aiModels/connectionFactory';
+import { appendCall, attemptsOf, createMessage, type MessageAttempt } from './aiModels/connectionFactory';
 import type { ResolvedModel } from './aiModels/resolveModel';
 import { costEstimator } from './aiModels/settleInvocation';
 
@@ -21,7 +21,7 @@ export interface DraftResult {
   resolutionSummary: string;
   wasFixed: boolean;
   suggestedTimeMinutes: number;
-  /** Every provider call made, for the route to bill via messagesUsage. */
+  /** Every provider attempt made (tagged by `call`), for the route to bill via messagesUsage. */
   attempts: MessageAttempt[];
 }
 export class ThinTranscriptError extends Error {
@@ -103,7 +103,7 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
       });
     } catch (error) {
       // A refused attempt completed before its fallback threw: billed, keep it.
-      attempts.push(...attemptsOf(error));
+      appendCall(attempts, attemptsOf(error));
       throw new TicketDraftFailedError(
         'Ticket draft provider outcome is unknown',
         attempts,
@@ -111,7 +111,7 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
         { cause: error },
       );
     }
-    attempts.push(...outcome.attempts);
+    appendCall(attempts, outcome.attempts);
     const text = lastTextBlock(outcome.message.content);
     if (text) {
       try {

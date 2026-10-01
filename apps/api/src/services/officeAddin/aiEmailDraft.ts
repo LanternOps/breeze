@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { maxOutputTokensForAiBudget } from '../aiBudgetReservations';
-import { attemptsOf, createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
+import { appendCall, attemptsOf, createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
 import type { ResolvedModel } from '../aiModels/resolveModel';
 import { costEstimator } from '../aiModels/settleInvocation';
 
@@ -32,7 +32,7 @@ export interface EmailDraftResult {
   subject: string;
   summary: string;
   suggestedTimeMinutes: number;
-  /** Every provider call made, for the route to bill via messagesUsage. */
+  /** Every provider attempt made (tagged by `call`), for the route to bill via messagesUsage. */
   attempts: MessageAttempt[];
 }
 
@@ -130,10 +130,10 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
       // deterministic fallback), but wrapped so prior attempts' spend bills.
       attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);
       // A refused attempt completed before its fallback threw: billed, keep it.
-      attempts.push(...attemptsOf(err));
+      appendCall(attempts, attemptsOf(err));
       return fail(err, true);
     }
-    attempts.push(...outcome.attempts);
+    appendCall(attempts, outcome.attempts);
     const text = lastTextBlock(outcome.message.content);
     if (!text) {
       attemptErrors.push(`attempt ${attempt + 1}: no text block in model response`);

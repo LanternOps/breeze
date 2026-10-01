@@ -153,10 +153,15 @@ export async function quoteInvocationCents(binding: TurnBinding, usage: BilledUs
 
 export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsage[]): NewInvocation[] {
   const b = input.binding;
-  const multi = priced.length > 1;
   return priced.map((p, index): NewInvocation => {
-    const servedByFallback = p.unboundModel || (input.outcome.fallbackUsed && p.model !== b.wireModel);
-    const refusedLeg = input.outcome.fallbackUsed && multi && p.model === b.wireModel;
+    // Refusal / fallback labels belong to ONE createMessage call's attempts: a
+    // row from a multi-call settlement (a retry loop) is labelled from its own
+    // call's outcome and sibling rows, never from the merged turn outcome.
+    const outcome = p.callOutcome ?? input.outcome;
+    const callRows = p.call === undefined ? priced : priced.filter((x) => x.call === p.call);
+    const multi = callRows.length > 1;
+    const servedByFallback = p.unboundModel || (outcome.fallbackUsed && p.model !== b.wireModel);
+    const refusedLeg = outcome.fallbackUsed && multi && p.model === b.wireModel;
     // The speed the row was BILLED at: a requested 'fast' the provider served
     // as standard is recorded as standard (not applied).
     const optionsSent = b.options.speed !== undefined || p.appliedSpeed === 'fast'
@@ -180,8 +185,8 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       optionsSent,
       thinkingModeSent: b.thinkingMode,
       inferenceGeoSent: b.inferenceGeo,
-      stopReason: refusedLeg ? 'refusal' : input.outcome.stopReason,
-      refusalCategory: refusedLeg || servedByFallback || input.outcome.refused ? input.outcome.refusalCategory : null,
+      stopReason: refusedLeg ? 'refusal' : outcome.stopReason,
+      refusalCategory: refusedLeg || servedByFallback || outcome.refused ? outcome.refusalCategory : null,
       fallbackUsed: servedByFallback,
       catalogRevisionId: b.catalogRevisionId,
       connectionConfigVersion: b.configVersion,

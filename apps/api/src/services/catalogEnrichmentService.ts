@@ -9,7 +9,7 @@ import { captureException, captureMessage } from './sentry';
 import { assertOutsideHeldDbContext } from '../db';
 import { LlmUnavailableError } from './llm/llmUnavailableError';
 import { readOrgPartnerId } from './aiModels/candidateLoader';
-import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageAttempt } from './aiModels/connectionFactory';
+import { anthropicClientFor, appendCall, attemptsOf, createMessage, dispatchCause, type MessageAttempt } from './aiModels/connectionFactory';
 import { messagesUsage, messagesUsageAfterDispatchError } from './aiModels/invocationUsage';
 import { safeErrorMessage } from './aiModels/safeDbError';
 import { resolveModel, type ResolvedModel } from './aiModels/resolveModel';
@@ -356,7 +356,7 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
           tools,
           messages,
         });
-        attempts.push(...outcome.attempts);
+        appendCall(attempts, outcome.attempts);
         const resp = outcome.message;
         lastStopReason = resp.stop_reason ?? null;
         if (resp.stop_reason === 'pause_turn' || resp.stop_reason === 'tool_use') {
@@ -369,7 +369,7 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
     } catch (error) {
       // A refused attempt that completed before its fallback threw was billed
       // by the provider: it joins the turns already spent.
-      attempts.push(...attemptsOf(error));
+      appendCall(attempts, attemptsOf(error));
       const budgetStop = error instanceof EnrichmentBudgetStopError;
       if (actor.orgId && reservationId) {
         await settleAfterFailure({
@@ -873,11 +873,11 @@ export async function polishCatalogText(
         providerOutcomeUnknown = true;
         // A refused attempt that completed before its fallback threw was
         // billed by the provider: it joins the attempts already spent.
-        attempts.push(...attemptsOf(error));
+        appendCall(attempts, attemptsOf(error));
         throw dispatchCause(error);
       }
       const { raw } = turn;
-      attempts.push(...turn.attempts);
+      appendCall(attempts, turn.attempts);
       if (!raw) continue;
 
       // Only accept fields that were actually requested — never let the model

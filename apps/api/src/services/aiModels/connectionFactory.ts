@@ -163,7 +163,23 @@ export function messagesModelParams(
 export type MessagesBody = Omit<Anthropic.MessageCreateParamsNonStreaming, 'model' | 'thinking' | 'output_config'>;
 /** The SDK request options a one-shot surface may pin (wall clock, no hidden retries). */
 export interface MessageRequestOptions { signal?: AbortSignal; maxRetries?: number }
-export interface MessageAttempt { wireModel: string; message: Anthropic.Message }
+/**
+ * One completed provider request. `call` is set by a caller that runs several
+ * createMessage calls under one settlement (a retry loop) so the ledger
+ * interprets each call's attempts on their own (see invocationUsage.messagesUsage).
+ */
+export interface MessageAttempt { wireModel: string; message: Anthropic.Message; call?: number }
+/**
+ * Append one createMessage call's attempts to a running list, tagging them with
+ * the next `call` index. A caller whose single settlement spans several calls
+ * (a retry or tool loop) uses this so each call's refusal/fallback semantics
+ * stay its own. Nothing to append (a throw before any attempt completed) is a no-op.
+ */
+export function appendCall(into: MessageAttempt[], callAttempts: readonly MessageAttempt[]): void {
+  if (callAttempts.length === 0) return;
+  const call = into.reduce((n, a) => Math.max(n, (a.call ?? 0) + 1), 0);
+  into.push(...callAttempts.map((a) => ({ ...a, call })));
+}
 export interface MessageOutcome { message: Anthropic.Message; attempts: MessageAttempt[] }
 
 /**
