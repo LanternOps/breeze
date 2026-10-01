@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MODEL_LIFECYCLES } from '@breeze/shared';
+import { AI_SURFACES, AI_SURFACE_ROLES, MODEL_LIFECYCLES } from '@breeze/shared';
 import { describe, expect, it } from 'vitest';
+import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
+import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
+import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 import { PARTNER_AI_CONNECTION_KINDS, PARTNER_AI_MODEL_SOURCES } from './aiModelRegistry';
 
 export function readMigration(name: string): string {
@@ -59,5 +62,35 @@ describe('partner_ai_models contract (#7600 W02)', () => {
   it('the connection FK is composite and cascades', () => {
     expect(sqlText).toMatch(/FOREIGN KEY \(connection_id, partner_id\)\s+REFERENCES public\.partner_ai_connections \(id, partner_id\) ON DELETE CASCADE/);
     expect(sqlText).toMatch(/FOREIGN KEY \(refusal_fallback_offering_id, partner_id\)\s+REFERENCES public\.partner_ai_models \(id, partner_id\)/);
+  });
+});
+
+describe('ai_model_assignments contract (#7600 W02)', () => {
+  const sqlText = readMigration('2026-11-14-100200-ai-model-registry-assignments.sql');
+
+  it('the surface CHECK lists exactly AI_SURFACES', () => {
+    expect(checkLiterals(sqlText, 'surface')).toEqual([...AI_SURFACES]);
+  });
+
+  it('the role CHECK admits exactly AI_SURFACE_ROLES', () => {
+    const nonDefault = Object.entries(AI_SURFACE_ROLES).flatMap(([surface, roles]) =>
+      roles.filter((r) => r !== 'default').map((r) => `${surface}:${r}`));
+    expect(nonDefault).toEqual(['ai_agents:triage', 'ai_agents:analysis', 'ai_agents:remediation']);
+    expect(sqlText).toMatch(/role = 'default'\s+OR \(surface = 'ai_agents' AND role IN \('triage', 'analysis', 'remediation'\)\)/);
+    for (const roles of Object.values(AI_SURFACE_ROLES)) expect(roles).toContain('default');
+  });
+
+  it('the org-side composite FK is DEFERRABLE INITIALLY IMMEDIATE', () => {
+    expect(sqlText).toMatch(/ai_model_assignments_org_partner_fk\s+FOREIGN KEY \(org_id, offering_partner_id\)\s+REFERENCES public\.organizations \(id, partner_id\)\s+DEFERRABLE INITIALLY IMMEDIATE/);
+  });
+
+  it('is registered in the org cascade, merge (repoint-dedupe on surface+role) and export policy', () => {
+    const order = getOrgCascadeDeleteOrder();
+    expect(order.indexOf('ai_model_assignments')).toBeGreaterThan(order.indexOf('ai_cost_usage'));
+    expect(getOrgMergePolicies().get('ai_model_assignments')).toEqual({ kind: 'repoint-dedupe', key: ['surface', 'role'], keyWhere: '{org_id} IS NOT NULL' });
+    const policy = CORE_TENANT_EXPORT_POLICY['ai_model_assignments'];
+    expect(policy?.organizationKey).toBe('org_id');
+    expect(policy?.columns['options']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
+    expect(policy?.columns['permitted_offering_ids']?.decision).toBe('include');
   });
 });

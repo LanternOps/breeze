@@ -282,6 +282,11 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // when the last pointer goes null. Never reads or writes org_id; the table is
   // leave-for-erasure anyway.
   'ai_operator_task_targets.ai_operator_task_targets_stamp_detach': 'stamps a detach when the last pointer is nulled; never touches org_id',
+  // AI model registry W02 (2026-11-14-100200, #7600): BEFORE INSERT OR UPDATE
+  // OF permitted_offering_ids, fallback_offering_ids, offering_partner_id.
+  // Checks the offering arrays belong to offering_partner_id. A merge repoint
+  // changes org_id only (same partner), so it never fires on a merge.
+  'ai_model_assignments.ai_model_assignments_offering_ownership_guard': 'fires only on offering-array/offering_partner_id changes; an org_id-only repoint never fires it',
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',

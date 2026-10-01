@@ -291,6 +291,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // ai_model_assignments (AI model registry W02, #7600): org_id XOR partner_id.
+  // Only ORG override rows are cascade participants; partner-wide rows have
+  // org_id NULL and go with the partner. FKs out only: organizations
+  // (cascade + a deferrable composite), partner_ai_models (partner axis, not in
+  // this list), partners. Nothing references it.
+  'ai_model_assignments',
   // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
   // NOT NULL org_id, so all three are required here.
   //   - ai_operator_operations references action_intents and ai_agent_runs,

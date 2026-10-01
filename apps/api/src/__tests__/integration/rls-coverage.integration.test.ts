@@ -474,6 +474,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // Functional cross-partner forge proof:
   // aiScriptPoliciesPartnerRls.integration.test.ts.
   'ai_script_policies',
+  // ai_model_assignments (AI model registry W02, #7600): org override (org_id
+  // set) OR partner-wide (partner_id set, org_id NULL). Created dual-axis from
+  // day one in 2026-11-14-100200 with its partner-wide SELECT branch in the
+  // same file. Functional forge proof: aiModelAssignmentsPartnerRls.integration.test.ts.
+  'ai_model_assignments',
   // deliverable_template_sets / deliverable_template_items (spec #5573 §4.6,
   // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
   // set, org_id NULL — one service tier applied across every org the MSP
@@ -817,6 +822,8 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'monitor_conversion_outputs',
   // ai_script_policies_one_owner_chk, 2026-10-16-120200 (#5612 W04).
   'ai_script_policies',
+  // ai_model_assignments_one_owner_chk, 2026-11-14-100200 (#7600 W02).
+  'ai_model_assignments',
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
   'deliverable_template_sets',
