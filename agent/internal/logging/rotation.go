@@ -54,6 +54,8 @@ type RotatingWriter struct {
 	// warning has already been written to os.Stderr for this writer (see
 	// writeDisabledFallback).
 	disabledWarned bool
+	// closed is set by Close and never cleared; see Close.
+	closed bool
 }
 
 // NewRotatingWriter creates a writer that rotates when maxSizeMB is exceeded.
@@ -97,6 +99,9 @@ func (rw *RotatingWriter) Write(p []byte) (int, error) {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 
+	if rw.closed {
+		return 0, os.ErrClosed
+	}
 	if rw.disabled {
 		return rw.writeDisabledFallback(p)
 	}
@@ -156,10 +161,14 @@ func (rw *RotatingWriter) Reopen() error {
 	return nil
 }
 
-// Close closes the underlying file.
+// Close closes the underlying file. A closed writer stays closed: later
+// writes fail with os.ErrClosed and never open, rotate or re-create the file
+// or its directory (a support session closes its log before removing its
+// folder, #7629).
 func (rw *RotatingWriter) Close() error {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
+	rw.closed = true
 
 	if rw.file != nil {
 		err := rw.file.Close()

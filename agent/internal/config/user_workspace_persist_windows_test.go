@@ -103,3 +103,31 @@ func TestUserWorkspaceCodecTrustRealFolderAsStandardUser(t *testing.T) {
 		t.Fatalf("data dir writable by Users: err = %v, want a write refusal", err)
 	}
 }
+
+// TestUserWorkspaceCodecTrustRefusesAnElevatedSession: in a session running
+// with Administrators enabled, the session user is not an accepted owner or
+// writer. A non-elevated process of the same user can write the folder (the
+// DACL grants that user), so trusting it would let that process swap the
+// codec between its hash check and the elevated LoadLibrary. The codec is
+// refused instead and the session falls back to the WebSocket desktop.
+func TestUserWorkspaceCodecTrustRefusesAnElevatedSession(t *testing.T) {
+	if !isAdminEnabled(t) {
+		t.Skip("needs an elevated runner token (Administrators enabled)")
+	}
+	plantInstalledAgentConfig(t)
+	t.Cleanup(resetUserWorkspaceForTest)
+	ws := filepath.Join(t.TempDir(), "breeze-support-7629")
+	if err := SecureUserWorkspace(ws); err != nil {
+		t.Fatalf("SecureUserWorkspace: %v", err)
+	}
+	if err := os.MkdirAll(GetDataDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dll := filepath.Join(GetDataDir(), "openh264-2.4.1-win64.dll")
+	if err := os.WriteFile(dll, []byte("codec"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyProgramDataPath(dll); err == nil {
+		t.Fatal("VerifyProgramDataPath accepted a user-writable codec in an elevated session")
+	}
+}

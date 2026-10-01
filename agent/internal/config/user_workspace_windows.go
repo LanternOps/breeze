@@ -165,10 +165,26 @@ func applyUserWorkspaceFileDACL(path string) error {
 	return applyWindowsDACL(path, sddl)
 }
 
-// workspaceOwnerSID returns the SID of the user this process runs as (the
-// process token, not an impersonation token), or "" if it cannot be read.
+// workspaceOwnerSID returns the SID of the user this support session runs as,
+// which VerifyProgramDataPath then accepts as an owner and writer inside the
+// session's private folder, or "" to accept no one extra.
+//
+// "" when the session runs with Administrators enabled (elevated): the folder
+// grants the user SID, so a non-elevated process of the same user could swap
+// a file between its check and the elevated process loading it, a UAC bypass.
+// An elevated session therefore trusts only SYSTEM/Administrators-controlled
+// files there, which refuses the downloaded codec (the desktop falls back to
+// the WebSocket stream). Also "" if the token cannot be read: fail closed.
 func workspaceOwnerSID() string {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return ""
+	}
+	// Token 0: the thread's effective token (impersonation token if any).
+	if elevated, err := windows.Token(0).IsMember(admins); err != nil || elevated {
+		return ""
+	}
+	user, err := windows.GetCurrentThreadEffectiveToken().GetTokenUser()
 	if err != nil {
 		return ""
 	}

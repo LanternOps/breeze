@@ -1985,14 +1985,15 @@ jobs:
       # junction, file or foreign-owned directory, and check the machine-wide
       # config policy is unchanged. The foreign-owner test plants its owner
       # with SeRestorePrivilege, so it too needs this elevated runner.
-      # Eight more TestUserWorkspace* tests are the #7629 regression: support
+      # Nine more TestUserWorkspace* tests are the #7629 regression: support
       # sessions keep all files in their private folder. The config, data and
       # log dirs resolve there; once the session binds its agent.yaml, token
       # rotation, mTLS renewal and every other config persist land there (also
       # as a standard user); an installed agent's config at the default path
       # is untouched; an outside-path persist is refused; and the H.264 codec
       # in the folder passes the trust check with real ACLs as a standard
-      # user, but not once BUILTIN\Users can write it.
+      # user, but not once BUILTIN\Users can write it, and not in an elevated
+      # session (needs this elevated runner).
       - name: Run Windows config owner/DACL tests (must not skip)
         working-directory: agent
         env:
@@ -2006,7 +2007,7 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
-          if ($passes -ne 23) { throw "expected exactly 23 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 24) { throw "expected exactly 24 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # #7629: a support session's executable and private folder are removed
       # after it exits, even when it still held files in the folder when it

@@ -493,3 +493,22 @@ func TestResolveTrustedOrLegacyBinaryPath(t *testing.T) {
 		})
 	}
 }
+
+// TestSelfUninstallRefusedInASupportSession: a support session is not the
+// installed agent and must never uninstall it. self_uninstall arrives over the
+// same command channel as everything else, so a mis-routed or forged one in a
+// support session is refused before anything is touched (#7629).
+func TestSelfUninstallRefusedInASupportSession(t *testing.T) {
+	origPrepare, origSchedule := prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn
+	t.Cleanup(func() { prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn = origPrepare, origSchedule })
+	prepareSelfUninstallFn = func(bool) error {
+		t.Error("self-uninstall preparation ran in a support session")
+		return nil
+	}
+	scheduleSelfUninstallShutdownFn = func(*Heartbeat) { t.Error("self-uninstall shutdown scheduled in a support session") }
+
+	result := handleSelfUninstall(&Heartbeat{supportMode: true}, Command{ID: "cmd-1", Type: "self_uninstall"})
+	if result.Status != "failed" {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+}

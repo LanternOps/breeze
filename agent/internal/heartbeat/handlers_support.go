@@ -127,11 +127,10 @@ func supportCleanup(h *Heartbeat) {
 
 	// Belt-and-braces against ever removing a real install's config dir: the
 	// workspace is only ever the temp directory runSupportSession created.
+	// A failure is not logged: logging was discarded by the release above.
+	// Whatever this process still holds is removed by the post-exit cleanup.
 	if isSupportWorkDir(h.supportWorkDir) {
-		if err := removeSupportWorkDir(h.supportWorkDir); err != nil {
-			log.Warn("could not remove the support folder yet; it is removed once this process exits",
-				"path", h.supportWorkDir, "error", err.Error())
-		}
+		_ = removeSupportWorkDir(h.supportWorkDir)
 	}
 
 	// Removes the executable, and whatever of the folder this process still

@@ -3,7 +3,9 @@ package agentapp
 import (
 	"io"
 	"os"
+	"runtime"
 	"sync"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/logging"
 )
@@ -27,8 +29,7 @@ func trackLogFile(f io.Closer) {
 // Windows an open file keeps the folder from being removed, and logging
 // discarded from here on means nothing re-creates the log afterwards.
 func releaseLogFiles() {
-	logging.Init("text", "error", io.Discard)
-	log = logging.L("main")
+	logging.DiscardOutput()
 
 	openLogFiles.mu.Lock()
 	files := openLogFiles.files
@@ -44,5 +45,13 @@ func releaseLogFiles() {
 // on Windows.
 func discardSupportWorkDir(workDir string) {
 	releaseLogFiles()
-	_ = os.RemoveAll(workDir)
+	// A brief retry: an antivirus scan of a just-written file can make the
+	// first removal fail on Windows. Nothing else runs after this, so the
+	// error has nowhere useful to go (logging is discarded).
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := os.RemoveAll(workDir); err == nil || runtime.GOOS != "windows" {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
