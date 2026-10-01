@@ -148,6 +148,7 @@ import {
   type PatchPlanToolRefs,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { legacyAgentModel } from '../aiModels/legacySurfaceModels';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
@@ -1862,7 +1863,7 @@ async function driveSdkLoop(
   }
   const usableLlm: UsableLlmConfig = llm;
   const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
-  const model = effective.model ?? llm.model;
+  const model = legacyAgentModel(effective.model, llm.model);
 
   // #5870 — the only log line between admission and termination. Without it
   // a run that is legitimately still thinking (a design run may now run up

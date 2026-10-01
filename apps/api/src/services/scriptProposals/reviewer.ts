@@ -25,6 +25,7 @@ import {
 import { transitionProposal } from './proposals';
 import { resolveEffectiveScriptPolicy, type EffectiveScriptPolicy } from './policy';
 import type { ScriptReviewJobData } from './reviewQueue';
+import { legacyReviewerModel } from '../aiModels/legacySurfaceModels';
 
 export const SCRIPT_REVIEW_TIMEOUT_MS = 60_000;
 export const SCRIPT_REVIEW_MAX_OUTPUT_TOKENS = 2_000;
@@ -145,7 +146,7 @@ export function buildReviewerPrompt(args: {
  */
 export async function resolveReviewerModel(orgId: string): Promise<string> {
   const effective = await resolveReviewerPolicy(orgId);
-  return effective.reviewerModel ?? AI_SCRIPT_REVIEWER_MODEL;
+  return legacyReviewerModel(effective.reviewerModel, AI_SCRIPT_REVIEWER_MODEL);
 }
 
 /** The effective lane policy as the worker sees it (system context — there
@@ -367,7 +368,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   }
   const reservationId = reservation.reservationId;
 
-  const model = effectivePolicy.reviewerModel ?? AI_SCRIPT_REVIEWER_MODEL;
+  const model = legacyReviewerModel(effectivePolicy.reviewerModel, AI_SCRIPT_REVIEWER_MODEL);
 
   // Settle-at-zero helper for the branches where no tokens were ever spent.
   const settleAtZero = (catalogPricing?: CatalogPricing) =>

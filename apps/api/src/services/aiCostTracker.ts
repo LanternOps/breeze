@@ -20,6 +20,7 @@ import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 import { topologySessionCondition, type TopologySessionVisibility } from './topology/aiSessionAccess';
 import { isPlatformModelSnapshotLoaded, peekPlatformModel } from './aiModels/platformModelSnapshot';
 import { computeInvocationCents, platformRateSnapshot, type RateSnapshot } from './aiModels/pricing';
+import type { ModelRates } from '@breeze/shared';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -694,6 +695,34 @@ export function calculateCostCents(
     {},
   );
   return Math.round(cents * 100) / 100;
+}
+
+/**
+ * The per-million rates calculateCostCents() charges for `model`, as a
+ * registry ModelRates (#7600 W02): W01's resolveTokenRate (platform snapshot,
+ * else bootstrap MODEL_PRICING), else DEFAULT_PRICING. Used ONLY to price
+ * backfilled non-platform offerings at exactly what legacy bills, so the W02
+ * shadow ledger and the W03 cutover agree with it. A prototype key
+ * ('constructor', '__proto__') is never a model id; without the guard
+ * MODEL_PRICING[...] would resolve through Object.prototype.
+ * W03 moves this and its rate table to aiModels/legacySurfaceModels.ts (its
+ * per-partner cutover still runs the projection); W08 deletes it.
+ */
+export function getLegacyModelRates(model: string): {
+  rates: ModelRates;
+  source: 'priced' | 'default_pricing';
+} {
+  const rate = model in Object.prototype ? null : resolveTokenRate(model);
+  if (rate) return { source: 'priced', rates: { ...rate.standard } };
+  return {
+    source: 'default_pricing',
+    rates: {
+      inputCentsPerM: DEFAULT_PRICING.inputPerMillion,
+      outputCentsPerM: DEFAULT_PRICING.outputPerMillion,
+      cacheReadCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
+      cacheWriteCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
+    },
+  };
 }
 
 export function calculateCatalogCostCents(

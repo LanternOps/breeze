@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   calculateCatalogCostCents,
   calculateCostCents,
+  getLegacyModelRates,
   isPricedModel,
   OFFERABLE_AI_MODELS,
   checkAiRateLimit,
@@ -2189,4 +2190,39 @@ describe('token pricing reads the platform model registry (W01 #7599)', () => {
     expect(calculateCostCents('claude-sonnet-5-5', value, 1_000_000)).toBe(1000);
     warn.mockRestore();
   });
+});
+
+describe('getLegacyModelRates (#7600 W02)', () => {
+  beforeEach(() => clearPlatformModelSnapshot()); // cold snapshot → W00 MODEL_PRICING bootstrap, deterministic
+
+  it('returns the bootstrap MODEL_PRICING rates with the standard cache multipliers', () => {
+    expect(getLegacyModelRates('claude-sonnet-5-5')).toEqual({
+      source: 'priced',
+      rates: { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 },
+    });
+  });
+
+  it('honours a per-model cache-read override', () => {
+    expect(getLegacyModelRates('claude-opus-5-5').rates.cacheReadCentsPerM).toBe(20);
+    expect(getLegacyModelRates('claude-fable-5-1').rates.cacheReadCentsPerM).toBe(25);
+  });
+
+  it.each(['my-gateway-model', 'constructor', '__proto__', 'toString'])(
+    'falls back to DEFAULT_PRICING for an unknown or prototype-named id (%s)',
+    (model) => {
+      expect(getLegacyModelRates(model)).toEqual({
+        source: 'default_pricing',
+        rates: { inputCentsPerM: 500, outputCentsPerM: 2500, cacheReadCentsPerM: 50, cacheWriteCentsPerM: 625 },
+      });
+    },
+  );
+
+  it.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-4-5', 'my-gateway-model'])(
+    'prices one million of each token class exactly as calculateCostCents does (%s), cold or warm snapshot',
+    (model) => {
+      const { rates } = getLegacyModelRates(model);
+      const expected = rates.inputCentsPerM + rates.outputCentsPerM + rates.cacheReadCentsPerM + rates.cacheWriteCentsPerM;
+      expect(calculateCostCents(model, 1_000_000, 1_000_000, 1_000_000, 1_000_000)).toBeCloseTo(expected, 2);
+    },
+  );
 });
