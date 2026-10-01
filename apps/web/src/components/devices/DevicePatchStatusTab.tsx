@@ -14,6 +14,8 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
+import type { DevicePatchApprovalEvaluation, DevicePatchEffectiveApproval } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
@@ -44,6 +46,9 @@ type PatchItem = {
   requiresReboot?: boolean;
   isDownloaded?: boolean;
   approvalStatus?: string;
+  // #7625: the ring-aware verdict the scheduled patch job would reach. Display
+  // only — the per-row Install action still keys off approvalStatus (manual).
+  effectiveApproval?: DevicePatchEffectiveApproval | null;
   scope?: 'machine' | 'user' | null;
   // #4223 deployment axis: the latest install attempt on this device failed.
   installFailure?: PatchInstallFailure | null;
@@ -56,6 +61,7 @@ type PatchPayload = {
   lastPatchScanStatus?: string | null;
   lastPatchScanUserScopeScanned?: boolean | null;
   lastPatchScanUserScopeSkipReason?: string | null;
+  approvalEvaluation?: DevicePatchApprovalEvaluation | null;
   pending?: PatchItem[];
   pendingPatches?: PatchItem[];
   missing?: PatchItem[];
@@ -252,8 +258,14 @@ function readPatchIds(patches: PatchItem[]): string[] {
 // longer meaningfully "awaiting approval" — PatchApprovalCell below already
 // suppresses the "Pending Approval" badge for exactly this case (#4223), so
 // the "Patch Controls" count must agree with what the row actually shows.
+//
+// #7625: when the ring-aware verdict is present, only a patch NOTHING will
+// approve is awaiting approval — a ring auto-approved, deferred or
+// policy-excluded patch is not waiting on anyone.
 function isAwaitingApproval(patch: PatchItem): boolean {
-  return !isPatchApprovedForInstall(patch) && !readInstallFailure(patch.installFailure);
+  if (readInstallFailure(patch.installFailure)) return false;
+  if (patch.effectiveApproval) return patch.effectiveApproval.state === 'needs_approval';
+  return !isPatchApprovedForInstall(patch);
 }
 
 // #2727 — per-user installs are detected but not yet remediable. The agent runs
@@ -283,7 +295,60 @@ function isPatchApprovedForInstall(patch: PatchItem): boolean {
   return patch.approvalStatus == null || patch.approvalStatus === 'approved';
 }
 
-function getApprovalBadge(patch: PatchItem): { label: string; className: string } {
+const APPROVAL_BADGE_CLASS = {
+  approved: 'bg-success/15 text-success border-success/30',
+  pending: 'bg-warning/15 text-warning border-warning/30',
+  info: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
+  muted: 'bg-muted text-muted-foreground border-border',
+} as const;
+
+type ApprovalBadge = { label: string; className: string; title?: string };
+
+// #7625: badge for the ring-aware verdict. Null when the API sent none (older
+// payloads, or the evaluation failed) so the caller falls back to the
+// manual-only approvalStatus badge.
+function getEffectiveApprovalBadge(
+  patch: PatchItem,
+  ringName: string | null,
+  t: TFunction,
+  timezone?: string
+): ApprovalBadge | null {
+  const effective = patch.effectiveApproval;
+  if (!effective) return null;
+  const ring = ringName || t('devicePatchStatusTab.approval.unnamedRing');
+  switch (effective.state) {
+    case 'approved':
+      return { label: t('devicePatchStatusTab.approval.approved'), className: APPROVAL_BADGE_CLASS.approved, title: t('devicePatchStatusTab.approval.approvedTitle') };
+    case 'auto_approved':
+      return { label: t('devicePatchStatusTab.approval.autoApproved'), className: APPROVAL_BADGE_CLASS.approved, title: t('devicePatchStatusTab.approval.autoApprovedTitle', { ring }) };
+    case 'deferred': {
+      if (!effective.holdUntil) {
+        return { label: t('devicePatchStatusTab.approval.deferred'), className: APPROVAL_BADGE_CLASS.info, title: t('devicePatchStatusTab.approval.deferredNoDateTitle', { ring }) };
+      }
+      const date = formatDate(effective.holdUntil, timezone);
+      return { label: t('devicePatchStatusTab.approval.deferredUntil', { date }), className: APPROVAL_BADGE_CLASS.info, title: t('devicePatchStatusTab.approval.deferredUntilTitle', { ring, date }) };
+    }
+    case 'excluded': {
+      const title = effective.reason === 'blocked_by_source'
+        ? t('devicePatchStatusTab.approval.excludedSourceTitle')
+        : effective.reason === 'blocked_by_app_rule'
+          ? t('devicePatchStatusTab.approval.excludedAppRuleTitle')
+          : t('devicePatchStatusTab.approval.excludedCategoryTitle', { ring });
+      return { label: t('devicePatchStatusTab.approval.excluded'), className: APPROVAL_BADGE_CLASS.muted, title };
+    }
+    case 'needs_approval':
+    default:
+      return {
+        label: t('devicePatchStatusTab.approval.pending'),
+        className: APPROVAL_BADGE_CLASS.pending,
+        title: effective.reason === 'no_ring_resolved'
+          ? t('devicePatchStatusTab.approval.needsApprovalNoRingTitle')
+          : t('devicePatchStatusTab.approval.needsApprovalRingTitle', { ring }),
+      };
+  }
+}
+
+function getApprovalBadge(patch: PatchItem): ApprovalBadge {
   switch ((patch.approvalStatus ?? 'approved').toLowerCase()) {
     case 'approved':
       return { label: 'Approved', className: 'bg-success/15 text-success border-success/30' };
@@ -302,18 +367,24 @@ function getApprovalBadge(patch: PatchItem): { label: string; className: string 
 // failure and its reason; "Pending Approval" is provably stale at that point
 // (ring auto-approval is evaluated at dispatch and never persisted), so it is
 // suppressed while any real persisted approval state stays visible.
-function PatchApprovalCell({ patch, timezone }: { patch: PatchItem; timezone?: string }) {
+function PatchApprovalCell({ patch, timezone, ringName }: { patch: PatchItem; timezone?: string; ringName: string | null }) {
   const { t } = useTranslation('devices');
-  const approvalBadge = getApprovalBadge(patch);
+  const approvalBadge = getEffectiveApprovalBadge(patch, ringName, t, timezone) ?? getApprovalBadge(patch);
   const approvalEl = (
-    <span className={`inline-flex w-fit items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium ${approvalBadge.className}`}>
+    <span
+      data-testid={`device-patch-${patch.id}-approval`}
+      title={approvalBadge.title}
+      className={`inline-flex w-fit items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium ${approvalBadge.className}`}
+    >
       {approvalBadge.label}
     </span>
   );
   const failure = readInstallFailure(patch.installFailure);
   if (!failure) return approvalEl;
 
-  const isPendingApproval = (patch.approvalStatus ?? 'approved').toLowerCase() === 'pending';
+  const isPendingApproval = patch.effectiveApproval
+    ? patch.effectiveApproval.state === 'needs_approval'
+    : (patch.approvalStatus ?? 'approved').toLowerCase() === 'pending';
   const reason = failure.error?.trim() || t('devicePatchStatusTab.installFailure.noReason');
   return (
     <div className="flex max-w-xs flex-col gap-1">
@@ -912,6 +983,25 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   // null/undefined means the field isn't present (older agent, non-Windows device,
   // or no winget provider), which is not the same as "we tried and failed".
   const userScopeNotScanned = payload?.lastPatchScanUserScopeScanned === false;
+  // #7625: which update ring the per-patch approval states were evaluated against.
+  const approvalEvaluation = payload?.approvalEvaluation ?? null;
+  const approvalRingName = approvalEvaluation?.ring
+    ? approvalEvaluation.ring.name || t('devicePatchStatusTab.approval.unnamedRing')
+    : null;
+  const installTitleFor = (patch: PatchItem, patchName: string, isApproved: boolean): string => {
+    if (isUserScopedPatch(patch)) return t('devicePatchStatusTab.installPatchUserScopeTitle', { name: patchName });
+    if (isApproved) return t('devicePatchStatusTab.installPatchTitle', { name: patchName });
+    // The ring handles it on schedule; installing it NOW still needs a manual
+    // approval (the install endpoint's gate is manual-only).
+    const state = patch.effectiveApproval?.state;
+    if (state === 'auto_approved' || state === 'deferred') {
+      return t('devicePatchStatusTab.installPatchRingManagedTitle', {
+        name: patchName,
+        ring: approvalRingName ?? t('devicePatchStatusTab.approval.unnamedRing'),
+      });
+    }
+    return t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
+  };
 
   // -------------------------------------------------------------------------
   // Post-install polling: poll every 5s for up to 90s watching pending count
@@ -1178,6 +1268,18 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 </a>
               </p>
             )}
+            {approvalEvaluation?.available === false && (
+              <p data-testid="device-patch-approval-unavailable" className="mt-1 text-xs text-muted-foreground">
+                {t('devicePatchStatusTab.approval.unavailable')}
+              </p>
+            )}
+            {approvalEvaluation?.available && (
+              <p data-testid="device-patch-approval-ring" className="mt-1 text-xs text-muted-foreground">
+                {approvalRingName
+                  ? t('devicePatchStatusTab.approval.ringLine', { ring: approvalRingName })
+                  : t('devicePatchStatusTab.approval.noRingLine')}
+              </p>
+            )}
           </div>
           <div className="flex flex-col items-end gap-2">
             <button
@@ -1340,11 +1442,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const isApproved = isPatchApprovedForInstall(patch);
                       const canInstall = isPatchInstallable(patch);
                       const patchName = normalizePatchName(patch);
-                      const installTitle = isUserScopedPatch(patch)
-                        ? t('devicePatchStatusTab.installPatchUserScopeTitle', { name: patchName })
-                        : isApproved
-                          ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
-                          : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
+                      const installTitle = installTitleFor(patch, patchName, isApproved);
 
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-native'}-${index}`} className="text-sm">
@@ -1421,7 +1519,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <PatchApprovalCell patch={patch} timezone={effectiveTimezone} />
+                            <PatchApprovalCell patch={patch} timezone={effectiveTimezone} ringName={approvalRingName} />
                           </td>
                           <td className="px-2 py-3">
                             {patchId && (
@@ -1499,11 +1597,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const isApproved = isPatchApprovedForInstall(patch);
                       const canInstall = isPatchInstallable(patch);
                       const patchName = normalizePatchName(patch);
-                      const installTitle = isUserScopedPatch(patch)
-                        ? t('devicePatchStatusTab.installPatchUserScopeTitle', { name: patchName })
-                        : isApproved
-                          ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
-                          : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
+                      const installTitle = installTitleFor(patch, patchName, isApproved);
 
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
@@ -1594,7 +1688,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <PatchApprovalCell patch={patch} timezone={effectiveTimezone} />
+                            <PatchApprovalCell patch={patch} timezone={effectiveTimezone} ringName={approvalRingName} />
                           </td>
                           <td className="px-2 py-3">
                             {patchId && (

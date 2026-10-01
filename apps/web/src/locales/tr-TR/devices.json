@@ -993,7 +993,12 @@
     "level": "Seviye",
     "policy2": "Politika",
     "features": "Özellikler",
-    "inheritedFrom": "Şuradan devralındı: {{name}}"
+    "inheritedFrom": "Şuradan devralındı: {{name}}",
+    "patchApproval": {
+      "label": "onay",
+      "byRing": "bağlı güncelleme halkası tarafından belirlenir",
+      "manualOnly": "yalnızca el ile onaylar (bağlı güncelleme halkası yok)"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",
@@ -1913,7 +1918,29 @@
       "badge": "Kurulum başarısız",
       "noReason": "Ajan bir neden bildirmedi",
       "failedAt": "Son kurulum denemesi başarısız oldu: {{when}}"
-    }
+    },
+    "approval": {
+      "approved": "Onaylandı",
+      "approvedTitle": "El ile onaylandı.",
+      "autoApproved": "Otomatik onaylandı",
+      "autoApprovedTitle": "{{ring}} güncelleme halkası tarafından onaylandı. Bir sonraki zamanlanmış yama çalıştırması bunu yükler.",
+      "deferred": "Ertelendi",
+      "deferredNoDateTitle": "{{ring}} güncelleme halkasının bir erteleme süresi var, ancak bu yamanın süreyi ölçecek bir yayın tarihi yok; bu yüzden bekletilmeye devam ediyor. Yüklemek için el ile onaylayın.",
+      "deferredUntil": "{{date}} tarihinde otomatik onaylanır",
+      "deferredUntilTitle": "{{ring}} güncelleme halkası yeni yamaları erteleme süresi boyunca bekletir. Bu yama {{date}} tarihinde onaylanır ve sonraki zamanlanmış yama çalıştırmasıyla yüklenir.",
+      "excluded": "İlke tarafından hariç tutuldu",
+      "excludedSourceTitle": "Yama ilkesinin kaynakları bu yamayı kapsamıyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "excludedAppRuleTitle": "Yama ilkesindeki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
+      "pending": "Onay bekliyor",
+      "needsApprovalRingTitle": "{{ring}} güncelleme halkası bu yamayı otomatik onaylamıyor. Yüklemek için el ile onaylayın.",
+      "needsApprovalNoRingTitle": "Bu cihazın yama ilkesine bağlı bir güncelleme halkası yok; bu yüzden bu yama yalnızca el ile onaydan sonra yüklenir.",
+      "unnamedRing": "bağlı güncelleme halkası",
+      "ringLine": "Onaylar şu güncelleme halkasını izler: {{ring}}",
+      "noRingLine": "Bağlı güncelleme halkası yok. Yamalar yalnızca el ile onaydan sonra yüklenir.",
+      "unavailable": "Güncelleme halkası onayları değerlendirilemedi. Rozetler yalnızca el ile onayları gösteriyor."
+    },
+    "installPatchRingManagedTitle": "{{name}}, {{ring}} güncelleme halkası tarafından yönetilir ve bir sonraki zamanlanmış yama çalıştırmasıyla yüklenir. Şimdi yüklemek için el ile onay gerekir."
   },
   "devicePerformanceGraphs": {
     "description": "Zaman içinde CPU, RAM, disk kullanımı ve ağ bant genişliği",

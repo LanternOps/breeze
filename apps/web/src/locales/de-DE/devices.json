@@ -993,7 +993,12 @@
     "level": "Ebene",
     "policy2": "Richtlinie",
     "features": "Funktionen",
-    "inheritedFrom": "Geerbt von {{name}}"
+    "inheritedFrom": "Geerbt von {{name}}",
+    "patchApproval": {
+      "label": "Genehmigung",
+      "byRing": "durch den verknüpften Update-Ring festgelegt",
+      "manualOnly": "nur manuelle Genehmigungen (kein Update-Ring verknüpft)"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",
@@ -1913,7 +1918,29 @@
       "badge": "Installation fehlgeschlagen",
       "noReason": "Kein Grund vom Agent gemeldet",
       "failedAt": "Letzter Installationsversuch fehlgeschlagen: {{when}}"
-    }
+    },
+    "approval": {
+      "approved": "Genehmigt",
+      "approvedTitle": "Manuell genehmigt.",
+      "autoApproved": "Automatisch genehmigt",
+      "autoApprovedTitle": "Vom Update-Ring {{ring}} genehmigt. Der nächste geplante Patch-Lauf installiert es.",
+      "deferred": "Zurückgestellt",
+      "deferredNoDateTitle": "Der Update-Ring {{ring}} hat ein Zurückstellungsfenster, aber dieser Patch hat kein Veröffentlichungsdatum, an dem es gemessen werden kann. Er bleibt daher zurückgehalten. Genehmigen Sie ihn manuell, um ihn zu installieren.",
+      "deferredUntil": "Automatische Genehmigung am {{date}}",
+      "deferredUntilTitle": "Der Update-Ring {{ring}} hält neue Patches für sein Zurückstellungsfenster zurück. Dieser wird am {{date}} genehmigt und mit dem nächsten geplanten Patch-Lauf danach installiert.",
+      "excluded": "Durch Richtlinie ausgeschlossen",
+      "excludedSourceTitle": "Die Quellen der Patch-Richtlinie umfassen diesen Patch nicht, daher überspringen geplante Patch-Läufe ihn.",
+      "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
+      "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel der Patch-Richtlinie hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
+      "pending": "Genehmigung ausstehend",
+      "needsApprovalRingTitle": "Der Update-Ring {{ring}} genehmigt diesen Patch nicht automatisch. Genehmigen Sie ihn manuell, um ihn zu installieren.",
+      "needsApprovalNoRingTitle": "Mit der Patch-Richtlinie dieses Geräts ist kein Update-Ring verknüpft, daher wird dieser Patch nur nach manueller Genehmigung installiert.",
+      "unnamedRing": "der verknüpfte Update-Ring",
+      "ringLine": "Genehmigungen folgen dem Update-Ring: {{ring}}",
+      "noRingLine": "Kein Update-Ring verknüpft. Patches werden nur nach manueller Genehmigung installiert.",
+      "unavailable": "Die Genehmigungen des Update-Rings konnten nicht ausgewertet werden. Die Kennzeichnungen zeigen nur manuelle Genehmigungen."
+    },
+    "installPatchRingManagedTitle": "{{name}} wird vom Update-Ring {{ring}} verwaltet und mit dem nächsten geplanten Patch-Lauf installiert. Für eine sofortige Installation ist eine manuelle Genehmigung erforderlich."
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, Festplattennutzung und Netzwerkbandbreite im Zeitverlauf",

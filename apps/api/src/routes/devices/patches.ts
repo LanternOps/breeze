@@ -12,6 +12,9 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
 import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from '../../services/patchSeverityOverlay';
+import { loadDevicePatchApprovalView, type DevicePatchApprovalView } from '../../services/devicePatchApprovalView';
+import { captureException } from '../../services/sentry';
+import type { DevicePatchApprovalEvaluation } from '@breeze/shared';
 
 export const patchesRoutes = new Hono();
 
@@ -179,8 +182,8 @@ function normalizePatchHistoryResult(
  *
  * This is intentionally only the partner-wide manual-approval gate. It does NOT consider
  * the device's effective patch ring or category/auto-approve rules — for the full
- * ring + category-aware evaluation see `resolveApprovedPatchesForDevice` in
- * `services/patchApprovalEvaluator.ts`.
+ * ring + category-aware evaluation see `services/patchEligibility.ts` (the GET route
+ * below reports that verdict as `effectiveApproval` via `loadDevicePatchApprovalView`).
  *
  * Known limitation: because this gate is partner-wide and ring-agnostic, a patch that is
  * approved for ring A passes this gate for a device in ring B. Wiring the install
@@ -389,6 +392,32 @@ patchesRoutes.get(
       ? await getApprovedPatchIdsForPartner(partnerId, patchIds)
       : new Set<string>();
 
+    // #7625: the ring-aware verdict — what the scheduled job would decide for
+    // each outstanding patch (manual / ring auto-approved / deferred until a
+    // date / needs approval / excluded by policy). Additive: `approvalStatus`
+    // keeps its manual-only meaning because the Install action below is still
+    // gated on it. Same system-context escape as getApprovedPatchIdsForPartner
+    // and for the same reason: the evaluator reads partner-axis tables
+    // (patch_policies, patch_approvals) that an org-scoped request context
+    // cannot see; deviceId/orgId are server-derived from the access-checked
+    // device. A failure degrades to `available: false` (the tab falls back to
+    // approvalStatus) rather than failing the whole patch list.
+    let approvalView: DevicePatchApprovalView | null = null;
+    let approvalEvaluation: DevicePatchApprovalEvaluation | null = null;
+    if (devicePatchList.some((p) => p.status === 'pending')) {
+      try {
+        approvalView = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() => loadDevicePatchApprovalView(deviceId, device.orgId))
+        );
+        approvalEvaluation = approvalView.evaluation;
+      } catch (err) {
+        console.error(`[devices/patches] ring-aware approval evaluation failed for device ${deviceId}:`, err);
+        captureException(err);
+        approvalEvaluation = { available: false, ring: null };
+      }
+    }
+    const effectiveApprovalFor = (patchId: string) => approvalView?.byPatchId.get(patchId) ?? null;
+
     // #4223: surface the latest failed install attempt (and its reason, e.g.
     // the agent's battery preflight) on each outstanding patch, so the tab no
     // longer reads "Pending approval" for a patch whose install actually failed.
@@ -415,6 +444,7 @@ patchesRoutes.get(
         requiresReboot: p.requiresReboot,
         scope: p.scope,
         approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending',
+        effectiveApproval: effectiveApprovalFor(p.patchId),
         installFailure: installFailures.get(p.patchId) ?? null
       }));
 
@@ -481,6 +511,7 @@ patchesRoutes.get(
         lastPatchScanStatus: lastPatchScan?.status ?? null,
         lastPatchScanUserScopeScanned,
         lastPatchScanUserScopeSkipReason,
+        approvalEvaluation,
         pending,
         missing,
         installed,
@@ -497,7 +528,8 @@ patchesRoutes.get(
           releaseDate: p.releaseDate,
           installedAt: p.installedAt,
           source: p.source,
-          approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending'
+          approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending',
+          effectiveApproval: p.status === 'pending' ? effectiveApprovalFor(p.patchId) : null
         }))
       }
     });

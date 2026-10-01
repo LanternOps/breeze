@@ -967,4 +967,65 @@ describe('DevicePatchStatusTab', () => {
     expect(screen.getByText('(1 pending approval)')).toBeInTheDocument();
     expect(screen.queryByText('(2 pending approval)')).not.toBeInTheDocument();
   });
+  // #7625: a patch the linked update ring auto-approves used to read
+  // "Pending Approval" because the badge only knew about manual approvals.
+  it('shows the ring-aware approval state instead of "Pending Approval" for ring-managed patches (#7625)', async () => {
+    const pendingPatch = (id: string, title: string, effectiveApproval: unknown) => ({
+      id, title, source: 'microsoft', category: 'security', status: 'pending',
+      approvalStatus: 'pending', effectiveApproval, installFailure: null
+    });
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 0,
+          approvalEvaluation: { available: true, ring: { id: 'ring-1', name: 'Workstations Ring' } },
+          pending: [
+            pendingPatch('auto-1', 'Auto Update (KB1)', { state: 'auto_approved', reason: 'ring_auto_approve', holdUntil: null }),
+            pendingPatch('held-1', 'Held Update (KB2)', { state: 'deferred', reason: 'held_by_deferral', holdUntil: '2026-10-07T12:00:00.000Z' }),
+            pendingPatch('manual-1', 'Manual Update (KB3)', { state: 'needs_approval', reason: 'awaiting_manual_approval', holdUntil: null }),
+            pendingPatch('excl-1', 'Excluded Update (KB4)', { state: 'excluded', reason: 'blocked_by_category', holdUntil: null })
+          ],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" timezone="UTC" />);
+
+    const auto = await screen.findByTestId('device-patch-auto-1-approval');
+    expect(auto.textContent).toBe('Auto-approved');
+    expect(auto.getAttribute('title')).toContain('Workstations Ring');
+    expect(screen.getByTestId('device-patch-held-1-approval').textContent).toContain('Auto-approves');
+    expect(screen.getByTestId('device-patch-held-1-approval').textContent).toContain('2026');
+    expect(screen.getByTestId('device-patch-manual-1-approval').textContent).toBe('Pending Approval');
+    expect(screen.getByTestId('device-patch-excl-1-approval').textContent).toBe('Excluded by policy');
+    // Only the patch nothing will approve counts as awaiting approval.
+    expect(screen.getByText('(1 pending approval)')).toBeInTheDocument();
+    expect(screen.getByText(/Workstations Ring/, { selector: '[data-testid="device-patch-approval-ring"]' })).toBeInTheDocument();
+    // The per-row Install action is still gated on a manual approval; its
+    // title says the ring installs it on schedule.
+    const installAuto = screen.getByRole('button', { name: /Auto Update \(KB1\)/ });
+    expect(installAuto).toBeDisabled();
+    expect(installAuto.getAttribute('aria-label')).toContain('next scheduled patch run');
+  });
+
+  it('falls back to the manual approval badge when the ring evaluation is unavailable (#7625)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 0,
+          approvalEvaluation: { available: false, ring: null },
+          pending: [
+            { id: 'p-1', title: 'Some Update (KB9)', source: 'microsoft', category: 'security', status: 'pending', approvalStatus: 'pending', effectiveApproval: null, installFailure: null }
+          ],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    expect((await screen.findByTestId('device-patch-p-1-approval')).textContent).toBe('Pending Approval');
+    expect(screen.getByTestId('device-patch-approval-unavailable')).toBeInTheDocument();
+  });
 });
