@@ -3127,6 +3127,38 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.revocationLeaseProtocolVersion).toBe(expectedLease);
   });
 
+  // desktopWsFenceProtocolVersion: agents that honour the start fence on the
+  // WebSocket desktop fallback advertise it. The server accepts it and does not
+  // act on it yet (no column, no gate). It must never cost the beat or the
+  // other capabilities it carries, whatever its value.
+  it.each([
+    { name: 'recognized version 1', value: 1 },
+    { name: 'unknown future version', value: 7 },
+    { name: 'malformed string', value: 'yes' },
+  ])('accepts the WebSocket start-fence capability without dropping other capabilities: $name', async ({ value }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: {
+          desktopFenceProtocolVersion: 1,
+          revocationLeaseProtocolVersion: 1,
+          desktopWsFenceProtocolVersion: value,
+        },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.desktopFenceProtocolVersion).toBe(1);
+    expect(updateArg.revocationLeaseProtocolVersion).toBe(1);
+    expect(updateArg).not.toHaveProperty('desktopWsFenceProtocolVersion');
+  });
+
   // consentPromptProtocolVersion: same non-sticky contract — the server must
   // be able to tell whether this build honors a `prompt` block on a desktop
   // stream start, and an agent that stops reporting it (old build, or a

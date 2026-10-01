@@ -172,6 +172,7 @@ async function insertDevice(orgId: string, siteId: string): Promise<{ id: string
     agentVersion: '0.0.0-test',
     status: 'online',
     revocationLeaseProtocolVersion: 1,
+    desktopFenceProtocolVersion: 1,
     enrolledAt: new Date(),
   }).returning({ id: devices.id });
   if (!row) throw new Error('insertDevice: no row returned');

@@ -141,43 +141,8 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// before the consent prompt, before capture — so a superseded or
 	// post-terminal start cannot spawn a helper, show a banner, or take a
 	// lease on its way to being refused.
-	fenceInput, genErr := parseDesktopStartGeneration(cmd.Payload)
-	if genErr != nil {
-		// Fail closed: a generation we cannot compare is one we cannot honour.
-		log.Warn("refusing start_desktop with a malformed start generation",
-			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
-		return tools.NewErrorResult(
-			desktopStartFenceError(desktopFenceReasonMalformed, genErr.Error()),
-			time.Since(start).Milliseconds())
-	}
-	fenceInput.CommandID = cmd.ID
-	decision := h.desktopStartFence.admitStart(sessionID, fenceInput)
-	if decision.NeedsSync {
-		// W05: the fence has no in-process record of this session — fresh
-		// install, a lost or corrupt state file, an evicted entry, or simply
-		// the first start since this agent started. The payload alone cannot
-		// be ordered against a terminal the endpoint may have forgotten, so
-		// ask the control plane what it currently believes and decide on that.
-		// Bounded, once per session, and fail-closed on no answer.
-		if !h.syncDesktopFence(sessionID) {
-			return tools.NewErrorResult(
-				desktopStartFenceError(desktopFenceReasonUnsynced,
-					"the control plane did not confirm this session's generation"),
-				time.Since(start).Milliseconds())
-		}
-		decision = h.desktopStartFence.admitStart(sessionID, fenceInput)
-	}
-	if !decision.Admitted {
-		log.Warn("refusing start_desktop at the desktop start fence",
-			"sessionId", sessionID,
-			"commandId", cmd.ID,
-			"reason", string(decision.Reason),
-			"generation", fenceInput.Generation,
-			"highWater", decision.HighWater,
-		)
-		return tools.NewErrorResult(
-			desktopStartFenceError(decision.Reason, ""),
-			time.Since(start).Milliseconds())
+	if _, refusal := h.admitDesktopStartAtFence(sessionID, cmd, start); refusal != nil {
+		return *refusal
 	}
 
 	// #7047: a Mac at the login window cannot take remote input, so a session
@@ -383,6 +348,57 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	return directStartResult(sessionID, answer, prompt, consentReason, time.Since(start).Milliseconds())
 }
 
+// admitDesktopStartAtFence runs a desktop start (start_desktop or the
+// WebSocket fallback's desktop_stream_start) through the start fence: parse
+// the generation, admit it, and on a miss resync once with the control plane
+// before deciding. Returns the admitted fence input, or a ready-to-return
+// refusal. Must be called before any side effect of the start.
+func (h *Heartbeat) admitDesktopStartAtFence(sessionID string, cmd Command, start time.Time) (desktopStartFenceInput, *tools.CommandResult) {
+	fenceInput, genErr := parseDesktopStartGeneration(cmd.Payload)
+	if genErr != nil {
+		// Fail closed: a generation we cannot compare is one we cannot honour.
+		log.Warn("refusing a desktop start with a malformed start generation",
+			"type", cmd.Type, "sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
+		r := tools.NewErrorResult(
+			desktopStartFenceError(desktopFenceReasonMalformed, genErr.Error()),
+			time.Since(start).Milliseconds())
+		return fenceInput, &r
+	}
+	fenceInput.CommandID = cmd.ID
+	decision := h.desktopStartFence.admitStart(sessionID, fenceInput)
+	if decision.NeedsSync {
+		// The fence has no in-process record of this session — fresh install,
+		// a lost or corrupt state file, an evicted entry, or simply the first
+		// start since this agent started. The payload alone cannot be ordered
+		// against a terminal the endpoint may have forgotten, so ask the
+		// control plane what it currently believes and decide on that.
+		// Bounded, once per session, and fail-closed on no answer.
+		if !h.syncDesktopFence(sessionID) {
+			r := tools.NewErrorResult(
+				desktopStartFenceError(desktopFenceReasonUnsynced,
+					"the control plane did not confirm this session's generation"),
+				time.Since(start).Milliseconds())
+			return fenceInput, &r
+		}
+		decision = h.desktopStartFence.admitStart(sessionID, fenceInput)
+	}
+	if !decision.Admitted {
+		log.Warn("refusing a desktop start at the desktop start fence",
+			"type", cmd.Type,
+			"sessionId", sessionID,
+			"commandId", cmd.ID,
+			"reason", string(decision.Reason),
+			"generation", fenceInput.Generation,
+			"highWater", decision.HighWater,
+		)
+		r := tools.NewErrorResult(
+			desktopStartFenceError(decision.Reason, ""),
+			time.Since(start).Milliseconds())
+		return fenceInput, &r
+	}
+	return fenceInput, nil
+}
+
 // directStartResult builds the direct-mode start result. In consent mode it
 // carries the gate's consentReason (#6819) exactly as the helper path does via
 // withConsentGranted. Split out so the marker is unit-testable on linux, where
@@ -513,6 +529,13 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// No-op in always-on mode / when nothing was leased.
 	h.releaseDesktopLeases(sessionID)
 
+	// A session relayed over the WebSocket fallback is ended by the same stop:
+	// End and every server-side teardown send stop_desktop, and without this
+	// the stream kept capturing until the relay's next revalidation tick.
+	if h.stopWsDesktopStream(sessionID) {
+		h.endWsStreamUX(sessionID)
+	}
+
 	// State-based routing: if an IPC helper actually owns this session, stop it
 	// over IPC; otherwise stop the direct desktopMgr session. Never gate on the
 	// headless flag — on Linux (and any box whose headless state flips between
@@ -569,16 +592,22 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
-// handleDesktopStreamStart is the WS-relay fallback path: frames are pushed to
-// the API over the agent's own WebSocket instead of peer-to-peer WebRTC.
+// handleDesktopStreamStart is the WebSocket-relay fallback path: frames are
+// pushed to the API over the agent's own WebSocket instead of peer-to-peer
+// WebRTC.
 //
-// It deliberately carries NO revocation lease and runs no lease watchdog. It
-// does not need one: unlike a WebRTC session, every frame passes through the
-// server, so the server can (and does) cut it — the ~30s desktop_stream loop in
-// routes/desktopWs.ts revalidates and drops the relay. The lease exists
-// precisely because the API is NOT in the WebRTC media path; here it is.
-// Follow-up: fold this path into the same revalidation function the lease renew
-// uses, so the two revocation deadlines are provably the same policy.
+// It honours everything start_desktop does before and around capture:
+//   - the start fence (generation, tombstone, resync-on-unknown), before any
+//     side effect;
+//   - the revocation lease, which is required and kept alive by the stream's
+//     own watchdog (desktop/ws_lease.go). The API's relay also re-checks
+//     authorization on its tick, but that only stops frames reaching the
+//     viewer; the lease is what stops the capture itself;
+//   - the consent gate, and a fence re-check after it: the prompt can stay up
+//     for its whole timeout, and a stop or a newer start that landed meanwhile
+//     wins over a late Allow;
+//   - the notify notice and on-screen indicator (afterDesktopStart), with the
+//     matching end notice / indicator hide when the stream stops.
 func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
@@ -592,6 +621,13 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
+	}
+
+	// Start fence first — before the lease check, the consent prompt and
+	// capture — so a superseded or post-terminal start has no side effect.
+	fenceInput, refusal := h.admitDesktopStartAtFence(sessionID, cmd, start)
+	if refusal != nil {
+		return *refusal
 	}
 
 	config := desktop.DefaultStreamConfig()
@@ -616,14 +652,18 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		displayIndex = int(di)
 	}
 
-	// Consent gate — the same one `handleStartDesktop`'s non-broker path runs,
-	// and for the same reason (the viewer is untrusted; the agent is the only
+	// Fail closed without a lease, exactly as start_desktop does: without one
+	// nothing can end this capture once the session's authorization changes
+	// or the session ends while no viewer is receiving it.
+	lease := parseRevocationLease(cmd.Payload)
+	if lease == nil {
+		return tools.NewErrorResult(desktop.ErrRevocationLeaseRequired, time.Since(start).Milliseconds())
+	}
+
+	// Consent gate — the same one start_desktop's non-broker path runs, and
+	// for the same reason (the viewer is untrusted; the agent is the only
 	// party positioned to ask the end user and to refuse before capture
-	// starts). This transport previously started capturing unconditionally,
-	// regardless of the device's consent/notify policy, because it never
-	// looked at (or was ever sent) a prompt block at all. "notify"-mode
-	// sessions are informational only here too, matching the WebRTC path —
-	// only "consent" mode blocks.
+	// starts). Only "consent" mode blocks; "notify" is informational.
 	prompt := parseDesktopPrompt(cmd.Payload)
 	consentReason := ""
 	if prompt != nil && prompt.Mode == "consent" {
@@ -637,11 +677,20 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// The prompt can stay up for its whole timeout. A stop (viewer closed,
+	// session ended) or a newer start that landed meanwhile wins over a late
+	// Allow: nothing would ever stop a capture started now.
+	if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok {
+		log.Warn("refusing desktop_stream_start: the session moved on while the start was in flight",
+			"sessionId", sessionID, "commandId", cmd.ID, "reason", string(reason))
+		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
+	}
+
 	startSession := h.wsDesktopStart
 	if startSession == nil {
 		startSession = h.wsDesktopMgr.StartSession
 	}
-	w, h2, err := startSession(sessionID, displayIndex, config, func(sid string, data []byte) error {
+	w, h2, stream, err := startSession(sessionID, displayIndex, config, lease, func(sid string, data []byte) error {
 		if h.wsClient != nil {
 			return h.wsClient.SendDesktopFrame(sid, data)
 		}
@@ -650,6 +699,32 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
+
+	// Capture setup takes time too: re-check before telling the end user, and
+	// again after. Cleanup only ever touches the stream THIS start created
+	// (a newer start may already have replaced it under the same id), and
+	// only this start's own prompt.
+	if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok {
+		h.stopWsDesktopStreamExact(sessionID, stream)
+		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
+	}
+	if prompt != nil {
+		h.afterDesktopStreamStart(sessionID, cmd.ID, prompt)
+	}
+	ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput)
+	if ok && !h.wsStreamIsCurrent(sessionID, stream) {
+		// The stream is gone although nothing ended the session: its lease
+		// watchdog stopped it before the notice went out.
+		ok, reason = false, desktopFenceReasonTerminal
+	}
+	if !ok {
+		h.stopWsDesktopStreamExact(sessionID, stream)
+		if prompt != nil {
+			h.endOvertakenStreamUX(sessionID, cmd.ID, reason)
+		}
+		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
+	}
+
 	result := map[string]any{
 		"sessionId":    sessionID,
 		"screenWidth":  w,
@@ -661,6 +736,28 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 }
 
+// streamStartOvertakenError is what a stream start reports when a stop or a
+// newer start for the same session landed while it was waiting.
+func streamStartOvertakenError(reason desktopFenceReason) error {
+	if reason == desktopFenceReasonTerminal {
+		return desktopStartFenceError(reason, "session was ended while the start was in flight")
+	}
+	return desktopStartFenceError(reason, "a newer start for this session arrived while the start was in flight")
+}
+
+// stopWsDesktopStream stops the WebSocket fallback stream for sessionID, if
+// one is running. Reports whether it stopped one.
+func (h *Heartbeat) stopWsDesktopStream(sessionID string) bool {
+	if h.wsDesktopMgr == nil {
+		return false
+	}
+	return h.wsDesktopMgr.StopSession(sessionID)
+}
+
+// handleDesktopStreamStop ends a WebSocket fallback stream. Like stop_desktop
+// it is terminal for the session: the tombstone is installed even when no
+// stream is running, so a start that the stop overtook (still waiting on its
+// consent prompt, or not yet delivered) is refused when it gets there.
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
@@ -674,7 +771,10 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// Compatibility for pre-Wave-4 API instances. This executes the stop,
 		// but intentionally returns no ID-bound outcome and therefore can never
 		// satisfy the API's durable-proof parser.
-		h.wsDesktopMgr.StopSession(sessionID)
+		h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
+		if h.stopWsDesktopStream(sessionID) {
+			h.endWsStreamUX(sessionID)
+		}
 		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 	}
 
@@ -687,9 +787,11 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
 	outcome := "already_absent"
-	if h.wsDesktopMgr.StopSession(sessionID) {
+	if h.stopWsDesktopStream(sessionID) {
 		outcome = "stopped"
+		h.endWsStreamUX(sessionID)
 	}
 	return tools.NewSuccessResult(map[string]any{
 		"sessionId":      sessionID,

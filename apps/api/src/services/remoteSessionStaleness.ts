@@ -1,4 +1,4 @@
-import { and, eq, lte, or } from 'drizzle-orm';
+import { and, eq, lte, or, sql } from 'drizzle-orm';
 import { remoteSessions } from '../db/schema';
 
 export const REMOTE_SESSION_PENDING_STALE_MS = 5 * 60 * 1000;
@@ -19,7 +19,13 @@ export function remoteSessionStaleCondition(now: Date) {
     ),
     and(
       eq(remoteSessions.status, 'connecting'),
-      lte(remoteSessions.createdAt, new Date(now.getTime() - REMOTE_SESSION_CONNECTING_STALE_MS)),
+      // Measured from the latest start attempt when one recorded its time (a
+      // WebSocket-fallback start waits here through its consent prompt),
+      // otherwise from creation. started_at is never earlier than created_at,
+      // so this can only keep a row longer, never expire one sooner.
+      // The cutoff is bound as an ISO string: a Date inside a raw sql
+      // template bypasses the column encoder and fails to bind (#3369).
+      sql`COALESCE(${remoteSessions.startedAt}, ${remoteSessions.createdAt}) <= ${new Date(now.getTime() - REMOTE_SESSION_CONNECTING_STALE_MS).toISOString()}::timestamp`,
     ),
   );
 }

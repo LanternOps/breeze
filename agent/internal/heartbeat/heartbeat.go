@@ -253,6 +253,13 @@ type SecurityCapabilities struct {
 	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
 	// against an agent reporting 0, same shape as the revocation-lease gate.
 	DesktopFenceProtocolVersion int `json:"desktopFenceProtocolVersion,omitempty"`
+	// DesktopWsFenceProtocolVersion declares that the WebSocket desktop
+	// fallback (desktop_stream_start) honours the same start fence, revocation
+	// lease and stop tombstone as start_desktop. Builds that only report
+	// DesktopFenceProtocolVersion ignore the generation on that path. The API
+	// accepts it without acting on it yet, so it can later require it there
+	// without another agent release.
+	DesktopWsFenceProtocolVersion int `json:"desktopWsFenceProtocolVersion,omitempty"`
 	// ConsentPromptProtocolVersion declares that this build parses the
 	// `prompt` block on a desktop-stream-start command (parseDesktopPrompt,
 	// handlers_desktop.go) and gates capture on it: a consent dialog or
@@ -520,8 +527,11 @@ type Heartbeat struct {
 	pamRecoveryMaxAttempts       int
 	pamGateProofTimeout          time.Duration
 	pamGateStuckReassertInterval time.Duration
-	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners                sync.Map // desktop session ID -> helper session ID
+	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error)
+	// wsStreamStopNotify reports a lease-driven stream stop to the control
+	// plane; nil means sendDesktopDisconnectNotification (tests override it).
+	wsStreamStopNotify func(sessionID, reason string)
+	desktopOwners      sync.Map // desktop session ID -> helper session ID
 	// leaseRenewRequester asks the control plane to renew a desktop session's
 	// revocation lease. Indirected through a field (rather than calling the
 	// method directly) so the helper-hosted bridge is observable in tests.
@@ -1218,6 +1228,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// unconditionally (not only in direct mode): the service process runs the
 	// renewals for helper-hosted sessions too.
 	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	// The WebSocket fallback stream renews the same lease over the same
+	// socket, and a lease-driven stop is reported like a WebRTC peer drop and
+	// ends the on-screen indicator and notice (handlers_desktop_stream.go).
+	h.wireWsDesktopStreamHooks()
 	// Same outbound renew, reached from the IPC side: a helper-hosted session's
 	// watchdog lives in the helper process, so its renewals arrive here as
 	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
@@ -1287,6 +1301,9 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// otherwise the silence the grace window budgets for.
 	if msg.Unavailable {
 		h.desktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		if h.wsDesktopMgr != nil {
+			h.wsDesktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		}
 		go h.forwardRevocationLeaseToHelper(msg)
 		return
 	}
@@ -1309,6 +1326,12 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
 			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
 			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		// A WebSocket fallback stream keeps the same lease (desktop/ws_lease.go).
+		if h.wsDesktopMgr != nil {
+			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID,
+				desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
+				desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		}
 		return
 	}
 
@@ -1317,6 +1340,9 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// Mark it revoked first — synchronously, so the local watchdog is already
 	// authoritative before anything below can fail or stall.
 	h.desktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	if h.wsDesktopMgr != nil {
+		h.wsDesktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	}
 	// The stop itself runs OFF the read pump: handleStopDesktop does a 10s
 	// synchronous IPC SendCommand and StopSession -> wg.Wait(), and
 	// websocket/client.go documents that this callback must not block. With the
@@ -7924,6 +7950,7 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
 		DesktopFenceProtocolVersion:     1,
+		DesktopWsFenceProtocolVersion:   1,
 		ConsentPromptProtocolVersion:    1,
 	}
 }

@@ -208,9 +208,9 @@ func TestHandleRefreshInventoryDispatchesSendInventory(t *testing.T) {
 func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 	var gotDisplayIndex int
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			gotDisplayIndex = displayIndex
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -218,8 +218,9 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 		ID:   "desktop-stream-1",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId":    "ws-1",
-			"displayIndex": float64(2),
+			"sessionId":       "ws-1",
+			"displayIndex":    float64(2),
+			"revocationLease": testRevocationLeasePayload(),
 		},
 	})
 
@@ -242,9 +243,9 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehaviorBlocks(t *testing.T) {
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -252,7 +253,8 @@ func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehavior
 		ID:   "desktop-stream-consent-block",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-consent-block",
+			"sessionId":       "ws-consent-block",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode":                       "consent",
 				"consentUnavailableBehavior": "block",
@@ -281,9 +283,9 @@ func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehavior
 func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t *testing.T) {
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -291,7 +293,8 @@ func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t 
 		ID:   "desktop-stream-consent-proceed",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-consent-proceed",
+			"sessionId":       "ws-consent-proceed",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode":                       "consent",
 				"consentUnavailableBehavior": "proceed",
@@ -321,16 +324,16 @@ func TestHandleDesktopStreamStartStartsImmediatelyWhenNoPromptBlockSent(t *testi
 	// exactly as before this change (regression control).
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
 	result := handleDesktopStreamStart(h, Command{
 		ID:      "desktop-stream-no-prompt",
 		Type:    tools.CmdDesktopStreamStart,
-		Payload: map[string]any{"sessionId": "ws-no-prompt"},
+		Payload: map[string]any{"sessionId": "ws-no-prompt", "revocationLease": testRevocationLeasePayload()},
 	})
 
 	if !started {
@@ -346,9 +349,9 @@ func TestHandleDesktopStreamStartStartsImmediatelyForNotifyMode(t *testing.T) {
 	// not block the start.
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -356,7 +359,8 @@ func TestHandleDesktopStreamStartStartsImmediatelyForNotifyMode(t *testing.T) {
 		ID:   "desktop-stream-notify",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-notify",
+			"sessionId":       "ws-notify",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode": "notify",
 			},

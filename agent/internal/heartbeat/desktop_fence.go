@@ -430,6 +430,23 @@ func (f *desktopFence) isTerminal(sessionID string) bool {
 	return f.entries[sessionID].Terminal
 }
 
+// stillCurrent re-checks an already-admitted start after a long wait (the
+// consent prompt) or after capture was created: a terminal that landed since
+// wins, and so does a newer start for the same session. A start admitted
+// without a generation (older API) can only be overtaken by a terminal.
+func (f *desktopFence) stillCurrent(sessionID string, in desktopStartFenceInput) (bool, desktopFenceReason) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entry := f.entries[sessionID]
+	if entry.Terminal {
+		return false, desktopFenceReasonTerminal
+	}
+	if in.HasGeneration && entry.HasHighWater && entry.HighWater > in.Generation {
+		return false, desktopFenceReasonSuperseded
+	}
+	return true, ""
+}
+
 // snapshot returns a copy of every entry, for the helper connect-time sync.
 func (f *desktopFence) snapshot() map[string]desktopFenceEntry {
 	f.mu.Lock()

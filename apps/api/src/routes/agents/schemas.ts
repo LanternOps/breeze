@@ -364,6 +364,11 @@ export const heartbeatSchema = z.object({
     // route treats anything other than exactly 1 as "not capable".
     revocationLeaseProtocolVersion: z.number().int().optional().catch(undefined),
     desktopFenceProtocolVersion: z.number().int().optional().catch(undefined),
+    // The agent also honours the start fence on the WebSocket desktop fallback
+    // (desktop_stream_start). Accepted and parsed only — not recorded and not
+    // gated on yet, so a later server can require it on that path without
+    // another agent release. Same tolerant contract as its siblings.
+    desktopWsFenceProtocolVersion: z.number().int().optional().catch(undefined),
     // Consent/notification prompt capability. Same tolerant contract: a
     // malformed value drops this field alone rather than rejecting the beat.
     consentPromptProtocolVersion: z.number().int().optional().catch(undefined),

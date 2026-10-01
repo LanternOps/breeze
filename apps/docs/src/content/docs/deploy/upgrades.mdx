@@ -195,6 +195,29 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### Next release — remote desktop start fence required by default
+
+- **`REMOTE_DESKTOP_FENCE_REQUIRED` now defaults to `true`.** Remote desktop
+  (WebRTC and the WebSocket fallback) starts only on agents that report the
+  session start fence, which agents v0.114.0 and later do. On an older agent the
+  technician sees "Remote desktop needs an agent update on this device (session
+  revocation lease and start fence support)…" (HTTP `503 agent_upgrade_required`,
+  or the WebSocket error `AGENT_UPGRADE_REQUIRED`) and no session starts.
+  Terminal, Files and every other remote tool are unaffected. Agents update
+  themselves; if you pin agent versions below v0.114.0, move the pin, or set
+  `REMOTE_DESKTOP_FENCE_REQUIRED=false` until they have updated. If your `.env`
+  still carries `REMOTE_DESKTOP_FENCE_REQUIRED=false` copied from an older
+  `.env.example`, that line keeps the fence off; remove it. A value that is not
+  a recognized boolean now refuses boot.
+- **The WebSocket desktop fallback now behaves like WebRTC.** The technician's
+  view stays on *connecting* until the agent reports the stream started, so a
+  consent prompt is answered before anything is shown; a denial ends the session
+  as `denied` with its reason. **End** stops the stream immediately. Updated
+  agents also show the notify notice and on-screen indicator on this transport,
+  keep the session lease (a Redis or API outage longer than about 90 seconds ends
+  the stream, as it already does on WebRTC), and refuse a start that arrives after
+  the session was stopped.
+
 ### v0.118.0 — legacy alerting retired, network checks become monitors
 
 <Aside type="caution" title="Before you upgrade: convert everything on v0.117.0">

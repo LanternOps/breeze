@@ -719,6 +719,12 @@ const envObjectSchema = z
     // guessing which way it resolved.
     BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: z.string().optional(),
 
+    // Remote desktop start fence (default true). A recognized false value is
+    // the explicit opt-out for fleets still on agents older than v0.114.0;
+    // validated in the superRefine below so a typo refuses boot instead of
+    // leaving an operator unsure which way it resolved.
+    REMOTE_DESKTOP_FENCE_REQUIRED: z.string().optional(),
+
     // #1374 W04 — Google Cloud service account (JSON, or base64 of that JSON)
     // with the Play Integrity API enabled, used to decode Android
     // `decodeIntegrityToken` verdicts. OPTIONAL by design: Play Integrity only
@@ -1990,6 +1996,21 @@ const envSchema = envObjectSchema
           'BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
           'Defaults to true (an L4/critical-tier approval requires a trusted platform_bound_basis). ' +
           'Set false ONLY as a break-glass revert — it re-opens the critical-tier bypass for every legacy mobile approver key.',
+      });
+    }
+
+    // REMOTE_DESKTOP_FENCE_REQUIRED (remote desktop start fence). Same
+    // treatment as BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: the runtime
+    // reader keeps the fence required for an unrecognized value.
+    const fenceRequiredRaw = (data.REMOTE_DESKTOP_FENCE_REQUIRED ?? '').trim().toLowerCase();
+    if (fenceRequiredRaw && !boolValues.has(fenceRequiredRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['REMOTE_DESKTOP_FENCE_REQUIRED'],
+        message:
+          'REMOTE_DESKTOP_FENCE_REQUIRED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to true (remote desktop requires an agent with the start fence, v0.114.0 or later). ' +
+          'Set false only while agents older than v0.114.0 are still updating.',
       });
     }
 
