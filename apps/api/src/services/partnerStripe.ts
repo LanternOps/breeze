@@ -472,16 +472,18 @@ export async function savePartnerStripeKey(input: {
  * pay affordance (public page, portal, invoice PDF line, send-email CTA) must
  * ask this instead of re-deriving it, or a CTA appears that 409s on click (#7509).
  *
- * stripe_connect_accounts is partner-axis: call from system scope (or a context
- * that can see the partner row), or an org-scoped read is silently filtered to
- * "not available".
+ * stripe_connect_accounts is partner-axis, so an org-scoped (portal) read would be
+ * silently RLS-filtered to "not available". The read therefore elects system
+ * scope itself on a short-lived connection (runOutsideDbContext — a bare nested
+ * system context would stay inside the caller's scoped transaction), making the
+ * answer independent of the caller's context.
  */
 export async function isPartnerOnlinePaymentAvailable(partnerId: string): Promise<boolean> {
-  const [row] = await db
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .select({ status: stripeConnectAccounts.status, apiKey: stripeConnectAccounts.apiKey })
     .from(stripeConnectAccounts)
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
-    .limit(1);
+    .limit(1)));
   return row != null && row.status === 'connected' && !!row.apiKey;
 }
 

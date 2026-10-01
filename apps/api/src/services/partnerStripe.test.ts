@@ -791,6 +791,13 @@ describe('listPartnersNeedingStripeAccountBootstrap', () => {
 describe('isPartnerOnlinePaymentAvailable (#7509)', () => {
   beforeEach(() => { dbMocks.selectResults.length = 0; });
 
+  it('reads under a system context (partner-axis table, caller may be org-scoped)', async () => {
+    const before = systemContextCalls.count;
+    dbMocks.selectResults.push([{ status: 'connected', apiKey: 'enc(sk_live_x)' }]);
+    await isPartnerOnlinePaymentAvailable(PARTNER_A);
+    expect(systemContextCalls.count).toBe(before + 1);
+  });
+
   it('is true only for a connected row holding a key', async () => {
     dbMocks.selectResults.push([{ status: 'connected', apiKey: 'enc(sk_live_x)' }]);
     expect(await isPartnerOnlinePaymentAvailable(PARTNER_A)).toBe(true);

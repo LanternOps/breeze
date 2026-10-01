@@ -238,6 +238,14 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(onlinePayMock).toHaveBeenCalledWith('p1');
   });
 
+  it('GET /invoices/:id fails closed (200, unavailable) when the availability lookup throws (#7509)', async () => {
+    onlinePayMock.mockRejectedValue(new Error('db down'));
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).onlinePaymentAvailable).toBe(false);
+  });
+
   it('GET /invoices/:id serializes the exact safe line keyset even if the service row has internal fields', async () => {
     getCustomerInvoiceMock.mockResolvedValue({
       invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' },

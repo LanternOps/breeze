@@ -829,15 +829,11 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
   // the line, never the render.
   // #7509: and only when the partner can actually take online payment — the
   // line is a "Pay online" call to action, so without it the printed link is a
-  // dead end. A lookup failure drops the line (fail closed), never the render.
-  let payOnline = false;
-  if (loaded.invoice.status !== 'draft') {
-    try {
-      payOnline = await isPartnerOnlinePaymentAvailable(loaded.invoice.partnerId);
-    } catch (err) {
-      console.error(`[invoicePdf] online-payment availability lookup failed for invoice ${invoiceId} — rendering without the pay-online line`, err);
-    }
-  }
+  // dead end. 
+  // A lookup error propagates: the issued PDF is persisted and frozen, so a
+  // transient fault must fail the render (retryable), not bake in a line-less copy.
+  const payOnline = loaded.invoice.status !== 'draft'
+    && await isPartnerOnlinePaymentAvailable(loaded.invoice.partnerId);
   if (payOnline) {
     try {
       const link = await getOrMintInvoiceLink({
@@ -1051,7 +1047,7 @@ async function deliverInvoiceEmail(
   if (publicLinked && ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0) {
     try {
       payEnabled = await isPartnerOnlinePaymentAvailable(invoice.partnerId);
-    } catch { /* label-only — never fail the send over it */ }
+    } catch (err) { console.error('[invoicePdf] online-payment availability lookup failed — sending with the View label', err); /* label-only — never fail the send over it */ }
   }
   // This IS the "Request balance payment" action for deposit invoices: the money
   // fields reflect the deposit-vs-balance split so the email states what's owed

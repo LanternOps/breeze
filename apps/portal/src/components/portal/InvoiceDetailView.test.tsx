@@ -142,6 +142,11 @@ describe('InvoiceDetailView worked-vs-billed note (#6467)', () => {
 });
 
 describe('InvoiceDetailView — payment unavailable', () => {
+  it('still shows the Pay button when online payment is available (positive control)', () => {
+    render(<InvoiceDetailView detail={{ ...detail([line()]), onlinePaymentAvailable: true }} />);
+    expect(screen.getByTestId('invoice-pay-button')).toBeTruthy();
+  });
+
   it('shows no Pay button when the partner has no online payment set up (#7509)', () => {
     render(<InvoiceDetailView detail={{ ...detail([line()]), onlinePaymentAvailable: false }} />);
     expect(screen.queryByTestId('invoice-pay-button')).toBeNull();

@@ -157,8 +157,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   // safer than showing one that 409s — and log it.
   let onlinePaymentAvailable = false;
   try {
-    onlinePaymentAvailable = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      isPartnerOnlinePaymentAvailable(result.partnerId)));
+    onlinePaymentAvailable = await isPartnerOnlinePaymentAvailable(result.partnerId);
   } catch (err) {
     console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
   }
