@@ -217,7 +217,15 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         calculateCostCents: costEstimator(resolved),
       });
       if (maxTokens === null) {
-        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId });
+        // Nothing was sent. A failing release must not replace the budget
+        // answer (S8): the hold just expires on its TTL.
+        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId }).catch((releaseError) => {
+          const scrubbed = safeErrorMessage(releaseError);
+          console.error('[extension-ai] releasing an unused reservation failed', { reservationId, error: scrubbed });
+          captureException(new Error(`extension AI reservation release failed: ${scrubbed}`), undefined, {
+            org_id: input.orgId, ai_reservation_id: reservationId,
+          });
+        });
         throw new ExtensionAiError('budget_exceeded', 'The AI request exceeds the remaining budget.');
       }
 
@@ -246,13 +254,15 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           } catch (settleError) {
             // Settlement errors are DB errors: scrubbed before any log or report.
             const scrubbed = safeErrorMessage(settleError);
-            console.error('[extension-ai] settling a failed dispatch failed', { error: scrubbed });
-            captureException(new Error(scrubbed));
+            console.error('[extension-ai] settling a failed dispatch failed', { reservationId, error: scrubbed });
+            captureException(new Error(`extension AI settlement failed: ${scrubbed}`), undefined, {
+              org_id: input.orgId, ai_reservation_id: reservationId,
+            });
           }
         }
         if (!settled) {
           await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-            .catch((markError) => captureException(markError));
+            .catch((markError) => captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`)));
         }
         throw await classifyProviderFailure(dispatchCause(error), resolved.connection.config);
       }
@@ -263,18 +273,32 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         .join('');
       const billed = messagesUsage(binding, outcome.attempts);
 
+      const holdIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+        .catch((markError) => {
+          captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`), undefined, {
+            org_id: input.orgId, ai_reservation_id: reservationId,
+          });
+        });
       try {
         // The one billing path: priced from the bound registry rate, written to
         // the ledger, and (platform funding) drawn down from prepaid credits.
-        await settleInvocation({
+        const settled = await settleInvocation({
           binding, orgId: input.orgId, userId: ledgerUserId,
           sessionId: null, agentRunId: null, sourceRef: `extension:${input.surface}`,
           ...billed, reservationId, toolExecutionCount: 1,
         });
+        // S1: deferred but not persisted (already reported): keep the hold.
+        if (settled.unrecorded) await holdIndeterminate();
       } catch (error) {
-        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-          .catch((markError) => captureException(markError));
-        throw error;
+        // The provider was paid but the spend could not be recorded. Settlement
+        // errors are DB errors: never rethrown raw to the extension (S8).
+        const scrubbed = safeErrorMessage(error);
+        console.error('[extension-ai] settlement after a paid call failed', { reservationId, error: scrubbed });
+        captureException(new Error(`extension AI settlement failed: ${scrubbed}`), undefined, {
+          org_id: input.orgId, ai_reservation_id: reservationId,
+        });
+        await holdIndeterminate();
+        throw new ExtensionAiError('ai_unavailable', 'AI usage could not be recorded; try again shortly.', { permanent: false });
       }
 
       return {

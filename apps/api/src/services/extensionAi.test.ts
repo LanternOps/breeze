@@ -348,11 +348,42 @@ describe('buildExtensionAiContext', () => {
     await expect(invocation).resolves.toMatchObject({ billingSource: 'partner_key' });
   });
 
-  it('a failed settlement marks the reservation indeterminate and rethrows', async () => {
-    settleInvocation.mockRejectedValueOnce(new Error('ledger down'));
+  it('a failed settlement marks the reservation indeterminate and throws a classified, scrubbed ExtensionAiError (review S8)', async () => {
+    settleInvocation.mockRejectedValueOnce(Object.assign(new Error('Failed query: insert … params: sk-ant-secret'), { params: ['sk-ant-secret'] }));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(buildExtensionAiContext().invoke(input)).rejects.toThrow('ledger down');
+    const thrown = await buildExtensionAiContext().invoke(input).catch((e: unknown) => e);
+    const logged = JSON.stringify(error.mock.calls);
+    error.mockRestore();
+
+    expect(thrown).toBeInstanceOf(ExtensionAiError);
+    expect(thrown).toMatchObject({ code: 'ai_unavailable', permanent: false });
+    expect(String((thrown as Error).message)).not.toContain('sk-ant-secret');
     expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: RESERVATION_ID });
+    expect(logged).not.toContain('sk-ant-secret');
+    const messages = captureException.mock.calls.map(([e]) => String((e as Error).message));
+    expect(messages.some((m) => /extension AI settlement failed/.test(m))).toBe(true);
+    expect(messages.join(' ')).not.toContain('sk-ant-secret');
+  });
+
+  it('an UNRECORDED settlement keeps the reservation indeterminate (review S1)', async () => {
+    settleInvocation.mockResolvedValueOnce({ costCents: 1, invocationIds: [], deferred: true, unrecorded: true });
+    await expect(buildExtensionAiContext().invoke(input)).resolves.toMatchObject({ text: 'workspace summary' });
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: RESERVATION_ID });
+  });
+
+  it('a failing release cannot replace the budget_exceeded error (review S8)', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved', reservedCostCents: 0, reservationId: RESERVATION_ID,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    releaseUnusedAiBudgetReservation.mockRejectedValueOnce(new Error('Failed query: update … params: x'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({ name: 'ExtensionAiError', code: 'budget_exceeded' });
+    error.mockRestore();
+    expect(create).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
   });
 
   it('attributes platform usage to the platform funding (credits are drawn down by settlement)', async () => {
