@@ -193,3 +193,4 @@ export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
 export * from './devicePoolAssignmentEvents';
 export * from './aiModelRegistry';
+export * from './aiInvocations';

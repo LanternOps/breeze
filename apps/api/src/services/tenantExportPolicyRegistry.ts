@@ -91,6 +91,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "ai_budget_reservations": tablePolicy("org_id", {"included":["id","org_id","idempotency_key","session_id","billing_source","namespace","daily_period_key","monthly_period_key","uncapped","reserved_cost_cents","actual_cost_cents","status","settlement_fingerprint","created_at","updated_at","indeterminate_at","settled_at","released_at","expires_at","expired_at","expiry_reason"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_budgets": tablePolicy("org_id", {"included":["max_compute_cents_per_day","id","org_id","enabled","monthly_budget_cents","daily_budget_cents","max_turns_per_session","messages_per_minute_per_user","messages_per_hour_per_org","approval_mode","alert_threshold_pcts","tool_rate_limit_multiplier","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["allowed_models"]}),
   "ai_cost_usage": tablePolicy("org_id", {"included":["compute_cents","id","org_id","period","period_key","total_cost_cents","session_count","message_count","tool_execution_count","billing_source","updated_at"],"reviewedIncluded":["input_tokens","output_tokens"],"excludedSensitive":[],"excludedOpen":[]}),
+  // AI model registry W02 (#7600): the invocation ledger. options_sent and
+  // rate_snapshot are jsonb -> excludedOpen. The four *_tokens columns trip
+  // SUSPICIOUS_NAME_PARTS ('token') but are counters -> reviewedIncluded
+  // (precedent ai_cost_usage.input_tokens).
+  "ai_invocations": tablePolicy("org_id", {"included":["id","org_id","surface","role","user_id","session_id","agent_run_id","source_ref","offering_id","connection_id","funding_source","requested_model","served_model","thinking_mode_sent","inference_geo_sent","stop_reason","refusal_category","fallback_used","catalog_revision_id","connection_config_version","cost_cents","chargeable","sdk_reported_cost_usd","ledger_mode","legacy_cost_cents","created_at"],"reviewedIncluded":["input_tokens","output_tokens","cache_read_tokens","cache_write_tokens"],"excludedSensitive":[],"excludedOpen":["options_sent","rate_snapshot"]}),
   // AI model registry W02 (#7600): options is jsonb -> excludedOpen (CLAUDE.md).
   // The uuid[] columns hold offering ids (tenant identifiers, not json/jsonb/
   // bytea) -> included, precedent fix_memory.rebuild_pending_org_ids.

@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { AI_SURFACES, AI_SURFACE_ROLES, MODEL_LIFECYCLES } from '@breeze/shared';
 import { describe, expect, it } from 'vitest';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
-import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
+import { getOrgCascadeDeleteOrder, __testOnly as tenantCascadeTestOnly } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
+import { AI_INVOCATION_LEDGER_MODES } from './aiInvocations';
 import { PARTNER_AI_CONNECTION_KINDS, PARTNER_AI_MODEL_SOURCES } from './aiModelRegistry';
 
 export function readMigration(name: string): string {
@@ -92,5 +93,32 @@ describe('ai_model_assignments contract (#7600 W02)', () => {
     expect(policy?.organizationKey).toBe('org_id');
     expect(policy?.columns['options']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
     expect(policy?.columns['permitted_offering_ids']?.decision).toBe('include');
+  });
+});
+
+describe('ai_invocations contract (#7600 W02)', () => {
+  const sqlText = readMigration('2026-11-14-100300-ai-invocations.sql');
+
+  it('surface CHECK = AI_SURFACES; ledger_mode CHECK = the Drizzle literals', () => {
+    expect(checkLiterals(sqlText, 'surface')).toEqual([...AI_SURFACES]);
+    expect(checkLiterals(sqlText, 'ledger_mode')).toEqual([...AI_INVOCATION_LEDGER_MODES]);
+  });
+
+  it('is append-only for breeze_app with a column-level org_id grant only', () => {
+    expect(sqlText).toMatch(/REVOKE UPDATE, DELETE, TRUNCATE ON public\.ai_invocations FROM breeze_app;/);
+    expect(sqlText).toMatch(/GRANT UPDATE \(org_id\) ON public\.ai_invocations TO breeze_app;/);
+    expect(sqlText).toMatch(/GRANT SELECT, DELETE ON public\.ai_invocations TO breeze_audit_admin;/);
+  });
+
+  it('is registered: cascade, audit-admin erasure, plain repoint merge, export policy', () => {
+    const order = getOrgCascadeDeleteOrder();
+    expect(order.indexOf('ai_invocations')).toBeGreaterThan(order.indexOf('ai_cost_usage'));
+    expect(order.indexOf('ai_invocations')).toBeLessThan(order.indexOf('ai_model_assignments'));
+    expect(tenantCascadeTestOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('ai_invocations')).toBe(true);
+    expect(getOrgMergePolicies().get('ai_invocations')).toEqual({ kind: 'repoint' });
+    const policy = CORE_TENANT_EXPORT_POLICY['ai_invocations'];
+    expect(policy?.columns['rate_snapshot']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
+    expect(policy?.columns['options_sent']).toMatchObject({ decision: 'exclude', openContainerReviewed: true });
+    expect(policy?.columns['input_tokens']).toMatchObject({ decision: 'include', reviewedSensitiveName: true });
   });
 });

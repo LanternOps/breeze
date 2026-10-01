@@ -329,6 +329,15 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_operator_task_events') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ai_operator_task_events FROM breeze_app;
         END IF;
+        -- ai_invocations (AI model registry W02, #7600, 2026-11-14-100300):
+        -- append-only invocation ledger. Org erasure and retention delete it as
+        -- breeze_audit_admin with breeze.allow_audit_retention='1'. The
+        -- table-level REVOKE also drops column privileges, so the column-level
+        -- UPDATE (org_id) the org-merge repoint needs is re-granted right after.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_invocations') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ai_invocations FROM breeze_app;
+          GRANT UPDATE (org_id) ON TABLE ai_invocations TO breeze_app;
+        END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_action_results') THEN
           REVOKE TRUNCATE ON TABLE automation_action_results FROM breeze_app;
           REVOKE TRUNCATE ON TABLE automation_action_results FROM PUBLIC;

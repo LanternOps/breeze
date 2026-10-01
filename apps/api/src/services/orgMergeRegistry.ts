@@ -715,6 +715,12 @@ const REPOINT_TABLES: readonly string[] = [
   // agent_rollback_events removed (#4371 fixup): reclassified 'leave-for-erasure'
   // in SPECIAL above — breeze_app has no UPDATE on this append-only table.
   "ai_action_plans",
+  // ai_invocations (#7600 W02) is append-only, but its trigger admits exactly
+  // the org_id-only UPDATE this policy issues while the loser org is fenced
+  // 'merging' (same partner), and breeze_app holds a column-level UPDATE
+  // (org_id) grant for it — so usage history follows the merged client
+  // (spec §5.5; chargeback W10).
+  "ai_invocations",
   "ai_screenshots",
   "ai_sessions",
   "alert_correlation_members",
