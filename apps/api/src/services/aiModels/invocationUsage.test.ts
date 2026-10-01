@@ -218,22 +218,45 @@ describe('sdkTurnUsage — cumulative modelUsage is billed as per-key deltas aga
     expect(out.usage).toEqual([std(SONNET, tok(1, 0))]);
   });
 
-  it('a decreased component bills ZERO, flags snapshot_regressed and resets the snapshot', () => {
-    const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: snap({ [SONNET]: T }),
+  it('a decreased component bills ZERO, flags snapshot_regressed and keeps the HIGH-WATER snapshot', () => {
+    // T = tok(1000, 200, 5000, 100) style fixture; the regressed reading is lower on some components.
+    const prevSnap = snap({ [SONNET]: T });
+    const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: prevSnap,
       result: success({ usage: ru(tok(5, 5)), modelUsage: { [SONNET]: mu(tok(200, 60, 900, 20)) } }) });
     expect(out.usage).toEqual([]);
     expect(out.usageConfirmed).toBe(false);
     expect(out.usageNote).toBe('snapshot_regressed');
-    expect(out.nextSnapshot).toEqual(snap({ [SONNET]: tok(200, 60, 900, 20) }));
+    // Component-wise max of previous and current: a one-off low reading can
+    // never make the next turn re-bill tokens that were already billed.
+    const hw = out.nextSnapshot!.models[SONNET]!.tokens;
+    const p = prevSnap.models[SONNET]!.tokens;
+    expect(hw).toEqual({
+      input: Math.max(p.input, 200), output: Math.max(p.output, 60),
+      cacheRead: Math.max(p.cacheRead, 900), cacheWrite: Math.max(p.cacheWrite, 20),
+    });
   });
 
-  it('a key that vanished from modelUsage is a regression too', () => {
+  it('after a regression, a glitch reading that recovers does not re-bill already-billed tokens', () => {
+    const first = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: snap({ [SONNET]: T }),
+      result: success({ modelUsage: { [SONNET]: mu(tok(1, 1)) } }) });
+    expect(first.usageNote).toBe('snapshot_regressed');
+    const next = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: first.nextSnapshot,
+      result: success({ modelUsage: { [SONNET]: mu(add(T, tok(3, 2))) } }) });
+    expect(next.usageNote).toBe('delta');
+    expect(next.usage).toEqual([std(SONNET, tok(3, 2))]);
+  });
+
+  it('a key that vanished from modelUsage bills no delta for it, is not a regression, and stays in the snapshot', () => {
     const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(),
       previousSnapshot: snap({ [SONNET]: T, [HAIKU]: tok(1, 1) }),
       result: success({ modelUsage: { [SONNET]: mu(add(T, T)) } }) });
-    expect(out.usage).toEqual([]);
-    expect(out.usageNote).toBe('snapshot_regressed');
-    expect(out.nextSnapshot).toEqual(snap({ [SONNET]: add(T, T) }));
+    expect(out.usage).toEqual([std(SONNET, T)]);
+    expect(out.usageNote).toBe('delta');
+    expect(out.nextSnapshot).toEqual(snap({ [SONNET]: add(T, T), [HAIKU]: tok(1, 1) }));
+    // and when it reappears at its old total, nothing is re-billed for it
+    const back = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: out.nextSnapshot,
+      result: success({ modelUsage: { [SONNET]: mu(add(T, T)), [HAIKU]: mu(tok(1, 1)) } }) });
+    expect(back.usage).toEqual([]);
   });
 
   it('no snapshot: result.usage is billed, capped componentwise by the summed modelUsage', () => {

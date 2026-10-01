@@ -134,7 +134,7 @@ export function parseSdkUsageSnapshot(raw: unknown): SdkUsageSnapshot | null {
 export type SdkUsageNote =
   | 'delta'               // snapshot present, nothing decreased: per-key deltas billed
   | 'first_result'        // no snapshot: result.usage billed, capped by modelUsage
-  | 'snapshot_regressed'  // a key or component decreased: billed ZERO, snapshot reset (Sentry: ai_usage_snapshot_regressed)
+  | 'snapshot_regressed'  // a component decreased: billed ZERO, snapshot kept at its high-water mark (Sentry: ai_usage_snapshot_regressed)
   | 'no_result'           // aborted / untrustworthy result: billed ZERO, snapshot unchanged
   | 'empty_usage';        // the turn made no model call: nothing billed, snapshot unchanged
 
@@ -161,7 +161,7 @@ function readCount(v: unknown): number | 'invalid' {
 function readModelUsage(modelUsage: unknown): SdkUsageSnapshot | 'invalid' | null {
   if (modelUsage === undefined || modelUsage === null) return null;
   if (typeof modelUsage !== 'object' || Array.isArray(modelUsage)) return 'invalid';
-  const models: SdkUsageSnapshot['models'] = {};
+  const models: SdkUsageSnapshot['models'] = Object.create(null) as SdkUsageSnapshot['models'];
   for (const [key, raw] of Object.entries(modelUsage as Record<string, unknown>)) {
     if (!key || !raw || typeof raw !== 'object') return 'invalid';
     const e = raw as SdkModelUsageLike;
@@ -171,7 +171,31 @@ function readModelUsage(modelUsage: unknown): SdkUsageSnapshot | 'invalid' | nul
     const [input, output, cacheRead, cacheWrite, webSearchRequests] = vals as number[];
     models[key] = { tokens: { input: input!, output: output!, cacheRead: cacheRead!, cacheWrite: cacheWrite! }, webSearchRequests: webSearchRequests! };
   }
-  return { version: 1, models };
+  return { version: 1, models: { ...models } };
+}
+
+/**
+ * Component-wise high-water mark of two snapshots (union of keys). Used after
+ * a regression so a one-off low reading can never make a later turn re-bill
+ * tokens that were already billed: under-billing beats double-billing.
+ */
+function highWater(a: SdkUsageSnapshot, b: SdkUsageSnapshot): SdkUsageSnapshot {
+  const keys = new Set([...Object.keys(a.models), ...Object.keys(b.models)]);
+  const entries: Array<[string, Entry]> = [];
+  for (const k of keys) {
+    const x = Object.hasOwn(a.models, k) ? a.models[k]! : ZERO;
+    const y = Object.hasOwn(b.models, k) ? b.models[k]! : ZERO;
+    entries.push([k, {
+      tokens: {
+        input: Math.max(x.tokens.input, y.tokens.input),
+        output: Math.max(x.tokens.output, y.tokens.output),
+        cacheRead: Math.max(x.tokens.cacheRead, y.tokens.cacheRead),
+        cacheWrite: Math.max(x.tokens.cacheWrite, y.tokens.cacheWrite),
+      },
+      webSearchRequests: Math.max(x.webSearchRequests, y.webSearchRequests),
+    }]);
+  }
+  return { version: 1, models: Object.fromEntries(entries) };
 }
 
 function isZero(e: Entry): boolean {
@@ -278,10 +302,13 @@ export function sdkTurnUsage(input: {
 
   if (prev) {
     const deltas: Array<[string, Entry]> = [];
-    let regressed = Object.keys(prev.models).some((k) => !(k in current.models));
+    // A key absent from this result is not a regression on its own: it bills
+    // no delta and keeps its last total in the snapshot (so it can never be
+    // re-billed if it reappears).
+    let regressed = false;
     for (const [key, cur] of entries) {
       if (regressed) break;
-      const d = minus(cur, prev.models[key] ?? ZERO);
+      const d = minus(cur, Object.hasOwn(prev.models, key) ? prev.models[key]! : ZERO);
       if (d === 'decreased') regressed = true;
       else if (!isZero(d)) deltas.push([key, d]);
     }
@@ -289,17 +316,17 @@ export function sdkTurnUsage(input: {
       return {
         usage: [],
         outcome: sdkOutcome(binding, obs, result, obs.refusalFallback?.fallbackModel ?? binding.wireModel),
-        nextSnapshot: current,
+        nextSnapshot: highWater(prev, current),
         usageConfirmed: false,
         usageNote: 'snapshot_regressed',
       };
     }
-    const newKeys = new Set(entries.map(([k]) => k).filter((k) => !(k in prev.models)));
+    const newKeys = new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));
     const servedModel = servedModelOf(binding, obs, deltas, newKeys);
     return {
       usage: deltas.map(([k, d]) => billed(k, d)),
       outcome: sdkOutcome(binding, obs, result, servedModel),
-      nextSnapshot: current,
+      nextSnapshot: highWater(prev, current),
       usageConfirmed: !errored,
       usageNote: 'delta',
     };
