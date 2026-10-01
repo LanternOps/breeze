@@ -168,7 +168,18 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
             <tbody>
               {data.rows.map((r) => (
                 <tr key={r.key} className="border-b last:border-0" data-testid={`ai-usage-breakdown-row-${r.key}`}>
-                  <td className="px-6 py-2">{labelOf(r)}</td>
+                  <td className="px-6 py-2">
+                    {labelOf(r)}
+                    {groupBy === 'model' && r.connectionDisconnected && (
+                      <span
+                        data-testid={`ai-usage-breakdown-disconnected-${r.key}`}
+                        title={t('aiModels.usage.disconnectedHint')}
+                        className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                      >
+                        {t('aiModels.usage.disconnected')}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumber(r.invocations)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.costCents / 100)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumber(r.inputTokens)}</td>

@@ -515,6 +515,8 @@
       "loading": "Loading usage…",
       "empty": "No model calls in this period.",
       "error": "Couldn't load the usage breakdown.",
+      "disconnected": "Disconnected",
+      "disconnectedHint": "The connection that served these calls has since been disconnected.",
       "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above."
     },
     "link": {

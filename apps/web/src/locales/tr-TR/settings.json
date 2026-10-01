@@ -515,6 +515,8 @@
       "loading": "Kullanım yükleniyor…",
       "empty": "Bu dönemde model çağrısı yok.",
       "error": "Kullanım dökümü yüklenemedi.",
+      "disconnected": "Bağlantı kesildi",
+      "disconnectedHint": "Bu çağrıları karşılayan bağlantı o zamandan beri kesildi.",
       "footnote": "Ret oranı model çağrısı başınadır. Sayımlar model kaydı devreye girdiğinde başlar; önceki kullanım yukarıdaki toplamlardadır."
     },
     "link": {

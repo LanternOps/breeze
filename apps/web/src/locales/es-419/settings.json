@@ -515,6 +515,8 @@
       "loading": "Cargando el uso…",
       "empty": "No hay llamadas a modelos en este período.",
       "error": "No se pudo cargar el desglose de uso.",
+      "disconnected": "Desconectada",
+      "disconnectedHint": "La conexión que atendió estas llamadas ya se desconectó.",
       "footnote": "La tasa de rechazo se calcula por llamada al modelo. Los conteos comienzan cuando el registro de modelos entró en funcionamiento; el uso anterior está en los totales de arriba."
     },
     "link": {

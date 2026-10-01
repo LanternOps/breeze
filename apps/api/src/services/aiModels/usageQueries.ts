@@ -88,13 +88,17 @@ const SIMPLE: Record<Exclude<AiUsageGroupBy, 'model'>, { key: SQL; label: SQL; j
  *  - a platform leg: the platform catalog's display name for the served model;
  *  - else the served model id.
  * The key keeps funding and connection apart, so the same model id on the
- * platform key and on a BYO key stays two rows.
+ * platform key and on a BYO key stays two rows. connection_disconnected marks
+ * a connection W03 has soft-disconnected (kept as ledger provenance; a
+ * reconnect is a NEW connection, so its calls are a separate row); false for
+ * platform legs.
  */
 function buildModelQuery(input: UsageQueryInput): SQL {
   return sql`
     SELECT g.funding_source || ':' || COALESCE(g.connection_id::text, 'platform') || ':' || g.served_model AS key,
       COALESCE(ml.name, spm.display_name, g.served_model) AS label,
-      g.invocations, g.cost_cents, g.input_tokens, g.output_tokens, g.refusals, g.fallbacks
+      g.invocations, g.cost_cents, g.input_tokens, g.output_tokens, g.refusals, g.fallbacks,
+      COALESCE(gc.status = 'disconnected', false) AS connection_disconnected
     FROM (
       SELECT i.funding_source, i.connection_id, i.served_model, MIN(i.requested_model) AS requested_model,
         ${AGGREGATES},
@@ -115,6 +119,7 @@ function buildModelQuery(input: UsageQueryInput): SQL {
       LIMIT 1
     ) ml ON true
     LEFT JOIN ai_platform_models spm ON g.connection_id IS NULL AND spm.model_id = g.served_model
+    LEFT JOIN partner_ai_connections gc ON gc.id = g.connection_id
     ORDER BY g.sort_cost DESC NULLS LAST, g.sort_count DESC`;
 }
 
@@ -133,6 +138,8 @@ export function buildUsageQuery(input: UsageQueryInput): SQL {
 type RawRow = {
   key?: string; label?: string | null; invocations: string; cost_cents: string | null;
   input_tokens: string | null; output_tokens: string | null; refusals: string; fallbacks: string;
+  /** groupBy=model only. */
+  connection_disconnected?: boolean;
 };
 
 export function toUsageRow(r: RawRow): AiUsageRowDto {
@@ -148,6 +155,7 @@ export function toUsageRow(r: RawRow): AiUsageRowDto {
     refusals,
     refusalRate: invocations === 0 ? 0 : refusals / invocations,
     fallbacks: Number(r.fallbacks ?? 0),
+    ...(r.connection_disconnected === undefined ? {} : { connectionDisconnected: r.connection_disconnected === true }),
   };
 }
 

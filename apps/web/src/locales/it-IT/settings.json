@@ -515,6 +515,8 @@
       "loading": "Caricamento dell'utilizzo…",
       "empty": "Nessuna chiamata ai modelli in questo periodo.",
       "error": "Impossibile caricare il dettaglio dell'utilizzo.",
+      "disconnected": "Disconnessa",
+      "disconnectedHint": "La connessione che ha servito queste chiamate è stata nel frattempo disconnessa.",
       "footnote": "Il tasso di rifiuto è calcolato per chiamata al modello. I conteggi iniziano dall'attivazione del registro dei modelli; l'utilizzo precedente è incluso nei totali sopra."
     },
     "link": {

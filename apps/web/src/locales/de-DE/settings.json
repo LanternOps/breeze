@@ -515,6 +515,8 @@
       "loading": "Nutzung wird geladen…",
       "empty": "Keine Modellaufrufe in diesem Zeitraum.",
       "error": "Die Nutzungsaufschlüsselung konnte nicht geladen werden.",
+      "disconnected": "Getrennt",
+      "disconnectedHint": "Die Verbindung, über die diese Aufrufe liefen, wurde inzwischen getrennt.",
       "footnote": "Die Ablehnungsquote bezieht sich auf einen Modellaufruf. Die Zählung beginnt mit dem Start der Modellregistrierung; frühere Nutzung ist in den Summen oben enthalten."
     },
     "link": {

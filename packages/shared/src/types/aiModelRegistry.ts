@@ -139,6 +139,12 @@ export interface AiUsageRowDto {
   /** refusals / invocations, 0..1; 0 when invocations = 0. */
   refusalRate: number;
   fallbacks: number;
+  /**
+   * groupBy=model only (absent otherwise): the connection that served these
+   * calls has since been disconnected (W03 soft-disconnect keeps it as ledger
+   * provenance). Always false for platform-funded rows.
+   */
+  connectionDisconnected?: boolean;
 }
 
 export interface AiUsageBreakdownDto {
@@ -147,5 +153,5 @@ export interface AiUsageBreakdownDto {
   to: string;
   orgId: string | null;
   rows: AiUsageRowDto[];
-  totals: Omit<AiUsageRowDto, 'key' | 'label'>;
+  totals: Omit<AiUsageRowDto, 'key' | 'label' | 'connectionDisconnected'>;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
-import type { AiAssignmentRowDto, AiUsageBreakdownDto } from '../types/aiModelRegistry';
+import type { AiAssignmentRowDto, AiUsageBreakdownDto, AiUsageRowDto } from '../types/aiModelRegistry';
 import {
   AI_ASSIGNMENT_WRITE_ROLES,
   AI_USAGE_GROUP_BYS,
@@ -152,6 +152,10 @@ describe('aiUsageQueryBaseSchema', () => {
   });
   it('the breakdown DTO groupBy is the validator union', () => {
     expectTypeOf<AiUsageBreakdownDto['groupBy']>().toEqualTypeOf<AiUsageGroupBy>();
+  });
+  it('a usage row can flag a disconnected serving connection (groupBy=model only); totals never carry it', () => {
+    expectTypeOf<AiUsageRowDto['connectionDisconnected']>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<keyof AiUsageBreakdownDto['totals']>().not.toEqualTypeOf<keyof AiUsageBreakdownDto['totals'] | 'connectionDisconnected'>();
   });
 });
 

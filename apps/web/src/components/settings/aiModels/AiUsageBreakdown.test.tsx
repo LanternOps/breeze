@@ -82,6 +82,21 @@ describe('AiUsageBreakdown', () => {
     expect((await screen.findByTestId('ai-usage-breakdown-row-system')).textContent).toMatch(/System \/ agents/);
   });
 
+  it('marks a model row whose serving connection was disconnected, and only that row', async () => {
+    const GONE = 'partner_key:dddddddd-dddd-4ddd-8ddd-dddddddddddd:claude-sonnet-x';
+    const LIVE = 'partner_key:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:claude-sonnet-x';
+    const row = (key: string, connectionDisconnected: boolean) => ({
+      key, label: 'Sonnet X', invocations: 1, costCents: 10, inputTokens: 1, outputTokens: 1, refusals: 0, refusalRate: 0, fallbacks: 0, connectionDisconnected,
+    });
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ ...emptyBreakdown('model'), rows: [row(GONE, true), row(LIVE, false)], totals }));
+    render(<AiUsageBreakdown orgId={null} />);
+    const marker = await screen.findByTestId(`ai-usage-breakdown-disconnected-${GONE}`);
+    expect(marker.textContent).toBe('Disconnected');
+    expect(marker.getAttribute('title')).toMatch(/connection that served these calls/i);
+    expect(screen.getByTestId(`ai-usage-breakdown-row-${GONE}`).textContent).toMatch(/Sonnet X\s*Disconnected/);
+    expect(screen.queryByTestId(`ai-usage-breakdown-disconnected-${LIVE}`)).toBeNull();
+  });
+
   it('shows the empty state', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes(emptyBreakdown('model')));
     render(<AiUsageBreakdown orgId={null} />);

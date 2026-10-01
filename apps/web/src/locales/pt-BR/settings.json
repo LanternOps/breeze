@@ -515,6 +515,8 @@
       "loading": "Carregando o uso…",
       "empty": "Nenhuma chamada de modelo neste período.",
       "error": "Não foi possível carregar o detalhamento de uso.",
+      "disconnected": "Desconectada",
+      "disconnectedHint": "A conexão que atendeu estas chamadas foi desconectada desde então.",
       "footnote": "A taxa de recusa é calculada por chamada de modelo. As contagens começam quando o registro de modelos entrou em operação; o uso anterior está nos totais acima."
     },
     "link": {

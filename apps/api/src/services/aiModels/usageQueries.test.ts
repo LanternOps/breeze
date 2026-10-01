@@ -56,6 +56,16 @@ describe('buildUsageQuery', () => {
     expect(sql).toMatch(/GROUP BY i\.funding_source, i\.connection_id, i\.served_model/);
     expect(sql).not.toMatch(/offering_id/);
   });
+  // W03 soft-disconnect keeps the connection as provenance; the model row says so.
+  it('groupBy=model flags a row whose serving connection is disconnected (LEFT JOIN, false for platform rows)', () => {
+    const { sql } = render(buildUsageQuery(base({ groupBy: 'model' })));
+    expect(sql).toMatch(/LEFT JOIN partner_ai_connections gc ON gc\.id = g\.connection_id/);
+    expect(sql).toMatch(/COALESCE\(gc\.status = 'disconnected', false\) AS connection_disconnected/);
+  });
+  it.each(['surface', 'user', 'org'] as const)('groupBy=%s carries no disconnected flag', (groupBy) => {
+    const { sql } = render(buildUsageQuery(base({ groupBy })));
+    expect(sql).not.toMatch(/connection_disconnected|partner_ai_connections/);
+  });
   it('orders by cost then invocations and caps at 200 rows', () => {
     const { sql } = render(buildUsageQuery(base({ groupBy: 'user' })));
     expect(sql).toMatch(/ORDER BY SUM\(i\.cost_cents\) DESC NULLS LAST, COUNT\(\*\) DESC\s+LIMIT 200/);
@@ -69,6 +79,14 @@ describe('toUsageRow', () => {
   });
   it('refusalRate is 0 with no invocations', () => {
     expect(toUsageRow({ key: 'k', label: 'L', invocations: '0', cost_cents: null, input_tokens: null, output_tokens: null, refusals: '0', fallbacks: '0' }).refusalRate).toBe(0);
+  });
+  it.each([[true, true], [false, false]])('maps connection_disconnected %s → connectionDisconnected %s (model rows)', (raw, flag) => {
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0', connection_disconnected: raw }))
+      .toMatchObject({ connectionDisconnected: flag });
+  });
+  it('a row without the column (non-model groupings, totals) has no connectionDisconnected key', () => {
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0' }))
+      .not.toHaveProperty('connectionDisconnected');
   });
   it('falls back to the key when no label resolved', () => {
     expect(toUsageRow({ key: 'k', label: null, invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0' }).label).toBe('k');

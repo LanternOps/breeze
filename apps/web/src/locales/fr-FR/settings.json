@@ -515,6 +515,8 @@
       "loading": "Chargement de l'utilisation…",
       "empty": "Aucun appel de modèle sur cette période.",
       "error": "Impossible de charger la répartition de l'utilisation.",
+      "disconnected": "Déconnectée",
+      "disconnectedHint": "La connexion qui a servi ces appels a depuis été déconnectée.",
       "footnote": "Le taux de refus est calculé par appel de modèle. Les compteurs démarrent à la mise en service du registre de modèles ; l'utilisation antérieure figure dans les totaux ci-dessus."
     },
     "link": {
