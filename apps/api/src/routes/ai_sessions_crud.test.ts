@@ -169,7 +169,7 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
-import { InvalidSessionModelError } from '../services/aiOfferableModels';
+import { InvalidSessionModelError } from '../services/aiModels/invalidSessionModelError';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../services/llm/llmAvailability';
 
@@ -249,7 +249,9 @@ describe('AI routes', () => {
     });
 
     it('returns 400 invalid_model when the requested model is not allowed (#7587)', async () => {
-      vi.mocked(createSession).mockRejectedValueOnce(new InvalidSessionModelError('claude-made-up-9'));
+      vi.mocked(createSession).mockRejectedValueOnce(
+        new InvalidSessionModelError('Model "claude-made-up-9" is not available for AI sessions.', 'invalid_model'),
+      );
 
       const res = await app.request('/ai/sessions', {
         method: 'POST',
@@ -262,6 +264,59 @@ describe('AI routes', () => {
         error: 'Model "claude-made-up-9" is not available for AI sessions.',
         code: 'invalid_model',
       });
+    });
+
+    it('returns 400 not_permitted for a foreign / not-permitted offering id, with no detail about it (W03 #7601)', async () => {
+      const foreign = 'cccccccc-1111-4222-8333-444455556666';
+      vi.mocked(createSession).mockRejectedValueOnce(
+        new InvalidSessionModelError('This AI model is not available here. Choose another model.', 'not_permitted'),
+      );
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test', offeringId: foreign, options: { effort: 'high' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'This AI model is not available here. Choose another model.',
+        code: 'not_permitted',
+      });
+      expect(vi.mocked(createSession)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ offeringId: foreign, options: { effort: 'high' } }),
+      );
+    });
+
+    it('returns 400 permission_required for a premium offering without the permission (W03 #7601)', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(
+        new InvalidSessionModelError('Your role does not allow this AI model. Choose another model.', 'permission_required'),
+      );
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ offeringId: 'cccccccc-1111-4222-8333-444455556666' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'permission_required' });
+    });
+
+    it.each([
+      [{ offeringId: 'not-a-uuid' }],
+      [{ options: { effort: 'ludicrous' } }],
+      [{ options: { inferenceGeo: 'eu' } }],
+    ])('rejects a malformed model choice %j before createSession', async (body) => {
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(createSession)).not.toHaveBeenCalled();
     });
 
     it('returns ai_not_configured as 503 when no model provider is configured', async () => {

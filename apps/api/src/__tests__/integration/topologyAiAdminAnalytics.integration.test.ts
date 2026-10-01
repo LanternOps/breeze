@@ -38,7 +38,7 @@ async function mfaToken(env: TestEnvironment) {
 async function insertSessionWithExecution(env: TestEnvironment, siteId: string | null, toolName: string) {
   const db = getTestDb();
   const [session] = await db.insert(aiSessions).values({
-    orgId: env.organization.id, userId: env.user.id, title: `s-${toolName}`, type: siteId ? 'topology' : 'general', topologySiteId: siteId,
+    orgId: env.organization.id, userId: env.user.id, model: 'claude-sonnet-5-5', title: `s-${toolName}`, type: siteId ? 'topology' : 'general', topologySiteId: siteId,
   }).returning();
   await db.insert(aiToolExecutions).values({
     sessionId: session!.id, toolName, toolInput: { site_id: siteId, node_id: `node-of-${toolName}` }, status: 'completed',

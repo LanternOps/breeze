@@ -52,12 +52,13 @@ import {
   buildClientSystemPrompt,
   checkClientRateLimits,
   generateClientSessionTitle,
-  resolveClientLlmConfig,
 } from '../../services/clientAiSessions';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import type { AiBillingSource } from '../../services/aiCostTracker';
 import type { ResolvedModel } from '../../services/aiModels/resolveModel';
-import { resolveSessionTurn } from '../../services/aiModels/sessionModel';
+import { chooseSessionModel, resolveSessionTurn, type SessionModelChoice } from '../../services/aiModels/sessionModel';
+import { readOrgPartnerId } from '../../services/aiModels/candidateLoader';
+import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import {
   CLIENT_HOSTS,
@@ -82,7 +83,6 @@ import {
   type ClientAiAuthContext,
 } from './schemas';
 import { CLIENT_AI_SSE_PING_INTERVAL_MS, toClientSseEvent } from './sse';
-import { legacyOfficeChatModel } from '../../services/aiModels/legacySurfaceModels';
 
 export const clientAiSessionRoutes = new Hono();
 
@@ -153,8 +153,7 @@ function auditClient(
 
 /**
  * Shared post-resolution preflight: org budget → partner credits. `funding`
- * is the resolved offering's (W03: decided before admission); session
- * create still passes its legacy-derived source until Task 9.
+ * is the resolved offering's (W03: decided before admission).
  */
 async function runClientPreflight(
   c: Context,
@@ -304,13 +303,25 @@ clientAiSessionRoutes.post('/', async (c) => {
     return c.json({ error: 'unsupported_host', host }, 400);
   }
 
-  const resolved = await resolveClientLlmConfig(auth.orgId);
-  if (resolved.source === 'unavailable') {
-    return c.json({ error: 'ai_unavailable' }, 503);
+  // W03 (#7601): the session is created on the registry's `office_chat`
+  // offering for the org's partner. Portal users are not Breeze users, so no
+  // permission gate applies. `policy.allowedModels` is no longer read here:
+  // W02 backfilled it into the office_chat assignment, and W04 replaces its
+  // editor (an edit before then has no routing effect).
+  const partnerId = await readOrgPartnerId(auth.orgId);
+  if (!partnerId) return c.json({ error: 'ai_unavailable' }, 503);
+  let choice: SessionModelChoice;
+  try {
+    choice = await chooseSessionModel({ partnerId, orgId: auth.orgId, userId: null, surface: 'office_chat' });
+  } catch (err) {
+    if (err instanceof LlmUnavailableError || err instanceof LlmNotConfiguredError) {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+    throw err;
   }
-  const rejection = await runClientPreflight(c, auth, policy, resolved.source === 'partner' ? 'partner_key' : 'platform');
+  const rejection = await runClientPreflight(c, auth, policy, choice.billingSource);
   if (rejection) return rejection;
-  const model = legacyOfficeChatModel(policy.allowedModels, resolved.model);
+  const model = choice.model;
   const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
   // #6473 — mirrors createSession in services/aiAgent.ts: without this, every
@@ -329,7 +340,10 @@ clientAiSessionRoutes.post('/', async (c) => {
       clientUserId: auth.clientUserId,
       type: clientSessionType(host),
       model,
-      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+      offeringId: choice.offeringId,
+      offeringPartnerId: choice.offeringPartnerId,
+      options: choice.options,
+      billingSource: choice.billingSource,
       maxTurns: budget.maxTurnsPerSession,
       systemPrompt,
       workbookName: workbookName ?? null,

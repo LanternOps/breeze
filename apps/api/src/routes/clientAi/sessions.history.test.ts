@@ -11,7 +11,6 @@ const {
   checkBillingCreditsMock, rateLimiterMock,
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
-  resolveClientLlmConfigMock,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
   ORG_ID: '0c0c0c0c-1111-4222-8333-444455556666',
@@ -36,7 +35,6 @@ const {
   resolveToolResultMock: vi.fn(() => true),
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
-  resolveClientLlmConfigMock: vi.fn(),
 }));
 
 vi.mock('../../services/aiAgentSdk', () => ({
@@ -85,9 +83,16 @@ vi.mock('../../services/clientAiToolBridge', () => ({
   failPendingForSession: failPendingMock,
 }));
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
-vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
-  resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
+// W03 Task 9: create resolves the office_chat offering through the registry.
+vi.mock('../../services/aiModels/candidateLoader', () => ({
+  readOrgPartnerId: vi.fn(() => Promise.resolve('partner-1')),
+}));
+vi.mock('../../services/aiModels/sessionModel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/aiModels/sessionModel')>()),
+  chooseSessionModel: vi.fn(() => Promise.resolve({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
 }));
 
 import { clientAiSessionRoutes } from './sessions';
@@ -107,11 +112,6 @@ beforeEach(() => {
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
-  resolveClientLlmConfigMock.mockResolvedValue({
-    source: 'platform',
-    apiKey: 'platform-key',
-    model: 'claude-sonnet-4-6',
-  });
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
   dbInsertMock.mockImplementation(() => ({
     values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) })),

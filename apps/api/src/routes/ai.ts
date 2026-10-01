@@ -31,7 +31,7 @@ import {
   resolveDefaultModel,
   sanitizeErrorForClient,
 } from '../services/aiAgent';
-import { InvalidSessionModelError } from '../services/aiOfferableModels';
+import { InvalidSessionModelError } from '../services/aiModels/invalidSessionModelError';
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { redactPersistedToolInput } from '../services/aiToolOutput';

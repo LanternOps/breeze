@@ -37,7 +37,18 @@ vi.mock('./llm/llmConfigResolver', () => ({
 }));
 vi.mock('./topology/aiToolGate', async (original) => ({ ...await original<object>(), authorizeTopologySessionSite: authorizeSiteMock }));
 
+// W03 Task 9 (#7601): createSession picks its model through the registry.
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(async () => ({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
+}));
+
 import { createSession } from './aiAgent';
+import { chooseSessionModel } from './aiModels/sessionModel';
+import { readOrgPartnerId } from './aiModels/candidateLoader';
 import { TopologyAiSessionError } from './topology/aiToolGate';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
@@ -68,7 +79,8 @@ describe('createSession topology pinning (M4-D2)', () => {
     expect(authorizeSiteMock).toHaveBeenCalledWith(expect.anything(), SITE);
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, type: 'topology', topologySiteId: SITE, deviceId: null }));
     expect(result.orgId).toBe(ORG_B);
-    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(readOrgPartnerId)).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, surface: 'chat' }));
   });
 
   it('refuses a site the caller cannot read, or where topology AI is unavailable, without inserting', async () => {

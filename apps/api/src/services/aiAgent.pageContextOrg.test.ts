@@ -52,7 +52,18 @@ vi.mock('./llm/llmConfigResolver', () => ({
   resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
+// W03 Task 9 (#7601): createSession picks its model through the registry.
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(async () => ({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
+}));
+
 import { createSession } from './aiAgent';
+import { chooseSessionModel } from './aiModels/sessionModel';
+import { readOrgPartnerId } from './aiModels/candidateLoader';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -121,7 +132,8 @@ describe('createSession page-context org anchoring (#5593)', () => {
 
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B }));
     expect(result.orgId).toBe(ORG_B);
-    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(readOrgPartnerId)).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, surface: 'chat' }));
   });
 
   it('falls back to accessibleOrgIds[0] when the page-context device is outside the caller org axis', async () => {

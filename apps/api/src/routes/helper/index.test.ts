@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 
 const {
   captureExceptionMock,
-  resolveLlmConfigMock,
   checkBudgetMock,
   checkSystemAiRateLimitMock,
   reserveAiBudgetMock,
@@ -11,17 +10,20 @@ const {
   getEffectiveAiBudgetMock,
 } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
-  resolveLlmConfigMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   checkSystemAiRateLimitMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetMock: vi.fn(),
   getEffectiveAiBudgetMock: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
 }));
-const { resolveSessionTurnMock } = vi.hoisted(() => ({ resolveSessionTurnMock: vi.fn() }));
-// W03 Task 7: helper turns resolve through the registry (session create stays legacy until Task 9).
+const { resolveSessionTurnMock, chooseSessionModelMock } = vi.hoisted(() => ({
+  resolveSessionTurnMock: vi.fn(),
+  chooseSessionModelMock: vi.fn(),
+}));
+// W03: helper turns (Task 7) and session create (Task 9) resolve through the registry.
 vi.mock('../../services/aiModels/sessionModel', () => ({
   resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
+  chooseSessionModel: (...args: unknown[]) => chooseSessionModelMock(...args),
 }));
 
 vi.mock('../../db', () => ({
@@ -160,7 +162,6 @@ vi.mock('../../services/aiAgentSdk', () => ({
 }));
 
 vi.mock('../../services/llm/llmConfigResolver', () => ({
-  resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
   LlmUnavailableError: class LlmUnavailableError extends Error {
     readonly status = 503;
     readonly code = 'ai_unavailable';
@@ -210,6 +211,17 @@ const VALID_TOOL_DECL = {
   inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
 };
 
+function helperChoice() {
+  return {
+    resolved: makeResolvedModel('anthropic_byok', { surface: 'helper' }),
+    offeringId: 'off-1',
+    offeringPartnerId: 'partner-1',
+    options: null,
+    model: 'claude-sonnet-5-5',
+    billingSource: 'partner_key' as const,
+  };
+}
+
 function mockHelperAuthDevice() {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
@@ -248,14 +260,7 @@ describe('helper routes permission derivation', () => {
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 5,
-    });
+    chooseSessionModelMock.mockResolvedValue(helperChoice());
     resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'helper' }));
     app = new Hono();
     app.route('/helper', helperRoutes);
@@ -289,8 +294,14 @@ describe('helper routes permission derivation', () => {
     }));
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
     expect((insertedValues?.contextSnapshot as Record<string, unknown>).permissionLevel).toBe('standard');
-    expect(insertedValues?.model).toBe('claude-opus-4-6');
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    // W03 Task 9: the session is created on the registry's helper offering.
+    expect(insertedValues).toMatchObject({
+      offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+      model: 'claude-sonnet-5-5', billingSource: 'partner_key',
+    });
+    expect(chooseSessionModelMock).toHaveBeenCalledWith({
+      partnerId: 'partner-1', orgId: 'org-1', userId: null, surface: 'helper',
+    });
   });
 
   // #6473 — Helper-originated sessions were the third createSession-shaped
@@ -322,11 +333,7 @@ describe('helper routes permission derivation', () => {
 
   it('returns ai_unavailable as 503 before inserting a helper session', async () => {
     mockHelperAuthDevice();
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'unavailable',
-      partnerId: 'partner-1',
-      reason: 'key_error',
-    });
+    chooseSessionModelMock.mockRejectedValue(new LlmUnavailableError());
 
     const res = await app.request('/helper/chat/sessions', {
       method: 'POST',
@@ -337,13 +344,14 @@ describe('helper routes permission derivation', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(db.insert).not.toHaveBeenCalled();
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    // The body's partnerId is ignored: the device's own partner is resolved.
+    expect(chooseSessionModelMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'partner-1' }));
   });
 
   it('captures resolver throws and returns a generic retryable 503 when creating a session', async () => {
     mockHelperAuthDevice();
     const resolverError = new Error('database driver detail');
-    resolveLlmConfigMock.mockRejectedValueOnce(resolverError);
+    chooseSessionModelMock.mockRejectedValueOnce(resolverError);
 
     const res = await app.request('/helper/chat/sessions', {
       method: 'POST',
@@ -454,7 +462,7 @@ describe('helper routes permission derivation', () => {
     expect([...onlyTools].sort()).toEqual(getHelperAllowedTools('standard').sort());
     expect(allowedTools!.map((n) => n.replace('mcp__breeze__', '')).sort()).toEqual([...onlyTools].sort());
     expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'helper', userId: null });
-    expect(resolveLlmConfigMock).not.toHaveBeenCalled();
+    expect(chooseSessionModelMock).not.toHaveBeenCalled();
     expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
     // Org-axis AI rate limiter — the same ceiling technician chat enforces
     // via checkAiRateLimit. Helper sessions are device-scoped with no acting
@@ -801,14 +809,7 @@ describe('helper client-declared session tools', () => {
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 5,
-    });
+    chooseSessionModelMock.mockResolvedValue(helperChoice());
     resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'helper' }));
     app = new Hono();
     app.route('/helper', helperRoutes);
@@ -1099,14 +1100,7 @@ describe('helper session ownership scoping (cross-principal isolation)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 5,
-    });
+    chooseSessionModelMock.mockResolvedValue(helperChoice());
     resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'helper' }));
     app = new Hono();
     app.route('/helper', helperRoutes);

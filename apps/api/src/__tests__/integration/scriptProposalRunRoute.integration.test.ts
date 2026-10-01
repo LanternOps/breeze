@@ -106,7 +106,7 @@ runDb('the chat session back-fill sets session_id once, org-scoped, and never fo
   const other = await withSystemDbAccessContext(() => createOrganization({ partnerId: partner.id }));
   const user = await withSystemDbAccessContext(() => createUser({ partnerId: partner.id, orgId: org.id }));
   const [session] = await withSystemDbAccessContext(() => db.insert(aiSessions).values({
-    orgId: org.id, userId: user.id, title: 'sp-test',
+    orgId: org.id, userId: user.id, title: 'sp-test', model: 'claude-sonnet-5-5',
   }).returning({ id: aiSessions.id }));
   const proposalId = await seedReviewedProposal(org.id, org.id);
   const foreignId = await seedReviewedProposal(other.id, other.id);

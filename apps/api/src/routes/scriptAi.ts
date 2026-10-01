@@ -44,8 +44,10 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
-import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
-import { AI_NOT_CONFIGURED_BODY, llmUnusableCode } from '../services/llm/llmAvailability';
+import { LlmUnavailableError } from '../services/llm/llmUnavailableError';
+import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
+import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
+import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -94,25 +96,24 @@ scriptAiRoutes.post(
     const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
     if (!orgId) return c.json({ error: 'Organization context required' }, 400);
 
-    let resolved;
+    // The builder's model is picked through the registry (W03 #7601). It
+    // always runs the Agent SDK, never the env OpenAI-compatible provider, so
+    // it has no legacy branch. Refuse before a session exists: with no model
+    // the builder's first message could only come back empty.
+    let choice: SessionModelChoice;
     try {
-      resolved = await resolveLlmConfigForOrg(orgId);
+      const partnerId = await readOrgPartnerId(orgId);
+      if (!partnerId) return c.json({ error: 'ai_unavailable' }, 503);
+      choice = await chooseSessionModel({ partnerId, orgId, userId: auth.user.id, surface: 'script_builder' });
     } catch (err) {
+      if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       captureException(err, c);
       return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
     }
 
     try {
-      // Refuse before a session exists: with no model provider the builder's
-      // first message could only come back empty.
-      // The builder always runs the Agent SDK, never the OpenAI-compatible provider.
-      if (llmUnusableCode(resolved, 'agent_sdk') === 'ai_not_configured') {
-        return c.json(AI_NOT_CONFIGURED_BODY, 503);
-      }
-      if (resolved.source === 'unavailable') {
-        return c.json({ error: 'ai_unavailable' }, 503);
-      }
-      const session = await createScriptBuilderSession(auth, body, resolved.model);
+      const session = await createScriptBuilderSession(auth, body, choice);
       writeRouteAudit(c, {
         orgId: session.orgId,
         action: 'ai.script_builder.session.create',

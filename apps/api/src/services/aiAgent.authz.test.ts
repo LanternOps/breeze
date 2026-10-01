@@ -56,6 +56,15 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn() }));
 vi.mock('./aiInputSanitizer', () => ({ sanitizePageContext: (x: unknown) => x }));
 
+// W03 Task 9 (#7601): createSession picks its model through the registry.
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(async () => ({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
+}));
+
 import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };

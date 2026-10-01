@@ -1,5 +1,6 @@
 import type { TopologyAiExplanation } from './topologyAi';
 import type { AiToolHandoffStatus } from '../utils/aiToolHandoff';
+import type { OfferingOptions } from '../validators/aiModelOptions';
 
 // ============================================
 // AI Approval Modes
@@ -337,6 +338,11 @@ export type AiStreamEvent =
 
 export interface CreateAiSessionRequest {
   pageContext?: AiPageContext;
+  /** Registry offering to run the session on (#7598 W03). */
+  offeringId?: string;
+  /** Per-call options the user chose; absent keys follow the assignment. */
+  options?: Partial<OfferingOptions>;
+  /** @deprecated W03: a model id is mapped to the partner's offering for it; W05 removes it. */
   model?: string;
   title?: string;
 }

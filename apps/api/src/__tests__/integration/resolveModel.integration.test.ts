@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { activateRevision } from '../../services/llmProviderCatalog';
 import { findOfferingIdByModel, loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
 import { resolveModel } from '../../services/aiModels/resolveModel';
+import { chooseSessionModel, InvalidSessionModelError } from '../../services/aiModels/sessionModel';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
 import { seedCatalogRevision, seedPricedPlatformModel, seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 
@@ -133,5 +134,51 @@ describe.skipIf(!RUN)('resolveModel against real assignments, plans and settings
     expect(await resolveModel({
       partnerId: b.partnerId, orgId: b.orgId, surface: 'chat', requested: { offeringId: b.offeringId, origin: 'session' },
     })).toMatchObject({ ok: false, reason: 'connection_unavailable', offeringId: b.offeringId });
+  });
+});
+
+describe.skipIf(!RUN)('session creation (chooseSessionModel) against real rows — W03 Task 9', () => {
+  const saved = process.env.ANTHROPIC_API_KEY;
+  beforeEach(() => { process.env.ANTHROPIC_API_KEY = 'sk-ant-w03-integration-placeholder'; });
+  afterEach(() => { if (saved === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved; });
+
+  it('creates on the surface default: offering, its partner and funding (control)', async () => {
+    const a = await seedRegistryPartner('platform');
+    expect(await chooseSessionModel({ partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat' }))
+      .toMatchObject({ offeringId: a.offeringId, offeringPartnerId: a.partnerId, options: null, model: a.modelId, billingSource: 'platform' });
+  });
+
+  it('a forged cross-partner offering id is not_permitted with no detail about the foreign offering', async () => {
+    const a = await seedRegistryPartner('platform');
+    const b = await seedRegistryPartner('byok');
+    await fixtureSql`UPDATE partner_ai_models SET display_name = 'Partner B secret model' WHERE id = ${b.offeringId}`;
+    const err = await chooseSessionModel({
+      partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat', offeringId: b.offeringId,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidSessionModelError);
+    expect(err).toMatchObject({ status: 400, code: 'not_permitted', message: 'This AI model is not available here. Choose another model.' });
+    expect(String((err as Error).message)).not.toContain('Partner B');
+  });
+
+  it('a legacy model id of another partner\'s offering is invalid_model (lookup is partner-scoped)', async () => {
+    const a = await seedRegistryPartner('platform');
+    const b = await seedRegistryPartner('byok');
+    await expect(chooseSessionModel({
+      partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat', legacyModel: b.modelId,
+    })).rejects.toMatchObject({ status: 400, code: 'invalid_model' });
+  });
+
+  it('a disabled own offering requested by id is refused (400), never stored', async () => {
+    const a = await seedRegistryPartner('platform');
+    const other = await seedOffering({ partnerId: a.partnerId, platformModelId: await seedPricedPlatformModel(), enabled: false });
+    await expect(chooseSessionModel({
+      partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat', offeringId: other,
+    })).rejects.toBeInstanceOf(InvalidSessionModelError);
+  });
+
+  it('ai_sessions.model has no default: an insert without a model fails (W02 handoff #5)', async () => {
+    const s = await seedRegistryPartner('platform');
+    await expect(fixtureSql`INSERT INTO ai_sessions (org_id, user_id, type) VALUES (${s.orgId}, ${s.userId}, 'general')`)
+      .rejects.toMatchObject({ code: '23502' });
   });
 });

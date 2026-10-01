@@ -111,6 +111,10 @@ vi.mock('../services/scriptBuilderTools', () => ({
   SCRIPT_BUILDER_MCP_TOOL_NAMES: [],
 }));
 
+// W03 Task 9: session create resolves through the registry (not exercised here).
+vi.mock('../services/aiModels/sessionModel', () => ({ chooseSessionModel: vi.fn() }));
+vi.mock('../services/aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn() }));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));

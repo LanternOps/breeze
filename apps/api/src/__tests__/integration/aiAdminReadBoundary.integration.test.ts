@@ -95,8 +95,8 @@ describe('cross-user AI admin read boundary', () => {
     const [ownSession, foreignSession] = await admin
       .insert(aiSessions)
       .values([
-        { orgId: ownOrg.id, clientUserId: ownPortalUser!.id, type: 'excel_client', title: 'own' },
-        { orgId: foreignOrg.id, clientUserId: foreignPortalUser!.id, type: 'excel_client', title: 'foreign' },
+        { orgId: ownOrg.id, clientUserId: ownPortalUser!.id, type: 'excel_client', title: 'own', model: 'claude-sonnet-5-5' },
+        { orgId: foreignOrg.id, clientUserId: foreignPortalUser!.id, type: 'excel_client', title: 'foreign', model: 'claude-sonnet-5-5' },
       ])
       .returning({ id: aiSessions.id, orgId: aiSessions.orgId });
 

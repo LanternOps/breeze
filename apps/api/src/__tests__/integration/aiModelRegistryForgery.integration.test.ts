@@ -281,7 +281,7 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
     return { a, b, orgA, orgB, offA, offB };
   }
   async function seedSession(orgId: string): Promise<string> {
-    const [row] = await adminSql`INSERT INTO ai_sessions (org_id) VALUES (${orgId}) RETURNING id`;
+    const [row] = await adminSql`INSERT INTO ai_sessions (org_id, model) VALUES (${orgId}, 'claude-sonnet-5-5') RETURNING id`;
     return String(row!.id);
   }
 
@@ -316,8 +316,8 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
       VALUES (${t.orgA.id}, ${siteA!.id}, ${`w02-move-${randomUUID()}`}, 'w02-move-host', 'linux', '22.04', 'x86_64', '0.0.0-test', 'offline')
       RETURNING id`;
     const [session] = await adminSql`
-      INSERT INTO ai_sessions (org_id, device_id, offering_id, offering_partner_id, options)
-      VALUES (${t.orgA.id}, ${device!.id}, ${t.offA}, ${t.a.id}, '{"effort":"high"}')
+      INSERT INTO ai_sessions (org_id, device_id, model, offering_id, offering_partner_id, options)
+      VALUES (${t.orgA.id}, ${device!.id}, 'claude-sonnet-5-5', ${t.offA}, ${t.a.id}, '{"effort":"high"}')
       RETURNING id`;
     await withSystemDbAccessContext(() => db.execute(sql`
       UPDATE devices SET org_id = ${t.orgB.id}, site_id = ${siteB!.id} WHERE id = ${device!.id}`));

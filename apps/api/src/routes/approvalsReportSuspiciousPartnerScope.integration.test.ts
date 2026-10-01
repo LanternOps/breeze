@@ -279,7 +279,7 @@ async function seedExecutionLinkedApproval(
   return withSystemDbAccessContext(async () => {
     const [session] = await db
       .insert(aiSessions)
-      .values({ orgId: s.intentOrgId, userId: s.user.id, status: 'active', type: 'general' })
+      .values({ orgId: s.intentOrgId, userId: s.user.id, status: 'active', type: 'general', model: 'claude-sonnet-5-5' })
       .returning({ id: aiSessions.id });
     if (!session) throw new Error('seed: ai_sessions insert returned nothing');
 

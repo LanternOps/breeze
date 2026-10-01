@@ -1,13 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({ resolveModel: vi.fn(), readOrgPartnerId: vi.fn(), readSessionModelRow: vi.fn() }));
+const extra = vi.hoisted(() => ({
+  findOfferingIdByModel: vi.fn(),
+  isPlatformLlmConfigured: vi.fn(() => true),
+  ensurePartnerCutover: vi.fn(async () => true),
+}));
 vi.mock('./resolveModel', async (orig) => ({ ...(await orig<typeof import('./resolveModel')>()), resolveModel: m.resolveModel }));
-vi.mock('./candidateLoader', () => ({ readOrgPartnerId: m.readOrgPartnerId, readSessionModelRow: m.readSessionModelRow }));
+vi.mock('./candidateLoader', () => ({
+  readOrgPartnerId: m.readOrgPartnerId,
+  readSessionModelRow: m.readSessionModelRow,
+  findOfferingIdByModel: extra.findOfferingIdByModel,
+}));
+vi.mock('../llm/llmAvailability', async (orig) => ({
+  ...(await orig<typeof import('../llm/llmAvailability')>()),
+  isPlatformLlmConfigured: extra.isPlatformLlmConfigured,
+}));
+vi.mock('./registryCutover', () => ({ ensurePartnerCutover: extra.ensurePartnerCutover }));
 
-import { resolveSessionTurn } from './sessionModel';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
+import { chooseSessionModel, InvalidSessionModelError, resolveSessionTurn } from './sessionModel';
+import { LlmNotConfiguredError } from '../llm/llmAvailability';
+import { LlmUnavailableError } from '../llm/llmConfigResolver';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  extra.isPlatformLlmConfigured.mockReturnValue(true);
+  extra.ensurePartnerCutover.mockResolvedValue(true);
   m.readOrgPartnerId.mockResolvedValue('partner-1');
   m.resolveModel.mockResolvedValue({ ok: true });
 });
@@ -47,5 +66,85 @@ describe('resolveSessionTurn', () => {
   it('a missing session throws (callers map it to their own not-found)', async () => {
     m.readSessionModelRow.mockResolvedValue(null);
     await expect(resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1' })).rejects.toThrow(/not found/);
+  });
+});
+
+describe('chooseSessionModel', () => {
+  const base = { partnerId: 'partner-1', orgId: 'org-1', userId: 'u1', surface: 'chat' as const };
+
+  it('a permitted requested offering is stored with the user options and its funding', async () => {
+    m.resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { offering: { id: 'off-2', displayName: 'Opus' } }));
+    const c = await chooseSessionModel({ ...base, offeringId: 'off-2', options: { effort: 'high' } });
+    expect(m.resolveModel).toHaveBeenCalledWith({ ...base, requested: { offeringId: 'off-2', options: { effort: 'high' }, origin: 'user' } });
+    expect(c).toMatchObject({
+      offeringId: 'off-2', offeringPartnerId: 'partner-1', options: { effort: 'high' },
+      model: 'claude-sonnet-5-5', billingSource: 'partner_key',
+    });
+  });
+
+  it('nothing requested resolves the surface default and stores options null (follow the assignment)', async () => {
+    m.resolveModel.mockResolvedValue(makeResolvedModel('platform'));
+    const c = await chooseSessionModel({ ...base, surface: 'helper', userId: null });
+    expect(m.resolveModel).toHaveBeenCalledWith({ ...base, surface: 'helper', userId: null });
+    expect(c).toMatchObject({ offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null, billingSource: 'platform' });
+  });
+
+  it('a not-permitted / foreign offering is a 400 with the resolver reason (no fallback for a fresh choice)', async () => {
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'not_permitted', recoverable: true, offeringId: 'x',
+      message: 'This AI model is not available here. Choose another model.' });
+    const err = await chooseSessionModel({ ...base, offeringId: 'x' }).catch((e) => e);
+    expect(err).toBeInstanceOf(InvalidSessionModelError);
+    expect(err).toMatchObject({ name: 'InvalidSessionModelError', status: 400, code: 'not_permitted',
+      message: 'This AI model is not available here. Choose another model.' });
+  });
+
+  it('a premium offering without the permission is a 400 permission_required', async () => {
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'permission_required', recoverable: true, offeringId: 'p', message: 'm' });
+    await expect(chooseSessionModel({ ...base, offeringId: 'p' })).rejects.toMatchObject({ status: 400, code: 'permission_required' });
+  });
+
+  it('a requested offering during the registry cutover is the retryable 503, not a 400', async () => {
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'upgrading' });
+    await expect(chooseSessionModel({ ...base, offeringId: 'off-2' })).rejects.toBeInstanceOf(LlmUnavailableError);
+  });
+
+  it('the legacy `model` string maps to the matching enabled offering', async () => {
+    extra.findOfferingIdByModel.mockResolvedValue('off-7');
+    m.resolveModel.mockResolvedValue(makeResolvedModel());
+    await chooseSessionModel({ ...base, legacyModel: 'claude-opus-5-5' });
+    expect(extra.ensurePartnerCutover).toHaveBeenCalledWith('partner-1');
+    expect(extra.findOfferingIdByModel).toHaveBeenCalledWith({ partnerId: 'partner-1', orgId: 'org-1', surface: 'chat', modelId: 'claude-opus-5-5' });
+    expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'off-7', origin: 'user' } }));
+  });
+
+  it('an explicit offeringId wins over the legacy model string', async () => {
+    m.resolveModel.mockResolvedValue(makeResolvedModel());
+    await chooseSessionModel({ ...base, offeringId: 'off-2', legacyModel: 'claude-opus-5-5' });
+    expect(extra.findOfferingIdByModel).not.toHaveBeenCalled();
+    expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'off-2', origin: 'user' } }));
+  });
+
+  it('an unknown legacy model id is invalid_model and never resolved', async () => {
+    extra.findOfferingIdByModel.mockResolvedValue(null);
+    await expect(chooseSessionModel({ ...base, legacyModel: 'gpt-free-form' })).rejects.toMatchObject({
+      status: 400, code: 'invalid_model', message: 'Model "gpt-free-form" is not available for AI sessions.',
+    });
+    expect(m.resolveModel).not.toHaveBeenCalled();
+  });
+
+  it('the legacy lookup never reads assignments of a partner not yet cut over', async () => {
+    extra.ensurePartnerCutover.mockResolvedValue(false);
+    await expect(chooseSessionModel({ ...base, legacyModel: 'claude-opus-5-5' })).rejects.toBeInstanceOf(LlmUnavailableError);
+    expect(extra.findOfferingIdByModel).not.toHaveBeenCalled();
+    expect(m.resolveModel).not.toHaveBeenCalled();
+  });
+
+  it('nothing requested and nothing eligible keeps the legacy 503 shapes', async () => {
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: null, message: 'm' });
+    await expect(chooseSessionModel(base)).rejects.toBeInstanceOf(LlmUnavailableError);
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm' });
+    await expect(chooseSessionModel(base)).rejects.toBeInstanceOf(LlmUnavailableError);
+    extra.isPlatformLlmConfigured.mockReturnValue(false);
+    await expect(chooseSessionModel(base)).rejects.toBeInstanceOf(LlmNotConfiguredError);
   });
 });

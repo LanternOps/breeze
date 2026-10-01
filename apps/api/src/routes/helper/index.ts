@@ -38,10 +38,11 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
-import { LlmUnavailableError, resolveLlmConfig } from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
+import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
 import type { ResolveFailureReason } from '../../services/aiModels/eligibility';
 import type { ResolvedModel } from '../../services/aiModels/resolveModel';
-import { resolveSessionTurn } from '../../services/aiModels/sessionModel';
+import { chooseSessionModel, resolveSessionTurn, type SessionModelChoice } from '../../services/aiModels/sessionModel';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { captureException } from '../../services/sentry';
 import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
@@ -266,15 +267,20 @@ helperRoutes.post(
     const device = c.get('helperDevice');
     const auth = c.get('auth');
     const body = c.req.valid('json') ?? {};
-    let resolved;
+    // W03 (#7601): the session is created on the registry's `helper`
+    // offering for the DEVICE's partner (never a body field). No user: the
+    // helper is device-initiated, so no permission gate applies.
+    const partnerId = auth.helperDevicePartnerId;
+    if (!partnerId) return c.json({ error: 'ai_unavailable' }, 503);
+    let choice: SessionModelChoice;
     try {
-      resolved = await resolveLlmConfig(auth.helperDevicePartnerId ?? null);
+      choice = await chooseSessionModel({ partnerId, orgId: device.orgId, userId: null, surface: 'helper' });
     } catch (error) {
+      if (error instanceof LlmUnavailableError || error instanceof LlmNotConfiguredError) {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
       captureException(error, c, { service: 'helperRoutes', orgId: device.orgId });
       return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
-    }
-    if (resolved.source === 'unavailable') {
-      return c.json({ error: 'ai_unavailable' }, 503);
     }
     const permissionLevel: HelperPermissionLevel = await resolveHelperPermissionLevelForDevice(
       device.id,
@@ -309,7 +315,11 @@ helperRoutes.post(
         orgId: device.orgId,
         userId: null,
         deviceId: device.id,
-        model: resolved.model,
+        model: choice.model,
+        offeringId: choice.offeringId,
+        offeringPartnerId: choice.offeringPartnerId,
+        options: choice.options,
+        billingSource: choice.billingSource,
         systemPrompt,
         maxTurns: budget.maxTurnsPerSession,
         contextSnapshot: {

@@ -36,7 +36,9 @@ export const aiSessions = pgTable('ai_sessions', {
   status: aiSessionStatusEnum('status').notNull().default('active'),
   type: text('type').notNull().default('general'),
   title: varchar('title', { length: 255 }),
-  model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
+  // No default (W03 #7601): every insert names its model, a provenance
+  // snapshot of the resolved offering (routing reads offering_id).
+  model: varchar('model', { length: 100 }).notNull(),
   billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull().default('platform'),
   catalogEntryId: uuid('catalog_entry_id'),
   catalogRevisionId: uuid('catalog_revision_id'),
