@@ -77,6 +77,19 @@ export function assertNotStale(surface: AiSurface, existing: AiModelAssignmentRo
   if (!matches) throw new RegistryWriteError(STALE_MESSAGE, 'stale_write', 409, { surface });
 }
 
+/**
+ * Permitted ids not already stored on the row being replaced. Only these are
+ * validated: an id that was valid when saved and has since been disabled (or
+ * otherwise become ineligible) must not make the whole row unsaveable; the
+ * read-time merge already filters it out. Stored ids come from a row pinned to
+ * the same partner (and, for org rows, the same org), so they are the partner's
+ * by construction; a foreign id can only arrive as a new id, which is checked.
+ */
+function newlyAddedIds(ids: string[] | null, stored: AiModelAssignmentRow | undefined): string[] {
+  const kept = new Set(stored?.permittedOfferingIds ?? []);
+  return (ids ?? []).filter((id) => !kept.has(id));
+}
+
 /** All-or-nothing: validates every row, then upserts in one transaction. Never writes fallback columns (W09). */
 export async function putPartnerAssignments(input: { partnerId: string; rows: PartnerAssignmentInput[] }): Promise<AiModelAssignmentRow[]> {
   const { partnerId } = input;
@@ -87,9 +100,10 @@ export async function putPartnerAssignments(input: { partnerId: string; rows: Pa
 
     // Validate every row before writing anything.
     for (const row of input.rows) {
-      assertNotStale(row.surface, existing.find((e) => e.surface === row.surface && e.role === row.role), row.expectedUpdatedAt);
+      const stored = existing.find((e) => e.surface === row.surface && e.role === row.role);
+      assertNotStale(row.surface, stored, row.expectedUpdatedAt);
       const def = await assertOfferingUsableForSurface({ partnerId, offeringId: row.defaultOfferingId, surface: row.surface, field: 'defaultOfferingId', ctx, cache });
-      for (const id of row.permittedOfferingIds ?? []) {
+      for (const id of newlyAddedIds(row.permittedOfferingIds, stored)) {
         await assertOfferingUsableForSurface({ partnerId, offeringId: id, surface: row.surface, field: 'permittedOfferingIds', ctx, cache });
       }
       if (row.permittedOfferingIds && !row.permittedOfferingIds.includes(row.defaultOfferingId)) {
@@ -220,9 +234,10 @@ export async function putOrgAssignments(input: { partnerId: string; orgId: strin
 
     // Validate every row before writing anything.
     for (const row of input.rows) {
-      assertNotStale(row.surface, orgRows.find((r) => r.surface === row.surface && r.role === row.role), row.expectedUpdatedAt);
+      const stored = orgRows.find((r) => r.surface === row.surface && r.role === row.role);
+      assertNotStale(row.surface, stored, row.expectedUpdatedAt);
       if (isBlank(row)) continue;
-      await assertOrgRowNarrows(row, partnerRows.find((r) => r.surface === row.surface && r.role === row.role), { partnerId, ctx, cache });
+      await assertOrgRowNarrows(row, partnerRows.find((r) => r.surface === row.surface && r.role === row.role), stored, { partnerId, ctx, cache });
     }
 
     // A stale row throws and rolls back the whole transaction.
@@ -247,6 +262,7 @@ export async function putOrgAssignments(input: { partnerId: string; orgId: strin
 async function assertOrgRowNarrows(
   row: OrgAssignmentInput,
   p: AiModelAssignmentRow | undefined,
+  stored: AiModelAssignmentRow | undefined,
   env: { partnerId: string; ctx: EnableEligibilityContext; cache: Map<string, LoadedCandidate | null> },
 ): Promise<void> {
   const { surface } = row;
@@ -259,7 +275,10 @@ async function assertOrgRowNarrows(
   // zod admits only false|null; guard the service boundary anyway.
   if ((row.allowUserChoice as boolean | null) === true) widens(surface, 'allowUserChoice');
 
-  for (const id of row.permittedOfferingIds ?? []) {
+  // Already-stored ids skip both checks: one the partner has since dropped or
+  // disabled is filtered by the read-time merge (it never widens the effective
+  // set), and refusing it would leave the override unsaveable.
+  for (const id of newlyAddedIds(row.permittedOfferingIds, stored)) {
     if (partnerSet && !partnerSet.includes(id)) widens(surface, 'permittedOfferingIds', { offeringId: id });
     await usable(id, 'permittedOfferingIds');
   }

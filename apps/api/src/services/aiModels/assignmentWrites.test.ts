@@ -209,6 +209,51 @@ describe('putPartnerAssignments', () => {
     expect(h.upserts).toHaveLength(0);
   });
 
+  describe('already-stored permitted ids (stale ids stay saveable)', () => {
+    const V = '2026-10-01T10:00:00.000Z';
+    const stored = (over: Record<string, unknown> = {}) => [{ id: 'r1', surface: 'chat', role: 'default', orgId: null, defaultOfferingId: A, permittedOfferingIds: [A, B], updatedAt: new Date(V), ...over }];
+
+    it('accepts a stored permitted id that has since been disabled', async () => {
+      h.candidates.set(A, cand());
+      h.candidates.set(B, cand({ enabled: false }));
+      h.partnerRows = stored();
+      await putPartnerAssignments({ partnerId: P, rows: [row({ permittedOfferingIds: [A, B], expectedUpdatedAt: V })] });
+      expect(h.upserts[0]!.values).toMatchObject({ permittedOfferingIds: [A, B] });
+    });
+
+    it('accepts a stored permitted id whose offering no longer loads', async () => {
+      h.candidates.set(A, cand());
+      h.partnerRows = stored();
+      await expect(putPartnerAssignments({ partnerId: P, rows: [row({ permittedOfferingIds: [A, B], expectedUpdatedAt: V })] })).resolves.toHaveLength(1);
+    });
+
+    it('still validates a newly added id alongside stored ones', async () => {
+      h.candidates.set(A, cand());
+      h.candidates.set(B, cand({ enabled: false }));
+      h.candidates.set(C, cand({ enabled: false }));
+      h.partnerRows = stored();
+      const err = await putPartnerAssignments({ partnerId: P, rows: [row({ permittedOfferingIds: [A, B, C], expectedUpdatedAt: V })] }).catch((e) => e);
+      expect([err.code, err.details.offeringId, err.details.reason]).toEqual(['not_eligible', C, 'disabled']);
+      expect(h.upserts).toHaveLength(0);
+    });
+
+    it('still requires an eligible default even when it is a stored permitted id', async () => {
+      h.candidates.set(A, cand());
+      h.candidates.set(B, cand({ enabled: false }));
+      h.partnerRows = stored();
+      const err = await putPartnerAssignments({ partnerId: P, rows: [row({ defaultOfferingId: B, permittedOfferingIds: [A, B], expectedUpdatedAt: V })] }).catch((e) => e);
+      expect([err.code, err.details.field, err.details.offeringId]).toEqual(['not_eligible', 'defaultOfferingId', B]);
+    });
+
+    it('a stored id on another surface is not exempt on this one', async () => {
+      h.candidates.set(A, cand());
+      h.candidates.set(B, cand({ enabled: false }));
+      h.partnerRows = stored({ surface: 'helper' });
+      const err = await putPartnerAssignments({ partnerId: P, rows: [row({ permittedOfferingIds: [A, B] })] }).catch((e) => e);
+      expect([err.code, err.details.offeringId]).toEqual(['not_eligible', B]);
+    });
+  });
+
   it('writes nothing when any row fails (all-or-nothing)', async () => {
     h.candidates.set(A, cand());
     const err = await putPartnerAssignments({ partnerId: P, rows: [row(), row({ surface: 'helper', defaultOfferingId: B })] }).catch((e) => e);
@@ -274,6 +319,29 @@ describe('putOrgAssignments — the org write rejects every widening', () => {
     h.candidates.set(B, cand({ enabled: false }));
     const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [B] , defaultOfferingId: B })] }).catch((e) => e);
     expect([err.code, err.details.field, err.details.offeringId]).toEqual(['not_eligible', 'permittedOfferingIds', B]);
+  });
+
+  it('accepts a stored org permitted id that has since been disabled', async () => {
+    const V = '2026-10-01T10:00:00.000Z';
+    h.candidates.set(B, cand({ enabled: false }));
+    h.existingRows = [{ id: 'o1', surface: 'chat', role: 'default', orgId: ORG, permittedOfferingIds: [A, B], updatedAt: new Date(V) }];
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [A, B], allowUserChoice: false, expectedUpdatedAt: V })] });
+    expect(h.upserts[0]!.values).toMatchObject({ permittedOfferingIds: [A, B], allowUserChoice: false });
+  });
+
+  it('accepts a stored org permitted id the partner has since dropped (the merge intersects)', async () => {
+    const V = '2026-10-01T10:00:00.000Z';
+    h.existingRows = [{ id: 'o1', surface: 'chat', role: 'default', orgId: ORG, permittedOfferingIds: [A, C], updatedAt: new Date(V) }];
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [A, C], expectedUpdatedAt: V })] });
+    expect(h.upserts[0]!.values).toMatchObject({ permittedOfferingIds: [A, C] });
+  });
+
+  it('a newly added org id is still checked even when other ids are stored', async () => {
+    const V = '2026-10-01T10:00:00.000Z';
+    h.candidates.set(B, cand({ enabled: false }));
+    h.existingRows = [{ id: 'o1', surface: 'chat', role: 'default', orgId: ORG, permittedOfferingIds: [A], updatedAt: new Date(V) }];
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [A, B], expectedUpdatedAt: V })] }).catch((e) => e);
+    expect([err.code, err.details.offeringId]).toEqual(['not_eligible', B]);
   });
 
   it('checks set options against the inherited partner default', async () => {
