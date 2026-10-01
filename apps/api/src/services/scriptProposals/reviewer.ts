@@ -3,29 +3,31 @@
 // The independent model review pass for an AI-authored script proposal
 // (W02, #5612). See spec §4.4 for the full pipeline and this module's
 // exported functions for the roadmap §3.4 contract this wave produces.
-import { messagesApiWireOptions } from '../aiModels/modelWireOptions';
 import type { RiskTier, ScriptReviewVerdict, ScriptScanResult, TouchClass } from '@breeze/shared';
 import { riskTierRank, scriptReviewVerdictSchema } from '@breeze/shared';
 import { APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
 import { db, withSystemDbAccessContext } from '../../db';
 import { devices, organizations } from '../../db/schema';
 import {
   scriptProposalReviews, scriptProposals, type ScriptProposalReviewRow, type ScriptProposalRow,
 } from '../../db/schema/scriptProposals';
-import { reserveAiBudget } from '../aiBudgetReservations';
-import { recordUsage } from '../aiCostTracker';
+import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../aiBudgetReservations';
+import { checkBudgetDetailed } from '../aiCostTracker';
+import { readOrgPartnerId } from '../aiModels/candidateLoader';
+import { anthropicClientFor, createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
+import { messagesUsage } from '../aiModels/invocationUsage';
+import { refusalHeadline } from '../aiModels/refusals';
+import { resolveModel } from '../aiModels/resolveModel';
+import { safeErrorMessage } from '../aiModels/safeDbError';
+import { settleInvocation } from '../aiModels/settleInvocation';
+import { turnBindingFrom } from '../aiModels/turnBinding';
 import { createAuditLogAsync } from '../auditService';
 import { captureException } from '../sentry';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
-import {
-  getAnthropicClientForPartner, getLlmBillingSourceForOrg, resolveWireModel,
-} from '../llm/llmConfigResolver';
 import { transitionProposal } from './proposals';
 import { resolveEffectiveScriptPolicy, type EffectiveScriptPolicy } from './policy';
 import type { ScriptReviewJobData } from './reviewQueue';
-import { legacyReviewerModel } from '../aiModels/legacySurfaceModels';
 
 export const SCRIPT_REVIEW_TIMEOUT_MS = 60_000;
 export const SCRIPT_REVIEW_MAX_OUTPUT_TOKENS = 2_000;
@@ -136,37 +138,10 @@ export function buildReviewerPrompt(args: {
   return { system: REVIEWER_SYSTEM_PROMPT, user };
 }
 
-/**
- * The reviewer's model for `orgId`: the effective script policy's
- * `reviewer_model` (org override, else partner, W04 #5612) or the platform
- * default. The org may only choose a model the partner's BYOK provider
- * already serves — that constraint is enforced by the PUT route's validation
- * (routes/ai/scriptPolicy.ts), not here, so this stays a plain read. Runs in
- * the worker (no request context), hence the system context.
- */
-export async function resolveReviewerModel(orgId: string): Promise<string> {
-  const effective = await resolveReviewerPolicy(orgId);
-  return legacyReviewerModel(effective.reviewerModel, AI_SCRIPT_REVIEWER_MODEL);
-}
-
 /** The effective lane policy as the worker sees it (system context — there
  *  is no request here). */
 export async function resolveReviewerPolicy(orgId: string): Promise<EffectiveScriptPolicy> {
   return withSystemDbAccessContext(() => resolveEffectiveScriptPolicy(orgId));
-}
-
-/** The org's partner id. `organizations.partner_id` is NOT NULL, so this
- *  always resolves for a real org. */
-export async function readOrgPartnerId(orgId: string): Promise<string> {
-  return withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-    if (!row) throw new Error(`script-review: organization ${orgId} not found`);
-    return row.partnerId;
-  });
 }
 
 /** Facts about the proposal's target devices, scoped to `orgId` even though
@@ -192,9 +167,6 @@ export async function loadDeviceFacts(orgId: string, deviceIds: string[]): Promi
     }));
   });
 }
-
-type BillingSource = Awaited<ReturnType<typeof getLlmBillingSourceForOrg>>;
-type CatalogPricing = ReturnType<typeof resolveWireModel>['catalogPricing'];
 
 /**
  * Thrown when the proposal is not in a reviewable state and no model review
@@ -319,8 +291,10 @@ function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
 }
 
+// Review rows and Sentry are written from these messages: a database error
+// must not carry its statement's values into either (safeDbError.ts).
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return safeErrorMessage(error);
 }
 
 /**
@@ -338,8 +312,6 @@ function errorMessage(error: unknown): string {
  * call, never around it.
  */
 export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptProposalReviewRow> {
-  // Invocation-ledger attribution for every cost record below (#7600 W02).
-  const ledger = { surface: 'script_reviewer' } as const;
   const proposal = await loadProposalForReview(job.orgId, job.proposalId);
   if (!proposal) {
     throw new ProposalNotReviewableError(job.proposalId, 'missing');
@@ -353,15 +325,38 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   const scan = scanFromProposal(proposal);
   await ensureStaticScanRow(job, scan);
 
-  const billingSource: BillingSource = await getLlmBillingSourceForOrg(job.orgId);
-  // Resolved BEFORE the reservation so a policy-read failure cannot strand
-  // an open reservation. The ceiling is advisory context for the prompt
-  // (spec §9); the lane's own evaluator re-reads the policy at decision time.
+  // The effective lane policy supplies only the advisory ceiling for the prompt
+  // (spec §9); the lane's own evaluator re-reads it at decision time. Its
+  // `reviewerModel` no longer routes anything: the `script_reviewer`
+  // assignment is authoritative (W02 projected the old value into it).
   const effectivePolicy = await resolveReviewerPolicy(job.orgId);
+  const partnerId = await readOrgPartnerId(job.orgId);
+  // Resolved BEFORE admission (quorum #4): an unusable reviewer model never
+  // holds budget, and the proposal fails with a reason an admin can act on.
+  // A system call (no userId), so the per-user permission gate does not apply.
+  const resolved = partnerId
+    ? await resolveModel({ partnerId, orgId: job.orgId, surface: 'script_reviewer', maxTokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS })
+    : null;
+  if (!resolved?.ok) {
+    return failReview(job, resolved ? resolved.message : 'No AI model is available for script review.', 'failed', {
+      reservationId: undefined, model: undefined,
+    });
+  }
+  // Credits + plan gate for the resolved funding, BEFORE the reservation
+  // (reserveAiBudget only enforces caps).
+  const denial = await checkBudgetDetailed(job.orgId, resolved.funding);
+  if (denial) {
+    return failReview(job, denial.message, 'failed', { reservationId: undefined, model: undefined });
+  }
+  const binding = turnBindingFrom(resolved);
+  const model = binding.wireModel;
+  // Stable key: a retry of this attempt re-binds its still-unsettled
+  // reservation to the current binding before anything is dispatched.
   const reservation = await reserveAiBudget({
     orgId: job.orgId,
     idempotencyKey: `script-review:${job.proposalId}:${job.attempt}`,
-    billingSource,
+    billingSource: resolved.funding,
+    binding,
   });
   if (reservation.kind === 'denied') {
     return failReview(job, `Budget denied (${reservation.reason}): ${reservation.message}`, 'failed', {
@@ -370,69 +365,63 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   }
   const reservationId = reservation.reservationId;
 
-  const model = legacyReviewerModel(effectivePolicy.reviewerModel, AI_SCRIPT_REVIEWER_MODEL);
+  // The ONE billing path: the registry rate bound above, written to the ledger
+  // and rolled into the session/org totals by settleInvocation. With no
+  // attempts (nothing came back) the reservation settles at zero.
+  const settle = (attempts: MessageAttempt[]) => settleInvocation({
+    binding, orgId: job.orgId, userId: null, sessionId: null, agentRunId: null,
+    sourceRef: `script-review:${job.proposalId}`,
+    ...(attempts.length > 0
+      ? messagesUsage(binding, attempts)
+      : {
+          usage: [],
+          outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: binding.wireModel, providerModel: null, sdkReportedCostUsd: null },
+        }),
+    reservationId,
+  });
+  // Dispatch was proven not to have happened: hand the capacity back.
+  const releaseUndispatched = () => releaseUnusedAiBudgetReservation({ orgId: job.orgId, reservationId });
 
-  // Settle-at-zero helper for the branches where no tokens were ever spent.
-  const settleAtZero = (catalogPricing?: CatalogPricing) =>
-    recordUsage(null, job.orgId, model, 0, 0, false, billingSource, catalogPricing, reservationId, 0, ledger);
-
-  // From here on a reservation is open: every exit must settle it and fail
-  // closed, including the prompt-input reads (an org erased mid-flight, a
-  // device query error) — not only the provider and model calls.
+  // From here on a reservation is open: every exit must settle (or release) it
+  // and fail closed, including the prompt-input reads (an org erased
+  // mid-flight, a device query error) — not only the provider and model calls.
   let system: string;
   let user: string;
-  let partnerId: string;
   try {
-    partnerId = await readOrgPartnerId(job.orgId);
     const targetDevices = await loadDeviceFacts(job.orgId, proposal.targetDeviceIds);
     // Advisory context only — see buildReviewerPrompt's comment. This is
     // the effective (partner ∧ org) ceiling, never the org row alone.
     const ceiling: RiskTier = effectivePolicy.maxUnattendedRiskTier;
     ({ system, user } = buildReviewerPrompt({ proposal, scan, devices: targetDevices, ceiling }));
   } catch (error) {
-    await settleAtZero();
+    await releaseUndispatched();
     return failReview(job, `Review inputs unavailable: ${errorMessage(error)}`, 'failed', { reservationId, model });
   }
 
-  let client: Awaited<ReturnType<typeof getAnthropicClientForPartner>>['client'];
-  let wireModel: string;
-  let catalogPricing: CatalogPricing;
+  let client: ReturnType<typeof anthropicClientFor>;
   try {
-    const llm = await getAnthropicClientForPartner(partnerId, { surface: 'script_review_verdict', orgId: job.orgId });
-    client = llm.client;
-    const wire = resolveWireModel(llm.resolved, model);
-    wireModel = wire.model;
-    catalogPricing = wire.catalogPricing;
+    client = anthropicClientFor(resolved, { surface: 'script_review_verdict', orgId: job.orgId });
   } catch (error) {
-    await settleAtZero();
-    // Covers both a genuine provider/egress outage and a model-catalog
-    // misconfiguration (LlmUnavailableError from resolveWireModel); the error
-    // name is kept so the two stay distinguishable in the row and the logs.
+    await releaseUndispatched();
     const name = error instanceof Error ? error.name : 'Error';
     return failReview(job, `Provider or model resolution failed (${name}): ${errorMessage(error)}`, 'failed', { reservationId, model });
   }
 
-  let resp: Awaited<ReturnType<typeof client.messages.create>>;
+  let outcome: Awaited<ReturnType<typeof createMessage>>;
   try {
     // No tools, one user turn, hard output cap, hard wall clock. `maxRetries: 0`
     // because the SDK's own retry would silently double the wall clock and
     // the spend for a call whose result is discarded on timeout anyway.
-    resp = await client.messages.create(
-      {
-        model: wireModel,
-        max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
-        // #7587, #7599: same per-model thinking/effort as chat via
-        // messagesApiWireOptions (adaptive + medium on current models;
-        // nothing for other ids, as before).
-        ...messagesApiWireOptions(wireModel, SCRIPT_REVIEW_MAX_OUTPUT_TOKENS),
-        system,
-        messages: [{ role: 'user', content: user }],
-      },
+    // Thinking/effort/betas come from the resolved wire params.
+    outcome = await createMessage(
+      client,
+      resolved,
+      { max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS, system, messages: [{ role: 'user', content: user }] },
       { signal: AbortSignal.timeout(SCRIPT_REVIEW_TIMEOUT_MS), maxRetries: 0 },
     );
   } catch (error) {
     const timedOut = isTimeoutError(error);
-    await settleAtZero(catalogPricing);
+    await settle([]);
     return failReview(
       job,
       `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(error)}`,
@@ -441,8 +430,17 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     );
   }
 
-  const inputTokens = resp.usage?.input_tokens ?? 0;
-  const outputTokens = resp.usage?.output_tokens ?? 0;
+  const resp = outcome.message;
+  const billed = messagesUsage(binding, outcome.attempts);
+  const inputTokens = billed.usage.reduce((n, u) => n + u.tokens.input, 0);
+  const outputTokens = billed.usage.reduce((n, u) => n + u.tokens.output, 0);
+  if (resp.stop_reason === 'refusal') {
+    // Tokens were spent: settle them, then fail the review with the category
+    // so the proposal shows why (§9.1a) instead of "no parseable verdict".
+    await settle(outcome.attempts);
+    return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId, model, inputTokens, outputTokens });
+  }
+
   const textBlock = resp.content.find((b) => b.type === 'text');
   const rawText = textBlock?.type === 'text' ? textBlock.text : undefined;
   const parsedJson = parseVerdictText(rawText);
@@ -450,7 +448,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
 
   if (!parsed || !parsed.success) {
     // Tokens really were spent: settle at the REAL counts, then fail closed.
-    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId, 0, ledger);
+    await settle(outcome.attempts);
     const reason = !parsed
       ? 'Reviewer returned no parseable JSON verdict'
       : `Malformed reviewer verdict: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`;
@@ -486,7 +484,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
           verdict: floored,
           inputTokens,
           outputTokens,
-          // Priced by recordUsage against the reservation; the row keeps the
+          // Priced by settleInvocation against the reservation; the row keeps the
           // token counts, the reservation keeps the cents.
           costCents: null,
           budgetReservationId: reservationId,
@@ -500,7 +498,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     });
   } catch (error) {
     if (error instanceof ProposalAlreadyReviewedError) {
-      await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId, 0, ledger);
+      await settle(outcome.attempts);
       console.warn('[scriptReview] lost the transition race for a proposal already reviewed by a concurrent attempt', {
         proposalId: job.proposalId,
       });
@@ -516,12 +514,12 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   // only lose the audit row on top of the spend. Capture loudly instead —
   // the reservation's 30-minute TTL sweep still reclaims the cap.
   try {
-    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId, 0, ledger);
+    await settle(outcome.attempts);
   } catch (error) {
     console.error('[scriptReview] budget settlement failed after the review committed', {
       proposalId: job.proposalId, orgId: job.orgId, reservationId, inputTokens, outputTokens,
     });
-    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+    captureException(new Error(safeErrorMessage(error)), undefined, {
       service: 'scriptReview', orgId: job.orgId,
     });
   }

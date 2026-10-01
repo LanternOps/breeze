@@ -158,6 +158,12 @@ describe('W03 parity: office_ticket', () => {
   });
 });
 
+describe('W03 parity: script_reviewer', () => {
+  surfaceParity('surface queries (legacy reviewer_model / env route and its funding)', async () => {
+    await assertSurfaceParity({ select: surfaceQuery('script_reviewer'), bind, registrySide: viaAssignment('script_reviewer', false) });
+  });
+});
+
 describe('W03 parity harness discriminates (mutations that MUST fail)', () => {
   const chatSide = viaAssignment('chat', true);
 

@@ -6,7 +6,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices, scriptProposalReviews, scriptProposals } from '../../db/schema';
 import { buildOrgAccessClosures, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createSite } from './db-utils';
+import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 import { getTestDb } from './setup';
 
 /**
@@ -39,15 +40,13 @@ vi.mock('../../config/env', async (importOriginal) => ({
   aiScriptAuthoringEnabled: () => true,
 }));
 
-vi.mock('../../services/llm/llmConfigResolver', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../services/llm/llmConfigResolver')>();
+vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/aiModels/connectionFactory')>();
   return {
     ...actual,
-    getAnthropicClientForPartner: vi.fn(async () => ({
-      client: { messages: { create: h.messagesCreate } },
-      resolved: { source: 'platform', model: 'claude-sonnet-4-6', catalog: null },
-    })),
-    resolveWireModel: vi.fn((_resolved: unknown, model: string) => ({ model })),
+    // Only the client is faked; resolveModel, createMessage, settlement and the
+    // reservation are the real ones.
+    anthropicClientFor: vi.fn(() => ({ messages: { create: h.messagesCreate } })),
   };
 });
 
@@ -84,8 +83,9 @@ const VALID_VERDICT = {
 };
 
 async function seed() {
-  const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
+  const seeded = await seedRegistryPartner('platform');
+  const partner = { id: seeded.partnerId };
+  const org = { id: seeded.orgId };
   const site = await createSite({ orgId: org.id });
   const [device] = await getTestDb()
     .insert(devices)
@@ -136,6 +136,7 @@ async function idleInTransactionCount(): Promise<number> {
 }
 
 beforeEach(() => {
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-script-review-integration-placeholder';
   h.messagesCreate.mockReset();
   h.visibleAtEnqueue = null;
   h.review = null;

@@ -160,6 +160,8 @@ export function messagesModelParams(
 }
 
 export type MessagesBody = Omit<Anthropic.MessageCreateParamsNonStreaming, 'model' | 'thinking' | 'output_config'>;
+/** The SDK request options a one-shot surface may pin (wall clock, no hidden retries). */
+export interface MessageRequestOptions { signal?: AbortSignal; maxRetries?: number }
 export interface MessageAttempt { wireModel: string; message: Anthropic.Message }
 export interface MessageOutcome { message: Anthropic.Message; attempts: MessageAttempt[] }
 
@@ -173,6 +175,8 @@ export async function createMessage(
   client: Anthropic,
   resolved: ResolvedModel,
   body: MessagesBody,
+  /** Per-request transport options (abort signal, SDK retries) passed to every dispatch. */
+  requestOptions?: MessageRequestOptions,
 ): Promise<MessageOutcome> {
   const wireBetas = resolved.wireParams.betas;
   // §7: a call's max_tokens never exceeds the model's max_output_tokens.
@@ -190,16 +194,16 @@ export async function createMessage(
       ...params,
       betas: [...wireBetas, ...(serverSide ? [SERVER_SIDE_FALLBACK_BETA] : [])],
       ...(fbParams ? { fallbacks: [fbParams] } : {}),
-    } as never) as unknown as Anthropic.Message;
+    } as never, ...(requestOptions ? [requestOptions] : [])) as unknown as Anthropic.Message;
     return { message, attempts: [{ wireModel: resolved.wireModel, message }] };
   }
 
-  const first = await client.messages.create(params as never) as Anthropic.Message;
+  const first = await client.messages.create(params as never, ...(requestOptions ? [requestOptions] : [])) as Anthropic.Message;
   if (fb && first.stop_reason === 'refusal') {
     const second = await client.messages.create({
       ...capped,
       ...messagesModelParams(fb),
-    } as never) as Anthropic.Message;
+    } as never, ...(requestOptions ? [requestOptions] : [])) as Anthropic.Message;
     return {
       message: second,
       attempts: [{ wireModel: resolved.wireModel, message: first }, { wireModel: fb.wireModel, message: second }],

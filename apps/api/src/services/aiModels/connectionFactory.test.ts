@@ -234,6 +234,15 @@ describe('createMessage', () => {
     expect(out.attempts.map((a) => a.wireModel)).toEqual(['anthropic/claude-sonnet-5.5', 'anthropic/claude-haiku-4.5']);
   });
 
+  it('request options (wall clock, no SDK retries) reach every dispatch, including the client-side refusal retry', async () => {
+    m.create.mockResolvedValueOnce(reply('refusal')).mockResolvedValueOnce(reply('end_turn'));
+    const opts = { signal: AbortSignal.timeout(1000), maxRetries: 0 };
+    await createMessage({ messages: { create: m.create } } as never, r('catalog', { refusalFallback: { ...FALLBACK, wireModel: 'anthropic/claude-haiku-4.5' } }),
+      { max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] }, opts);
+    expect(m.create.mock.calls[0]![1]).toBe(opts);
+    expect(m.create.mock.calls[1]![1]).toBe(opts);
+  });
+
   it('catalog refusal with no fallback: one call, refusal returned as is', async () => {
     m.create.mockResolvedValueOnce(reply('refusal'));
     const out = await createMessage({ messages: { create: m.create } } as never, r('catalog'),
