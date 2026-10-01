@@ -1616,3 +1616,60 @@ describe("Xero W03", () => {
     );
   });
 });
+
+// #7386: the PUT already enqueues a worker sync, so the workbench's own
+// follow-up POST /mappings/sync can lose the Redis lock (409 sync_in_progress)
+// even though the create succeeds. That is "queued", not a failure.
+describe("AccountingMappingWorkbench — decision racing the worker's sync (#7386)", () => {
+  it("treats sync_in_progress after a decision as queued: no error, row settles to Synced without a reload", async () => {
+    let listCalls = 0;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse(
+          { error: "QuickBooks mapping sync is already in progress", code: "sync_in_progress" },
+          409,
+        );
+      }
+      if (method === "PUT") {
+        return jsonResponse({
+          data: {
+            breezeEntityType: "org",
+            breezeEntityId: ORG_ID,
+            remoteEntityType: "Customer",
+            remoteEntityId: "qb-12",
+            linkStatus: "confirmed",
+            syncStatus: "pending",
+            lastSyncedAt: null,
+            lastError: null,
+          },
+        });
+      }
+      listCalls++;
+      // 1st GET = initial load; later GETs = the settle poll (worker finished).
+      return jsonResponse({
+        data: [
+          listCalls === 1
+            ? suggestedOrgProposal
+            : { ...suggestedOrgProposal, linkStatus: "confirmed", syncStatus: "synced" },
+        ],
+      });
+    });
+
+    render(
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent("In QuickBooks"),
+      { timeout: 5000 },
+    );
+    expect(screen.queryByTestId(`quickbooks-mapping-error-${ORG_ID}`)).not.toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+  });
+});
