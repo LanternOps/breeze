@@ -49,6 +49,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../../middleware/auth';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 const existing = { id: CONFIG_ID, orgId: ORG_ID, name: 'Primary S3', provider: 's3', providerConfig: {} };
 
@@ -86,13 +87,18 @@ describe('DELETE /backup/configs/:id', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toContain(noun);
+    expect(body.error).not.toContain('other records');
     expect(body.error).toContain('Disable');
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('returns 409 with a generic message for an unrecognised FK constraint', async () => {
     deleteMock.mockImplementation(() => { throw fkError('something_else_fk'); });
     const res = await app.request(`/backup/configs/${CONFIG_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('other records');
+    expect(body.error).toContain('Disable it instead');
   });
 
   it('still surfaces non-FK errors', async () => {
