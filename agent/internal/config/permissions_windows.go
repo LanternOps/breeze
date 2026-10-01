@@ -102,20 +102,7 @@ var (
 // failures are fatal; callers must not reinterpret them as lock contention.
 func PrepareMainAgentLockDir() (string, error) {
 	configPath := mainAgentConfigDirFn()
-	configHandle, err := ensureMainAgentDirectory(configPath, windowsConfigDirCreateSDDL)
-	if err != nil {
-		return "", fmt.Errorf("secure main-agent config directory: %w", err)
-	}
-	defer closeMainAgentDirectoryHandleFn(configHandle)
-
-	configIdentity, err := inspectMainAgentDirectory(configHandle, "config directory")
-	if err != nil {
-		return "", err
-	}
-	if err := hardenAndVerifyMainAgentDirectory(configHandle, windowsConfigDirCreateSDDL, "config directory"); err != nil {
-		return "", err
-	}
-	if err := verifyMainAgentDirectoryPath(configPath, configIdentity, "", "config directory"); err != nil {
+	if err := secureMainAgentConfigDir(configPath); err != nil {
 		return "", err
 	}
 
@@ -223,6 +210,29 @@ func OpenPreparedMainAgentLockDir() (*MainAgentLockDirectory, error) {
 		return nil, err
 	}
 	return &MainAgentLockDirectory{configHandle: configHandle, runHandle: runHandle}, nil
+}
+
+// secureMainAgentConfigDir takes the config dir at configPath by handle:
+// opened without following reparse points (created with the private
+// descriptor if absent), refused if it is a reparse point or not a directory,
+// owner, group and PROTECTED DACL set and verified through the handle, then
+// the path re-checked to still name that same directory. Once it returns nil
+// no other account can change the directory or replace its entries.
+func secureMainAgentConfigDir(configPath string) error {
+	configHandle, err := ensureMainAgentDirectory(configPath, windowsConfigDirCreateSDDL)
+	if err != nil {
+		return fmt.Errorf("secure main-agent config directory: %w", err)
+	}
+	defer func() { _ = closeMainAgentDirectoryHandleFn(configHandle) }()
+
+	configIdentity, err := inspectMainAgentDirectory(configHandle, "config directory")
+	if err != nil {
+		return err
+	}
+	if err := hardenAndVerifyMainAgentDirectory(configHandle, windowsConfigDirCreateSDDL, "config directory"); err != nil {
+		return err
+	}
+	return verifyMainAgentDirectoryPath(configPath, configIdentity, "", "config directory")
 }
 
 func ensureMainAgentDirectory(path, sddl string) (windows.Handle, error) {

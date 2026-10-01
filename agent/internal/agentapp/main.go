@@ -1256,6 +1256,9 @@ func runAgent() {
 	// standard user, e.g. through an older Quick Support client), and refuses
 	// one that is a link. Covers both the service and the console path below.
 	if err := reclaimConfigDirFn(false); err != nil {
+		// Same marker as a guard failure (the Windows Event Log), so a
+		// service that stops here is not just an SCM start error.
+		writeInstanceGuardMarkerFn(startup, err)
 		fmt.Fprintf(os.Stderr, "Breeze agent cannot use its config folder: %v\n", err)
 		mainAgentExitFn(exitConfigDirUntrusted)
 		return

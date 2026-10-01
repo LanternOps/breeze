@@ -1,6 +1,7 @@
 package agentapp
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -109,11 +110,13 @@ func (nopGuard) Close() error { return nil }
 // before it reads config or starts anything.
 func TestRunAgentStopsWhenTheConfigFolderCannotBeTrusted(t *testing.T) {
 	origAcquire, origExit, origReclaim := acquireMainAgentGuardFn, mainAgentExitFn, reclaimConfigDirFn
-	origReconcile, origStart := reconcileServiceUnitIfNeededFn, startAgentFn
+	origReconcile, origStart, origMarker := reconcileServiceUnitIfNeededFn, startAgentFn, writeInstanceGuardMarkerFn
 	t.Cleanup(func() {
 		acquireMainAgentGuardFn, mainAgentExitFn, reclaimConfigDirFn = origAcquire, origExit, origReclaim
-		reconcileServiceUnitIfNeededFn, startAgentFn = origReconcile, origStart
+		reconcileServiceUnitIfNeededFn, startAgentFn, writeInstanceGuardMarkerFn = origReconcile, origStart, origMarker
 	})
+	var marked error
+	writeInstanceGuardMarkerFn = func(_ ProcessStartup, err error) { marked = err }
 	acquireMainAgentGuardFn = func(ProcessStartup) (mainAgentGuard, error) { return nopGuard{}, nil }
 	var forEnrollArg []bool
 	reclaimConfigDirFn = func(forEnroll bool) error {
@@ -129,6 +132,9 @@ func TestRunAgentStopsWhenTheConfigFolderCannotBeTrusted(t *testing.T) {
 
 	if exitCode != exitConfigDirUntrusted || reconciled || started {
 		t.Fatalf("exit=%d reconciled=%v started=%v, want exit %d and nothing else", exitCode, reconciled, started, exitConfigDirUntrusted)
+	}
+	if !errors.Is(marked, config.ErrConfigDirUntrusted) {
+		t.Errorf("startup marker = %v, want the config folder error recorded", marked)
 	}
 	if len(forEnrollArg) != 1 || forEnrollArg[0] {
 		t.Errorf("reclaim called with forEnroll=%v, want one call with false (start, not enroll)", forEnrollArg)

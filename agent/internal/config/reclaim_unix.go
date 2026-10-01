@@ -11,14 +11,16 @@ import (
 )
 
 // reclaimConfigFileModes are the files whose contents the agent loads as its
-// configuration and identity, with the mode each gets when it has to be taken
-// back Another account that could write one of these could point the
-// agent at a server, pin update-signing keys or name programs it runs.
-var reclaimConfigFileModes = map[string]uint32{
+// configuration and identity, with the mode a fresh copy gets.
+var reclaimConfigFileModes = map[string]os.FileMode{
 	"agent.yaml":        0o644,
 	"secrets.yaml":      0o600,
 	"helper_token.yaml": 0o600, // the agent restores root:breeze 0640 on start
 }
+
+// reclaimSkipEntries are left alone: sessions/<key> is owned by the session
+// user by design (helper/manager.go), and its parent is root-owned.
+var reclaimSkipEntries = map[string]bool{"sessions": true, reclaimQuarantineDir: true}
 
 // Seams: the unit tests run unprivileged, so they cannot create root-owned
 // files or chown.
@@ -47,6 +49,11 @@ func reclaimSeparateDataDir() error {
 	return reclaimUnixDir(data, false, false)
 }
 
+// Only world write marks an entry as writable by another account: group
+// write is part of the agent's own layout (the macOS installer makes the
+// config dir 0770, the IPC socket is 0660).
+const reclaimOtherWrite = 0o002
+
 func reclaimUnixDir(root string, configDir, forEnroll bool) error {
 	fi, err := os.Lstat(root)
 	if os.IsNotExist(err) {
@@ -56,7 +63,19 @@ func reclaimUnixDir(root string, configDir, forEnroll bool) error {
 		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: %s is a symbolic link to another location; remove it and install the agent again", ErrConfigDirUntrusted, root)
+		// An administrator may move the folder and leave a root-owned
+		// symlink; another account's symlink is not followed.
+		if uid := reclaimOwnerUIDFn(root, fi); uid != 0 {
+			return fmt.Errorf("%w: %s is a symbolic link owned by uid %d, not root", ErrConfigDirUntrusted, root, uid)
+		}
+		target, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return fmt.Errorf("%w: resolve %s: %v", ErrConfigDirUntrusted, root, err)
+		}
+		root = target
+		if fi, err = os.Lstat(root); err != nil {
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
+		}
 	}
 	if !fi.IsDir() {
 		return fmt.Errorf("%w: %s is not a directory", ErrConfigDirUntrusted, root)
@@ -64,93 +83,98 @@ func reclaimUnixDir(root string, configDir, forEnroll bool) error {
 	if reclaimGeteuidFn() != 0 {
 		return nil
 	}
-	untrusted, err := reclaimUnixEntry(root, fi, fi.Mode().Perm()&^0o022)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
-	}
-	if untrusted {
-		log.Warn("The agent folder was created or changed by another account; taking it back", "dir", root)
-	}
-	if err := reclaimUnixContents(root, configDir, forEnroll, untrusted); err != nil {
-		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
-	}
-	return nil
-}
 
-// reclaimUnixEntry makes path root-owned with mode want when another account
-// owns it or it is group/world-writable, and reports whether it was.
-func reclaimUnixEntry(path string, fi os.FileInfo, want os.FileMode) (bool, error) {
-	uid := reclaimOwnerUIDFn(path, fi)
-	perm := fi.Mode().Perm()
-	if uid == 0 && perm&0o022 == 0 {
-		return false, nil
-	}
-	if uid != 0 {
-		if err := reclaimLchownFn(path); err != nil {
-			return true, fmt.Errorf("take back %s from uid %d: %w", path, uid, err)
+	// The folder itself. Its parent (/etc, /var/lib, /Library/Application
+	// Support) is root's, so the path cannot be swapped underneath.
+	if uid := reclaimOwnerUIDFn(root, fi); uid != 0 {
+		log.Warn("The agent folder was created by another account; taking it back", "dir", root, "uid", uid)
+		if err := reclaimLchownFn(root); err != nil {
+			return fmt.Errorf("%w: take back %s: %v", ErrConfigDirUntrusted, root, err)
 		}
 	}
-	if perm != want {
-		if err := os.Chmod(path, want); err != nil {
-			return true, fmt.Errorf("set mode of %s: %w", path, err)
+	if perm := fi.Mode().Perm(); perm&reclaimOtherWrite != 0 {
+		if err := os.Chmod(root, perm&^reclaimOtherWrite); err != nil {
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 		}
 	}
-	return true, nil
-}
 
-// reclaimUnixContents sweeps dir without following links. With all set every
-// subtree is swept; otherwise dir's entries and the subtrees under entries
-// another account controlled.
-func reclaimUnixContents(dir string, configDir, forEnroll, all bool) error {
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		return fmt.Errorf("list %s: %w", dir, err)
+		return fmt.Errorf("%w: list %s: %v", ErrConfigDirUntrusted, root, err)
 	}
+	q := quarantine{root: root}
+	type configFile struct {
+		path, name string
+		mode       os.FileMode
+	}
+	var configFiles []configFile
 	for _, e := range entries {
-		p := filepath.Join(dir, e.Name())
-		fi, err := os.Lstat(p)
+		if reclaimSkipEntries[e.Name()] {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		efi, err := os.Lstat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return err
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 		}
-		uid := reclaimOwnerUIDFn(p, fi)
-		if fi.Mode()&os.ModeSymlink != 0 {
+		uid := reclaimOwnerUIDFn(p, efi)
+		if efi.Mode()&os.ModeSymlink != 0 {
 			if uid != 0 {
 				if err := os.Remove(p); err != nil {
-					return fmt.Errorf("remove link %s planted by uid %d: %w", p, uid, err)
+					return fmt.Errorf("%w: remove the link %s: %v", ErrConfigDirUntrusted, p, err)
 				}
 				log.Warn("Removed a link another account planted in the agent folder; its target was left untouched", "path", p)
 			}
 			continue
 		}
-		want := fi.Mode().Perm() &^ 0o022
-		configMode, isConfig := reclaimConfigFileModes[e.Name()]
-		// configDir is only set for the folder's own entries, not in recursion.
-		isConfig = isConfig && configDir && !fi.IsDir()
-		if isConfig {
-			want = os.FileMode(configMode)
-			if (uid != 0 || fi.Mode().Perm()&0o022 != 0) && forEnroll {
-				if err := os.Remove(p); err != nil {
-					return fmt.Errorf("remove %s, which another account could write: %w", p, err)
+		worldWritable := efi.Mode().Perm()&reclaimOtherWrite != 0
+		if uid == 0 && !worldWritable {
+			continue
+		}
+		if mode, ok := reclaimConfigFileModes[e.Name()]; ok && configDir && efi.Mode().IsRegular() {
+			if forEnroll && uid != 0 {
+				if err := q.move(p, e.Name()); err != nil {
+					return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 				}
-				log.Warn("Removed a config file another account could have written; enrollment writes a new one", "path", p, "uid", uid)
+				log.Warn("Set aside a config file another account wrote; enrollment writes a new one", "path", p, "uid", uid)
 				continue
 			}
+			configFiles = append(configFiles, configFile{p, e.Name(), mode})
+			continue
 		}
-		untrusted, err := reclaimUnixEntry(p, fi, want)
-		if err != nil {
-			return err
-		}
-		if untrusted && isConfig {
-			log.Warn("Re-secured a config file another account could have written; check its contents", "path", p, "uid", uid)
-		}
-		if fi.IsDir() && (all || untrusted) {
-			if err := reclaimUnixContents(p, false, forEnroll, true); err != nil {
-				return err
+		if uid == 0 {
+			// Root's own entry, only world-writable: the path is root's
+			// and its parent is too, so it cannot be swapped.
+			if err := os.Chmod(p, efi.Mode().Perm()&^reclaimOtherWrite); err != nil {
+				return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 			}
+			continue
 		}
+		// Another account's entry: set aside, not walked into or chowned.
+		if err := q.move(p, e.Name()); err != nil {
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
+		}
+		log.Warn("Set aside an entry another account controlled in the agent folder", "path", p, "uid", uid)
+	}
+
+	for _, f := range configFiles {
+		data, err := os.ReadFile(f.path)
+		if err != nil {
+			return fmt.Errorf("%w: read %s: %v", ErrConfigDirUntrusted, f.path, err)
+		}
+		// The original is set aside (a handle another account holds then
+		// reaches that copy), and a new root-owned file with an explicit
+		// mode (no setuid survives) is written in its place.
+		if err := q.move(f.path, f.name); err != nil {
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
+		}
+		if err := atomicWriteFile(f.path, data, f.mode); err != nil {
+			return fmt.Errorf("%w: rewrite %s: %v", ErrConfigDirUntrusted, f.path, err)
+		}
+		log.Warn("Replaced a config file another account could write with a fresh copy; check its contents", "path", f.path)
 	}
 	return nil
 }

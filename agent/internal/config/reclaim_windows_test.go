@@ -132,57 +132,85 @@ func reclaimSDDL(t *testing.T, path string) string {
 	return sd.String()
 }
 
+func quarantinedWin(t *testing.T, root, name string) bool {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(root, reclaimQuarantineDir, "*", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(matches) == 1
+}
+
 // TestReclaimConfigDirTakesBackAFolderAnotherAccountCreated: a config folder
 // a standard user created before the agent was installed is taken back before
-// the agent reads it: the folder and everything in it owned by SYSTEM or
-// Administrators, writable by no one else, agent.yaml still readable by
-// Users (the Helper reads it), secrets.yaml not. The user can write nothing
-// there afterwards.
+// the agent reads it. The folder is the agent's; agent.yaml and secrets.yaml
+// are fresh copies (contents kept, the agent's owner and DACL, Users read on
+// agent.yaml only), so a write handle that user opened beforehand no longer
+// reaches them; everything else the user owned is set aside, unread. The user
+// can write nothing there afterwards.
 func TestReclaimConfigDirTakesBackAFolderAnotherAccountCreated(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
 	plantFolderAsStandardUser(t, root)
+	cfgPath := filepath.Join(root, "agent.yaml")
+
+	// A write handle the standard user opened beforehand, shared for
+	// delete (so the agent can replace the file): afterwards it must no
+	// longer reach agent.yaml.
+	var held windows.Handle
+	reclaimAsStandardUser(t, func() {
+		p16, _ := windows.UTF16PtrFromString(cfgPath)
+		h, err := windows.CreateFile(p16, windows.GENERIC_WRITE,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, 0, 0)
+		if err != nil {
+			t.Fatalf("open agent.yaml for write as the standard user: %v", err)
+		}
+		held = h
+	})
+	defer func() { _ = windows.CloseHandle(held) }()
 
 	if err := reclaimConfigDir(root, false); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
-	for _, p := range []string{
-		root,
-		filepath.Join(root, "agent.yaml"),
-		filepath.Join(root, "secrets.yaml"),
-		filepath.Join(root, "agent.state"),
-		filepath.Join(root, "data"),
-		filepath.Join(root, "data", "sub"),
-		filepath.Join(root, "data", "sub", "openh264.dll"),
-	} {
+	for _, p := range []string{root, cfgPath, filepath.Join(root, "secrets.yaml")} {
 		assertTrustedObject(t, p)
 	}
-	if sddl := reclaimSDDL(t, filepath.Join(root, "agent.yaml")); !strings.Contains(sddl, "(A;;FR;;;BU)") {
+	if b, err := os.ReadFile(cfgPath); err != nil || !strings.Contains(string(b), "server_url") {
+		t.Errorf("agent.yaml contents not kept: %q, %v", b, err)
+	}
+	if sddl := reclaimSDDL(t, cfgPath); !strings.Contains(sddl, "(A;;FR;;;BU)") {
 		t.Errorf("agent.yaml lost the Users read the Helper needs: %s", sddl)
 	}
 	if sddl := reclaimSDDL(t, filepath.Join(root, "secrets.yaml")); strings.Contains(sddl, ";;;BU)") {
 		t.Errorf("secrets.yaml grants Users access: %s", sddl)
 	}
+	for _, name := range []string{"agent.state", "data"} {
+		if _, err := os.Lstat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) || !quarantinedWin(t, root, name) {
+			t.Errorf("%s was not set aside into quarantine (lstat err %v)", name, err)
+		}
+	}
 
+	var n uint32
+	if err := windows.WriteFile(held, []byte("server_url: https://attacker.example\n"), &n, nil); err == nil {
+		if b, _ := os.ReadFile(cfgPath); strings.Contains(string(b), "attacker") {
+			t.Error("a write handle opened before the reclaim still changes agent.yaml")
+		}
+	}
 	reclaimAsStandardUser(t, func() {
-		if f, err := os.OpenFile(filepath.Join(root, "agent.yaml"), os.O_WRONLY, 0); err == nil {
+		if f, err := os.OpenFile(cfgPath, os.O_WRONLY, 0); err == nil {
 			_ = f.Close()
 			t.Error("the standard user can still write agent.yaml")
 		}
 		if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("x"), 0o644); err == nil {
 			t.Error("the standard user can still create files in the folder")
 		}
-		if err := os.WriteFile(filepath.Join(root, "data", "sub", "openh264.dll"), []byte("swap"), 0o644); err == nil {
-			t.Error("the standard user can still replace a file in the data dir")
-		}
 	})
 }
 
-// TestReclaimConfigDirForEnrollRemovesConfigAnotherAccountWrote: before an
-// enrollment, agent.yaml and secrets.yaml another account wrote are removed,
-// not adopted (their contents would be carried into the new enrollment).
-// Other content is re-secured.
-func TestReclaimConfigDirForEnrollRemovesConfigAnotherAccountWrote(t *testing.T) {
+// TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote: before an
+// enrollment, agent.yaml and secrets.yaml another account owns are set aside,
+// not adopted (their contents would carry into the new enrollment).
+func TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
 	plantFolderAsStandardUser(t, root)
@@ -191,12 +219,11 @@ func TestReclaimConfigDirForEnrollRemovesConfigAnotherAccountWrote(t *testing.T)
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
 	for _, name := range []string{"agent.yaml", "secrets.yaml"} {
-		if _, err := os.Lstat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("%s was not removed before enrolling (lstat err %v)", name, err)
+		if _, err := os.Lstat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) || !quarantinedWin(t, root, name) {
+			t.Errorf("%s was not set aside before enrolling (lstat err %v)", name, err)
 		}
 	}
 	assertTrustedObject(t, root)
-	assertTrustedObject(t, filepath.Join(root, "agent.state"))
 }
 
 // TestReclaimConfigDirRefusesALinkedFolder: a junction where the config
@@ -221,19 +248,16 @@ func TestReclaimConfigDirRefusesALinkedFolder(t *testing.T) {
 }
 
 // TestReclaimConfigDirLeavesATrustedFolderAlone: a folder the agent created
-// (SYSTEM/Administrators-owned, its own DACLs) is not changed.
+// (its own owner and DACLs) is not changed and nothing is set aside.
 func TestReclaimConfigDirLeavesATrustedFolderAlone(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := applyWindowsDACL(root, windowsConfigDirSDDL); err != nil {
+	if err := createMainAgentDirectory(root, windowsConfigDirCreateSDDL); err != nil {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(root, "agent.yaml")
 	secPath := filepath.Join(root, "secrets.yaml")
-	for p, sddl := range map[string]string{cfgPath: reclaimOwnerSDDL + windowsConfigFileSDDL, secPath: reclaimOwnerSDDL + windowsSecretFileSDDL} {
+	for p, sddl := range map[string]string{cfgPath: windowsConfigFileSDDL, secPath: windowsSecretFileSDDL} {
 		if err := os.WriteFile(p, []byte("agent_id: x\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -241,18 +265,65 @@ func TestReclaimConfigDirLeavesATrustedFolderAlone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	before := map[string]string{root: reclaimSDDL(t, root), cfgPath: reclaimSDDL(t, cfgPath), secPath: reclaimSDDL(t, secPath)}
+	before := map[string]string{cfgPath: reclaimSDDL(t, cfgPath), secPath: reclaimSDDL(t, secPath)}
+	beforeInfo, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := reclaimConfigDir(root, true); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
 	for p, sddl := range before {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("%s removed from a trusted folder: %v", p, err)
-			continue
-		}
 		if after := reclaimSDDL(t, p); after != sddl {
 			t.Errorf("%s changed:\nbefore %s\nafter  %s", p, sddl, after)
 		}
 	}
+	if afterInfo, err := os.Stat(cfgPath); err != nil || !os.SameFile(beforeInfo, afterInfo) {
+		t.Errorf("agent.yaml in a trusted folder was replaced or removed (err %v)", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, reclaimQuarantineDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a trusted folder had entries set aside (lstat err %v)", err)
+	}
+	// The folder itself is re-hardened through its handle on every run (as
+	// the instance guard does); that is stable: a second run changes nothing.
+	assertTrustedObject(t, root)
+	rootSDDL := reclaimSDDL(t, root)
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("second reclaimConfigDir: %v", err)
+	}
+	if after := reclaimSDDL(t, root); after != rootSDDL {
+		t.Errorf("a second run changed the folder:\nbefore %s\nafter  %s", rootSDDL, after)
+	}
+}
+
+// TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAConfigFile: a config
+// file another account holds open without delete sharing cannot be replaced
+// by a fresh copy; the agent refuses rather than re-secure it in place, which
+// would leave that handle able to write the agent's config. Once the handle
+// is gone the folder is taken back.
+func TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAConfigFile(t *testing.T) {
+	requireElevatedRunner(t)
+	root := filepath.Join(t.TempDir(), "Breeze")
+	plantFolderAsStandardUser(t, root)
+	cfgPath := filepath.Join(root, "agent.yaml")
+	var held *os.File
+	reclaimAsStandardUser(t, func() {
+		f, err := os.OpenFile(cfgPath, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatalf("open agent.yaml as the standard user: %v", err)
+		}
+		held = f
+	})
+	if err := reclaimConfigDir(root, false); !errors.Is(err, ErrConfigDirUntrusted) {
+		_ = held.Close()
+		t.Fatalf("err = %v while another account holds agent.yaml open, want ErrConfigDirUntrusted", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("reclaimConfigDir once the handle is closed: %v", err)
+	}
+	assertTrustedObject(t, cfgPath)
 }
