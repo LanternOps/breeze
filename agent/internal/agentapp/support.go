@@ -331,8 +331,13 @@ func runSupportSession() {
 	fmt.Println("Breeze Quick Support")
 	fmt.Println("Connecting…")
 
+	// Created private to this user (owner = the user, protected DACL, no
+	// BUILTIN\Users; 0700 off Windows) and registered so every config write
+	// inside it keeps that policy instead of the machine-wide ProgramData one,
+	// which a standard user may not assign (#7620). A planted junction or
+	// symlink at this path is refused, not followed.
 	workDir := supportWorkDir()
-	if err := os.MkdirAll(workDir, 0o700); err != nil {
+	if err := config.SecureUserWorkspace(workDir); err != nil {
 		supportFail("Could not create a temporary working folder for this session.", err)
 		return
 	}

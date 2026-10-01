@@ -1978,20 +1978,25 @@ jobs:
       # state); they skip on a filtered token, so assert zero skips. Only these
       # tests run, not the whole package: its serverurl TTL test is flaky on
       # Windows (1ns TTL vs the Windows clock).
+      # The six TestUserWorkspace* tests are the #7620 regression: Quick
+      # Support run by a standard user. They impersonate a filtered token
+      # (Administrators deny-only, no privileges) to secure the support
+      # workspace and run SaveEnrollment as that user, refuse a planted
+      # junction, and check the machine-wide config policy is unchanged.
       - name: Run Windows config owner/DACL tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/config -run '^Test(ApplyWindowsDACL|AssignOwnerWithFallback)' -v 2>&1
+          $out = go test ./internal/config -run '^Test(ApplyWindowsDACL|AssignOwnerWithFallback|UserWorkspace)' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
-          if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 13) { throw "expected exactly 13 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
