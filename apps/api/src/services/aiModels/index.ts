@@ -11,3 +11,4 @@ export * from './modelWireOptions';
 export * from './discovery';
 export * from './connections';
 export * from './offerings';
+export * from './assignments';
