@@ -3,7 +3,9 @@
  * legacy functions themselves (no re-implementation): resolveLlmConfig,
  * resolveWireModel, getLlmBillingSourceForOrg, mergeScriptPolicies,
  * mergeAgentPolicies/normalizeAgentPolicy, the Task 1 pickers,
- * resolveDefaultModel, resolveReviewerDefaultModel, isPricedModel.
+ * resolveDefaultModel, resolveReviewerDefaultModel, isPricedModel, and the
+ * surfaces' transport builders buildAnthropicClient / buildClaudeSdkChildEnv
+ * (where legacy refuses a catalog partner).
  *
  * The CALLER must route the DB reads those functions make to the fixture
  * (see parity.test.ts) and set process.env via withFixtureEnv.
@@ -13,6 +15,7 @@ import { mergeAgentPolicies, normalizeAgentPolicy } from '../../aiAgents/effecti
 import { isPricedModel } from '../../aiCostTracker';
 import { resolveDefaultModel } from '../../aiModel';
 import {
+  buildAnthropicClient,
   getLlmBillingSourceForOrg,
   LlmUnavailableError,
   resolveLlmConfig,
@@ -20,9 +23,10 @@ import {
   type ResolvedLlmConfig,
 } from '../../llm/llmConfigResolver';
 import { mergeScriptPolicies, type ScriptPolicyMergeInput } from '../../scriptProposals/policy';
+import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
 import { legacyAgentModel, legacyExtensionModel, legacyOfficeChatModel, legacyReviewerModel } from '../legacySurfaceModels';
 import type { LegacyAgentRow } from '../legacyProjection';
-import type { ParityFixture, ParityQuery, SurfaceUse } from './harness';
+import { PARTNER_DEFAULT_UNVERIFIED, type ParityFixture, type ParityQuery, type SurfaceUse } from './harness';
 
 export async function withFixtureEnv<T>(env: ParityFixture['env'], fn: () => Promise<T>): Promise<T> {
   const keys = ['ANTHROPIC_MODEL', 'BREEZE_AI_SCRIPT_REVIEWER_MODEL', 'WORKSPACE_CONTENT_LLM_MODEL'] as const;
@@ -58,27 +62,67 @@ function agentPolicyRow(row: LegacyAgentRow) {
   } as Parameters<typeof normalizeAgentPolicy>[0]);
 }
 
+type UsableConfig = Exclude<ResolvedLlmConfig, { source: 'unavailable' }>;
+
+/**
+ * Runs the surface's REAL legacy transport builder. A catalog partner is
+ * refused there (it throws), which the oracle reports as `catalog_refused`;
+ * any throw for a non-catalog config is an oracle bug and propagates.
+ */
+function refusedByTransport(resolved: UsableConfig, build: (r: UsableConfig) => unknown): boolean {
+  try {
+    build(resolved);
+    return false;
+  } catch (error) {
+    if (resolved.source === 'partner' && resolved.endpoint.kind === 'catalog') return true;
+    throw error;
+  }
+}
+
+/**
+ * ai_agents (aiAgents/runLoop.ts `env: buildClaudeSdkChildEnv(usableLlm)`): the
+ * run loop builds the SDK child env with no egress proxy URL, and
+ * buildClaudeSdkChildEnv (streamingSessionManager.ts) throws for a catalog
+ * endpoint without one. The run loop never calls resolveWireModel.
+ */
+const agentTransport = (r: UsableConfig) => buildClaudeSdkChildEnv(r, {});
+
+/**
+ * extension_content (extensionAi.ts): resolveWireModel first, then
+ * buildAnthropicClient(usable), which throws LlmUnavailableError for any
+ * non-anthropic partner endpoint (llmConfigResolver.ts).
+ */
+const extensionTransport = (r: UsableConfig) => buildAnthropicClient(r);
+
 function use(
-  resolved: Exclude<ResolvedLlmConfig, { source: 'unavailable' }>,
+  resolved: UsableConfig,
   model: string,
-  opts: { refuseCatalog?: boolean; funding?: 'platform' | 'partner_key' } = {},
+  opts: {
+    funding?: 'platform' | 'partner_key';
+    transportBeforeWire?: (r: UsableConfig) => unknown;
+    transportAfterWire?: (r: UsableConfig) => unknown;
+  } = {},
 ): SurfaceUse {
-  if (opts.refuseCatalog && resolved.source === 'partner' && resolved.endpoint.kind === 'catalog') {
+  if (opts.transportBeforeWire && refusedByTransport(resolved, opts.transportBeforeWire)) {
     return unavailable('catalog_refused');
   }
+  let wire: { model: string };
   try {
-    const wire = resolveWireModel(resolved, model);
-    return {
-      outcome: 'ok',
-      destination: resolved.source === 'partner' ? { connectionId: resolved.configId } : 'platform',
-      funding: opts.funding ?? (resolved.source === 'partner' ? 'partner_key' : 'platform'),
-      logicalModel: model,
-      wireModel: wire.model,
-    };
+    wire = resolveWireModel(resolved, model);
   } catch (error) {
     if (error instanceof LlmUnavailableError) return unavailable('model_unverified');
     throw error;
   }
+  if (opts.transportAfterWire && refusedByTransport(resolved, opts.transportAfterWire)) {
+    return unavailable('catalog_refused');
+  }
+  return {
+    outcome: 'ok',
+    destination: resolved.source === 'partner' ? { connectionId: resolved.configId } : 'platform',
+    funding: opts.funding ?? (resolved.source === 'partner' ? 'partner_key' : 'platform'),
+    logicalModel: model,
+    wireModel: wire.model,
+  };
 }
 
 export async function legacySurfaceUse(fixture: ParityFixture, query: ParityQuery): Promise<SurfaceUse> {
@@ -88,7 +132,12 @@ export async function legacySurfaceUse(fixture: ParityFixture, query: ParityQuer
     return { outcome: 'ok', destination: 'platform', funding: 'platform', logicalModel: model, wireModel: model };
   }
   const resolved = await resolveLlmConfig(s.partnerId);
-  if (resolved.source === 'unavailable') return unavailable(resolved.reason);
+  if (resolved.source === 'unavailable') {
+    // resolveLlmConfig's model_unverified keys on the partner DEFAULT alone
+    // (resolveCatalogEndpoint); relabel it so it can't be confused with a
+    // per-surface resolveWireModel failure (`model_unverified` from use()).
+    return unavailable(resolved.reason === 'model_unverified' ? PARTNER_DEFAULT_UNVERIFIED : resolved.reason);
+  }
 
   if (query.kind === 'session') {
     const session = s.liveSessions.find((x) => x.id === query.sessionId)!;
@@ -102,7 +151,7 @@ export async function legacySurfaceUse(fixture: ParityFixture, query: ParityQuer
     // Load step copied from effectivePolicy.ts:523 (the merge itself is called for real).
     const allowedModels = Array.isArray(raw) ? (raw as string[]) : null;
     const merged = mergeAgentPolicies(agentPolicyRow(partnerRow), orgRow ? agentPolicyRow(orgRow) : null, { allowedModels });
-    return use(resolved, legacyAgentModel(merged.effective.model, resolved.model), { refuseCatalog: true });
+    return use(resolved, legacyAgentModel(merged.effective.model, resolved.model), { transportBeforeWire: agentTransport });
   }
 
   switch (query.surface) {
@@ -125,7 +174,7 @@ export async function legacySurfaceUse(fixture: ParityFixture, query: ParityQuer
     case 'extension_content': {
       const model = legacyExtensionModel(undefined, process.env);
       if (!isPricedModel(model)) return unavailable('unpriced_model');
-      return use(resolved, model, { refuseCatalog: true });
+      return use(resolved, model, { transportAfterWire: extensionTransport });
     }
   }
   // patch_test returned above; TS does not narrow query.surface through the compound guard.

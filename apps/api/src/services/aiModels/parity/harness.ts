@@ -48,6 +48,21 @@ export interface ExpectedDivergence {
 
 const isCatalog = (f: ParityFixture) => f.snapshot.config?.catalogEntryId != null;
 
+/**
+ * The oracle's reason when resolveLlmConfig itself is unavailable because the
+ * partner DEFAULT is not mapped+verified on the catalog revision — distinct
+ * from a per-surface resolveWireModel failure (`model_unverified`).
+ */
+export const PARTNER_DEFAULT_UNVERIFIED = 'partner_default_unverified';
+
+/** The fixture's pinned partner default is not mapped AND verified on its catalog revision (a null default is checked by the resolver). */
+const partnerDefaultUnverifiedOnCatalog = (f: ParityFixture): boolean => {
+  const model = f.snapshot.config?.defaultModel;
+  if (model == null) return true;
+  const p = f.catalogProvider;
+  return !p || !Object.hasOwn(p.modelMap, model) || !p.verifiedModels.includes(model);
+};
+
 export const EXPECTED_DIVERGENCES: readonly ExpectedDivergence[] = [
   {
     id: 'catalog_refused_surfaces',
@@ -63,7 +78,8 @@ export const EXPECTED_DIVERGENCES: readonly ExpectedDivergence[] = [
     why: 'Legacy resolveLlmConfig disables every surface when the partner DEFAULT is not verified on the catalog revision; the registry resolves each surface\'s own offering (spec §9 eligibility is per offering).',
     applies: (f, _q, legacy, registry) =>
       isCatalog(f)
-      && legacy.outcome === 'unavailable' && legacy.reason === 'model_unverified'
+      && partnerDefaultUnverifiedOnCatalog(f)
+      && legacy.outcome === 'unavailable' && legacy.reason === PARTNER_DEFAULT_UNVERIFIED
       && registry.outcome === 'ok',
   },
 ];

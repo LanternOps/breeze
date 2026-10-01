@@ -8,7 +8,10 @@ vi.mock('../../sentry', () => ({ captureException: vi.fn(), captureMessage: vi.f
 import { buildDesiredRegistryState } from '../legacyProjection';
 import { bindLegacyFixture } from './bindLegacyFixture';
 import { PARITY_FIXTURES } from './fixtures';
-import { EXPECTED_DIVERGENCES, parityQueries, runParity, type ParityFixture, type ParityRow } from './harness';
+import { EXPECTED_DIVERGENCES, PARTNER_DEFAULT_UNVERIFIED, parityQueries, runParity, type ParityFixture, type ParityRow } from './harness';
+
+const ORG_A = '70000000-0000-4000-8000-0000000000a1';
+const ORG_B = '70000000-0000-4000-8000-0000000000b1';
 import { legacySurfaceUse, withFixtureEnv } from './legacyOracle';
 import { projectionEnvFor } from './projectionEnv';
 import { materializeDesiredState, projectSurfaceUse } from './storeProjection';
@@ -35,10 +38,38 @@ describe('AI model registry parity: projection vs the real legacy path (#7600 W0
     expect(unexpected, JSON.stringify(unexpected, null, 2)).toEqual([]);
   });
 
-  it('every declared divergence actually occurs (no stale allowlist)', async () => {
-    const seen = new Set<string>();
-    for (const f of PARITY_FIXTURES) for (const r of await parityFor(f)) if (r.divergence) seen.add(r.divergence);
-    expect([...seen].sort()).toEqual(EXPECTED_DIVERGENCES.map((d) => d.id).sort());
+  it('every declared divergence actually occurs (no stale allowlist), exactly where expected', async () => {
+    const label = (r: ParityRow): string => {
+      const q = r.query;
+      const at = (orgId: string) => (orgId === ORG_A ? 'A' : orgId === ORG_B ? 'B' : orgId);
+      const what = q.kind === 'surface' ? `${q.surface}@${at(q.orgId)}` : q.kind === 'agent' ? `agent:${q.agentKind}@${at(q.orgId)}` : `session:${q.sessionId}`;
+      return `${r.divergence} ${r.fixture} ${what}`;
+    };
+    const seen: string[] = [];
+    for (const f of PARITY_FIXTURES) for (const r of await parityFor(f)) if (r.divergence) seen.push(label(r));
+    expect(seen.sort()).toEqual([
+      'catalog_partner_default_unverified catalog_default_unverified extension_content@A',
+      'catalog_partner_default_unverified catalog_default_unverified extension_content@B',
+      'catalog_partner_default_unverified catalog_default_unverified script_reviewer@A',
+      'catalog_partner_default_unverified catalog_default_unverified script_reviewer@B',
+      'catalog_refused_surfaces byok_catalog_verified agent:patch@A',
+      'catalog_refused_surfaces byok_catalog_verified agent:patch@B',
+      'catalog_refused_surfaces byok_catalog_verified agent:triage@A',
+      'catalog_refused_surfaces byok_catalog_verified extension_content@A',
+      'catalog_refused_surfaces byok_catalog_verified extension_content@B',
+    ]);
+    expect([...new Set(seen.map((s) => s.split(' ')[0]))].sort()).toEqual(EXPECTED_DIVERGENCES.map((d) => d.id).sort());
+  });
+
+  it('catalog_partner_default_unverified does not swallow a per-surface unverified model', () => {
+    const f = PARITY_FIXTURES.find((x) => x.name === 'byok_catalog_verified')!;
+    const q = { kind: 'surface', surface: 'office_chat', orgId: ORG_A } as const;
+    const ok = { outcome: 'ok', destination: 'platform', funding: 'platform', logicalModel: 'm', wireModel: 'm' } as const;
+    const d = EXPECTED_DIVERGENCES.find((x) => x.id === 'catalog_partner_default_unverified')!;
+    // A surface-level resolveWireModel failure (legacy reason model_unverified) is never explained away…
+    expect(d.applies(f, q, { outcome: 'unavailable', reason: 'model_unverified' }, ok)).toBe(false);
+    // …and nor is the config-level reason on a fixture whose default IS verified.
+    expect(d.applies(f, q, { outcome: 'unavailable', reason: PARTNER_DEFAULT_UNVERIFIED }, ok)).toBe(false);
   });
 
   it('is discriminating: a projection that moves BYOK chat to the platform key is caught', async () => {
