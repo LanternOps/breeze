@@ -29,6 +29,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, runAfterDbContextExit, withSystemDbAccessContext } from '../db';
 import { deviceMtlsCertificates, devices } from '../db/schema';
 import { normalizeCertificateSerial } from './agentCertificateBinding';
+import { captureException } from './sentry';
 import type { CfCertResult, CloudflareMtlsService, ParsedIssuedCertificate } from './cloudflareMtls';
 import {
   queueCertificateRevocationCore,
@@ -138,29 +139,74 @@ export async function activateIssuedCertificateCore(
   };
 }
 
-function errorName(err: unknown): string {
-  return err instanceof Error ? err.name : 'unknown';
-}
 
 /** The device is missing, in another org, or invisible to the caller's context. */
 class DeviceNotIssuableError extends Error {
   constructor() {
-    super('mtls_issuance_device_not_found');
+    super('device_not_issuable');
     this.name = 'DeviceNotIssuableError';
   }
 }
 
+// Bounded failure reasons this module raises itself — safe to log and tag.
+// Anything else (a postgres error, say) is reported by error NAME only, since
+// a raw driver message can carry column values.
+const KNOWN_FAILURE_REASONS = new Set([
+  'device_not_issuable',
+  'mtls_history_insert_failed',
+  'mtls_history_activation_failed',
+  'legacy_device_update_failed',
+]);
+
+function failureReason(err: unknown): string {
+  if (err instanceof Error) {
+    return KNOWN_FAILURE_REASONS.has(err.message) ? err.message : err.name;
+  }
+  return 'unknown';
+}
+
+/**
+ * Logs and reports a failure on the issuance path. Never carries certificate
+ * material, serials or provider ids — the device id goes to the log line only,
+ * not to Sentry tags.
+ */
+function reportIssuanceFailure(event: string, deviceId: string, err?: unknown): void {
+  const reason = err === undefined ? event : failureReason(err);
+  console.error(`[mtls-issuance] ${event}:`, { deviceId, reason });
+  captureException(
+    err instanceof Error ? err : new Error(`mtls_issuance_${event}`),
+    undefined,
+    { mtlsIssuanceEvent: event, mtlsIssuanceReason: reason },
+  );
+}
+
 /**
  * One best-effort provider revoke, started once the caller's outermost DB
- * context has settled. Not durable: for a certificate with no history row,
- * which the retry sweep cannot see.
+ * context has settled. Not durable — it is for a certificate with no history
+ * row, which the retry sweep cannot see — so a failure is reported, never
+ * dropped.
  */
-export function revokeInlineAfterContextExit(cert: CfCertResult, cfService: CloudflareMtlsService): void {
+export function revokeInlineAfterContextExit(
+  deviceId: string,
+  cert: CfCertResult,
+  cfService: CloudflareMtlsService,
+): void {
   runAfterDbContextExit('mtls-issuance.revoke-orphan-inline', async () => {
     try {
       await cfService.revokeCertificate(cert.id);
     } catch (err) {
-      console.error('[mtls-issuance] inline orphan revoke failed:', errorName(err));
+      reportIssuanceFailure('orphan_revoke_failed', deviceId, err);
+    }
+  });
+}
+
+/** Durable post-commit revoke of a history row; the sweep is the backstop. */
+function revokeRowAfterContextExit(label: string, deviceId: string, certificateId: string): void {
+  runAfterDbContextExit(label, async () => {
+    try {
+      await revokeCertificateNowOrEnqueue(certificateId);
+    } catch (err) {
+      reportIssuanceFailure('row_revoke_failed', deviceId, err);
     }
   });
 }
@@ -207,17 +253,27 @@ async function revokeUnrecordedCertificate(
       }),
     );
   } catch (err) {
-    console.error('[mtls-issuance] orphan-revoke marker row could not be written:', errorName(err));
+    reportIssuanceFailure('orphan_marker_write_failed', target.deviceId, err);
   }
 
   if (markerId) {
-    const id = markerId;
-    runAfterDbContextExit('mtls-issuance.revoke-orphan', () => revokeCertificateNowOrEnqueue(id));
+    revokeRowAfterContextExit('mtls-issuance.revoke-orphan', target.deviceId, markerId);
     return;
   }
 
-  console.error('[mtls-issuance] ORPHAN_PROVIDER_CERT: no durable marker, inline best-effort revoke:', target.deviceId);
-  revokeInlineAfterContextExit(cert, cfService);
+  reportIssuanceFailure('orphan_without_marker', target.deviceId);
+  revokeInlineAfterContextExit(target.deviceId, cert, cfService);
+}
+
+async function certificateRowCommitted(certificateId: string): Promise<boolean> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({ id: deviceMtlsCertificates.id })
+      .from(deviceMtlsCertificates)
+      .where(eq(deviceMtlsCertificates.id, certificateId))
+      .limit(1),
+  );
+  return Boolean(row);
 }
 
 /**
@@ -232,10 +288,13 @@ async function revokeUnrecordedCertificate(
  * revoked at the provider, and the caller must not hand it to the agent —
  * the agent would hold a certificate the binding check does not know.
  *
- * Post-commit work (revoking the superseded or orphaned certificate) is
- * deferred until the OUTERMOST DB context has settled: the revoke locks the
- * history row on a separate connection, and the caller's still-open
- * transaction holds that row's lock until it commits.
+ * Post-commit work is deferred until the OUTERMOST DB context has settled:
+ * the revoke locks the history row on a separate connection, and the
+ * caller's still-open transaction holds that row's lock until it ends. Once
+ * it has ended, the new row is checked: if the caller's transaction rolled
+ * back, the certificate went with it — never delivered, never recorded — so
+ * it is revoked at the provider and the previous row (active again) is left
+ * alone. Otherwise the superseded certificate is revoked.
  */
 export async function recordIssuedCertificateForDevice(input: {
   orgId: string;
@@ -263,21 +322,32 @@ export async function recordIssuedCertificateForDevice(input: {
       }),
     );
   } catch (err) {
-    console.error('[mtls-issuance] certificate could not be recorded, revoking it:', errorName(err));
+    reportIssuanceFailure('record_failed', deviceId, err);
     if (err instanceof DeviceNotIssuableError) {
       // No marker row: one naming this (device, org) pair could only fail at
       // the caller's commit (deferred FK) and abort its whole transaction.
-      console.error('[mtls-issuance] ORPHAN_PROVIDER_CERT: device not issuable, inline best-effort revoke:', deviceId);
-      revokeInlineAfterContextExit(cert, cfService);
+      revokeInlineAfterContextExit(deviceId, cert, cfService);
     } else {
       await revokeUnrecordedCertificate({ orgId, deviceId }, cert, parsedCert, cfService);
     }
     return false;
   }
 
-  const demotedId = result.demotedCertificateId;
-  if (demotedId) {
-    runAfterDbContextExit('mtls-issuance.revoke-superseded', () => revokeCertificateNowOrEnqueue(demotedId));
-  }
+  const { certificateId, demotedCertificateId } = result;
+  runAfterDbContextExit('mtls-issuance.after-record', async () => {
+    try {
+      if (!(await certificateRowCommitted(certificateId))) {
+        reportIssuanceFailure('record_rolled_back', deviceId);
+        revokeInlineAfterContextExit(deviceId, cert, cfService);
+        return;
+      }
+      if (demotedCertificateId) {
+        await revokeCertificateNowOrEnqueue(demotedCertificateId);
+      }
+    } catch (err) {
+      // The demoted row is pending_revocation and due: the sweep revokes it.
+      reportIssuanceFailure('after_record_failed', deviceId, err);
+    }
+  });
   return true;
 }

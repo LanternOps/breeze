@@ -3018,7 +3018,7 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
       err instanceof Error ? err.name : 'unknown',
     );
     console.error('[agents] ORPHAN_PROVIDER_CERT (cert-parse-failure, no durable row possible):', deviceId);
-    revokeInlineAfterContextExit(cert, cfService);
+    revokeInlineAfterContextExit(deviceId, cert, cfService);
     return null;
   }
 

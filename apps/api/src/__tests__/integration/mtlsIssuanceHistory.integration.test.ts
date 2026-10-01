@@ -33,7 +33,7 @@ import 'reflect-metadata';
 import { Hono } from 'hono';
 import { createHash, randomBytes, randomUUID, webcrypto, X509Certificate } from 'node:crypto';
 import * as x509 from '@peculiar/x509';
-import { and, eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceMtlsCertificates, devices } from '../../db/schema';
 import { getTestDb } from './setup';
@@ -348,9 +348,16 @@ describe('#7432 — re-issuance supersedes and revokes the previous active row',
     }).returning({ id: deviceMtlsCertificates.id });
 
     // The approve route runs issuance inside the admin's request context.
-    const issued = await withDbAccessContext(orgContext(seeded.orgId), () =>
-      issueMtlsCertForDevice(seeded.deviceId, seeded.orgId),
-    );
+    // Nothing is revoked while that context is open: the revoke locks the
+    // history row, which this transaction holds until it commits.
+    let revokedWhileContextOpen = -1;
+    const issued = await withDbAccessContext(orgContext(seeded.orgId), async () => {
+      const result = await issueMtlsCertForDevice(seeded.deviceId, seeded.orgId);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      revokedWhileContextOpen = provider.revoked.length;
+      return result;
+    });
+    expect(revokedWhileContextOpen).toBe(0);
     expect(issued).not.toBeNull();
     const fresh = provider.issued[0]!;
 
@@ -398,17 +405,131 @@ describe('#7432 — re-issuance supersedes and revokes the previous active row',
     await vi.waitFor(() => expect(provider.revoked).toEqual([provider.issued[0]!.id]));
   });
 
-  runDb('issuance never creates a second active row for the device', async () => {
+  runDb('enrollment-shaped re-issuance (system context) supersedes each previous certificate: one active row, the rest revoked', async () => {
     const seeded = await seedDevice();
-    await withSystemDbAccessContext(() => issueMtlsCertForDevice(seeded.deviceId, seeded.orgId));
-    await withSystemDbAccessContext(() => issueMtlsCertForDevice(seeded.deviceId, seeded.orgId));
-    await withSystemDbAccessContext(() => issueMtlsCertForDevice(seeded.deviceId, seeded.orgId));
+    for (let i = 0; i < 3; i += 1) {
+      await withSystemDbAccessContext(() => issueMtlsCertForDevice(seeded.deviceId, seeded.orgId));
+    }
+    const [first, second, third] = provider.issued;
 
-    const rows = await getTestDb()
-      .select({ id: deviceMtlsCertificates.id })
-      .from(deviceMtlsCertificates)
-      .where(and(eq(deviceMtlsCertificates.deviceId, seeded.deviceId), eq(deviceMtlsCertificates.state, 'active')));
-    expect(rows).toHaveLength(1);
-    await vi.waitFor(() => expect(provider.revoked).toHaveLength(2));
+    await vi.waitFor(() => expect([...provider.revoked].sort()).toEqual([first!.id, second!.id].sort()));
+    await vi.waitFor(async () => {
+      const rows = await historyFor(seeded.deviceId);
+      const stateOf = (providerId: string) => rows.find((r) => r.providerCertificateId === providerId)?.state;
+      expect(rows.filter((r) => r.state === 'active')).toHaveLength(1);
+      expect(stateOf(third!.id)).toBe('active');
+      expect(stateOf(first!.id)).toBe('revoked');
+      expect(stateOf(second!.id)).toBe('revoked');
+    });
+  });
+});
+
+async function seedActiveHistoryRow(seeded: SeededDevice, providerCertificateId: string, serialNumber: string) {
+  const [row] = await getTestDb().insert(deviceMtlsCertificates).values({
+    orgId: seeded.orgId,
+    deviceId: seeded.deviceId,
+    providerCertificateId,
+    serialNumber,
+    legacyProvenance: true,
+    state: 'active',
+    issuedAt: new Date(Date.now() - 10 * 24 * 3_600_000),
+    expiresAt: new Date(Date.now() + 80 * 24 * 3_600_000),
+    activatedAt: new Date(Date.now() - 10 * 24 * 3_600_000),
+  }).returning();
+  return row!;
+}
+
+describe('failures after the certificate is recorded', () => {
+  runDb('a failure late in the activation rolls the whole record back, and the certificate is revoked through a durable marker row', async () => {
+    const oldProviderId = `cf-old-${randomUUID()}`;
+    const oldSerial = `0B${randomUUID().replace(/-/g, '').toUpperCase()}`;
+    const seeded = await seedDevice();
+    const oldRow = await seedActiveHistoryRow(seeded, oldProviderId, oldSerial);
+    const failingProviderId = `cf-fail-legacy-${randomUUID()}`;
+    provider.nextCertificate = async () => {
+      const leaf = await mintLeaf();
+      return {
+        id: failingProviderId,
+        certificate: leaf.pem,
+        privateKey: 'k',
+        serialNumber: leaf.serial,
+        issuedOn: new Date().toISOString(),
+        expiresOn: new Date(Date.now() + 86_400_000).toISOString(),
+      };
+    };
+
+    // Make the LAST step (the legacy devices.mtls_cert_* update) fail, after
+    // the insert, demote and promote have already run.
+    await getTestDb().execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION test_fail_legacy_mtls_update() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.mtls_cert_cf_id LIKE 'cf-fail-legacy-%' THEN
+          RAISE EXCEPTION 'test: legacy mTLS column update refused';
+        END IF;
+        RETURN NEW;
+      END $fn$;
+      DROP TRIGGER IF EXISTS test_fail_legacy_mtls_update ON devices;
+      CREATE TRIGGER test_fail_legacy_mtls_update BEFORE UPDATE OF mtls_cert_cf_id ON devices
+        FOR EACH ROW EXECUTE FUNCTION test_fail_legacy_mtls_update();
+    `));
+    let issued: Awaited<ReturnType<typeof issueMtlsCertForDevice>> | undefined;
+    try {
+      issued = await withSystemDbAccessContext(() => issueMtlsCertForDevice(seeded.deviceId, seeded.orgId));
+    } finally {
+      await getTestDb().execute(sql.raw(`
+        DROP TRIGGER IF EXISTS test_fail_legacy_mtls_update ON devices;
+        DROP FUNCTION IF EXISTS test_fail_legacy_mtls_update();
+      `));
+    }
+
+    expect(issued).toBeNull();
+    // Nothing half-recorded: the old row is still the active one, no
+    // pending_activation row survives, and the legacy columns are unchanged.
+    const rows = await historyFor(seeded.deviceId);
+    expect(rows.filter((r) => r.state === 'active').map((r) => r.id)).toEqual([oldRow.id]);
+    expect(rows.filter((r) => r.state === 'pending_activation')).toHaveLength(0);
+    expect((await legacyColumnsFor(seeded.deviceId)).cfId).toBeNull();
+
+    // The issued certificate gets a durable marker row and is revoked through it.
+    const marker = rows.find((r) => r.providerCertificateId === failingProviderId);
+    expect(marker).toBeDefined();
+    expect(marker!.fingerprintSha256).toMatch(/^[0-9a-f]{64}$/);
+    await vi.waitFor(() => expect(provider.revoked).toEqual([failingProviderId]));
+    await vi.waitFor(async () => {
+      const [after] = await getTestDb()
+        .select({ state: deviceMtlsCertificates.state })
+        .from(deviceMtlsCertificates)
+        .where(eq(deviceMtlsCertificates.id, marker!.id));
+      expect(after?.state).toBe('revoked');
+    });
+  });
+
+  runDb('when the caller\'s transaction rolls back after a successful record, the new certificate is revoked and the previous one stays active', async () => {
+    const oldProviderId = `cf-old-${randomUUID()}`;
+    const oldSerial = `0C${randomUUID().replace(/-/g, '').toUpperCase()}`;
+    const seeded = await seedDevice({
+      cfId: oldProviderId,
+      serial: oldSerial,
+      issuedAt: new Date(Date.now() - 10 * 24 * 3_600_000),
+      expiresAt: new Date(Date.now() + 80 * 24 * 3_600_000),
+    });
+    const oldRow = await seedActiveHistoryRow(seeded, oldProviderId, oldSerial);
+
+    // Enrollment-shaped: issuance succeeds, then a later step of the same
+    // enrollment transaction fails and everything rolls back.
+    await expect(withSystemDbAccessContext(async () => {
+      const issued = await issueMtlsCertForDevice(seeded.deviceId, seeded.orgId);
+      expect(issued).not.toBeNull();
+      throw new Error('a later enrollment step failed');
+    })).rejects.toThrow('a later enrollment step failed');
+    const rolledBack = provider.issued[0]!;
+
+    // The rolled-back certificate is revoked; the previous one is not touched.
+    await vi.waitFor(() => expect(provider.revoked).toEqual([rolledBack.id]));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(provider.revoked).toEqual([rolledBack.id]);
+    const rows = await historyFor(seeded.deviceId);
+    expect(rows.map((r) => ({ id: r.id, state: r.state }))).toEqual([{ id: oldRow.id, state: 'active' }]);
+    expect((await legacyColumnsFor(seeded.deviceId)).cfId).toBe(oldProviderId);
   });
 });

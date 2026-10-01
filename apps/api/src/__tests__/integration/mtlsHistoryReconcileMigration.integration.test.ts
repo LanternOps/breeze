@@ -177,6 +177,11 @@ describe(MIGRATION, () => {
     const sharedAStale = await seedHistoryRow(sharedA, { providerCertificateId: `cf-old-${randomUUID()}`, serialNumber: serial(), state: 'active' });
     const sharedB = await seedDevice({ ...shared, serial: serial() }, sharedA.orgId);
 
+    // Same org, same serial, different provider ids: also ambiguous.
+    const sameSerial = legacyCert();
+    const sameSerialA = await seedDevice(sameSerial);
+    const sameSerialB = await seedDevice({ ...sameSerial, cfId: `cf-${randomUUID()}` }, sameSerialA.orgId);
+
     await replayMigration();
 
     const [agreeingAfter] = await historyFor(agreeing.deviceId);
@@ -191,6 +196,8 @@ describe(MIGRATION, () => {
       .from(deviceMtlsCertificates)
       .where(inArray(deviceMtlsCertificates.deviceId, [sharedA.deviceId, sharedB.deviceId]));
     expect(sharedRows).toEqual([{ id: sharedAStale.id, state: 'active' }]);
+    expect(await historyFor(sameSerialA.deviceId)).toHaveLength(0);
+    expect(await historyFor(sameSerialB.deviceId)).toHaveLength(0);
   });
 
   runDb('is idempotent: a second replay changes nothing', async () => {
