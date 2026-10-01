@@ -128,6 +128,14 @@ const limitsFields = z.object({
   taskDeadlineHours: z.number().int().min(1).max(720),
   taskMaxActiveTargets: z.number().int().min(1).max(100),
   taskMaxPendingPerOrg: z.number().int().min(1).max(1000),
+  // Research-profile caps (AI Suggested Fixes W2, v16).
+  maxConcurrentResearchRuns: z.number().int().min(1).max(10),
+  maxResearchRunsPerHour: z.number().int().min(1).max(300),
+  maxAutoResearchRunsPerHour: z.number().int().min(0).max(100),
+  researchQuickMaxTurns: z.number().int().min(2).max(10),
+  researchDeepMaxTurns: z.number().int().min(4).max(20),
+  researchQuickBudgetCentsPerRun: z.number().int().min(1).max(50),
+  researchDeepBudgetCentsPerRun: z.number().int().min(1).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -287,9 +295,20 @@ export const aiAgentPolicyFieldsSchema = z.object({
 // and applying `.superRefine()` to the base object schema below would make
 // it a `ZodObject` with refinements, on which Zod 4 refuses `.omit()` at
 // runtime — see `previewAiAgentSchema`'s docstring).
-function assertModeAllowedForKind(v: { kind: AiAgentKindLike; mode: AiAgentModeLike }, ctx: z.RefinementCtx): void {
+function assertModeAllowedForKind(
+  v: { kind: AiAgentKindLike; mode: AiAgentModeLike; ownerScope?: 'organization' | 'partner' },
+  ctx: z.RefinementCtx,
+): void {
   if (!allowedModesForKind(v.kind).includes(v.mode)) {
     ctx.addIssue({ code: 'custom', path: ['mode'], message: `mode ${v.mode} is not available for a ${v.kind} agent` });
+  }
+  // AI Suggested Fixes W2: the partner baseline research agent is provisioned by
+  // the system (researchProvisioning.ts); users may only add ORG overrides.
+  // `=== 'partner'` (not `!== 'organization'`): ownerScope is optional and an
+  // org-token create / the preview schema may omit it; the Task 6 service
+  // backstop covers the omitted case.
+  if (v.kind === 'research' && v.ownerScope === 'partner') {
+    ctx.addIssue({ code: 'custom', path: ['ownerScope'], message: 'research agents are provisioned by the system; only organization overrides can be created' });
   }
 }
 type AiAgentKindLike = (typeof AI_AGENT_KINDS)[number];
