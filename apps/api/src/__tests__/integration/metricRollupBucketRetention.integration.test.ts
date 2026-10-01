@@ -335,7 +335,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
     await dropMonth(LEGACY_OLD_MONTH.name);
   });
 
-  it('sweeps expired rows out of metric_rollups_default in batches and keeps rows still in retention', async () => {
+  it('drains metric_rollups_default: expired rows are dropped, in-retention rows move into their month (#7541)', async () => {
     // Months with no partition: rows land in the default partition.
     const expired = ['2019-07-01T00:00:00Z', '2019-07-01T00:05:00Z', '2019-07-01T00:10:00Z'];
     const kept = '2035-01-01T00:00:00Z';
@@ -358,10 +358,14 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       `)) as unknown as Array<{ n: number }>)[0]!.n;
     expect(await defaultCount()).toBe(4);
 
-    const result = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION, deleteBatchSize: 1 });
+    const result = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION });
 
     expect(result.defaultPartitionRowsDeleted).toBeGreaterThanOrEqual(3);
-    expect(await defaultCount()).toBe(1);
-    await getTestDb().execute(sql`DELETE FROM metric_rollups_default WHERE org_id = ${orgId}`);
+    expect(await defaultCount()).toBe(0);
+    expect(await bucketCounts('2035-01-01 00:00:00', '2035-02-01 00:00:00')).toEqual({ 300: 1 });
+    // The drain created both months (2019-07 is inside the test's long daily
+    // window); retention then dropped 2019-07's expired 5-minute leaf.
+    await dropMonth('metric_rollups_y2035m01');
+    await dropMonth('metric_rollups_y2019m07');
   });
 });

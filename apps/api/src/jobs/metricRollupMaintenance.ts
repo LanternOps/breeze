@@ -67,7 +67,9 @@ export function createMetricRollupMaintenanceWorker(): Worker<MetricRollupMainte
       console.log(
         `[MetricRollupMaintenance] ensured=${result.ensuredPartitions.length} droppedMonths=${result.droppedPartitions.length}` +
           ` droppedBucketLeaves=${result.droppedBucketPartitions.length} compacted=${result.compactedPartitions.length}` +
-          ` defaultRowsDeleted=${result.defaultPartitionRowsDeleted} failures=${result.failures.length} durationMs=${result.durationMs}`,
+          ` defaultRowsDeleted=${result.defaultPartitionRowsDeleted} defaultRowsMoved=${result.defaultPartitionDrain.rowsMoved}` +
+          ` defaultBlockedMonths=${result.defaultPartitionDrain.blockedMonths.length}` +
+          ` failures=${result.failures.length} durationMs=${result.durationMs}`,
       );
       if (result.skipped) {
         console.warn(`[MetricRollupMaintenance] Run skipped: ${result.reason ?? 'unknown reason'}`);
