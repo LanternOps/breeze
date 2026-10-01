@@ -109,7 +109,7 @@ func verifyPinnedServerCert(_ [][]byte, verifiedChains [][]*x509.Certificate) er
 		return nil
 	}
 	if len(verifiedChains) == 0 {
-		return fmt.Errorf("bmr: no verified certificate chain to check against the pinned recovery-media fingerprint(s) — refusing connection")
+		return fmt.Errorf("%w: no verified certificate chain to check against the pinned recovery-media fingerprint(s) — refusing connection", ErrServerCertPinMismatch)
 	}
 	for _, chain := range verifiedChains {
 		for _, cert := range chain {
@@ -122,5 +122,5 @@ func verifyPinnedServerCert(_ [][]byte, verifiedChains [][]*x509.Certificate) er
 			}
 		}
 	}
-	return fmt.Errorf("bmr: no certificate in the server's verified chain matches the fingerprint(s) baked into this recovery media — refusing connection")
+	return fmt.Errorf("%w: no certificate in the server's verified chain matches the fingerprint(s) baked into this recovery media — refusing connection", ErrServerCertPinMismatch)
 }
