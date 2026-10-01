@@ -111,8 +111,8 @@ func resolveFirstInstallServerURL(configured string) (string, error) {
 // runs before `enroll` in every install lane.
 //
 // Every other cause — unreadable file, corrupt YAML, a torn/malformed
-// server_url (config.SetAllAndPersist truncates in place, so a concurrent read
-// really can observe one) — means this host probably IS enrolled and its config
+// server_url (older agents wrote agent.yaml by truncating it in place, so a
+// concurrent read could observe one) — means this host probably IS enrolled and its config
 // is broken. Returning a bare "" there made the fallback either guess a control
 // plane and carry on as if nothing happened, or tell the operator "this host is
 // not enrolled yet" — advice that is simply false and sends them to re-enroll

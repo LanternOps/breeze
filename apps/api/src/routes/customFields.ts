@@ -53,7 +53,9 @@ const createCustomFieldSchema = z.object({
 
 const updateCustomFieldSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  options: customFieldOptionsSchema.optional(),
+  // Nullable for the same reason as create: the edit form sends
+  // options: null for non-Dropdown types (#7476).
+  options: customFieldOptionsSchema.nullable().optional(),
   required: z.boolean().optional(),
   defaultValue: z.unknown().optional(),
   deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),

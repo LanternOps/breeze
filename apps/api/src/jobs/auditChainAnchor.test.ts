@@ -104,6 +104,31 @@ import {
   shutdownAuditChainAnchorWorker,
   runAnchorSweep,
 } from './auditChainAnchor';
+import { getAnchorSigningKeyId, getAnchorSigningPublicKey } from '../services/auditAnchorSigning';
+import { createPublicKey, verify } from 'node:crypto';
+
+async function sweepAndReadAnchorLine(): Promise<Record<string, unknown>> {
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  let loggedArgs: unknown[];
+  try {
+    await runAnchorSweep();
+  } finally {
+    loggedArgs = logSpy.mock.calls.map((c) => c[0]);
+    logSpy.mockRestore();
+  }
+  const line = loggedArgs
+    .filter((a): a is string => typeof a === 'string')
+    .map((s) => {
+      try {
+        return JSON.parse(s) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .find((o) => o !== null && o.evt === 'audit_chain_anchor');
+  if (!line) throw new Error('no evt:audit_chain_anchor line was logged');
+  return line;
+}
 
 const ORIGINAL_FLAG = process.env.AUDIT_CHAIN_ANCHOR_ENABLED;
 const ORIGINAL_SIGN_KEY = process.env.AUDIT_ANCHOR_SIGNING_KEY;
@@ -465,6 +490,45 @@ describe('auditChainAnchor worker', () => {
       expect(orgIds).toEqual([null, 'org-1']);
     });
 
+    it('carries the signature itself, verifiable off-box with only the public key (#7470)', async () => {
+      // Without the signature on the forwarded line, an off-box copy only says
+      // "this was signed" — it cannot be checked against the published key.
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(32, 7).toString('base64');
+      mockSweep([], [{ verify: [{ reason: 'no_anchor' }], signed: true }]); // system only
+
+      const anchorLine = await sweepAndReadAnchorLine();
+      expect(typeof anchorLine.signature).toBe('string');
+
+      const publicKeyB64 = getAnchorSigningPublicKey();
+      expect(publicKeyB64).not.toBeNull();
+      const publicKey = createPublicKey({
+        key: Buffer.from(publicKeyB64!, 'base64'),
+        format: 'der',
+        type: 'spki',
+      });
+      expect(
+        verify(
+          null,
+          Buffer.from(String(anchorLine.canonical), 'utf8'),
+          publicKey,
+          Buffer.from(String(anchorLine.signature), 'base64'),
+        ),
+      ).toBe(true);
+    });
+
+    it('omits the signature when the DB declined to stamp it (head moved mid-sign)', async () => {
+      // audit_chain_anchor_head() only stores the signature when the re-read
+      // head still matches what was signed; otherwise the row is unsigned and
+      // the log line must not claim a signature the DB never kept.
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(32, 7).toString('base64');
+      mockSweep([], [{ verify: [{ reason: 'no_anchor' }], signed: false }]);
+
+      const anchorLine = await sweepAndReadAnchorLine();
+      expect(anchorLine.signed).toBe(false);
+      expect(anchorLine.signature).toBeNull();
+      expect(anchorLine.signingKeyId).toBeNull();
+    });
+
     it('emits an UNSIGNED anchor line (signed:false, signingKeyId:null) when no key is set', async () => {
       delete process.env.AUDIT_ANCHOR_SIGNING_KEY;
       mockSweep([], [{ verify: [{ reason: 'no_anchor' }], signed: false }]); // system only
@@ -492,6 +556,7 @@ describe('auditChainAnchor worker', () => {
       expect(anchorLine).toBeDefined();
       expect(anchorLine!.signed).toBe(false);
       expect(anchorLine!.signingKeyId).toBeNull();
+      expect(anchorLine!.signature).toBeNull();
       // Even unsigned, the canonical/digest are emitted so the off-box record is
       // self-describing.
       expect(typeof anchorLine!.canonical).toBe('string');
@@ -545,6 +610,69 @@ describe('auditChainAnchor worker', () => {
       expect(stats.incidentsRaised).toBe(0); // no org incident for the system chain
       expect(dbInsertMock).not.toHaveBeenCalled();
       expect(captureExceptionMock).toHaveBeenCalled(); // but Sentry still fires
+    });
+  });
+
+  describe('anchor signing status log (#7470)', () => {
+    async function sweepLogs(): Promise<{ log: string[]; warn: string[]; error: string[] }> {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await runAnchorSweep();
+        const text = (spy: typeof logSpy) => spy.mock.calls.map((c) => c.map(String).join(' '));
+        return { log: text(logSpy), warn: text(warnSpy), error: text(errorSpy) };
+      } finally {
+        logSpy.mockRestore();
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    }
+
+    it('names the key id and public key when signing is enabled, so operators can pin it off-box', async () => {
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(32, 7).toString('base64');
+      mockSweep([], [{ verify: [{ reason: 'no_anchor' }], signed: true }]);
+
+      const { log } = await sweepLogs();
+      const line = log.find((l) => l.includes('Anchor signing enabled'));
+      expect(line).toBeDefined();
+      expect(line).toContain(getAnchorSigningKeyId()!);
+      expect(line).toContain(getAnchorSigningPublicKey()!);
+    });
+
+    it('also logs the key at boot, not only at the 04:45 UTC sweep', async () => {
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(32, 7).toString('base64');
+      const { initializeAuditChainAnchorWorker } = await import('./auditChainAnchor');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      let lines: string[];
+      try {
+        await initializeAuditChainAnchorWorker();
+      } finally {
+        lines = logSpy.mock.calls.map((c) => c.map(String).join(' '));
+        logSpy.mockRestore();
+      }
+      expect(lines.some((l) => l.includes('Anchor signing enabled') && l.includes(getAnchorSigningPublicKey()!))).toBe(true);
+      expect(dbExecuteMock).not.toHaveBeenCalled(); // boot log only — no sweep ran
+    });
+
+    it('warns (and names the variable) when no key is configured', async () => {
+      mockSweep([], [{ verify: [{ reason: 'no_anchor' }] }]);
+      const { warn } = await sweepLogs();
+      expect(warn.some((l) => l.includes('AUDIT_ANCHOR_SIGNING_KEY is NOT set'))).toBe(true);
+    });
+
+    it('errors loudly when the configured key is not a 32-byte seed', async () => {
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(16, 7).toString('base64');
+      // writeAnchor throws on the malformed key before its DB call, so only the
+      // enumeration + verify + readHead calls are consumed.
+      dbExecuteMock.mockResolvedValueOnce([]);
+      dbExecuteMock.mockResolvedValueOnce([{ reason: 'no_anchor' }]);
+      dbExecuteMock.mockResolvedValueOnce([intactHead]);
+
+      const { error } = await sweepLogs();
+      expect(
+        error.some((l) => l.includes('AUDIT_ANCHOR_SIGNING_KEY is set but is not a base64 32-byte Ed25519 seed')),
+      ).toBe(true);
     });
   });
 

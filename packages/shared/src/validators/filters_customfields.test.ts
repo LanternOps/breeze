@@ -224,6 +224,11 @@ describe('updateCustomFieldSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('should accept null options, as the web edit form sends for non-Dropdown types (#7476)', () => {
+    const result = updateCustomFieldSchema.safeParse({ name: 'Renamed', options: null, deviceTypes: null });
+    expect(result.success).toBe(true);
+  });
+
   it('should accept nullable deviceTypes', () => {
     const result = updateCustomFieldSchema.safeParse({ deviceTypes: null });
     expect(result.success).toBe(true);

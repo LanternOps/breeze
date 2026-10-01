@@ -219,23 +219,21 @@ func PromotePendingCredentials(authToken, watchdogAuthToken, helperAuthToken str
 	}
 
 	// The Breeze Helper runs as the logged-in user and cannot read the
-	// root-only secrets.yaml. On Windows helper_auth_token is deliberately
-	// exempted from stripping and lives in agent.yaml instead (see
-	// secretKeyAllowedInAgentYAML); SetAndPersist below writes it there.
-	// Promoting only into secrets.yaml would leave the Helper reading the
-	// SUPERSEDED token and 401ing as soon as its 5-minute grace lapsed — the
-	// same stranding bug, one component over.
-	if err := SetAndPersist(secretKeyHelperAuthToken, helperAuthToken); err != nil {
-		return fmt.Errorf("persisting rotated helper token to agent config: %w", err)
-	}
-	// On Unix the same Helper-visibility requirement is met by the dedicated,
-	// group-scoped helper_token.yaml instead (see helpertoken_unix.go); a
-	// no-op on Windows. Uses the same config-file resolution as the
-	// secrets.yaml write above (mutateSecretsAndPersist -> secretsFilePath ->
-	// viper.ConfigFileUsed()).
+	// root-only secrets.yaml, and must never find the token in the
+	// world-readable agent.yaml either. On Windows the caller pushes the
+	// rotated token to the console-session Assist over IPC
+	// (Heartbeat.sendHelperTokenUpdate). On Unix the Helper reads the
+	// dedicated, group-scoped helper_token.yaml (see helpertoken_unix.go),
+	// rewritten here — a no-op on Windows. Skipping this would leave the Helper
+	// on the SUPERSEDED token, 401ing once its 5-minute grace lapsed. Uses the
+	// same config-file resolution as the secrets.yaml write above
+	// (mutateSecretsAndPersist -> secretsFilePath -> viper.ConfigFileUsed()).
 	if err := writeHelperTokenFileFor(viper.ConfigFileUsed(), helperAuthToken); err != nil {
 		return fmt.Errorf("persisting rotated helper token file: %w", err)
 	}
+	// The promoted set supersedes any helper token an older agent kept in
+	// agent.yaml; the rotation recorded at scrub time is done.
+	clearHelperTokenRotationOwed()
 	return nil
 }
 

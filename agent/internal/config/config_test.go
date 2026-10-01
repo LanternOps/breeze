@@ -63,18 +63,14 @@ func TestSaveToKeepsFullAgentTokensOutOfAgentYAML(t *testing.T) {
 	if strings.HasPrefix(text, "auth_token:") || strings.HasPrefix(text, "watchdog_auth_token:") {
 		t.Fatalf("agent.yaml contains full-token key:\n%s", text)
 	}
-	if runtime.GOOS == "windows" {
-		// Windows: no narrower delivery exists yet (see helpertoken_windows.go),
-		// so the helper-scoped token still goes into agent.yaml.
-		if !strings.Contains(text, "helper_auth_token: brz_helper") {
-			t.Fatalf("agent.yaml missing helper-scoped token:\n%s", text)
-		}
-	} else {
-		// Unix: it must NOT be in agent.yaml (world-readable) — it belongs in
-		// the group-scoped helper_token.yaml instead.
-		if strings.Contains(text, "helper_auth_token") {
-			t.Fatalf("agent.yaml must not contain the helper token on this platform:\n%s", text)
-		}
+	// agent.yaml is readable by every local user on every platform, so the
+	// helper-scoped token must never be in it. Windows delivers it to the
+	// console-session Assist over IPC; Unix also writes the group-scoped
+	// helper_token.yaml.
+	if strings.Contains(text, "helper_auth_token") || strings.Contains(text, "brz_helper") {
+		t.Fatalf("agent.yaml must not contain the helper token:\n%s", text)
+	}
+	if runtime.GOOS != "windows" {
 		helperTokenYAML, err := os.ReadFile(helperTokenFilePathFor(cfgPath))
 		if err != nil {
 			t.Fatalf("read helper token file: %v", err)
@@ -126,16 +122,12 @@ helper_auth_token: brz_helper
 			t.Fatalf("scrubbed agent.yaml contains %q:\n%s", forbidden, text)
 		}
 	}
-	if runtime.GOOS == "windows" {
-		if !strings.Contains(text, "helper_auth_token: brz_helper") {
-			t.Fatalf("scrubbed agent.yaml lost helper token:\n%s", text)
-		}
-	} else if strings.Contains(text, "helper_auth_token") {
+	if strings.Contains(text, "helper_auth_token") {
 		// This raw migration call only has to get the token OUT of
 		// agent.yaml; it lands in secrets.yaml like any other migrated
-		// secret. Seeding the dedicated helper_token.yaml from there is a
-		// separate step — see TestSeedHelperTokenFileFromSecretsIfMissing.
-		t.Fatalf("scrubbed agent.yaml must not contain the helper token on this platform:\n%s", text)
+		// secret. On Unix, seeding the dedicated helper_token.yaml from there
+		// is a separate step — see TestSeedHelperTokenFileFromSecretsIfMissing.
+		t.Fatalf("scrubbed agent.yaml must not contain the helper token:\n%s", text)
 	}
 
 	loaded, err := Load(cfgPath)
@@ -767,11 +759,10 @@ func TestIsSecretYAMLKey(t *testing.T) {
 		// Caught by suffix rules (_password, _secret, _token).
 		"smtp_password": true,
 		"some_token":    true,
-		// Windows only: helper token stays in agent.yaml (no narrower delivery
-		// exists there yet), so isSecretYAMLKey is false there. On Unix it
-		// belongs in the group-scoped helper_token.yaml instead, so it IS
-		// treated as a secret key (stripped out of agent.yaml) there.
-		"helper_auth_token": runtime.GOOS != "windows",
+		// Stripped from agent.yaml on every platform: Windows delivers it over
+		// IPC, Unix also writes the group-scoped helper_token.yaml.
+		"helper_auth_token":         true,
+		"pending_helper_auth_token": true,
 		// Non-secret keys that happen to contain "key" or "token" substrings
 		// but don't match any suffix rule.
 		"server_url":       false,
@@ -791,7 +782,7 @@ func TestIsSecretYAMLKey(t *testing.T) {
 // agent.yaml (world-readable) after migration. This mirrors
 // TestMigrateInlineSecretsToSecretFileScrubsAgentYAML but exercises the
 // backup_s3_* keys that were absent from the original 5-key allowlist.
-// helper_auth_token must still be present in agent.yaml.
+// helper_auth_token is stripped along with them.
 func TestSaveToStripsBackupS3SecretsFromAgentYAML(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")
@@ -838,13 +829,8 @@ backup_s3_secret_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 		}
 	}
 
-	if runtime.GOOS == "windows" {
-		// helper_auth_token must remain in agent.yaml (Helper reads it there).
-		if !strings.Contains(text, "helper_auth_token: brz_helper") {
-			t.Fatalf("scrubbed agent.yaml lost helper token:\n%s", text)
-		}
-	} else if strings.Contains(text, "helper_auth_token") {
-		t.Fatalf("scrubbed agent.yaml must not contain the helper token on this platform:\n%s", text)
+	if strings.Contains(text, "helper_auth_token") {
+		t.Fatalf("scrubbed agent.yaml must not contain the helper token:\n%s", text)
 	}
 
 	// secrets.yaml must contain the S3 credentials.

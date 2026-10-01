@@ -1,3 +1,4 @@
+import { resolveMessagesApiThinking } from './aiModelThinking';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveDefaultModel } from './aiAgent';
@@ -109,9 +110,13 @@ async function analyzeWithClaude(input: {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   const client = new Anthropic();
 
+  const model = resolveDefaultModel();
   const resp = await client.messages.create({
-    model: resolveDefaultModel(),
+    model,
     max_tokens: 512,
+    // #7587: without an explicit effort, Sonnet 5.5 thinks at the API default
+    // and this 512-token JSON reply was truncated at max_tokens.
+    ...resolveMessagesApiThinking(model),
     system: [
       {
         type: 'text' as const,

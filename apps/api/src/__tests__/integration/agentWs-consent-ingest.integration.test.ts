@@ -24,6 +24,9 @@
  *      activates ONLY when the start bound consentUnavailableBehavior='proceed',
  *      and is audited session_consent_bypassed with the true reason — never as
  *      a user grant
+ *   7. WebSocket fallback: the stream start's result carries the screen size
+ *      instead of an answer; it activates the same exact connecting start
+ *      under the same consent predicate, and its denial finalizes 'denied'
  */
 import { describe, it, expect } from 'vitest';
 import { eq, and } from 'drizzle-orm';
@@ -34,6 +37,8 @@ import { getTestDb } from './setup';
 import { setupTestEnvironment } from './db-utils';
 import { createAgentWsHandlers } from '../../routes/agentWs';
 import { devices, remoteSessions, auditLogs } from '../../db/schema';
+import { withSystemDbAccessContext } from '../../db';
+import { commitDesktopTerminalIntent } from '../../services/remoteDesktopTerminalIntent';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 // Combined validation exercises live credential admission before consent sinks.
@@ -762,5 +767,142 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
       endedAt: null,
       errorMessage: null,
     });
+  });
+  // WebSocket fallback (desktop_stream_start): the result has no SDP answer,
+  // only the captured screen size. Same exact-command, same-consent-predicate
+  // activation as the WebRTC answer; before this the result was dropped as
+  // malformed and a consent-mode session was marked active before any prompt.
+  runDb('stream start + consentReason=user → status=active + audit session_consent_granted', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      screenWidth: 1920,
+      screenHeight: 1080,
+      consentReason: 'user',
+    });
+
+    const row = await readSessionStatus(sessionId);
+    expect(row.status).toBe('active');
+    // startedAt belongs to the start commit (commitDesktopStreamStartIntent),
+    // which this fixture skips; activation does not move it.
+    expect(row.startedAt).toBeNull();
+    expect(row.webrtcAnswer).toBeNull();
+    expect(await consentAuditFor(sessionId, 'session_consent_granted')).toMatchObject({
+      actorType: 'agent',
+      actorId: dev.id,
+      // Same structured consent record as the WebRTC answer path.
+      details: expect.objectContaining({ startCommandId: startCommandId(sessionId), consentProtocol: 1 }),
+    });
+  });
+
+  runDb('stream start in consent mode with no consent marker stays connecting (fails closed)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      screenWidth: 1920,
+      screenHeight: 1080,
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('connecting');
+    expect(await auditActionsFor(sessionId)).toEqual([]);
+  });
+
+  runDb('stream start with a version 2 grant not backed by its outcome stays connecting', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      screenWidth: 1920,
+      screenHeight: 1080,
+      consentReason: 'user',
+      consentProtocol: 2,
+      consentOutcome: 'presented_expired',
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('connecting');
+    expect(await auditActionsFor(sessionId)).toEqual([]);
+  });
+
+  runDb('stream start in notify mode activates with no consent audit', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({
+      deviceId: dev.id,
+      orgId: env.organization.id,
+      userId: env.user.id,
+      promptMode: 'notify',
+      consentUnavailableBehavior: null,
+    });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      screenWidth: 1280,
+      screenHeight: 720,
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('active');
+    expect(await auditActionsFor(sessionId)).toEqual([]);
+  });
+
+  runDb('stream start result for a different start of the same session activates nothing', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id, promptMode: 'off', consentUnavailableBehavior: null });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      screenWidth: 1280,
+      screenHeight: 720,
+    }, 'completed', '99999999-9999-4999-8999-999999999999');
+
+    expect((await readSessionStatus(sessionId)).status).toBe('connecting');
+  });
+
+  runDb('stream start consent denial → status=denied + audit session_consent_denied', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      event: 'consent_denied',
+      reason: 'user',
+    });
+
+    expect((await readSessionStatus(sessionId)).status).toBe('denied');
+    expect(await auditActionsFor(sessionId)).toContain('session_consent_denied');
+  });
+
+  // The relay closes right after a denial and runs its durable finalization,
+  // which writes 'failed' through the terminal-intent contract. That write
+  // only matches a live row, so the recorded denial survives it.
+  runDb('a consent denial survives the relay close that follows it', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({ deviceId: dev.id, orgId: env.organization.id, userId: env.user.id });
+
+    await sendDeskStartResult(dev.agentId, dev.id, env.organization.id, env.partner.id, sessionId, {
+      sessionId,
+      event: 'consent_denied',
+      reason: 'user',
+    });
+    const closed = await withSystemDbAccessContext(() => commitDesktopTerminalIntent({
+      sessionId,
+      write: { status: 'failed', endedAt: new Date(), errorMessage: 'setup_failed' },
+      phase: 'confirmed',
+    }));
+
+    expect(closed.ok).toBe(false);
+    const row = await readSessionStatus(sessionId);
+    expect(row.status).toBe('denied');
+    expect(row.errorMessage).toBe('The user on the remote device declined the connection.');
   });
 });

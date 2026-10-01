@@ -10,6 +10,7 @@ package rebuild
 import (
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
@@ -170,6 +171,12 @@ type Options struct {
 	// False keeps the soft path: a file-only snapshot rebuilds with a
 	// warning and StateApplied=false.
 	ExpectSystemState bool `json:"expectSystemState"`
+
+	// Integrity is the snapshot integrity expectation (the command
+	// payload's and/or recovery bootstrap's `integrity` block, see
+	// bmr.ResolveIntegrity). nil = none was sent: the engine keeps its
+	// earlier checks.
+	Integrity *integrity.Expectation `json:"-"`
 
 	System   System // nil → real system (system_linux.go)
 	Progress func(phase Phase, message string, current, total int64)

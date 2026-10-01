@@ -3,6 +3,7 @@
 // The independent model review pass for an AI-authored script proposal
 // (W02, #5612). See spec §4.4 for the full pipeline and this module's
 // exported functions for the roadmap §3.4 contract this wave produces.
+import { resolveMessagesApiThinking } from '../aiModelThinking';
 import type { RiskTier, ScriptReviewVerdict, ScriptScanResult, TouchClass } from '@breeze/shared';
 import { riskTierRank, scriptReviewVerdictSchema } from '@breeze/shared';
 import { APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
@@ -417,6 +418,9 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
       {
         model: wireModel,
         max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
+        // #7587: same per-model thinking/effort as chat (adaptive + medium on
+        // current models; nothing for other ids, as before).
+        ...resolveMessagesApiThinking(wireModel),
         system,
         messages: [{ role: 'user', content: user }],
       },

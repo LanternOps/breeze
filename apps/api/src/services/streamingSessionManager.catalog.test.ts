@@ -431,6 +431,11 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     }));
     // The wire model id from the revision's map, not the platform-logical id.
     expect(capturedQueryArgs[0]!.options.model).toBe('anthropic/claude-sonnet-4-6');
+    // INTERIM (#7587) — delete with the model registry. Thinking is keyed on
+    // the WIRE id: the logical claude-sonnet-4-6 would be adaptive, but the
+    // gateway sees 'anthropic/claude-sonnet-4-6', which keeps today's disabled.
+    expect(capturedQueryArgs[0]!.options.thinking).toEqual({ type: 'disabled' });
+    expect(capturedQueryArgs[0]!.options.effort).toBeUndefined();
     // …while the session keeps the logical id for provenance/pricing fallback.
     expect(session.model).toBe('claude-sonnet-4-6');
 
@@ -531,6 +536,10 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     );
 
     expect(capturedQueryArgs[0]!.options.model).toBe('claude-opus-4-8');
+    // INTERIM (#7587) — delete with the model registry. Chat never hard-codes
+    // `disabled`: a current model gets adaptive thinking + effort medium.
+    expect(capturedQueryArgs[0]!.options.thinking).toEqual({ type: 'adaptive' });
+    expect(capturedQueryArgs[0]!.options.effort).toBe('medium');
     expect(session.model).toBe('claude-opus-4-8');
     // No pricing snapshot => `recordUsage` falls back to the Anthropic list
     // rates, which is exactly right for traffic that went to Anthropic.

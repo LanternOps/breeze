@@ -1,7 +1,11 @@
 // Package bmr implements bare metal recovery orchestration for the Breeze agent.
 package bmr
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
+)
 
 const BootstrapResponseVersion = 1
 
@@ -38,6 +42,16 @@ type RecoveryConfig struct {
 	// ApplyManifestScope so a manifest with external references can never be
 	// honoured on an assumption.
 	FileIndex *FileIndexInfo `json:"-"`
+
+	// Integrity is the snapshot integrity expectation for this recovery:
+	// the command payload's `integrity` block (bmr_recover) resolved with
+	// the recovery bootstrap's (see ResolveIntegrity), never decoded from
+	// the RecoveryConfig JSON itself. nil = the server sent none, and the
+	// recovery keeps its earlier checks. In attested mode the manifest bytes
+	// must match the attestation before they are parsed, and every restored
+	// object is staged beside its target, checked exactly against its
+	// manifest entry and only then renamed into place.
+	Integrity *integrity.Expectation `json:"-"`
 }
 
 type AuthenticatedProviderConfig struct {
@@ -81,6 +95,11 @@ type AuthenticatedSnapshot struct {
 	// (Part 0 §1 negotiateRecoveryCapabilities), so a non-complete
 	// FileIndexInfo can never legitimately reach the agent.
 	FileIndex *FileIndexInfo `json:"fileIndex,omitempty"`
+	// Integrity is the snapshot's integrity expectation (the same `integrity`
+	// block restore commands carry), raw so BootstrapIntegrity can refuse a
+	// block it does not understand instead of dropping it on decode. Absent
+	// from servers that predate snapshot attestations.
+	Integrity json.RawMessage `json:"integrity,omitempty"`
 }
 
 // FileIndexInfo mirrors apps/api/src/services/recoveryBootstrap.ts's
@@ -118,6 +137,9 @@ type BootstrapResponse struct {
 	// server-side (only its hash is), so it cannot appear here again on a
 	// later /bmr/recover/authenticate call with the same token.
 	Recovery *RecoveryBinding `json:"recovery,omitempty"`
+	// Integrity is accepted at the top level of the bootstrap as well as on
+	// Snapshot; see BootstrapIntegrity.
+	Integrity json.RawMessage `json:"integrity,omitempty"`
 }
 
 // RecoveryBinding is the bare-metal recovery a recovery token is bound to
@@ -167,6 +189,13 @@ type RecoveryResult struct {
 	// field (`failedFiles`) and apps/api/src/routes/backup/bmr.ts persists
 	// it on the completion record.
 	FailedFiles int `json:"failedFiles"`
+	// Code is a stable, machine-readable reason the server and console can
+	// key on: "system_state_requires_rebuild" when a Windows recovery
+	// restored files only and left the snapshot's system state to a
+	// bare-metal rebuild, or an integrity failure code
+	// (integrity.FailureCode) when the snapshot manifest did not pass its
+	// integrity check. Empty otherwise.
+	Code string `json:"code,omitempty"`
 }
 
 // ValidationResult from post-restore checks.

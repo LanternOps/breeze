@@ -199,7 +199,7 @@ export const createCustomFieldSchema = z.object({
 
 export const updateCustomFieldSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  options: customFieldOptionsSchema.optional(),
+  options: customFieldOptionsSchema.nullable().optional(),
   required: z.boolean().optional(),
   defaultValue: z.unknown().optional(),
   deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()

@@ -320,6 +320,8 @@
     "generateNewToken": "Generate new token",
     "generateToken": "Generate token",
     "cliTokenNotGenerated": "No token yet. Choose the site, number of devices and expiry, then generate a token. Each token is a live enrollment key.",
+    "cliCommandNeedsToken": "Generate a token first. The install command appears here once a token exists — until then there is nothing to run.",
+    "copyCommand": "Copy command",
     "cliTokenSite": "Devices enrolled with this token join {{site}}.",
     "singleUseValidForOneDevice": "Single-use — valid for one device. Generate a new token for each additional machine.",
     "linux": "linux",

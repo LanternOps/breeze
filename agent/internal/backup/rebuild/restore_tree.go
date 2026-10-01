@@ -11,6 +11,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 )
 
 // mountTree mounts every planned partition with a mount point under the
@@ -68,7 +69,7 @@ func restoreTree(ctx context.Context, r *run) error {
 	if err := os.MkdirAll(workRoot, 0o700); err != nil {
 		return fmt.Errorf("create restore work root: %w", err)
 	}
-	res, err := backup.RestoreFromSnapshotContext(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging, WorkRoot: workRoot}, func(phase string, cur, total int64, msg string) {
+	res, err := restoreSnapshotFiles(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging, WorkRoot: workRoot, Integrity: r.opts.Integrity}, func(phase string, cur, total int64, msg string) {
 		r.progress(PhaseRestore, msg, cur, total)
 	})
 	if err != nil {
@@ -143,7 +144,7 @@ func restoreWorkRoot(stateDir string) string { return filepath.Join(stateDir, "w
 // Shared by the Linux restoreTree and the Windows winRestoreTree.
 func (r *run) recordRestoreFailures(res *backup.RestoreResult) error {
 	r.result.FilesRestored, r.result.BytesRestored = res.FilesRestored, res.BytesRestored
-	r.warnings = append(r.warnings, res.Warnings...)
+	r.appendRestoreWarnings(res.Warnings)
 	if res.FilesFailed == 0 {
 		return nil
 	}
@@ -175,4 +176,30 @@ func (r *run) recordRestoreFailures(res *backup.RestoreResult) error {
 		return errors.New(msg)
 	}
 	return nil
+}
+
+// restoreSnapshotFiles is backup.RestoreFromSnapshotContext; a var so tests
+// can observe the RestoreConfig the engine hands the file restore.
+var restoreSnapshotFiles = backup.RestoreFromSnapshotContext
+
+// appendRestoreWarnings appends a file restore's warnings, dropping the
+// unattested-snapshot warning when the run already carries it, so a result
+// states it once.
+func (r *run) appendRestoreWarnings(ws []string) {
+	have := false
+	for _, w := range r.warnings {
+		if w == integrity.UnattestedRestoreWarning {
+			have = true
+			break
+		}
+	}
+	for _, w := range ws {
+		if w == integrity.UnattestedRestoreWarning {
+			if have {
+				continue
+			}
+			have = true
+		}
+		r.warnings = append(r.warnings, w)
+	}
 }

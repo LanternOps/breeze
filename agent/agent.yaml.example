@@ -3,7 +3,6 @@
 # Values are populated automatically during enrollment.
 
 agent_id: ""
-helper_auth_token: ""
 enabled_collectors:
     - hardware
     - software

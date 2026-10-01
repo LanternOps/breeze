@@ -221,6 +221,17 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     return null;
   }
 
+  // A deactivated rule raises nothing (#7626). The evaluator already filters
+  // `is_active` when it loads rules, but server-side producers (patch alerts,
+  // policy / config-compliance bridges) resolve their built-in rule by name
+  // and call straight in — this is the one gate every producer passes, so the
+  // Active switch means the same thing on every path. Compared strictly so a
+  // row read without the column never reads as inactive.
+  if (rule.isActive === false) {
+    console.log(`[AlertService] Rule ${ruleId} is inactive; not raising alert for device=${deviceId}`);
+    return null;
+  }
+
   // Get template for cooldown setting
   const [template] = await db
     .select()
