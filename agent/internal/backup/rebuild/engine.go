@@ -206,6 +206,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	r := &run{opts: opts, sys: opts.System, winSys: opts.WinSystem, staging: opts.StagingRoot,
 		result: &Result{SnapshotID: opts.SnapshotID, Target: opts.Target, Identity: opts.Identity, Status: "failed"}}
+	// Outside attested mode the result says, once, that nothing was
+	// checked against a snapshot attestation (the file restore's own copy
+	// of the warning is dropped, see appendRestoreWarnings).
+	if w := opts.Integrity.UnattestedWarning(); w != "" {
+		r.warnings = append(r.warnings, w)
+	}
 	r.statePath = filepath.Join(opts.StateDir, fmt.Sprintf("rebuild-%s-%s.json", opts.SnapshotID, targetKey(opts.Target)))
 	// cleanupLeftovers reads the state file to find a VHDX a crashed run
 	// left attached, so it must run before ForceReprovision discards it.
@@ -326,10 +332,15 @@ func resolvePlatform(ctx context.Context, r *run) error {
 	if host == "" {
 		return ErrUnsupportedHost
 	}
+	// An integrity expectation issued for another snapshot is refused
+	// before anything is downloaded.
+	if err := r.opts.Integrity.CheckSnapshot(r.opts.SnapshotID); err != nil {
+		return &RefusalError{Reason: err.Error()}
+	}
 	lay := r.opts.Layout
 	if lay == nil {
 		var err error
-		if lay, err = fetchLayout(ctx, r.opts.Provider, r.opts.SnapshotID); err != nil {
+		if lay, err = fetchLayout(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.Integrity); err != nil {
 			return err
 		}
 	} else if lay.SchemaVersion != layout.SchemaVersion {

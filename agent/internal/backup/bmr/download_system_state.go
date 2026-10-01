@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
@@ -40,17 +41,23 @@ var ErrNoSystemStateArtifacts = errors.New("bmr: system-state manifest has no ar
 // restore" as a soft outcome. The caller owns stagingDir — it is neither
 // created nor removed here.
 func DownloadSystemState(ctx context.Context, provider providers.BackupProvider, snapshotID string, expect bool, stagingDir string) (*systemstate.SystemStateManifest, []string, error) {
-	stateManifestKey := path.Join(snapshotRootDir, snapshotID, systemStatePath, "manifest.json")
+	return DownloadSystemStateVerified(ctx, provider, snapshotID, expect, stagingDir, nil)
+}
 
-	tmpFile, tmpErr := os.CreateTemp("", "bmr-state-manifest-*.json")
-	if tmpErr != nil {
-		return nil, nil, fmt.Errorf("bmr: create temp: %w", tmpErr)
+// DownloadSystemStateVerified is DownloadSystemState under a snapshot
+// integrity expectation. In attested mode the state manifest must match the
+// attested system_state_manifest object before it is parsed (an attestation
+// without that object while the snapshot carries system state fails
+// closed), and every artifact must carry a checksum and match it exactly.
+// Without an attested expectation the checks are DownloadSystemState's
+// earlier ones; the unattested-snapshot warning is the caller's to add, once
+// per result.
+func DownloadSystemStateVerified(ctx context.Context, provider providers.BackupProvider, snapshotID string, expect bool, stagingDir string, e *integrity.Expectation) (*systemstate.SystemStateManifest, []string, error) {
+	data, fetchWarnings, dlErr, fatalErr := fetchSystemStateManifest(ctx, provider, snapshotID, expect, e)
+	if fatalErr != nil {
+		return nil, nil, fatalErr
 	}
-	tmpPath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
+	if dlErr != nil {
 		// ErrNoSystemState means "this snapshot never captured system
 		// state" — a legitimate, common outcome preflight treats as a soft
 		// warning. That can ONLY be concluded when the provider positively
@@ -69,16 +76,12 @@ func DownloadSystemState(ctx context.Context, provider providers.BackupProvider,
 		return nil, nil, fmt.Errorf("bmr: download system-state manifest: %w", dlErr)
 	}
 
-	data, readErr := os.ReadFile(tmpPath)
-	if readErr != nil {
-		return nil, nil, fmt.Errorf("bmr: read state manifest: %w", readErr)
-	}
 	var stateManifest systemstate.SystemStateManifest
 	if err := json.Unmarshal(data, &stateManifest); err != nil {
 		return nil, nil, fmt.Errorf("bmr: decode state manifest: %w", err)
 	}
 
-	var warnings []string
+	warnings := fetchWarnings
 	if blocking := intersectStrings(stateManifest.RequiredSteps, stateManifest.IncompleteSteps); len(blocking) > 0 {
 		return nil, nil, fmt.Errorf("bmr: required system-state steps incomplete: %s", strings.Join(blocking, ", "))
 	}
@@ -114,7 +117,7 @@ func DownloadSystemState(ctx context.Context, provider providers.BackupProvider,
 			_ = os.Remove(localPath)
 			return nil, nil, fmt.Errorf("artifact %s (%s): download: %w", artifact.Name, artifact.Path, dlErr)
 		}
-		if verifyErr := verifyArtifactIntegrity(localPath, artifact); verifyErr != nil {
+		if verifyErr := checkStagedArtifact(localPath, artifact, e); verifyErr != nil {
 			_ = os.Remove(localPath)
 			return nil, nil, fmt.Errorf("artifact %s (%s): %w", artifact.Name, artifact.Path, verifyErr)
 		}
@@ -124,4 +127,104 @@ func DownloadSystemState(ctx context.Context, provider providers.BackupProvider,
 		warnings = append(warnings, applyArtifactMetadata(localPath, artifact)...)
 	}
 	return &stateManifest, warnings, nil
+}
+
+// systemStateManifestKey is snapshots/<id>/system-state/manifest.json.
+func systemStateManifestKey(snapshotID string) string {
+	return path.Join(snapshotRootDir, snapshotID, systemStatePath, "manifest.json")
+}
+
+// fetchSystemStateManifest downloads a snapshot's system-state manifest.
+// It returns the bytes, or one of two errors:
+//
+//   - dlErr: the object could not be downloaded; the caller classifies it
+//     exactly as before (absent vs. expected vs. transport failure).
+//   - fatalErr: the recovery must fail whether or not system state was
+//     expected — an integrity failure, a local I/O failure, or, in attested
+//     mode, a state manifest the attestation does not cover while the
+//     snapshot carries one (expect, or the object exists in storage), an
+//     attested one that cannot be read, or an unattested one whose absence
+//     storage does not confirm (any failure other than ErrObjectNotFound).
+//
+// Without an attested expectation this is the plain download it always was.
+func fetchSystemStateManifest(ctx context.Context, provider providers.BackupProvider, snapshotID string, expect bool, e *integrity.Expectation) (data []byte, warnings []string, dlErr error, fatalErr error) {
+	key := systemStateManifestKey(snapshotID)
+	if e.Attested() {
+		if _, ok := e.Object(integrity.RoleSystemStateManifest); ok {
+			data, warnings, err := integrity.FetchControlObject(ctx, provider, e, integrity.RoleSystemStateManifest, key, "")
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("bmr: system-state manifest integrity check: %w", err)
+			}
+			return data, warnings, nil, nil
+		}
+		notAttested := fmt.Errorf("bmr: system-state manifest: %w: %s", integrity.ErrObjectNotAttested, integrity.RoleSystemStateManifest)
+		if expect {
+			return nil, nil, nil, notAttested
+		}
+		// Only a state manifest that is confirmed absent may pass without
+		// an attested digest; one that exists is refused unparsed, and one
+		// whose presence cannot be established fails the step.
+		_, probeErr := downloadToTemp(provider, key)
+		switch {
+		case probeErr == nil:
+			return nil, nil, nil, notAttested
+		case errors.Is(probeErr, providers.ErrObjectNotFound):
+			return nil, nil, probeErr, nil
+		default:
+			return nil, nil, nil, fmt.Errorf("bmr: probe system-state manifest: %w", probeErr)
+		}
+	}
+	data, err := downloadToTemp(provider, key)
+	if err != nil {
+		var readErr *tempReadError
+		if errors.As(err, &readErr) {
+			return nil, nil, nil, err
+		}
+		return nil, nil, err, nil
+	}
+	return data, nil, nil, nil
+}
+
+// tempReadError is a local failure (temp file create/read), not a download
+// failure: callers never read it as "the object is absent".
+type tempReadError struct{ err error }
+
+func (e *tempReadError) Error() string { return e.err.Error() }
+func (e *tempReadError) Unwrap() error { return e.err }
+
+// downloadToTemp downloads key into a temporary file, returns its bytes and
+// removes the file.
+func downloadToTemp(provider providers.BackupProvider, key string) ([]byte, error) {
+	tmpFile, tmpErr := os.CreateTemp("", "bmr-state-manifest-*.json")
+	if tmpErr != nil {
+		return nil, &tempReadError{fmt.Errorf("bmr: create temp: %w", tmpErr)}
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := provider.Download(key, tmpPath); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, &tempReadError{fmt.Errorf("bmr: read state manifest: %w", err)}
+	}
+	return data, nil
+}
+
+// checkStagedArtifact checks a downloaded system-state artifact. In attested
+// mode it must carry a checksum and match its size and SHA-256 exactly
+// (integrity.CheckStoredBytes); otherwise verifyArtifactIntegrity's earlier
+// rules apply (size always, checksum when recorded).
+func checkStagedArtifact(localPath string, artifact systemstate.Artifact, e *integrity.Expectation) error {
+	if !e.Attested() {
+		return verifyArtifactIntegrity(localPath, artifact)
+	}
+	if _, err := integrity.CheckStoredBytes(localPath, integrity.Stored{Size: artifact.SizeBytes, SHA256: artifact.Checksum}, e); err != nil {
+		if code := integrity.FailureCode(err); code != "" {
+			return fmt.Errorf("%w (%s)", err, code)
+		}
+		return err
+	}
+	return nil
 }

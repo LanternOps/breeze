@@ -12,9 +12,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -78,6 +80,22 @@ var maxConsecutiveDownloadFailures = 25
 // wave and is not touched here.
 var newRestorerFunc = newRestorer
 
+// recoverHostGOOS is runtime.GOOS; a var so tests exercise the Windows
+// files-only path and the live-apply path on any host.
+var recoverHostGOOS = runtime.GOOS
+
+// CodeSystemStateRequiresRebuild is RecoveryResult.Code for a Windows
+// recovery of a snapshot that carries system state: the files were
+// restored and the system state was left for a bare-metal rebuild, which
+// applies it offline (rebuild.Run → RestoreSystemStateOfflineWindows). A
+// Windows bmr_recover never imports registry hives, boot configuration,
+// certificates, firewall policy or drivers into the running system.
+const CodeSystemStateRequiresRebuild = "system_state_requires_rebuild"
+
+// systemStateRequiresRebuildWarning accompanies CodeSystemStateRequiresRebuild
+// in Warnings, so a reader that only renders warnings still says why.
+const systemStateRequiresRebuildWarning = CodeSystemStateRequiresRebuild + ": system state is applied by a bare-metal rebuild; this recovery restored files only"
+
 // RunRecovery orchestrates a full bare metal recovery.
 //
 // Steps:
@@ -117,15 +135,28 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		"deviceId", cfg.DeviceID,
 	)
 
+	// An expectation issued for another snapshot is refused before any
+	// download. Outside attested mode the result says, once, that nothing
+	// was checked against a snapshot attestation.
+	if err := cfg.Integrity.CheckSnapshot(cfg.SnapshotID); err != nil {
+		result.Error = fmt.Sprintf("snapshot integrity expectation refused: %s", err.Error())
+		return result, err
+	}
+	if w := cfg.Integrity.UnattestedWarning(); w != "" {
+		result.Warnings = append(result.Warnings, w)
+	}
+
 	// 1. Download snapshot manifest.
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	manifest, manifestSHA256, err := downloadManifest(cfg.SnapshotID, provider)
+	manifest, manifestSHA256, manifestWarnings, err := downloadManifest(ctx, cfg.SnapshotID, provider, cfg.Integrity)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to download manifest: %s", err.Error())
+		result.Code = integrity.FailureCode(err)
 		return result, err
 	}
+	result.Warnings = append(result.Warnings, manifestWarnings...)
 
 	// Refuse before any target write when this manifest references objects
 	// under an older snapshot's prefix that the provider is not authorized
@@ -161,7 +192,15 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	stateResult := applySystemState(ctx, cfg, provider)
+	var stateResult systemStateResult
+	if recoverHostGOOS == "windows" {
+		stateResult = deferWindowsSystemState(cfg, provider)
+		if stateResult.requiresRebuild {
+			result.Code = CodeSystemStateRequiresRebuild
+		}
+	} else {
+		stateResult = applySystemState(ctx, cfg, provider)
+	}
 	result.StateApplied = stateResult.applied
 	result.DriversInjected = stateResult.drivers
 	result.Warnings = append(result.Warnings, stateResult.warnings...)
@@ -206,7 +245,10 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		return result, ctx.Err()
 	}
 	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr, SystemStateOutcome{
-		Expected:      cfg.ExpectSystemState,
+		// A Windows files-only recovery never set out to apply the
+		// snapshot's system state (CodeSystemStateRequiresRebuild says so),
+		// so validation does not hold it to it.
+		Expected:      cfg.ExpectSystemState && !stateResult.requiresRebuild,
 		ManifestFound: stateResult.manifestFound,
 		Applied:       stateResult.applied,
 	})
@@ -310,6 +352,13 @@ type manifestFile struct {
 	OriginalPath string `json:"originalPath,omitempty"`
 	BackupPath   string `json:"backupPath"`
 	Size         int64  `json:"size"`
+	// Checksum and Volatile mirror backup.SnapshotFile's identically-tagged
+	// fields: the SHA-256 of the bytes stored at BackupPath, and whether the
+	// source kept changing while it was uploaded. An attested recovery
+	// requires Checksum and checks it exactly — Volatile never waives it,
+	// since the digest is of the stored bytes (integrity.CheckStoredBytes).
+	Checksum string `json:"checksum,omitempty"`
+	Volatile bool   `json:"volatile,omitempty"`
 	// Mode and ModTime mirror backup.SnapshotFile's identically-tagged
 	// fields (agent/internal/backup/snapshot.go) — bmr's manifestFile is a
 	// deliberately independent JSON-shaped mirror (see snapshotManifest's
@@ -373,8 +422,31 @@ func restoreSourcePath(file manifestFile) string {
 // (hex-encoded) — the hash is needed by the scope check (see scope.go,
 // ApplyManifestScope) to verify the manifest we just read matches the one
 // the server's file index was hydrated from.
-func downloadManifest(snapshotID string, provider providers.BackupProvider) (*snapshotManifest, string, error) {
+//
+// In attested mode the bytes must first match the attested manifest object
+// (size and SHA-256) — nothing is parsed before that — and the scope check
+// still compares the same digest with the file index afterwards. Without an
+// attested expectation the download is exactly the one it has always been.
+func downloadManifest(ctx context.Context, snapshotID string, provider providers.BackupProvider, e *integrity.Expectation) (*snapshotManifest, string, []string, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
+	if e.Attested() {
+		data, warnings, err := integrity.FetchControlObject(ctx, provider, e, integrity.RoleManifest, manifestKey, "")
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("bmr: manifest integrity check: %w", err)
+		}
+		var manifest snapshotManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return nil, "", nil, fmt.Errorf("bmr: decode manifest: %w", err)
+		}
+		return &manifest, integrity.DigestBytes(data), warnings, nil
+	}
+	m, sum, err := downloadManifestUnchecked(manifestKey, provider)
+	return m, sum, nil, err
+}
+
+// downloadManifestUnchecked is the manifest download used when the server
+// sent no attested expectation.
+func downloadManifestUnchecked(manifestKey string, provider providers.BackupProvider) (*snapshotManifest, string, error) {
 
 	tmpFile, err := os.CreateTemp("", "bmr-manifest-*.json")
 	if err != nil {
@@ -462,6 +534,10 @@ type systemStateResult struct {
 	// persists and the console shows; before this, the reason lived only
 	// in warnings and the console could say nothing but "failed" (#5479).
 	firstArtifactFailure string
+	// requiresRebuild is set by deferWindowsSystemState: the snapshot
+	// carries system state that this (Windows) recovery deliberately left
+	// for a bare-metal rebuild.
+	requiresRebuild bool
 }
 
 // resolveStagingArtifactPath validates artifact.Path — an untrusted,
@@ -565,22 +641,53 @@ func deepestExistingAncestor(p string) string {
 	}
 }
 
-func applySystemState(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
-	// Download system state manifest from the snapshot.
-	stateManifestKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, "manifest.json")
-
-	tmpFile, tmpErr := os.CreateTemp("", "bmr-state-manifest-*.json")
-	if tmpErr != nil {
-		return systemStateResult{err: fmt.Errorf("bmr: create temp: %w", tmpErr)}
+// deferWindowsSystemState is the system-state phase of a recovery on a
+// Windows host: nothing is downloaded into staging and nothing is applied
+// to the running system. It only works out whether the snapshot carries
+// system state — the bootstrap says so, the attestation covers a state
+// manifest, or one exists in storage — and if it does, marks the result so
+// the operator is sent to a bare-metal rebuild, which applies it offline.
+func deferWindowsSystemState(cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
+	_, attested := cfg.Integrity.Object(integrity.RoleSystemStateManifest)
+	carriesState := cfg.ExpectSystemState || attested
+	if !carriesState {
+		_, probeErr := downloadToTemp(provider, systemStateManifestKey(cfg.SnapshotID))
+		switch {
+		case probeErr == nil:
+			carriesState = true
+		case errors.Is(probeErr, ErrRecoverySessionLost):
+			return systemStateResult{err: fmt.Errorf("bmr: probe system state manifest: %w", probeErr)}
+		case !errors.Is(probeErr, providers.ErrObjectNotFound):
+			// Only a confirmed absence means "no
+			// system state"; any other failure leaves it unknown.
+			return systemStateResult{err: fmt.Errorf("bmr: probe system state manifest: %w", probeErr)}
+		}
 	}
-	tmpPath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer os.Remove(tmpPath)
+	if !carriesState {
+		return systemStateResult{warnings: []string{"no system state found in snapshot, skipping state restore"}}
+	}
+	slog.Info("bmr: system state left for a bare-metal rebuild on this Windows host", "snapshotId", cfg.SnapshotID)
+	return systemStateResult{requiresRebuild: true, warnings: []string{systemStateRequiresRebuildWarning}}
+}
 
-	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
+func applySystemState(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
+	// Download system state manifest from the snapshot. In attested mode
+	// its bytes are checked against the attestation before any are parsed
+	// (fetchSystemStateManifest); otherwise it is the plain download.
+	data, manifestWarnings, dlErr, fatalErr := fetchSystemStateManifest(ctx, provider, cfg.SnapshotID, cfg.ExpectSystemState, cfg.Integrity)
+	if fatalErr != nil {
+		return systemStateResult{err: fatalErr}
+	}
+	if dlErr != nil {
 		if errors.Is(dlErr, ErrRecoverySessionLost) {
 			// Not "no state in this snapshot" — the helper can no longer
 			// download anything (#5635).
+			return systemStateResult{err: fmt.Errorf("bmr: download system state manifest: %w", dlErr)}
+		}
+		if !errors.Is(dlErr, providers.ErrObjectNotFound) {
+			// Only a confirmed absence
+			// (ErrObjectNotFound) means "no system state"; any other
+			// failure leaves it unknown and fails the step.
 			return systemStateResult{err: fmt.Errorf("bmr: download system state manifest: %w", dlErr)}
 		}
 		if cfg.ExpectSystemState {
@@ -596,17 +703,12 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		return systemStateResult{warnings: []string{"no system state found in snapshot, skipping state restore"}}
 	}
 
-	data, readErr := os.ReadFile(tmpPath)
-	if readErr != nil {
-		return systemStateResult{err: fmt.Errorf("bmr: read state manifest: %w", readErr)}
-	}
-
 	var stateManifest systemstate.SystemStateManifest
 	if err := json.Unmarshal(data, &stateManifest); err != nil {
 		return systemStateResult{err: fmt.Errorf("bmr: decode state manifest: %w", err)}
 	}
 
-	var warnings []string
+	warnings := manifestWarnings
 
 	// Required-step enforcement: independently re-derive the producer's own
 	// gate (systemstate.missingRequired) instead of trusting that the
@@ -719,7 +821,7 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			}
 			continue
 		}
-		if verifyErr := verifyArtifactIntegrity(localPath, artifact); verifyErr != nil {
+		if verifyErr := checkStagedArtifact(localPath, artifact, cfg.Integrity); verifyErr != nil {
 			recordFailure(fmt.Sprintf("artifact %s failed verification, discarding: %s", artifact.Name, verifyErr.Error()))
 			_ = os.Remove(localPath)
 			continue
@@ -738,9 +840,25 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	// is gone.
 	serviceUnits, serviceUnitsErr := enabledSystemdUnitsFromStaging(stagingDir)
 
+	// An attested snapshot applies its system state whole or not at all: once
+	// one artifact failed its integrity check, none of the others reach the
+	// live system.
+	if cfg.Integrity.Attested() && verificationFailed {
+		return systemStateResult{
+			manifestFound:        true,
+			warnings:             warnings,
+			err:                  fmt.Errorf("bmr: system state not applied: %s", firstFailure),
+			serviceUnits:         serviceUnits,
+			serviceUnitsErr:      serviceUnitsErr,
+			firstArtifactFailure: firstFailure,
+		}
+	}
+
 	// Apply system state via platform-specific restorer.
 	restorer := newRestorerFunc()
-	if restoreErr := restorer.RestoreSystemState(stagingDir); restoreErr != nil {
+	restoreErr := restorer.RestoreSystemState(stagingDir)
+	warnings = append(warnings, restorerWarnings(restorer)...)
+	if restoreErr != nil {
 		return systemStateResult{
 			manifestFound:        true,
 			warnings:             warnings,
@@ -770,6 +888,16 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		serviceUnitsErr:      serviceUnitsErr,
 		firstArtifactFailure: firstFailure,
 	}
+}
+
+// restorerWarnings returns the non-fatal notes a platform Restorer recorded
+// while applying system state (the Linux restorer's skipped package list
+// entries), for restorers that keep any.
+func restorerWarnings(r Restorer) []string {
+	if w, ok := r.(interface{ Warnings() []string }); ok {
+		return w.Warnings()
+	}
+	return nil
 }
 
 // verifyArtifactIntegrity checks a downloaded system-state artifact against
@@ -956,6 +1084,11 @@ func restoreFiles(
 		}
 	}
 
+	var stager *attestedStager
+	if cfg.Integrity.Attested() {
+		stager = newAttestedStager(provider, cfg.Integrity)
+	}
+
 	breakerTripped := false
 	var sessionLostErr error
 	for _, file := range manifest.Files {
@@ -976,6 +1109,20 @@ func restoreFiles(
 		if override, ok := cfg.TargetPaths[origPath]; ok {
 			targetPath = override
 			overridden = true
+		}
+
+		// On Windows a component carrying a stream separator or ending in a
+		// dot or space is not the file it names (an alternate data stream,
+		// or a name Win32 silently shortens): refuse it before any write.
+		if recoverHostGOOS == "windows" {
+			if err := windowsRestorePathError(targetPath); err != nil {
+				addFailure("restore refused for %s: %s", origPath, err.Error())
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
 		}
 
 		// A RESUMED restore must never write THROUGH an ancestor a
@@ -1029,6 +1176,46 @@ func restoreFiles(
 			continue
 		}
 
+		if stager != nil {
+			// Attested: stage beside the target in a private file this
+			// helper creates, check the staged bytes exactly against the
+			// (attested) manifest entry, give it the target's ownership and
+			// permissions, and only then rename onto targetPath — a file
+			// that fails is never installed (see attestedStager).
+			stageWarnings, stageFidelity, stageErr := stager.restore(ctx, file, targetPath)
+			for _, w := range stageWarnings {
+				if len(warnings) < maxRecoveryWarnings {
+					warnings = append(warnings, w)
+				}
+			}
+			if stageErr != nil {
+				if code := integrity.FailureCode(stageErr); code != "" {
+					addFailure("restore failed for %s: %s (%s)", origPath, stageErr.Error(), code)
+				} else {
+					addFailure("restore failed for %s: %s", origPath, stageErr.Error())
+				}
+				if errors.Is(stageErr, ErrRecoverySessionLost) {
+					sessionLostErr = stageErr
+					break
+				}
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+			consecutiveFailures = 0
+			for _, msg := range append(stageFidelity, applyPublishedAttributes(targetPath, file)...) {
+				addFidelityFailure("%s for %s", msg, origPath)
+			}
+			if ctx != nil && ctx.Err() != nil {
+				return filesRestored, bytesRestored, warnings, failedFiles, nil
+			}
+			filesRestored++
+			bytesRestored += file.Size
+			continue
+		}
+
 		dlErr := provider.Download(file.BackupPath, targetPath)
 		if dlErr != nil && !errors.Is(dlErr, ErrRecoverySessionLost) {
 			// D19b: a destination that already exists with the owner-write
@@ -1067,35 +1254,7 @@ func restoreFiles(
 			return filesRestored, bytesRestored, warnings, failedFiles, nil
 		}
 
-		// Reapply the manifest's captured mode + mtime, best-effort — exactly
-		// like restore.go's post-restore fidelity step (~:241). A
-		// chmod/chtimes failure must not fail an otherwise-good restore, but
-		// IS surfaced in warnings so the caller knows fidelity was partial.
-		// Mode==0 / a zero ModTime means "unknown" (pre-fidelity manifest) →
-		// leave the OS default (O20).
-		if file.Mode != 0 {
-			if chmodErr := chmodFile(targetPath, os.FileMode(file.Mode).Perm()); chmodErr != nil {
-				addFidelityFailure("could not reapply mode %o to %s: %s", os.FileMode(file.Mode).Perm(), origPath, chmodErr.Error())
-				slog.Warn("bmr: failed to reapply file mode on restore",
-					"target", targetPath, "mode", file.Mode, "error", chmodErr.Error())
-			}
-		}
-		if !file.ModTime.IsZero() {
-			if chtimesErr := chtimesFile(targetPath, file.ModTime, file.ModTime); chtimesErr != nil {
-				addFidelityFailure("could not reapply mtime to %s: %s", origPath, chtimesErr.Error())
-				slog.Warn("bmr: failed to reapply mtime on restore",
-					"target", targetPath, "error", chtimesErr.Error())
-			}
-		}
-		// Windows attributes last (#5407): FILE_ATTRIBUTE_READONLY would make
-		// the chmod/chtimes above fail, so they have to have run already.
-		// WinAttrs==0 (non-Windows backup, or a pre-#5407 manifest) is a
-		// no-op, keeping every existing BMR restore byte-identical.
-		if winErr := applyWinAttrsFile(targetPath, file.WinAttrs); winErr != nil {
-			addFidelityFailure("could not reapply windows attributes to %s: %s", origPath, winErr.Error())
-			slog.Warn("bmr: failed to reapply windows file attributes on restore",
-				"target", targetPath, "winAttrs", file.WinAttrs, "error", winErr.Error())
-		}
+		applyRestoredFileMetadata(targetPath, origPath, file, addFidelityFailure)
 
 		filesRestored++
 		bytesRestored += file.Size
@@ -1146,6 +1305,38 @@ func restoreFiles(
 			fmt.Errorf("bmr: %d of %d files failed to restore", len(manifest.Files)-filesRestored, len(manifest.Files))
 	}
 	return filesRestored, bytesRestored, warnings, failedFiles, nil
+}
+
+// applyRestoredFileMetadata reapplies the manifest's captured mode + mtime
+// and Windows attributes to a restored file, best-effort — exactly like
+// restore.go's post-restore fidelity step. A chmod/chtimes failure must not
+// fail an otherwise-good restore, but IS surfaced (addFidelityFailure) so
+// the caller knows fidelity was partial. Mode==0 / a zero ModTime means
+// "unknown" (pre-fidelity manifest) → leave the OS default (O20).
+func applyRestoredFileMetadata(targetPath, origPath string, file manifestFile, addFidelityFailure func(format string, args ...any)) {
+	if file.Mode != 0 {
+		if chmodErr := chmodFile(targetPath, os.FileMode(file.Mode).Perm()); chmodErr != nil {
+			addFidelityFailure("could not reapply mode %o to %s: %s", os.FileMode(file.Mode).Perm(), origPath, chmodErr.Error())
+			slog.Warn("bmr: failed to reapply file mode on restore",
+				"target", targetPath, "mode", file.Mode, "error", chmodErr.Error())
+		}
+	}
+	if !file.ModTime.IsZero() {
+		if chtimesErr := chtimesFile(targetPath, file.ModTime, file.ModTime); chtimesErr != nil {
+			addFidelityFailure("could not reapply mtime to %s: %s", origPath, chtimesErr.Error())
+			slog.Warn("bmr: failed to reapply mtime on restore",
+				"target", targetPath, "error", chtimesErr.Error())
+		}
+	}
+	// Windows attributes last (#5407): FILE_ATTRIBUTE_READONLY would make
+	// the chmod/chtimes above fail, so they have to have run already.
+	// WinAttrs==0 (non-Windows backup, or a pre-#5407 manifest) is a
+	// no-op, keeping every existing BMR restore byte-identical.
+	if winErr := applyWinAttrsFile(targetPath, file.WinAttrs); winErr != nil {
+		addFidelityFailure("could not reapply windows attributes to %s: %s", origPath, winErr.Error())
+		slog.Warn("bmr: failed to reapply windows file attributes on restore",
+			"target", targetPath, "winAttrs", file.WinAttrs, "error", winErr.Error())
+	}
 }
 
 // ensureNoSymlinkAncestor walks every path component strictly below base up
@@ -1324,4 +1515,21 @@ func clearReadOnly(dst string) (restored bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// windowsRestorePathError checks every component of a Windows restore path
+// after its volume (`C:`, `\\?\C:`, `\\.\C:`) with
+// securefs.ValidateWindowsComponents; the error carries invalid_windows_name.
+func windowsRestorePathError(p string) error {
+	rest := p
+	for _, prefix := range []string{`\\?\`, `\\.\`} {
+		if strings.HasPrefix(rest, prefix) {
+			rest = rest[len(prefix):]
+			break
+		}
+	}
+	if len(rest) >= 2 && rest[1] == ':' && ((rest[0] >= 'A' && rest[0] <= 'Z') || (rest[0] >= 'a' && rest[0] <= 'z')) {
+		rest = rest[2:]
+	}
+	return securefs.ValidateWindowsComponents(rest)
 }

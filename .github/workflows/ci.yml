@@ -2060,20 +2060,25 @@ jobs:
       # enables SeBackup/SeRestore only inside its scope and that a partial
       # AcquirePrivileges failure releases what it already enabled — the
       # scope every offline hive load in the rebuild engine runs under.
+      # The restricted-descriptor tests read principals from real
+      # descriptors, resolve the local account domain, read back the
+      # restrictive ACL a restore applies to an entry whose descriptor names
+      # unknown principals or cannot be read, and refuse stream and alias
+      # names in a restore.
       - name: Run Windows security-descriptor capture/apply tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_SecurityDescriptorApplyFailureIsWarningNotFailure|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
+          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_InvalidSecurityDescriptorIsQuarantined|SecurityDescriptorPrincipalsFromRealDescriptor|SecurityDescriptorLocalKnownDomains|SecurityDescriptorQuarantineOnRealRestore|SecurityDescriptorSACLOnlyUnknownDropsTheSACL|RestoreFromSnapshot_RefusesInvalidWindowsNames|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the security-descriptor / hive-privilege tests SKIPPED - the HiveNightmare-class fix or the hive privilege scope has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 9) { throw "expected exactly 9 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Whole-machine Windows capture path. internal/backup and
       # internal/backup/systemstate are both excluded from the bare package

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/hyperv"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
@@ -122,6 +123,13 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 	if err := p.validate(); err != nil {
 		return fail("invalid bare_metal_rebuild payload: " + err.Error())
 	}
+	// The payload's `integrity` block, resolved with the bootstrap's in
+	// buildTokenModeOptionsWithIntegrity. A block this helper cannot read
+	// fails the command before the server is contacted.
+	cmdIntegrity, err := integrity.FromPayload(payload)
+	if err != nil {
+		return fail("invalid bare_metal_rebuild payload: " + err.Error())
+	}
 
 	// No fixed deadline (#6664): the watchdog stops a rebuild that stops
 	// making progress, with an absolute ceiling as a backstop. See
@@ -130,7 +138,7 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 	defer stop()
 
 	target := rebuild.Target{Kind: rebuild.TargetKind(p.Target.Kind), Path: p.Target.Path, ImageSizeBytes: p.Target.ImageSizeBytes}
-	opts, report, err := buildTokenModeOptions(ctx, p.Server, p.Token, target, "")
+	opts, report, err := buildTokenModeOptionsWithIntegrity(ctx, p.Server, p.Token, target, "", cmdIntegrity)
 	if err != nil {
 		return fail(err.Error())
 	}

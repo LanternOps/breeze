@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/storagesession"
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -250,32 +251,38 @@ func isBrokeredProvider(provider providers.BackupProvider) bool {
 // session. The artifact must come from a canonical snapshot: the snapshot's
 // manifest names exactly one backup file stored under that snapshot's own
 // files/ prefix. A remote backupFile path is never accepted; an explicit,
-// existing local file is still honoured.
-func resolveBrokeredMSSQLArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string) (string, func(), error) {
+// existing local file is still honoured (not with an integrity
+// expectation: then the file always comes from the snapshot and is checked
+// against its manifest entry before its path is returned).
+func resolveBrokeredMSSQLArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string, expect *integrity.Expectation) (string, func(), []string, error) {
 	if snapshotID == "" {
 		trimmed := strings.TrimSpace(backupFile)
-		if trimmed != "" && filepath.IsAbs(trimmed) {
+		if trimmed != "" && filepath.IsAbs(trimmed) && !expect.Present() {
 			if info, err := os.Stat(trimmed); err == nil && info.Mode().IsRegular() {
-				return trimmed, nil, nil
+				return trimmed, nil, nil, nil
 			}
 		}
-		return "", nil, fmt.Errorf("storage session: MSSQL restore through a storage session requires snapshotId; a remote backupFile path is not accepted")
+		return "", nil, nil, fmt.Errorf("storage session: MSSQL restore through a storage session requires snapshotId; a remote backupFile path is not accepted")
 	}
 	if snapshotID == "." || snapshotID == ".." || strings.ContainsAny(snapshotID, `/\`) {
-		return "", nil, fmt.Errorf("storage session: snapshotId must be a single path component")
+		return "", nil, nil, fmt.Errorf("storage session: snapshotId must be a single path component")
 	}
-	manifest, err := downloadMssqlSnapshotManifest(provider, snapshotID)
+	manifest, warnings, err := downloadMssqlSnapshotManifest(provider, snapshotID, expect)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if len(manifest.Files) != 1 {
-		return "", nil, fmt.Errorf("storage session: MSSQL snapshot %s must list exactly one backup file, found %d", snapshotID, len(manifest.Files))
+		return "", nil, nil, fmt.Errorf("storage session: MSSQL snapshot %s must list exactly one backup file, found %d", snapshotID, len(manifest.Files))
 	}
 	key := manifest.Files[0].BackupPath
 	prefix := path.Join("snapshots", snapshotID, "files") + "/"
 	name, ok := strings.CutPrefix(key, prefix)
 	if !ok || name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
-		return "", nil, fmt.Errorf("storage session: MSSQL snapshot %s names a backup file outside its own snapshot", snapshotID)
+		return "", nil, nil, fmt.Errorf("storage session: MSSQL snapshot %s names a backup file outside its own snapshot", snapshotID)
 	}
-	return downloadMSSQLArtifact(instance, provider, key, name)
+	artifact, cleanup, fileWarnings, err := downloadMSSQLArtifact(instance, provider, key, name, mssqlStored(manifest.Files[0]), expect)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return artifact, cleanup, append(warnings, fileWarnings...), nil
 }

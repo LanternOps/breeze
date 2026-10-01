@@ -9,22 +9,28 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 
 	"github.com/breeze-rmm/agent/internal/backup/storagesession"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
 
-// The server now adds an `integrity` block to every restore-shaped command it
+// The server adds an `integrity` block to every restore-shaped command it
 // delivers (the snapshot's attestation digests, or why there are none). This
-// helper does not know the block yet: it must run every command exactly as
-// before. encoding/json drops keys no struct field names, and no payload
-// decoder in this program uses DisallowUnknownFields.
+// helper reads it: an unattested block runs the command as before and labels
+// the result, an attested block whose digests the stored manifest does not
+// match stops the command before anything is restored, a block for another
+// snapshot is refused, and a block in a newer format refuses the command and
+// asks for an agent update. Payload decoders that do not read the block are
+// unchanged by it.
 var compatIntegrityBlocks = map[string]any{
 	"attested": map[string]any{
 		"v": 1, "mode": "attested", "trust": "server_verified", "snapshotId": "snap-integrity-compat",
@@ -37,7 +43,7 @@ var compatIntegrityBlocks = map[string]any{
 	"future":     map[string]any{"v": 9, "mode": "something_new", "extra": []any{1, 2}},
 }
 
-func TestIntegrityBlock_CoreCommandsRunAsBefore(t *testing.T) {
+func TestIntegrityBlock_CoreCommandsHonorTheBlock(t *testing.T) {
 	origWorkRoot := backupRestoreWorkRoot
 	backupRestoreWorkRoot = func() string { return t.TempDir() }
 	t.Cleanup(func() { backupRestoreWorkRoot = origWorkRoot })
@@ -55,13 +61,45 @@ func TestIntegrityBlock_CoreCommandsRunAsBefore(t *testing.T) {
 				})
 				result := executeCommand(backupipc.BackupCommandRequest{CommandID: "c-" + cmd, CommandType: cmd, Payload: payload},
 					nil, &vaultManagerRef{}, nil, newActiveCommandCanceller())
-				if !result.Success {
-					t.Fatalf("%s with an integrity block failed: %q", cmd, result.Stderr)
+				var body struct {
+					Status   string   `json:"status"`
+					Error    string   `json:"error"`
+					Warnings []string `json:"warnings"`
 				}
-				if cmd == "backup_restore" {
-					checkRestored(files)(t, result, target)
-				} else {
-					checkStatus("passed")(t, result, target)
+				_ = json.Unmarshal([]byte(result.Stdout), &body)
+				switch blockName {
+				case "unattested":
+					// Runs as before, labelled as not checked against an
+					// attestation.
+					if !result.Success {
+						t.Fatalf("%s with an unattested block failed: %q", cmd, result.Stderr)
+					}
+					if cmd == "backup_restore" {
+						checkRestored(files)(t, result, target)
+					} else {
+						checkStatus("passed")(t, result, target)
+					}
+					if !strings.Contains(strings.Join(body.Warnings, "\n"), "not checked against a snapshot attestation") {
+						t.Fatalf("warnings %v do not label the unattested snapshot", body.Warnings)
+					}
+				case "attested":
+					// The stored manifest does not match the attested digest:
+					// a restore fails before writing, a verification reports
+					// a failed check in a completed command.
+					if cmd == "backup_restore" {
+						if result.Success {
+							t.Fatalf("restore ran although the manifest differs from its attestation: %+v", result)
+						}
+						if entries, _ := os.ReadDir(target); len(entries) != 0 {
+							t.Fatalf("restore wrote %d entries", len(entries))
+						}
+					} else if body.Status != "failed" || !strings.Contains(body.Error, "attestation") {
+						t.Fatalf("%s: status %q error %q, want a failed attestation check", cmd, body.Status, body.Error)
+					}
+				case "future":
+					if result.Success || !strings.Contains(result.Stderr+result.Stdout, "update the Breeze agent") {
+						t.Fatalf("%s with a newer integrity format: %+v, want a refusal asking for an agent update", cmd, result)
+					}
 				}
 			})
 		}
@@ -155,14 +193,22 @@ func withIntegrityInBootstrap(t *testing.T, upstream *httptest.Server, block any
 	return server
 }
 
-func TestIntegrityBlock_BareMetalRebuildRunsAsBefore(t *testing.T) {
+// rebuildBlocks are integrity blocks for the token-mode rebuild fixture's
+// snapshot ("snap-1").
+var rebuildBlocks = map[string]any{
+	"unattested":       map[string]any{"v": 1, "mode": "unattested", "snapshotId": "snap-1", "reason": "unattested_legacy"},
+	"another snapshot": map[string]any{"v": 1, "mode": "unattested", "snapshotId": "snap-other", "reason": "unattested_legacy"},
+	"future":           map[string]any{"v": 9, "mode": "something_new", "extra": []any{1, 2}},
+}
+
+func TestIntegrityBlock_BareMetalRebuildHonorsTheBlock(t *testing.T) {
 	type observed struct {
 		target     rebuild.Target
 		identity   string
 		snapshotID string
 		dryRuns    []bool
 	}
-	run := func(t *testing.T, block any) observed {
+	run := func(t *testing.T, block any) (observed, []rebuild.Options, backupipc.BackupCommandResult) {
 		upstream, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
 		server := upstream
 		payload := testBareMetalRebuildPayload(t, upstream.URL)
@@ -177,29 +223,47 @@ func TestIntegrityBlock_BareMetalRebuildRunsAsBefore(t *testing.T) {
 		}
 		fake := &fakeRebuild{}
 		res := execBareMetalRebuild(context.Background(), payload, fake.fn)
-		if !res.Success {
-			t.Fatalf("bare_metal_rebuild failed: %q", res.Stderr)
+		var o observed
+		if len(fake.calls) == 2 {
+			o = observed{target: fake.calls[1].Target, identity: string(fake.calls[1].Identity), snapshotID: fake.calls[1].SnapshotID}
+			for _, c := range fake.calls {
+				o.dryRuns = append(o.dryRuns, c.DryRun)
+			}
 		}
-		if len(fake.calls) != 2 {
-			t.Fatalf("rebuild calls = %d, want a dry run then the run", len(fake.calls))
-		}
-		o := observed{target: fake.calls[1].Target, identity: string(fake.calls[1].Identity), snapshotID: fake.calls[1].SnapshotID}
-		for _, c := range fake.calls {
-			o.dryRuns = append(o.dryRuns, c.DryRun)
-		}
-		return o
+		return o, fake.calls, res
 	}
-	want := run(t, nil)
-	for name, block := range compatIntegrityBlocks {
+	want, _, res := run(t, nil)
+	if !res.Success {
+		t.Fatalf("bare_metal_rebuild without a block failed: %q", res.Stderr)
+	}
+	for name, block := range rebuildBlocks {
 		t.Run(name, func(t *testing.T) {
-			if got := run(t, block); !reflect.DeepEqual(got, want) {
-				t.Fatalf("rebuild options differ with an integrity block:\n got %+v\nwant %+v", got, want)
+			got, calls, res := run(t, block)
+			switch name {
+			case "unattested":
+				// Runs as before; the engine receives the expectation.
+				if !res.Success || !reflect.DeepEqual(got, want) {
+					t.Fatalf("rebuild with an unattested block: %+v, options %+v, want %+v", res, got, want)
+				}
+				for _, c := range calls {
+					if c.Integrity == nil || c.Integrity.Mode != integrity.ModeUnattested {
+						t.Fatalf("engine options carry integrity %+v, want the unattested expectation", c.Integrity)
+					}
+				}
+			case "another snapshot":
+				if res.Success || len(calls) != 0 {
+					t.Fatalf("a block for another snapshot must refuse the rebuild before the engine runs: %+v (%d engine calls)", res, len(calls))
+				}
+			case "future":
+				if res.Success || len(calls) != 0 || !strings.Contains(res.Stderr, "update the Breeze agent") {
+					t.Fatalf("a newer integrity format must refuse the rebuild and ask for an update: %+v (%d engine calls)", res, len(calls))
+				}
 			}
 		})
 	}
 }
 
-func TestIntegrityBlock_BMRRecoverCommandRunsAsBefore(t *testing.T) {
+func TestIntegrityBlock_BMRRecoverCommandHonorsTheBlock(t *testing.T) {
 	orig := runBMRRecovery
 	t.Cleanup(func() { runBMRRecovery = orig })
 	var got []bmr.RecoveryConfig
@@ -212,20 +276,32 @@ func TestIntegrityBlock_BMRRecoverCommandRunsAsBefore(t *testing.T) {
 		t.Fatalf("bmr_recover failed: %q", res.Stderr)
 	}
 	for name, block := range compatIntegrityBlocks {
-		with := map[string]any{"integrity": block}
-		for k, v := range base {
-			with[k] = v
-		}
-		if res := execBMRRecover(context.Background(), sessionPayloadJSON(t, with), nil); !res.Success {
-			t.Fatalf("%s: bmr_recover with an integrity block failed: %q", name, res.Stderr)
-		}
-	}
-	for i := 1; i < len(got); i++ {
-		if !reflect.DeepEqual(got[i], got[0]) {
-			t.Fatalf("recovery config differs with an integrity block:\n got %+v\nwant %+v", got[i], got[0])
-		}
-	}
-	if len(got) != 1+len(compatIntegrityBlocks) {
-		t.Fatalf("recoveries run = %d", len(got))
+		t.Run(name, func(t *testing.T) {
+			got = got[:1]
+			with := map[string]any{"integrity": block}
+			for k, v := range base {
+				with[k] = v
+			}
+			res := execBMRRecover(context.Background(), sessionPayloadJSON(t, with), nil)
+			if name == "future" {
+				if res.Success || len(got) != 1 || !strings.Contains(res.Stderr, "update the Breeze agent") {
+					t.Fatalf("a newer integrity format must refuse the recovery before it starts and ask for an update: %+v", res)
+				}
+				return
+			}
+			if !res.Success || len(got) != 2 {
+				t.Fatalf("bmr_recover with an integrity block: %+v", res)
+			}
+			// The recovery receives the command's expectation; everything
+			// else is configured exactly as before.
+			if got[1].Integrity == nil || got[1].Integrity.SnapshotID != "snap-integrity-compat" {
+				t.Fatalf("recovery config carries integrity %+v", got[1].Integrity)
+			}
+			stripped := got[1]
+			stripped.Integrity = nil
+			if !reflect.DeepEqual(stripped, got[0]) {
+				t.Fatalf("recovery config differs with an integrity block:\n got %+v\nwant %+v", stripped, got[0])
+			}
+		})
 	}
 }

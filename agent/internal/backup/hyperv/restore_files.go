@@ -15,9 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // VMRestoreFromBackupResult holds the outcome of a VM restore from backup.
@@ -152,7 +155,8 @@ func restoreEntryPath(f vmRestoreManifFile) string {
 // Windows path (drive, UNC, \\?\ or a VSS shadow-copy device) or a POSIX one;
 // its volume or device prefix is dropped so C:\Users\x lands at Users/x on the
 // new disk. Parent components, alternate data streams, drive-relative
-// components and NUL bytes are refused rather than cleaned.
+// components, NUL bytes and reserved device names are refused rather than
+// cleaned.
 func vmRestoreRelativePath(f vmRestoreManifFile) (string, error) {
 	recorded := restoreEntryPath(f)
 	if recorded == "" {
@@ -178,12 +182,23 @@ func vmRestoreRelativePath(f vmRestoreManifFile) (string, error) {
 		if strings.ContainsAny(c, `:*?"<>|`) {
 			return "", fmt.Errorf("path %q has a component that is not a plain file name", recorded)
 		}
+		// ... and a name ending in a dot or space would be written under
+		// its shortened alias, not the recorded name.
+		if last := c[len(c)-1]; last == '.' || last == ' ' {
+			return "", fmt.Errorf("invalid_windows_name: path %q has a component ending in a dot or space", recorded)
+		}
 		parts = append(parts, c)
 	}
 	if len(parts) == 0 {
 		return "", fmt.Errorf("path %q names a volume root, not a file", recorded)
 	}
-	return strings.Join(parts, "/"), nil
+	rel := strings.Join(parts, "/")
+	// The new volume is NTFS: a reserved device name cannot be stored under
+	// the recorded name.
+	if err := securefs.ValidateWindowsComponents(rel); err != nil {
+		return "", fmt.Errorf("path %q: %w", recorded, err)
+	}
+	return rel, nil
 }
 
 // stripWindowsVolume removes the volume or device prefix from a
@@ -255,11 +270,20 @@ func stripWindowsVolume(p string) (string, error) {
 	}
 }
 
-// restoreManifestFiles downloads each regular file in files to its mapped
-// path under root. Directory entries are created; symlinks are skipped with a
+// restoreManifestFiles places each regular file in files at its mapped path
+// under root. Directory entries are created; symlinks are skipped with a
 // warning (a new VM volume gets no links). Every refused, failed or corrupt
 // file is counted; tally.err() decides the restore's outcome.
-func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provider providers.BackupProvider, root string) fileRestoreTally {
+//
+// Each object is downloaded into a private staging directory created under
+// workDir (never onto the volume being restored), checked there, and only
+// then placed with securefs: a handle-pinned walk from root that refuses
+// every link or reparse point on the way and publishes by an atomic rename
+// relative to the pinned parent. With an integrity expectation the check is
+// integrity.DownloadChecked (exact size and SHA-256 when attested; Volatile
+// never waives it); without one it is the earlier size/checksum rule
+// (verifyRestoredFile). The staging directory is removed before returning.
+func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provider providers.BackupProvider, root, workDir string, expect *integrity.Expectation) fileRestoreTally {
 	var t fileRestoreTally
 	cleanRoot := filepath.Clean(root)
 
@@ -268,7 +292,7 @@ func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provi
 	type placement struct {
 		file    vmRestoreManifFile
 		display string
-		target  string
+		rel     string // OS-separated, relative to root
 		err     error
 	}
 	placements := make([]placement, 0, len(files))
@@ -277,8 +301,8 @@ func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provi
 		p := placement{file: file, display: restoreEntryPath(file)}
 		rel, err := vmRestoreRelativePath(file)
 		if err == nil {
-			p.target = filepath.Join(cleanRoot, filepath.FromSlash(rel))
-			if !underRoot(cleanRoot, p.target) {
+			p.rel = filepath.FromSlash(rel)
+			if !underRoot(cleanRoot, filepath.Join(cleanRoot, p.rel)) {
 				err = fmt.Errorf("path %q escapes the restore root", p.display)
 			}
 		}
@@ -288,17 +312,38 @@ func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provi
 		}
 		placements = append(placements, p)
 	}
+
+	stagingDir, err := integrity.StagingPath(workDir)
+	if err == nil {
+		err = securefs.EnsurePrivateDir(stagingDir)
+	}
+	if err != nil {
+		reason := fmt.Sprintf("not restored: create staging directory: %v", err)
+		for _, p := range placements {
+			if p.file.Kind == "" {
+				t.Total++
+				t.fail(p.display, reason)
+			}
+		}
+		return t
+	}
+	defer func() {
+		if rmErr := os.RemoveAll(stagingDir); rmErr != nil {
+			slog.Warn("vmrestore: failed to remove staging directory", "dir", stagingDir, "error", rmErr.Error())
+		}
+	}()
+
 	if planner, ok := provider.(downloadPlanner); ok && len(plan) > 0 {
 		planner.PrepareDownloads(plan)
 	}
 
 	for _, p := range placements {
-		file, display, target := p.file, p.display, p.target
+		file, display := p.file, p.display
 		switch file.Kind {
 		case manifestKindDir:
 			if p.err != nil {
 				t.warn(fmt.Sprintf("directory %s skipped: %v", display, p.err))
-			} else if err := os.MkdirAll(target, 0o755); err != nil {
+			} else if err := securefs.InstallDir(cleanRoot, p.rel, 0o755, false, nil, time.Time{}); err != nil {
 				t.warn(fmt.Sprintf("directory %s not created: %v", display, err))
 			}
 			continue
@@ -320,26 +365,56 @@ func restoreManifestFiles(ctx context.Context, files []vmRestoreManifFile, provi
 			t.fail(display, fmt.Sprintf("not restored: %v", ctx.Err()))
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			t.fail(display, fmt.Sprintf("create directory: %v", err))
+		staged, err := integrity.StagingPath(stagingDir)
+		if err != nil {
+			t.fail(display, err.Error())
 			continue
 		}
-		if err := downloadObject(ctx, provider, file.BackupPath, target); err != nil {
-			_ = os.Remove(target)
-			t.fail(display, fmt.Sprintf("download: %v", err))
+		warnings, reason, ok := stageManifestFile(ctx, provider, file, staged, expect)
+		if !ok {
+			_ = os.Remove(staged)
+			t.fail(display, reason)
 			continue
 		}
-		if msg, ok := verifyRestoredFile(target, file); !ok {
-			_ = os.Remove(target)
-			t.fail(display, msg)
+		placeWarnings, err := securefs.InstallFile(cleanRoot, p.rel, staged, 0, time.Time{}, nil)
+		if err != nil {
+			_ = os.Remove(staged)
+			t.fail(display, fmt.Sprintf("place file: %v", err))
 			continue
-		} else if msg != "" {
-			t.warn(fmt.Sprintf("%s: %s", display, msg))
+		}
+		for _, w := range warnings {
+			t.warn(w)
+		}
+		if reason != "" {
+			t.warn(fmt.Sprintf("%s: %s", display, reason))
+		}
+		for _, w := range placeWarnings {
+			t.warn(fmt.Sprintf("%s: %v", display, w))
 		}
 		t.Restored++
 		t.Bytes += file.Size
 	}
 	return t
+}
+
+// stageManifestFile downloads file's object to staged and checks it.
+// ok=false fails the file with reason; with ok=true a non-empty reason is a
+// per-file warning and warnings are result-level warnings (a vault copy
+// replaced by the primary copy, say).
+func stageManifestFile(ctx context.Context, provider providers.BackupProvider, file vmRestoreManifFile, staged string, expect *integrity.Expectation) (warnings []string, reason string, ok bool) {
+	if expect.Present() {
+		want := integrity.Stored{Size: file.Size, SHA256: file.Checksum, Volatile: file.Volatile}
+		res, w, err := integrity.DownloadChecked(ctx, provider, file.BackupPath, staged, want, expect)
+		if err != nil {
+			return nil, err.Error(), false
+		}
+		return w, res.Warning, true
+	}
+	if err := downloadObject(ctx, provider, file.BackupPath, staged); err != nil {
+		return nil, fmt.Sprintf("download: %v", err), false
+	}
+	msg, ok := verifyRestoredFile(staged, file)
+	return nil, msg, ok
 }
 
 // downloadPlanner has the shape of providers.DownloadPlanner: a provider that
@@ -412,7 +487,7 @@ func verifyRestoredFile(target string, file vmRestoreManifFile) (msg string, ok 
 // moment the command reports a terminal result. An incomplete sync leaves
 // result "degraded" with the counts and removes the partial staging
 // directory; the booted VM is left running.
-func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir string, files []vmRestoreManifFile, provider providers.BackupProvider) {
+func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir string, files []vmRestoreManifFile, provider providers.BackupProvider, expect *integrity.Expectation) {
 	result.BackgroundSyncActive = false
 	if len(files) == 0 {
 		return
@@ -428,7 +503,10 @@ func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir s
 		}
 	}
 
-	if err := os.MkdirAll(syncDir, 0o755); err != nil {
+	// The sync directory is created private (SYSTEM and Administrators on
+	// Windows, owner-only elsewhere) without following a link, like the
+	// staging directory beside it.
+	if err := securefs.EnsurePrivateDir(syncDir); err != nil {
 		progress.Total = len(files)
 		progress.Failed = len(files)
 		degrade(fmt.Sprintf("background sync could not create its staging directory: %v", err))
@@ -436,7 +514,7 @@ func runBackgroundSync(ctx context.Context, result *InstantBootResult, syncDir s
 	}
 	slog.Info("instantboot: background sync started", "vmName", result.VMName, "files", len(files), "syncDir", syncDir)
 
-	tally := restoreManifestFiles(ctx, files, provider, syncDir)
+	tally := restoreManifestFiles(ctx, files, provider, syncDir, filepath.Dir(syncDir), expect)
 	progress.Total = tally.Total
 	progress.Synced = tally.Restored
 	progress.Failed = tally.Failed

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -23,6 +24,9 @@ type InstantBootConfig struct {
 	CPUCount   int    `json:"cpuCount,omitempty"`
 	DiskSizeGB int64  `json:"diskSizeGb,omitempty"`
 	WorkDir    string `json:"workDir,omitempty"`
+	// Integrity is the command's integrity expectation (nil when the
+	// payload carried none). Not part of the JSON form.
+	Integrity *integrity.Expectation `json:"-"`
 }
 
 // bootCriticalPatterns lists path patterns that must be present for a
@@ -128,11 +132,12 @@ func InstantBoot(
 	progress("downloading_manifest", 1, 8)
 	slog.Info("instantboot: downloading snapshot manifest", "snapshotId", cfg.SnapshotID)
 
-	manifest, err := downloadVMRestoreManifest(cfg.SnapshotID, provider)
+	manifest, manifestWarnings, err := fetchVMRestoreManifest(ctx, cfg.SnapshotID, provider, cfg.Integrity)
 	if err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("instantboot: download manifest: %w", err)
 	}
+	result.Warnings = appendBoundedWarnings(result.Warnings, manifestWarnings...)
 
 	// 2. Classify files into boot-critical and remaining.
 	bootFiles, remainingFiles := classifyFiles(manifest.Files)
@@ -175,6 +180,16 @@ func InstantBoot(
 	}
 	targetRoot := driveLetter + `:\`
 
+	// Restrict the new volume's root to SYSTEM and Administrators before
+	// anything is written to it; its default permissions are put back after
+	// the boot configuration step.
+	rootGuard, err := protectVolumeRoot(driveLetter)
+	if err != nil {
+		dismountVHDX(baseVHDX)
+		result.Error = err.Error()
+		return result, fmt.Errorf("instantboot: protect volume root: %w", err)
+	}
+
 	// 6. Download ONLY boot-critical files.
 	progress("restoring_boot_files", 4, 8)
 	if ctx.Err() != nil {
@@ -184,8 +199,8 @@ func InstantBoot(
 	}
 	slog.Info("instantboot: restoring boot-critical files", "count", len(bootFiles))
 
-	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot)
-	result.Warnings = append(result.Warnings, bootTally.Warnings...)
+	bootTally := restoreManifestFiles(ctx, bootFiles, provider, targetRoot, workDir, cfg.Integrity)
+	result.Warnings = appendBoundedWarnings(result.Warnings, bootTally.Warnings...)
 	if bootTally.Failed > 0 {
 		// A VM missing boot-critical files is not booted, and nothing is left
 		// behind: the deferred cleanup removes the restore directory.
@@ -206,6 +221,12 @@ func InstantBoot(
 	if bootErr := configureBootLoader(driveLetter); bootErr != nil {
 		slog.Warn("instantboot: boot config failed, VM may not boot automatically",
 			"error", bootErr.Error())
+	}
+
+	if err := rootGuard.restoreDefaults(); err != nil {
+		dismountVHDX(baseVHDX)
+		result.Error = err.Error()
+		return result, fmt.Errorf("instantboot: %w", err)
 	}
 
 	// 8. Dismount base VHDX.
@@ -275,7 +296,7 @@ func InstantBoot(
 	// 11. Sync the remaining files before returning. The command's context is
 	// cancelled and its storage session revoked as soon as this returns, so
 	// the sync runs inside the command, bounded by its run budget.
-	runBackgroundSync(ctx, result, filepath.Join(workDir, "sync-staging"), remainingFiles, provider)
+	runBackgroundSync(ctx, result, filepath.Join(workDir, "sync-staging"), remainingFiles, provider, cfg.Integrity)
 
 	return result, nil
 }

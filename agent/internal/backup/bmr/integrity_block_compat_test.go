@@ -2,16 +2,20 @@ package bmr
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 )
 
 // The server adds an `integrity` block (the snapshot's attestation digests,
 // or why there are none) to the recovery bootstrap, on the envelope and on
-// the nested bootstrap, and to bmr_recover command payloads. A helper that
-// does not know the block must decode everything else exactly as before:
-// encoding/json drops keys no struct field names, and nothing in this
-// package decodes with DisallowUnknownFields.
+// the nested bootstrap, and to bmr_recover command payloads. The recovery
+// client reads the nested bootstrap's block (BootstrapIntegrity) and decodes
+// everything else exactly as before; a block in a format it does not know
+// refuses the recovery and asks for an agent update.
 var integrityBlocks = map[string]string{
 	"attested": `{"v":1,"mode":"attested","trust":"server_verified","snapshotId":"provider-snapshot-1",` +
 		`"objects":[{"role":"manifest","key":"snapshots/provider-snapshot-1/manifest.json","sha256":"` +
@@ -45,14 +49,34 @@ func TestRecoveryBootstrapWithIntegrityBlockDecodesAsBefore(t *testing.T) {
 	if want.Download == nil || want.Snapshot == nil || want.Snapshot.SnapshotID != "provider-snapshot-1" {
 		t.Fatalf("fixture did not decode through the versioned bootstrap: %+v", want)
 	}
+	if e, err := BootstrapIntegrity(want); e != nil || err != nil {
+		t.Fatalf("bootstrap without a block: expectation %+v, err %v; want none", e, err)
+	}
+	wantMode := map[string]string{"attested": integrity.ModeAttested, "unattested": integrity.ModeUnattested}
 	for name, block := range integrityBlocks {
 		t.Run(name, func(t *testing.T) {
 			got, err := decodeBootstrapResponse(bootstrapEnvelope(block))
 			if err != nil {
 				t.Fatalf("decode bootstrap with integrity: %v", err)
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("bootstrap decoded differently with an integrity block:\n got %+v\nwant %+v", got, want)
+			if string(got.Integrity) != block {
+				t.Fatalf("nested bootstrap integrity = %s, want %s", got.Integrity, block)
+			}
+			// Everything else decodes exactly as before.
+			stripped := *got
+			stripped.Integrity = nil
+			if !reflect.DeepEqual(&stripped, want) {
+				t.Fatalf("bootstrap decoded differently with an integrity block:\n got %+v\nwant %+v", &stripped, want)
+			}
+			e, err := BootstrapIntegrity(got)
+			if name == "future" {
+				if !errors.Is(err, integrity.ErrInvalidExpectation) || !strings.Contains(err.Error(), "update the Breeze agent") {
+					t.Fatalf("future block: err %v, want a refusal asking for an agent update", err)
+				}
+				return
+			}
+			if err != nil || e == nil || e.Mode != wantMode[name] || e.SnapshotID != "provider-snapshot-1" {
+				t.Fatalf("expectation %+v err %v, want mode %s", e, err, wantMode[name])
 			}
 		})
 	}
