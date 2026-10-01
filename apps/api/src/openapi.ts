@@ -3798,6 +3798,36 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/alerts/rules/{id}/active': {
+      patch: {
+        operationId: 'setBuiltInAlertRuleActive',
+        tags: ['Alerts'],
+        summary: 'Switch a built-in alert rule on or off',
+        description: 'Switches a built-in system rule that Breeze raises itself (patch job failures, reboot pending too long, policy violations) on or off for its organization. Every other legacy alert rule write returns 410; author alert conditions as monitors.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { isActive: { type: 'boolean' } },
+                required: ['isActive'],
+                additionalProperties: false
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Rule updated',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/AlertRule' } } }
+          },
+          '404': { description: 'Rule not found' },
+          '410': { description: 'Not a built-in rule; legacy alert rule writes are retired' }
+        }
+      }
+    },
     '/alerts/channels': {
       get: {
         operationId: 'listNotificationChannels',

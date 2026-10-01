@@ -8,6 +8,8 @@ import { navigateTo } from '@/lib/navigation';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../hooks/useMlFeatureFlags', () => ({ useMlFeatureFlags: () => ({ isDisabled: () => false }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// #7626: own coverage in BuiltInAlertRules.test.tsx; keeps this suite's fetch fixtures unchanged.
+vi.mock('./BuiltInAlertRules', () => ({ default: () => <div data-testid="builtin-alert-rules-stub" /> }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);

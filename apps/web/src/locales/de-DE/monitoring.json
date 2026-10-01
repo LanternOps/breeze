@@ -376,6 +376,22 @@
       "convert": "Regel konnte nicht umgewandelt werden"
     }
   },
+  "builtInRules": {
+    "title": "Integrierte Alarme",
+    "description": "Alarme, die Breeze selbst auslöst. Schalten Sie eine Regel aus, um diesen Alarm für ihre Organisation zu beenden; bereits offene Alarme bleiben offen, bis Sie sie auflösen.",
+    "columns": {
+      "name": "Bezeichnung",
+      "organization": "Organisation",
+      "active": "Aktiv"
+    },
+    "toggle": "{{name}} ein- oder ausschalten",
+    "switchedOn": "{{name}} eingeschaltet",
+    "switchedOff": "{{name}} ausgeschaltet",
+    "errors": {
+      "fetch": "Integrierte Alarme konnten nicht geladen werden",
+      "toggle": "Integrierter Alarm konnte nicht aktualisiert werden"
+    }
+  },
   "devices": {
     "title": "Geräte",
     "columns": {

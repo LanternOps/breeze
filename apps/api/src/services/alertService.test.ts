@@ -142,6 +142,50 @@ describe('createAlert correlation enqueue boundary', () => {
   });
 });
 
+describe('createAlert honours alert_rules.is_active (#7626)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._selectResults.length = 0;
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([{ id: 'alert-1' }]);
+  });
+
+  const input = {
+    ruleId: 'rule-builtin',
+    deviceId: 'device-1',
+    orgId: 'org-1',
+    severity: 'high' as const,
+    title: 'Patch job failed on host-1',
+    message: '1 patch(es) failed to install on host-1.',
+  };
+
+  it('raises no alert, burns no cooldown and publishes nothing for an inactive rule', async () => {
+    dbMock._selectResults.push(
+      [{ id: 'rule-builtin', templateId: 'template-1', overrideSettings: null, isActive: false }],
+      [{ id: 'template-1', cooldownMinutes: 240 }],
+      [],
+    );
+
+    const alertId = await createAlert(input);
+
+    expect(alertId).toBeNull();
+    expect(dbMock.execute).not.toHaveBeenCalled();
+    expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
+    expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
+  });
+
+  it('still raises the alert for an active rule', async () => {
+    dbMock._selectResults.push(
+      [{ id: 'rule-builtin', templateId: 'template-1', overrideSettings: null, isActive: true }],
+      [{ id: 'template-1', cooldownMinutes: 240 }],
+      [],
+    );
+
+    expect(await createAlert(input)).toBe('alert-1');
+    expect(dbMock.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.triggered)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

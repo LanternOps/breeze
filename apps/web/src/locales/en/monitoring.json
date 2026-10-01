@@ -376,6 +376,22 @@
       "convert": "Failed to convert rule"
     }
   },
+  "builtInRules": {
+    "title": "Built-in alerts",
+    "description": "Alerts Breeze raises itself. Switch one off to stop that alert for its organization; alerts already open stay open until you resolve them.",
+    "columns": {
+      "name": "Name",
+      "organization": "Organization",
+      "active": "Active"
+    },
+    "toggle": "Switch {{name}} on or off",
+    "switchedOn": "{{name}} switched on",
+    "switchedOff": "{{name}} switched off",
+    "errors": {
+      "fetch": "Failed to load built-in alerts",
+      "toggle": "Failed to update built-in alert"
+    }
+  },
   "devices": {
     "title": "Devices",
     "columns": {
