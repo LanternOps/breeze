@@ -149,7 +149,17 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
-### Next release — `APP_VERSION` comes from the image
+### v0.120.0 — start fence default and newly mapped API settings
+
+The [v0.120.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.120.0/docker-compose.yml) change the `api` environment in both `docker-compose.yml` and `deploy/docker-compose.prod.yml`:
+
+| Change | Required action |
+|---|---|
+| `REMOTE_DESKTOP_FENCE_REQUIRED` defaults to `true` (was `false`). | See [v0.120.0 — remote desktop start fence](#v01200--s3-backups-through-storage-sessions-restore-integrity-consent-prompt-protocol-2). Until you take this change, an unset variable keeps the fence **off**. |
+| `AUDIT_ANCHOR_SIGNING_KEY`, `AUDIT_CHAIN_ANCHOR_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`, `AUDIT_CHAIN_VERIFY_MODE`, `AUDIT_CHAIN_VERIFY_RESCAN_SLICES` and `AUDIT_ADMIN_DATABASE_URL` are now passed to the API. Before this release Compose installs ignored them even when they were set in `.env`. | Copy the entries into your own Compose file if you set any of them. All are optional; leaving them empty keeps today's behaviour. See [Environment Variables](/deploy/environment/). |
+| `AI_INVOCATIONS_RETENTION_DAYS`, `AI_INVOCATIONS_RETENTION_BATCH_SIZE` and `AI_INVOCATIONS_RETENTION_MAX_BATCHES` are mapped (optional; retention defaults to 400 days). `deploy/docker-compose.prod.yml` also gains the three `DEVICE_COMMAND_QUEUE_*_TTL_HOURS` deadlines. | Copy them if you maintain your own Compose file and want to tune them. |
+
+### v0.119.0 — `APP_VERSION` comes from the image
 
 Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environment. That value replaced the version baked into the image, so `/health`, the upgrade preflight, and the recorded version history reported whatever `.env` said, even when the running image was older. The shipped `docker-compose.yml` and `deploy/docker-compose.prod.yml` no longer set it.
 
@@ -157,12 +167,13 @@ Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environ
 |---|---|
 | The `APP_VERSION:` line is removed from the shared API environment block (`x-api-env` in `docker-compose.yml`, the API environment in `deploy/docker-compose.prod.yml`). | Delete the `APP_VERSION:` line from your own Compose file. Keep `BREEZE_VERSION:`, which still selects the agent release. Until you remove the line, `/health` keeps reporting `BREEZE_VERSION` and the version-mismatch warning cannot fire. |
 
-### Next release — coturn relays again
+### v0.119.0 — coturn relays again
 
 | Change | Required action |
 |---|---|
 | The v0.118.0 coturn configuration listed `denied-peer-ip=::`. coturn reads an all-zero address as "no bound", so that one entry refused every peer and relayed (TURN) connections could not be set up. The entry is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`; coturn already refuses the unspecified address on its own. | Delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in a Compose file) from your coturn configuration and restart coturn, even if you skip this release. Do not replace it with `0.0.0.0` or a range starting at `::`. |
-### Next release — coturn refuses IPv4-mapped and NAT64 peers
+
+### v0.119.0 — coturn refuses IPv4-mapped and NAT64 peers
 
 | Change | Required action |
 |---|---|
@@ -195,7 +206,31 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
-### Next release — remote desktop start fence required by default
+### v0.120.0 — S3 backups through storage sessions, restore integrity, consent prompt protocol 2
+
+<Aside type="caution" title="Before you upgrade: agents and HTTPS for S3 backups">
+  Backups to S3 and S3-compatible storage are now written only through a short-lived, write-scoped storage session, with no fallback. Before upgrading, update every device that backs up to S3 to agent **v0.119.0 or later**, switch MinIO and other S3-compatible endpoints to `https://` (same host and port), and make sure agents reach the API over HTTPS with `PUBLIC_API_URL` set. Local and NAS destinations are unchanged. See [HTTPS for Backups](/backup/https-backups/).
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Update every device that backs up to S3 to agent v0.119.0 or later, and move storage endpoints and the agent API to HTTPS (above).
+2. Back up the database.
+3. Upgrade the server: `bash guided-setup.sh --upgrade 0.120.0` on a digest-pinned install, or set `BREEZE_VERSION=0.120.0` and run `docker compose pull api web portal && docker compose up -d`.
+4. Merge the [Compose file changes](#v01200--start-fence-default-and-newly-mapped-api-settings) if you maintain your own Compose file.
+5. Let agents and Breeze Assist update to 0.120.0. **Server first:** a server older than this release refuses consent- and notify-mode desktop starts on updated agents.
+6. Open each Backup policy's **Destination** section and work through the storage key card: replace each listed key with your storage provider, disable the old one, then use **Check old key** or **I disabled this key**.
+</Steps>
+
+#### Backups and restores
+
+- **Who is refused for S3 backups.** A device whose backup component has reported it cannot write through a storage session (`409 helper_update_required` on the on-demand SQL Server and Hyper-V routes; scheduled jobs fail with "Update the Breeze agent on this device, then try again."), an `http://` storage endpoint, a plain-`http://` agent API or a missing `PUBLIC_API_URL`, and providers other than S3 and local. Devices that have not reported yet are held until their first heartbeat. The `manage_backup_configs` AI tool accepts only the `s3` and `local` providers.
+- **Restores are checked against the snapshot's integrity record.** Every restore, verify, test restore, VM restore and bare-metal recovery carries the snapshot's integrity expectations, and the updated backup helper checks the manifest and each file before installing it. A snapshot that failed its integrity check is refused; a snapshot without an attestation still restores and is labelled *unattested*. See [Restoring from Backup](/backup/restoring/).
+- **Windows restores are stricter.** Reserved Windows names (`CON`, `NUL`, `COM1` and the like), and path components containing `:` or ending in `.` or a space, are refused. A restored security descriptor naming accounts the machine doesn't recognise is replaced with a restrictive one (owner Administrators; SYSTEM and Administrators only), and the result lists those paths. `bmr_recover` on Windows restores files only; system state is applied by a bare-metal rebuild.
+- **DR plans.** A **Bare metal rebuild** step now waits up to 24 hours by default (was 4 hours).
+
+#### Remote desktop start fence required by default
 
 - **`REMOTE_DESKTOP_FENCE_REQUIRED` now defaults to `true`.** Remote desktop
   (WebRTC and the WebSocket fallback) starts only on agents that report the
@@ -207,8 +242,13 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
   themselves; if you pin agent versions below v0.114.0, move the pin, or set
   `REMOTE_DESKTOP_FENCE_REQUIRED=false` until they have updated. If your `.env`
   still carries `REMOTE_DESKTOP_FENCE_REQUIRED=false` copied from an older
-  `.env.example`, that line keeps the fence off; remove it. A value that is not
-  a recognized boolean now refuses boot.
+  `.env.example`, that line keeps the fence off; remove it. A Compose file from
+  an earlier release also passes `false` when the variable is unset, so an
+  existing install keeps the fence **off** until you either set
+  `REMOTE_DESKTOP_FENCE_REQUIRED=true` in `.env` or take the
+  [v0.120.0 Compose change](#v01200--start-fence-default-and-newly-mapped-api-settings).
+  New installs get it on. A value that is not a recognized boolean (true/false,
+  1/0, yes/no, on/off) now refuses boot.
 - **The WebSocket desktop fallback now behaves like WebRTC.** The technician's
   view stays on *connecting* until the agent reports the stream started, so a
   consent prompt is answered before anything is shown; a denial ends the session
@@ -217,6 +257,43 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
   keep the session lease (a Redis or API outage longer than about 90 seconds ends
   the stream, as it already does on WebRTC), and refuse a start that arrives after
   the session was stopped.
+
+#### Consent prompts report whether they were shown
+
+Only devices whose remote access policy uses the **consent** prompt are affected.
+
+- **A signed-in user who cannot be shown the prompt is always refused**, whatever "If no one can respond" says (for example, Breeze Assist not running or a native dialog failing). That setting still applies when nobody is signed in, and when a prompt the user could see went unanswered.
+- **On macOS and Linux an unanswered prompt is refused,** because only Windows reports the lock state reliably.
+- **Update Breeze Assist with the agent.** An older Assist still handles Allow and Deny, but its unanswered prompts are refused.
+- The technician sees a specific message for each outcome, and consent audit events gain `consentOutcome`, `consentOccupancy` and `consentProtocol`, plus the reasons `no_user_session` and `helper_unreachable`. See [Remote Access](/features/remote-access/).
+
+#### Breeze Assist on Windows
+
+- **Console session only.** The agent delivers Assist's credential only over its local channel to the active console session and no longer stores it in `agent.yaml`. Assist in an RDP or other non-console session shows that it has not received its credentials until a later release adds support.
+- On first start the agent moves any credential it finds in `agent.yaml` into its protected secrets file and rotates it once. macOS and Linux are unaffected.
+
+#### AI
+
+- **The default model is `claude-sonnet-5-5` with adaptive thinking.** Existing chats keep their stored model, and `BREEZE_AI_SCRIPT_REVIEWER_MODEL` follows the new default. If AI runs through a LiteLLM or other gateway alias, add an alias for `claude-sonnet-5-5` and let the gateway accept or drop the thinking parameters (LiteLLM `drop_params`), or set `ANTHROPIC_MODEL` to your backend's model id. See [Environment Variables](/deploy/environment/).
+- `POST /ai/sessions` rejects a model that isn't offered (`400 invalid_model`).
+- **AI model registry.** Platform admins get **Admin → AI models** (`/admin/ai-models`). A daily discovery job lists new Anthropic models for review; it never enables, prices or removes anything, and it is skipped when `ANTHROPIC_BASE_URL` points at a gateway. Routing, pricing and billing still come from your existing settings in this release.
+
+#### Other behaviour changes
+
+- **API error codes.** Five codes from device and agent routes now use the standard uppercase form: `SCHEME_NOT_ALLOWED`, `INVALID_CUSTOM_FIELD_VALUE` (was `invalid-custom-field-value`), `RACE_LOST`, `RE_ENROLLMENT_REQUIRED` and `SOFTWARE_INVENTORY_LOCK_TIMEOUT`. HTTP statuses and messages are unchanged; update integrations that match on the old codes.
+- **S3-backed binary hosting.** Backup, watchdog, user-helper and recovery-media downloads are served from the `agent/` prefix, and the Breeze Assist installer is synced to `helper/` at boot. The `backup/`, `watchdog/`, `user-helper/` and `recovery-iso/` prefixes are no longer read and can be deleted. An unset `HELPER_BINARY_DIR` now means the agent binaries directory. See [Binary Distribution](/deploy/binaries/).
+- **Device restores count against the device limit,** like enrollment.
+
+#### Environment variables
+
+**No new required variables.** `REMOTE_DESKTOP_FENCE_REQUIRED` now defaults to `true` (see above). New optional: `AI_INVOCATIONS_RETENTION_DAYS` (default 400), `AI_INVOCATIONS_RETENTION_BATCH_SIZE` and `AI_INVOCATIONS_RETENTION_MAX_BATCHES`. The audit-chain settings are now passed to the API by Compose; see [Compose file changes](#v01200--start-fence-default-and-newly-mapped-api-settings).
+
+#### Migrations
+
+Twelve idempotent migrations apply on boot. They add tables for portal session revocations, backup storage key history and the AI model registry, seed the platform model catalog, and copy each partner's AI provider setup into the registry. No large rewrites.
+
+- **`ai_sessions` index.** Built with `CREATE INDEX CONCURRENTLY` outside a transaction. If the build is interrupted, the next start refuses with "ai_sessions offering index build left INVALID index". Run `DROP INDEX CONCURRENTLY public.ai_sessions_offering_idx;` and restart the API.
+- **First start.** The API records the storage key each S3 destination uses and builds the AI registry from your current AI settings, logging one `[startup]` line for each.
 
 ### v0.118.0 — legacy alerting retired, network checks become monitors
 

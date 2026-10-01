@@ -34,6 +34,8 @@ Network Topology is off by default. A partner admin enables it for all of the pa
 | **Diagnostics** | **Diagnose** (including the routed path trace) and recurring monitoring policies. |
 | **AI insights** | **Explain this**. The organization also needs AI enabled and a working AI provider. |
 
+After you turn on **Enable network topology**, Breeze builds each site's first map automatically from the network data it already holds, a few sites at a time. Until a site's map is ready, its explorer shows **Building the topology map**; this usually clears within a few minutes. Sites added later are picked up the same way. If the first build fails for a site, the explorer shows **Topology unavailable** and Breeze retries it automatically with increasing back-off. (Before v0.120.0, the first build never ran on its own, and sites could stay on **Building the topology map** indefinitely.)
+
 When you turn a toggle off, only what the explorer shows changes. Breeze keeps processing collected evidence, so turning a toggle back on doesn't require a rebuild.
 
 ### Collect physical evidence
