@@ -10,7 +10,7 @@ Closes #7600
 
 **Goal:** Ship the registry's tenant-scoped tables (connections, offerings, assignments, the invocation ledger, and offering columns on `ai_sessions` / `ai_agents`), fill them from every partner's **current effective behaviour**, move `/ai/provider` onto the new store with an unchanged contract, and shadow-write one ledger row next to every existing cost record — while every AI surface still routes, prices and bills through the legacy path.
 
-**Architecture:** In W02 the legacy config (`partner_llm_configs` + env + policy columns) stays the routing authority, and the new store is maintained as a **projection** of it. Connections are kept exact at all times. Offerings, assignments and agent/session bindings are refreshed at every sync point, may lag other legacy writers between boots, and are made exact by W03's blocking cutover reconcile. One pure function, `buildDesiredRegistryState(legacySnapshot, env)`, defines that projection. One DB function, `reconcilePartnerFromLegacyInTx(partnerId)`, applies it under a per-partner advisory lock. It runs at three sync points: the migration's id-preserving connection copy, every API boot (detached), and every `/ai/provider` write (same transaction as the legacy write). A parity harness compares the projection, read back through registry semantics, against the **real** legacy resolution functions for every config shape. Legacy model choices that are more than "the partner default" are first extracted into named functions, so the oracle and the routes run the same code. The ledger is fed through a listener bridge. `aiCostTracker` emits a `LegacyCostEvent` after it computes the legacy cost. The ledger listener, registered only at process boot, prices the call with W01's `priceInvocation`. It writes an `ai_invocations` row (`ledger_mode='shadow'`) after the caller's transaction exits, and logs a structured diff when the two costs disagree.
+**Architecture:** In W02 the legacy config (`partner_llm_configs` + env + policy columns) stays the routing authority, and the new store is maintained as a **projection** of it. Connections are kept exact at all times. Offerings, assignments and agent/session bindings are refreshed at every sync point, may lag other legacy writers between boots. W03 freezes them per partner with a durable, one-time cutover (W03 Task 6A), after which nothing re-projects that partner. One pure function, `buildDesiredRegistryState(legacySnapshot, env)`, defines that projection. One DB function, `reconcilePartnerFromLegacyInTx(partnerId)`, applies it under a per-partner advisory lock. It runs at three sync points: the migration's id-preserving connection copy, every API boot (detached), and every `/ai/provider` write (same transaction as the legacy write). A parity harness compares the projection, read back through registry semantics, against the **real** legacy resolution functions for every config shape. Legacy model choices that are more than "the partner default" are first extracted into named functions, so the oracle and the routes run the same code. The ledger is fed through a listener bridge. `aiCostTracker` emits a `LegacyCostEvent` after it computes the legacy cost. The ledger listener, registered only at process boot, prices the call with W01's `priceInvocation`. It writes an `ai_invocations` row (`ledger_mode='shadow'`) after the caller's transaction exits, and logs a structured diff when the two costs disagree.
 
 **Tech Stack:** Hono, Drizzle ORM on PostgreSQL 16 (hand-written SQL migrations, forced RLS, composite FKs, plpgsql triggers), BullMQ, Vitest (unit + real-Postgres integration), `@breeze/shared` (zod).
 
@@ -34,7 +34,7 @@ Closes #7600
     - script/Office policy edits;
     - budget edits.
 
-  Nothing in W02 reads those bindings. **W03 must run `reconcileAllPartnersFromLegacy()` blocking (before serving) at its cutover boot, and only then stop calling it** (see "Handoff to W03").
+  Nothing in W02 reads those bindings. **W03 cuts each partner over exactly once** (W03 Task 6A). It calls `reconcilePartnerFromLegacyInTx(partnerId)` in one system transaction together with a durable per-partner cutover row. `resolveModel` gates on that row, and a leased, resumable sweep that starts after `serve()` covers the rest. W03 deletes W02's detached boot sweep (see "Handoff to W03").
 - **Migrations:** exactly seven new files. Each must sort after the newest **committed** migration at commit time. W00's newest is `2026-11-12-110000-partner-llm-catalog-pin-default-model.sql`; W01 adds more. Before committing each file, run `git fetch origin && scripts/check-migration-naming.sh --against-ref origin/main` (it lists and compares with the runner's `localeCompare`; a shell `sort` does not). If it fails, move all seven to the day after the newest committed date and keep their relative order:
   - `apps/api/migrations/2026-11-14-100000-ai-model-registry-connections.sql`
   - `apps/api/migrations/2026-11-14-100100-ai-model-registry-offerings.sql`
@@ -243,7 +243,7 @@ The parity harness (Task 11) is only discriminating if its oracle runs the code 
   - `legacyReviewerModel(policyReviewerModel: string | null, envReviewerModel: string): string`
   - `legacyAgentModel(effectiveModel: string | null, resolvedModel: string): string`
   - `EXTENSION_AI_DEFAULT_MODEL: 'claude-haiku-4-5'`
-  - `getLegacyModelRates(model: string): { rates: ModelRates; source: 'priced' | 'default_pricing' }` (in `aiCostTracker.ts`). It returns exactly the rate `calculateCostCents` charges: the registry snapshot, else `MODEL_PRICING`, else `DEFAULT_PRICING`. Deleted with the legacy cost path in W03.
+  - `getLegacyModelRates(model: string): { rates: ModelRates; source: 'priced' | 'default_pricing' }` (in `aiCostTracker.ts`). It returns exactly the rate `calculateCostCents` charges: the registry snapshot, else `MODEL_PRICING`, else `DEFAULT_PRICING`. **Lifetime:** W03 moves it and its rate table to `legacySurfaceModels.ts`, because W03's per-partner cutover still runs this projection. W08 deletes it with the rest of the legacy projection.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -351,8 +351,8 @@ Expected: FAIL. `legacySurfaceModels.test.ts` can't resolve `./legacySurfaceMode
  * EXTRACTED, not re-implemented: each legacy call site calls the function
  * below, and the W02 parity oracle (parity/legacyOracle.ts) calls the same
  * function. A parity test is only discriminating when its oracle IS the
- * legacy path. W03 deletes this file once every surface resolves through
- * resolveModel().
+ * legacy path. It outlives the routing cutover: W03's per-partner cutover
+ * still runs the W02 projection, which uses these pickers. W08 deletes it.
  */
 
 /** Extension AI's built-in default (services/extensionAi.ts). */
@@ -428,7 +428,8 @@ import { legacyAgentModel } from '../aiModels/legacySurfaceModels';
  * shadow ledger and the W03 cutover agree with it. A prototype key
  * ('constructor', '__proto__') is never a model id; without the guard
  * MODEL_PRICING[...] would resolve through Object.prototype.
- * Deleted with the legacy cost path in W03.
+ * W03 moves this and its rate table to aiModels/legacySurfaceModels.ts (its
+ * per-partner cutover still runs the projection); W08 deletes it.
  */
 export function getLegacyModelRates(model: string): {
   rates: ModelRates;
@@ -499,6 +500,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - encrypted-column spec `{ table: 'partner_ai_connections', column: 'api_key_encrypted', aadBinding: 'row', aadTag: 'partner_llm_configs.api_key_encrypted' }`.
   - **Invariant:** for every `partner_llm_configs` row there is a connection with the same `id`, the same `api_key_encrypted` bytes, `kind = catalog_entry_id IS NULL ? 'anthropic_byok' : 'catalog'`, and `legacy_default_model = default_model`.
   - Trigger `partner_llm_configs_mirror_to_connection` (AFTER UPDATE on the legacy table) re-applies every mirrored column to the same-id connection. Any legacy UPDATE, such as the resolver's `markPartnerLlmError`, therefore reaches the registry in the same statement. Inserts and deletes are the reconcile's job (Task 12), because a delete must first re-point assignments.
+  - **The trigger is W02-only scaffolding.** W03 Task 6B stops writing the legacy table and drops it in its own migration (`2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql`).
   - **Temporary invariant (W02–W03):** at most one `anthropic_byok`/`catalog` connection per partner (`partner_ai_connections_compat_uq`). W04 drops this index when the multi-connection UI lands.
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -748,7 +750,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.partner_ai_connections TO breeze_
 -- writer's RLS (every legacy writer runs in system scope, or as the owning
 -- partner, which may update its own connection). INSERT/DELETE are not
 -- mirrored here: a delete must re-point assignments first, which only
--- services/aiModels/legacyReconcile.ts can do. Dropped in W08 with the table.
+-- services/aiModels/legacyReconcile.ts can do.
+-- W02-ONLY SCAFFOLDING: W03 Task 6B stops all legacy writes and drops this
+-- trigger (2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql).
 CREATE OR REPLACE FUNCTION public.partner_llm_configs_mirror_to_connection() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -4866,6 +4870,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Create: `apps/api/src/services/aiModels/parity/fixtures.ts`
 - Create: `apps/api/src/services/aiModels/parity/legacyOracle.ts`
 - Create: `apps/api/src/services/aiModels/parity/storeProjection.ts`
+- Create: `apps/api/src/services/aiModels/parity/legacyFixtureMocks.ts` (dependency-free mock state + `vi.mock` module factories)
+- Create: `apps/api/src/services/aiModels/parity/bindLegacyFixture.ts` (the per-fixture legacy mock binder)
+- Create: `apps/api/src/services/aiModels/parity/projectionEnv.ts` (`projectionEnvFor`)
 - Create: `apps/api/src/services/aiModels/parity/parity.test.ts`
 - Modify: `apps/api/src/config/env.ts` (~:254, extract `resolveReviewerDefaultModel`; behaviour-preserving)
 
@@ -4883,7 +4890,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `legacySurfaceUse(fixture: ParityFixture, query: ParityQuery): Promise<SurfaceUse>` (requires the caller to mock the DB reads, see the test)
   - `type RegistrySnapshot` + `materializeDesiredState(desired: DesiredRegistryState, fixture: ParityFixture): RegistrySnapshot`
   - `projectSurfaceUse(store: RegistrySnapshot, query: ParityQuery): SurfaceUse` (registry semantics: assignment merge, W03's permitted check for policy models, connection status, catalog binding)
-  - `EXPECTED_DIVERGENCES`, `runParity(fixture, registrySide): Promise<ParityRow[]>`, `type ParityRow`
+  - `EXPECTED_DIVERGENCES`, `runParity(fixture, queries, legacySide, registrySide): Promise<ParityRow[]>`, `type ParityRow`, `sameUse`
+  - R6 (W03 Tasks 1 and 7 import these, so they reproduce exactly W02's binding):
+    - `projectionEnvFor(fixture: ParityFixture): LegacyProjectionEnv` (`parity/projectionEnv.ts`). It is computed from `fixture.env` only and never reads `process.env`.
+    - `bindLegacyFixture(fixture: ParityFixture): void` (`parity/bindLegacyFixture.ts`). It routes the legacy functions' DB and catalog reads to this fixture: seals the BYOK key under the legacy AAD and fills `legacyFixtureState`.
+    - `legacyFixtureState`, `legacyDbMockModule()`, `legacyCatalogMockModule()` (`parity/legacyFixtureMocks.ts`, no imports). A test wires them with `vi.mock('<path>/db', async () => (await import('<path>/parity/legacyFixtureMocks')).legacyDbMockModule())`, and the same for `services/llmProviderCatalog`.
+    - `materializeDesiredState` / `projectSurfaceUse` stay exported from `storeProjection.ts`.
   - `resolveReviewerDefaultModel(env?: NodeJS.ProcessEnv): string` (config/env.ts)
 
 **Comparison rule:**
@@ -5394,21 +5406,27 @@ export const PARITY_FIXTURES: readonly ParityFixture[] = [
 
 (`claude-haiku-4-5-20251001` is deliberately absent from `platformModels` in `office_and_reviewer_overrides`. It is a dated id on a BYOK connection, so it becomes a `manual` offering at its `MODEL_PRICING` rate, which exercises Review Focus 2.)
 
-- [ ] **Step 6: Write the parity suite (failing first)**
+- [ ] **Step 6: Write the exported binding helpers (R6), then the parity suite (failing first)**
 
-`apps/api/src/services/aiModels/parity/parity.test.ts`:
+`apps/api/src/services/aiModels/parity/legacyFixtureMocks.ts` has **no imports**, so a `vi.mock` factory can load it without a cycle (`encryptedColumnRegistry.ts` itself imports `../db`):
 
 ```ts
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+/**
+ * Mock state + vi.mock module factories that route the LEGACY functions' DB
+ * and catalog reads to one parity fixture (#7600 W02; W03 Tasks 1/7 reuse).
+ * Dependency-free on purpose: vi.mock factories import it.
+ * Every read the oracle triggers is a single-row lookup for the fixture's one
+ * partner, keyed by the Drizzle table object passed to .from().
+ */
+export const legacyFixtureState: { rows: Map<unknown, unknown[]>; catalogProvider: unknown } = {
+  rows: new Map(),
+  catalogProvider: null,
+};
 
-// Route the legacy functions' DB reads to the current fixture. Keyed by the
-// Drizzle table object passed to .from(); every read here is a single-row
-// lookup for the fixture's one partner, so the table alone selects the rows.
-const fixtureDb = vi.hoisted(() => ({ rows: new Map<unknown, unknown[]>() }));
-vi.mock('../../../db', () => {
+export function legacyDbMockModule() {
   const select = () => ({
     from: (table: unknown) => {
-      const rows = fixtureDb.rows.get(table) ?? [];
+      const rows = legacyFixtureState.rows.get(table) ?? [];
       const chain: Record<string, unknown> = {};
       chain.where = () => chain;
       chain.limit = () => Promise.resolve(rows);
@@ -5417,28 +5435,84 @@ vi.mock('../../../db', () => {
     },
   });
   return {
-    db: { select, update: vi.fn() },
+    db: { select, update: () => { throw new Error('parity oracle must not write'); } },
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     getCurrentDbAccessContext: () => undefined,
   };
-});
-const catalogState = vi.hoisted(() => ({ provider: null as unknown }));
-vi.mock('../../llmProviderCatalog', () => ({ getListedProviderByEntryId: vi.fn(async () => catalogState.provider) }));
+}
+
+export function legacyCatalogMockModule() {
+  return { getListedProviderByEntryId: async () => legacyFixtureState.catalogProvider };
+}
+```
+
+`apps/api/src/services/aiModels/parity/bindLegacyFixture.ts`:
+
+```ts
+/** Bind one parity fixture to the legacy mocks (#7600 W02; W03 Task 1 imports it). */
+import { organizations, partnerLlmConfigs } from '../../../db/schema';
+import { columnAad, encryptedColumnRegistry } from '../../encryptedColumnRegistry';
+import { encryptSecret } from '../../secretCrypto';
+import type { ParityFixture } from './harness';
+import { legacyFixtureState } from './legacyFixtureMocks';
+
+export function bindLegacyFixture(fixture: ParityFixture): void {
+  const legacySpec = encryptedColumnRegistry.find((s) => s.table === 'partner_llm_configs' && s.column === 'api_key_encrypted')!;
+  const config = fixture.snapshot.config;
+  legacyFixtureState.rows = new Map<unknown, unknown[]>([
+    [organizations, [{ partnerId: fixture.snapshot.partnerId }]],
+    [partnerLlmConfigs, config ? [{
+      id: config.id, partnerId: fixture.snapshot.partnerId,
+      apiKeyEncrypted: encryptSecret(fixture.legacyApiKey!, { aad: columnAad(legacySpec, config.id) }),
+      defaultModel: config.defaultModel, catalogEntryId: config.catalogEntryId,
+      status: config.status, configVersion: 1,
+    }] : []],
+  ]);
+  legacyFixtureState.catalogProvider = fixture.catalogProvider;
+}
+```
+
+`apps/api/src/services/aiModels/parity/projectionEnv.ts`:
+
+```ts
+/** The LegacyProjectionEnv a fixture's env implies (#7600 W02; W03 Tasks 1/7 import it). Reads fixture.env, never process.env. */
+import { resolveReviewerDefaultModel } from '../../../config/env';
+import { getLegacyModelRates } from '../../aiCostTracker';
+import { resolveDefaultModel } from '../../aiModel';
+import type { LegacyProjectionEnv } from '../legacyProjection';
+import { legacyExtensionModel } from '../legacySurfaceModels';
+import type { ParityFixture } from './harness';
+
+export function projectionEnvFor(fixture: ParityFixture): LegacyProjectionEnv {
+  const env = fixture.env as NodeJS.ProcessEnv;
+  return {
+    defaultModel: resolveDefaultModel(env),
+    reviewerModel: resolveReviewerDefaultModel(env),
+    extensionModel: legacyExtensionModel(undefined, env),
+    legacyRates: (model) => getLegacyModelRates(model).rates,
+  };
+}
+```
+
+(When W03 moves `getLegacyModelRates` to `legacySurfaceModels.ts` (R4), this one import moves with it.)
+
+`apps/api/src/services/aiModels/parity/parity.test.ts`:
+
+```ts
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../../db', async () => (await import('./legacyFixtureMocks')).legacyDbMockModule());
+vi.mock('../../llmProviderCatalog', async () => (await import('./legacyFixtureMocks')).legacyCatalogMockModule());
 vi.mock('../../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: vi.fn() }));
 vi.mock('../../sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
-import { organizations, partnerLlmConfigs } from '../../../db/schema';
-import { getLegacyModelRates } from '../../aiCostTracker';
-import { resolveDefaultModel } from '../../aiModel';
-import { resolveReviewerDefaultModel } from '../../../config/env';
-import { columnAad, encryptedColumnRegistry } from '../../encryptedColumnRegistry';
-import { encryptSecret } from '../../secretCrypto';
 import { buildDesiredRegistryState } from '../legacyProjection';
-import { legacyExtensionModel } from '../legacySurfaceModels';
+import { bindLegacyFixture } from './bindLegacyFixture';
 import { PARITY_FIXTURES } from './fixtures';
 import { EXPECTED_DIVERGENCES, parityQueries, runParity, type ParityFixture, type ParityRow } from './harness';
 import { legacySurfaceUse, withFixtureEnv } from './legacyOracle';
+import { projectionEnvFor } from './projectionEnv';
 import { materializeDesiredState, projectSurfaceUse } from './storeProjection';
 
 beforeAll(() => {
@@ -5447,33 +5521,12 @@ beforeAll(() => {
   process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true';
 });
 
-function loadFixture(f: ParityFixture): void {
-  const legacySpec = encryptedColumnRegistry.find((s) => s.table === 'partner_llm_configs' && s.column === 'api_key_encrypted')!;
-  const config = f.snapshot.config;
-  fixtureDb.rows = new Map<unknown, unknown[]>([
-    [organizations, [{ partnerId: f.snapshot.partnerId }]],
-    [partnerLlmConfigs, config ? [{
-      id: config.id, partnerId: f.snapshot.partnerId,
-      apiKeyEncrypted: encryptSecret(f.legacyApiKey!, { aad: columnAad(legacySpec, config.id) }),
-      defaultModel: config.defaultModel, catalogEntryId: config.catalogEntryId,
-      status: config.status, configVersion: 1,
-    }] : []],
-  ]);
-  catalogState.provider = f.catalogProvider;
-}
-
-async function parityFor(f: ParityFixture): Promise<ParityRow[]> {
-  loadFixture(f);
-  return withFixtureEnv(f.env, async () => {
-    const desired = buildDesiredRegistryState(f.snapshot, {
-      defaultModel: resolveDefaultModel(),
-      reviewerModel: resolveReviewerDefaultModel(process.env),
-      extensionModel: legacyExtensionModel(undefined, process.env),
-      legacyRates: (m) => getLegacyModelRates(m).rates,
-    });
-    const store = materializeDesiredState(desired, f);
-    return runParity(f, parityQueries(f), legacySurfaceUse, (_f, q) => projectSurfaceUse(store, q));
-  });
+async function parityFor(f: ParityFixture, snapshotOverride?: ParityFixture['snapshot']): Promise<ParityRow[]> {
+  bindLegacyFixture(f);
+  const projected: ParityFixture = snapshotOverride ? { ...f, snapshot: snapshotOverride } : f;
+  const store = materializeDesiredState(buildDesiredRegistryState(projected.snapshot, projectionEnvFor(f)), projected);
+  return withFixtureEnv(f.env, () =>
+    runParity(f, parityQueries(f), legacySurfaceUse, (_f, q) => projectSurfaceUse(store, q)));
 }
 
 describe('AI model registry parity: projection vs the real legacy path (#7600 W02, spec §10)', () => {
@@ -5492,27 +5545,31 @@ describe('AI model registry parity: projection vs the real legacy path (#7600 W0
 
   it('is discriminating: a projection that moves BYOK chat to the platform key is caught', async () => {
     const f = PARITY_FIXTURES.find((x) => x.name === 'byok_direct_pinned')!;
-    loadFixture(f);
-    const rows = await withFixtureEnv(f.env, async () => {
-      const desired = buildDesiredRegistryState({ ...f.snapshot, config: null }, {
-        defaultModel: resolveDefaultModel(), reviewerModel: resolveReviewerDefaultModel(process.env),
-        extensionModel: legacyExtensionModel(undefined, process.env), legacyRates: (m) => getLegacyModelRates(m).rates,
-      });
-      const store = materializeDesiredState(desired, { ...f, snapshot: { ...f.snapshot, config: null } });
-      return runParity(f, parityQueries(f), legacySurfaceUse, (_f, q) => projectSurfaceUse(store, q));
-    });
+    const rows = await parityFor(f, { ...f.snapshot, config: null });
     expect(rows.some((r) => r.divergence === 'UNEXPECTED')).toBe(true);
+  });
+
+  it('projectionEnvFor reads the fixture env, never process.env (W03 reuses it)', () => {
+    const saved = process.env.ANTHROPIC_MODEL;
+    process.env.ANTHROPIC_MODEL = 'process-env-must-not-leak';
+    try {
+      const f = PARITY_FIXTURES.find((x) => x.name === 'no_config_env_overrides')!;
+      expect(projectionEnvFor(f)).toMatchObject({ defaultModel: 'claude-opus-5-5', reviewerModel: 'claude-haiku-4-5', extensionModel: 'claude-sonnet-4-6' });
+      expect(projectionEnvFor(PARITY_FIXTURES.find((x) => x.name === 'no_config')!).defaultModel).not.toBe('process-env-must-not-leak');
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_MODEL; else process.env.ANTHROPIC_MODEL = saved;
+    }
   });
 });
 ```
 
-The third test is the control. It proves the suite can go red: feeding the projection a snapshot with the config stripped must produce UNEXPECTED rows, because chat moves from the connection to the platform key.
+The third test is the control. It proves the suite can go red: projecting a snapshot with the config stripped must produce UNEXPECTED rows, because chat moves from the connection to the platform key.
 
 - [ ] **Step 7: Run it; fix only the projection, never the oracle**
 
 Run: `cd apps/api && npx vitest run src/services/aiModels/parity/parity.test.ts`
 
-Expected: PASS for all 15 fixtures plus the two meta tests. A failing fixture means a bug in `legacyProjection.ts` (Task 10) or `storeProjection.ts`. Fix it there and add a matching case to `legacyProjection.test.ts`. The oracle may only change if it fails to call a legacy function faithfully. For example, if `mergeScriptPolicies` or `normalizeAgentPolicy` rejects a fixture row shape, fill in the missing field. Never change what the oracle computes.
+Expected: PASS for all 15 fixtures plus the three meta tests. A failing fixture means a bug in `legacyProjection.ts` (Task 10) or `storeProjection.ts`. Fix it there and add a matching case to `legacyProjection.test.ts`. The oracle may only change if it fails to call a legacy function faithfully. For example, if `mergeScriptPolicies` or `normalizeAgentPolicy` rejects a fixture row shape, fill in the missing field. Never change what the oracle computes.
 
 Two assertions guard the oracle's own correctness and should be checked when it fails:
 - `legacySurfaceUse` returns `{ outcome: 'unavailable', reason: 'key_error' }` for `byok_errored` on every non-patch surface.
@@ -5547,11 +5604,16 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `readLegacyProjectionEnv(): LegacyProjectionEnv`
   - `loadLegacySnapshot(partnerId: string): Promise<LegacySnapshot>`. It must run inside a held system context.
   - `reconcilePartnerFromLegacyInTx(partnerId: string, env?: LegacyProjectionEnv): Promise<ReconcileReport>`. It must run inside a held system context; it takes the partner's advisory lock and joins the caller's transaction.
+    - **It throws on any failure and never returns a partial report.** No `try/catch` inside it swallows an error.
+    - It never opens, commits or rolls back a transaction of its own (no `db.transaction`, no savepoint).
+    - A failure therefore aborts the CALLER's transaction. W03's cutover inserts its cutover row in that same transaction, so a half-projected partner can never be marked cut over.
+    - Only `reconcileAllPartnersFromLegacy` (the W02 boot sweep) catches, and only per partner, around a fresh transaction.
   - `reconcilePartnerFromLegacy(partnerId: string, env?: LegacyProjectionEnv): Promise<ReconcileReport>`, which opens its own fresh system context.
   - `reconcileAllPartnersFromLegacy(opts?: { env?: LegacyProjectionEnv }): Promise<{ partners: number; failures: Array<{ partnerId: string; error: string }> }>`
   - `type ReconcileReport = { partnerId: string; connection: 'created' | 'updated' | 'unchanged' | 'removed' | 'none'; offeringsUpserted: number; assignmentsUpserted: number; assignmentsDeleted: number; agentsRebound: number; sessionsRebound: number; bootstrapPlatformModels: string[] }`
   - `ensureLegacyPlatformModel(modelId: string): Promise<string>`, which inserts an unpriced, non-offered `ai_platform_models` row once (`ON CONFLICT (model_id) DO NOTHING`) and returns its id.
-- **Ownership in W02:** the reconcile owns every `ai_model_assignments` row of the partner (partner rows and its orgs' rows). It deletes rows the projection doesn't produce. Nothing else writes assignments until W04, and W03 stops the boot sweep first (see "Handoff to W03").
+- **Ownership in W02:** the reconcile owns every `ai_model_assignments` row of the partner (partner rows and its orgs' rows). It deletes rows the projection doesn't produce. Nothing else writes assignments in W02.
+  - From W03 on, each partner is projected exactly once, at its durable cutover (W03 Task 6A), and never again. W03 deletes the detached boot sweep and replaces the `/ai/provider` re-projection with registry-native remaps (W03 Task 6B). Re-projecting a cut-over partner would revert registry-native edits.
 - **"Live" sessions:** `status = 'active' AND created_at > now() − SESSION_MAX_AGE_MS AND last_activity_at > now() − SESSION_IDLE_TIMEOUT_MS`. Those are exactly the sessions `aiAgentSdk` would still serve. Lazily-expired rows that still say `active` are left unbound on purpose, because there can be very many of them.
 
 **Apply order** (one transaction per partner, under `pg_advisory_xact_lock(hashtextextended('ai_model_registry_reconcile:' || partner_id, 0))`):
@@ -5623,8 +5685,10 @@ In `apps/api/src/services/aiAgentSdk.ts`, change lines 85–86 to `export const 
  * converge. Runs only in a held SYSTEM context: it reads and writes every org
  * of the partner, and must never see a tenant slice.
  *
- * W03: run reconcileAllPartnersFromLegacy() blocking at the cutover boot, then
- * stop calling it (the registry becomes authoritative).
+ * W03 (Task 6A) calls reconcilePartnerFromLegacyInTx ONCE per partner, in the
+ * same transaction as a durable per-partner cutover row (gated in resolveModel,
+ * plus a leased post-serve() sweep), deletes the boot sweep below, and never
+ * re-projects a cut-over partner.
  */
 import { and, eq, gt, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -5951,7 +6015,8 @@ Wire the boot sweep in `apps/api/src/index.ts`, directly after the `sealUnsealed
   // Detached: nothing in W02 routes on it, and GET /ai/provider reads only
   // connection rows, which the migration and the facade keep exact. Env changes
   // need a restart, so a per-boot sweep tracks ANTHROPIC_MODEL-style defaults.
-  // W03 replaces this with ONE blocking run at its cutover boot.
+  // W03 (Task 6A) deletes this block: each partner is projected exactly once,
+  // durably, at its cutover (gated in resolveModel, plus a leased sweep after serve()).
   void reconcileAllPartnersFromLegacy()
     .then((result) => {
       console.log(`[startup] AI model registry reconciled for ${result.partners} partner(s); ${result.failures.length} failed`);
@@ -5991,7 +6056,7 @@ import { withSystemDbAccessContext } from '../../db';
 import { columnAad } from '../../services/encryptedColumnRegistry';
 import { encryptSecret } from '../../services/secretCrypto';
 import { buildDesiredRegistryState, type LegacyProjectionEnv } from '../../services/aiModels/legacyProjection';
-import { loadLegacySnapshot, reconcilePartnerFromLegacy } from '../../services/aiModels/legacyReconcile';
+import { loadLegacySnapshot, reconcilePartnerFromLegacy, reconcilePartnerFromLegacyInTx } from '../../services/aiModels/legacyReconcile';
 import { parityQueries, type ParityFixture } from '../../services/aiModels/parity/harness';
 import { materializeDesiredState, projectSurfaceUse, type RegistrySnapshot } from '../../services/aiModels/parity/storeProjection';
 import { getLegacyModelRates } from '../../services/aiCostTracker';
@@ -6076,6 +6141,35 @@ describe.skipIf(!RUN)('legacy reconcile (#7600 W02)', () => {
     const [stale] = await adminSql`SELECT offering_id FROM ai_sessions WHERE id = ${t.staleSessionId}`;
     expect(live!.offering_id).not.toBeNull();
     expect(stale!.offering_id).toBeNull();
+  });
+
+  it('a failure mid-reconcile throws and leaves nothing behind in the caller\'s transaction (never a partial report)', async () => {
+    const t = await seedRichPartner();
+    // Fail the assignment step for THIS partner only, after offerings were upserted.
+    await adminSql.unsafe(`
+      CREATE OR REPLACE FUNCTION w02_test_fail_assignments() RETURNS trigger LANGUAGE plpgsql AS $f$
+      BEGIN
+        IF NEW.offering_partner_id = '${t.partner.id}' THEN RAISE EXCEPTION 'injected reconcile failure'; END IF;
+        RETURN NEW;
+      END $f$;
+      DROP TRIGGER IF EXISTS w02_test_fail_assignments ON ai_model_assignments;
+      CREATE TRIGGER w02_test_fail_assignments BEFORE INSERT ON ai_model_assignments
+        FOR EACH ROW EXECUTE FUNCTION w02_test_fail_assignments();`);
+    try {
+      let report: unknown = 'not-returned';
+      await expect(withSystemDbAccessContext(async () => {
+        report = await reconcilePartnerFromLegacyInTx(t.partner.id, env);
+      })).rejects.toThrow(/injected reconcile failure/);
+      expect(report).toBe('not-returned');
+      expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${t.partner.id}`).toHaveLength(0);
+      expect(await adminSql`SELECT 1 FROM partner_ai_models WHERE partner_id = ${t.partner.id}`).toHaveLength(0);
+      expect(await adminSql`SELECT 1 FROM ai_model_assignments WHERE offering_partner_id = ${t.partner.id}`).toHaveLength(0);
+      const [bound] = await adminSql`SELECT offering_id FROM ai_sessions WHERE id = ${t.liveSessionId}`;
+      expect(bound!.offering_id).toBeNull();
+    } finally {
+      await adminSql.unsafe(`DROP TRIGGER IF EXISTS w02_test_fail_assignments ON ai_model_assignments;
+                             DROP FUNCTION IF EXISTS w02_test_fail_assignments();`);
+    }
   });
 
   it('is idempotent: a second run changes nothing', async () => {
@@ -6182,6 +6276,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ## Task 13: `/ai/provider` on the registry — same contract, reads the registry, writes legacy + registry atomically (unit + integration)
+
+> **W02-only scaffolding (W03 Task 6B removes it).** The "legacy write + re-projection" write path below exists only while legacy is the routing source.
+> - W03 replaces every facade write with **registry-native id remaps** (connect / disconnect / rotate / change default model, gated by the partner's cutover) and stops writing `partner_llm_configs`.
+> - It drops the Task 2 mirror trigger.
+> - It rewrites this task's integration cases that assert the legacy-row or trigger round trip.
+>
+> Re-running the projection after the flip would revert registry-native edits, so nothing here may be reused as the W03 write path. The read path (`getPartnerLlmStatus` from the registry) and the unchanged route contract carry forward.
 
 `routes/aiProvider.ts` does not change. It keeps importing `savePartnerLlmKey`, `getPartnerLlmStatus`, `updatePartnerLlmConfig`, `updatePartnerLlmEndpoint` and `deletePartnerLlmConfig` from `services/partnerLlmConfig.ts`. `routes/aiProvider.test.ts` mocks exactly those, so it stays green **unmodified**. The service underneath becomes the facade:
 - **Reads:** `getPartnerLlmStatus` reads the partner's compat connection in `partner_ai_connections`. `defaultModel` comes from `legacy_default_model`, so `null` ("tracks the deployment default") survives exactly. The route still derives `effectiveDefaultModel` from `resolveDefaultModel()`.
@@ -6325,10 +6426,11 @@ import { reconcilePartnerFromLegacyInTx } from './aiModels/legacyReconcile';
 
 ```ts
 /**
- * #7600 W02: the legacy table stays the routing source until W03, and the
- * registry is its projection. Every /ai/provider mutation runs its legacy write
- * and the reconcile in ONE system transaction, so both stores commit or roll
- * back together. Partner pinning comes from the route (BILLING_MANAGE +
+ * #7600 W02 SCAFFOLDING: the legacy table stays the routing source until W03,
+ * and the registry is its projection. Every /ai/provider mutation runs its
+ * legacy write and the reconcile in ONE system transaction, so both stores
+ * commit or roll back together. W03 Task 6B replaces this with registry-native
+ * remaps and must NOT keep calling the reconcile (it would revert native edits). Partner pinning comes from the route (BILLING_MANAGE +
  * canManagePartnerWidePolicies); every statement below filters on partnerId.
  */
 function inRegistryWrite<T>(partnerId: string, write: () => Promise<T>): Promise<T> {
@@ -7192,7 +7294,7 @@ Every existing cost record now also feeds the shadow ledger. The tracker compute
 | extension AI (`extensionAi.ts`) | `recordUsage(null, …)` | `{ surface: 'extension_content' }` |
 | AI agents (`aiAgents/runLoop.ts`) | `recordSessionlessSdkUsage` | `{ surface: 'ai_agents', agentRunId: run.id }` |
 | env OpenAI-compatible chat (`llm/openaiSessionManager.ts` settle) | direct `emitLegacyCostRecorded` | none (session-derived); `legacyCostSource: 'openai_env'` |
-| patch test runner | — | **no cost record exists** ("DELIBERATELY UNMETERED", `aiPatchTestRunner.ts`), so there is nothing to shadow. W03 meters it through `resolveModel` |
+| patch test runner | — | **no cost record exists** ("DELIBERATELY UNMETERED", #5557, `aiPatchTestRunner.ts`), so there is nothing to shadow. It stays unmetered after W03 too: it has no `org_id`, so no ledger row is possible |
 
 `recordOpenAIUsage` has no callers (dead code) and is left alone. `recordClientUsage` (the per-client-user Office ledger) is not a model call of its own: the same turn is already recorded by `recordUsageFromSdkResult`, so it gets no emit.
 
@@ -7751,25 +7853,35 @@ Then run one `/pr-review-toolkit:review-pr` round. Tenancy and billing-adjacent,
 
 ## Handoff to W03 (binding)
 
-1. **Final blocking reconcile, then stop.** At the cutover boot, run `await reconcileAllPartnersFromLegacy()` BEFORE `serve()`, and fail the boot if it reports failures. Only then switch reads to the registry, and remove the detached per-boot sweep from `index.ts`. Between boots, W02 bindings can lag agent-policy edits, new sessions and script/Office/budget policy edits.
-2. **Authority flip.**
-   - Writes move to the registry.
-   - The `/ai/provider` facade stops writing `partner_llm_configs`.
-   - Delete the `partner_llm_configs_mirror_to_connection` trigger in the same change, because the legacy table stops being written.
-   - W08 drops the table, `legacy_default_model` and `partner_ai_connections_compat_uq`. W04 may drop the index earlier, when multi-connection lands.
+W03's plan, "Required W02 plan changes" R1–R6, is authoritative where it is more specific.
+
+1. **Per-partner, durable, one-time cutover. No boot barrier.**
+   - W03 Task 6A calls `reconcilePartnerFromLegacyInTx(partnerId)` exactly once per partner. The call runs in one system transaction together with a durable per-partner cutover row, so both commit or neither does. R2: the reconcile throws on any failure and never returns a partial report.
+   - `resolveModel` refuses a partner (`registry_unavailable`, recoverable) until it is cut over, and cuts it over on demand.
+   - A coordinator-leased, resumable sweep starts after `serve()` (and after `startRegisteredWorkers` in `worker.ts`). Its completion is monotonic.
+   - W03 deletes W02's detached `reconcileAllPartnersFromLegacy()` boot block in `index.ts`. Nothing re-projects a cut-over partner.
+   - Between W02 boots, bindings can lag agent-policy edits, new sessions and script/Office/budget policy edits. The cutover projection captures the legacy state at that partner's cutover moment.
+2. **Authority flip (W03 Task 6B).**
+   - The Task 13 facade's "legacy write + re-projection" path and the Task 2 mirror trigger are W02-only scaffolding.
+   - W03 replaces facade writes with registry-native id remaps (connect / disconnect / rotate / change default model, gated by the cutover), stops writing `partner_llm_configs`, and drops the trigger in `2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql`.
+   - W03 rewrites Task 13's integration cases that assert the legacy-row or trigger round trip.
+   - Legacy readers (`resolveLlmConfig`, `llmUnusableCodeForOrgInSystemContext`, `markPartnerLlmError`) move to `getCompatConnection` / `getConnectionKeyMaterial`.
+   - W08 drops the table and `legacy_default_model`. W08 also drops `partner_ai_connections_compat_uq`, unless W04 drops it first when multi-connection lands.
 3. **Ledger.**
    - Switch `recordInvocation` to `ledgerMode: 'authoritative'`.
    - Derive session totals and `ai_cost_usage` only from authoritative rows. W02 shadow rows were never billed.
-   - Delete `legacyCostEvents.ts`, the emits, and `getLegacyModelRates`.
+   - Delete `legacyCostEvents.ts` and the emits.
    - Use the `legacy_cost_cents` vs `cost_cents` diff (`SELECT … FROM ai_invocations WHERE ledger_mode = 'shadow'`) as the pricing go/no-go.
+   - R4: `getLegacyModelRates` and its rate table are **not** deleted in W03. They move to `legacySurfaceModels.ts`, because the per-partner cutover of a not-yet-cut-over partner still runs W02's projection, which prices manual offerings with them. W08 deletes them, together with `legacyProjection.ts`, `legacyReconcile.ts` and the pickers.
 4. **Parity.** Reuse `parity/` with `resolveModel` as the registry side.
    - `EXPECTED_DIVERGENCES` lists the only two allowed behaviour changes: catalog on agents/extension, and per-offering catalog eligibility.
    - A third divergence must be added deliberately, with a spec reference.
+   - R6: `projectionEnvFor(fixture)` and `bindLegacyFixture(fixture)` are exported (Task 11) so W03's goldens and `registrySnapshotDeps.ts` reproduce exactly W02's binding.
 5. **Deferred from §5.6:**
    - drop the stale `ai_sessions.model` default once session creation goes through `resolveModel`;
    - validate explicit agent policy models against the `ai_agents` effective permitted set at write time.
 6. **Ledger insert contexts.** The provenance guard runs with the writer's RLS. An insert under an org token can name `connection_id` only through an enabled, org-visible offering. Keep ledger writes in system scope (`runAfterDbContextExit`), or insert with `offering_id` set.
-7. **Patch test runner** has no cost record today. W03 meters it through `resolveModel` (spec §9).
+7. **Patch test runner** (R5). W03 routes `patch_test` through `resolveModel` and the connection factory. It stays **unmetered** by design (#5557): it has no `org_id`, so no ledger row is possible.
 
 ## Index additions
 
@@ -7781,7 +7893,7 @@ Names this plan introduces that the index does not list. All are W02 unless note
   - `ai_invocations.ledger_mode`, `ai_invocations.legacy_cost_cents`.
 - **Index:** `partner_ai_connections_compat_uq` (temporary, W02–W04).
 - **Triggers:**
-  - `partner_llm_configs_mirror_to_connection` (W02–W03);
+  - `partner_llm_configs_mirror_to_connection` (W02-only scaffolding; dropped by W03 Task 6B);
   - `partner_ai_models_integrity_guard`;
   - `ai_model_assignments_offering_ownership_guard`;
   - `ai_invocations_append_only`, `ai_invocations_provenance_guard`;
@@ -7798,10 +7910,10 @@ Names this plan introduces that the index does not list. All are W02 unless note
 - **`legacyReconcile.ts`:** `reconcilePartnerFromLegacyInTx`, `reconcilePartnerFromLegacy`, `reconcileAllPartnersFromLegacy`, `loadLegacySnapshot`, `readLegacyProjectionEnv`, `ensureLegacyPlatformModel`, `ReconcileReport`.
 - **`legacyCostEvents.ts`:** `InvocationLedgerContext`, `LegacyCostEvent`, `onLegacyCostRecorded`, `emitLegacyCostRecorded`.
 - **`invocationLedger.ts`:** `registerInvocationLedgerShadow`, `recordShadowInvocation`, `surfaceFromSession`, `buildShadowRateSnapshot`, `shadowCostDiff`.
-- **`parity/`:** `SurfaceUse`, `ParityQuery`, `ParityFixture`, `ParityRow`, `PARITY_FIXTURES`, `parityQueries`, `legacySurfaceUse`, `withFixtureEnv`, `RegistrySnapshot`, `materializeDesiredState`, `projectSurfaceUse`, `EXPECTED_DIVERGENCES`, `runParity`, `sameUse`.
+- **`parity/`:** `SurfaceUse`, `ParityQuery`, `ParityFixture`, `ParityRow`, `PARITY_FIXTURES`, `parityQueries`, `legacySurfaceUse`, `withFixtureEnv`, `RegistrySnapshot`, `materializeDesiredState`, `projectSurfaceUse`, `EXPECTED_DIVERGENCES`, `runParity`, `sameUse`; R6: `projectionEnvFor` (`projectionEnv.ts`), `bindLegacyFixture` (`bindLegacyFixture.ts`), `legacyFixtureState` / `legacyDbMockModule` / `legacyCatalogMockModule` (`legacyFixtureMocks.ts`).
 - **Retention:** `jobs/aiInvocationRetention.ts` (`pruneAiInvocations`, `AI_INVOCATION_RETENTION_DEFAULT_DAYS`); queue `ai-invocation-retention`; worker `aiInvocationRetention`; env `AI_INVOCATIONS_RETENTION_DAYS` / `_BATCH_SIZE` / `_MAX_BATCHES`.
 - **Elsewhere:**
-  - `aiCostTracker.ts`: `getLegacyModelRates` (built on W01's private `resolveTokenRate`; deleted in W03);
+  - `aiCostTracker.ts`: `getLegacyModelRates` (built on W01's private `resolveTokenRate`; W03 moves it to `legacySurfaceModels.ts`; W08 deletes it);
   - `config/env.ts`: `resolveReviewerDefaultModel`;
   - `aiAgentSdk.ts`: `SESSION_MAX_AGE_MS` / `SESSION_IDLE_TIMEOUT_MS` become exported.
 

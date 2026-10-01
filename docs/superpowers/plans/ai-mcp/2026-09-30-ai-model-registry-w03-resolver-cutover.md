@@ -23,6 +23,8 @@ Closes #7601
   - `settleInvocation.ts` prices those components with `priceInvocation` and writes the ledger rows. It writes them inside `settleAiBudgetReservation`'s existing transaction, which also derives the session/`ai_cost_usage` increments from the inserted rows.
 - **Turn binding.** A turn's binding (offering, options, rate snapshot, connection identity, wire model) is written onto the budget reservation row in the reservation transaction, which is the durable turn claim. A live SDK query is reused only when the binding's live-query key is unchanged.
 - **Cutover order.** Surfaces cut over one task at a time, each with a parity test against frozen legacy goldens. The hard-coded lists, `getLlmBillingSourceForOrg` and the legacy cost recorders are deleted last, behind an AST contract test.
+- **Registry authority.** Each partner is projected from legacy config exactly once, gated in the resolver and run by a leased background sweep (Task 6A). After that, `/ai/provider` and agent-policy writes edit the registry directly (Tasks 6B, 12). Nothing re-projects a cut-over partner.
+- **Money moves once.** A platform debit happens only on a reservation's first transition to `settled`, under a stable idempotency key. A settlement deferred by lock contention persists its priced rows and is replayed by the sweep (Task 6).
 
 **Tech Stack:** Hono, Drizzle ORM on PostgreSQL (hand-written SQL migrations, forced RLS), BullMQ + Redis, `@anthropic-ai/claude-agent-sdk` `^0.3.286` (`query()`, `fallbackModel`, `model_refusal_fallback` / `model_refusal_no_fallback` system messages), `@anthropic-ai/sdk` `^0.128.0` (`beta.messages.create` with `fallbacks` + `server-side-fallback-2026-07-01`, `usage.iterations`, `stop_details`), Vitest (unit + real-Postgres integration), TypeScript compiler API (contract test).
 
@@ -61,11 +63,26 @@ The rows below name what this plan consumes. Where a name comes from those plans
 | P8 | `services/aiModels/offerings.ts`: `getOffering(id)`, `listOfferings(partnerId, opts?)`, `type Offering = PartnerAiModelRow`. The fields are `id, partnerId, connectionId, platformModelId, modelId, source, displayName, capabilities, priceInputCentsPerM, priceOutputCentsPerM, priceCacheReadCentsPerM, priceCacheWriteCentsPerM, enabled, defaultOptions, allowedOptions, requiredPermission, refusalFallbackOfferingId, lifecycle`; the jsonb fields are typed `Record<string, unknown>`. | W02 Task 3, 8 | `candidateLoader.ts` |
 | P9 | `services/aiModels/assignments.ts`: `getEffectiveAssignment({ partnerId, orgId, surface, role? }): Promise<EffectiveAssignment>`, **never null**. The type is `{ defaultOfferingId, defaultSource: 'org'\|'partner'\|'none', permitted: PermittedSet, allowUserChoice, options: OfferingOptions, fallbackOfferingIds, … }`. Also `PermittedSet = { kind:'all' } \| { kind:'list'; offeringIds }` and `isPermitted(set, id)`. | W02 Task 9 | `resolveModel.ts` |
 | P10 | `services/aiModels/invocationLedger.ts`: `recordInvocation(row: NewInvocation): Promise<string>`, written through the **ambient** `db`, so it joins the settlement transaction. `NewInvocation` holds spec §5.5's fields in camelCase plus W02's `ledgerMode: 'shadow' \| 'authoritative'` and `legacyCostCents`. The W02 shadow bridge (`LegacyCostEvent` emitted by the legacy recorders) goes quiet as each surface stops calling those recorders, and Task 17 deletes it. | W02 Task 5 + index | `settleInvocation.ts` (`toNewInvocations`). If `recordInvocation` opens its own context, Task 6 adds an `{ executor }` option. |
-| P11 | W02 columns `ai_sessions.offering_id`, `ai_sessions.offering_partner_id` and `ai_sessions.options`, and `ai_agents.offering_id` / `offering_partner_id`. The frozen `policySnapshot.effective` carries `offeringId`. Run-time permitted-set checking of explicit policy offerings is **W03's** (W02's projection only models it). | W02 Task 6 | Task 12 |
-| P12 | **W02's legacy projection stays live through W03:**<br>• `legacyReconcile.ts`: `reconcileAllPartnersFromLegacy()`, `reconcilePartnerFromLegacy(partnerId)`, `readLegacyProjectionEnv()`.<br>• Its pickers in `legacySurfaceModels.ts` (`legacyExtensionModel`, `legacyReviewerModel`, `legacyOfficeChatModel`, `legacyAgentModel`, `EXTENSION_AI_DEFAULT_MODEL`).<br>• `config/env.ts` `resolveReviewerDefaultModel(env)`.<br>• `aiCostTracker.getLegacyModelRates`.<br>W02's handoff requires W03 to run `reconcileAllPartnersFromLegacy()` **blocking before serving at its cutover boot, then stop calling it**. That is Task 6A. | W02 Task 1, 11, 12 | Task 6A, Task 11, Task 13, Task 17 |
+| P11 | W02 columns `ai_sessions.offering_id`, `ai_sessions.offering_partner_id` and `ai_sessions.options`, and `ai_agents.offering_id` / `offering_partner_id`. The frozen `policySnapshot.effective` carries `offeringId`. W02 Task 6 defers three things to W03:<br>• run-time permitted-set checking of explicit policy offerings (Task 12 Step 5–6);<br>• write-time binding of `ai_agents.model` to `offering_id`, checked against the `ai_agents` permitted set (Task 12 Step 7A);<br>• dropping the stale `ai_sessions.model` default (Task 9 Step 5A).<br>Also consumed: W02 Task 8's connection-scoped `findOfferingIdForModel({ partnerId, connectionId, modelId })`, used by Task 2's `findOfferingIdByModel`. | W02 Task 6, 8 | Task 2, 9, 12 |
+| P12 | **W02's legacy projection stays live through W03:**<br>• `legacyReconcile.ts`: `reconcileAllPartnersFromLegacy()`, `reconcilePartnerFromLegacy(partnerId)`, `readLegacyProjectionEnv()`.<br>• Its pickers in `legacySurfaceModels.ts` (`legacyExtensionModel`, `legacyReviewerModel`, `legacyOfficeChatModel`, `legacyAgentModel`, `EXTENSION_AI_DEFAULT_MODEL`).<br>• `config/env.ts` `resolveReviewerDefaultModel(env)`.<br>• `aiCostTracker.getLegacyModelRates`.<br>W02's handoff item 1 asks for `reconcileAllPartnersFromLegacy()` **blocking before `serve()`**. The Codex review (findings 7, 8, 10) showed that barrier is unsafe. Task 6A replaces it: `reconcilePartnerFromLegacyInTx(partnerId)` runs once per partner, durably, gated in the resolver, with a leased background sweep. W02's `reconcileAllPartnersFromLegacy` is no longer called, and its detached per-boot sweep in `index.ts` is deleted. | W02 Task 1, 11, 12 | Task 6A, Task 11, Task 13, Task 17 |
 | P13 | The W02 parity harness in `services/aiModels/parity/`:<br>• `PARITY_FIXTURES`, `parityQueries(fixture)` and `legacySurfaceUse(fixture, query)` (the REAL legacy code; the caller mocks DB reads the way W02's `parity.test.ts` does).<br>• `SurfaceUse`, `ParityQuery` and `EXPECTED_DIVERGENCES` (two entries).<br>• `buildDesiredRegistryState`, `materializeDesiredState(desired, fixture): RegistrySnapshot` and `readLegacyProjectionEnv` from W02's projection.<br>• `mergeEffectiveAssignment` from `assignments.ts`. | W02 Task 10–11 | `parity/w03Parity.ts`, `parity/registrySnapshotDeps.ts` (Task 1) |
 | P14 | Integration fixtures: `__tests__/integration/db-utils.ts` `createPartner()` / `createOrganization({ partnerId })`; W02's `__tests__/integration/aiModelRegistryFixtures.ts` `seedPlatformModel()`, `seedOffering({ partnerId, platformModelId, enabled })` and `fixtureSql`; every integration file starts with `import './setup'`. | repo + W02 Task 4 | `helpers/aiModelRegistrySeed.ts` (Task 2) |
 | P15 | W01's discovery worker in `apps/api/src/jobs/aiModelDiscoveryWorker.ts` (not the index's `workers/` path; W01 followed the `jobs/` convention):<br>• `AiModelDiscoveryJobData = { type: 'sync-platform'; trigger }`, `processAiModelDiscoveryJob(job)` switching on `job.data.type`;<br>• `getAiModelDiscoveryQueue()`, `scheduleAiModelDiscoveryJobs()`;<br>• `discoverAnthropicModels(apiKey: string \| undefined)`. | W01 Task 7–8 | Task 16 |
+
+## Required W02 plan changes
+
+The Codex review of this plan (findings 7–10) changes three of W02's handoff items. This plan does **not** edit the W02 plan; the W02 owner applies these before W02 executes. Item numbers refer to W02's "Handoff to W03 (binding)" section.
+
+| # | W02 location | Change | Why (W03 task) |
+|---|---|---|---|
+| R1 | Handoff item 1; Architecture paragraph ("made exact by W03's blocking cutover reconcile"); Task 12 "Ownership in W02" note ("W03 stops the boot sweep first") | Replace "run `reconcileAllPartnersFromLegacy()` blocking before `serve()` and fail the boot on failures" with this: W03 calls `reconcilePartnerFromLegacyInTx(partnerId)` **once per partner**, inside its own system transaction, together with a durable per-partner cutover row. It is gated in `resolveModel` and run by a leased background sweep. W03 deletes W02's detached boot sweep. | A blocking boot sweep exceeds the 40 s health grace (finding 10). It leaves the split worker ungated (`worker.ts`, finding 7), and replicas race on one marker (finding 8). See Task 6A. |
+| R2 | Task 12 interface for `reconcilePartnerFromLegacyInTx` | State that it **throws** on any failure and never returns a partial report. It must not open, commit or roll back a transaction of its own (it already joins the caller's). | W03 inserts the cutover row in the same transaction. A swallowed failure would mark a half-projected partner as cut over (Task 6A). |
+| R3 | Handoff item 2; Task 13 (facade) | "Writes move to the registry" becomes: W03 replaces the facade's legacy + reconcile write with **registry-native id remaps** (connect / disconnect / change default model), never a re-projection. It also drops the Task 2 mirror trigger. W02 Task 13's integration cases that assert the legacy row or trigger round trip are rewritten by W03. | Re-running the projection after the flip would revert registry-native edits (finding 9). See Task 6B. |
+| R4 | Handoff item 3; Task 1 interface (`getLegacyModelRates` "Deleted with the legacy cost path in W03") | `getLegacyModelRates` and its rate table **move** to `legacySurfaceModels.ts` in W03. W08 deletes them, not W03. | Task 6A's cutover of a not-yet-cut-over partner still runs W02's projection (Task 10/12), which prices manual offerings with it. See Task 17. |
+| R5 | Handoff item 7 | Replace "W03 meters it through `resolveModel`" with: W03 routes `patch_test` through `resolveModel` and the connection factory. It stays **unmetered** by design (#5557): it has no `org_id`, so no ledger row is possible. | Task 14. |
+| R6 | Task 11 (parity harness) | Export two helpers instead of leaving them local to `parity.test.ts`: the per-fixture `LegacyProjectionEnv` builder (`projectionEnvFor(fixture)`) and the per-fixture legacy mock binder. Keep `materializeDesiredState` / `projectSurfaceUse` exported from `storeProjection.ts`. | W03's goldens test and `registrySnapshotDeps.ts` must reproduce exactly W02's binding (Tasks 1, 7). `projectSurfaceUse` is the exact expected tuple for declared divergences (finding 13). |
+
+**Cross-repo (not W02):** the billing service's `ai-credits/deduct` endpoint must honour the `idempotencyKey` that Task 6 Step 8a sends. Until it does, a debit retried after a lost response can double-charge, so the billing change ships first.
 
 ## Global Constraints
 
@@ -76,21 +93,33 @@ The rows below name what this plan consumes. Where a name comes from those plans
 - **Funding comes from the resolved offering, decided before admission.** Platform offering → `platform`; any connection offering → `partner_key`. `checkBudget` / `checkBudgetDetailed` / `checkBillingCredits` / `reserveAiBudget` / `settleComputeCents` receive `resolved.funding` (or the run's persisted `funding_source`). `getLlmBillingSourceForOrg` is deleted in Task 15.
 - **Platform-key traffic is never priced from a non-platform rate, and an unpriced model is never dispatched** (index invariant 5). `resolveModel` returns `ok:false, reason:'unpriced'` rather than a result without a rate.
 - **Nothing crosses a connection or a funding source implicitly.** The bounded fallback (§9.1) and the refusal fallback both require the same connection id and the same funding.
-- **Migrations.** There are exactly five new files, each named to sort after the newest **committed** migration at commit time. Check `git ls-tree --name-only origin/main apps/api/migrations | grep -E '/[0-9]{4}-' | sort | tail -1` before each commit and bump the date if W01/W02 or later work sorts after it. The names below assume nothing on `main` sorts after `2026-11-19`:
-  - `apps/api/migrations/2026-11-19-100000-ai-budget-reservation-model-binding.sql` (Task 6)
+- **Migrations.** There are exactly seven new files, each named to sort after the newest **committed** migration at commit time. Check `git ls-tree --name-only origin/main apps/api/migrations | grep -E '/[0-9]{4}-' | sort | tail -1` before each commit and bump the date if W01/W02 or later work sorts after it. The names below assume nothing on `main` sorts after `2026-11-19`:
+  - `apps/api/migrations/2026-11-19-100000-ai-budget-reservation-model-binding.sql` (Task 6: `model_binding`, `pending_settlement`, `credits_debited_at`)
   - `apps/api/migrations/2026-11-19-100100-ai-models-premium-permission.sql` (Task 2)
-  - `apps/api/migrations/2026-11-19-100200-ai-agent-runs-blocked-funding.sql` (Task 12)
+  - `apps/api/migrations/2026-11-19-100200-ai-agent-runs-blocked-funding.sql` (Task 12: `blocked`, `funding_source`, `admitted_offering_id`)
   - `apps/api/migrations/2026-11-19-100300-partner-ai-models-discovery-state.sql` (Task 16)
-  - `apps/api/migrations/2026-11-19-100400-ai-model-registry-state.sql` (Task 6A)
+  - `apps/api/migrations/2026-11-19-100400-ai-model-registry-cutover.sql` (Task 6A)
+  - `apps/api/migrations/2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql` (Task 6B)
+  - `apps/api/migrations/2026-11-19-100600-ai-sessions-model-drop-default.sql` (Task 9)
 
-  All five are idempotent (`IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then re-add, existence-guarded inserts). None has an inner `BEGIN`/`COMMIT`. A file that writes rows (only the permission file) elects `set_config('breeze.scope','system',true)` first.
-- **Cutover boot (W02 handoff).**
-  - The first boot of this release runs W02's `reconcileAllPartnersFromLegacy()` **blocking, before `serve()`**, then records completion in the singleton system table `ai_model_registry_state`. Every later boot skips it, and the registry is authoritative from then on.
-  - A partner created after cutover has no assignments. Its first `resolveModel` bootstraps its registry once through W02's reconcile; with no legacy config, that projects platform defaults.
-  - `/ai/provider` keeps W02's atomic legacy + registry write until W04 replaces it.
-  - **No task may break `legacyReconcile.ts` or its inputs** before W08 deletes them: the pickers, the reviewer default and the legacy rate table.
+  All seven are idempotent (`IF NOT EXISTS`, `DROP … IF EXISTS` then re-add, existence-guarded inserts). None has an inner `BEGIN`/`COMMIT`. A file that writes rows elects `set_config('breeze.scope','system',true)` first. Only two write rows: the permission file and the cutover file's singleton insert.
+- **Registry cutover (replaces W02 handoff item 1; see "Required W02 plan changes").**
+  - Each partner is projected from legacy config **exactly once**, durably, inside one transaction with its `ai_model_registry_partner_cutover` row (Task 6A). It is never projected again.
+  - The gate is in `resolveModel` (`registry_unavailable` until the partner is cut over) and in every registry-native write (the `/ai/provider` facade, agent model binding, the legacy session-model lookup). It is not a boot barrier, so the API, the split worker and any future consumer are all gated.
+  - A coordinator-leased background sweep cuts every partner over after `serve()` / `startRegisteredWorkers`, resumable, with monotonic completion. `/health` is never blocked.
+  - **Authority flip (Task 6B).** `/ai/provider` writes the registry natively (connect / disconnect / default-model remaps by offering id) and no longer writes `partner_llm_configs`. The mirror trigger is dropped. Nothing re-projects a cut-over partner.
+  - **No task may break `legacyReconcile.ts` or its inputs** before W08 deletes them: the pickers, the reviewer default and the legacy rate table. The cutover of a partner that has not been cut over yet still needs them.
+  - **Legacy policy fields stop routing at cutover.** `ai_script_policies.reviewer_model`, Office `allowedModels` and `ai_budgets.allowed_models` were projected once, and their editors stay live until W04 replaces them. An edit made between this wave's release and W04's has no routing effect. Agent `model` is the exception: Task 12 binds it at write time. Release W03 and W04 together, or treat the gap as known (Self-review).
 - **Transport carriage.** W01's adapters refuse `speed`, `inferenceGeo` and `thinkingDisplay:'updates'` until its spike enables them. `resolveModel` therefore clamps option support to what the dispatch transport can carry (`transportCarries`, Task 4) **before** building wire params. A fast-mode rate is never bound to a turn that cannot send fast mode. Residency fails closed when the geography cannot be carried.
-- **Export policy fires on new columns.** `ai_budget_reservations.model_binding` (jsonb → `excludedOpen`) and `ai_agent_runs.funding_source` (text → `included`) each get a `CORE_TENANT_EXPORT_POLICY` entry in the same task. `partner_ai_models` is partner-axis with no `org_id`, so its new columns need no export entry. The only new table is `ai_model_registry_state`, a system singleton with no tenant column. It goes in the `rls-coverage` system-table allowlist (like `llm_provider_catalog`), and no cascade, merge or export list applies to it.
+- **Export policy fires on new columns.** Each new column on an org-cascade table gets a `CORE_TENANT_EXPORT_POLICY` classification in the same task:
+  - `ai_budget_reservations.model_binding` and `.pending_settlement` (jsonb → `excludedOpen`), `.credits_debited_at` (→ `included`), Task 6;
+  - `ai_agent_runs.funding_source` and `.admitted_offering_id` (→ `included`), Task 12.
+
+  `partner_ai_models` is partner-axis with no `org_id`, so its new columns need no export entry. There are two new tables, both in Task 6A:
+  - `ai_model_registry_state` is a system singleton with no tenant column. It goes in the `rls-coverage` system-table allowlist (like `llm_provider_catalog`).
+  - `ai_model_registry_partner_cutover` is partner-axis (shape 3, forced RLS). It goes in `PARTNER_TENANT_TABLES` and cascades from `partners` by FK.
+
+  Neither has an `org_id`, so no org cascade, merge or export list applies.
 - **DB contexts.** Request code uses the ambient request `db`. Reservation and settlement keep their own `runOutsideDbContext(() => withSystemDbAccessContext(...))` transaction, and the ledger insert happens **inside** it. The resolver's DB reads use `runOutsideDbContext(() => withSystemDbAccessContext(...))`, like `llmConfigResolver.ts` today, so they never hold a second pooled connection under a request transaction for longer than one read. Never call `resolveModel` while holding a row lock.
 - **Permission gate.** It applies only to user-initiated calls, meaning `userId` is a Breeze `users.id`. Office client users (portal), helper (device), agents, the reviewer, system-initiated enrichment and patch tests pass no `userId`.
 - **Public repo.** No IPs, hostnames or infrastructure detail, and no description of unfixed vulnerabilities, in code, comments, commits or the PR.
@@ -120,6 +149,13 @@ These are the five input classes most likely to bite. Each has a pinning test in
    - Task 5: `invocationUsage` table;
    - Task 6: "SDK says $9.99, registry says $0.012 → ledger + rollup + credits all $0.012" and "SDK says $0 on a model added by today's discovery → billed at its platform rate";
    - Task 7: the chat `result` case asserts `settleInvocation` gets no SDK cost field.
+
+   The registry number must also be **debited exactly once** (review findings 1–2):
+   - a repeated settlement must not debit twice;
+   - a settlement deferred by lock contention must not be lost or debited early;
+   - a failed debit call must not go unretried.
+
+   Pinned by Task 6 Step 8a: "a repeated settlement of the same reservation debits once, with the reservation key", "a deferred settlement debits nothing now", "a rejected debit is not stamped", and the integration case "lock contention twice → rows persisted pending, not lost; the sweep replays ledger + rollups exactly once".
 3. **Refusals.**
    - A refusal with no fallback configured.
    - A refusal where the fallback served the turn.
@@ -139,6 +175,8 @@ These are the five input classes most likely to bite. Each has a pinning test in
    - Task 6: integration, "binding is written in the reservation transaction; a forced failure after insert leaves neither";
    - Task 4: `liveQueryKey` differs on each of connection id / config_version / revision / wire model / wire fingerprint;
    - Task 7: idle Office session with a bumped `config_version` is recreated, and a processing one is left for the 409 path.
+   - A stable-key retry (agent runs) whose binding changed must re-bind its unsettled reservation, never bill the old rate (finding 4). Pinned by Task 6 integration "a stable-key replay after a rate change re-binds the active reservation before dispatch". An agent run must dispatch on the offering and funding admission checked (finding 6). Pinned by Task 12 "re-resolves the ADMITTED offering".
+   - Two replicas booting at once must cut each partner over exactly once (finding 8). Pinned by Task 6A's lease and partner-row integration cases.
 5. **Cross-partner or forged offering ids.** A user can send another partner's offering id, a disabled offering, an offering outside the permitted set, or a premium offering without the permission. Each must give `not_permitted` / `permission_required` with no detail about the foreign offering, and nothing may be stored on the session. Pinned by:
    - Task 3: the table;
    - Task 2: integration, "an offering owned by partner B is invisible when resolving for partner A";
@@ -170,7 +208,7 @@ These are the five input classes most likely to bite. Each has a pinning test in
 | `apps/api/src/services/aiModels/settleInvocation.test.ts` | Pricing + settlement wiring |
 | `apps/api/src/services/aiModels/refusals.ts` | §9.1a user-facing refusal text + alternatives + docs link |
 | `apps/api/src/services/aiModels/refusals.test.ts` | Message shape, `null` category |
-| `apps/api/src/services/aiModels/sessionModel.ts` | `resolveSessionTurn` (Task 7); `chooseSessionModel` for session creation (`requested` → `resolveModel`, legacy `model` → offering lookup) and `InvalidSessionModelError`, moved from W00's `aiOfferableModels.ts` (Task 9) |
+| `apps/api/src/services/aiModels/sessionModel.ts` | `resolveSessionTurn` (Task 7); `chooseSessionModel` for session creation (`requested` → `resolveModel`, legacy `model` → offering on the surface default's connection) and `InvalidSessionModelError`, moved from W00's `aiOfferableModels.ts` (Task 9) |
 | `apps/api/src/services/aiModels/sessionModel.test.ts` | Validation table |
 | `apps/api/src/services/aiModels/aiModelRegistry.contract.test.ts` | AST contract: model literals, `new Anthropic(`, `buildWireParams(`, `total_cost_usd` |
 | `apps/api/src/services/aiAgents/modelBlocked.ts` | Blocked-run outcome + once-per-agent-per-day notification |
@@ -179,11 +217,17 @@ These are the five input classes most likely to bite. Each has a pinning test in
 | `apps/api/src/services/aiModels/parity/w03Goldens.test.ts` | Proves goldens = live legacy before deletion (Task 1); retired in Task 15 |
 | `apps/api/src/services/aiModels/parity/w03Parity.ts` | `queryKey`, `toSurfaceUse`, `assertSurfaceParity`: the REAL `resolveModel` vs frozen goldens under W02's comparison rule + `EXPECTED_DIVERGENCES` |
 | `apps/api/src/services/aiModels/parity/registrySnapshotDeps.ts` | Backs the resolver's data adapters with W02's materialized `RegistrySnapshot` (the one coupling point to W02's snapshot shape) |
-| `apps/api/src/services/aiModels/parity/w03.<surface>.parity.test.ts` | One per surface (11 files, Tasks 7–14): chat, helper, scriptBuilder, officeChat, officeTicket, ticketDraft, scriptReviewer, aiAgents, catalogEnrichment, extensionContent, patchTest |
+| `apps/api/src/services/aiModels/parity/w03Surfaces.parity.test.ts` | One `describe` per surface (Tasks 7, 10–14 append): chat/topology + sessions, helper, script_builder, office_chat, ticket draft, office_ticket, script_reviewer, ai_agents, catalog_enrichment, extension_content, patch_test; plus the mutation self-tests that must fail (finding 13) |
 | `apps/api/src/__tests__/integration/helpers/aiModelRegistrySeed.ts` | `seedRegistryPartner(kind)`: a real partner/org/user + connection/offering/assignments/chat session for integration tests |
-| `apps/api/src/services/aiModels/registryCutover.ts` (+ `.test.ts`) | Task 6A: blocking cutover reconcile at boot + lazy per-partner bootstrap |
-| `apps/api/src/__tests__/integration/aiModelRegistryCutover.integration.test.ts` | Cutover runs once, then never again; new partner bootstrap |
-| `apps/api/migrations/2026-11-19-100400-ai-model-registry-state.sql` | `ai_model_registry_state` singleton (system table) |
+| `apps/api/src/services/aiModels/registryCutover.ts` (+ `.test.ts`), `registryCutoverStore.ts` | Task 6A: per-partner once-only cutover, the resolver/write gate, the leased resumable background sweep |
+| `apps/api/src/db/schema/aiModelRegistryCutover.ts` | `aiModelRegistryState`, `aiModelRegistryPartnerCutover` |
+| `apps/api/src/__tests__/integration/aiModelRegistryCutover.integration.test.ts` | Concurrent sweeps, resume after interruption, on-demand partner cutover, monotonic completion |
+| `apps/api/migrations/2026-11-19-100400-ai-model-registry-cutover.sql` | `ai_model_registry_state` singleton (system table) + `ai_model_registry_partner_cutover` (partner-axis, forced RLS) |
+| `apps/api/src/services/aiModels/compatRemap.ts` (+ `.test.ts`) | Task 6B: registry-native `/ai/provider` writes (connect / disconnect / default model) as offering-id remaps |
+| `apps/api/src/__tests__/integration/aiProviderAuthority.integration.test.ts` | The facade edits the registry, never re-projects it; the legacy table is not written; the mirror trigger is gone |
+| `apps/api/migrations/2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql` | Drops W02's `partner_llm_configs_mirror_to_connection` (W02 handoff #2) |
+| `apps/api/migrations/2026-11-19-100600-ai-sessions-model-drop-default.sql` | Drops the stale `ai_sessions.model` default (W02 handoff #5) |
+| `apps/api/src/services/aiAgents/agentModelBinding.ts` (+ `.test.ts`) | Write-time agent policy model → offering, checked against the `ai_agents` permitted set (W02 handoff #5) |
 | `apps/api/src/__tests__/integration/resolveModel.integration.test.ts` | Live catalog revision, forged ownership, plan/residency against real rows |
 | `apps/api/src/__tests__/integration/aiInvocationSettlement.integration.test.ts` | Ledger ≡ rollups, binding atomicity, SDK-cost regression |
 | `apps/api/src/__tests__/integration/aiModelConnectionDiscovery.integration.test.ts` | BYOK/catalog discovery lifecycle against real rows |
@@ -204,7 +248,8 @@ These are the five input classes most likely to bite. Each has a pinning test in
 | `packages/shared/src/types/index.ts` | 2 | `PartnerSettings.ai?: { residencyRequired?: boolean }` |
 | `apps/api/src/services/partnerLlmConfig.ts` (or W02's connection probe), `apps/api/src/services/llm/providerFidelityHarness.ts`, W01 `discovery.ts` | 4 | Use `createAnthropicClient` |
 | `apps/api/src/services/aiBudgetReservations.ts`, `apps/api/src/db/schema/ai.ts` | 6 | `binding` on reserve; `invocations` on settle; rollups derived from ledger rows |
-| `apps/api/src/index.ts`, `apps/api/src/db/schema/index.ts`, `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`, `services/aiModels/resolveModel.ts` | 6A | Blocking cutover reconcile before `serve()` (replaces W02's detached sweep); `ai_model_registry_state` schema + system allowlist; lazy partner bootstrap |
+| `apps/api/src/index.ts`, `apps/api/src/worker.ts`, `apps/api/src/db/schema/index.ts`, `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`, `services/aiModels/resolveModel.ts`, `eligibility.ts` | 6A | Background cutover sweep after `serve()` / `startRegisteredWorkers` (W02's detached reconcile deleted); the two new tables in the RLS allowlists; the `registry_unavailable` gate |
+| `apps/api/src/services/partnerLlmConfig.ts`, `apps/api/src/services/llm/llmConfigResolver.ts` | 6B | The `/ai/provider` facade writes the registry natively; the legacy resolver reads the compat connection |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` | 6, 12 | Two column classifications |
 | `apps/api/src/services/streamingSessionManager.ts` | 7, 8 | `getOrCreate(…, resolved: ResolvedModel …)`; live-query key; `result` → `settleInvocation`; refusal handling |
 | `apps/api/src/services/aiAgentSdk.ts` | 7 | `runPreFlightChecks` resolves the session turn and checks the budget with `resolved.funding` |
@@ -214,8 +259,9 @@ These are the five input classes most likely to bite. Each has a pinning test in
 | `apps/api/src/routes/clientAi/sessions.ts`, `apps/api/src/services/clientAiSessions.ts` | 7, 9 | `office_chat` turn + session create |
 | `apps/api/src/services/aiAgent.ts`, `packages/shared/src/validators/ai.ts`, `packages/shared/src/types/ai.ts` | 8, 9 | `model_refusal` stream event; session create via `sessionModel.ts`; `offeringId` / `options` in body |
 | `apps/api/src/routes/officeAddin/tickets.ts`, `apps/api/src/services/officeAddin/aiEmailDraft.ts`, `apps/api/src/services/aiTicketDraft.ts` | 10 | `office_ticket` + ticket draft |
-| `apps/api/src/services/scriptProposals/reviewer.ts`, `apps/api/src/config/env.ts` | 11 | `script_reviewer` surface; env var removed |
-| `apps/api/src/services/aiAgents/runLoop.ts`, `runService.ts`, `agentCircuit.ts`, `analysisAdmission.ts`, `packages/shared/src/types/aiAgents.ts`, web run-status maps + locales | 12 | `ai_agents` surface |
+| `apps/api/src/services/scriptProposals/reviewer.ts`, `scriptProposals/policy.ts`, `services/system/connections/registry.ts` | 11 | `script_reviewer` surface; the reviewer env var deprecated (no longer read at runtime; `config/env.ts` keeps it for W02's projection) |
+| `apps/api/src/services/aiAgents/runLoop.ts`, `runService.ts`, `agentCircuit.ts`, `analysisAdmission.ts`, `agentService.ts`, `apps/api/src/routes/aiAgents.ts`, `packages/shared/src/types/aiAgents.ts`, web run-status maps + locales | 12 | `ai_agents` surface; admitted offering persisted on the run; write-time model binding |
+| `apps/api/src/db/schema/ai.ts` (`aiSessions.model`), integration inserts that relied on its default | 9 | Default dropped |
 | `apps/api/src/services/catalogEnrichmentService.ts`, `apps/api/src/services/extensionAi.ts`, `ee/workspace/src/services/enrichmentService.ts` | 13 | `catalog_enrichment`, `extension_content` |
 | `apps/api/src/services/aiPatchTestRunner.ts` | 14 | `patch_test` via the factory |
 | `apps/api/src/services/llm/llmConfigResolver.ts`, `apps/api/src/services/aiBudgetAlerts.ts`, `apps/api/src/services/aiCostTracker.ts` (`getUsageSummary`), W02 parity harness | 15 | `getLlmBillingSourceForOrg` deleted; funding labels from the resolver / ledger rollup; goldens test retired |
@@ -459,7 +505,8 @@ This task also seeds the `ai_models:premium` permission (spec §5.3, §15 #7), g
   export async function loadPlatformDefaultCandidate(): Promise<LoadedCandidate | null>;
   export async function loadPartnerFacts(partnerId: string): Promise<{ plan: PartnerPlan; residencyRequired: boolean }>;
   export async function loadUserPermissionPredicate(userId: string, partnerId: string | null, orgId: string | null): Promise<(key: string) => boolean>;
-  export async function findOfferingIdByModel(partnerId: string, modelId: string): Promise<string | null>;
+  /** Finding 11: only within the surface's effective DEFAULT connection; never picks another destination. */
+  export async function findOfferingIdByModel(input: { partnerId: string; orgId: string | null; surface: AiSurface; modelId: string }): Promise<string | null>;
   export async function readOrgPartnerId(orgId: string): Promise<string | null>;
   export async function readSessionModelRow(sessionId: string): Promise<{ orgId: string; offeringId: string | null; options: Partial<OfferingOptions> | null } | null>;
   export const EMPTY_OPTION_SUPPORT: OptionSupport;
@@ -728,6 +775,8 @@ const m = vi.hoisted(() => ({
   getListedProviderByEntryId: vi.fn(),
   isLlmProviderCatalogEnabled: vi.fn(() => true),
   isPlatformLlmConfigured: vi.fn(() => true),
+  findOfferingIdForModel: vi.fn(),
+  getEffectiveAssignment: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -735,7 +784,8 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
-vi.mock('./offerings', () => ({ getOffering: m.getOffering, listOfferings: vi.fn() }));
+vi.mock('./offerings', () => ({ getOffering: m.getOffering, listOfferings: vi.fn(), findOfferingIdForModel: m.findOfferingIdForModel }));
+vi.mock('./assignments', () => ({ getEffectiveAssignment: m.getEffectiveAssignment }));
 vi.mock('./connections', () => ({
   getConnection: m.getConnection,
   getConnectionKeyMaterial: m.getConnectionKeyMaterial,
@@ -762,7 +812,7 @@ vi.mock('./capabilities', () => ({
   }),
 }));
 
-import { loadOfferingCandidate, loadPlatformDefaultCandidate } from './candidateLoader';
+import { findOfferingIdByModel, loadOfferingCandidate, loadPlatformDefaultCandidate } from './candidateLoader';
 
 const PLATFORM_ROW = {
   id: 'pm-1', modelId: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5',
@@ -906,6 +956,40 @@ describe('loadOfferingCandidate', () => {
     expect((await loadOfferingCandidate('off-1', 'p1'))!.facts.inferenceGeo).toBe('eu');
     m.getConnection.mockResolvedValue({ ...BYOK_CONN, inferenceGeo: null });
     expect((await loadOfferingCandidate('off-1', 'p1'))!.facts.inferenceGeo).toBe('us');
+  });
+});
+
+describe('findOfferingIdByModel (finding 11: never crosses to another connection)', () => {
+  // The same model id exists on the platform AND on a BYOK connection.
+  const PLATFORM_SONNET = { ...BASE_OFFERING, id: 'plat-sonnet', partnerId: 'p1' };
+  const BYOK_SONNET = { ...BASE_OFFERING, id: 'byok-sonnet', partnerId: 'p1', connectionId: 'conn-1', source: 'discovered', modelId: 'claude-sonnet-5-5' };
+  const BYOK_OPUS_DISABLED = { ...BASE_OFFERING, id: 'byok-opus', partnerId: 'p1', connectionId: 'conn-1', enabled: false, modelId: 'claude-opus-5-5' };
+  const rows = [PLATFORM_SONNET, BYOK_SONNET, BYOK_OPUS_DISABLED];
+  beforeEach(() => {
+    m.getOffering.mockImplementation(async (id: string) => rows.find((o) => o.id === id) ?? null);
+    // A faithful stand-in for W02's connection-scoped lookup.
+    m.findOfferingIdForModel.mockImplementation(async (q: { connectionId: string | null; modelId: string }) =>
+      rows.find((o) => o.connectionId === q.connectionId && (o.modelId ?? 'claude-sonnet-5-5') === q.modelId)?.id ?? null);
+  });
+  const find = (modelId: string) => findOfferingIdByModel({ partnerId: 'p1', orgId: 'o1', surface: 'chat', modelId });
+
+  it('the same model id on platform and BYOK → the one on the surface default\'s connection', async () => {
+    m.getEffectiveAssignment.mockResolvedValue({ defaultOfferingId: 'byok-sonnet', permitted: { kind: 'all' } });
+    expect(await find('claude-sonnet-5-5')).toBe('byok-sonnet');
+    expect(m.findOfferingIdForModel).toHaveBeenLastCalledWith({ partnerId: 'p1', connectionId: 'conn-1', modelId: 'claude-sonnet-5-5' });
+    m.getEffectiveAssignment.mockResolvedValue({ defaultOfferingId: 'plat-sonnet', permitted: { kind: 'all' } });
+    expect(await find('claude-sonnet-5-5')).toBe('plat-sonnet');
+    expect(m.findOfferingIdForModel).toHaveBeenLastCalledWith({ partnerId: 'p1', connectionId: null, modelId: 'claude-sonnet-5-5' });
+  });
+  it('a disabled match, or a model only on ANOTHER connection, is null (never a destination change)', async () => {
+    m.getEffectiveAssignment.mockResolvedValue({ defaultOfferingId: 'byok-sonnet', permitted: { kind: 'all' } });
+    expect(await find('claude-opus-5-5')).toBeNull();
+    m.getEffectiveAssignment.mockResolvedValue({ defaultOfferingId: 'plat-sonnet', permitted: { kind: 'all' } });
+    expect(await find('claude-opus-5-5')).toBeNull();
+  });
+  it('no surface default → null', async () => {
+    m.getEffectiveAssignment.mockResolvedValue({ defaultOfferingId: null, permitted: { kind: 'all' } });
+    expect(await find('claude-sonnet-5-5')).toBeNull();
   });
 });
 
@@ -1276,16 +1360,29 @@ export async function loadUserPermissionPredicate(
   };
 }
 
-export async function findOfferingIdByModel(partnerId: string, modelId: string): Promise<string | null> {
-  const offerings = await systemRead(() => listOfferings(partnerId, { enabledOnly: true }));
-  for (const o of offerings) {
-    if (o.modelId === modelId) return o.id;
-    if (o.connectionId === null && o.platformModelId) {
-      const row = await systemRead(() => getPlatformModelById(o.platformModelId!));
-      if (row?.modelId === modelId) return o.id;
-    }
-  }
-  return null;
+/**
+ * A legacy model string → the enabled offering with that model on the
+ * surface's effective DEFAULT connection (review finding 11). The same id on
+ * another connection (platform vs BYOK) would silently change destination and
+ * funding, so it is never picked: no match → null (caller: invalid_model).
+ * The lookup is W02's connection-scoped `findOfferingIdForModel` (W02 Task 8),
+ * which W02's per-connection unique indexes make unambiguous.
+ */
+export async function findOfferingIdByModel(input: {
+  partnerId: string; orgId: string | null; surface: AiSurface; modelId: string;
+}): Promise<string | null> {
+  const assignment = await getEffectiveAssignment({
+    partnerId: input.partnerId, orgId: input.orgId, surface: input.surface, role: 'default',
+  });
+  if (!assignment.defaultOfferingId) return null;
+  const def = await systemRead(() => getOffering(assignment.defaultOfferingId!));
+  if (!def || def.partnerId !== input.partnerId) return null;
+  const id = await systemRead(() => findOfferingIdForModel({
+    partnerId: input.partnerId, connectionId: def.connectionId, modelId: input.modelId,
+  }));
+  if (!id) return null;
+  const offering = await systemRead(() => getOffering(id));
+  return offering?.enabled ? id : null;
 }
 
 export async function readOrgPartnerId(orgId: string): Promise<string | null> {
@@ -1310,7 +1407,7 @@ export async function readSessionModelRow(
 }
 ```
 
-> If W02's `listOfferings` has no `{ enabledOnly }` option, filter `o.enabled` in the loop instead. That is the only change allowed here.
+Add the imports `getEffectiveAssignment` (`./assignments`), `findOfferingIdForModel` (`./offerings`) and `type AiSurface` (`@breeze/shared`).
 
 W01 has no platform inference-geo setting (its spike decision D3 is open, P5), so add one to `platformModels.ts`. It is env-only until an `/admin/ai-models` field exists:
 
@@ -1504,7 +1601,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
+import { findOfferingIdByModel, loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
 import { activateRevision, createRevision } from '../../services/llmProviderCatalog';
 import { seedOffering } from './aiModelRegistryFixtures';
 import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
@@ -1546,13 +1643,25 @@ describe('candidate loader against real rows', () => {
     await activateRevision({ entryId: c.catalogEntryId!, revisionId });
     expect((await loadOfferingCandidate(c.offeringId, c.partnerId))!.facts.catalog).toEqual({ usable: false });
   });
+
+  it('a legacy model id present on BOTH platform and BYOK maps to the surface default\'s connection only (finding 11)', async () => {
+    const b = await seedRegistryPartner('byok');            // BYOK offering for modelId is every surface's default
+    const platformTwin = await seedOffering({ partnerId: b.partnerId, platformModelId: b.platformModelId, enabled: true });
+    const find = () => findOfferingIdByModel({ partnerId: b.partnerId, orgId: b.orgId, surface: 'chat', modelId: b.modelId });
+    expect(await find()).toBe(b.offeringId);
+    await sys(() => db.execute(sql`
+      UPDATE ai_model_assignments SET default_offering_id = ${platformTwin}::uuid
+       WHERE partner_id = ${b.partnerId}::uuid AND org_id IS NULL AND surface = 'chat' AND role = 'default'`));
+    expect(await find()).toBe(platformTwin);
+    expect(await findOfferingIdByModel({ partnerId: b.partnerId, orgId: b.orgId, surface: 'chat', modelId: 'claude-not-offered' })).toBeNull();
+  });
 });
 ```
 
 - [ ] **Step 11: Run the integration tests**
 
 Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/resolveModel.integration.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 12: Typecheck and commit**
 
@@ -1965,14 +2074,26 @@ describe('resolveModel — transport carriage (W01 adapters refuse what they can
 });
 
 describe('resolveModel — refusal fallback', () => {
-  it('carries an eligible same-connection fallback with its own rate', async () => {
+  it('Messages API: carries an eligible same-connection fallback with its own (different) rate', async () => {
     candidates.def = cand('def', { refusalFallbackOfferingId: 'fb' });
     candidates.fb = cand('fb', {}, { rate: { source: 'platform', standard: FAST } });
-    const r = await resolveModel(BASE);
+    const r = await resolveModel({ ...BASE, transport: 'messages_api' });
     expect(r).toMatchObject({
       ok: true,
       refusalFallback: { offeringId: 'fb', wireModel: 'wire-fb', rateSnapshot: { source: 'platform', standard: FAST } },
     });
+  });
+
+  it('Agent SDK: a differently priced fallback is dropped (overload fallback is unattributable, finding 3)', async () => {
+    candidates.def = cand('def', { refusalFallbackOfferingId: 'fb' });
+    candidates.fb = cand('fb', {}, { rate: { source: 'platform', standard: FAST } });
+    expect(await resolveModel({ ...BASE, transport: 'agent_sdk' })).not.toHaveProperty('refusalFallback');
+  });
+
+  it('Agent SDK: an equally priced fallback is carried', async () => {
+    candidates.def = cand('def', { refusalFallbackOfferingId: 'fb' });
+    candidates.fb = cand('fb');
+    expect(await resolveModel({ ...BASE, transport: 'agent_sdk' })).toMatchObject({ refusalFallback: { offeringId: 'fb' } });
   });
 
   it('drops a fallback on another connection', async () => {
@@ -2229,12 +2350,18 @@ function wireFor(
   });
 }
 
+function sameRates(a: RateSnapshot, b: RateSnapshot): boolean {
+  return JSON.stringify([a.standard, a.option ?? null]) === JSON.stringify([b.standard, b.option ?? null]);
+}
+
 async function refusalFallbackFor(
   primary: LoadedCandidate,
   partnerId: string,
   ctx: EligibilityContext,
   maxTokens: number | undefined,
   carriage: TransportCarriage,
+  transport: DispatchTransport,
+  primaryRate: RateSnapshot,
 ): Promise<ResolvedRefusalFallback | undefined> {
   const id = primary.refusalFallbackOfferingId;
   if (!id) return undefined;
@@ -2247,13 +2374,25 @@ async function refusalFallbackFor(
     return undefined;
   }
   const wireParams = wireFor(fb, requestedOptions(fb, undefined, undefined), maxTokens, carriage);
+  const fbRate = rateFor(fb, wireParams.applied);
+  // Review finding 3: the Agent SDK's `fallbackModel` also fires on OVERLOAD,
+  // and its per-turn usage cannot say which model served — so on the SDK
+  // transport a fallback is only carried when it bills at the primary's
+  // rates (then the attribution question cannot change the price). The
+  // Messages API attributes per iteration/attempt, so it carries any.
+  if (transport === 'agent_sdk' && !sameRates(fbRate, primaryRate)) {
+    console.warn('[resolveModel] refusal fallback dropped on the Agent SDK transport: priced differently from the primary', {
+      offeringId: primary.offeringId, fallbackOfferingId: id,
+    });
+    return undefined;
+  }
   return {
     offeringId: id,
     displayName: fb.displayName,
     wireModel: fb.wireModel,
     wireParams,
     options: wireParams.applied,
-    rateSnapshot: rateFor(fb, wireParams.applied),
+    rateSnapshot: fbRate,
   };
 }
 
@@ -2273,8 +2412,9 @@ async function finalize(
   // model's support drops anything it cannot honour.
   const requested = requestedOptions(c, input.requested?.options, assignmentOptions);
   const wireParams = wireFor(c, requested, input.maxTokens, carriage);
+  const primaryRate = rateFor(c, wireParams.applied);
   const refusalFallback = input.partnerId
-    ? await refusalFallbackFor(c, input.partnerId, ctx, input.maxTokens, carriage)
+    ? await refusalFallbackFor(c, input.partnerId, ctx, input.maxTokens, carriage, transport, primaryRate)
     : undefined;
   return {
     ok: true,
@@ -2294,7 +2434,7 @@ async function finalize(
     inferenceGeo: wireParams.inferenceGeo ?? null,
     ...(refusalFallback ? { refusalFallback } : {}),
     promptProfile: c.promptProfile,
-    rateSnapshot: rateFor(c, wireParams.applied),
+    rateSnapshot: primaryRate,
     capabilities: c.capabilities,
     limits: c.limits,
     ...(c.catalogRevisionId ? { catalogRevisionId: c.catalogRevisionId } : {}),
@@ -2437,7 +2577,7 @@ describe('resolveModel against real assignments, plans and settings', () => {
 ```
 
 Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/resolveModel.integration.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 6: Re-export, typecheck and commit**
 
@@ -3350,9 +3490,10 @@ describe('sdkTurnUsage — the provider never supplies a billing number', () => 
   });
 
   it('an overload fallback (no refusal message) is invisible to main-loop usage → priced at the primary model', () => {
-    // Documented limitation: SDK `fallbackModel` also fires on overload, and the
-    // per-turn `usage` does not say which model served. Same connection and
-    // funding are guaranteed by resolveModel, so this never crosses funding.
+    // SDK `fallbackModel` also fires on overload, and the per-turn `usage` does
+    // not say which model served. Review finding 3: resolveModel only sets an
+    // SDK refusal fallback whose rate EQUALS the primary's (Task 3), so pricing
+    // an unattributed turn at the primary rate is exact, not an approximation.
     expect(sdkTurnUsage({ binding: B, tokens: T, observation: newSdkTurnObservation(),
       result: { subtype: 'success', stop_reason: 'end_turn' } }).usage[0]!.model).toBe('claude-sonnet-5-5');
   });
@@ -3613,6 +3754,7 @@ This task makes `ai_invocations` the source of truth (spec §5.5, §8; quorum #5
 - `settleInvocation` prices each `BilledUsage` with `priceInvocation` at the rate **bound to the turn**, then builds one ledger row per billed model.
 - **Reservation path.** It hands the rows to `settleAiBudgetReservation`. That function inserts them inside its **existing** transaction, then derives the `ai_sessions` totals and the `ai_cost_usage` increments from the inserted rows, so the rollups cannot disagree with the ledger.
 - **No-reservation path.** `recordInvocationsWithRollups` does the same in its own system transaction.
+- **Exactly-once money (Step 8a).** Credits are debited once per reservation, keyed and stamped, and only by the call that settled it. A settlement deferred by lock contention is persisted and replayed by the sweep. A stable-key retry re-binds its still-active reservation before dispatch.
 - **Turn binding.** `reserveAiBudget` takes the turn binding and writes it in the same transaction as the reservation insert (`model_binding`) and the session's `offering_id` / `offering_partner_id` / `options` / `model` (spec §9.2 bullet 1). Settlement then **rejects** any ledger row whose rate is not one the reservation bound. The billed price is provably the one fixed at the turn claim.
 
 **Files:**
@@ -3739,7 +3881,7 @@ describe('settleInvocation', () => {
       rateSnapshot: { source: 'platform', standard: STD }, ledgerMode: 'authoritative',
     })]);
     expect(call).not.toHaveProperty('actualCostCents');
-    expect(m.deduct).toHaveBeenCalledWith('o1', 300);
+    expect(m.deduct).toHaveBeenCalledWith('o1', 300, { idempotencyKey: 'ai-settlement:r1' });
   });
 
   it('partner_key funding never touches platform credits', async () => {
@@ -3931,11 +4073,8 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     });
   }
 
-  // Same posture as the legacy recorders: the provider has been paid, so the
-  // platform credit draw-down happens even when the rollup was deferred.
-  if (input.binding.funding === 'platform' && costCents > 0) {
-    await deductBillingCredits(input.orgId, costCents);
-  }
+  // Platform credits are drawn down by Step 8a's debitSettledCredits — once per
+  // reservation, keyed, only when THIS call settled it (review finding 1).
   return { costCents, invocationIds, deferred };
 }
 ```
@@ -4254,6 +4393,239 @@ Expected: PASS. The existing `aiBudgetReservations.test.ts` cases keep passing b
 Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiInvocationSettlement.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts`
 Expected: PASS. The export-policy suites fail if `model_binding` is unclassified, which proves the registry edit landed.
 
+- [ ] **Step 8a: Exactly-once credits, durable deferred settlements, binding on replay (review findings 1, 2, 4)**
+
+Three gaps a repeated or contended settlement would otherwise open:
+
+- **Finding 1: an unkeyed debit.**
+  - *Problem.* `deductBillingCredits` is an unkeyed HTTP POST, and the steps above call it after **every** settlement, including `already_settled` replays (`aiBudgetReservations.ts:658–662` dedupes only the rollups).
+  - *Fix.* The debit now happens only when **this call** moved the reservation to `settled`. It carries an idempotency key, `ai-settlement:<reservationId>`. A durable `credits_debited_at` stamp on the reservation lets the sweep retry a debit whose HTTP call failed, under the same key.
+- **Finding 2: lost deferred settlements.**
+  - *Problem.* A settlement deferred by org-lock contention (`deferred_indeterminate`) persisted nothing, and expiry never replays usage.
+  - *Fix.* The full settle input (the priced ledger rows) is written to `ai_budget_reservations.pending_settlement` under the **reservation row lock only**, with no org lock, so it cannot hit the same contention. The existing sweep job replays it through the same idempotent `settleAiBudgetReservation`, and the debit follows the first-transition rule above.
+- **Finding 4: a reused reservation with a stale binding.**
+  - *Problem.* A stable-key retry (`ai-agent-run:<runId>`, `script-review:<id>:<attempt>`) gets back the existing **active** reservation, whose binding may predate a rate or offering change. Settlement would then reject the new rows and leak the hold.
+  - *Fix.* On a key replay of a reservation that is still `active` and never settled, `reserveAiBudget` **re-binds** it in the same transaction (new `model_binding`, session re-stamped) before anything is dispatched. A billing-source change already throws there (`aiBudgetReservations.ts:447–453`), and so does a replay onto a non-`active` reservation.
+  - *Why re-bind rather than reuse the old binding or reject?* The unsettled reservation describes a dispatch that never completed (lease recovery, a job retry). Reusing its old binding would bill a model nobody is about to run, and rejecting would wedge the run forever on its stable key.
+
+Extra files for this step:
+- Modify: `apps/api/migrations/2026-11-19-100000-ai-budget-reservation-model-binding.sql` (two more columns; the file is not shipped yet)
+- Modify: `apps/api/src/jobs/aiBudgetReservationSweep.ts` (replay pending settlements and retry missed debits before expiry)
+- Modify: `apps/api/src/services/aiCostTracker.ts` (`deductBillingCredits(orgId, costCents, opts?: { idempotencyKey?: string }): Promise<boolean>` returns whether the billing service accepted it; the body gains `idempotencyKey`)
+- Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` (`pending_settlement` → `excludedOpen`, `credits_debited_at` → `included`)
+
+Interfaces added:
+
+```ts
+// aiBudgetReservations.ts
+export class AiBudgetBindingConflictError extends Error { readonly code: 'binding_conflict' }
+export function persistPendingSettlement(input: SettleAiBudgetReservationInput): Promise<'persisted' | 'already_settled'>;
+export function replayPendingAiSettlements(limit?: number): Promise<Array<{ reservationId: string; orgId: string; kind: 'settled' | 'already_settled'; invocations: NewInvocation[] }>>;
+export function markCreditsDebited(reservationId: string): Promise<void>;
+export function listUndebitedPlatformSettlements(limit?: number): Promise<Array<{ reservationId: string; orgId: string; costCents: number }>>;
+// settleInvocation.ts
+export function debitSettledCredits(input: { orgId: string; reservationId: string | null; invocations: readonly NewInvocation[] }): Promise<void>;
+```
+
+Migration additions (append to the Task 6 file):
+
+```sql
+-- Review finding 2: a settlement deferred by org-lock contention persists its
+-- priced ledger rows here (reservation row lock only) and the sweep replays
+-- them idempotently. Review finding 1: credits are debited once per
+-- reservation, keyed and stamped. pending_settlement is jsonb → excludedOpen.
+ALTER TABLE ai_budget_reservations ADD COLUMN IF NOT EXISTS pending_settlement jsonb NULL;
+ALTER TABLE ai_budget_reservations ADD COLUMN IF NOT EXISTS credits_debited_at timestamptz NULL;
+CREATE INDEX IF NOT EXISTS ai_budget_reservations_pending_settlement_idx
+  ON ai_budget_reservations (updated_at) WHERE pending_settlement IS NOT NULL;
+```
+
+Write the failing tests first:
+
+```ts
+// appended to settleInvocation.test.ts
+describe('credits are debited exactly once per reservation (finding 1)', () => {
+  it('a repeated settlement of the same reservation debits once, with the reservation key', async () => {
+    m.settleDurably
+      .mockResolvedValueOnce({ kind: 'settled', reservationId: 'r1', actualCostCents: 300, invocationIds: ['i1'] })
+      .mockResolvedValueOnce({ kind: 'already_settled', reservationId: 'r1', actualCostCents: 300, invocationIds: [] });
+    const input = {
+      binding: B, orgId: 'o1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [{ model: 'claude-sonnet-5-5', tokens: T, webSearchRequests: 0 }], outcome: OK, reservationId: 'r1',
+    };
+    await settleInvocation(input);
+    await settleInvocation(input);
+    expect(m.deduct).toHaveBeenCalledTimes(1);
+    expect(m.deduct).toHaveBeenCalledWith('o1', 300, { idempotencyKey: 'ai-settlement:r1' });
+    expect(m.markDebited).toHaveBeenCalledWith('r1');
+  });
+
+  it('a deferred settlement debits nothing now (the sweep replays and debits later)', async () => {
+    m.settleDurably.mockResolvedValue({ kind: 'deferred_indeterminate', reservationId: 'r1' });
+    const out = await settleInvocation({
+      binding: B, orgId: 'o1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [{ model: 'claude-sonnet-5-5', tokens: T, webSearchRequests: 0 }], outcome: OK, reservationId: 'r1',
+    });
+    expect(out.deferred).toBe(true);
+    expect(m.deduct).not.toHaveBeenCalled();
+  });
+
+  it('a rejected debit is not stamped (the sweep retries it under the same key)', async () => {
+    m.deduct.mockResolvedValue(false);
+    await settleInvocation({
+      binding: B, orgId: 'o1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [{ model: 'claude-sonnet-5-5', tokens: T, webSearchRequests: 0 }], outcome: OK, reservationId: 'r1',
+    });
+    expect(m.markDebited).not.toHaveBeenCalled();
+  });
+});
+```
+
+Add `markDebited: vi.fn()` to the hoisted mocks, `markCreditsDebited: m.markDebited` to the `../aiBudgetReservations` mock, and `m.deduct.mockResolvedValue(true)` to `beforeEach`.
+
+```ts
+// appended to aiInvocationSettlement.integration.test.ts
+describe('contended, replayed and retried settlements (findings 1, 2, 4)', () => {
+  it('lock contention twice → rows persisted pending, not lost; the sweep replays ledger + rollups exactly once', async () => {
+    const s = await seedRegistryPartner('platform');
+    const r = await resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'chat' });
+    if (!r.ok) throw new Error(r.reason);
+    const binding = turnBindingFrom(r);
+    const res = await reserveAiBudget({ orgId: s.orgId, billingSource: binding.funding, sessionId: s.chatSessionId,
+      idempotencyKey: `t:${randomUUID()}`, binding }) as { reservationId: string };
+    // Hold the org row lock from another connection so both settle attempts time out.
+    const blocker = await holdOrganizationLock(s.orgId);
+    try {
+      const out = await settleInvocation({
+        binding, orgId: s.orgId, userId: null, sessionId: s.chatSessionId, agentRunId: null, sourceRef: null,
+        usage: [{ model: binding.wireModel, tokens: T, webSearchRequests: 0 }],
+        outcome: { ...OK(1.23), servedModel: binding.wireModel }, reservationId: res.reservationId,
+      });
+      expect(out.deferred).toBe(true);
+    } finally {
+      await blocker.release();
+    }
+    const [pending] = await sys(() => db.execute<{ pending_settlement: unknown }>(sql`
+      SELECT pending_settlement FROM ai_budget_reservations WHERE id = ${res.reservationId}::uuid`));
+    expect(pending!.pending_settlement).not.toBeNull();
+    const first = await replayPendingAiSettlements();
+    const second = await replayPendingAiSettlements();
+    expect(first.map((x) => x.kind)).toEqual(['settled']);
+    expect(second).toEqual([]);   // pending cleared in the settling transaction
+    const rows = await sys(() => db.execute(sql`SELECT 1 FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('a stable-key replay after a rate change re-binds the active reservation before dispatch (finding 4)', async () => {
+    const s = await seedRegistryPartner('platform');
+    const r = await resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'ai_agents' });
+    if (!r.ok) throw new Error(r.reason);
+    const key = `ai-agent-run:${randomUUID()}`;
+    const old = turnBindingFrom(r);
+    const first = await reserveAiBudget({ orgId: s.orgId, billingSource: old.funding, idempotencyKey: key, binding: old }) as { reservationId: string };
+    const repriced = { ...old, rateSnapshot: { ...old.rateSnapshot, standard: { ...old.rateSnapshot.standard, inputCentsPerM: 999 } } };
+    const again = await reserveAiBudget({ orgId: s.orgId, billingSource: old.funding, idempotencyKey: key, binding: repriced }) as { reservationId: string };
+    expect(again.reservationId).toBe(first.reservationId);
+    await expect(settleInvocation({
+      binding: old, orgId: s.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [{ model: old.wireModel, tokens: T, webSearchRequests: 0 }], outcome: { ...OK(null), servedModel: old.wireModel },
+      reservationId: first.reservationId,
+    })).rejects.toThrow(/does not match the turn binding/);
+    await expect(settleInvocation({
+      binding: repriced, orgId: s.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [{ model: old.wireModel, tokens: T, webSearchRequests: 0 }], outcome: { ...OK(null), servedModel: old.wireModel },
+      reservationId: first.reservationId,
+    })).resolves.toMatchObject({ deferred: false });
+  });
+});
+```
+
+> `holdOrganizationLock(orgId)` opens a dedicated superuser connection, runs `BEGIN; SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE`, and returns `{ release }` (commit + close). Put it in `helpers/aiModelRegistrySeed.ts`. For the test, lower `AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS` through its existing env/test override; if there is none, add an optional `lockTimeoutMs` to `SettleAiBudgetReservationInput`, used only by tests.
+
+Then implement:
+
+1. `aiCostTracker.deductBillingCredits(orgId, costCents, opts?: { idempotencyKey?: string })` sends `{ costCents, idempotencyKey }` and returns `true` only on `res.ok`. The billing service must honour the key; see the cross-repo item at the end of this plan. Legacy callers that ignore the result are unaffected.
+2. In `settleInvocation`, replace the unconditional debit with:
+
+```ts
+  if (input.reservationId) {
+    // … settleAiBudgetReservationDurably as above …
+    if (result.kind === 'settled') {
+      await debitSettledCredits({ orgId: input.orgId, reservationId: input.reservationId, invocations: rows });
+    }
+    // 'already_settled' → another call settled and debited; 'deferred_indeterminate' → the sweep will.
+  } else {
+    invocationIds = await recordInvocationsWithRollups({ /* … */ });
+    await debitSettledCredits({ orgId: input.orgId, reservationId: null, invocations: rows });
+  }
+```
+
+```ts
+/** Platform-funded spend leaves prepaid credits exactly once per reservation (finding 1). */
+export async function debitSettledCredits(input: {
+  orgId: string; reservationId: string | null; invocations: readonly NewInvocation[];
+}): Promise<void> {
+  const platformCents = sumCostCents(input.invocations.filter((r) => r.fundingSource === 'platform'));
+  if (platformCents <= 0) return;
+  const key = input.reservationId ? `ai-settlement:${input.reservationId}` : `ai-invocation:${input.invocations[0]!.sourceRef ?? randomUUID()}`;
+  const accepted = await deductBillingCredits(input.orgId, platformCents, { idempotencyKey: key });
+  if (accepted && input.reservationId) await markCreditsDebited(input.reservationId);
+}
+```
+
+3. In `aiBudgetReservations.ts`:
+   - `settleAiBudgetReservationDurably`: on the second lock timeout, **before** `markAiBudgetReservationIndeterminate`, call `persistPendingSettlement(input)`, and return `deferred_indeterminate` only if that call succeeded. If persisting also fails, keep today's capture and log path.
+   - `persistPendingSettlement(input)`: `inReservationTransaction` **without** `lockOrganizationRow`:
+
+```sql
+UPDATE ai_budget_reservations SET pending_settlement = ${JSON.stringify(input)}::jsonb, updated_at = now()
+WHERE id = ${input.reservationId}::uuid AND org_id = ${input.orgId}::uuid
+  AND status IN ('active', 'indeterminate', 'expired') AND pending_settlement IS NULL
+RETURNING id
+```
+
+     No row back means it is already settled or already pending.
+   - The `settleAiBudgetReservation` final `UPDATE` also sets `pending_settlement = NULL`.
+   - `replayPendingAiSettlements(limit = 100)`: select `id, org_id, pending_settlement` where it is not null and `status <> 'settled'`, ordered by `updated_at`. Re-run `settleAiBudgetReservation(stored)` for each; it is idempotent by fingerprint. Return each result with its invocations.
+   - `markCreditsDebited(id)`: `UPDATE … SET credits_debited_at = now() WHERE id = $1 AND credits_debited_at IS NULL`.
+   - `listUndebitedPlatformSettlements`: settled rows with `billing_source = 'platform'`, `actual_cost_cents > 0`, `credits_debited_at IS NULL` and `settled_at < now() - interval '2 minutes'`.
+   - Finding 4, `reserveAiBudget`'s existing-key branch, after the conflict check:
+
+```ts
+    if (existing) {
+      if (/* existing billing_source / session / namespace conflict */) throw new Error('AI budget reservation idempotency key conflicts with another dispatch');
+      if (input.binding && stableJson(parseTurnBinding(existing.model_binding)) !== stableJson(input.binding)) {
+        if (existing.status !== 'active' || existing.settlement_fingerprint !== null) {
+          throw new AiBudgetBindingConflictError();   // never re-bind a reservation whose outcome is (or may be) recorded
+        }
+        await db.execute(sql`UPDATE ai_budget_reservations SET model_binding = ${JSON.stringify(input.binding)}::jsonb, updated_at = now()
+                             WHERE id = ${existing.id}::uuid`);
+        if (sessionId && input.binding.offeringId) await stampSessionBinding(sessionId, input.orgId, input.binding);   // the same UPDATE as a fresh claim
+      }
+      return existingResult(existing);
+    }
+```
+
+   Add `model_binding` to the existing-row `SELECT`. Extract the session-stamp `UPDATE` from the fresh-claim path into `stampSessionBinding(sessionId, orgId, binding)` so both paths use it.
+4. `jobs/aiBudgetReservationSweep.ts`, before `expireStaleAiBudgetReservations`:
+
+```ts
+  for (const settled of await replayPendingAiSettlements()) {
+    if (settled.kind === 'settled') {
+      await debitSettledCredits({ orgId: settled.orgId, reservationId: settled.reservationId, invocations: settled.invocations });
+    }
+  }
+  for (const missed of await listUndebitedPlatformSettlements()) {
+    // Same idempotency key as the first attempt: the billing service dedupes.
+    if (await deductBillingCredits(missed.orgId, missed.costCents, { idempotencyKey: `ai-settlement:${missed.reservationId}` })) {
+      await markCreditsDebited(missed.reservationId);
+    }
+  }
+```
+
+Run: `cd apps/api && npx vitest run src/services/aiModels/settleInvocation.test.ts src/services/aiBudgetReservations.test.ts src/jobs/aiBudgetReservationSweep.test.ts && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiInvocationSettlement.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts`
+Expected: PASS. The export-policy suite fails until both new columns are classified.
+
 - [ ] **Step 9: Commit**
 
 ```bash
@@ -4261,7 +4633,9 @@ git add apps/api/src/services/aiModels/settleInvocation.ts apps/api/src/services
   apps/api/migrations/2026-11-19-100000-ai-budget-reservation-model-binding.sql \
   apps/api/src/__tests__/integration/aiInvocationSettlement.integration.test.ts \
   apps/api/src/services/aiBudgetReservations.ts apps/api/src/db/schema/ai.ts \
-  apps/api/src/services/tenantExportPolicyRegistry.ts
+  apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/aiCostTracker.ts \
+  apps/api/src/jobs/aiBudgetReservationSweep.ts apps/api/src/jobs/aiBudgetReservationSweep.test.ts \
+  apps/api/src/__tests__/integration/helpers/aiModelRegistrySeed.ts
 git commit -m "feat(ai): single billing path — ledger rows settle with derived rollups and bound rates (#7601)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -4269,41 +4643,58 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-## Task 6A: Registry cutover boot — one blocking reconcile, then the registry is authoritative
+## Task 6A: Registry cutover — per-partner, durable, coordinated, and never blocking liveness
 
-W02 keeps the registry a **projection** of the legacy config. It refreshes the projection detached at every boot and atomically on every `/ai/provider` write. It hands W03 one instruction (P12): **run `reconcileAllPartnersFromLegacy()` blocking, before serving, at the cutover boot, then stop calling it.** From Task 7 on, routing reads the registry, so the bindings must be exact before the first request. After cutover, three things would clobber registry state if the sweep kept running:
-- session/agent rebinding from the stale `model` column;
-- assignment deletion;
-- the env-var removals in Tasks 11 and 13, which would change the projection's reviewer and extension defaults.
+W02 keeps the registry a **projection** of the legacy config. W03 makes the registry the authority, so each partner must be reconciled **exactly once, durably, before any registry-routed dispatch for that partner**, and never again: after the flip (Task 6B), re-running the projection would revert registry-native writes. The Codex review found three ways a boot-time global sweep fails that:
+- **Finding 7: no barrier on partial failure.**
+  - A partial failure still let registry routing proceed.
+  - Partners with stale rows were never repaired.
+  - The split worker entrypoint started its AI consumers without any barrier (`apps/api/src/worker.ts`: the migration-parity wait, then `startRegisteredWorkers`).
+- **Finding 8: no single run.** Replicas raced on one marker, and a partial run could clear completion.
+- **Finding 10: boot time.** An unbounded sweep before `serve()` exceeds prod's 40 s health grace (`deploy/docker-compose.prod.yml` `start_period: 40s` on `/health`).
 
-**Design:**
-- **Cutover marker.** A singleton system table, `ai_model_registry_state`, records when the cutover reconcile completed. No tenant column means no RLS, like `llm_provider_catalog`.
-- **Boot sequence:**
-  - The boot runs `runRegistryCutoverIfNeeded()` **before `serve()`**, replacing W02's detached sweep.
-  - With the marker set, the boot does nothing.
-  - With it unset, the boot reconciles every partner (blocking; per-partner advisory locks make concurrent boots of several API instances safe), then sets the marker if no partner failed.
-  - A partial run leaves the marker unset so the next boot retries, and captures each failure.
-- **New partners.** A partner created after cutover has no assignments. `ensurePartnerRegistry(partnerId)` bootstraps it once through W02's `reconcilePartnerFromLegacy` (no legacy config projects platform defaults). It runs only when the partner has **zero** partner-level assignment rows, so it can never overwrite registry state. It is memoized per process, and `resolveModel` calls it before reading the assignment.
-- **`/ai/provider`.** It keeps W02's atomic legacy + registry write until W04 replaces it.
+**Design** (it replaces W02 handoff item 1; see "Required W02 plan changes"):
+- **Per-partner durable record.** The table is `ai_model_registry_partner_cutover (partner_id PK → partners ON DELETE CASCADE, cutover_at)`, partner-axis (shape 3). `cutoverPartner(partnerId)` runs in ONE system transaction:
+  1. take W02's per-partner reconcile advisory lock;
+  2. if the row exists, return `already`;
+  3. otherwise run `reconcilePartnerFromLegacyInTx(partnerId)` and insert the row, so both commit or neither does.
+  
+  A partner is reconciled at most once, ever, whoever gets there first.
+- **The gate is in the resolver, not in boot.** `resolveModel` calls `ensurePartnerCutover(partnerId)` first (memoized per process).
+  - No row → `cutoverPartner` now: one partner, bounded.
+  - Failure → `resolveModel` returns `ok:false, reason:'registry_unavailable', recoverable:true`, so nothing dispatches on a stale registry.
+  
+  Every entrypoint (API, split worker, any future consumer) dispatches through `resolveModel`, so all of them are gated without a boot barrier.
+- **Background sweep, single coordinator.** `runRegistryCutoverSweep()` starts **after** `serve()` in `index.ts` and after `startRegisteredWorkers` in `worker.ts`.
+  - It takes a lease on the singleton `ai_model_registry_state` (`UPDATE … WHERE lease_expires_at < now() OR lease_owner = me RETURNING`). It renews the lease every partner and stops if the lease is lost.
+  - It walks partners **without** a cutover row in id order, in batches, calling `cutoverPartner`. Crash or restart resumes naturally, because the anti-join *is* the cursor.
+  - When no partner is left, it sets `cutover_completed_at = COALESCE(cutover_completed_at, now())`. Completion is monotonic, never cleared.
+  - Failures stay unrowed, and the next sweep (or the partner's next request) retries them.
+- Liveness (`/health`) is never blocked. Each AI request costs at most one partner's reconcile, once.
 
 **Files:**
-- Create: `apps/api/migrations/2026-11-19-100400-ai-model-registry-state.sql`
-- Create: `apps/api/src/db/schema/aiModelRegistryState.ts` (+ export from `db/schema/index.ts`)
+- Create: `apps/api/migrations/2026-11-19-100400-ai-model-registry-cutover.sql` (singleton state table + the partner table with its RLS)
+- Create: `apps/api/src/db/schema/aiModelRegistryCutover.ts` (+ export from `db/schema/index.ts`)
 - Create: `apps/api/src/services/aiModels/registryCutover.ts`, `apps/api/src/services/aiModels/registryCutover.test.ts`
 - Create: `apps/api/src/__tests__/integration/aiModelRegistryCutover.integration.test.ts`
-- Modify: `apps/api/src/index.ts` (replace W02's detached `reconcileAllPartnersFromLegacy()` block, placed after `serve()` near `sealUnsealedSettingsSecrets`, with an awaited `runRegistryCutoverIfNeeded()` **before** `serve()`)
-- Modify: `apps/api/src/services/aiModels/resolveModel.ts` (call `ensurePartnerRegistry` before `getEffectiveAssignment`), `apps/api/src/services/aiModels/resolveModel.test.ts` (mock it)
-- Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (system-table allowlist)
+- Modify: `apps/api/src/index.ts` (delete W02's detached `reconcileAllPartnersFromLegacy()` block; start `runRegistryCutoverSweep()` detached **after** `serve()`)
+- Modify: `apps/api/src/worker.ts` (start the same detached sweep after `startRegisteredWorkers`)
+- Modify: `apps/api/src/services/aiModels/resolveModel.ts` (+ test) (the gate; `ResolveFailureReason` gains `'registry_unavailable'`)
+- Modify: `apps/api/src/services/aiModels/eligibility.ts` (add `'registry_unavailable'` to `ResolveFailureReason`), `resolveModel.ts` `unavailableMessage`
+- Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (singleton → system allowlist; partner table → `PARTNER_TENANT_TABLES`)
 
 **Interfaces:**
-- Consumes: P12 `reconcileAllPartnersFromLegacy(): Promise<{ partners: number; failures: Array<{ partnerId: string; error: string }> }>` and `reconcilePartnerFromLegacy(partnerId): Promise<ReconcileReport>`; Drizzle `aiModelAssignments` (W02).
+- Consumes: P12 `reconcilePartnerFromLegacyInTx(partnerId)` (needs a held system context; takes `pg_advisory_xact_lock(hashtextextended('ai_model_registry_reconcile:' || partner_id, 0))` and joins the caller's transaction).
 - Produces:
   ```ts
-  export type CutoverOutcome = 'already_done' | 'completed' | 'partial';
-  export function runRegistryCutoverIfNeeded(deps?: { reconcileAll?: typeof reconcileAllPartnersFromLegacy }): Promise<CutoverOutcome>;
-  export function ensurePartnerRegistry(partnerId: string, deps?: { reconcilePartner?: typeof reconcilePartnerFromLegacy }): Promise<boolean>;
+  export type PartnerCutoverResult = 'done' | 'already';
+  export function cutoverPartner(partnerId: string, deps?: { reconcileInTx?: typeof reconcilePartnerFromLegacyInTx }): Promise<PartnerCutoverResult>;
+  export function ensurePartnerCutover(partnerId: string): Promise<boolean>;   // false = could not cut over (caller refuses)
+  export function runRegistryCutoverSweep(opts?: { owner?: string; leaseMs?: number; batch?: number; deps?: { cutover?: typeof cutoverPartner } }):
+    Promise<{ outcome: 'not_coordinator' | 'complete' | 'incomplete'; processed: number; failed: string[] }>;
+  export function isPartnerCutOver(partnerId: string): Promise<boolean>;     // Task 6B's facade gate
   export function __resetRegistryCutoverMemoForTests(): void;
-  // table ai_model_registry_state (id smallint PK = 1, cutover_completed_at, cutover_partners, cutover_failures, updated_at)
+  // ResolveFailureReason gains 'registry_unavailable'
   ```
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -4313,73 +4704,90 @@ W02 keeps the registry a **projection** of the legacy config. It refreshes the p
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
-  state: [] as Array<{ cutoverCompletedAt: Date | null }>,
-  updates: [] as Array<Record<string, unknown>>,
-  assignmentCount: 0,
+  rows: new Set<string>(),
+  pending: [] as string[],
+  lease: { owner: null as string | null, expired: true },
+  completedAt: null as Date | null,
+  reconcile: vi.fn(),
   capture: vi.fn(),
 }));
-vi.mock('../../db', () => ({
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  db: {
-    select: (shape?: Record<string, unknown>) => ({
-      from: () => ({
-        limit: async () => m.state,
-        where: () => ({ limit: async () => [shape && 'n' in shape ? { n: m.assignmentCount } : m.state[0]] }),
-      }),
-    }),
-    update: () => ({ set: (v: Record<string, unknown>) => ({ where: async () => { m.updates.push(v); } }) }),
+// A tiny in-memory stand-in for the two tables; registryCutover.ts reaches them only
+// through the helpers below, which it imports from './registryCutoverStore'.
+vi.mock('./registryCutoverStore', () => ({
+  withPartnerCutoverTx: async (partnerId: string, fn: (exists: boolean) => Promise<void>) => {
+    const exists = m.rows.has(partnerId);
+    await fn(exists);
+    if (!exists) m.rows.add(partnerId);
   },
+  hasCutoverRow: async (id: string) => m.rows.has(id),
+  takeLease: async (owner: string) => {
+    if (m.completedAt) return 'complete';
+    if (m.lease.owner && m.lease.owner !== owner && !m.lease.expired) return 'held';
+    m.lease = { owner, expired: false };
+    return 'taken';
+  },
+  renewLease: async (owner: string) => m.lease.owner === owner,
+  nextUncutPartners: async (after: string | null, limit: number) =>
+    m.pending.filter((p) => !m.rows.has(p) && (after === null || p > after)).slice(0, limit),
+  markComplete: async () => { m.completedAt ??= new Date(); },
+  releaseLease: async () => { m.lease = { owner: null, expired: true }; },
 }));
 vi.mock('../sentry', () => ({ captureException: m.capture }));
-vi.mock('./legacyReconcile', () => ({ reconcileAllPartnersFromLegacy: vi.fn(), reconcilePartnerFromLegacy: vi.fn() }));
+vi.mock('./legacyReconcile', () => ({ reconcilePartnerFromLegacyInTx: m.reconcile }));
 
-import { __resetRegistryCutoverMemoForTests, ensurePartnerRegistry, runRegistryCutoverIfNeeded } from './registryCutover';
+import { __resetRegistryCutoverMemoForTests, cutoverPartner, ensurePartnerCutover, runRegistryCutoverSweep } from './registryCutover';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  m.state = [{ cutoverCompletedAt: null }];
-  m.updates = [];
-  m.assignmentCount = 0;
+  m.rows = new Set(); m.pending = []; m.lease = { owner: null, expired: true }; m.completedAt = null;
+  m.reconcile.mockResolvedValue({});
   __resetRegistryCutoverMemoForTests();
 });
 
-describe('runRegistryCutoverIfNeeded', () => {
-  it('runs the W02 reconcile once and marks the cutover complete', async () => {
-    const reconcileAll = vi.fn().mockResolvedValue({ partners: 3, failures: [] });
-    await expect(runRegistryCutoverIfNeeded({ reconcileAll })).resolves.toBe('completed');
-    expect(reconcileAll).toHaveBeenCalledTimes(1);
-    expect(m.updates[0]).toMatchObject({ cutoverPartners: 3, cutoverFailures: 0, cutoverCompletedAt: expect.any(Date) });
-  });
-
-  it('never runs again once marked (the registry is authoritative)', async () => {
-    m.state = [{ cutoverCompletedAt: new Date() }];
-    const reconcileAll = vi.fn();
-    await expect(runRegistryCutoverIfNeeded({ reconcileAll })).resolves.toBe('already_done');
-    expect(reconcileAll).not.toHaveBeenCalled();
-  });
-
-  it('a partial run leaves the marker unset (next boot retries) and reports each failure', async () => {
-    const reconcileAll = vi.fn().mockResolvedValue({ partners: 2, failures: [{ partnerId: 'p9', error: 'boom' }] });
-    await expect(runRegistryCutoverIfNeeded({ reconcileAll })).resolves.toBe('partial');
-    expect(m.updates[0]).toMatchObject({ cutoverCompletedAt: null, cutoverFailures: 1 });
-    expect(m.capture).toHaveBeenCalledTimes(1);
+describe('cutoverPartner', () => {
+  it('reconciles a partner exactly once, ever', async () => {
+    expect(await cutoverPartner('p1')).toBe('done');
+    expect(await cutoverPartner('p1')).toBe('already');
+    expect(m.reconcile).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('ensurePartnerRegistry', () => {
-  it('bootstraps a partner with NO assignment rows exactly once', async () => {
-    const reconcilePartner = vi.fn().mockResolvedValue({});
-    await expect(ensurePartnerRegistry('p1', { reconcilePartner })).resolves.toBe(true);
-    await expect(ensurePartnerRegistry('p1', { reconcilePartner })).resolves.toBe(false);
-    expect(reconcilePartner).toHaveBeenCalledTimes(1);
+describe('ensurePartnerCutover (the resolver gate)', () => {
+  it('cuts an un-reconciled partner over on demand, then serves from memo', async () => {
+    expect(await ensurePartnerCutover('p1')).toBe(true);
+    expect(await ensurePartnerCutover('p1')).toBe(true);
+    expect(m.reconcile).toHaveBeenCalledTimes(1);
   });
+  it('a failing reconcile refuses (never routes on a stale registry) and is retried next time', async () => {
+    m.reconcile.mockRejectedValueOnce(new Error('boom'));
+    expect(await ensurePartnerCutover('p1')).toBe(false);
+    expect(await ensurePartnerCutover('p1')).toBe(true);
+  });
+});
 
-  it('never touches a partner that already has assignments', async () => {
-    m.assignmentCount = 10;
-    const reconcilePartner = vi.fn();
-    await expect(ensurePartnerRegistry('p2', { reconcilePartner })).resolves.toBe(false);
-    expect(reconcilePartner).not.toHaveBeenCalled();
+describe('runRegistryCutoverSweep', () => {
+  it('a second concurrent sweep is not the coordinator', async () => {
+    m.pending = ['a', 'b'];
+    m.lease = { owner: 'other', expired: false };
+    expect((await runRegistryCutoverSweep({ owner: 'me' })).outcome).toBe('not_coordinator');
+    expect(m.reconcile).not.toHaveBeenCalled();
+  });
+  it('processes every un-cut partner, completes monotonically, and a later run is a no-op', async () => {
+    m.pending = ['a', 'b', 'c'];
+    m.rows.add('b');                                   // cut over on demand earlier
+    const first = await runRegistryCutoverSweep({ owner: 'me', batch: 2 });
+    expect(first).toMatchObject({ outcome: 'complete', processed: 2, failed: [] });
+    const completedAt = m.completedAt;
+    expect((await runRegistryCutoverSweep({ owner: 'me' })).outcome).toBe('complete');
+    expect(m.completedAt).toBe(completedAt);
+    expect(m.reconcile).toHaveBeenCalledTimes(2);
+  });
+  it('a failure leaves completion unset and the partner un-rowed for retry', async () => {
+    m.pending = ['a', 'b'];
+    m.reconcile.mockImplementation(async (id: string) => { if (id === 'b') throw new Error('x'); return {}; });
+    expect(await runRegistryCutoverSweep({ owner: 'me' })).toMatchObject({ outcome: 'incomplete', failed: ['b'] });
+    expect(m.completedAt).toBeNull();
+    expect(m.rows.has('b')).toBe(false);
   });
 });
 ```
@@ -4389,23 +4797,42 @@ describe('ensurePartnerRegistry', () => {
 Run: `cd apps/api && npx vitest run src/services/aiModels/registryCutover.test.ts`
 Expected: FAIL with `Failed to resolve import "./registryCutover"`.
 
-- [ ] **Step 3: Migration, schema, RLS-coverage allowlist**
+- [ ] **Step 3: Migration, schema and RLS registrations**
 
 ```sql
--- apps/api/migrations/2026-11-19-100400-ai-model-registry-state.sql
--- AI model registry W03 (#7601): the cutover marker. W02 (#7600) keeps the
--- registry a projection of the legacy config; W03's first boot runs that
--- projection ONCE, blocking, before serving, then the registry is
--- authoritative. One row, no tenant column → no RLS (system table, same
--- posture as llm_provider_catalog; rls-coverage system allowlist).
--- Writes one row → elects system scope first. Idempotent.
+-- apps/api/migrations/2026-11-19-100400-ai-model-registry-cutover.sql
+-- AI model registry W03 (#7601): per-partner, durable legacy → registry
+-- cutover. A partner is projected from legacy config EXACTLY ONCE (the row is
+-- inserted in the same transaction as W02's reconcile); afterwards the
+-- registry is the authority (Task 6B). The singleton holds the background
+-- sweep's coordinator lease and monotonic completion stamp (system table,
+-- no tenant column → no RLS, like llm_provider_catalog). The partner table is
+-- partner-axis (shape 3): forced RLS, system OR breeze_has_partner_access.
+-- The only row write elects system scope first. Idempotent.
 CREATE TABLE IF NOT EXISTS ai_model_registry_state (
   id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   cutover_completed_at timestamptz NULL,
-  cutover_partners integer NULL,
-  cutover_failures integer NULL,
+  lease_owner text NULL,
+  lease_expires_at timestamptz NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS ai_model_registry_partner_cutover (
+  partner_id uuid PRIMARY KEY REFERENCES partners(id) ON DELETE CASCADE,
+  cutover_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE ai_model_registry_partner_cutover ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ai_model_registry_partner_cutover FORCE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'ai_model_registry_partner_cutover'
+                 AND policyname = 'ai_model_registry_partner_cutover_access') THEN
+    CREATE POLICY ai_model_registry_partner_cutover_access ON ai_model_registry_partner_cutover
+      FOR ALL
+      USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id))
+      WITH CHECK (public.breeze_current_scope() = 'system');
+  END IF;
+END $$;
 
 DO $$
 DECLARE n integer;
@@ -4417,115 +4844,212 @@ BEGIN
 END $$;
 ```
 
-> Copy the `GRANT` lines (if any) that `2026-09-12-llm-provider-catalog.sql` gives `breeze_app` for its system tables. `breeze_app` needs `SELECT, UPDATE` here.
+> Copy the policy-helper names and the `GRANT` lines from an existing partner-axis migration (e.g. W02's `partner_ai_connections` migration), so `breeze_app` gets `SELECT, INSERT` here and `SELECT, UPDATE` on the singleton.
+
+Drizzle tables go in `apps/api/src/db/schema/aiModelRegistryCutover.ts`:
+- `aiModelRegistryState`, with columns `id`, `cutoverCompletedAt`, `leaseOwner`, `leaseExpiresAt`, `updatedAt`;
+- `aiModelRegistryPartnerCutover`, with columns `partnerId` (FK to `partners.id`, `onDelete: 'cascade'`) and `cutoverAt`.
+
+In `rls-coverage.integration.test.ts`:
+- add `'ai_model_registry_state'` to the system-table allowlist, with comment `// W03 cutover coordinator: one row, no tenant column (#7601).`;
+- add `'ai_model_registry_partner_cutover'` to `PARTNER_TENANT_TABLES`.
+
+The partner table has no `org_id`, so no org cascade, merge or export list applies. Partner deletion cascades through the FK.
+
+- [ ] **Step 4: Implement the store and `registryCutover.ts`**
+
+`registryCutoverStore.ts` holds the SQL: one function per step the unit test mocks. `withPartnerCutoverTx` is the load-bearing one:
 
 ```ts
-// apps/api/src/db/schema/aiModelRegistryState.ts
-import { integer, pgTable, smallint, timestamp } from 'drizzle-orm/pg-core';
+// apps/api/src/services/aiModels/registryCutoverStore.ts
+import { and, asc, eq, gt, notExists, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { aiModelRegistryPartnerCutover, aiModelRegistryState, partners } from '../../db/schema';
 
-/** AI model registry W03: the one-row cutover marker (system table, no RLS). */
-export const aiModelRegistryState = pgTable('ai_model_registry_state', {
-  id: smallint('id').primaryKey().default(1),
-  cutoverCompletedAt: timestamp('cutover_completed_at', { withTimezone: true }),
-  cutoverPartners: integer('cutover_partners'),
-  cutoverFailures: integer('cutover_failures'),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
+
+/** One system transaction: W02's per-partner lock → existence check → fn → row insert. */
+export async function withPartnerCutoverTx(partnerId: string, fn: (exists: boolean) => Promise<void>): Promise<void> {
+  await sys(async () => {
+    // Same key W02's reconcile takes; xact locks are re-entrant within the session.
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'ai_model_registry_reconcile:' + partnerId}, 0))`);
+    const [row] = await db.select({ id: aiModelRegistryPartnerCutover.partnerId }).from(aiModelRegistryPartnerCutover)
+      .where(eq(aiModelRegistryPartnerCutover.partnerId, partnerId)).limit(1);
+    await fn(Boolean(row));
+    if (!row) await db.insert(aiModelRegistryPartnerCutover).values({ partnerId }).onConflictDoNothing();
+  });
+}
+
+export async function hasCutoverRow(partnerId: string): Promise<boolean> {
+  const [row] = await sys(() => db.select({ id: aiModelRegistryPartnerCutover.partnerId }).from(aiModelRegistryPartnerCutover)
+    .where(eq(aiModelRegistryPartnerCutover.partnerId, partnerId)).limit(1));
+  return Boolean(row);
+}
+
+export async function takeLease(owner: string, leaseMs: number): Promise<'taken' | 'held' | 'complete'> {
+  return sys(async () => {
+    const [state] = await db.select().from(aiModelRegistryState).limit(1);
+    if (state?.cutoverCompletedAt) return 'complete';
+    const taken = await db.execute(sql`
+      UPDATE ai_model_registry_state
+      SET lease_owner = ${owner}, lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}), updated_at = now()
+      WHERE id = 1 AND cutover_completed_at IS NULL
+        AND (lease_expires_at IS NULL OR lease_expires_at < now() OR lease_owner = ${owner})
+      RETURNING id`);
+    return taken.length > 0 ? 'taken' : 'held';
+  });
+}
+
+export async function renewLease(owner: string, leaseMs: number): Promise<boolean> {
+  const renewed = await sys(() => db.execute(sql`
+    UPDATE ai_model_registry_state SET lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}), updated_at = now()
+    WHERE id = 1 AND lease_owner = ${owner} RETURNING id`));
+  return renewed.length > 0;
+}
+
+export async function nextUncutPartners(after: string | null, limit: number): Promise<string[]> {
+  const rows = await sys(() => db.select({ id: partners.id }).from(partners)
+    .where(and(
+      after ? gt(partners.id, after) : undefined,
+      notExists(db.select({ x: sql`1` }).from(aiModelRegistryPartnerCutover)
+        .where(eq(aiModelRegistryPartnerCutover.partnerId, partners.id))),
+    ))
+    .orderBy(asc(partners.id)).limit(limit));
+  return rows.map((r) => r.id);
+}
+
+export async function markComplete(owner: string): Promise<void> {
+  // Monotonic: COALESCE never moves or clears an existing stamp (finding 8).
+  await sys(() => db.execute(sql`
+    UPDATE ai_model_registry_state SET cutover_completed_at = COALESCE(cutover_completed_at, now()),
+      lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+    WHERE id = 1 AND lease_owner = ${owner}`));
+}
+
+export async function releaseLease(owner: string): Promise<void> {
+  await sys(() => db.execute(sql`
+    UPDATE ai_model_registry_state SET lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+    WHERE id = 1 AND lease_owner = ${owner}`));
+}
 ```
-
-Add `'ai_model_registry_state'` to the system-table allowlist in `rls-coverage.integration.test.ts`, next to `llm_provider_catalog`, with the comment `// W03 cutover marker: one row, no tenant column (#7601).`
-
-- [ ] **Step 4: Implement `registryCutover.ts` and hook it into boot and the resolver**
 
 ```ts
 // apps/api/src/services/aiModels/registryCutover.ts
 /**
- * W02 → W03 handoff (#7600 "Handoff to W03"). The legacy projection runs ONCE,
- * blocking, at the first boot of this release; afterwards the registry is the
- * authority and the projection only bootstraps partners that have no registry
- * rows at all (created after cutover).
+ * Legacy → registry cutover (W02 handoff, revised per review findings 7–10).
+ * A partner is projected from legacy config EXACTLY ONCE, durably, before any
+ * registry-routed dispatch for it; the resolver gates on that, so every
+ * entrypoint (API, split worker) is covered without blocking boot liveness.
  */
-import { and, count, eq, isNull } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { aiModelAssignments, aiModelRegistryState } from '../../db/schema';
+import { randomUUID } from 'node:crypto';
 import { captureException } from '../sentry';
-import { reconcileAllPartnersFromLegacy, reconcilePartnerFromLegacy } from './legacyReconcile';
+import { reconcilePartnerFromLegacyInTx } from './legacyReconcile';
+import {
+  hasCutoverRow, markComplete, nextUncutPartners, releaseLease, renewLease, takeLease, withPartnerCutoverTx,
+} from './registryCutoverStore';
 
-export type CutoverOutcome = 'already_done' | 'completed' | 'partial';
+export type PartnerCutoverResult = 'done' | 'already';
 
-const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
-
-export async function runRegistryCutoverIfNeeded(
-  deps: { reconcileAll?: typeof reconcileAllPartnersFromLegacy } = {},
-): Promise<CutoverOutcome> {
-  const [state] = await sys(() => db.select().from(aiModelRegistryState).limit(1));
-  if (state?.cutoverCompletedAt) return 'already_done';
-  const result = await (deps.reconcileAll ?? reconcileAllPartnersFromLegacy)();
-  for (const failure of result.failures) {
-    captureException(new Error(failure.error), undefined, { area: 'ai_model_registry_cutover', partnerId: failure.partnerId });
-  }
-  const complete = result.failures.length === 0;
-  await sys(() => db.update(aiModelRegistryState).set({
-    cutoverCompletedAt: complete ? new Date() : null,
-    cutoverPartners: result.partners,
-    cutoverFailures: result.failures.length,
-    updatedAt: new Date(),
-  }).where(eq(aiModelRegistryState.id, 1)));
-  console.log(`[startup] AI model registry cutover: ${result.partners} partner(s), ${result.failures.length} failed`);
-  return complete ? 'completed' : 'partial';
+export async function cutoverPartner(
+  partnerId: string,
+  deps: { reconcileInTx?: typeof reconcilePartnerFromLegacyInTx } = {},
+): Promise<PartnerCutoverResult> {
+  let result: PartnerCutoverResult = 'already';
+  await withPartnerCutoverTx(partnerId, async (exists) => {
+    if (exists) return;
+    await (deps.reconcileInTx ?? reconcilePartnerFromLegacyInTx)(partnerId);
+    result = 'done';
+  });
+  return result;
 }
 
-const bootstrapped = new Set<string>();
+const cutOver = new Set<string>();
 
 export function __resetRegistryCutoverMemoForTests(): void {
-  bootstrapped.clear();
+  cutOver.clear();
 }
 
-/** A partner with NO partner-level assignment rows gets its registry projected once. */
-export async function ensurePartnerRegistry(
-  partnerId: string,
-  deps: { reconcilePartner?: typeof reconcilePartnerFromLegacy } = {},
-): Promise<boolean> {
-  if (bootstrapped.has(partnerId)) return false;
-  const [row] = await sys(() => db
-    .select({ n: count() })
-    .from(aiModelAssignments)
-    .where(and(isNull(aiModelAssignments.orgId), eq(aiModelAssignments.partnerId, partnerId)))
-    .limit(1));
-  if (Number(row?.n ?? 0) > 0) {
-    bootstrapped.add(partnerId);
+export async function isPartnerCutOver(partnerId: string): Promise<boolean> {
+  if (cutOver.has(partnerId)) return true;
+  if (await hasCutoverRow(partnerId)) { cutOver.add(partnerId); return true; }
+  return false;
+}
+
+export async function ensurePartnerCutover(partnerId: string): Promise<boolean> {
+  if (await isPartnerCutOver(partnerId)) return true;
+  try {
+    await cutoverPartner(partnerId);
+    cutOver.add(partnerId);
+    return true;
+  } catch (error) {
+    captureException(error, undefined, { area: 'ai_model_registry_cutover', partnerId });
     return false;
   }
-  await runOutsideDbContext(() => (deps.reconcilePartner ?? reconcilePartnerFromLegacy)(partnerId));
-  bootstrapped.add(partnerId);
-  return true;
 }
-```
 
-In `apps/api/src/index.ts`, delete W02's detached block (`void reconcileAllPartnersFromLegacy().then(…).catch(…)`). Immediately **before** the `serve(...)` call, add:
-
-```ts
-  // AI model registry W03 (#7601): W02's legacy projection runs ONCE, blocking,
-  // before the API serves its first registry-routed request; afterwards the
-  // registry is authoritative (W02 "Handoff to W03"). A failure here must not
-  // keep the API down: partners that failed are retried at the next boot.
+export async function runRegistryCutoverSweep(opts: {
+  owner?: string; leaseMs?: number; batch?: number; deps?: { cutover?: typeof cutoverPartner };
+} = {}): Promise<{ outcome: 'not_coordinator' | 'complete' | 'incomplete'; processed: number; failed: string[] }> {
+  const owner = opts.owner ?? `sweep-${randomUUID()}`;
+  const leaseMs = opts.leaseMs ?? 5 * 60_000;
+  const batch = opts.batch ?? 50;
+  const cutover = opts.deps?.cutover ?? cutoverPartner;
+  const lease = await takeLease(owner, leaseMs);
+  if (lease === 'complete') return { outcome: 'complete', processed: 0, failed: [] };
+  if (lease === 'held') return { outcome: 'not_coordinator', processed: 0, failed: [] };
+  const failed: string[] = [];
+  let processed = 0;
+  let after: string | null = null;
   try {
-    await runRegistryCutoverIfNeeded();
-  } catch (err) {
-    console.error('[startup] AI model registry cutover failed; retried at next boot', err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    for (;;) {
+      const ids = await nextUncutPartners(after, batch);
+      if (ids.length === 0) break;
+      for (const partnerId of ids) {
+        try {
+          if ((await cutover(partnerId)) === 'done') processed += 1;
+          cutOver.add(partnerId);
+        } catch (error) {
+          failed.push(partnerId);
+          captureException(error, undefined, { area: 'ai_model_registry_cutover', partnerId });
+        }
+        if (!(await renewLease(owner, leaseMs))) return { outcome: 'not_coordinator', processed, failed };
+        after = partnerId;
+      }
+    }
+    if (failed.length === 0) {
+      await markComplete(owner);
+      return { outcome: 'complete', processed, failed };
+    }
+    return { outcome: 'incomplete', processed, failed };
+  } finally {
+    if (failed.length > 0) await releaseLease(owner);
   }
+}
 ```
 
 In `resolveModel.ts`, right after the `if (!input.partnerId) throw …` line:
 
 ```ts
-  await ensurePartnerRegistry(partnerId);   // Task 6A: post-cutover partners have no rows yet
+  // Task 6A: no registry-routed dispatch for a partner that has not been cut over.
+  if (!(await ensurePartnerCutover(partnerId))) return unavailable('registry_unavailable', null);
 ```
 
-Mock it in `resolveModel.test.ts`: `vi.mock('./registryCutover', () => ({ ensurePartnerRegistry: vi.fn(async () => false) }))`.
+Add `'registry_unavailable'` to `ResolveFailureReason` and to `unavailableMessage`: `'AI configuration is being upgraded. Try again in a moment.'`. In `resolveModel.test.ts`, mock `./registryCutover` → `{ ensurePartnerCutover: vi.fn(async () => true) }`, and add one case: when it resolves `false`, the result is `{ ok: false, reason: 'registry_unavailable' }` and the loader is never called.
 
-- [ ] **Step 5: Write the integration test**
+`apps/api/src/index.ts`: delete W02's detached `void reconcileAllPartnersFromLegacy()…` block. **After** `serve(...)`, add:
+
+```ts
+  // AI model registry W03 (#7601): cut every partner over in the background.
+  // Liveness is never blocked; resolveModel cuts a partner over on demand if
+  // its first AI request beats the sweep (registryCutover.ts).
+  void runRegistryCutoverSweep()
+    .then((r) => console.log(`[startup] AI model registry cutover sweep: ${r.outcome}, ${r.processed} partner(s), ${r.failed.length} failed`))
+    .catch((err) => { console.error('[startup] AI model registry cutover sweep failed', err); captureException(err); });
+```
+
+`apps/api/src/worker.ts`: add the same detached call right after `await startRegisteredWorkers('worker', …)`. The lease makes a second process a no-op, and the resolver gate covers any job that runs before the sweep reaches its partner.
+
+- [ ] **Step 5: Write the integration test (real Postgres, real W02 reconcile)**
 
 ```ts
 // apps/api/src/__tests__/integration/aiModelRegistryCutover.integration.test.ts
@@ -4534,52 +5058,289 @@ import { describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { resolveModel } from '../../services/aiModels/resolveModel';
-import { __resetRegistryCutoverMemoForTests, runRegistryCutoverIfNeeded } from '../../services/aiModels/registryCutover';
-import { reconcileAllPartnersFromLegacy } from '../../services/aiModels/legacyReconcile';
+import {
+  __resetRegistryCutoverMemoForTests, cutoverPartner, runRegistryCutoverSweep,
+} from '../../services/aiModels/registryCutover';
 import { createOrganization, createPartner } from './db-utils';
 
 const sys = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
+const resetState = () => sys(() => db.execute(sql`
+  UPDATE ai_model_registry_state SET cutover_completed_at = NULL, lease_owner = NULL, lease_expires_at = NULL WHERE id = 1`));
 
-describe('registry cutover (W02 → W03 handoff)', () => {
-  it('runs the real projection once, then never again', async () => {
-    await sys(() => db.execute(sql`UPDATE ai_model_registry_state SET cutover_completed_at = NULL WHERE id = 1`));
-    const spy = vi.fn(reconcileAllPartnersFromLegacy);
-    expect(await runRegistryCutoverIfNeeded({ reconcileAll: spy })).toBe('completed');
-    expect(await runRegistryCutoverIfNeeded({ reconcileAll: spy })).toBe('already_done');
-    expect(spy).toHaveBeenCalledTimes(1);
+describe('registry cutover (findings 7, 8, 10)', () => {
+  it('two concurrent sweeps: exactly one coordinates; every partner is cut over exactly once', async () => {
+    await resetState();
+    const ps = await Promise.all(Array.from({ length: 30 }, () => createPartner()));
+    const spy = vi.fn(cutoverPartner);
+    const [a, b] = await Promise.all([
+      runRegistryCutoverSweep({ owner: 'A', deps: { cutover: spy } }),
+      runRegistryCutoverSweep({ owner: 'B', deps: { cutover: spy } }),
+    ]);
+    expect([a.outcome, b.outcome].sort()).toEqual(['complete', 'not_coordinator']);
+    const rows = await sys(() => db.execute(sql`
+      SELECT partner_id FROM ai_model_registry_partner_cutover WHERE partner_id = ANY(${ps.map((p) => p.id)}::uuid[])`));
+    expect(rows).toHaveLength(30);
   });
 
-  it('a partner created after cutover resolves chat through a one-time bootstrap', async () => {
+  it('an interrupted sweep resumes where it stopped (the anti-join is the cursor)', async () => {
+    await resetState();
+    await Promise.all(Array.from({ length: 10 }, () => createPartner()));
+    let calls = 0;
+    const flaky = vi.fn(async (id: string) => { calls += 1; if (calls === 4) throw new Error('crash'); return cutoverPartner(id); });
+    expect((await runRegistryCutoverSweep({ owner: 'A', deps: { cutover: flaky } })).outcome).toBe('incomplete');
+    expect((await runRegistryCutoverSweep({ owner: 'B' })).outcome).toBe('complete');
+    const [{ completed }] = await sys(() => db.execute<{ completed: Date | null }>(sql`
+      SELECT cutover_completed_at AS completed FROM ai_model_registry_state WHERE id = 1`));
+    expect(completed).not.toBeNull();
+  });
+
+  it('a request for a partner the sweep has not reached cuts it over on demand, then resolves', async () => {
     __resetRegistryCutoverMemoForTests();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
-    const before = await sys(() => db.execute(sql`SELECT 1 FROM ai_model_assignments WHERE partner_id = ${partner.id}::uuid`));
-    expect(before).toHaveLength(0);
-    const r = await resolveModel({ partnerId: partner.id, orgId: org.id, surface: 'chat' });
-    expect(r).toMatchObject({ ok: true, funding: 'platform' });
+    expect(await resolveModel({ partnerId: partner.id, orgId: org.id, surface: 'chat' })).toMatchObject({ ok: true });
+    const rows = await sys(() => db.execute(sql`SELECT 1 FROM ai_model_registry_partner_cutover WHERE partner_id = ${partner.id}::uuid`));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('completion is monotonic: a later incomplete sweep never clears it', async () => {
+    await resetState();
+    await runRegistryCutoverSweep({ owner: 'A' });
+    const before = await sys(() => db.execute<{ c: Date }>(sql`SELECT cutover_completed_at AS c FROM ai_model_registry_state`));
+    await runRegistryCutoverSweep({ owner: 'B', deps: { cutover: async () => { throw new Error('x'); } } });
+    const after = await sys(() => db.execute<{ c: Date }>(sql`SELECT cutover_completed_at AS c FROM ai_model_registry_state`));
+    expect(after[0]!.c).toEqual(before[0]!.c);
   });
 });
 ```
+
+> The fleet-size case (30 partners, two coordinators) is the representative concurrency check. The per-request bound is one partner's reconcile. Boot never waits on either.
 
 - [ ] **Step 6: Run and commit**
 
 Run: `cd apps/api && npx vitest run src/services/aiModels/registryCutover.test.ts src/services/aiModels/resolveModel.test.ts`
 Expected: PASS.
 
-Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiModelRegistryCutover.integration.test.ts && DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`
-Expected: PASS. The RLS coverage suite fails if the new table is not in its system allowlist, which proves the allowlist edit landed.
-
-Run: `pnpm db:check-drift`
-Expected: no drift.
+Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiModelRegistryCutover.integration.test.ts && DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage && pnpm db:check-drift`
+Expected: PASS. RLS coverage fails until both tables are registered, which proves the registration landed.
 
 ```bash
-git add apps/api/migrations/2026-11-19-100400-ai-model-registry-state.sql apps/api/src/db/schema/aiModelRegistryState.ts \
-  apps/api/src/db/schema/index.ts apps/api/src/services/aiModels/registryCutover.ts \
+git add apps/api/migrations/2026-11-19-100400-ai-model-registry-cutover.sql apps/api/src/db/schema/aiModelRegistryCutover.ts \
+  apps/api/src/db/schema/index.ts apps/api/src/services/aiModels/registryCutover.ts apps/api/src/services/aiModels/registryCutoverStore.ts \
   apps/api/src/services/aiModels/registryCutover.test.ts apps/api/src/services/aiModels/resolveModel.ts \
-  apps/api/src/services/aiModels/resolveModel.test.ts apps/api/src/index.ts \
+  apps/api/src/services/aiModels/resolveModel.test.ts apps/api/src/services/aiModels/eligibility.ts \
+  apps/api/src/index.ts apps/api/src/worker.ts \
   apps/api/src/__tests__/integration/aiModelRegistryCutover.integration.test.ts \
   apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
-git commit -m "feat(ai): registry cutover boot — one blocking legacy projection, then the registry is authoritative (#7601)
+git commit -m "feat(ai): per-partner durable registry cutover gated in the resolver; background coordinated sweep (#7601)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 6B: Authority flip — `/ai/provider` writes the registry; legacy mirror and re-projection removed
+
+W02's binding handoff item 2, and review finding 9.
+- **What breaks today.** After cutover, re-running W02's projection on a provider edit would:
+  - reset assignment options and fallbacks;
+  - delete assignment rows the projection doesn't produce;
+  - rebind sessions from legacy model strings.
+  
+  That overwrites registry choices, e.g. a session a user created on an explicit offering (Task 9).
+- **The flip.** The facade (`services/partnerLlmConfig.ts`, W02 Task 13) stops writing `partner_llm_configs` and performs **registry-native** edits. They express the same legacy semantics as id remaps, never as a re-projection.
+  - **Gate first.** Every facade write calls `ensurePartnerCutover(partnerId)` (Task 6A), so a partner is never edited natively before its one projection.
+  - **Connect** (first compat connection, BYOK or catalog):
+    - create the connection;
+    - for every model the partner's registry references through **platform** offerings (assignment defaults, permitted and fallback arrays, agent policy offerings, live session offerings), ensure a same-model offering on the new connection. BYOK offerings link the platform row; catalog offerings fail closed through eligibility if unmapped, which is legacy's behaviour;
+    - remap those ids everywhere.
+    
+    Options, `allow_user_choice` and rows are untouched, and nothing is deleted.
+  - **Rotate key / change catalog entry** (same kind): update the connection in place (`api_key_encrypted`, `key_last4`, `key_fingerprint`, `catalog_entry_id`, `config_version + 1`, `status 'active'`, `last_error NULL`), then enqueue discovery (Task 16 adds that call). No remap.
+  - **Switch kind** (BYOK ↔ catalog): disconnect, then connect.
+  - **Disconnect:** remap the connection's offering ids back to same-model platform offerings, creating them enabled if missing. Then delete the connection; its offerings cascade, and stale session pointers `SET NULL` and resolve to the default next turn.
+  - **Change default model** (`legacy_default_model`): re-point only the **partner-level** assignment rows whose `default_offering_id` is the previous default's offering, to the new model's offering on the same connection (created if missing). Org rows are untouched; they are deliberate overrides.
+- **Mirror trigger.** `partner_llm_configs_mirror_to_connection` is dropped in the same change: nothing writes the legacy table any more.
+- **Legacy-table readers move to the compat connection.** `resolveLlmConfig`'s `readPartnerLlmConfig` and `llmUnusableCodeForOrgInSystemContext` read through W02's `getCompatConnection` / `getConnectionKeyMaterial` (both still serve the env-OpenAI and readiness paths). `markPartnerLlmError` updates the connection (`status='error'`, `last_error`, matching `id` + `config_version`).
+
+**Files:**
+- Create: `apps/api/migrations/2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql`
+- Create: `apps/api/src/services/aiModels/compatRemap.ts`, `apps/api/src/services/aiModels/compatRemap.test.ts`
+- Modify: `apps/api/src/services/partnerLlmConfig.ts` (+ `partnerLlmConfig.test.ts`) (facade writes)
+- Modify: `apps/api/src/services/llm/llmConfigResolver.ts` (+ test) (`readPartnerLlmConfig`, `llmUnusableCodeForOrgInSystemContext`, `markPartnerLlmError`)
+- Create: `apps/api/src/__tests__/integration/aiProviderAuthority.integration.test.ts`
+
+**Interfaces:**
+- Consumes: Task 6A `ensurePartnerCutover`; P7 `createConnection`, `getCompatConnection`, `getConnectionKeyMaterial`, `encryptConnectionKey`.
+- Produces:
+  ```ts
+  // compatRemap.ts (all inside a held system transaction)
+  export async function remapPartnerOfferings(partnerId: string, mapping: ReadonlyMap<string, string>): Promise<{ assignments: number; agents: number; sessions: number; offerings: number }>;
+  export async function ensureSameModelOfferings(partnerId: string, from: { connectionId: string | null }, to: { connectionId: string | null }): Promise<Map<string, string>>;
+  export async function connectCompat(partnerId: string, input: { kind: 'anthropic_byok' | 'catalog'; apiKey: string; catalogEntryId: string | null; connectedBy: string | null; defaultModel: string | null }): Promise<string>;
+  export async function disconnectCompat(partnerId: string): Promise<void>;
+  export async function changeCompatDefaultModel(partnerId: string, modelId: string | null): Promise<void>;
+  ```
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// apps/api/src/__tests__/integration/aiProviderAuthority.integration.test.ts
+import './setup';
+import { describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
+import { deletePartnerLlmConfig, savePartnerLlmKey } from '../../services/partnerLlmConfig';
+import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
+
+const sys = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
+
+describe('authority flip (finding 9): /ai/provider edits the registry, never re-projects it', () => {
+  it('connecting a BYOK key moves platform references to the key but keeps options, rows and explicit choices', async () => {
+    const s = await seedRegistryPartner('platform');
+    await sys(() => db.execute(sql`UPDATE ai_model_assignments SET options = '{"effort":"low"}'::jsonb
+      WHERE partner_id = ${s.partnerId}::uuid AND surface = 'catalog_enrichment'`));
+    const before = await sys(() => db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM ai_model_assignments WHERE partner_id = ${s.partnerId}::uuid`));
+    await savePartnerLlmKey(s.partnerId, 'sk-ant-test', { probe: false });   // the facade's probe is stubbed in this suite
+    const [row] = await sys(() => db.execute<{ options: unknown; conn: string | null }>(sql`
+      SELECT a.options, o.connection_id AS conn FROM ai_model_assignments a
+      JOIN partner_ai_models o ON o.id = a.default_offering_id
+      WHERE a.partner_id = ${s.partnerId}::uuid AND a.surface = 'catalog_enrichment'`));
+    expect(row!.options).toEqual({ effort: 'low' });
+    expect(row!.conn).not.toBeNull();
+    const after = await sys(() => db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM ai_model_assignments WHERE partner_id = ${s.partnerId}::uuid`));
+    expect(after[0]!.n).toBe(before[0]!.n);
+    const legacy = await sys(() => db.execute(sql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${s.partnerId}::uuid`));
+    expect(legacy).toHaveLength(0);   // the legacy table is no longer written
+  });
+
+  it('disconnecting returns references to platform offerings and deletes the connection', async () => {
+    const s = await seedRegistryPartner('byok');
+    await deletePartnerLlmConfig(s.partnerId);
+    const conns = await sys(() => db.execute(sql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${s.partnerId}::uuid`));
+    expect(conns).toHaveLength(0);
+    const [d] = await sys(() => db.execute<{ conn: string | null }>(sql`
+      SELECT o.connection_id AS conn FROM ai_model_assignments a JOIN partner_ai_models o ON o.id = a.default_offering_id
+      WHERE a.partner_id = ${s.partnerId}::uuid AND a.surface = 'chat'`));
+    expect(d!.conn).toBeNull();
+  });
+
+  it('the legacy mirror trigger is gone', async () => {
+    const t = await sys(() => db.execute(sql`SELECT 1 FROM pg_trigger WHERE tgname = 'partner_llm_configs_mirror_to_connection'`));
+    expect(t).toHaveLength(0);
+  });
+});
+```
+
+> `savePartnerLlmKey`'s real signature and probe seam come from W02 Task 13. Stub the probe exactly the way W02's `aiModelRegistryReconcile.integration.test.ts` does.
+
+`compatRemap.test.ts` (unit, mocked `db.execute`) pins the remap SQL touches exactly:
+- `ai_model_assignments.default_offering_id`, `permitted_offering_ids` and `fallback_offering_ids` (`array_replace`);
+- `ai_agents.offering_id`;
+- `ai_sessions.offering_id` (status `active` only);
+- `partner_ai_models.refusal_fallback_offering_id`.
+
+It also asserts the remap **never** issues a `DELETE` on assignments or touches `options` / `allow_user_choice`.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `cd apps/api && npx vitest run src/services/aiModels/compatRemap.test.ts && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiProviderAuthority.integration.test.ts`
+Expected: FAIL. `./compatRemap` is missing, and the facade still writes `partner_llm_configs` and re-projects.
+
+- [ ] **Step 3: Implement**
+
+```ts
+// apps/api/src/services/aiModels/compatRemap.ts — the remap core (callers hold a system transaction)
+import { sql } from 'drizzle-orm';
+import { db } from '../../db';
+
+export async function remapPartnerOfferings(
+  partnerId: string,
+  mapping: ReadonlyMap<string, string>,
+): Promise<{ assignments: number; agents: number; sessions: number; offerings: number }> {
+  let assignments = 0, agents = 0, sessions = 0, offerings = 0;
+  for (const [from, to] of mapping) {
+    assignments += (await db.execute(sql`
+      UPDATE ai_model_assignments SET
+        default_offering_id = CASE WHEN default_offering_id = ${from}::uuid THEN ${to}::uuid ELSE default_offering_id END,
+        permitted_offering_ids = array_replace(permitted_offering_ids, ${from}::uuid, ${to}::uuid),
+        fallback_offering_ids = array_replace(fallback_offering_ids, ${from}::uuid, ${to}::uuid),
+        updated_at = now()
+      WHERE offering_partner_id = ${partnerId}::uuid
+        AND (default_offering_id = ${from}::uuid OR ${from}::uuid = ANY(permitted_offering_ids) OR ${from}::uuid = ANY(fallback_offering_ids))
+      RETURNING id`)).length;
+    agents += (await db.execute(sql`
+      UPDATE ai_agents SET offering_id = ${to}::uuid, updated_at = now()
+      WHERE offering_partner_id = ${partnerId}::uuid AND offering_id = ${from}::uuid RETURNING id`)).length;
+    sessions += (await db.execute(sql`
+      UPDATE ai_sessions SET offering_id = ${to}::uuid, updated_at = now()
+      WHERE offering_partner_id = ${partnerId}::uuid AND offering_id = ${from}::uuid AND status = 'active' RETURNING id`)).length;
+    offerings += (await db.execute(sql`
+      UPDATE partner_ai_models SET refusal_fallback_offering_id = ${to}::uuid
+      WHERE partner_id = ${partnerId}::uuid AND refusal_fallback_offering_id = ${from}::uuid RETURNING id`)).length;
+  }
+  return { assignments, agents, sessions, offerings };
+}
+```
+
+`ensureSameModelOfferings(partnerId, from, to)`:
+- selects every offering on `from` that is referenced (assignment default/permitted/fallback, agent offering, active session offering);
+- for each, finds or creates the offering with the same logical model on `to`, created **enabled**:
+  - to platform: `source 'platform'`, `platform_model_id` by model id;
+  - to BYOK: `source 'discovered'`, linked `platform_model_id`, `model_id`;
+  - to catalog: `source 'catalog'`, `model_id`;
+- returns the `from → to` id map.
+
+The three entry points compose these inside one `runOutsideDbContext(() => withSystemDbAccessContext(…))` transaction:
+- `connectCompat`: `createConnection` → `ensureSameModelOfferings(partner, { connectionId: null }, { connectionId })` → `remapPartnerOfferings`. If `defaultModel` is set, also `changeCompatDefaultModel`.
+- `disconnectCompat`: `ensureSameModelOfferings(partner, { connectionId }, { connectionId: null })` → `remapPartnerOfferings` → `DELETE FROM partner_ai_connections WHERE id = $connectionId`.
+- `changeCompatDefaultModel`: updates `legacy_default_model`, then re-points the partner-level rows (`org_id IS NULL`) whose `default_offering_id` is the old default's offering.
+
+The facade (`partnerLlmConfig.ts`) keeps its exported names and route contract, and every write becomes:
+
+```ts
+  if (!(await ensurePartnerCutover(partnerId))) throw new PartnerLlmError('AI configuration is being upgraded. Try again in a moment.', 503);
+  // probe exactly as today (outside any transaction), then ONE of:
+  //   no compat connection → connectCompat(...)
+  //   same kind            → rotate in place (W02 connections service) + enqueueConnectionSync
+  //   different kind       → disconnectCompat + connectCompat
+  //   default-model edit   → changeCompatDefaultModel
+  //   delete               → disconnectCompat
+  // and NO partner_llm_configs write, NO reconcilePartnerFromLegacyInTx call.
+```
+
+`llmConfigResolver.ts`:
+- `readPartnerLlmConfig(partnerId)` reads `getCompatConnection(partnerId)` + `getConnectionKeyMaterial(id)` and maps them to the old row shape (`{ id, partnerId, apiKeyEncrypted, defaultModel: legacyDefaultModel, catalogEntryId, status, configVersion }`). `decryptPartnerLlmApiKey` becomes `decryptConnectionKey` (same AAD tag, W02 P7).
+- `llmUnusableCodeForOrgInSystemContext` does the same.
+- `markPartnerLlmError` updates `partner_ai_connections` (`status='error'`, `last_error`, `updated_at`) `WHERE id = configId AND config_version = configVersion`.
+
+```sql
+-- apps/api/migrations/2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql
+-- AI model registry W03 (#7601), W02 handoff item 2: the /ai/provider facade
+-- now writes the registry directly and nothing writes partner_llm_configs, so
+-- the legacy → connection mirror is removed. The table itself stays (read by
+-- nothing in W03) and is dropped in W08. DDL only. Idempotent.
+DROP TRIGGER IF EXISTS partner_llm_configs_mirror_to_connection ON public.partner_llm_configs;
+DROP FUNCTION IF EXISTS public.partner_llm_configs_mirror_to_connection();
+```
+
+- [ ] **Step 4: Run and commit**
+
+Run: `cd apps/api && npx vitest run src/services/aiModels/compatRemap.test.ts src/services/partnerLlmConfig.test.ts src/services/llm/llmConfigResolver.test.ts src/routes/aiProvider`
+Expected: PASS. `routes/aiProvider.test.ts` mocks the facade and stays green unmodified.
+
+Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiProviderAuthority.integration.test.ts src/__tests__/integration/aiModelRegistryReconcile.integration.test.ts src/__tests__/integration/llmCatalogSelection.integration.test.ts`
+Expected: PASS. Update W02's reconcile suite's facade round-trip case to the registry-native expectations: no legacy row, references remapped. Point `llmCatalogSelection`'s seeding at `createConnection` instead of `partner_llm_configs`.
+
+```bash
+git add apps/api/migrations/2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql \
+  apps/api/src/services/aiModels/compatRemap.ts apps/api/src/services/aiModels/compatRemap.test.ts \
+  apps/api/src/services/partnerLlmConfig.ts apps/api/src/services/partnerLlmConfig.test.ts \
+  apps/api/src/services/llm/llmConfigResolver.ts apps/api/src/services/llm/llmConfigResolver.test.ts \
+  apps/api/src/__tests__/integration/aiProviderAuthority.integration.test.ts \
+  apps/api/src/__tests__/integration/aiModelRegistryReconcile.integration.test.ts \
+  apps/api/src/__tests__/integration/llmCatalogSelection.integration.test.ts
+git commit -m "feat(ai): authority flip — /ai/provider edits the registry natively; legacy mirror removed (#7601)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -5324,7 +6085,8 @@ Append to `w03Parity.ts`:
 import { expect } from 'vitest';
 import type { ResolveModelResult } from '../resolveModel';
 import { PARITY_FIXTURES } from './fixtures';
-import { parityQueries, runParity, type ParityFixture } from './harness';
+import { parityQueries, runParity, sameUse, type ParityFixture } from './harness';
+import { projectSurfaceUse, type RegistrySnapshot } from './storeProjection';
 
 export function toSurfaceUse(r: ResolveModelResult): SurfaceUse {
   if (!r.ok) return { outcome: 'unavailable', reason: r.reason };
@@ -5337,21 +6099,31 @@ export function toSurfaceUse(r: ResolveModelResult): SurfaceUse {
   };
 }
 
-/** W02's runParity with the frozen goldens as the legacy side; fails on any UNEXPECTED divergence. */
+/**
+ * W02's runParity with the frozen goldens as the legacy side. Fails on any
+ * UNEXPECTED divergence, AND (review finding 13) on a DECLARED divergence whose
+ * registry answer is not exactly W02's projected registry answer for that query.
+ * W02's `applies()` accepts any `ok`; that alone would pass a catalog surface
+ * resolved to the platform, or to the wrong model.
+ */
 export async function assertSurfaceParity(opts: {
   select: (q: ParityQuery) => boolean;
-  bind: (fixture: ParityFixture) => void | Promise<void>;
+  /** Binds the resolver's data adapters to this fixture and returns the snapshot they read. */
+  bind: (fixture: ParityFixture) => RegistrySnapshot | Promise<RegistrySnapshot>;
   registrySide: (fixture: ParityFixture, q: ParityQuery) => Promise<SurfaceUse>;
+  /** Mutation self-tests only: override the frozen legacy side. */
+  legacySide?: (fixture: ParityFixture, q: ParityQuery) => SurfaceUse;
 }): Promise<void> {
   const goldens = loadW03Goldens();
   const failures: string[] = [];
   let compared = 0;
   for (const fixture of PARITY_FIXTURES) {
-    await opts.bind(fixture);
+    const store = await opts.bind(fixture);
     const rows = await runParity(
       fixture,
       parityQueries(fixture).filter(opts.select),
       async (f, q) => {
+        if (opts.legacySide) return opts.legacySide(f, q);
         const golden = goldens[f.name]?.[queryKey(q)];
         if (!golden) throw new Error(`no W03 golden for ${f.name} ${queryKey(q)}`);
         return golden;
@@ -5360,8 +6132,16 @@ export async function assertSurfaceParity(opts: {
     );
     compared += rows.length;
     for (const row of rows) {
+      const at = `${row.fixture} ${queryKey(row.query)}`;
       if (row.divergence === 'UNEXPECTED') {
-        failures.push(`${row.fixture} ${queryKey(row.query)}: legacy ${JSON.stringify(row.legacy)} vs registry ${JSON.stringify(row.registry)}`);
+        failures.push(`${at}: legacy ${JSON.stringify(row.legacy)} vs registry ${JSON.stringify(row.registry)}`);
+      } else if (row.divergence !== null) {
+        // Declared divergence: the registry answer must be the EXACT projected tuple
+        // (destination, funding, logical model, wire model), not merely `ok`.
+        const projected = projectSurfaceUse(store, row.query);
+        if (!sameUse(row.registry, projected)) {
+          failures.push(`${at} [${row.divergence}]: registry ${JSON.stringify(row.registry)} vs projected ${JSON.stringify(projected)}`);
+        }
       }
     }
   }
@@ -5513,6 +6293,7 @@ beforeAll(() => { process.env.LLM_PROVIDER_CATALOG_ENABLED = 'true'; });
 const bind = (fixture: ParityFixture) => {
   const store = storeFor(fixture);
   h.state.deps = snapshotDeps(store, fixture) as never;
+  return store;
 };
 const partnerOf = (fixture: ParityFixture) => storeFor(fixture).partnerId;
 const surfaceQuery = (surface: AiSurface) => (q: ParityQuery) => q.kind === 'surface' && q.surface === surface;
@@ -5556,13 +6337,93 @@ describe('W03 parity: office_chat', () => {
 });
 ```
 
+**Mutation self-tests (review finding 13).** A parity suite that cannot fail proves nothing. Append to `w03Surfaces.parity.test.ts` (it has the hoisted adapters):
+
+```ts
+describe('W03 parity harness discriminates (mutations that MUST fail)', () => {
+  const chatSide = viaAssignment('chat', true);
+
+  it('a registry side that forces platform funding fails', async () => {
+    await expect(assertSurfaceParity({
+      select: surfaceQuery('chat'), bind,
+      registrySide: async (f, q) => {
+        const u = await chatSide(f, q);
+        return u.outcome === 'ok' ? { ...u, destination: 'platform', funding: 'platform' } : u;
+      },
+    })).rejects.toThrow();
+  });
+
+  it('an entrypoint that resolves the WRONG surface fails (chat answered as patch_test: BYOK chat vs platform patch_test)', async () => {
+    await expect(assertSurfaceParity({
+      select: surfaceQuery('chat'), bind,
+      registrySide: async (f, q) => {
+        const goldens = loadW03Goldens();
+        return goldens[f.name]![queryKey({ kind: 'surface', surface: 'patch_test', orgId: (q as { orgId: string }).orgId })]!;
+      },
+    })).rejects.toThrow();
+  });
+
+  it('a declared catalog divergence resolved to the wrong destination fails (any-ok is not enough)', async () => {
+    await expect(assertSurfaceParity({
+      select: surfaceQuery('extension_content'), bind,
+      registrySide: async (f, q) => {
+        const u = await viaAssignment('extension_content', false)(f, q);
+        return u.outcome === 'ok' ? { ...u, destination: 'platform', funding: 'platform' } : u;
+      },
+    })).rejects.toThrow();
+  });
+});
+```
+
+Add `loadW03Goldens` and `queryKey` to the `./w03Parity` import. The third case needs at least one catalog fixture whose `extension_content` golden is `catalog_refused`. W02's fixture list has one (P13, `catalog_*`). If it is missing, the case fails, which is correct: the declared divergence would then be untested.
+
+**Entry-point assertions (review finding 13).** The parity suite calls the resolvers. The entrypoints are proven separately, by composition: after W03 an entrypoint has no routing logic of its own. It passes ONE surface string to the resolver, then forwards the `ResolvedModel` unchanged to dispatch and to the reservation. Each SDK entrypoint's route or service test pins three things, using `makeResolvedModel('anthropic_byok')`, whose `partner_key` funding differs from every platform default:
+1. the **exact** resolver call: `toHaveBeenCalledWith({ sessionId, surface: '<surface>', userId })`;
+2. the dispatch received **the same object**: `streamingSessionManager.getOrCreate` gets `toBe(model)` as its model argument;
+3. the reservation: `reserveAiBudget` receives `expect.objectContaining({ billingSource: 'partner_key', binding: turnBindingFrom(model) })`.
+
+| Entrypoint | Test file | Surface |
+|---|---|---|
+| `runPreFlightChecks` (chat/topology turns) | `services/aiAgentSdk.test.ts` | `'chat'`; `checkBudget(orgId, 'partner_key')` instead of the reservation |
+| `runPreFlightChecks` (script builder turns) | `services/aiAgentSdk.test.ts` | `'script_builder'` |
+| `POST /ai/sessions/:id/messages` | `routes/ai.modelResolution.test.ts` (above) | consumes the preflight `model` → 2 + 3 |
+| helper messages | `routes/helper/index.test.ts` | `'helper'` |
+| script builder messages | `routes/scriptAi_messages_approve.test.ts` | consumes the preflight `model` → 2 + 3 |
+| Office chat messages | `routes/clientAi/sessions.messages.test.ts` | `'office_chat'` |
+
+The helper case, as the template for the others:
+
+```ts
+// apps/api/src/routes/helper/index.test.ts — new case
+it('dispatches and reserves exactly the model resolved for the helper surface (finding 13)', async () => {
+  const model = makeResolvedModel('anthropic_byok');
+  resolveSessionTurnMock.mockResolvedValue(model);
+  await app.request(`/helper/chat/sessions/${SESSION_ID}/messages`, { method: 'POST', headers: helperHeaders, body: JSON.stringify({ content: 'hi' }) });
+  expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, surface: 'helper', userId: null });
+  expect(getOrCreateMock.mock.calls[0]![3]).toBe(model);   // the model argument position in getOrCreate
+  expect(reserveAiBudgetMock).toHaveBeenCalledWith(expect.objectContaining({
+    billingSource: 'partner_key', binding: turnBindingFrom(model),
+  }));
+});
+```
+
+Use the route path and the `getOrCreate` argument index the file already uses. Tasks 10–13 follow the same three-assertion rule for their Messages API entrypoints, and each task's test list names the case.
+
+**Env OpenAI-compatible execution (review finding 12).** Add two `runPreFlightChecks` cases to `services/aiAgentSdk.test.ts`. Both run with `MCP_LLM_PROVIDER=openai-compatible` through the config mock and with **no** `ANTHROPIC_API_KEY` or other platform credential env var:
+- a `chat` session row with `offering_id NULL` and a legacy resolver returning `{ source: 'platform', model: 'gpt-4o-mini' }` → `{ ok: true, model: null, openaiCompatible: true }`, `resolveSessionTurn` never called, and `checkBudget(orgId, 'platform')`;
+- the legacy resolver returning `{ source: 'partner', … }` → `{ ok: false, error: 'ai_unavailable', status: 503 }`.
+
+Task 9 pins the creation half.
+
+**Not adopted from finding 13: running every parity fixture through every HTTP entrypoint.** Each route needs 30–40 hoisted mocks (`helper/index.test.ts` on `origin/main`), and fixtures × queries × routes would repeat the resolver matrix through code with no routing of its own. Composition gives the same guarantee: exact tuples per fixture at the resolver, plus the surface string and pass-through at each entrypoint. The surface-swap mutation above proves that a wrong surface string would be caught.
+
 - [ ] **Step 11: Run everything touched**
 
 Run: `cd apps/api && npx vitest run src/services/aiModels src/services/streamingSessionManager src/services/aiAgentSdk src/routes/ai src/routes/helper src/routes/scriptAi src/routes/clientAi`
 Expected: PASS. Check the reported file count includes every `streamingSessionManager.*.test.ts`: the substring filter matches them all.
 
 Run: `cd apps/api && npx vitest run src/services/aiModels/parity/w03Surfaces.parity.test.ts`
-Expected: PASS (5 tests). A failure lists `fixture query: legacy … vs registry …`. It is either a resolver bug or a W02 projection gap: fix the resolver, or stop and report the projection gap. **Never** add an `EXPECTED_DIVERGENCES` entry to make it pass.
+Expected: PASS (8 tests: 5 parity plus 3 mutations that must reject). A failure lists `fixture query: legacy … vs registry …`. It is either a resolver bug or a W02 projection gap: fix the resolver, or stop and report the projection gap. **Never** add an `EXPECTED_DIVERGENCES` entry to make it pass.
 
 Run: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/topologyAiFailureAccounting.integration.test.ts`
 Expected: PASS.
@@ -5886,6 +6747,7 @@ A route stores the resolved `offering_id`, `offering_partner_id` and `options`, 
 - A **requested** offering (`origin: 'user'`) that is ineligible or not permitted is a 400 with the resolver's reason. No fallback applies and nothing is stored.
 - The legacy `model` string in the request body is accepted for one more wave as a lookup key. It maps to the partner's enabled offering with that model id, then goes through the same resolution; an unknown id is `invalid_model`.
 - No request and no eligible default keeps today's 503 (`ai_unavailable`, or `ai_not_configured` when the deployment has no platform credential).
+- **A deployment on the env OpenAI-compatible chat path (`MCP_LLM_PROVIDER=openai-compatible`) keeps its legacy creation branch until W06** (review finding 12). Such a deployment can have no Anthropic credential at all (`isPlatformLlmConfigured(…, 'chat')` is true on the env flag alone, `services/llm/llmAvailability.ts:89` on `origin/main`). The registry would find no eligible platform offering and refuse every new chat. `createSession` therefore branches on `isOpenAICompatibleProvider()` first, exactly where `origin/main` `aiAgent.ts:210–214` resolves today. The session is stored with `offering_id = NULL`. Task 7's `runPreFlightChecks` already routes `chat` turns on this flag to the legacy path, so execution needs no new code.
 
 W00's `assertSessionModelAllowed`, its `OFFERABLE_AI_MODELS` check and the `InvalidSessionModelError` in `aiOfferableModels.ts` are replaced. The error class moves to `sessionModel.ts`.
 
@@ -5899,6 +6761,8 @@ W00's `assertSessionModelAllowed`, its `OFFERABLE_AI_MODELS` check and the `Inva
 - Modify: `apps/api/src/routes/helper/index.ts` (create ~L255–320)
 - Modify: `apps/api/src/routes/clientAi/sessions.ts` (create ~L296–325)
 - Modify: `apps/api/src/services/aiAgent.sessionModel.test.ts` (W00), `apps/api/src/routes/ai_sessions_crud.test.ts`, `helper/index.test.ts`, `scriptAi_sessions.test.ts`, `clientAi/sessions.create.test.ts`
+- Create: `apps/api/migrations/2026-11-19-100600-ai-sessions-model-drop-default.sql` (W02 handoff #5)
+- Modify: `apps/api/src/db/schema/ai.ts` (`aiSessions.model` ~L38 loses `.default(…)`), plus every `ai_sessions` insert that omitted `model` (Step 5A)
 
 **Interfaces:**
 - Consumes: Task 3 `resolveModel`, `ResolvedModel`; Task 2 `findOfferingIdByModel`, `readOrgPartnerId`; `isPlatformLlmConfigured`; `LlmUnavailableError`, `LlmNotConfiguredError` (the class `aiAgent.ts` already throws).
@@ -5937,6 +6801,7 @@ vi.mock('../llm/llmAvailability', async (orig) => ({
   isPlatformLlmConfigured: extra.isPlatformLlmConfigured,
 }));
 // extend the './candidateLoader' mock above with: findOfferingIdByModel: extra.findOfferingIdByModel
+vi.mock('./registryCutover', () => ({ ensurePartnerCutover: vi.fn(async () => true) }));
 
 describe('chooseSessionModel', () => {
   const base = { partnerId: 'partner-1', orgId: 'org-1', userId: 'u1', surface: 'chat' as const };
@@ -5966,7 +6831,7 @@ describe('chooseSessionModel', () => {
     extra.findOfferingIdByModel.mockResolvedValue('off-7');
     m.resolveModel.mockResolvedValue(makeResolvedModel());
     await chooseSessionModel({ ...base, legacyModel: 'claude-opus-5-5' });
-    expect(extra.findOfferingIdByModel).toHaveBeenCalledWith('partner-1', 'claude-opus-5-5');
+    expect(extra.findOfferingIdByModel).toHaveBeenCalledWith({ partnerId: 'partner-1', orgId: 'org-1', surface: 'chat', modelId: 'claude-opus-5-5' });
     expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'off-7', origin: 'user' } }));
   });
 
@@ -6032,7 +6897,13 @@ export async function chooseSessionModel(input: {
 }): Promise<SessionModelChoice> {
   let offeringId = input.offeringId;
   if (!offeringId && input.legacyModel) {
-    offeringId = (await findOfferingIdByModel(input.partnerId, input.legacyModel)) ?? undefined;
+    // The lookup reads assignments: never against a partner not yet cut over (Task 6A).
+    if (!(await ensurePartnerCutover(input.partnerId))) {
+      throw new LlmUnavailableError('AI configuration is being upgraded. Try again in a moment.');
+    }
+    offeringId = (await findOfferingIdByModel({
+      partnerId: input.partnerId, orgId: input.orgId, surface: input.surface, modelId: input.legacyModel,
+    })) ?? undefined;
     if (!offeringId) {
       throw new InvalidSessionModelError(`Model "${input.legacyModel}" is not available for AI sessions.`, 'invalid_model');
     }
@@ -6062,24 +6933,42 @@ export async function chooseSessionModel(input: {
 }
 ```
 
-Add the imports: `findOfferingIdByModel` (`./candidateLoader`), `isPlatformLlmConfigured` and `LlmNotConfiguredError` (`../llm/llmAvailability`), `LlmUnavailableError` (`../llm/llmConfigResolver`), `type AiBillingSource` (`../aiCostTracker`), `type ResolvedModel` (`./resolveModel`) and `type ResolveFailureReason` (`./eligibility`).
+Add the imports: `findOfferingIdByModel` (`./candidateLoader`), `ensurePartnerCutover` (`./registryCutover`), `isPlatformLlmConfigured` and `LlmNotConfiguredError` (`../llm/llmAvailability`), `LlmUnavailableError` (`../llm/llmConfigResolver`), `type AiBillingSource` (`../aiCostTracker`), `type ResolvedModel` (`./resolveModel`) and `type ResolveFailureReason` (`./eligibility`).
 
 - [ ] **Step 4: Wire every create route**
 
 **`createSession` (`aiAgent.ts`).** Replace `resolveLlmConfigForOrg(orgId)` → `assertSessionModelAllowed` → `billingSource` with:
 
 ```ts
-  const partnerId = await readOrgPartnerId(orgId);
-  if (!partnerId) throw new LlmUnavailableError();
-  const choice = await chooseSessionModel({
-    partnerId, orgId, userId: auth.user.id, surface: 'chat',
-    ...(options.offeringId ? { offeringId: options.offeringId } : {}),
-    ...(options.options ? { options: options.options } : {}),
-    ...(options.model ? { legacyModel: options.model } : {}),
-  });
+  let choice: Pick<SessionModelChoice, 'offeringId' | 'options' | 'model' | 'billingSource'> & { offeringPartnerId: string | null };
+  if (isOpenAICompatibleProvider()) {
+    // Env OpenAI-compatible chat (review finding 12): legacy resolution, no
+    // offering, until W06 absorbs this path. Byte-for-byte today's checks.
+    const resolved = await resolveLlmConfigForOrg(orgId);
+    if (llmUnusableCode(resolved) === 'ai_not_configured') throw new LlmNotConfiguredError();
+    if (resolved.source === 'unavailable') throw new LlmUnavailableError();
+    if (options.offeringId || options.options || (options.model && options.model !== resolved.model)) {
+      throw new InvalidSessionModelError('Model selection is not available on this deployment.', 'invalid_model');
+    }
+    choice = {
+      offeringId: null, offeringPartnerId: null, options: null, model: resolved.model,
+      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+    };
+  } else {
+    const partnerId = await readOrgPartnerId(orgId);
+    if (!partnerId) throw new LlmUnavailableError();
+    choice = await chooseSessionModel({
+      partnerId, orgId, userId: auth.user.id, surface: 'chat',
+      ...(options.offeringId ? { offeringId: options.offeringId } : {}),
+      ...(options.options ? { options: options.options } : {}),
+      ...(options.model ? { legacyModel: options.model } : {}),
+    });
+  }
 ```
 
-The insert sets `model: choice.model, offeringId: choice.offeringId, offeringPartnerId: choice.offeringPartnerId, options: choice.options, billingSource: choice.billingSource`. Delete `assertSessionModelAllowed`. Topology sessions use this same function, so `surface: 'chat'` is right for both (spec §4).
+The insert sets `model: choice.model, offeringId: choice.offeringId, offeringPartnerId: choice.offeringPartnerId, options: choice.options, billingSource: choice.billingSource`. Delete `assertSessionModelAllowed`. Keep the `resolveLlmConfigForOrg` and `llmUnusableCode` imports, which now serve only the env branch. Task 17's contract allows `resolveLlmConfigForOrg` until W06. Topology sessions use this same function, so `surface: 'chat'` is right for both (spec §4).
+
+The script-builder, helper and Office creates do **not** take this branch. On `origin/main` the env path serves `chat` only (`isPlatformLlmConfigured(…, 'chat')`), so those surfaces already needed an Anthropic credential.
 
 **`packages/shared/src/validators/ai.ts`.**
 
@@ -6111,8 +7000,52 @@ export const createAiSessionSchema = z.object({
 - [ ] **Step 5: Rewrite W00's session-model tests and the route tests**
 
 - `aiAgent.sessionModel.test.ts` (W00): replace the `assertSessionModelAllowed` cases with assertions that `createSession` inserts `offeringId` / `offeringPartnerId` / `options` / `model` / `billingSource` from a mocked `chooseSessionModel`, and propagates `InvalidSessionModelError`.
+- `aiAgent.sessionModel.test.ts`, new `describe('env OpenAI-compatible deployment (finding 12)')`. Set `MCP_LLM_PROVIDER=openai-compatible` through the config mock, **delete `ANTHROPIC_API_KEY` and every `PLATFORM_LLM_CREDENTIAL_ENV_KEYS` var**, and leave `chooseSessionModel` and `resolveModel` unmocked so a call fails loudly. The legacy resolver mock returns `{ source: 'platform', model: 'gpt-4o-mini' }`. Cases:
+  1. `createSession(auth, {})` resolves, `chooseSessionModel` is never called, and the insert carries `{ offeringId: null, offeringPartnerId: null, options: null, model: 'gpt-4o-mini', billingSource: 'platform' }`.
+  2. `{ offeringId: <uuid> }` and `{ model: 'claude-opus-5-5' }` each reject `InvalidSessionModelError` with code `invalid_model`, and nothing is inserted.
+  3. The legacy resolver returning `{ source: 'unavailable' }` rejects `LlmUnavailableError`.
+- The **execution** half of finding 12 is pinned in Task 7 Step 10's `runPreFlightChecks` cases (`services/aiAgentSdk.test.ts`).
 - `ai_sessions_crud.test.ts`: `POST /ai/sessions` with `{ offeringId: <foreign uuid> }` → mocked `createSession` rejects `new InvalidSessionModelError('This AI model is not available here. Choose another model.', 'not_permitted')` → expect `400` and `{ error, code: 'not_permitted' }`.
 - `helper/index.test.ts`, `scriptAi_sessions.test.ts`, `clientAi/sessions.create.test.ts`: mock `chooseSessionModel` to return `{ resolved: makeResolvedModel(), offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null, model: 'claude-sonnet-5-5', billingSource: 'platform' }`, and assert the insert values carry those five fields. In the Office test, also assert the insert's `model` no longer equals `policy.allowedModels[0]` when they differ.
+
+- [ ] **Step 5A: Drop the stale `ai_sessions.model` default (W02 handoff #5)**
+
+On `origin/main` the column is `model varchar(100) NOT NULL DEFAULT 'claude-sonnet-4-5-20250929'` (`db/schema/ai.ts:38`). W02 Task 6 deferred dropping the default because several suites insert sessions with no model. Every production insert now names its model:
+- `createSession`, script builder, helper and Office write `choice.model`;
+- `executionLedger.createAgentRunSession` writes `args.model`;
+- `mcpToolExecutionLedger` writes `'external-mcp'`.
+
+A row with no model must therefore fail loudly instead of carrying a retired id.
+
+First, the failing assertion. Append it to the Task 2 integration file, which already replays real migrations:
+
+```ts
+// apps/api/src/__tests__/integration/resolveModel.integration.test.ts — append
+it('ai_sessions.model has no default: an insert without a model fails (W02 handoff #5)', async () => {
+  const s = await seedRegistryPartner('platform');
+  await expect(sys(() => db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, type) VALUES (${s.orgId}::uuid, ${s.userId}::uuid, 'general')`)))
+    .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23502' }) });
+});
+```
+
+Run it (`npx vitest run --config vitest.integration.config.ts src/__tests__/integration/resolveModel.integration.test.ts`). It FAILS: the insert succeeds on the default. Then:
+
+```sql
+-- apps/api/migrations/2026-11-19-100600-ai-sessions-model-drop-default.sql
+-- AI model registry W03 (#7601), W02 handoff #5 / spec §5.6: every session is
+-- created on a resolved offering, which names its model. The stale default
+-- named a retired model id. DROP DEFAULT is idempotent; no rows are written.
+ALTER TABLE public.ai_sessions ALTER COLUMN model DROP DEFAULT;
+```
+
+In `db/schema/ai.ts`, change `model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),` to `model: varchar('model', { length: 100 }).notNull(),`. Remove the `apps/api/src/db/schema/ai.ts` `ai_sessions.model` mention from Task 17's literal allowlist reason. The `ai_budgets.allowed_models` default stays until W08.
+
+Sweep the inserts that relied on the default:
+- `npx tsc --noEmit -p tsconfig.json` now flags every Drizzle `insert(aiSessions).values({…})` without `model`, because it is a required insert field. This covers `__tests__/integration/agentRunLineageFixtures.ts:166` on `origin/main`. Add `model: 'claude-sonnet-5-5'`; test files may use literals.
+- Raw SQL inserts are invisible to tsc. Run `git grep -n "INSERT INTO ai_sessions" -- apps/api/src ee` and add `model` to every column list that lacks it. On `origin/main` that includes `topologyAiReadScope.integration.test.ts:214–219`. Those three statements assert `23503` / `23514`, and Postgres checks `NOT NULL` first, so without a `model` they would fail with `23502`.
+- W02's note names `ai-budget-reservations.integration.test.ts`. It inserts through a helper; fix the helper.
+
+Run `pnpm db:check-drift` (expected clean), then the integration files touched by the sweep.
 
 - [ ] **Step 6: Run and commit**
 
@@ -6123,7 +7056,9 @@ Run: `cd packages/shared && npx vitest run src/validators/ai && cd ../../apps/ap
 Expected: PASS / no errors.
 
 ```bash
-git add apps/api/src/services/aiModels/sessionModel.ts apps/api/src/services/aiModels/sessionModel.test.ts \
+git add apps/api/migrations/2026-11-19-100600-ai-sessions-model-drop-default.sql apps/api/src/db/schema/ai.ts \
+  apps/api/src/__tests__/integration \
+  apps/api/src/services/aiModels/sessionModel.ts apps/api/src/services/aiModels/sessionModel.test.ts \
   apps/api/src/services/aiAgent.ts apps/api/src/services/aiAgent.sessionModel.test.ts apps/api/src/services/aiOfferableModels.ts \
   apps/api/src/routes/ai.ts apps/api/src/routes/ai_sessions_crud.test.ts packages/shared/src/validators/ai.ts \
   apps/api/src/routes/scriptAi.ts apps/api/src/services/scriptBuilderService.ts apps/api/src/routes/scriptAi_sessions.test.ts \
@@ -6222,6 +7157,20 @@ it('ticket draft inherits the chat session offering, reserves with its funding +
 });
 ```
 
+Add to `ai.ticket.test.ts` (finding 5):
+
+```ts
+it('exhausted platform credits refuse the ticket draft before any reservation or provider call', async () => {
+  resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('platform'));
+  checkBudgetDetailedMock.mockResolvedValue({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+  const res = await app.request(`/ai/sessions/${SESSION_ID}/ticket-draft`, { method: 'POST', headers: authHeaders });
+  expect(res.status).toBe(402);
+  expect(checkBudgetDetailedMock).toHaveBeenCalledWith(ORG_ID, 'platform');
+  expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+  expect(draftTicketFromTranscriptMock).not.toHaveBeenCalled();
+});
+```
+
 Add the equivalent to `tickets.test.ts`:
 - `resolveModel` is called with `{ partnerId, orgId, userId, surface: 'office_ticket', maxTokens: 1024 }`;
 - `checkBudgetDetailed` is called with `resolved.funding`;
@@ -6313,6 +7262,10 @@ Make the same change to `draftTicketFromEmail` in `aiEmailDraft.ts`. `EmailDraft
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       throw err;
     }
+    // Review finding 5: reserveAiBudget enforces caps, NOT prepaid credits or
+    // the plan gate — check them with the resolved funding before reserving.
+    const denial = await checkBudgetDetailed(session.orgId, turn.funding);
+    if (denial) return c.json({ error: denial.message }, 402);
     const binding = turnBindingFrom(turn);
     const reservation = await reserveAiBudget({
       orgId: session.orgId,
@@ -6442,7 +7395,7 @@ Now the order is: resolve `script_reviewer` (a system call, so no permission gat
 
 - [ ] **Step 1: Write the failing reviewer tests**
 
-In `runScriptReview.test.ts`, replace the `../llm/llmConfigResolver` mock (`getLlmBillingSourceForOrg`, `getAnthropicClientForPartner`, `resolveWireModel`) and the `../aiCostTracker` `recordUsage` mock with mocks of `../aiModels/resolveModel` (`resolveModel`), `../aiModels/candidateLoader` (`readOrgPartnerId`), `../aiModels/connectionFactory` (`anthropicClientFor` → fake client, plus the real `createMessage`) and `../aiModels/settleInvocation` (`settleInvocation`). Then add:
+In `runScriptReview.test.ts`, replace the `../llm/llmConfigResolver` mock (`getLlmBillingSourceForOrg`, `getAnthropicClientForPartner`, `resolveWireModel`) and the `../aiCostTracker` `recordUsage` mock (keep a `checkBudgetDetailed: shared.checkBudgetDetailed` mock there, default `null`) with mocks of `../aiModels/resolveModel` (`resolveModel`), `../aiModels/candidateLoader` (`readOrgPartnerId`), `../aiModels/connectionFactory` (`anthropicClientFor` → fake client, plus the real `createMessage`) and `../aiModels/settleInvocation` (`settleInvocation`). Then add:
 
 ```ts
 it('resolves the script_reviewer assignment BEFORE reserving, and reserves with its funding + binding', async () => {
@@ -6460,6 +7413,15 @@ it('an ineligible reviewer model fails the review with the resolver message and 
   await runScriptReview(JOB);
   expect(shared.reserveAiBudget).not.toHaveBeenCalled();
   expect(shared.failReview).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('no price set'));
+});
+
+it('exhausted platform credits fail the review before any reservation or provider call (finding 5)', async () => {
+  shared.resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'script_reviewer' }));
+  shared.checkBudgetDetailed.mockResolvedValue({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+  await runScriptReview(JOB);
+  expect(shared.reserveAiBudget).not.toHaveBeenCalled();
+  expect(shared.createCalls).toHaveLength(0);
+  expect(shared.failReview).toHaveBeenCalledWith(expect.anything(), 'You are out of AI credits.');
 });
 
 it('a stored reviewer_model is ignored at runtime (the assignment is authoritative)', async () => {
@@ -6489,6 +7451,10 @@ Replace the block from `const billingSource = await getLlmBillingSourceForOrg(jo
     // holds budget, and the proposal fails with a reason an admin can act on.
     return failReview(job, resolved ? resolved.message : 'No AI model is available for script review.');
   }
+  // Review finding 5: credits + plan gate with the resolved funding, BEFORE the
+  // reservation (reserveAiBudget only enforces caps).
+  const denial = await checkBudgetDetailed(job.orgId, resolved.funding);
+  if (denial) return failReview(job, denial.message);
   const binding = turnBindingFrom(resolved);
   const reservation = await reserveAiBudget({
     orgId: job.orgId,
@@ -6554,7 +7520,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 Agents were the worst-drifted surface. They sent the **logical** model id with no wire translation, and a catalog partner's run threw building an unproxied SDK env. Funding came from `getLlmBillingSourceForOrg` in four places: admission, compute settlement ×2 and the run loop's compute leg. This task fixes all of it:
 - **Admission** (`createAndEnqueueAgentRun`, step 7) resolves `ai_agents` for the policy's explicit offering (`origin: 'policy'`):
-  - The offering must be in the `ai_agents` effective permitted set at run time (quorum #11; W02 checks it at write). The bounded fallback applies.
+  - The offering must be in the `ai_agents` effective permitted set at run time (quorum #11). The bounded fallback applies.
   - `checkBudget`, `checkComputeCredits` and `reserveComputeCents` take `resolved.funding`.
   - The run row persists `funding_source`, so compute settlement never re-derives funding.
   - An unavailable model is the new skip reason `model_unavailable`, and notifies once per agent per day.
@@ -6564,10 +7530,21 @@ Agents were the worst-drifted surface. They sent the **logical** model id with n
   - runs the mid-stream budget guard on the **registry** price;
   - settles through `settleInvocation` (`agent_run_id`, `user_id NULL`).
 - **New terminal status `blocked`.** A run ends `blocked` with `error_code` `model_unavailable` (re-resolve failed) or `model_refused` (§9.1a), and the category goes in `outcome`. `blocked` is **neutral** for the circuit breaker: an admin's model choice is not an agent fault.
+- **Write-time binding of the policy model (W02 handoff #5, deferred from spec §5.6 by W02 Task 6).** Until W03, W02's per-boot projection mapped `ai_agents.model` to `ai_agents.offering_id`. Task 6A runs that projection once per partner and never again, so after cutover nothing would map an edited `model`. Agent create/update would then be silently ignored at run time. `createAgent` / `updateAgent` therefore bind the model when they write it:
+  - `bindAgentModel(owner, model)` runs the cutover gate first.
+  - It maps the string to an offering on the `ai_agents` default's connection (`findOfferingIdByModel`, Task 2).
+  - It checks the offering against the owner's `ai_agents` effective permitted set (partner-wide agent: the partner assignment; org agent: the merged one).
+  - It writes `model`, `offering_id` and `offering_partner_id` together.
+  - An unknown model id, or one outside the permitted set, is a **400** with code `invalid_model` / `not_permitted`. Nothing is written.
+  - `model: null` clears both columns, so the agent follows the assignment.
+  - The run-time check above stays, because the permitted set can narrow after the write.
 
 **Files:**
 - Create: `apps/api/migrations/2026-11-19-100200-ai-agent-runs-blocked-funding.sql`
 - Create: `apps/api/src/services/aiAgents/modelBlocked.ts`, `apps/api/src/services/aiAgents/modelBlocked.test.ts`
+- Create: `apps/api/src/services/aiAgents/agentModelBinding.ts`, `apps/api/src/services/aiAgents/agentModelBinding.test.ts`
+- Modify: `apps/api/src/services/aiAgents/agentService.ts` (`scalarPolicyColumns` ~L262–278, `createAgent` ~L631, `updateAgent` ~L720) and `apps/api/src/routes/aiAgents.ts` (`mapError` ~L226)
+- Modify tests: `agentService.test.ts`, `routes/aiAgents.test.ts` (the hoisted `agentService` mock gains `AgentModelNotAllowedError`)
 - Modify: `apps/api/src/services/aiModels/parity/w03Surfaces.parity.test.ts` (append a `describe`)
 - Modify: `packages/shared/src/types/aiAgents.ts` (`AI_AGENT_RUN_STATUSES` ~L25)
 - Modify: `apps/api/src/db/schema/aiAgents.ts` (`aiAgentRuns.fundingSource`)
@@ -6597,6 +7574,11 @@ Agents were the worst-drifted surface. They sent the **logical** model id with n
     reason: ModelBlockedReason; message: string; now?: Date;
   }): Promise<void>;
   export class AgentRunBlockedError extends Error { readonly errorCode: ModelBlockedReason; readonly outcome: Record<string, unknown> }
+  // agentModelBinding.ts (W02 handoff #5)
+  export class AgentModelNotAllowedError extends Error { readonly status: 400 | 503; readonly code: 'invalid_model' | 'not_permitted' | 'registry_unavailable' }
+  export function bindAgentModel(owner: AgentOwner, model: string | null): Promise<{
+    model: string | null; offeringId: string | null; offeringPartnerId: string | null;
+  }>;
   // connectionFactory.ts
   export function grantCatalogSdkEgress(resolved: ResolvedModel, input: {
     key: string; orgId: string; aiSessionId: string | null;
@@ -6680,6 +7662,14 @@ it('an inflated SDK cost does not trip the per-run budget guard; the registry pr
   expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: RUN_ID, userId: null, sessionId: null }));
 });
 
+it('re-resolves the ADMITTED offering, and never dispatches on a funding source admission did not check (finding 6)', async () => {
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
+  await runAgent(runFixture({ admittedOfferingId: 'off-admitted', fundingSource: 'partner_key' }));
+  expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'off-admitted', origin: 'policy' } }));
+  expect(queryMock).not.toHaveBeenCalled();
+  expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({ errorCode: 'model_unavailable' }));
+});
+
 it('an unavailable model ends the run blocked/model_unavailable and notifies', async () => {
   resolveModel.mockResolvedValue({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'o', message: 'Model X is no longer available — choose another.' });
   await runAgent(runFixture());
@@ -6713,7 +7703,7 @@ it('admission resolves the agent model first: funding feeds checkBudget and the 
   resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
   await createAndEnqueueAgentRun(admissionInput());
   expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
-  expect(insertedRunValues()).toMatchObject({ fundingSource: 'partner_key' });
+  expect(insertedRunValues()).toMatchObject({ fundingSource: 'partner_key', admittedOfferingId: 'off-1' });
 });
 
 it('an unavailable agent model skips with model_unavailable and notifies once per day', async () => {
@@ -6749,6 +7739,11 @@ ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_status_chk CHECK (status 
   'queued', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'expired', 'skipped', 'blocked'
 ));
 ALTER TABLE ai_agent_runs ADD COLUMN IF NOT EXISTS funding_source text NULL;
+-- Review finding 6: the offering admission resolved (and checked credits for).
+-- The run loop re-resolves THIS offering (bounded fallback keeps connection +
+-- funding), so a queued run can never move funding after admission. Provenance
+-- id (no FK, like ai_invocations): resolveModel re-validates ownership.
+ALTER TABLE ai_agent_runs ADD COLUMN IF NOT EXISTS admitted_offering_id uuid NULL;
 ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_funding_source_chk;
 ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_funding_source_chk
   CHECK (funding_source IS NULL OR funding_source IN ('platform', 'partner_key'));
@@ -6763,9 +7758,11 @@ export const AI_AGENT_RUN_STATUSES = [
 // apps/api/src/db/schema/aiAgents.ts — aiAgentRuns
   /** AI model registry W03: funding of the offering resolved at admission. NULL = pre-W03 run. */
   fundingSource: text('funding_source').$type<'platform' | 'partner_key' | null>(),
+  /** W03 (finding 6): the offering admission resolved; the run dispatches this one or is blocked. */
+  admittedOfferingId: uuid('admitted_offering_id'),
 ```
 
-Add `'funding_source'` to the `ai_agent_runs` entry's `included` list in `tenantExportPolicyRegistry.ts`.
+Add `'funding_source'` and `'admitted_offering_id'` to the `ai_agent_runs` entry's `included` list in `tenantExportPolicyRegistry.ts`.
 
 Run `cd apps/web && npx tsc --noEmit` and fix every `Record<AiAgentRunStatus, …>` it flags. `AiRunCard.tsx` `TERMINAL_BY_STATUS` gets `blocked: true`. Every status → label/colour map gets a `blocked` entry styled like `skipped`, labelled "Blocked". Find each status label key with `git grep -n '"skipped"' apps/web/src/locales/en/common.json`, then add `"blocked": "Blocked"` beside it in **all 8** locale files: English for now, and state in the PR that non-English strings are machine-drafted. Update the status list in the `aiToolsAiAgentGovernance.ts` description string to include `blocked`.
 
@@ -6860,6 +7857,10 @@ Add `'model_unavailable'` to `AgentRunSkipReason`. Map it in `analysisAdmission.
             : {}),
         })
       : null;
+    if (agentModel && !agentModel.ok && agentModel.reason === 'registry_unavailable') {
+      // Transient cutover failure (Task 6A): skip this admission, never tell an admin the model is gone.
+      return skip('model_unavailable');
+    }
     if (!agentModel?.ok) {
       await notifyModelBlocked({
         orgId, agentId: resolved.agentId, agentName: resolved.agentName,
@@ -6875,7 +7876,7 @@ Add `'model_unavailable'` to `AgentRunSkipReason`. Map it in `analysisAdmission.
 
 > `resolved.agentId`, `resolved.agentName`, `resolved.agentOrgId` and `resolved.effective.recipients` stand for whatever fields `ResolvedAgent` / `AiAgentPolicySnapshot` actually carries for the agent's id, name, owning org and recipients. Use the names the circuit-open notifier reads (`agentCircuit.ts` ~L515).
 
-The rest of step 7b already uses `billingSource`, so `checkComputeCredits(orgId, billingSource, …)` is unchanged. The run insert adds `fundingSource: billingSource`. Both compute-settle sites (~L1761, ~L1920) replace `await getLlmBillingSourceForOrg(orgId)` with the run's stored value. Select `fundingSource` with the row they already load:
+The rest of step 7b already uses `billingSource`, so `checkComputeCredits(orgId, billingSource, …)` is unchanged. The run insert adds `fundingSource: billingSource, admittedOfferingId: agentModel.offering.id`. Both compute-settle sites (~L1761, ~L1920) replace `await getLlmBillingSourceForOrg(orgId)` with the run's stored value. Select `fundingSource` with the row they already load:
 
 ```ts
       const fundingSource = run.fundingSource ?? 'platform';   // NULL = admitted before W03; previous fail-safe
@@ -6887,16 +7888,27 @@ In `driveSdkLoop`, replace the `resolveLlmConfigForOrg` block (~L1859–1865) wi
 
 ```ts
     const partnerId = await readOrgPartnerId(run.orgId);
+    // Finding 6: dispatch the offering ADMISSION resolved and checked credits for
+    // (bounded fallback can only keep its connection + funding). Runs admitted
+    // before W03 carry no admitted offering and fall back to the policy/default.
+    const requestedOfferingId = run.admittedOfferingId ?? effective.offeringId ?? null;
     const agentModel = partnerId
       ? await resolveModel({
           partnerId, orgId: run.orgId, surface: 'ai_agents',
-          ...(effective.offeringId ? { requested: { offeringId: effective.offeringId, origin: 'policy' as const } } : {}),
+          ...(requestedOfferingId ? { requested: { offeringId: requestedOfferingId, origin: 'policy' as const } } : {}),
         })
       : null;
     if (!agentModel?.ok) {
       const message = agentModel?.message ?? 'No AI model is available for AI agents.';
       throw new AgentRunBlockedError('model_unavailable',
-        blockedOutcome('model_unavailable', { message, offeringId: effective.offeringId ?? null }), message);
+        blockedOutcome('model_unavailable', { message, offeringId: requestedOfferingId }), message);
+    }
+    if (run.fundingSource && agentModel.funding !== run.fundingSource) {
+      // Never dispatch on a funding source admission did not check (credits,
+      // compute ceiling) — re-queue to re-admit instead.
+      const message = 'The agent\'s model changed funding source after the run was admitted. Re-run it.';
+      throw new AgentRunBlockedError('model_unavailable',
+        blockedOutcome('model_unavailable', { message, offeringId: agentModel.offering.id }), message);
     }
     const binding = turnBindingFrom(agentModel);
     const billingSource = agentModel.funding;
@@ -7026,6 +8038,133 @@ In `streamingSessionManager.getOrCreate`, replace the inline grant block (~L1192
 
 `streamingSessionManager.catalog.test.ts` must still pass unchanged in behaviour. Re-run it.
 
+- [ ] **Step 7A: Bind the policy model at write time (W02 handoff #5)**
+
+Write the failing test first:
+
+```ts
+// apps/api/src/services/aiAgents/agentModelBinding.test.ts
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const m = vi.hoisted(() => ({
+  ensurePartnerCutover: vi.fn(async () => true),
+  readOrgPartnerId: vi.fn(async () => 'p1'),
+  findOfferingIdByModel: vi.fn(),
+  getEffectiveAssignment: vi.fn(),
+}));
+vi.mock('../aiModels/registryCutover', () => ({ ensurePartnerCutover: m.ensurePartnerCutover }));
+vi.mock('../aiModels/candidateLoader', () => ({ readOrgPartnerId: m.readOrgPartnerId, findOfferingIdByModel: m.findOfferingIdByModel }));
+vi.mock('../aiModels/assignments', async (orig) => ({
+  ...(await orig<typeof import('../aiModels/assignments')>()), getEffectiveAssignment: m.getEffectiveAssignment,
+}));
+
+import { AgentModelNotAllowedError, bindAgentModel } from './agentModelBinding';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  m.getEffectiveAssignment.mockResolvedValue({ defaultOfferingId: 'off-1', permitted: { kind: 'list', offeringIds: ['off-1', 'off-2'] } });
+});
+
+describe('bindAgentModel', () => {
+  it('maps a permitted model to its offering on the ai_agents default connection (org agent: merged assignment)', async () => {
+    m.findOfferingIdByModel.mockResolvedValue('off-2');
+    await expect(bindAgentModel({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5'))
+      .resolves.toEqual({ model: 'claude-opus-5-5', offeringId: 'off-2', offeringPartnerId: 'p1' });
+    expect(m.findOfferingIdByModel).toHaveBeenCalledWith({ partnerId: 'p1', orgId: 'o1', surface: 'ai_agents', modelId: 'claude-opus-5-5' });
+    expect(m.getEffectiveAssignment).toHaveBeenCalledWith({ partnerId: 'p1', orgId: 'o1', surface: 'ai_agents' });
+  });
+
+  it('a partner-wide agent checks the PARTNER assignment (orgId null)', async () => {
+    m.findOfferingIdByModel.mockResolvedValue('off-1');
+    await bindAgentModel({ orgId: null, partnerId: 'p1' }, 'claude-sonnet-5-5');
+    expect(m.readOrgPartnerId).not.toHaveBeenCalled();
+    expect(m.getEffectiveAssignment).toHaveBeenCalledWith({ partnerId: 'p1', orgId: null, surface: 'ai_agents' });
+  });
+
+  it('an unknown model is 400 invalid_model; a model outside the permitted set is 400 not_permitted', async () => {
+    m.findOfferingIdByModel.mockResolvedValue(null);
+    await expect(bindAgentModel({ orgId: 'o1', partnerId: null }, 'gpt-free-form')).rejects.toMatchObject({ status: 400, code: 'invalid_model' });
+    m.findOfferingIdByModel.mockResolvedValue('off-9');
+    await expect(bindAgentModel({ orgId: 'o1', partnerId: null }, 'claude-haiku-4-5')).rejects.toMatchObject({ status: 400, code: 'not_permitted' });
+  });
+
+  it('null clears the binding without touching the registry', async () => {
+    await expect(bindAgentModel({ orgId: 'o1', partnerId: null }, null)).resolves.toEqual({ model: null, offeringId: null, offeringPartnerId: null });
+    expect(m.ensurePartnerCutover).not.toHaveBeenCalled();
+  });
+
+  it('a partner whose cutover failed is 503, never a guess on a stale registry', async () => {
+    m.ensurePartnerCutover.mockResolvedValueOnce(false);
+    await expect(bindAgentModel({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5'))
+      .rejects.toBeInstanceOf(AgentModelNotAllowedError);
+    expect(m.findOfferingIdByModel).not.toHaveBeenCalled();
+  });
+});
+```
+
+Run: `cd apps/api && npx vitest run src/services/aiAgents/agentModelBinding.test.ts`. It FAILS: `./agentModelBinding` does not resolve. Then implement:
+
+```ts
+// apps/api/src/services/aiAgents/agentModelBinding.ts
+/**
+ * Agent policy model → registry offering, at WRITE time (W02 handoff #5,
+ * spec §5.6, quorum #11). After the W03 cutover nothing re-projects
+ * ai_agents.model, so the write path owns ai_agents.offering_id.
+ */
+import { getEffectiveAssignment, isPermitted } from '../aiModels/assignments';
+import { findOfferingIdByModel, readOrgPartnerId } from '../aiModels/candidateLoader';
+import { ensurePartnerCutover } from '../aiModels/registryCutover';
+import type { AgentOwner } from './agentService';
+
+export class AgentModelNotAllowedError extends Error {
+  readonly status: 400 | 503;
+  readonly code: 'invalid_model' | 'not_permitted' | 'registry_unavailable';
+
+  constructor(message: string, code: AgentModelNotAllowedError['code']) {
+    super(message);
+    this.name = 'AgentModelNotAllowedError';
+    this.code = code;
+    this.status = code === 'registry_unavailable' ? 503 : 400;
+  }
+}
+
+export async function bindAgentModel(owner: AgentOwner, model: string | null): Promise<{
+  model: string | null; offeringId: string | null; offeringPartnerId: string | null;
+}> {
+  if (model === null) return { model: null, offeringId: null, offeringPartnerId: null };
+  const partnerId = owner.partnerId ?? (owner.orgId ? await readOrgPartnerId(owner.orgId) : null);
+  if (!partnerId) throw new AgentModelNotAllowedError(`Model "${model}" is not available for AI agents.`, 'invalid_model');
+  if (!(await ensurePartnerCutover(partnerId))) {
+    throw new AgentModelNotAllowedError('AI configuration is being upgraded. Try again in a moment.', 'registry_unavailable');
+  }
+  const offeringId = await findOfferingIdByModel({ partnerId, orgId: owner.orgId, surface: 'ai_agents', modelId: model });
+  if (!offeringId) throw new AgentModelNotAllowedError(`Model "${model}" is not available for AI agents.`, 'invalid_model');
+  const assignment = await getEffectiveAssignment({ partnerId, orgId: owner.orgId, surface: 'ai_agents' });
+  if (!isPermitted(assignment.permitted, offeringId)) {
+    throw new AgentModelNotAllowedError('This AI model is not permitted for AI agents here. Choose another model.', 'not_permitted');
+  }
+  return { model, offeringId, offeringPartnerId: partnerId };
+}
+```
+
+Wire it into `agentService.ts`:
+- Remove `if (input.model !== undefined) out.model = input.model;` from `scalarPolicyColumns`.
+- In `createAgent`, after `validateAgentRecipients` and before the insert, compute `const binding = await bindAgentModel(owner, input.model ?? null);`. Spread `{ model: binding.model, offeringId: binding.offeringId, offeringPartnerId: binding.offeringPartnerId }` into the inserted values.
+- In `updateAgent`, inside the `withAgentRowLocked` callback and only when `input.model !== undefined`, compute the same binding with the row's `owner`. Spread it into the update set.
+- `bindAgentModel` reads only registry tables and never takes a lock, so calling it under the agent row lock cannot deadlock. The row lock is on `ai_agents`, and the cutover's advisory lock is per partner.
+
+In `routes/aiAgents.ts` `mapError`, add before the `AgentInvariantError` line:
+
+```ts
+  if (err instanceof AgentModelNotAllowedError) {
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
+```
+
+Tests to add:
+- `agentService.test.ts`: create with `model: 'claude-opus-5-5'` inserts `offeringId` / `offeringPartnerId` from a mocked `bindAgentModel`. Update without `model` never calls it. A rejected binding writes nothing.
+- `routes/aiAgents.test.ts`: `PATCH` with a model the mocked service rejects as `not_permitted` returns `400 { error, code: 'not_permitted' }`.
+
 - [ ] **Step 8: Append the parity suite**
 
 ```ts
@@ -7052,7 +8191,7 @@ describe('W03 parity: ai_agents (policy offering, permitted set re-checked at ru
 
 - [ ] **Step 9: Run everything touched**
 
-Run: `cd apps/api && npx vitest run src/services/aiAgents src/services/streamingSessionManager src/services/aiModels/connectionFactory.test.ts src/services/aiToolsAiAgentGovernance`
+Run: `cd apps/api && npx vitest run src/services/aiAgents src/routes/aiAgents src/services/streamingSessionManager src/services/aiModels/connectionFactory.test.ts src/services/aiToolsAiAgentGovernance`
 Expected: PASS. Check the file count covers every `runLoop*.test.ts` and `runService*.test.ts`.
 
 Run: `cd apps/api && npx vitest run src/services/aiModels/parity/w03Surfaces.parity.test.ts && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/tenant-export-policy.integration.test.ts`
@@ -7071,7 +8210,7 @@ git add apps/api/migrations/2026-11-19-100200-ai-agent-runs-blocked-funding.sql 
   apps/api/src/services/streamingSessionManager.ts apps/api/src/db/schema/aiAgents.ts \
   apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/aiToolsAiAgentGovernance.ts \
   packages/shared/src/types/aiAgents.ts apps/web/src/components apps/web/src/locales \
-  apps/api/src/services/aiModels/parity/w03Surfaces.parity.test.ts
+  apps/api/src/services/aiModels/parity/w03Surfaces.parity.test.ts apps/api/src/routes/aiAgents.ts apps/api/src/routes/aiAgents.test.ts
 git commit -m "feat(ai): agent runs resolve, translate, fund and settle through the registry; blocked runs (#7601)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -7259,7 +8398,13 @@ In `buildExtensionAiContext().invoke`, replace everything from `const model = in
       if (!partnerId) throw new ExtensionAiError('ai_unavailable', 'AI is unavailable for this organization.');
       let offeringId: string | undefined;
       if (input.model) {
-        offeringId = (await findOfferingIdByModel(partnerId, input.model)) ?? undefined;
+        // The lookup reads assignments: never against a partner not yet cut over (Task 6A). Transient.
+        if (!(await ensurePartnerCutover(partnerId))) {
+          throw new ExtensionAiError('ai_unavailable', 'AI configuration is being upgraded. Try again in a moment.');
+        }
+        offeringId = (await findOfferingIdByModel({
+          partnerId, orgId: input.orgId, surface: 'extension_content', modelId: input.model,
+        })) ?? undefined;
         if (!offeringId) {
           // PERMANENT: a model id the partner has not enabled; every retry reproduces it.
           throw new ExtensionAiError('ai_unavailable', `AI model "${input.model}" is not available for extension use.`, { permanent: true });
@@ -7276,7 +8421,8 @@ In `buildExtensionAiContext().invoke`, replace everything from `const model = in
         throw new ExtensionAiError(
           resolved.reason === 'connection_unavailable' ? 'not_configured' : 'ai_unavailable',
           resolved.message,
-          { permanent: resolved.reason !== 'connection_unavailable' },
+          // registry_unavailable (Task 6A) is a transient cutover failure: retryable.
+          { permanent: resolved.reason !== 'connection_unavailable' && resolved.reason !== 'registry_unavailable' },
         );
       }
       const billingSource = resolved.funding;
@@ -7324,7 +8470,7 @@ In `buildExtensionAiContext().invoke`, replace everything from `const model = in
       };
 ```
 
-> `classifyProviderFailure(error, usable)` keeps its body. It only reads `source` / `partnerId` / `configId` / `configVersion` off the connection config, which `resolved.connection.config` still carries. `settleInvocation` draws down platform credits, so the explicit `deductBillingCredits` is deleted. Delete the `legacyExtensionModel` call and the `isPricedModel`, `resolveLlmConfigForOrg`, `resolveWireModel` and `buildAnthropicClient` imports from this file.
+> `classifyProviderFailure(error, usable)` keeps its body. It only reads `source` / `partnerId` / `configId` / `configVersion` off the connection config, which `resolved.connection.config` still carries. `settleInvocation` draws down platform credits, so the explicit `deductBillingCredits` is deleted. Delete the `legacyExtensionModel` call and the `isPricedModel`, `resolveLlmConfigForOrg`, `resolveWireModel` and `buildAnthropicClient` imports from this file. Import `ensurePartnerCutover` from `./aiModels/registryCutover`. Mock it to `true` in `extensionAi.test.ts`, and add one case: when it resolves `false`, an explicit `input.model` throws a **non-permanent** `ai_unavailable`.
 
 `packages/extension-sdk/src/server.ts`: change the `model?` doc comment to "Optional: a model id the partner has enabled for extension use; the host maps it to that offering. Omit to use the partner's `extension_content` default."
 
@@ -7944,7 +9090,7 @@ In `scheduleAiModelDiscoveryJobs`, next to W01's daily `sync-platform` repeatabl
   await queue.add('sync-all-connections', { type: 'sync-all-connections' }, { repeat: { every: 24 * 60 * 60 * 1000 }, jobId: 'sync-all-connections' });
 ```
 
-`enqueueOrReplaceStale` is `services/bullmqUtils.ts:43`. In W02's `connections.ts`, after `createConnection` and after the function that rotates a key (bumps `config_version`) has **committed**:
+`enqueueOrReplaceStale` is `services/bullmqUtils.ts:43`. In W02's `connections.ts` after `createConnection`, and in Task 6B's facade after `connectCompat` and after the in-place key/catalog rotation, once each has **committed**:
 
 ```ts
     // Outside any held DB context: the instrumented queue asserts it (#3127).
@@ -7980,7 +9126,7 @@ Expected: no drift.
 
 ```bash
 git add apps/api/migrations/2026-11-19-100300-partner-ai-models-discovery-state.sql \
-  apps/api/src/services/aiModels/discovery.ts apps/api/src/services/aiModels/connections.ts \
+  apps/api/src/services/aiModels/discovery.ts apps/api/src/services/aiModels/connections.ts apps/api/src/services/partnerLlmConfig.ts \
   apps/api/src/db/schema apps/api/src/jobs/aiModelDiscoveryWorker.ts apps/api/src/jobs/aiModelDiscoveryWorker.test.ts \
   apps/api/src/__tests__/integration/aiModelConnectionDiscovery.integration.test.ts \
   apps/api/src/__tests__/partner-wide-write-coverage.test.ts
@@ -8060,7 +9206,7 @@ const MODEL_ID = /^claude-[a-z]+-\d/;
 /** path (repo-relative, '/'-separated) → why it may contain a model literal. ≥ 20 chars each. */
 const MODEL_LITERAL_ALLOWLIST: Record<string, string> = {
   'apps/api/src/services/aiModel.ts': 'Bootstrap fallback for a fresh self-host before the first platform sync (index invariant #1).',
-  'apps/api/src/db/schema/ai.ts': 'Stale column defaults on ai_sessions.model / ai_budgets.allowed_models; W08 (#7606) drops them with the columns.',
+  'apps/api/src/db/schema/ai.ts': 'Stale ai_budgets.allowed_models column default; W08 (#7606) drops it with the column. (The ai_sessions.model default is dropped in Task 9.)',
   'apps/web/src/components/clientAi/PolicyEditor.tsx': 'Dead Office allowedModels editor; W04 (#7602) replaces it with the office_chat assignment.',
   'apps/api/src/services/aiModels/legacySurfaceModels.ts': 'W02 legacy projection inputs (frozen legacy defaults + rates) for the cutover and post-cutover bootstrap; W08 deletes them.',
 };
@@ -8226,16 +9372,31 @@ Expected: PASS. Two failure modes here are real bugs, not flakes, and only appea
 - `orgMerge.test.ts` ("no merge policy registered for …");
 - `cascadeDelete.test.ts` / `moveOrg.coverage.test.ts`.
 
-This wave adds no tables, so both should be untouched.
+This wave adds no `org_id` or `device_id` table, so both should be untouched. Its two new tables are a system singleton and a partner-axis table.
 
 - [ ] **Step 2: Contract suites with real Postgres**
 
 Run: `pnpm test-stack up`, then:
-- `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiModel src/__tests__/integration/resolveModel src/__tests__/integration/aiInvocationSettlement src/__tests__/integration/workspaceEnrichmentByok src/__tests__/integration/topologyAiFailureAccounting src/__tests__/integration/tenant-export-policy src/__tests__/integration/tenantExportErasureRoundtrip src/__tests__/integration/tenantCascade src/__tests__/integration/orgLifecycleFoundations`
+- `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiModel src/__tests__/integration/aiProviderAuthority src/__tests__/integration/resolveModel src/__tests__/integration/aiInvocationSettlement src/__tests__/integration/ai-budget-reservations src/__tests__/integration/topologyAiReadScope src/__tests__/integration/llmCatalogSelection src/__tests__/integration/workspaceEnrichmentByok src/__tests__/integration/topologyAiFailureAccounting src/__tests__/integration/tenant-export-policy src/__tests__/integration/tenantExportErasureRoundtrip src/__tests__/integration/tenantCascade src/__tests__/integration/orgLifecycleFoundations`
+- The full integration suite once (`npx vitest run --config vitest.integration.config.ts`). Dropping the `ai_sessions.model` default (Task 9) can red any suite with a raw `INSERT INTO ai_sessions` that Task 9's grep missed.
 - `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`
 - `pnpm db:check-drift`
 
-Expected: all PASS. The per-surface parity suite already ran in Step 1, because it is a unit suite (`services/aiModels/parity/w03Surfaces.parity.test.ts`, 12 tests). RLS coverage now includes the `ai_model_registry_state` system-table entry. There is no drift.
+Expected: all PASS. The per-surface parity suite already ran in Step 1, because it is a unit suite (`services/aiModels/parity/w03Surfaces.parity.test.ts`, 12 parity tests plus 3 mutations that must reject). RLS coverage now includes the `ai_model_registry_state` system-table entry and `ai_model_registry_partner_cutover` in `PARTNER_TENANT_TABLES`. There is no drift.
+
+- [ ] **Step 2A: Pricing go/no-go (W02 handoff #3)**
+
+Before the PR, compare the W02 shadow ledger's legacy cost with the registry cost on a database that has W02 shadow rows. Use a staging copy, or the `pnpm test-stack` database after a scripted chat/agent/reviewer run under W02:
+
+```sql
+SELECT surface, funding_source, count(*) AS n,
+       sum(legacy_cost_cents) AS legacy_cents, sum(cost_cents) AS registry_cents,
+       max(abs(cost_cents - legacy_cost_cents)) AS worst_row_cents
+FROM ai_invocations WHERE ledger_mode = 'shadow'
+GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+Go if, for every `(surface, funding_source)` group, `registry_cents` is within 1% of `legacy_cents`. Two exceptions are expected and are not a no-go: catalog rows, which bill the revision rate, and SDK turns whose legacy number was the SDK's own cost. Any other gap is a pricing bug: stop and fix it before merging. Paste the table into the PR body.
 
 - [ ] **Step 3: Other packages**
 
@@ -8248,21 +9409,22 @@ Expected: all PASS.
 git grep -n "getLlmBillingSourceForOrg\|MODEL_PRICING\|OFFERABLE_AI_MODELS\|DEFAULT_PRICING\|isPricedModel\|recordUsageFromSdkResult\|recordSessionlessSdkUsage\|calculateCostCents\|resolveWireModel\|getAnthropicClientForPartner" -- apps ee packages
 git grep -n "BREEZE_AI_SCRIPT_REVIEWER_MODEL\|WORKSPACE_CONTENT_LLM_MODEL\|AI_SCRIPT_REVIEWER_MODEL" -- apps/api/src/services apps/api/src/routes ee | grep -v "aiModels/legacy\|config/env\|system/connections"
 git ls-tree --name-only origin/main apps/api/migrations | grep -E '/[0-9]{4}-' | sort | tail -1
-ls apps/api/migrations | sort | tail -4
+ls apps/api/migrations | sort | tail -7
 ```
 
 Expected:
 - the first grep prints nothing;
 - the second prints nothing outside W02's projection, `config/env.ts` and the env registry (all kept until W08);
-- the five `2026-11-19-…` migrations sort **after** the newest file on `origin/main`. If not, rename them to sort after it, keeping their relative order, and re-run `autoMigrate.test.ts`.
+- the seven `2026-11-19-…` migrations sort **after** the newest file on `origin/main`. If not, rename them to sort after it, keeping their relative order, and re-run `autoMigrate.test.ts`.
 
 - [ ] **Step 5: One independent review round**
 
 Run `/pr-review-toolkit:review-pr` on the branch, with the reviewer pointed at:
 - the Review Focus list above;
-- `settleAiBudgetReservation`'s binding assertion;
+- `settleAiBudgetReservation`'s binding assertion, and the keyed debit / pending-settlement replay (Task 6 Step 8a);
 - `resolveModel`'s bounded-fallback same-connection/funding checks;
-- the agent `blocked` transitions.
+- the cutover gate and lease (Task 6A) and the registry-native facade remaps (Task 6B);
+- the agent `blocked` transitions and the admitted-offering re-resolve.
 
 Act only on confirmed, consequential findings. Re-review a fix only if it touched billing, funding or the resolver.
 
@@ -8271,8 +9433,11 @@ Act only on confirmed, consequential findings. Re-review a fix only if it touche
 Push `feature/7598-ai-model-registry/wave-7601` and open the PR against `main`. The title is `feat(ai): model registry W03 — resolveModel cutover, per-offering funding, single cost function`. The body:
 - includes `Closes #7601`;
 - lists:
-  - the five migrations;
-  - the cutover boot: the first boot of this release blocks on one legacy → registry reconcile of every partner before serving, so expect a longer first start;
+  - the seven migrations;
+  - the cutover: after deploy, a background sweep projects each partner from legacy config once. A partner's AI requests answer "AI configuration is being upgraded" only if that partner's own projection fails. `/health` is unaffected;
+  - the cross-repo dependency: the billing service must honour `idempotencyKey` on `ai-credits/deduct` (Task 6 Step 8a). Until it does, a retried debit can double-charge, so the billing change ships first;
+  - the pricing go/no-go table (Step 2A);
+  - the legacy policy fields that stop routing until W04 (Global Constraints);
   - the deprecated env vars (`BREEZE_AI_SCRIPT_REVIEWER_MODEL`, `WORKSPACE_CONTENT_LLM_MODEL`), with the "migrated by W02/W03" note for self-hosters;
   - the new `AI_PLATFORM_INFERENCE_GEO`;
   - the new `blocked` run status;
@@ -8295,7 +9460,7 @@ These names are introduced here and absent from the index. None renames an index
 | Where | Name | Why |
 |---|---|---|
 | `services/aiModels/eligibility.ts` | `checkEligibility`, `CandidateFacts`, `EligibilityContext` (incl. `geoCarriable`), `ResolveFailureReason`, `PARTNER_PLAN_ORDER`, `PartnerPlan`, `planSatisfies`, `ConnectionKind` | Spec §9 step 2 as a pure, table-testable rule set |
-| `services/aiModels/candidateLoader.ts` | `loadOfferingCandidate`, `loadPlatformDefaultCandidate`, `loadPartnerFacts`, `loadUserPermissionPredicate`, `findOfferingIdByModel`, `readOrgPartnerId`, `readSessionModelRow`, `LoadedCandidate`, `ResolvedConnection`, `AllowedOptions`, `EMPTY_OPTION_SUPPORT` | The single adapter over W01/W02 row shapes; live connection / catalog resolution |
+| `services/aiModels/candidateLoader.ts` | `loadOfferingCandidate`, `loadPlatformDefaultCandidate`, `loadPartnerFacts`, `loadUserPermissionPredicate`, `findOfferingIdByModel({ partnerId, orgId, surface, modelId })` (scoped to the surface default's connection), `readOrgPartnerId`, `readSessionModelRow`, `LoadedCandidate`, `ResolvedConnection`, `AllowedOptions`, `EMPTY_OPTION_SUPPORT` | The single adapter over W01/W02 row shapes; live connection / catalog resolution |
 | `services/aiModels/promptProfiles.ts` | `toPromptProfile`, `applyPromptProfile` (re-exports W01's `PROMPT_PROFILES` / `PromptProfile`) | §7 prompt-profile hook (identity in v1) |
 | `services/aiModels/transport.ts` | `DispatchTransport`, `TransportCarriage`, `defaultTransport`, `transportCarries` | Never apply (or price) an option W01's adapters cannot send |
 | `services/aiModels/resolveModel.ts` | `ResolveModelInput.requested.origin` (`'user' \| 'session' \| 'policy'`), `.maxTokens`, `.transport`; `ResolvedModel.{surface, role, transport, partnerId, orgId, logicalModel, wireParams, limits, fellBack}`; `ModelUnavailable.{offeringId, message}`; `PLATFORM_ONLY_SURFACES`, `unavailableMessage`, `RequestOrigin` | Additive to the §9 signature. `origin` encodes §9.1's stored-choice rule and the policy-vs-user `allow_user_choice` distinction. `partnerId: null` is allowed only for `patch_test` |
@@ -8305,16 +9470,19 @@ These names are introduced here and absent from the index. None renames an index
 | `services/aiModels/settleInvocation.ts` | `settleInvocation`, `SettleInvocationInput`, `SettledInvocation`, `priceUsage`, `PricedUsage`, `sumCostCents`, `costEstimator`, `toNewInvocations`, `WEB_SEARCH_COST_CENTS` | The single billing path over `priceInvocation` + `recordInvocation` (`ledgerMode: 'authoritative'`) |
 | `services/aiModels/refusals.ts` | `REFUSAL_DOCS_URL`, `RefusalAlternative`, `refusalHeadline`, `refusalMessageText`, `listRefusalAlternatives` | §9.1a |
 | `services/aiModels/sessionModel.ts` | `resolveSessionTurn`, `chooseSessionModel`, `SessionModelChoice`, `InvalidSessionModelError` (moved from W00 `aiOfferableModels.ts`) | Session turn re-resolution + creation |
-| `services/aiModels/registryCutover.ts` | `runRegistryCutoverIfNeeded`, `ensurePartnerRegistry`, `CutoverOutcome`, `__resetRegistryCutoverMemoForTests` | W02 → W03 handoff (one blocking projection, then registry authority) |
+| `services/aiModels/registryCutover.ts`, `registryCutoverStore.ts` | `cutoverPartner`, `PartnerCutoverResult`, `ensurePartnerCutover`, `isPartnerCutOver`, `runRegistryCutoverSweep`, `__resetRegistryCutoverMemoForTests`; store: `withPartnerCutoverTx`, `hasCutoverRow`, `takeLease`, `renewLease`, `nextUncutPartners`, `markComplete`, `releaseLease` | Replaces W02 handoff item 1: once-only per-partner projection, resolver/write gate, leased resumable sweep |
+| `services/aiModels/compatRemap.ts` | `remapPartnerOfferings`, `ensureSameModelOfferings`, `connectCompat`, `disconnectCompat`, `changeCompatDefaultModel` | W02 handoff item 2: `/ai/provider` writes the registry natively |
+| `services/aiAgents/agentModelBinding.ts` | `bindAgentModel`, `AgentModelNotAllowedError` | W02 handoff item 5: agent policy model bound and permitted-checked at write |
 | `services/aiModels/discovery.ts` | `MISSING_AFTER_SUCCESSFUL_SYNCS`, `RETIRED_AFTER_DAYS`, `ConnectionSyncReport`; `discoverAnthropicModels(apiKey, target)` gains `target` | §6 lifecycle constants; BYOK pinning |
 | `jobs/aiModelDiscoveryWorker.ts` (W01) | `aiModelConnectionSyncJobId`, `enqueueConnectionSync`; `AiModelDiscoveryJobData` gains `sync-connection` (jobId `sync-connection-${id}`) and `sync-all-connections` | The index's `sync-connection:{id}` is not a legal BullMQ jobId |
 | `services/aiModels/platformModels.ts` | `getPlatformInferenceGeo` (env `AI_PLATFORM_INFERENCE_GEO`) | §7 platform geo; W01's D3 left it open |
 | `services/aiModels/legacySurfaceModels.ts` (W02) | `getLegacyModelRates`, `LEGACY_MODEL_RATES` (moved from `aiCostTracker.ts`) | Projection-only legacy rates once `MODEL_PRICING` leaves billing; W08 deletes |
 | `services/aiAgents/modelBlocked.ts` | `ModelBlockedReason`, `AgentRunBlockedError`, `blockedOutcome`, `modelBlockedDedupeKey`, `notifyModelBlocked` | §9.1 / §9.1a agent outcomes |
-| `services/aiBudgetReservations.ts` | `ReserveAiBudgetInput.binding`, `SettleAiBudgetReservationInput.invocations`, `SettleAiBudgetReservationResult.invocationIds`, `recordInvocationsWithRollups` | Ledger-derived rollups, binding in the claim transaction |
+| `services/aiBudgetReservations.ts` | `ReserveAiBudgetInput.binding`, `SettleAiBudgetReservationInput.invocations`, `SettleAiBudgetReservationResult.invocationIds`, `recordInvocationsWithRollups`, `persistPendingSettlement`, `replayPendingAiSettlements`, `markCreditsDebited`, `listUndebitedPlatformSettlements`, `stampSessionBinding`, `AiBudgetBindingConflictError` | Ledger-derived rollups, binding in the claim transaction, exactly-once debit and deferred-settlement replay |
+| `services/aiModels/settleInvocation.ts` (cont.) | `debitSettledCredits`; `deductBillingCredits(orgId, cents, { idempotencyKey })` (`aiCostTracker.ts`) | Debit once per reservation, under a stable key |
 | `services/streamingSessionManager.ts` | `ActiveSession.{liveKey, turnBinding, ledgerUserId, refusalObservation, forceRecreate}`; `getOrCreate(… resolved: ResolvedModel …, { ledgerUserId })` | §9.2 |
 | `services/aiAgentSdk.ts` | `PreFlightResult.{model, openaiCompatible, code}` | Chat / script-builder turn resolution |
-| DB | `ai_budget_reservations.model_binding jsonb`; `ai_agent_runs.funding_source text` + status `blocked`; `partner_ai_models.last_seen_at`, `missed_sync_count`; `ai_model_registry_state` (system singleton) | See the migrations |
+| DB | `ai_budget_reservations.model_binding`, `.pending_settlement` (jsonb), `.credits_debited_at`; `ai_agent_runs.funding_source`, `.admitted_offering_id` + status `blocked`; `partner_ai_models.last_seen_at`, `missed_sync_count`; `ai_model_registry_state` (system singleton); `ai_model_registry_partner_cutover` (partner-axis); `ai_sessions.model` loses its default; trigger `partner_llm_configs_mirror_to_connection` dropped | See the migrations |
 | `packages/shared` | `PERMISSION_GRANTS.AI_MODELS_PREMIUM` (`ai_models:premium`); `PartnerSettings.ai.residencyRequired`; `AiStreamEvent` `model_refusal`; `AI_AGENT_RUN_STATUSES` + `'blocked'`; `createAiSessionSchema.{offeringId, options}` | Permission gate, residency, refusals, blocked runs, session create |
 | tests | `services/aiModels/__fixtures__/resolvedModel.ts` (`makeResolvedModel`, `FIXTURE_STD_RATES`); `services/aiModels/parity/` `w03Goldens.json`, `w03Parity.ts` (`queryKey`, `loadW03Goldens`, `toSurfaceUse`, `assertSurfaceParity`), `registrySnapshotDeps.ts` (`storeFor`, `snapshotDeps`), `w03Surfaces.parity.test.ts`; `__tests__/integration/helpers/aiModelRegistrySeed.ts` (`seedRegistryPartner`) | Parity against frozen legacy routing through W02's harness; real-DB seeds |
 
@@ -8331,7 +9499,7 @@ These names are introduced here and absent from the index. None renames an index
 | Refusal fallback passthrough priced at the served rate | 3 (carried), 4 (wire), 5 (served model), 6 (priced per row) |
 | `promptProfile` returned + hook | 2, 3, 7, 12 |
 | Options / inference geo in the resolver (§7) | 3, clamped to W01 transport carriage |
-| W02 handoff: a blocking cutover reconcile, then registry authority; post-cutover partners bootstrapped | 6A |
+| W02 handoff: once-only per-partner cutover (replacing the blocking boot reconcile), then registry authority; `/ai/provider` registry-native; mirror trigger dropped; `ai_sessions.model` default dropped; agent model bound at write | 6A, 6B, 9, 12 |
 | Every surface on `resolveModel`, each with a parity check reusing W02's harness against frozen legacy goldens | 1 (goldens), 7 (chat/topology, helper, script builder, office chat), 10 (ticket draft, office ticket), 11 (reviewer), 12 (agents, incl. wire translation and the policy permitted check at run), 13 (catalog enrichment, extension/workspace), 14 (patch test via the factory) |
 | Funding per offering through admission → reservation → credits → settlement → compute; delete `getLlmBillingSourceForOrg` | 6, 7, 10–14, 12 (compute + admission), 15 |
 | One cost function; SDK cost is telemetry only; both the general and the Office paths; budgets/credits/ledgers/displayed cost read it; rollups derived from `ai_invocations`; positive-wrong and zero SDK cost tests | 5, 6 (unit + integration), 7 (Office hook + `done`), 17 (contract rule 4) |
@@ -8342,9 +9510,10 @@ These names are introduced here and absent from the index. None renames an index
 | Session `requested` model validated through `resolveModel` (replaces W00) | 9 |
 
 **Known limits, called out rather than hidden:**
-- **SDK overload fallback.** `fallbackModel` also fires on overload, and the SDK's per-turn usage does not say which model served, so an overload-served SDK turn is priced at the primary rate. Same connection and funding are guaranteed, so it never crosses funding (Task 5 test).
+- **SDK refusal fallback is equal-price only.** `fallbackModel` also fires on overload, and the SDK's per-turn usage does not say which model served. Review finding 3: Task 3 therefore sets an SDK fallback only when its rate equals the primary's. A differently priced fallback is dropped with a warning, so that partner's SDK surfaces get no refusal fallback, and the refusal is reported with alternatives (Task 8). Messages API surfaces keep any same-connection fallback, because they attribute each attempt.
 - **Refused leg on SDK surfaces.** It is not metered separately. Messages API surfaces do meter it, from `usage.iterations` / attempts.
-- **Deferred settlements.** A settlement deferred by lock contention (`deferred_indeterminate`) writes no ledger row, which is today's behaviour for rollups as well. The provider spend is still drawn from credits.
+- **Deferred settlements are replayed, not lost** (findings 1–2). The priced rows persist on the reservation, and the sweep replays them idempotently. Credits are debited once, under `ai-settlement:<reservationId>`. **Cross-repo dependency:** the billing service must honour that idempotency key. Until it does, a debit retried after a lost HTTP response can double-charge, so that change ships first.
+- **Legacy policy fields between W03 and W04.** `reviewer_model`, Office `allowedModels` and the budget allowlist were projected once. Their editors stay until W04, and edits made in between do not route (Global Constraints). Agent `model` is bound at write time (Task 12).
 - **Env OpenAI-compatible chat path.** It keeps its own cost and settlement until W06, so it writes no `ai_invocations` rows.
 - **Not yet carriable options.** Fast mode, `thinkingDisplay: updates` and inference geo stay off until W01's spike enables a transport for them (`transportCarries`). Until then, residency-required partners resolve nothing: fail closed, by design.
 
