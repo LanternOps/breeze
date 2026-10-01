@@ -1231,6 +1231,19 @@ func runAgent() {
 	serviceMode := isWindowsService()
 	startup := currentProcessStartup("run", "", serviceMode)
 	cacheMainProcessStartup(startup)
+	// Before anything reads the config, and before the instance guard
+	// (which hardens the folder and so would hide that another account had
+	// it): the agent re-secures its config folder if another account created
+	// it (e.g. through an older Quick Support client run by a standard user),
+	// and refuses one that is a link. Covers the service and console paths.
+	if err := reclaimConfigDirFn(false); err != nil {
+		// The instance-guard marker (the Windows Event Log; stderr), so a
+		// service that stops here is not just an SCM start error.
+		writeInstanceGuardMarkerFn(startup, fmt.Errorf("agent config folder: %w", err))
+		mainAgentExitFn(exitConfigDirUntrusted)
+		return
+	}
+
 	guard, err := acquireMainAgentGuardFn(startup)
 	if err != nil {
 		writeInstanceGuardMarkerFn(startup, err)
@@ -1250,19 +1263,6 @@ func runAgent() {
 		return
 	}
 	defer guard.Close()
-
-	// Before anything reads the config: the agent re-secures its config and
-	// data folder if another account created it (a folder pre-created by a
-	// standard user, e.g. through an older Quick Support client), and refuses
-	// one that is a link. Covers both the service and the console path below.
-	if err := reclaimConfigDirFn(false); err != nil {
-		// Same marker as a guard failure (the Windows Event Log), so a
-		// service that stops here is not just an SCM start error.
-		writeInstanceGuardMarkerFn(startup, err)
-		fmt.Fprintf(os.Stderr, "Breeze agent cannot use its config folder: %v\n", err)
-		mainAgentExitFn(exitConfigDirUntrusted)
-		return
-	}
 
 	// Self-heal the installed service unit from older installs (launchd plists on
 	// macOS; systemd unit on Linux) after a binary-only auto-update.

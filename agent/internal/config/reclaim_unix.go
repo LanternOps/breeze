@@ -3,11 +3,13 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // reclaimConfigFileModes are the files whose contents the agent loads as its
@@ -18,9 +20,42 @@ var reclaimConfigFileModes = map[string]os.FileMode{
 	"helper_token.yaml": 0o600, // the agent restores root:breeze 0640 on start
 }
 
-// reclaimSkipEntries are left alone: sessions/<key> is owned by the session
-// user by design (helper/manager.go), and its parent is root-owned.
-var reclaimSkipEntries = map[string]bool{"sessions": true, reclaimQuarantineDir: true}
+// reclaimSkipDirs are left alone when they are real directories root owns:
+// sessions/<key> is owned by the session user by design (helper/manager.go).
+var reclaimSkipDirs = map[string]bool{"sessions": true}
+
+// settleQuarantineDir leaves root/quarantine in place only as a real
+// directory root owns. Another account's symlink there is removed; anything
+// else of theirs by that name is renamed out of the way and then set aside
+// into the (new) quarantine like any other entry.
+func settleQuarantineDir(q *quarantine) error {
+	qpath := filepath.Join(q.root, reclaimQuarantineDir)
+	fi, err := os.Lstat(qpath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink == 0 && fi.IsDir() && reclaimOwnerUIDFn(qpath, fi) == 0 {
+		return nil
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		log.Warn("Removed a planted link named quarantine from the agent folder", "path", qpath)
+		return os.Remove(qpath)
+	}
+	moved := qpath + ".untrusted-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	if err := os.Rename(qpath, moved); err != nil {
+		return fmt.Errorf("move a planted %s out of the way: %w", qpath, err)
+	}
+	log.Warn("Set aside a planted entry named quarantine from the agent folder", "path", qpath)
+	return q.move(moved, reclaimQuarantineDir)
+}
+
+// reclaimHelperLog is written into the folder by the Breeze Assist helper as
+// the logged-in user on macOS (the folder is group-writable there); a log is
+// left alone rather than set aside on every start.
+const reclaimHelperLog = "helper.log"
 
 // Seams: the unit tests run unprivileged, so they cannot create root-owned
 // files or chown.
@@ -32,7 +67,8 @@ var (
 		}
 		return ^uint32(0) // unknown owner: treat as untrusted
 	}
-	reclaimLchownFn = func(path string) error { return os.Lchown(path, 0, -1) }
+	// root owner and group (0): the group was the other account's choice.
+	reclaimLchownFn = func(path string) error { return os.Lchown(path, 0, 0) }
 )
 
 func reclaimConfigDir(root string, forEnroll bool) error {
@@ -85,96 +121,118 @@ func reclaimUnixDir(root string, configDir, forEnroll bool) error {
 	}
 
 	// The folder itself. Its parent (/etc, /var/lib, /Library/Application
-	// Support) is root's, so the path cannot be swapped underneath.
+	// Support) is root's, so the path cannot be swapped underneath, and on
+	// Unix a permission change applies to every later operation at once.
 	if uid := reclaimOwnerUIDFn(root, fi); uid != 0 {
 		log.Warn("The agent folder was created by another account; taking it back", "dir", root, "uid", uid)
 		if err := reclaimLchownFn(root); err != nil {
 			return fmt.Errorf("%w: take back %s: %v", ErrConfigDirUntrusted, root, err)
 		}
-	}
-	if perm := fi.Mode().Perm(); perm&reclaimOtherWrite != 0 {
+		// The group was that account's choice too: no group write.
+		if err := os.Chmod(root, fi.Mode().Perm()&^0o022); err != nil {
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
+		}
+	} else if perm := fi.Mode().Perm(); perm&reclaimOtherWrite != 0 {
 		if err := os.Chmod(root, perm&^reclaimOtherWrite); err != nil {
 			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 		}
+	}
+
+	// The quarantine folder first, before anything is moved into it: unless
+	// it is a real directory root owns, a planted one (a symlink especially)
+	// would redirect every move below.
+	q := quarantine{root: root}
+	if err := settleQuarantineDir(&q); err != nil {
+		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 	}
 
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return fmt.Errorf("%w: list %s: %v", ErrConfigDirUntrusted, root, err)
 	}
-	q := quarantine{root: root}
-	type configFile struct {
-		path, name string
-		mode       os.FileMode
-	}
-	var configFiles []configFile
 	for _, e := range entries {
-		if reclaimSkipEntries[e.Name()] {
-			continue
+		if e.Name() == reclaimQuarantineDir {
+			continue // settled above
 		}
 		p := filepath.Join(root, e.Name())
 		efi, err := os.Lstat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
-				continue
+				continue // removed since the listing
 			}
 			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 		}
 		uid := reclaimOwnerUIDFn(p, efi)
-		if efi.Mode()&os.ModeSymlink != 0 {
+		isLink := efi.Mode()&os.ModeSymlink != 0
+		if reclaimSkipDirs[e.Name()] && efi.IsDir() && !isLink && uid == 0 {
+			continue
+		}
+		if e.Name() == reclaimHelperLog && efi.Mode().IsRegular() {
+			continue
+		}
+		if isLink {
 			if uid != 0 {
-				if err := os.Remove(p); err != nil {
+				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 					return fmt.Errorf("%w: remove the link %s: %v", ErrConfigDirUntrusted, p, err)
 				}
 				log.Warn("Removed a link another account planted in the agent folder; its target was left untouched", "path", p)
 			}
 			continue
 		}
-		worldWritable := efi.Mode().Perm()&reclaimOtherWrite != 0
-		if uid == 0 && !worldWritable {
-			continue
-		}
-		if mode, ok := reclaimConfigFileModes[e.Name()]; ok && configDir && efi.Mode().IsRegular() {
-			if forEnroll && uid != 0 {
-				if err := q.move(p, e.Name()); err != nil {
+		mode, isConfig := reclaimConfigFileModes[e.Name()]
+		isConfig = isConfig && configDir && efi.Mode().IsRegular()
+		if uid == 0 {
+			// Root's own entry, at most world-writable: fixed in place (it
+			// and its parent are root's, so the path cannot be swapped).
+			if efi.Mode().Perm()&reclaimOtherWrite != 0 {
+				want := efi.Mode().Perm() &^ reclaimOtherWrite
+				if isConfig {
+					want = mode
+				}
+				if err := os.Chmod(p, want); err != nil {
 					return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 				}
-				log.Warn("Set aside a config file another account wrote; enrollment writes a new one", "path", p, "uid", uid)
-				continue
-			}
-			configFiles = append(configFiles, configFile{p, e.Name(), mode})
-			continue
-		}
-		if uid == 0 {
-			// Root's own entry, only world-writable: the path is root's
-			// and its parent is too, so it cannot be swapped.
-			if err := os.Chmod(p, efi.Mode().Perm()&^reclaimOtherWrite); err != nil {
-				return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 			}
 			continue
 		}
-		// Another account's entry: set aside, not walked into or chowned.
+		// Another account's entry: set aside, unread, never walked into,
+		// chowned or (for a config file) adopted.
 		if err := q.move(p, e.Name()); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // removed since the listing
+			}
 			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 		}
-		log.Warn("Set aside an entry another account controlled in the agent folder", "path", p, "uid", uid)
+		switch {
+		case isConfig && forEnroll:
+			log.Warn("Set aside a config file another account wrote; enrollment writes a new one", "path", p, "uid", uid)
+		case isConfig:
+			log.Warn("Set aside a config file another account wrote; the agent starts unenrolled", "path", p, "uid", uid)
+		default:
+			log.Warn("Set aside an entry another account controlled in the agent folder", "path", p, "uid", uid)
+		}
 	}
+	return nil
+}
 
-	for _, f := range configFiles {
-		data, err := os.ReadFile(f.path)
-		if err != nil {
-			return fmt.Errorf("%w: read %s: %v", ErrConfigDirUntrusted, f.path, err)
+// reclaimQuarantineDir is the folder entries are set aside in, inside the
+// config folder (so it is as private as the folder).
+const reclaimQuarantineDir = "quarantine"
+
+type quarantine struct{ root, dir string }
+
+// move renames path (an entry of q.root, which the caller has already taken
+// back) into this run's quarantine folder. A rename moves the entry itself:
+// a link is moved, not followed.
+func (q *quarantine) move(path, name string) error {
+	if q.dir == "" {
+		q.dir = filepath.Join(q.root, reclaimQuarantineDir, time.Now().UTC().Format("20060102T150405.000000000Z"))
+		if err := os.MkdirAll(q.dir, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", q.dir, err)
 		}
-		// The original is set aside (a handle another account holds then
-		// reaches that copy), and a new root-owned file with an explicit
-		// mode (no setuid survives) is written in its place.
-		if err := q.move(f.path, f.name); err != nil {
-			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
-		}
-		if err := atomicWriteFile(f.path, data, f.mode); err != nil {
-			return fmt.Errorf("%w: rewrite %s: %v", ErrConfigDirUntrusted, f.path, err)
-		}
-		log.Warn("Replaced a config file another account could write with a fresh copy; check its contents", "path", f.path)
+	}
+	if err := os.Rename(path, filepath.Join(q.dir, name)); err != nil {
+		return fmt.Errorf("set aside %s: %w", path, err) // %w keeps os.IsNotExist working
 	}
 	return nil
 }

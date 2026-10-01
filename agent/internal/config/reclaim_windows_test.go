@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -132,95 +133,155 @@ func reclaimSDDL(t *testing.T, path string) string {
 	return sd.String()
 }
 
-func quarantinedWin(t *testing.T, root, name string) bool {
+func setAsideDir(t *testing.T, root string) string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(root, reclaimQuarantineDir, "*", name))
+	matches, err := filepath.Glob(root + ".untrusted-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return len(matches) == 1
+	if len(matches) != 1 {
+		t.Fatalf("set-aside folders next to %s: %v, want exactly one", root, matches)
+	}
+	return matches[0]
 }
 
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// openAsStandardUser opens path as the simulated standard user and returns a
+// func closing the handle (once; also run at cleanup) and the handle, which
+// outlives the impersonation.
+func openAsStandardUser(t *testing.T, path string, access, share, flags uint32) (func(), windows.Handle) {
+	t.Helper()
+	var h windows.Handle
+	reclaimAsStandardUser(t, func() {
+		p16, _ := windows.UTF16PtrFromString(path)
+		var err error
+		h, err = windows.CreateFile(p16, access, share, nil, windows.OPEN_EXISTING, flags, 0)
+		if err != nil {
+			t.Fatalf("open %s as the standard user: %v", path, err)
+		}
+	})
+	var once sync.Once
+	closeHandle := func() { once.Do(func() { _ = windows.CloseHandle(h) }) }
+	t.Cleanup(closeHandle)
+	return closeHandle, h
+}
+
+const reclaimFileAddFile = 0x0002 // FILE_ADD_FILE
+
+const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
+
 // TestReclaimConfigDirTakesBackAFolderAnotherAccountCreated: a config folder
-// a standard user created before the agent was installed is taken back before
-// the agent reads it. The folder is the agent's; agent.yaml and secrets.yaml
-// are fresh copies (contents kept, the agent's owner and DACL, Users read on
-// agent.yaml only), so a write handle that user opened beforehand no longer
-// reaches them; everything else the user owned is set aside, unread. The user
-// can write nothing there afterwards.
+// a standard user created before the agent was installed is replaced before
+// the agent reads it, not repaired in place (a handle the user opened while
+// owning it would keep its access). The user's config files are not adopted
+// (kept in the set-aside folder), and the user can write nothing in the new
+// folder.
 func TestReclaimConfigDirTakesBackAFolderAnotherAccountCreated(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
 	plantFolderAsStandardUser(t, root)
-	cfgPath := filepath.Join(root, "agent.yaml")
-
-	// A write handle the standard user opened beforehand, shared for
-	// delete (so the agent can replace the file): afterwards it must no
-	// longer reach agent.yaml.
-	var held windows.Handle
-	reclaimAsStandardUser(t, func() {
-		p16, _ := windows.UTF16PtrFromString(cfgPath)
-		h, err := windows.CreateFile(p16, windows.GENERIC_WRITE,
-			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, 0, 0)
-		if err != nil {
-			t.Fatalf("open agent.yaml for write as the standard user: %v", err)
-		}
-		held = h
-	})
-	defer func() { _ = windows.CloseHandle(held) }()
 
 	if err := reclaimConfigDir(root, false); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
-	for _, p := range []string{root, cfgPath, filepath.Join(root, "secrets.yaml")} {
-		assertTrustedObject(t, p)
-	}
-	if b, err := os.ReadFile(cfgPath); err != nil || !strings.Contains(string(b), "server_url") {
-		t.Errorf("agent.yaml contents not kept: %q, %v", b, err)
-	}
-	if sddl := reclaimSDDL(t, cfgPath); !strings.Contains(sddl, "(A;;FR;;;BU)") {
-		t.Errorf("agent.yaml lost the Users read the Helper needs: %s", sddl)
-	}
-	if sddl := reclaimSDDL(t, filepath.Join(root, "secrets.yaml")); strings.Contains(sddl, ";;;BU)") {
-		t.Errorf("secrets.yaml grants Users access: %s", sddl)
-	}
-	for _, name := range []string{"agent.state", "data"} {
-		if _, err := os.Lstat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) || !quarantinedWin(t, root, name) {
-			t.Errorf("%s was not set aside into quarantine (lstat err %v)", name, err)
+	assertTrustedObject(t, root)
+	aside := setAsideDir(t, root)
+	for _, name := range []string{"agent.yaml", "secrets.yaml", "agent.state", "data"} {
+		if exists(filepath.Join(root, name)) {
+			t.Errorf("%s the other account owned is in the agent's folder", name)
 		}
-	}
-
-	var n uint32
-	if err := windows.WriteFile(held, []byte("server_url: https://attacker.example\n"), &n, nil); err == nil {
-		if b, _ := os.ReadFile(cfgPath); strings.Contains(string(b), "attacker") {
-			t.Error("a write handle opened before the reclaim still changes agent.yaml")
+		if !exists(filepath.Join(aside, name)) {
+			t.Errorf("%s was not kept in the set-aside folder %s", name, aside)
 		}
 	}
 	reclaimAsStandardUser(t, func() {
-		if f, err := os.OpenFile(cfgPath, os.O_WRONLY, 0); err == nil {
-			_ = f.Close()
-			t.Error("the standard user can still write agent.yaml")
-		}
 		if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("x"), 0o644); err == nil {
-			t.Error("the standard user can still create files in the folder")
+			t.Error("the standard user can create files in the new folder")
 		}
 	})
+	if matches, _ := filepath.Glob(root + ".new-*"); len(matches) != 0 {
+		t.Errorf("staging folder left behind: %v", matches)
+	}
+}
+
+// TestReclaimConfigDirCarriesTheAgentsOwnConfig: in a folder another account
+// controlled, a config file an administrator wrote (Administrators owner) is
+// carried into the new folder with its contents and the agent's DACL (Users
+// read on agent.yaml only); the other account's secrets.yaml is not.
+func TestReclaimConfigDirCarriesTheAgentsOwnConfig(t *testing.T) {
+	requireElevatedRunner(t)
+	root := filepath.Join(t.TempDir(), "Breeze")
+	plantFolderAsStandardUser(t, root)
+	cfgPath := filepath.Join(root, "agent.yaml")
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("agent_id: admin-written\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if untrusted, err := ownerUntrusted(cfgPath); err != nil || untrusted {
+		t.Fatalf("admin-written agent.yaml owner untrusted=%v err=%v", untrusted, err)
+	}
+
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("reclaimConfigDir: %v", err)
+	}
+	if b, err := os.ReadFile(cfgPath); err != nil || string(b) != "agent_id: admin-written\n" {
+		t.Fatalf("agent.yaml not carried over: %q, %v", b, err)
+	}
+	assertTrustedObject(t, cfgPath)
+	if sddl := reclaimSDDL(t, cfgPath); !strings.Contains(sddl, "(A;;FR;;;BU)") {
+		t.Errorf("agent.yaml lacks the Users read the Helper needs: %s", sddl)
+	}
+	if exists(filepath.Join(root, "secrets.yaml")) {
+		t.Error("the other account's secrets.yaml was carried over")
+	}
+}
+
+// TestReclaimConfigDirDoesNotCarryAHardLinkedConfig: a config file with
+// another hard link is not copied: the link could make the agent copy some
+// other file's contents into its (Users-readable) agent.yaml.
+func TestReclaimConfigDirDoesNotCarryAHardLinkedConfig(t *testing.T) {
+	requireElevatedRunner(t)
+	root := filepath.Join(t.TempDir(), "Breeze")
+	plantFolderAsStandardUser(t, root)
+	cfgPath := filepath.Join(root, "agent.yaml")
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(t.TempDir(), "system-only.txt")
+	if err := os.WriteFile(other, []byte("not for Users\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(other, cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("reclaimConfigDir: %v", err)
+	}
+	if exists(cfgPath) {
+		t.Error("a hard-linked agent.yaml was copied into the new folder")
+	}
 }
 
 // TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote: before an
-// enrollment, agent.yaml and secrets.yaml another account owns are set aside,
-// not adopted (their contents would carry into the new enrollment).
+// enrollment, the other account's config files are not carried over either;
+// enrollment writes new ones.
 func TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
 	plantFolderAsStandardUser(t, root)
-
 	if err := reclaimConfigDir(root, true); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
+	aside := setAsideDir(t, root)
 	for _, name := range []string{"agent.yaml", "secrets.yaml"} {
-		if _, err := os.Lstat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) || !quarantinedWin(t, root, name) {
-			t.Errorf("%s was not set aside before enrolling (lstat err %v)", name, err)
+		if exists(filepath.Join(root, name)) || !exists(filepath.Join(aside, name)) {
+			t.Errorf("%s was not set aside before enrolling", name)
 		}
 	}
 	assertTrustedObject(t, root)
@@ -248,7 +309,8 @@ func TestReclaimConfigDirRefusesALinkedFolder(t *testing.T) {
 }
 
 // TestReclaimConfigDirLeavesATrustedFolderAlone: a folder the agent created
-// (its own owner and DACLs) is not changed and nothing is set aside.
+// is not replaced; its config files are untouched and a second run changes
+// nothing.
 func TestReclaimConfigDirLeavesATrustedFolderAlone(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
@@ -282,11 +344,9 @@ func TestReclaimConfigDirLeavesATrustedFolderAlone(t *testing.T) {
 	if afterInfo, err := os.Stat(cfgPath); err != nil || !os.SameFile(beforeInfo, afterInfo) {
 		t.Errorf("agent.yaml in a trusted folder was replaced or removed (err %v)", err)
 	}
-	if _, err := os.Lstat(filepath.Join(root, reclaimQuarantineDir)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a trusted folder had entries set aside (lstat err %v)", err)
+	if matches, _ := filepath.Glob(root + ".untrusted-*"); len(matches) != 0 {
+		t.Errorf("a trusted folder was replaced: %v", matches)
 	}
-	// The folder itself is re-hardened through its handle on every run (as
-	// the instance guard does); that is stable: a second run changes nothing.
 	assertTrustedObject(t, root)
 	rootSDDL := reclaimSDDL(t, root)
 	if err := reclaimConfigDir(root, false); err != nil {
@@ -297,33 +357,62 @@ func TestReclaimConfigDirLeavesATrustedFolderAlone(t *testing.T) {
 	}
 }
 
-// TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAConfigFile: a config
-// file another account holds open without delete sharing cannot be replaced
-// by a fresh copy; the agent refuses rather than re-secure it in place, which
-// would leave that handle able to write the agent's config. Once the handle
-// is gone the folder is taken back.
-func TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAConfigFile(t *testing.T) {
+// TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAFileOpen: a handle the
+// other account opened while it owned the folder keeps its access after any
+// owner or DACL change. NTFS will not rename the folder while a file in it is
+// open (whatever the sharing), so the agent refuses (the folder stays as it
+// was, no staging folder is left) rather than run in a folder that account
+// can still change; once the handle is gone (at the latest after a reboot, as
+// services start before any user logon) the folder is replaced.
+func TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAFileOpen(t *testing.T) {
+	requireElevatedRunner(t)
+	for name, share := range map[string]uint32{
+		"shared for delete":     shareAll,
+		"not shared for delete": windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "Breeze")
+			plantFolderAsStandardUser(t, root)
+			closeHandle, _ := openAsStandardUser(t, filepath.Join(root, "agent.state"), windows.GENERIC_WRITE, share, 0)
+
+			if err := reclaimConfigDir(root, false); !errors.Is(err, ErrConfigDirUntrusted) {
+				t.Fatalf("err = %v while another account holds a file open, want ErrConfigDirUntrusted", err)
+			}
+			if matches, _ := filepath.Glob(root + ".new-*"); len(matches) != 0 {
+				t.Errorf("staging folder left behind: %v", matches)
+			}
+			if !exists(filepath.Join(root, "agent.state")) {
+				t.Error("the folder was changed by a refused reclaim")
+			}
+			closeHandle()
+			if err := reclaimConfigDir(root, false); err != nil {
+				t.Fatalf("reclaimConfigDir once the handle is closed: %v", err)
+			}
+			assertTrustedObject(t, root)
+		})
+	}
+}
+
+// TestReclaimConfigDirLeavesAHeldFolderHandleBehind: a handle to the folder
+// itself that the other account opened (for adding files) while it owned the
+// folder does not block the replacement, and afterwards reaches the
+// set-aside folder, not the agent's.
+func TestReclaimConfigDirLeavesAHeldFolderHandleBehind(t *testing.T) {
 	requireElevatedRunner(t)
 	root := filepath.Join(t.TempDir(), "Breeze")
 	plantFolderAsStandardUser(t, root)
-	cfgPath := filepath.Join(root, "agent.yaml")
-	var held *os.File
-	reclaimAsStandardUser(t, func() {
-		f, err := os.OpenFile(cfgPath, os.O_WRONLY, 0)
-		if err != nil {
-			t.Fatalf("open agent.yaml as the standard user: %v", err)
-		}
-		held = f
-	})
-	if err := reclaimConfigDir(root, false); !errors.Is(err, ErrConfigDirUntrusted) {
-		_ = held.Close()
-		t.Fatalf("err = %v while another account holds agent.yaml open, want ErrConfigDirUntrusted", err)
-	}
-	if err := held.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_, h := openAsStandardUser(t, root, reclaimFileAddFile|windows.FILE_LIST_DIRECTORY, shareAll, windows.FILE_FLAG_BACKUP_SEMANTICS)
+
 	if err := reclaimConfigDir(root, false); err != nil {
-		t.Fatalf("reclaimConfigDir once the handle is closed: %v", err)
+		t.Fatalf("reclaimConfigDir: %v", err)
 	}
-	assertTrustedObject(t, cfgPath)
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), 0)
+	if err != nil {
+		t.Fatalf("GetFinalPathNameByHandle: %v", err)
+	}
+	if p := windows.UTF16ToString(buf[:n]); !strings.Contains(strings.ToLower(p), ".untrusted-") {
+		t.Errorf("the other account's folder handle reaches %s, not the set-aside folder", p)
+	}
+	assertTrustedObject(t, root)
 }

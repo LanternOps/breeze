@@ -96,44 +96,23 @@ func plantUnixConfigDir(t *testing.T) string {
 }
 
 // TestReclaimConfigDirUnixTakesBackAFolderAnotherAccountCreated: at start,
-// the folder is taken back, the config files are replaced by fresh copies
-// (contents kept, modes explicit, a new file so the other account's handles
-// no longer reach it) and everything else that account owns is set aside
-// without being walked into or chowned.
+// the folder is taken back (root owner, no group/world write) and everything
+// the other account owns in it, config files included, is set aside unread:
+// nothing inside is chowned, walked into or adopted.
 func TestReclaimConfigDirUnixTakesBackAFolderAnotherAccountCreated(t *testing.T) {
 	root := plantUnixConfigDir(t)
-	before, err := os.Stat(filepath.Join(root, "agent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	chowned := fakeRoot(t, 1000, nil)
 
 	if err := reclaimConfigDir(root, false); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
 	if len(*chowned) != 1 || (*chowned)[0] != root {
-		t.Errorf("chowned %v, want only the folder itself (nothing inside it is chowned)", *chowned)
+		t.Errorf("chowned %v, want only the folder itself", *chowned)
 	}
-	if m := modeOfPath(t, root); m&0o002 != 0 {
-		t.Errorf("folder mode %o still world-writable", m)
+	if m := modeOfPath(t, root); m != 0o755 {
+		t.Errorf("folder mode %o, want 755 (no group/world write)", m)
 	}
-	for name, want := range map[string]os.FileMode{"agent.yaml": 0o644, "secrets.yaml": 0o600} {
-		p := filepath.Join(root, name)
-		if m := modeOfPath(t, p); m != want {
-			t.Errorf("%s mode %o, want %o", name, m, want)
-		}
-		if b, err := os.ReadFile(p); err != nil || !strings.Contains(string(b), "server_url") {
-			t.Errorf("%s contents not kept: %q, %v", name, b, err)
-		}
-	}
-	after, err := os.Stat(filepath.Join(root, "agent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(before, after) {
-		t.Error("agent.yaml is the same file: a handle the other account holds still reaches it")
-	}
-	for _, name := range []string{"agent.state", "data"} {
+	for _, name := range []string{"agent.yaml", "secrets.yaml", "agent.state", "data"} {
 		if !gone(t, filepath.Join(root, name)) || !quarantined(t, root, name) {
 			t.Errorf("%s was not set aside into quarantine", name)
 		}
@@ -258,18 +237,61 @@ func TestReclaimConfigDirUnixLeavesATrustedFolderAlone(t *testing.T) {
 
 // TestReclaimConfigDirUnixClearsWorldWriteOnRootsOwnEntry: an entry root owns
 // that is only world-writable is fixed in place (its path cannot be swapped:
-// it and its parent are root's), not set aside.
+// it and its parent are root's), not set aside; a config file gets its mode.
 func TestReclaimConfigDirUnixClearsWorldWriteOnRootsOwnEntry(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "breeze")
 	mkdirMode(t, root, 0o755)
 	state := filepath.Join(root, "agent.state")
+	cfg := filepath.Join(root, "agent.yaml")
 	writeMode(t, state, 0o666)
+	writeMode(t, cfg, 0o666)
 	fakeRoot(t, 0, nil)
 	if err := reclaimConfigDir(root, false); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
 	}
 	if m := modeOfPath(t, state); m != 0o664 {
 		t.Errorf("agent.state mode %o, want 664", m)
+	}
+	if m := modeOfPath(t, cfg); m != 0o644 {
+		t.Errorf("agent.yaml mode %o, want 644", m)
+	}
+}
+
+// TestReclaimConfigDirUnixSkipsOnlyRealRootOwnedSpecialDirs: sessions and
+// quarantine are left alone only as real directories root owns. Another
+// account's symlink by either name is removed (never followed by the later
+// MkdirAll/Rename into quarantine, or the helper's chown into sessions), and
+// another account's sessions dir is set aside. A helper.log the Assist helper
+// wrote as the user stays.
+func TestReclaimConfigDirUnixSkipsOnlyRealRootOwnedSpecialDirs(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "breeze")
+	mkdirMode(t, root, 0o755)
+	elsewhere := t.TempDir()
+	quarantineLink := filepath.Join(root, reclaimQuarantineDir)
+	if err := os.Symlink(elsewhere, quarantineLink); err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(root, "sessions")
+	mkdirMode(t, sessions, 0o777)
+	helperLog := filepath.Join(root, "helper.log")
+	writeMode(t, helperLog, 0o644)
+	writeMode(t, filepath.Join(root, "agent.state"), 0o644)
+
+	fakeRoot(t, 0, map[string]uint32{quarantineLink: 1000, sessions: 1000, helperLog: 501, filepath.Join(root, "agent.state"): 1000})
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("reclaimConfigDir: %v", err)
+	}
+	if fi, err := os.Lstat(quarantineLink); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("another account's quarantine symlink was kept")
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Errorf("entries were moved through a planted quarantine link into %s", elsewhere)
+	}
+	if !gone(t, sessions) || !quarantined(t, root, "sessions") {
+		t.Error("another account's sessions dir was not set aside")
+	}
+	if gone(t, helperLog) {
+		t.Error("the helper's log was set aside")
 	}
 }
 

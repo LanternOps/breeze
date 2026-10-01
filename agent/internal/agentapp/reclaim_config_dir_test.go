@@ -58,9 +58,11 @@ func indexOf(order []string, name string) int {
 }
 
 // TestAgentStartReclaimsConfigDirBeforeReadingIt pins where runAgent takes
-// the config folder back: after the instance guard (which already holds the
-// folder by handle on Windows) and before anything reads config, on both the
-// service path (runAsService) and the console path (config.Load).
+// the config folder back: before the instance guard (which hardens the folder
+// and so would hide that another account had it, and holds it open, which
+// would keep a replaced folder from being set aside) and before anything
+// reads config, on both the service path (runAsService) and the console path
+// (config.Load).
 func TestAgentStartReclaimsConfigDirBeforeReadingIt(t *testing.T) {
 	order := callOrder(t, "runAgent")
 	guard, reclaim := indexOf(order, "acquireMainAgentGuardFn"), indexOf(order, "reclaimConfigDirFn")
@@ -68,8 +70,8 @@ func TestAgentStartReclaimsConfigDirBeforeReadingIt(t *testing.T) {
 	if guard < 0 || reclaim < 0 || service < 0 || load < 0 {
 		t.Fatalf("calls missing: guard=%d reclaim=%d runAsService=%d config.Load=%d", guard, reclaim, service, load)
 	}
-	if guard >= reclaim || reclaim >= service || reclaim >= load {
-		t.Errorf("order guard=%d reclaim=%d runAsService=%d config.Load=%d; want the reclaim after the guard and before both", guard, reclaim, service, load)
+	if reclaim >= guard || reclaim >= service || reclaim >= load {
+		t.Errorf("order guard=%d reclaim=%d runAsService=%d config.Load=%d; want the reclaim before all three", guard, reclaim, service, load)
 	}
 }
 
@@ -117,7 +119,8 @@ func TestRunAgentStopsWhenTheConfigFolderCannotBeTrusted(t *testing.T) {
 	})
 	var marked error
 	writeInstanceGuardMarkerFn = func(_ ProcessStartup, err error) { marked = err }
-	acquireMainAgentGuardFn = func(ProcessStartup) (mainAgentGuard, error) { return nopGuard{}, nil }
+	guarded := false
+	acquireMainAgentGuardFn = func(ProcessStartup) (mainAgentGuard, error) { guarded = true; return nopGuard{}, nil }
 	var forEnrollArg []bool
 	reclaimConfigDirFn = func(forEnroll bool) error {
 		forEnrollArg = append(forEnrollArg, forEnroll)
@@ -130,8 +133,8 @@ func TestRunAgentStopsWhenTheConfigFolderCannotBeTrusted(t *testing.T) {
 
 	runAgent()
 
-	if exitCode != exitConfigDirUntrusted || reconciled || started {
-		t.Fatalf("exit=%d reconciled=%v started=%v, want exit %d and nothing else", exitCode, reconciled, started, exitConfigDirUntrusted)
+	if exitCode != exitConfigDirUntrusted || reconciled || started || guarded {
+		t.Fatalf("exit=%d reconciled=%v started=%v guarded=%v, want exit %d and nothing else", exitCode, reconciled, started, guarded, exitConfigDirUntrusted)
 	}
 	if !errors.Is(marked, config.ErrConfigDirUntrusted) {
 		t.Errorf("startup marker = %v, want the config folder error recorded", marked)
