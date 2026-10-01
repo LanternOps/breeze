@@ -19,6 +19,7 @@ import { hypervRoutes } from './hyperv';
 import { slaRoutes } from './sla';
 import { vaultRoutes } from './vault';
 import { backupProviderRoutes } from './providers';
+import { storageCredentialRoutes } from './storageCredentials';
 
 export const backupRoutes = new Hono();
 
@@ -33,6 +34,8 @@ backupRoutes.use('*', authMiddleware);
 backupRoutes.use('*', requireScope('organization', 'partner', 'system'));
 
 backupRoutes.route('/', configsRoutes);
+// /backup/storage-credentials/* — carries its own prefix, like configsRoutes.
+backupRoutes.route('/', storageCredentialRoutes);
 backupRoutes.route('/', profilesRoutes);
 backupRoutes.route('/', jobsRoutes);
 backupRoutes.route('/', snapshotsRoutes);

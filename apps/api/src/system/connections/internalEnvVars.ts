@@ -291,11 +291,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   METRIC_ANOMALY_INCIDENT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   METRIC_ROLLUP_5M_RETENTION_DAYS: 'data retention window',
   METRIC_ROLLUP_DAILY_RETENTION_DAYS: 'data retention window',
-  METRIC_ROLLUP_DELETE_BATCH_SIZE: 'retention sweep batch knob',
+  METRIC_ROLLUP_DELETE_BATCH_SIZE: 'retention sweep batch knob (default partition only)',
   METRIC_ROLLUP_HOURLY_RETENTION_DAYS: 'data retention window',
   METRIC_ROLLUP_MAINTENANCE_CRON: 'job schedule override',
   METRIC_ROLLUP_MAINTENANCE_ENABLED: 'job toggle',
-  METRIC_ROLLUP_MAX_DELETE_BATCHES: 'retention sweep batch knob',
   METRIC_ROLLUP_PARTITION_MONTHS_AHEAD: 'partition maintenance tuning',
   METRIC_ROLLUP_PARTITION_MONTHS_BACK: 'partition maintenance tuning',
   // MFA_*
@@ -466,6 +465,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TURN_CREDENTIAL_MINT_LIMIT_PER_WINDOW: 'rate limit knob',
   TURN_CREDENTIAL_MINT_WINDOW_SECONDS: 'rate limit knob',
   TURN_CREDENTIAL_TTL_SECONDS: 'timing knob',
+  TZ: 'process time zone; switched per test by testUtils/hostTimeZone.ts',
   // UNINSTALL_*
   UNINSTALL_INTENT_DECOMMISSION_HOURS: 'timing knob',
   UNINSTALL_INTENT_REAP_CHUNK_SIZE: 'worker throughput knob',

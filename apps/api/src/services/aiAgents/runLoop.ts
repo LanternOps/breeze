@@ -38,6 +38,7 @@
  * DB touch here self-contexts, and the SDK loop itself runs under
  * `runOutsideDbContext` so the SDK's tool handlers never inherit one.
  */
+import { resolveModelThinking } from '../aiModelThinking';
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -2128,7 +2129,8 @@ async function driveSdkLoop(
           // and `summary`/`outcome` carry what a reviewer needs (wave 6).
           persistSession: false,
           settingSources: [],
-          thinking: { type: 'disabled' },
+          // #7587: per-model thinking/effort — see resolveModelThinking.
+          ...resolveModelThinking(model),
         },
       });
 

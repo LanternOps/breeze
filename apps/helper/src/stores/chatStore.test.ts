@@ -6,7 +6,7 @@ vi.mock('../lib/helperFetch', () => ({
   requireDevBearerToken: vi.fn(() => 'dev-token'),
 }));
 
-import { helperRequest } from '../lib/helperFetch';
+import { getTauriInvoke, helperRequest } from '../lib/helperFetch';
 import { WORKSPACE_CHAT_TOOLS } from '../lib/workspaceChatTools';
 import { processSSELines, useChatStore } from './chatStore';
 import { useWorkspaceStore } from './workspaceStore';
@@ -312,5 +312,112 @@ describe('loadSession — persisted tool_result rehydration', () => {
     expect(result!.toolName).toBe('search_workspace_files');
     const output = result!.toolOutput as { files: Array<{ fileIndexId: string }> };
     expect(output.files[0].fileIndexId).toBe('f1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initialize — helper token availability
+// ---------------------------------------------------------------------------
+
+describe('initialize — helper token availability', () => {
+  const TAURI_CONFIG = {
+    api_url: 'http://localhost:3001',
+    agent_id: 'agent-1',
+    has_mtls: false,
+    os_username: 'alice',
+    helper_version: 'test',
+  };
+
+  async function initializeWithTokenReady(ready: boolean) {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'read_agent_config') return TAURI_CONFIG;
+      if (cmd === 'helper_token_ready') return ready;
+      if (cmd === 'restart_ipc_if_stopped') return false;
+      throw new Error(`unexpected command ${cmd}`);
+    });
+    vi.mocked(getTauriInvoke).mockResolvedValue(invoke as never);
+    useChatStore.setState({ connectionState: 'disconnected', connectionError: null });
+    vi.useFakeTimers();
+    try {
+      const done = useChatStore.getState().initialize();
+      await vi.advanceTimersByTimeAsync(15_000);
+      await done;
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+    return invoke;
+  }
+
+  it('connects once the agent has delivered the helper token', async () => {
+    await initializeWithTokenReady(true);
+    expect(useChatStore.getState().connectionState).toBe('connected');
+  });
+
+  // Retry re-runs initialize. If the IPC client stopped after a permanent
+  // reject (e.g. on Windows, it started outside the console session), Retry
+  // must restart it or it could never receive a token.
+  it('asks the Rust side to restart a stopped IPC client before waiting for the token', async () => {
+    const invoke = await initializeWithTokenReady(true);
+    const cmds = invoke.mock.calls.map(([cmd]) => cmd);
+    expect(cmds).toContain('restart_ipc_if_stopped');
+    expect(cmds.indexOf('restart_ipc_if_stopped')).toBeLessThan(cmds.indexOf('helper_token_ready'));
+  });
+
+  // The token can land after the initial wait (an Assist that started while
+  // the agent was restarting sits in the IPC reconnect backoff). The window is
+  // only hidden, never re-created, so nothing would call initialize again:
+  // the error state must clear itself once the token shows up — without
+  // restarting the IPC client on every background check.
+  it('recovers from the error state on its own when the token arrives late', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    let ready = false;
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'read_agent_config') return TAURI_CONFIG;
+      if (cmd === 'helper_token_ready') return ready;
+      if (cmd === 'restart_ipc_if_stopped') return false;
+      throw new Error(`unexpected command ${cmd}`);
+    });
+    vi.mocked(getTauriInvoke).mockResolvedValue(invoke as never);
+    useChatStore.setState({ connectionState: 'disconnected', connectionError: null });
+    vi.useFakeTimers();
+    try {
+      const done = useChatStore.getState().initialize();
+      await vi.advanceTimersByTimeAsync(15_000);
+      await done;
+      expect(useChatStore.getState().connectionState).toBe('error');
+      const restarts = () => invoke.mock.calls.filter(([cmd]) => cmd === 'restart_ipc_if_stopped').length;
+
+      // Still no token: keeps checking quietly, never restarts the IPC client.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(useChatStore.getState().connectionState).toBe('error');
+      expect(restarts()).toBe(1);
+
+      ready = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(useChatStore.getState().connectionState).toBe('connected');
+
+      // Once connected the background check stops.
+      const polls = invoke.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(invoke.mock.calls.length).toBe(polls);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stops in an error state with a retryable explanation when no token ever arrives', async () => {
+    const invoke = await initializeWithTokenReady(false);
+    const state = useChatStore.getState();
+    expect(state.connectionState).toBe('error');
+    expect(state.connectionError).toMatch(/Breeze agent is running, then retry/);
+    // The same text the Rust side returns from helper_fetch, and accurate on
+    // every platform: only Windows limits Assist to the console session.
+    expect(state.connectionError).toMatch(/contact your administrator/);
+    expect(state.connectionError).not.toMatch(/console session/);
+    // It kept polling for the whole window rather than giving up at once.
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'helper_token_ready').length).toBeGreaterThan(1);
   });
 });

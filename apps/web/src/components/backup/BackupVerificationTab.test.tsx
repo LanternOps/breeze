@@ -78,6 +78,36 @@ describe('BackupVerificationTab', () => {
     await screen.findByText('42');
   });
 
+  it('shows the API risk sentence, not the humanized risk code', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/backup/verifications')) {
+        return makeJsonResponse({ data: mockVerifications });
+      }
+      if (url.includes('/backup/recovery-readiness')) {
+        return makeJsonResponse({
+          data: {
+            devices: [
+              {
+                deviceId,
+                readinessScore: 80,
+                riskFactors: [
+                  { code: 'restore_test_missing', severity: 'medium', message: 'No restore test has run in the last 30 days.' },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<BackupVerificationTab deviceId={deviceId} />);
+
+    expect(await screen.findByText('No restore test has run in the last 30 days.')).toBeTruthy();
+    expect(screen.queryByText('restore test missing')).toBeNull();
+  });
+
   it('shows the failure reason in verification history', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

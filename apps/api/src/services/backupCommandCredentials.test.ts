@@ -227,23 +227,50 @@ describe('materializeBackupStorageCredentials', () => {
       });
     });
 
-    it('resolves the write destination (with its encryption patch) at delivery', async () => {
-      const out = await materializeBackupStorageCredentials(
+    it('never resolves an S3 write destination into the frame: backups to S3 go through a write session', async () => {
+      const err = await materializeBackupStorageCredentials(
         {
           jobId: 'job-1',
           configId: CONFIG,
           ...backupWriteCredentialPayload(CONFIG, ORG, { provider: 's3', storageEncryption }),
         },
         ctx('mssql_backup'),
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CommandDeliveryRefusedError);
+      expect((err as Error).message).toMatch(/secure storage session/);
+    });
+
+    it('never passes an inline S3 write destination through', async () => {
+      await expect(
+        materializeBackupStorageCredentials({ jobId: 'job-1', provider: 's3', providerConfig: S3_CONFIG }, ctx('hyperv_backup')),
+      ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    });
+
+    it('passes an inline local write destination through (a path, not a credential)', async () => {
+      const inline = { jobId: 'job-1', provider: 'local', providerConfig: LOCAL_CONFIG };
+      expect(await materializeBackupStorageCredentials(inline, ctx('mssql_backup'))).toBe(inline);
+    });
+
+    it('never passes an inline S3 destination through for a backup_run row', async () => {
+      await expect(
+        materializeBackupStorageCredentials({ jobId: 'job-1', provider: 's3', providerConfig: S3_CONFIG }, ctx('backup_run')),
+      ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    });
+
+    it('resolves a local write destination at delivery', async () => {
+      resolveWriteMock.mockResolvedValue({
+        ok: true,
+        destination: { provider: 'local', providerConfig: LOCAL_CONFIG, storageEncryption: { required: false, mode: 'disabled' } },
+      });
+      const out = await materializeBackupStorageCredentials(
+        { jobId: 'job-1', ...backupWriteCredentialPayload(CONFIG, ORG, { provider: 'local', storageEncryption: { required: false, mode: 'disabled' } }) },
+        ctx('mssql_backup'),
       );
-      expect(resolveWriteMock).toHaveBeenCalledWith(CONFIG, ORG);
-      expect(resolveReadMock).not.toHaveBeenCalled();
       expect(out).toEqual({
         jobId: 'job-1',
-        configId: CONFIG,
-        provider: 's3',
-        providerConfig: { ...S3_CONFIG, serverSideEncryption: 'AES256' },
-        storageEncryption,
+        provider: 'local',
+        providerConfig: LOCAL_CONFIG,
+        storageEncryption: { required: false, mode: 'disabled' },
       });
     });
 
@@ -281,12 +308,12 @@ describe('materializeBackupStorageCredentials', () => {
         setBackupMetricsRecorder(null);
       });
 
-      it('counts a write delivered with the storage destination as a legacy credential write', async () => {
-        await materializeBackupStorageCredentials(
+      it('never counts a write as delivered with its storage credential', async () => {
+        await expect(materializeBackupStorageCredentials(
           backupWriteCredentialPayload(CONFIG, ORG, { provider: 's3', storageEncryption }),
           ctx('mssql_backup'),
-        );
-        expect(writeDispatch.mock.calls).toEqual([['mssql_backup', 'legacy_credential', 'delivery_refresher', 1]]);
+        )).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+        expect(writeDispatch.mock.calls).toEqual([['mssql_backup', 'refused', 'provider_not_local', 1]]);
       });
 
       it('counts a write to a local destination as a local write', async () => {
@@ -301,7 +328,7 @@ describe('materializeBackupStorageCredentials', () => {
         expect(writeDispatch.mock.calls).toEqual([['hyperv_backup', 'local', 'no_credential', 1]]);
       });
 
-      it('does not count a refused write or a read', async () => {
+      it('does not count a write refused for its configuration, or a read', async () => {
         resolveWriteMock.mockResolvedValue({ ok: false, reason: 'config_not_found', message: 'gone' });
         await expect(
           materializeBackupStorageCredentials(

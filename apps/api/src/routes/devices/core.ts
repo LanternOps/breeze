@@ -320,6 +320,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'agent_rollback_events', 'agent_rollback_directives',
   'device_reliability', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
+  'device_time_daily',
+  'device_time_status',
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
@@ -565,6 +567,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_hardware_components',
   'device_hardware_events',
   'device_hardware_health',
+  'device_time_daily',
+  'device_time_status',
   'device_network', 'device_ip_history', 'device_disks', 'device_memory_modules',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
@@ -2232,12 +2236,37 @@ coreRoutes.post(
     // must not be wedged by a race that lasts seconds — but reports
     // `uninstallAlreadyDispatched: true` so the caller can tell the user
     // plainly the machine may already be gone and will need a reinstall.
+    //
+    // Restore also admits the device against the partner device limit, the
+    // same admission enrollment and provisioning use, so it runs in a SYSTEM
+    // context: the partner row and the partner-wide count are invisible under
+    // the caller's tenant RLS. Authorization is unchanged and happened above,
+    // in the tenant context; the service refuses (STATE_CHANGED) if the locked
+    // row is no longer in the org and site that check approved.
+    // `runOutsideDbContext` is required, not an optimisation: inside the
+    // request's `withDbAccessContext` transaction a bare
+    // `withSystemDbAccessContext` joins that tenant transaction instead of
+    // escalating, and admission would then find no partner row.
     let result: Awaited<ReturnType<typeof restoreRemovedDevice>>;
     try {
-      result = await db.transaction((tx) => restoreRemovedDevice(tx, deviceId));
+      result = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(
+          () => db.transaction((tx) =>
+            restoreRemovedDevice(tx, deviceId, { orgId: device.orgId, siteId: device.siteId }),
+          ),
+          'devices.restore',
+        ),
+      );
     } catch (err) {
       if (err instanceof DeviceLifecycleError) {
-        return c.json({ error: err.message, code: err.code }, err.status);
+        return c.json({ error: err.message, code: err.code, ...err.details }, err.status);
+      }
+      // 55P03: the partner-row and devices-row waits are both bounded (3s).
+      // Transient and retryable, the same answer permanent delete gives.
+      if (pgErrorCode(err) === '55P03') {
+        return c.json({
+          error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
+        }, 409);
       }
       throw err;
     }

@@ -46,6 +46,7 @@ let authState = {
 let permissionsState: any;
 
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
@@ -268,6 +269,12 @@ const capturedAuthorizationSubject = {
   authorizationCheckedAt: null,
 };
 const captureRecoveryAuthorizationSubjectMock = vi.fn(async (): Promise<any> => capturedAuthorizationSubject);
+
+const resolveRestoreIntegrityMock = vi.hoisted(() => vi.fn(async (_snapshotDbId: string): Promise<unknown> => null));
+vi.mock('../../services/backupRestoreIntegrity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/backupRestoreIntegrity')>()),
+  resolveRestoreIntegrity: (id: string) => resolveRestoreIntegrityMock(id),
+}));
 
 vi.mock('../../services/recoveryAuthorizationSubject', () => ({
   captureRecoveryAuthorizationSubject: (...args: unknown[]) =>
@@ -830,6 +837,74 @@ describe('bmr routes', () => {
       },
     });
     expect(body.authenticatedAt).toBeTruthy();
+    expect(resolveRestoreIntegrityMock).toHaveBeenCalledWith(SNAPSHOT_ID);
+    // No expectation resolved: nothing is added to the shape older clients know.
+    expect(body).not.toHaveProperty('integrity');
+  });
+
+  it('authenticate: the bootstrap carries the snapshot integrity expectation', async () => {
+    resolveRestoreIntegrityMock.mockResolvedValueOnce({ mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' });
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal', targetConfig: null, status: 'active',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+        authenticatedAt: null, completedAt: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
+        timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
+        metadata: { providerType: 's3' }, backupType: 'file', isIncremental: false,
+        hardwareProfile: null, systemStateManifest: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{ configId: null }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]));
+    updateMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const block = { v: 1, mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' };
+    expect(body.integrity).toEqual(block);
+    expect(body.bootstrap.integrity).toEqual(block);
+  });
+
+  it('authenticate: an integrity lookup failure still returns the bootstrap, without a block', async () => {
+    resolveRestoreIntegrityMock.mockRejectedValueOnce(new Error('statement timeout'));
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal', targetConfig: null, status: 'active',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+        authenticatedAt: null, completedAt: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
+        timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
+        metadata: { providerType: 's3' }, backupType: 'file', isIncremental: false,
+        hardwareProfile: null, systemStateManifest: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{ configId: null }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]));
+    updateMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.tokenId).toBe(TOKEN_ID);
+    expect(body).not.toHaveProperty('integrity');
   });
 
   it('authenticate: legacy client (no capabilities) on a referenced snapshot is refused before the status flips', async () => {
@@ -1299,6 +1374,57 @@ describe('bmr routes', () => {
         },
       },
     });
+  });
+
+  it('persists the recovery result code and the null default for a helper that omits it', async () => {
+    const tokenRow = {
+      id: TOKEN_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      snapshotId: SNAPSHOT_ID,
+      restoreType: 'bare_metal',
+      targetConfig: { diskLayout: 'auto' },
+      status: 'authenticated',
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+      authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
+      completedAt: null,
+      usedAt: null,
+    };
+    const restoreJobId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
+    const complete = async (result: Record<string, unknown>) => {
+      selectMock.mockReturnValueOnce(chainMock([tokenRow]));
+      let insertedValues: Record<string, unknown> | null = null;
+      const insertChain = chainMock([{ id: restoreJobId, status: 'completed' }]);
+      insertChain.values = vi.fn((value: Record<string, unknown>) => {
+        insertedValues = value;
+        return insertChain;
+      });
+      insertMock.mockReturnValueOnce(insertChain);
+      updateMock.mockReturnValue(chainMock([]));
+      const res = await app.request('/backup/bmr/recover/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, result }),
+      });
+      expect(res.status).toBe(200);
+      return insertedValues as unknown as { targetConfig: { result: Record<string, unknown> } };
+    };
+
+    const withCode = await complete({
+      status: 'completed',
+      filesRestored: 120,
+      code: 'system_state_requires_rebuild',
+      warnings: ['system_state_requires_rebuild: system state is applied by a bare-metal rebuild; this recovery restored files only'],
+    });
+    expect(withCode.targetConfig.result).toMatchObject({
+      status: 'completed',
+      code: 'system_state_requires_rebuild',
+    });
+
+    const withoutCode = await complete({ status: 'completed', filesRestored: 120 });
+    expect(withoutCode.targetConfig.result.code).toBeNull();
   });
 
   it('returns the existing restore job for repeated completion calls', async () => {

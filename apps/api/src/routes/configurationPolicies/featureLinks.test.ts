@@ -209,6 +209,31 @@ describe('featureLinks routes', () => {
     expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 
+  it.each(['POST', 'PATCH'])(
+    'validates time settings on %s before mutation',
+    async (method) => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'time_sync' }],
+      });
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      const res = await app.request(
+        `/${POLICY_ID}/features${method === 'PATCH' ? '/' + LINK_ID : ''}`,
+        {
+          method,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...(method === 'POST' ? { featureType: 'time_sync' } : {}),
+            inlineSettings: { enforceNtp: true },
+          }),
+        },
+      );
+      expect(res.status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    },
+  );
+
   // ============================================================
   // POST /:id/features — pam inlineSettings validation (Fix A)
   // ============================================================
@@ -1628,5 +1653,63 @@ describe('retired feature types', () => {
       body: JSON.stringify({ featureType: 'alert_rule' }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+// A rule set is identified by (feature link, name) across saves: the
+// evaluator's persisted state, the due check and the compliance alert all key
+// on it. Two rule sets with one name would share one state row and one alert.
+describe('compliance rule set names', () => {
+  const rules = [{ type: 'disk_space_minimum', minGb: 5 }];
+  const DUPLICATED = { items: [{ name: 'Baseline', rules }, { name: 'Other', rules }, { name: 'Baseline', rules }] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mfaState.satisfied = true;
+    permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
+    addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'compliance' });
+    updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'compliance' });
+  });
+
+  it('POST refuses two rule sets with the same name → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: DUPLICATED }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('DUPLICATE_COMPLIANCE_RULE_SET_NAME');
+    expect(body.error).toContain('"Baseline"');
+    expect(body.names).toEqual(['Baseline']);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH refuses two rule sets with the same name → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: DUPLICATED }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('DUPLICATE_COMPLIANCE_RULE_SET_NAME');
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH with distinct names saves', async () => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: { items: [{ name: 'Baseline', rules }, { name: 'Other', rules }] } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateFeatureLinkMock).toHaveBeenCalledTimes(1);
   });
 });

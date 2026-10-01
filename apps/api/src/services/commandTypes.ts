@@ -139,6 +139,9 @@ export const CommandTypes = {
 
   // Boot performance
   COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
+  TIME_RESYNC: 'time_resync',
+  TIME_SET_TIMEZONE: 'time_set_timezone',
+  TIME_APPLY_POLICY: 'time_apply_policy',
   MANAGE_STARTUP_ITEM: 'manage_startup_item',
 
   // Audit policy compliance

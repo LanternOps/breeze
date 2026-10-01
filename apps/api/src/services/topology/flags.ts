@@ -23,6 +23,7 @@ export type TopologyFlags = Record<TopologyFlagName, boolean>;
 export type TopologyCapabilityReason =
   | 'materialization_disabled'
   | 'topology_preparing'
+  | 'topology_import_failed'
   | 'ui_disabled'
   | 'collection_unavailable'
   | 'physical_disabled'
@@ -32,7 +33,8 @@ export type TopologyCapabilityReason =
   | 'diagnostics_disabled'
   | 'diagnostics_unavailable'
   | 'ai_disabled'
-  | 'ai_unavailable';
+  | 'ai_unavailable'
+  | 'ai_not_configured';
 
 export interface TopologyCapabilityState {
   available: boolean;
@@ -226,20 +228,28 @@ function dependentCapability(
 /**
  * `aiReady` (M4-D4, #6000) is the server/provider/org AI policy answer
  * (`topologyAiAvailable` minus the flags, see `aiToolGate.ts`) — AI readiness
- * is never an agent capability bit.
+ * is never an agent capability bit. `aiNotConfigured` names the not-ready
+ * case where the server has no model provider at all (`ai_not_configured`,
+ * the same precedence as `topologyAiRefusalCode`).
  */
 export function getTopologyCapabilities(
   flags: TopologyFlags,
-  siteGraphReady: boolean,
+  /** `'import_failed'` (#7557): not ready, and the automatic first-snapshot
+   * import recorded a site-specific failure — say so instead of "preparing". */
+  siteGraphReady: boolean | 'import_failed',
   agentCapabilities: TopologyAgentCapabilities,
   aiReady = false,
+  aiNotConfigured = false,
 ): TopologyCapabilities {
-  const effectiveUi = flags.ui && flags.materialization && siteGraphReady;
+  const ready = siteGraphReady === true;
+  const effectiveUi = flags.ui && flags.materialization && ready;
   const uiReason: TopologyCapabilityReason = !flags.materialization
     ? 'materialization_disabled'
-    : !siteGraphReady
-      ? 'topology_preparing'
-      : 'ui_disabled';
+    : siteGraphReady === 'import_failed'
+      ? 'topology_import_failed'
+      : !ready
+        ? 'topology_preparing'
+        : 'ui_disabled';
 
   return {
     materialization: capability(flags.materialization, 'materialization_disabled'),
@@ -273,7 +283,7 @@ export function getTopologyCapabilities(
       flags.ai,
       aiReady,
       'ai_disabled',
-      'ai_unavailable',
+      !aiReady && aiNotConfigured ? 'ai_not_configured' : 'ai_unavailable',
     ),
   };
 }

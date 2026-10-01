@@ -40,6 +40,7 @@ import {
 import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
+import DeviceTimeSection from "./time/DeviceTimeSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -895,6 +896,11 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         />
       </Section>
 
+      <DeviceTimeSection
+        deviceId={deviceId}
+        deviceName={info?.displayName ?? info?.hostname ?? deviceId}
+      />
+
       <Section
         title={t("deviceInfoTab.hardwareSummary")}
         icon={<Cpu className="h-4 w-4 text-muted-foreground" />}
@@ -1108,7 +1114,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
           >
             {info.lastLogAt
-              ? t("deviceInfoTab.logsSilent", { since: formatDateTime(info.lastLogAt) })
+              ? t("deviceInfoTab.logsSilent", { since: formatDate(info.lastLogAt) })
               : t("deviceInfoTab.logsSilentNeverShipped")}
           </div>
         ) : null}

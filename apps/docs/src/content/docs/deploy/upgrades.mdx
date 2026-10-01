@@ -53,7 +53,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
    - prints links to the target release's `docker-compose.yml` and `.env.example`. It never edits your Compose file, so complete step 2 for the target release;
    - pulls the verified images, runs `docker compose up -d`, and waits for the API to report healthy.
 
-   Add `-y` to run it without prompts, for example from a script. Add `--no-up` to update `.env` only and restart later. The script refuses a target older than your current `BREEZE_VERSION`. Migrations are forward-only, so restore the matching database backup before you pass `--allow-downgrade`. It also re-pins the digests when `BREEZE_VERSION` already names the target, which repairs an install where only `BREEZE_VERSION` was edited.
+   Add `-y` to run it without prompts, for example from a script. Add `--no-up` to update `.env` only and restart later. The script refuses a target older than your current `BREEZE_VERSION`. Migrations are forward-only, so restore the matching database backup before you pass `--allow-downgrade`. Targets older than 0.112.0 are always refused, because release signatures do not cover those images; `--allow-unverified-release` does not apply to `--upgrade`. It also re-pins the digests when `BREEZE_VERSION` already names the target, which repairs an install where only `BREEZE_VERSION` was edited.
 
    If you run the manual verifier instead, follow [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later) and update `BREEZE_VERSION` and all four refs together.
 
@@ -156,6 +156,17 @@ Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environ
 | Change | Required action |
 |---|---|
 | The `APP_VERSION:` line is removed from the shared API environment block (`x-api-env` in `docker-compose.yml`, the API environment in `deploy/docker-compose.prod.yml`). | Delete the `APP_VERSION:` line from your own Compose file. Keep `BREEZE_VERSION:`, which still selects the agent release. Until you remove the line, `/health` keeps reporting `BREEZE_VERSION` and the version-mismatch warning cannot fire. |
+
+### Next release — coturn relays again
+
+| Change | Required action |
+|---|---|
+| The v0.118.0 coturn configuration listed `denied-peer-ip=::`. coturn reads an all-zero address as "no bound", so that one entry refused every peer and relayed (TURN) connections could not be set up. The entry is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`; coturn already refuses the unspecified address on its own. | Delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in a Compose file) from your coturn configuration and restart coturn, even if you skip this release. Do not replace it with `0.0.0.0` or a range starting at `::`. |
+### Next release — coturn refuses IPv4-mapped and NAT64 peers
+
+| Change | Required action |
+|---|---|
+| The two `denied-peer-ip` lines that v0.118.0 shipped commented out are now active in `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`: `::ffff:0:0-::ffff:ffff:ffff` (IPv4-mapped IPv6) and `64:ff9b::-64:ff9b::ffff:ffff` (NAT64 well-known prefix). Relay-to-relay sessions are unaffected. | Nothing if you use the bundled coturn with the shipped files. If you run your own coturn, add both lines from [TURN Server](/deploy/turn-server/#install-and-configure-coturn) and restart it. **Never deny the relay's own public IP.** |
 
 ### v0.118.0 — coturn peer restrictions and API stop grace
 
@@ -731,8 +742,10 @@ None are required. Full descriptions are in [Environment Variables](/deploy/envi
 `.env.example` and `deploy/docker-compose.prod.yml` now expect **signed,
 digest-pinned image references** (`ghcr.io/lanternops/breeze/api@sha256:…`)
 resolved from the release's signed image inventory. The guided installer
-resolves and verifies them itself for 0.112.0 and later (fail-closed), and
-falls back to tag-tracking refs for older releases. **Existing installs whose
+resolves and verifies them itself for 0.112.0 and later (fail-closed). The
+current installer refuses releases older than 0.112.0 unless you pass
+`--allow-unverified-release`; with that flag it warns and uses tag-tracking refs.
+**Existing installs whose
 `.env` still carries `…/api:${BREEZE_VERSION}` refs keep working with the
 upgrade steps at the top of this page.** If you have already switched to digest
 pins, update the four `BREEZE_*_IMAGE_REF` lines from the new release's

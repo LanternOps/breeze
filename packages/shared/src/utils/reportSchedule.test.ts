@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatNextOccurrence, isDue, lastOccurrenceKey, nextOccurrence } from './reportSchedule';
+import { formatNextOccurrence, isDue, lastOccurrenceKey, nextOccurrence, normalizeScheduleConfig } from './reportSchedule';
 
 describe('lastOccurrenceKey', () => {
   it('daily: before today\'s time uses yesterday', () => {
@@ -74,5 +74,40 @@ describe('isDue', () => {
   it('is not due when generated at/after the occurrence', () => {
     const occurrence = lastOccurrenceKey(new Date('2026-07-01T09:00:00Z'), 'daily', { time: '09:00' }, 'UTC');
     expect(isDue(new Date('2026-07-01T09:00:00Z'), occurrence, 'UTC')).toBe(false);
+  });
+});
+
+describe('normalizeScheduleConfig', () => {
+  it('keeps only the keys the cadence reads, in canonical spelling', () => {
+    expect(normalizeScheduleConfig('daily', { time: '8:05', day: 'friday', date: '3' })).toEqual({ time: '08:05' });
+    expect(normalizeScheduleConfig('weekly', { time: '08:05', day: 'Friday', date: '3' })).toEqual({ time: '08:05', day: 'friday' });
+    expect(normalizeScheduleConfig('monthly', { time: '23:59', day: 'friday', date: '07' })).toEqual({ time: '23:59', date: '7' });
+  });
+
+  it('applies exactly the defaults and clamps lastOccurrenceKey applies', () => {
+    expect(normalizeScheduleConfig('daily', {})).toEqual({ time: '09:00' });
+    expect(normalizeScheduleConfig('daily', { time: '25:00' })).toEqual({ time: '09:00' });
+    expect(normalizeScheduleConfig('weekly', {})).toEqual({ time: '09:00', day: 'monday' });
+    expect(normalizeScheduleConfig('weekly', { day: 'someday' })).toEqual({ time: '09:00', day: 'monday' });
+    expect(normalizeScheduleConfig('monthly', { date: '0' })).toEqual({ time: '09:00', date: '1' });
+    expect(normalizeScheduleConfig('monthly', { date: '31' })).toEqual({ time: '09:00', date: '31' });
+  });
+
+  it('never changes when a report fires', () => {
+    const configs = [
+      {}, { time: '8:05' }, { time: '25:00' }, { day: 'Sunday' }, { day: 'nope' },
+      { date: '31' }, { date: '0' }, { time: '23:59', day: 'saturday', date: '15' },
+    ];
+    const instants = ['2026-01-31T12:00:00Z', '2026-02-28T23:30:00Z', '2026-03-29T01:30:00Z', '2026-09-28T08:04:00Z'];
+    for (const cadence of ['daily', 'weekly', 'monthly'] as const) {
+      for (const cfg of configs) {
+        for (const iso of instants) {
+          for (const tz of ['UTC', 'Europe/Berlin', 'America/Los_Angeles']) {
+            expect(lastOccurrenceKey(new Date(iso), cadence, normalizeScheduleConfig(cadence, cfg), tz))
+              .toBe(lastOccurrenceKey(new Date(iso), cadence, cfg, tz));
+          }
+        }
+      }
+    }
   });
 });

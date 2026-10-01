@@ -8482,6 +8482,39 @@ describe('org routes', () => {
         expect(body.settings.eventLogs.elasticsearchApiKey).toBe('********');
       });
 
+      it('keeps org notification secrets behind echoed markers even where the partner sets the same field', async () => {
+        const { encryptSecret, decryptSecret } = await import('../services/secretCrypto');
+        const stored = {
+          notifications: {
+            slackWebhookUrl: encryptSecret('https://hooks.slack.example/services/org-secret')!,
+            webhooks: [encryptSecret('https://hooks.example.com/org-secret')!],
+          },
+        };
+        // assertNotLocked('notifications') sees a partner-set Slack URL.
+        vi.mocked(db.select)
+          .mockReturnValueOnce(thenableSelect([{ partnerId: 'partner-123' }]) as any)
+          .mockReturnValueOnce(thenableSelect([{
+            settings: { notifications: { slackWebhookUrl: encryptSecret('https://hooks.slack.example/services/partner')! } },
+          }]) as any)
+          .mockReturnValueOnce(limitSelect([{ settings: stored }]) as any);
+        const captured = captureUpdate();
+
+        const { maskSettingsSecrets } = await import('../services/settingsSecretMasking');
+        const echoed = (maskSettingsSecrets(stored) as { notifications: { webhooks: string[] } }).notifications.webhooks;
+
+        const res = await patchOrg({
+          notifications: { slackWebhookUrl: '********', slackChannel: '#ops', webhooks: echoed },
+        });
+
+        expect(res.status).toBe(200);
+        const n = captured.settings.notifications;
+        expect(decryptSecret(n.slackWebhookUrl)).toBe('https://hooks.slack.example/services/org-secret');
+        expect(n.webhooks).toEqual(stored.notifications.webhooks);
+        const body = await res.json();
+        expect(JSON.stringify(body)).not.toContain('org-secret');
+        expect(body.settings.notifications.webhooks).toEqual(echoed);
+      });
+
       it('replaces the stored secret with a freshly typed value', async () => {
         const { decryptSecret } = await import('../services/secretCrypto');
         queueSelects(storedOrgSettings());
@@ -8739,6 +8772,113 @@ describe('org routes', () => {
 
         expect(res.status).toBe(400);
         expect(setSpy).not.toHaveBeenCalled();
+      });
+
+      describe('notification channel secrets', () => {
+        const SLACK = 'https://hooks.slack.example/services/T000/B000/partner-secret';
+        const EXTRA = 'https://hooks.example.com/incoming/partner?token=partner-secret';
+
+        async function storedNotifications() {
+          const { encryptSecret } = await import('../services/secretCrypto');
+          return {
+            notifications: {
+              slackWebhookUrl: encryptSecret(SLACK)!,
+              slackChannel: '#ops-alerts',
+              pushoverAppToken: encryptSecret('azGDORePK8gMaC0QOYAMyEEuzJnyUi')!,
+              pushoverDefaultUser: encryptSecret('uQiRzpo4DXghDmr9QzzfQu27cmVRsG')!,
+              webhooks: [encryptSecret(EXTRA)!],
+            },
+          };
+        }
+
+        it('GET /orgs/partners/me never returns the stored values, plaintext or sealed', async () => {
+          setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+          vi.mocked(db.select).mockReturnValue(partnerRowSelect({
+            notifications: {
+              slackWebhookUrl: SLACK,
+              slackChannel: '#ops-alerts',
+              pushoverAppToken: 'azGDORePK8gMaC0QOYAMyEEuzJnyUi',
+              pushoverDefaultUser: 'uQiRzpo4DXghDmr9QzzfQu27cmVRsG',
+              webhooks: [EXTRA],
+            },
+          }) as any);
+
+          const res = await app.request('/orgs/partners/me');
+
+          expect(res.status).toBe(200);
+          const body = await res.json();
+          const text = JSON.stringify(body);
+          expect(text).not.toContain('partner-secret');
+          expect(text).not.toContain('azGDORePK8gMaC0QOYAMyEEuzJnyUi');
+          expect(text).not.toContain('uQiRzpo4DXghDmr9QzzfQu27cmVRsG');
+          expect(body.settings.notifications).toEqual({
+            slackWebhookUrl: '********',
+            slackChannel: '#ops-alerts',
+            pushoverAppToken: '********',
+            pushoverDefaultUser: '********',
+            webhooks: [expect.stringMatching(/^\*{8}:[0-9a-f]{16}$/)],
+          });
+        });
+
+        it('PATCH /orgs/partners/me accepts the echoed markers, keeps every stored value, and masks the response', async () => {
+          const { decryptSecret } = await import('../services/secretCrypto');
+          setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+          const stored = await storedNotifications();
+          vi.mocked(db.select).mockReturnValue(partnerRowSelect(stored) as any);
+          const captured = captureUpdate();
+          // Exactly what GET returns, sent straight back.
+          const { maskSettingsSecrets } = await import('../services/settingsSecretMasking');
+
+          const res = await patchMe({ settings: maskSettingsSecrets(stored) });
+
+          expect(res.status).toBe(200);
+          const n = captured.settings.notifications;
+          expect(decryptSecret(n.slackWebhookUrl)).toBe(SLACK);
+          expect(decryptSecret(n.pushoverAppToken)).toBe('azGDORePK8gMaC0QOYAMyEEuzJnyUi');
+          expect(decryptSecret(n.pushoverDefaultUser)).toBe('uQiRzpo4DXghDmr9QzzfQu27cmVRsG');
+          expect(n.webhooks.map((v: string) => decryptSecret(v))).toEqual([EXTRA]);
+          const text = JSON.stringify(await res.json());
+          expect(text).not.toContain('enc:');
+          expect(text).not.toContain('partner-secret');
+        });
+
+        it('PATCH /orgs/partners/me stores a newly typed value sealed, and an empty string clears it', async () => {
+          const { decryptSecret } = await import('../services/secretCrypto');
+          setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+          vi.mocked(db.select).mockReturnValue(partnerRowSelect(await storedNotifications()) as any);
+          const captured = captureUpdate();
+
+          const res = await patchMe({
+            settings: {
+              notifications: {
+                slackWebhookUrl: 'https://hooks.slack.example/services/new',
+                pushoverAppToken: '',
+                pushoverDefaultUser: '********',
+                webhooks: ['', 'https://hooks.example.com/new'],
+              },
+            },
+          });
+
+          expect(res.status).toBe(200);
+          const n = captured.settings.notifications;
+          expect(n.slackWebhookUrl).toMatch(/^enc:/);
+          expect(decryptSecret(n.slackWebhookUrl)).toBe('https://hooks.slack.example/services/new');
+          expect(n.pushoverAppToken).toBe('');
+          expect(n.webhooks).toHaveLength(1);
+          expect(decryptSecret(n.webhooks[0])).toBe('https://hooks.example.com/new');
+        });
+
+        it('PATCH /orgs/partners/me still rejects a dangerous scheme typed into a webhook field', async () => {
+          setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+          vi.mocked(db.select).mockReturnValue(partnerRowSelect(await storedNotifications()) as any);
+          const setSpy = vi.fn();
+          vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+          const res = await patchMe({ settings: { notifications: { webhooks: ['javascript:alert(1)'] } } });
+
+          expect(res.status).toBe(400);
+          expect(setSpy).not.toHaveBeenCalled();
+        });
       });
     });
   });

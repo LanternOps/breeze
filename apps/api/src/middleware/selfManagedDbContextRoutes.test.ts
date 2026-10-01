@@ -32,6 +32,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/assets'],
     ['GET', '/api/v1/portal/network/assets/'],
+    // Portal logout commits its durable signed-out record in its own system
+    // transaction; no portal request transaction may be held around it.
+    ['POST', '/api/v1/portal/auth/logout'],
+    ['POST', '/api/v1/portal/auth/logout/'],
     ['POST', '/api/v1/partner/stripe-connect/key'],
     ['POST', '/api/v1/partner/stripe-connect/key/'],
     ['GET', '/api/v1/partner/stripe-connect'],
@@ -216,6 +220,14 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/jobs/run-all'],
     ['POST', '/api/v1/backup/jobs/run-all/'],
     ['post', '/api/v1/backup/jobs/run-all'], // method is case-insensitive
+    // On-demand MSSQL / Hyper-V backups create a backup_jobs row and dispatch
+    // a backup write whose write session is minted at delivery, on another
+    // connection, only for a job that connection can see — so the row must
+    // commit before the dispatch.
+    ['POST', '/api/v1/backup/mssql/backup'],
+    ['POST', '/api/v1/backup/mssql/backup/'],
+    ['POST', '/api/v1/backup/hyperv/backup'],
+    ['POST', '/api/v1/backup/hyperv/backup/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -224,6 +236,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/backup/jobs/run-all/preview', 'read-only preview keeps the ambient tx'],
     ['POST', '/api/v1/backup/jobs/job-1/cancel', 'cancel enqueues nothing'],
     ['POST', '/api/v1/backup/jobs/run/device-1/extra', 'deeper path is not the run route'],
+    ['POST', '/api/v1/backup/mssql/restore', 'restore sibling keeps the ambient tx'],
+    ['POST', '/api/v1/backup/hyperv/restore', 'restore sibling keeps the ambient tx'],
+    ['GET', '/api/v1/backup/mssql/backup', 'only the POST dispatches a backup'],
     // #6593 — the Microsoft mailbox /connect builds a consent URL with no
     // server-side Graph call, so it keeps the ambient tx; only the Gmail sibling
     // (which probes Google at connect time) opts out.
@@ -251,6 +266,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
     ['GET', '/api/v1/portal/invoices/def-456/settle', 'portal settle is POST-only'],
+    ['GET', '/api/v1/portal/auth/logout', 'portal logout is POST-only'],
+    ['POST', '/api/v1/portal/auth/login', 'portal login keeps its own handling'],
     ['POST', '/api/v1/portal/invoices//settle', 'empty id segment must not match'],
     ['GET', '/api/v1/portal/quotes/def-456/pay', 'portal quote pay is POST-only'],
     ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],
@@ -567,4 +584,13 @@ it('self-manages the three pre-assignment routes and nothing near them', () => {
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/devices')).toBe(false);
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/pre-assignment/devices/abc-123/assign')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/move-org')).toBe(false);
+});
+
+it('self-manages the per-rule convert-to-monitor POST (its converter opens its own serializable transaction) and no sibling route', () => {
+  const rule = '11111111-1111-4111-8111-111111111111';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}/`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/monitor-definitions/convert-from-rule/${rule}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}/extra`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/monitor-definitions')).toBe(false);
 });

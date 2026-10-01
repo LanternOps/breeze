@@ -114,8 +114,9 @@ function stubState(orgs: OrgRow[] = [], links: LinkRow[] = [], laterLinkReads: u
         } else if (table === partners) {
           rows = [{ currencyCode: 'CAD' }];
         } else if (table === contacts) {
-          // The contacts compat mirror reads the existing primary before
-          // writing. Keyed by table so it does NOT consume a link read —
+          // The contacts compat service reads the org's billing contact (and
+          // primary) before writing, then re-projects billing_contact from
+          // it. Keyed by table so it does NOT consume a link read —
           // `laterLinkReads` positions the post-violation winner lookup by
           // count, and an extra read would silently shift it.
           rows = [];
@@ -123,8 +124,12 @@ function stubState(orgs: OrgRow[] = [], links: LinkRow[] = [], laterLinkReads: u
           rows = linkReads >= 2 ? (laterLinkReads.shift() ?? links) : links;
           linkReads++;
         }
-        const p = Promise.resolve(rows) as Promise<unknown[]> & { limit: () => Promise<unknown[]> };
+        const p = Promise.resolve(rows) as Promise<unknown[]> & {
+          limit: () => Promise<unknown[]>;
+          orderBy: () => unknown;
+        };
         p.limit = () => Promise.resolve(rows.slice(0, 1));
+        p.orderBy = () => p;
         return p;
       },
     }),

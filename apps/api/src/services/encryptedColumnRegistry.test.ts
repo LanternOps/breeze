@@ -338,4 +338,59 @@ describe('encryptedColumnRegistry', () => {
       expect(updates).toHaveLength(1);
     });
   });
+
+  describe('notification settings secrets in partners/organizations.settings', () => {
+    const SLACK = 'https://hooks.slack.example/services/T000/B000/abcdef';
+    const EXTRA = 'https://hooks.example.com/incoming/abc?token=xyz';
+
+    it.each(['partners', 'organizations'] as const)(
+      'seals the Slack URL, Pushover credentials and extra webhook URLs in %s.settings.notifications',
+      (table) => {
+        setEncryptionEnv({ APP_ENCRYPTION_KEY: 'current-key-material', APP_ENCRYPTION_KEY_ID: 'current' });
+
+        const sealed = encryptColumnValueForWrite(table, 'settings', {
+          notifications: {
+            slackWebhookUrl: SLACK,
+            slackChannel: '#ops-alerts',
+            pushoverAppToken: 'azGDORePK8gMaC0QOYAMyEEuzJnyUi',
+            pushoverDefaultUser: 'uQiRzpo4DXghDmr9QzzfQu27cmVRsG',
+            pushoverDefaultSound: 'pushover',
+            webhooks: [EXTRA, ''],
+          },
+        }) as { notifications: Record<string, unknown> };
+
+        const n = sealed.notifications;
+        expect(n.slackChannel).toBe('#ops-alerts');
+        expect(n.pushoverDefaultSound).toBe('pushover');
+        for (const field of ['slackWebhookUrl', 'pushoverAppToken', 'pushoverDefaultUser'] as const) {
+          expect(n[field]).toMatch(/^enc:v2:current:/);
+        }
+        const webhooks = n.webhooks as string[];
+        expect(webhooks[0]).toMatch(/^enc:v2:current:/);
+        expect(webhooks[1]).toBe('');
+        expect(JSON.stringify(sealed)).not.toContain('hooks.');
+        expect(decryptForColumn(table, 'settings', n.slackWebhookUrl as string)).toBe(SLACK);
+        expect(decryptForColumn(table, 'settings', webhooks[0])).toBe(EXTRA);
+        expect(decryptForColumn(table, 'settings', n.pushoverAppToken as string)).toBe('azGDORePK8gMaC0QOYAMyEEuzJnyUi');
+      },
+    );
+
+    it('treats `webhooks` as a secret only under notifications, not wherever the key appears', () => {
+      setEncryptionEnv({ APP_ENCRYPTION_KEY: 'current-key-material', APP_ENCRYPTION_KEY_ID: 'current' });
+
+      const value = {
+        webhooks: ['webhook-id-1'],
+        ticketing: { webhooks: ['ticket.created'] },
+        monitoring: { webhooks: { enabled: true, endpoints: [{ id: 'e1', name: 'Ops' }] } },
+      };
+      expect(encryptColumnValueForWrite('partners', 'settings', value)).toEqual(value);
+    });
+
+    it('applies the settings paths only to the settings columns', () => {
+      setEncryptionEnv({ APP_ENCRYPTION_KEY: 'current-key-material', APP_ENCRYPTION_KEY_ID: 'current' });
+
+      const value = { notifications: { slackWebhookUrl: 'https://example.com/x', webhooks: ['https://example.com/y'] } };
+      expect(encryptColumnValueForWrite('psa_connections', 'credentials', value)).toEqual(value);
+    });
+  });
 });

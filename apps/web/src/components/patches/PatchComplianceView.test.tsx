@@ -56,6 +56,12 @@ describe('PatchComplianceView', () => {
       return makeJsonResponse({}, false, 404);
     };
 
+  it('gives the compliance status filter select an accessible name', async () => {
+    fetchMock.mockImplementation(emptyComplianceImpl(() => null));
+    render(<PatchComplianceView ringId={null} />);
+    expect(await screen.findByRole('combobox', { name: 'Compliance status filter' })).toBeInTheDocument();
+  });
+
   it('disables Export in All-orgs mode (no org, no ring) with a select-an-org hint', async () => {
     orgState.currentOrgId = null;
     fetchMock.mockImplementation(emptyComplianceImpl(() => null));

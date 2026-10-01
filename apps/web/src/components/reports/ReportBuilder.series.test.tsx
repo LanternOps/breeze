@@ -54,6 +54,18 @@ describe('ReportBuilder — one report per organization (W03)', () => {
     });
   });
 
+  // Review follow-up: a one-time template offers One-time, but a multi-org
+  // report is recurring-only, so the choice must not stay on offer there.
+  it('drops the One-time choice once Covers is set to one report per organization', async () => {
+    const user = userEvent.setup();
+    render(<ReportBuilder mode="create" defaultValues={{ name: 'Posture', schedule: 'one_time' }} />);
+    expect(await screen.findByRole('button', { name: 'One-time' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByTestId('covers-mode-series'));
+
+    expect(screen.queryByRole('button', { name: 'One-time' })).toBeNull();
+  });
+
   it('creates a series: POST /reports/series with org-agnostic config, then opens its drill-down', async () => {
     const user = userEvent.setup();
     render(<ReportBuilder mode="create" defaultValues={{ filters: { siteIds: ['site-1'] } }} />);

@@ -29,7 +29,6 @@ import { attachWorkerObservability } from './workerObservability';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/cronDue';
-import { utcMsFromOffsetlessDbTimestamp } from '../utils/offsetlessTimestamp';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import { resolveAssetIdentity, type ResolvedAssetIdentity } from '../services/assetIdentity';
 import {
@@ -434,17 +433,9 @@ async function expireStaleRunningJobs(): Promise<number> {
  * Whether an interval-scheduled discovery profile is due, given the most
  * recent job's run timestamp.
  *
- * `discovery_jobs.scheduled_at` / `.created_at` are `timestamp(...)` columns
- * with no `withTimezone: true` (`db/schema/discovery.ts:132,139`), so the
- * driver hands back the UTC wall clock re-read as this process's LOCAL time
- * and `getTime()` is wrong by the host's offset (#4059 gap 2 — see
- * `utils/offsetlessTimestamp.ts`). Subtracting that from a true-instant `now`
- * skews the elapsed interval by the same amount: on a host west of UTC the
- * last run reads as more recent than it was, so interval discovery silently
- * stops firing for up to the host's offset; east of UTC it fires early.
- *
- * Exported as a pure seam so this is assertable without a database — see
- * `discoveryWorker.intervalDue.test.ts`, registered in `vitest.config.tz.ts`.
+ * `discovery_jobs.scheduled_at` / `.created_at` are offsetless `timestamp`
+ * columns; Drizzle decodes them as UTC, so `latestRunAt` is the stored instant
+ * on any host and the elapsed interval is a plain subtraction.
  */
 export function isIntervalScheduleDue(
   latestRunAt: Date | null,
@@ -452,7 +443,7 @@ export function isIntervalScheduleDue(
   thresholdMs: number,
 ): boolean {
   if (!latestRunAt) return true;
-  return now.getTime() - utcMsFromOffsetlessDbTimestamp(latestRunAt) >= thresholdMs;
+  return now.getTime() - latestRunAt.getTime() >= thresholdMs;
 }
 
 async function processScheduleProfiles(): Promise<{ enqueued: number }> {

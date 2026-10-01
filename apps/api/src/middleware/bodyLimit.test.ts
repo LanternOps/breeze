@@ -248,6 +248,7 @@ describe('bodyLimitForPath', () => {
       'contract-template': '/api/v1/contracts/contract-templates/tpl-1/versions/upload',
       'agent-ingest': '/api/v1/agents/agent-1/software',
       'agent-hardware-health': '/api/v1/agents/agent-1/hardware-health',
+      'agent-time-status': '/api/v1/agents/agent-1/time-status',
     };
     for (const [rule, path] of Object.entries(sampled)) {
       expect({ path, rule: bodyLimitForPath(path).rule }).toEqual({ path, rule });
@@ -361,6 +362,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     paths: ['/api/v1/agents/agent-1/hardware-health'],
     globalMaxSize: 2 * MB,
     note: 'carved out — 2MB hardware/RAID snapshot ingest (#6856); route and gate agree at 2MB.',
+  },
+  'agents/timeStatus.ts': {
+    paths: ['/api/v1/agents/agent-1/time-status'],
+    globalMaxSize: 512 * 1024,
+    note: 'Time status route and global gate both enforce 512 KiB.',
   },
   'agents/logs.ts': {
     paths: ['/api/v1/agents/agent-1/logs'],

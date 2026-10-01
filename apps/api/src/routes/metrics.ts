@@ -294,7 +294,7 @@ const backupStorageSessionMintsTotal = new Counter({
 
 const backupWriteUnexpectedLegacyTotal = new Counter({
   name: 'breeze_backup_write_dispatch_unexpected_legacy_total',
-  help: 'Backup write deliveries that carried the storage destination for a reason other than an older helper or a non-S3 destination, by command type and reason',
+  help: 'Backup write deliveries that carried the storage destination (none are expected: backups to S3 storage use write sessions only), by command type and reason',
   labelNames: ['command_type', 'reason'] as const,
   registers: [register]
 });
@@ -338,6 +338,13 @@ const backupAttestationsTotal = new Counter({
   name: 'breeze_backup_attestation_total',
   help: 'Snapshot attestation outcomes, at recording (recorded, duplicate_same, conflict, binding_mismatch, invalid, missing_from_capable, not_offered, missing_expectation, job_reuse_refused) and at server verification (verified, mismatch, verify_unavailable, verify_parked)',
   labelNames: ['outcome'] as const,
+  registers: [register]
+});
+
+const backupRestoreIntegrityTotal = new Counter({
+  name: 'breeze_backup_restore_integrity_total',
+  help: 'Integrity expectations delivered with restore-shaped commands and recovery bootstraps, by command type, status (attested, unattested, absent, override, refused) and reason',
+  labelNames: ['type', 'status', 'reason'] as const,
   registers: [register]
 });
 
@@ -960,6 +967,14 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
 }
 
+function recordRestoreIntegrityMetric(commandType: string, status: string, reason: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupRestoreIntegrityTotal
+    .labels(normalizeMetricLabel(commandType, 'unknown'), normalizeMetricLabel(status, 'unknown'), normalizeMetricLabel(reason, 'unknown'))
+    .inc(safeCount);
+}
+
 function recordUnexpectedLegacyWriteMetric(commandType: string, reason: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1181,6 +1196,7 @@ function bindMetricsRecorders(): void {
     onUnexpectedLegacyWrite: recordUnexpectedLegacyWriteMetric,
     onConditionalWriteProbe: recordConditionalWriteProbeMetric,
     onSnapshotPublishRefused: recordSnapshotPublishRefusedMetric,
+    onRestoreIntegrity: recordRestoreIntegrityMetric,
   });
 
   setAnomalyMetricsRecorder({

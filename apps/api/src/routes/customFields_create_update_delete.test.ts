@@ -416,6 +416,31 @@ describe('customFields routes', () => {
       expect(body.data.name).toBe('Updated Name');
     });
 
+    it('accepts explicit null options when editing a Text field (#7476)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeField()])
+          })
+        })
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeField({ name: 'Renamed', options: null })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+      const res = await app.request(`/custom-fields/${FIELD_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed', options: null, required: false, deviceTypes: null })
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ name: 'Renamed', options: null }));
+    });
+
     it('should return 404 for non-existent field', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

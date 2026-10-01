@@ -31,6 +31,7 @@ import type { SubjectAlertDispatch } from './alertService';
 import { escalationSeverityFor } from './monitors/escalationLatch';
 import { drainRetirementOutbox } from './hardwareHealth/retirementOutbox';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { SUBJECT_MONITOR_KINDS } from './monitors/subjectMonitorKinds';
 
 type Claimed = {
   id: string;
@@ -46,14 +47,14 @@ type Claimed = {
  * Drain every committed-but-undelivered subject alert envelope. Optionally
  * scoped to one device (the per-device worker drain); with no `deviceId`,
  * drains fleet-wide (the minute tick, and this function's own staging of
- * pending hardware recurrence escalations).
+ * pending subject-monitor recurrence escalations).
  */
 export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> {
   if (hasDbAccessContext()) {
     throw new Error('Subject outbox must run after commit — call it with no ambient DB access context');
   }
   await drainRetirementOutbox(deviceId);
-  await stagePendingHardwareEscalations(deviceId);
+  await stagePendingSubjectEscalations(deviceId);
 
   // System scope belongs only to this background cross-tenant dispatcher.
   for (const slot of ['_subjectDispatch', '_subjectResolutionDispatch'] as const) {
@@ -165,22 +166,24 @@ export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> 
 }
 
 /**
- * Stage a pending `alert.triggered` envelope for every hardware-health
- * (monitor, device) pair that has latched recurrence escalation but has not
- * yet had its escalation alert raised. Legacy (non-hardware) recurrence
- * escalation still runs synchronously through `fireEscalationLatch` —
- * only the hardware subject path defers this because its whole sweep
- * runs inside `withDbTransaction`'s savepoint, where a direct publish would
- * violate the "nothing publishes before commit" contract.
+ * Stage a pending `alert.triggered` envelope for every subject-monitor
+ * (`SUBJECT_MONITOR_KINDS`: hardware_health, time_sync) (monitor, device)
+ * pair that has latched recurrence escalation but has not yet had its
+ * escalation alert raised. Legacy (non-subject) recurrence escalation still
+ * runs synchronously through `fireEscalationLatch` — the subject path never
+ * calls it, because its whole sweep runs inside `withDbTransaction`'s
+ * savepoint, where a direct publish would violate the "nothing publishes
+ * before commit" contract. A subject kind missing from the list would latch
+ * (`escalatedAt` set, responses paused) with no alert ever telling a human.
  */
-async function stagePendingHardwareEscalations(deviceId?: string): Promise<void> {
+async function stagePendingSubjectEscalations(deviceId?: string): Promise<void> {
   await withSystemDbAccessContext(async () => {
     const candidates = await db.select({ state: monitorDeviceState, monitor: monitorDefinitions, device: devices })
       .from(monitorDeviceState)
       .innerJoin(monitorDefinitions, eq(monitorDefinitions.id, monitorDeviceState.monitorId))
       .innerJoin(devices, eq(devices.id, monitorDeviceState.deviceId))
       .where(and(
-        eq(monitorDefinitions.kind, 'hardware_health'),
+        inArray(monitorDefinitions.kind, [...SUBJECT_MONITOR_KINDS]),
         isNotNull(monitorDeviceState.escalatedAt),
         isNull(monitorDeviceState.escalationAlertId),
         isNotNull(monitorDeviceState.currentEpisodeId),
@@ -217,7 +220,7 @@ async function stagePendingHardwareEscalations(deviceId?: string): Promise<void>
         publisher: 'monitor-escalation',
         payload: {
           alertId: id, ruleId: null, deviceId: device.id, severity, title, message,
-          monitorId: monitor.id, kind: 'hardware_health', episodeId, requiresHuman: true,
+          monitorId: monitor.id, kind: monitor.kind, episodeId, requiresHuman: true,
           subjectKey: null, responsesOwner: true, source: 'monitor_recurrence',
         },
       };

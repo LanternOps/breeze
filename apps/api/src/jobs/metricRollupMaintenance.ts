@@ -1,9 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 
-import * as dbModule from '../db';
 import {
   DEFAULT_METRIC_ROLLUP_DELETE_BATCH_SIZE,
-  DEFAULT_METRIC_ROLLUP_MAX_DELETE_BATCHES,
   DEFAULT_METRIC_ROLLUP_PARTITION_MONTHS_AHEAD,
   DEFAULT_METRIC_ROLLUP_PARTITION_MONTHS_BACK,
   runMetricRollupMaintenance,
@@ -24,16 +22,8 @@ export type MetricRollupMaintenanceJobData = {
   partitionMonthsBack?: number;
   partitionMonthsAhead?: number;
   deleteBatchSize?: number;
+  /** Ignored. Pre-#7531 repeatable jobs still carry it in their stored data. */
   maxDeleteBatches?: number;
-};
-
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
-    throw new Error(
-      '[MetricRollupMaintenance] withSystemDbAccessContext is not available — DB module may not have loaded correctly',
-    );
-  }
-  return dbModule.withSystemDbAccessContext(fn);
 };
 
 function isMaintenanceEnabled(): boolean {
@@ -64,28 +54,41 @@ export function createMetricRollupMaintenanceWorker(): Worker<MetricRollupMainte
         return { skipped: true };
       }
 
-      return runWithSystemDbAccess(async () => {
-        const result = await runMetricRollupMaintenance({
-          now: job.data.requestedAt ? new Date(job.data.requestedAt) : undefined,
-          partitionMonthsBack: job.data.partitionMonthsBack,
-          partitionMonthsAhead: job.data.partitionMonthsAhead,
-          deleteBatchSize: job.data.deleteBatchSize,
-          maxDeleteBatches: job.data.maxDeleteBatches,
-        });
-        const deleted = result.retention.reduce((sum, tier) => sum + tier.deleted, 0);
-        console.log(
-          `[MetricRollupMaintenance] ensured=${result.ensuredPartitions.length} dropped=${result.droppedPartitions.length} deleted=${deleted} durationMs=${result.durationMs}`,
-        );
-        // A lock-contended run returns `skipped` with empty arrays — recording it
-        // would claim "ran, deleted 0, backlog clear" for work that never happened.
-        if (!result.skipped) {
-          recordRetentionRun('metric_rollup_maintenance', {
-            rowsDeleted: deleted,
-            incomplete: result.retention.some((tier) => tier.hasMore),
-          });
-        }
-        return result;
+      // No outer DB context (#7531): runMetricRollupMaintenance runs every step
+      // in its own short system transaction. Wrapping the whole run in one
+      // would hold each partition DROP's ACCESS EXCLUSIVE lock on
+      // metric_rollups until the end of the run, blocking every reader.
+      const result = await runMetricRollupMaintenance({
+        now: job.data.requestedAt ? new Date(job.data.requestedAt) : undefined,
+        partitionMonthsBack: job.data.partitionMonthsBack,
+        partitionMonthsAhead: job.data.partitionMonthsAhead,
+        deleteBatchSize: job.data.deleteBatchSize,
       });
+      console.log(
+        `[MetricRollupMaintenance] ensured=${result.ensuredPartitions.length} droppedMonths=${result.droppedPartitions.length}` +
+          ` droppedBucketLeaves=${result.droppedBucketPartitions.length} compacted=${result.compactedPartitions.length}` +
+          ` defaultRowsDeleted=${result.defaultPartitionRowsDeleted} failures=${result.failures.length} durationMs=${result.durationMs}`,
+      );
+      if (result.skipped) {
+        console.warn(`[MetricRollupMaintenance] Run skipped: ${result.reason ?? 'unknown reason'}`);
+      }
+      // A lock-contended run returns `skipped` with empty arrays — recording it
+      // would claim "ran, backlog clear" for work that never happened.
+      if (!result.skipped) {
+        recordRetentionRun('metric_rollup_maintenance', {
+          rowsDeleted: result.defaultPartitionRowsDeleted,
+          incomplete: result.failures.length > 0,
+        });
+      }
+      if (result.failures.length > 0) {
+        // Every other step still ran; fail the job so the stuck step is seen
+        // (a month that never compacts or drops is disk that never comes back).
+        throw new Error(
+          `[MetricRollupMaintenance] ${result.failures.length} step(s) failed: ` +
+            result.failures.map((f) => `${f.step} ${f.partition}: ${f.error}`).join('; '),
+        );
+      }
+      return result;
     },
     {
       connection: getBullMQConnection(),
@@ -118,7 +121,6 @@ export async function scheduleMetricRollupMaintenance(
       partitionMonthsBack: DEFAULT_METRIC_ROLLUP_PARTITION_MONTHS_BACK,
       partitionMonthsAhead: DEFAULT_METRIC_ROLLUP_PARTITION_MONTHS_AHEAD,
       deleteBatchSize: DEFAULT_METRIC_ROLLUP_DELETE_BATCH_SIZE,
-      maxDeleteBatches: DEFAULT_METRIC_ROLLUP_MAX_DELETE_BATCHES,
     },
     {
       jobId: REPEAT_JOB_ID,

@@ -162,7 +162,7 @@ const EPHEMERAL_ONLY: Record<string, string> = {
 };
 
 /** Pinned: every file with an ephemeral-device filter, all buckets together. */
-const EPHEMERAL_DISCOVERED_FILES = 67;
+const EPHEMERAL_DISCOVERED_FILES = 68;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

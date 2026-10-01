@@ -35,6 +35,7 @@ import type { TopologySettingsLayers } from './configurationTypes';
 import { TopologyOperationError } from './operationErrors';
 import { topologyPolicyMaterialDigest } from './monitoringDigests';
 import { disarmPolicyRow } from './monitoringPolicyState';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 type Binding = typeof topologySiteTemplateBindings.$inferSelect;
 export type TopologyConfigurationSnapshot = {
@@ -556,6 +557,7 @@ async function persistCompiledConfiguration(
       configurationDigest: resolved.digest,
     },
   });
+  markRequestAuditWritten();
 }
 
 /** SQL predicate over `topology_diagnostic_runs r` for queued runs a configuration write invalidates; null when nothing is affected. */

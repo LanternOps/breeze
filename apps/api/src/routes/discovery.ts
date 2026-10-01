@@ -6,6 +6,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
+import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import {
   discoveryProfiles,
   discoveryJobs,
@@ -554,7 +555,7 @@ discoveryRoutes.get(
           alertSettings: p.alertSettings ?? null,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
-          lastRunAt: row.lastRunAt ? new Date(row.lastRunAt).toISOString() : null
+          lastRunAt: row.lastRunAt ? dateFromSqlValue(row.lastRunAt).toISOString() : null
         };
       })
     });

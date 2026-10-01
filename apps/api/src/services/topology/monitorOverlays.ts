@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Freshness, HealthCoverage, HealthStatus, TopologyScope } from '@breeze/shared';
 import { db } from '../../db';
+import { dateFromSqlValue } from '../portal/sqlTimestamp';
 import { alertSiteScopeCondition } from '../../routes/alerts/helpers';
 import { siteAccessCheck } from '../../middleware/auth';
 import { hasPermission } from '../permissions';
@@ -211,7 +212,7 @@ function literalFamily(target: string): 'ipv4' | 'ipv6' | null {
 }
 
 function timestamp(value: string | Date | null): string | null {
-  return value ? new Date(value).toISOString() : null;
+  return value ? dateFromSqlValue(value).toISOString() : null;
 }
 
 type Evaluated = { overlay: TopologyMonitorOverlay; eligible: boolean; observedAt: number };

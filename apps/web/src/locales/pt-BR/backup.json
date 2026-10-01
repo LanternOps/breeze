@@ -118,7 +118,7 @@
     "filesOk": "Arquivos OK",
     "filesFailed": "Arquivos com falha",
     "lowReadinessDevices": "Dispositivos com baixa prontidão",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Dispositivos com pontuação abaixo do limite de prontidão de 85 pontos.",
+    "lowReadinessDevicesDescription": "Dispositivos com pontuação abaixo do limite de prontidão de {{threshold}} pontos.",
     "allDevicesMeetTheReadinessThreshold": "Todos os dispositivos atendem ao limite de prontidão.",
     "score": "Pontuação",
     "estRto": "Est. RTO",
@@ -535,7 +535,17 @@
     "kindVm": "Restaurar como VM",
     "kindInstantBoot": "Inicialização instantânea",
     "kindSelective": "Restauração seletiva",
-    "kindFull": "Restauração completa"
+    "kindFull": "Restauração completa",
+    "kindRebuild": "Reconstrução para VHDX",
+    "restoreQueuedOnDevice": "Restauração enfileirada em {{device}}.",
+    "restoreStartedOnDevice": "Restauração iniciada em {{device}}.",
+    "restoreQueued": "Restauração enfileirada.",
+    "restoreStarted": "Restauração iniciada.",
+    "viewProgress": "Ver progresso",
+    "cancelRestore": "Cancelar restauração",
+    "cancellingRestore": "Cancelando...",
+    "restoreCancelled": "Restauração cancelada.",
+    "cancelRestoreFailed": "Não foi possível cancelar a restauração."
   },
   "sLAConfigDialog": {
     "name": "Nome",
@@ -594,6 +604,7 @@
     "snapshotDetails": "Detalhes do snapshot",
     "size": "Tamanho:",
     "files": "Arquivos:",
+    "location": "Local:",
     "holdReason": "Motivo da retenção:",
     "holdSource": "Origem da retenção:",
     "enforcement": "Aplicação:",
@@ -614,6 +625,7 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "A imutabilidade aplicada pelo provedor não pode ser liberada pelo Breeze.",
     "fileTree": "Árvore de arquivos",
     "noFileTreeAvailable": "Nenhuma árvore de arquivos disponível.",
+    "fileIndexUnavailable": "Este snapshot tem arquivos, mas o índice de arquivos não está disponível, então eles não podem ser listados aqui.",
     "path": "Caminho:",
     "useTheRestoreWorkflowToRecoverOrExport": "Use o fluxo de restauração para recuperar ou exportar arquivos deste snapshot.",
     "select": "Selecionar",
@@ -653,7 +665,6 @@
     "chooseTheSnapshotToRestoreAsAVirtual": "Escolha o snapshot a restaurar como uma máquina virtual.",
     "noSnapshotsAvailable": "Nenhum snapshot disponível.",
     "cpu": "CPU",
-    "mb": "MB",
     "gb": "GB",
     "selectTargetHost": "Selecionar host de destino",
     "chooseAWindowsDeviceWithHyperVTo": "Escolha um dispositivo Windows com Hyper-V para hospedar a máquina virtual.",
@@ -692,6 +703,12 @@
     "hypervNoNicHint": "Nenhum switch selecionado — a VM não terá adaptador de rede até que você conecte um.",
     "startRebuild": "Iniciar reconstrução",
     "rebuildStarted": "Reconstrução iniciada. O VHDX aparecerá no host de reconstrução quando ela for concluída.",
+    "rebuildErrorNotRestorable": "Este snapshot não pode ser reconstruído: ele não está marcado como restaurável em bare metal. Escolha um snapshot da máquina inteira marcado como restaurável em bare metal ou use a restauração completa.",
+    "rebuildErrorNotRestorableReasons": "Este snapshot não pode ser reconstruído: {{reasons}}.",
+    "rebuildErrorHostUnsupported": "O host de reconstrução precisa executar o mesmo sistema operacional do snapshot. Escolha outro host.",
+    "rebuildErrorRecoveryInProgress": "Já existe uma recuperação bare metal em andamento para este dispositivo. Aguarde a conclusão ou cancele-a e tente novamente.",
+    "rebuildErrorSnapshotNotFound": "Este snapshot não existe mais. Atualize a página e escolha outro snapshot.",
+    "rebuildErrorHostNotFound": "O host de reconstrução selecionado não existe mais. Escolha outro host.",
     "enterAVmNameToContinue": "Insira um nome de VM para continuar.",
     "enterAVmNameOnTheVmNameStep": "Insira um nome de VM na etapa «Nome da VM» para iniciar a restauração."
   },
@@ -1075,5 +1092,18 @@
       "error": "Não foi possível carregar o status do backup externo",
       "alsoCheck": "Verifique também as conexões de backup de terceiros em Integrações."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "O estado do sistema é aplicado por uma reconstrução bare-metal",
+    "systemStateRequiresRebuildBody": "Esta recuperação do Windows restaurou apenas arquivos. Para aplicar o estado do sistema do snapshot, execute uma reconstrução bare-metal deste snapshot (Restaurar como VM, mecanismo de reconstrução).",
+    "unattestedSnapshot": "Snapshot sem atestação: os arquivos não foram verificados em relação a uma atestação de snapshot.",
+    "resultCode": "Código de resultado: {{code}}",
+    "restrictedDescriptors_one": "{{count}} item restaurado com uma lista de acesso restritiva",
+    "restrictedDescriptors_other": "{{count}} itens restaurados com uma lista de acesso restritiva",
+    "restrictedDescriptorsBody": "As permissões registradas citavam contas que esta máquina não reconhece ou não puderam ser lidas; por isso, somente SYSTEM e Administradores podem acessá-los (proprietário: Administradores). Revise e reatribua as permissões conforme necessário.",
+    "restrictedDescriptorsShowPaths_one": "Mostrar {{count}} caminho",
+    "restrictedDescriptorsShowPaths_other": "Mostrar {{count}} caminhos",
+    "restrictedDescriptorsUnlisted_one": "Mais {{count}} item não está listado.",
+    "restrictedDescriptorsUnlisted_other": "Mais {{count}} itens não estão listados."
   }
 }

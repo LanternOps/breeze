@@ -397,7 +397,7 @@
         "fetchReports": "Impossible de récupérer des rapports",
         "generateReport": "Impossible de générer un rapport",
         "generic": "Une erreur s’est produite",
-        "noCompletedRun": "Aucun récit terminé à ouvrir pour le moment"
+        "noCompletedRun": "Aucune exécution terminée à ouvrir pour le moment"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "notGeneratedYet": "Pas encore généré",
       "success": {
         "generated": "Rapport « {{name}} » généré."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Impossible de charger les destinataires du rapport",
         "businessEmailOnly": "Les rapports d'affaires sont envoyés uniquement aux adresses courriel ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
         "partnerOwnedEmailOnly": "Ce rapport couvre toutes les organisations, il est donc envoyé uniquement aux adresses courriel ci-dessous. Les contacts de l'organisation ne peuvent pas être ajoutés.",
+        "oneTimeNotEmailed": "Les rapports ponctuels ne sont pas envoyés par courriel. Choisissez une planification récurrente pour envoyer ce rapport aux contacts.",
         "emailAddresses": "Adresses courriel"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Tous les jours"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Une seule fois"
+        },
         "daily": {
           "label": "Quotidien"
         },
@@ -1361,15 +1366,57 @@
         "seriesTypeUnsupported": "Ce type de rapport ne peut pas être envoyé sous forme d’un rapport par organisation.",
         "seriesConfigOrgSpecific": "Retirez les filtres de site, d’appareil et de groupe : un rapport multi-organisation couvre des organisations entières.",
         "seriesManaged": "Ce rapport appartient à un rapport multi-organisation. Modifiez le rapport multi-organisation ou détachez d’abord cette copie.",
-        "seriesOwnerIneligible": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : il doit avoir accès à toutes les organisations et à tous les sites.",
+        "seriesOwnerIneligible": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligiblePermission": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : son rôle n’accorde pas l’autorisation d’exportation des rapports (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Cet utilisateur ne peut pas être propriétaire d’un rapport multi-organisation : il doit avoir accès à toutes les organisations.",
+        "seriesOwnerIneligibleInactive": "Le compte de cet utilisateur n’est pas actif : il ne peut donc pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligibleMembership": "Cet utilisateur n’est plus membre de votre partenaire : il ne peut donc pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligibleNotPartner": "Cet utilisateur n’appartient pas à votre partenaire : il ne peut donc pas être propriétaire d’un rapport multi-organisation.",
+        "seriesOwnerIneligibleTenantInactive": "Votre compte partenaire n’est pas actif : un rapport multi-organisation ne peut donc pas changer de propriétaire.",
         "seriesNotFound": "Ce rapport multi-organisation n’existe plus.",
         "seriesWriteDenied": "Seuls les utilisateurs du partenaire ayant accès à toutes les organisations peuvent modifier les rapports multi-organisation.",
         "seriesTargetOrgInaccessible": "Une des organisations choisies ne vous est pas accessible.",
+        "seriesTargetOrgHidden": "Quick Support et l’organisation d’attente des appareils non attribués ne peuvent pas être couverts par un rapport multi-organisation.",
         "reportNotSeriesChild": "Ce rapport ne fait plus partie d’un rapport multi-organisation.",
         "recipientModeRequiresSeries": "« Ne jamais envoyer » ne s’applique qu’à une copie d’un rapport multi-organisation.",
         "recipientsNeedExportAndMfa": "L’envoi de rapports à des destinataires exige l’autorisation d’exportation et l’authentification multifacteur.",
         "seriesAuthorityUnverifiable": "Impossible de confirmer l’accès du propriétaire pour le moment. Réessayez dans un instant."
       }
+    },
+    "seriesCombine": {
+      "banner": "Certaines organisations ont des rapports quasi identiques qui peuvent être regroupés en un rapport multi-organisation. Groupes trouvés : {{groups}}",
+      "review": "Examiner",
+      "title": "Regrouper en un rapport multi-organisation",
+      "groupLabel": "Groupe",
+      "groupSummary": "{{type}} · {{schedule}} · organisations : {{orgs}}",
+      "nameLabel": "Nom du rapport multi-organisation",
+      "targetLegend": "Organisations couvertes",
+      "targetSelected": "Uniquement ces organisations (aucun nouvel envoi)",
+      "targetAll": "Toutes les organisations, y compris celles ajoutées plus tard",
+      "targetAllWarning": "Les organisations sans copie aujourd'hui commenceront à recevoir ce rapport, uniquement en copie interne tant que vous n'aurez pas ajouté de destinataires clients.",
+      "adopt": "Conservé et converti",
+      "archive": "Doublon, sera archivé",
+      "deliverableLinked": "Utilisé comme preuve d'une prestation de service",
+      "lastRun": "Dernière exécution {{date}}",
+      "neverRun": "Jamais exécuté",
+      "contacts": "Destinataires clients : {{list}}",
+      "noContacts": "Aucun destinataire client",
+      "ccShared": "Copie interne sur chaque exemplaire : {{list}}",
+      "ccNone": "Aucune copie interne",
+      "ccConflictHeading": "Ces adresses en copie ne figurent que sur certains de ces rapports. Choisissez le sort de chacune :",
+      "ccInclude": "En copie sur chaque exemplaire",
+      "ccDrop": "Retirer de la copie",
+      "ccUnresolved": "Choisissez le sort de chaque adresse en copie avant de regrouper.",
+      "ruleNote": "Chaque client conserve exactement ses destinataires actuels. Vous pourrez ajouter une règle de destinataires plus tard dans le rapport multi-organisation.",
+      "confirm": "Regrouper",
+      "success": "Regroupé dans « {{name}} »",
+      "failed": "Impossible de regrouper ces rapports.",
+      "groupChanged": "Ces rapports ont changé depuis l'ouverture de cette fenêtre. La liste a été actualisée.",
+      "stalled": "N'est pas envoyé actuellement (son propriétaire a perdu l'accès). Le regroupement relance l'envoi.",
+      "ccHeldBy": "Actuellement en copie sur : {{list}}",
+      "ownerIneligible": "Vous ne pouvez pas être propriétaire d'un rapport pour ces organisations : {{list}}",
+      "ccTooMany": "Trop d'adresses en copie interne (maximum {{max}}).",
+      "otherOrgs": "d'autres organisations"
     }
   }
 }

@@ -18,6 +18,7 @@ import {
   notQueueableTitle,
 } from "./bulkActionGating";
 import { fetchWithAuth } from "../../stores/auth";
+import { usePermissions } from "../../lib/permissions";
 import { acquire, DEFAULT_FETCH_LIMIT } from "@/lib/fetchLimiter";
 import { formatLastSeen } from "@/lib/formatTime";
 import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
@@ -304,6 +305,9 @@ export default function DeviceCard({
   const commandQueueable = isCommandQueueable(device.status);
   const online = device.status === "online";
   const liveSessionTitle = notOnlineTitle(device.status, t);
+  // UX gate; the terminal session (routes/remote) requires remote.access.
+  const { can } = usePermissions();
+  const canRemoteTerminal = can("remote", "access");
   const queuedCommandTitle = notQueueableTitle(device.status, t);
   // `title` alone is unreachable on touch and for AT (a disabled button leaves
   // the tab order), so the reason is also rendered as visible text below the
@@ -435,21 +439,23 @@ export default function DeviceCard({
             </button>
             {menuOpen && (
               <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAction?.("terminal", device);
-                    setMenuOpen(false);
-                  }}
-                  disabled={!online}
-                  title={liveSessionTitle}
-                  aria-describedby={!online ? gateHintId : undefined}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                >
-                  <Terminal className="h-4 w-4" />
-                  {t("deviceCard.remoteTerminal")}{" "}
-                </button>
+                {canRemoteTerminal && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAction?.("terminal", device);
+                      setMenuOpen(false);
+                    }}
+                    disabled={!online}
+                    title={liveSessionTitle}
+                    aria-describedby={!online ? gateHintId : undefined}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                  >
+                    <Terminal className="h-4 w-4" />
+                    {t("deviceCard.remoteTerminal")}{" "}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={(e) => {

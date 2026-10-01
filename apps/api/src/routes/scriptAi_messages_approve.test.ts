@@ -186,6 +186,20 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 
+    it('returns ai_not_configured as 503 before touching the SDK manager', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValue({ ok: false, error: 'ai_not_configured', status: 503 });
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it('preserves the structured retryable 503 from resolver preflight failures', async () => {
       vi.mocked(runPreFlightChecks).mockResolvedValue({
         ok: false,

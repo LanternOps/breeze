@@ -781,6 +781,13 @@ export async function resolveMaintenanceConfigForDevice(
   return sorted[0]!.maintenanceSettings;
 }
 
+export interface ResolvedDeviceComplianceRules {
+  /** The ASSIGNED policy whose assignment won the `compliance` feature for this device. */
+  configPolicyId: string;
+  configPolicyName: string;
+  rules: (typeof configPolicyComplianceRules.$inferSelect)[];
+}
+
 /**
  * Resolves compliance rules for a device via the hierarchy.
  * Returns all compliance rule rows from the WINNING assignment.
@@ -788,8 +795,19 @@ export async function resolveMaintenanceConfigForDevice(
 export async function resolveComplianceRulesForDevice(
   deviceId: string
 ): Promise<(typeof configPolicyComplianceRules.$inferSelect)[]> {
+  return (await resolveComplianceAssignmentForDevice(deviceId))?.rules ?? [];
+}
+
+/**
+ * `resolveComplianceRulesForDevice`, naming the policy whose assignment won.
+ * `null` when the device is unknown or no compliance rules reach it. The
+ * compliance-alert reconcile uses it to say which policy took over.
+ */
+export async function resolveComplianceAssignmentForDevice(
+  deviceId: string
+): Promise<ResolvedDeviceComplianceRules | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
-  if (!hierarchy) return [];
+  if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
@@ -806,6 +824,8 @@ export async function resolveComplianceRulesForDevice(
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
       assignmentId: configPolicyAssignments.id,
+      policyId: configurationPolicies.id,
+      policyName: configurationPolicies.name,
     })
     .from(configPolicyAssignments)
     .innerJoin(
@@ -835,14 +855,18 @@ export async function resolveComplianceRulesForDevice(
       asc(configPolicyComplianceRules.sortOrder)
     );
 
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return null;
 
   const sorted = sortByHierarchy(rows);
-  const winningAssignmentId = sorted[0]!.assignmentId;
+  const winner = sorted[0]!;
 
-  return sorted
-    .filter((r) => r.assignmentId === winningAssignmentId)
-    .map((r) => r.complianceRule);
+  return {
+    configPolicyId: winner.policyId,
+    configPolicyName: winner.policyName,
+    rules: sorted
+      .filter((r) => r.assignmentId === winner.assignmentId)
+      .map((r) => r.complianceRule),
+  };
 }
 
 /**

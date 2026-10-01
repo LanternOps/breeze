@@ -164,7 +164,7 @@ func TestExecMSSQLRestoreStagesSnapshotArtifact(t *testing.T) {
 		},
 		Size: int64(len(backupBytes)),
 	}
-	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadMssqlSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestExecMSSQLVerifyStagesSnapshotPrefixArtifact(t *testing.T) {
 		},
 		Size: int64(len(backupBytes)),
 	}
-	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadMssqlSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 
@@ -449,7 +449,7 @@ func setupMSSQLSnapshotFixture(t *testing.T, provider providers.BackupProvider, 
 		},
 		Size: int64(len(backupBytes)),
 	}
-	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadMssqlSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 }

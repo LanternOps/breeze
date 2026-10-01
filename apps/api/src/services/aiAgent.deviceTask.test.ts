@@ -78,6 +78,7 @@ describe('createSession device binding', () => {
       model: 'claude-opus-4-6',
       configId: 'config-1',
       configVersion: 2,
+      endpoint: { kind: 'anthropic' },
     });
   });
 

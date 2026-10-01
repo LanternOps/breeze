@@ -1,4 +1,223 @@
 {
+  "timeSync": {
+    "title": "Ora",
+    "loading": "Caricamento dello stato dell’ora…",
+    "error": "Impossibile caricare lo stato dell’ora.",
+    "retry": "Riprova",
+    "unknown": "Sconosciuto",
+    "yes": "Sì",
+    "no": "Negativo",
+    "site": "Sede",
+    "policy": "Criterio",
+    "states": {
+      "not_reported": "Nessun dato sull’ora disponibile — è necessario un aggiornamento dell’agente che includa la sincronizzazione dell’ora",
+      "unsupported_os": "Non ancora supportato su questo sistema operativo"
+    },
+    "health": {
+      "healthy": "Regolare",
+      "warning": "Avviso",
+      "critical": "Critico",
+      "unknown": "Sconosciuto"
+    },
+    "severity": {
+      "critical": "Critico",
+      "warning": "Avviso",
+      "info": "Informazioni"
+    },
+    "received": "Ricevuto: {{at}}",
+    "collected": "Raccolto: {{at}}",
+    "stale": "Obsoleto — l’ultimo rapporto sull’ora è stato ricevuto più di 90 minuti fa.",
+    "expected": "Previsto: {{windows}} ({{iana}}), da {{source}}: {{name}}",
+    "expectedPolicy": "Previsto: {{windows}} ({{iana}}), dal criterio {{name}} — sostituisce il fuso orario della sede",
+    "managedBadge": "Gestito da Criteri di gruppo",
+    "unset": {
+      "site_utc_default": "Nessun fuso orario previsto (la sede usa UTC come predefinito)",
+      "no_site": "Nessun fuso orario previsto (nessuna sede assegnata)",
+      "unmapped": "Nessun fuso orario previsto (il fuso orario della sede non ha una corrispondenza Windows)"
+    },
+    "noFindings": "Nessun rilievo sull’ora in questo rapporto.",
+    "events": "Eventi recenti relativi all’ora ({{count}})",
+    "noEvents": "Nessun evento recente relativo all’ora.",
+    "eventHeading": "Evento {{id}} · Livello {{level}}",
+    "noMessage": "Nessun messaggio dell’evento.",
+    "fields": {
+      "source": "Origine dell’ora",
+      "sourceKind": "Tipo di origine",
+      "lastSync": "Ultima sincronizzazione riuscita",
+      "method": "Metodo di raccolta",
+      "lastError": "Ultimo errore di sincronizzazione",
+      "stratum": "Livello NTP",
+      "poll": "Intervallo di polling effettivo (secondi)",
+      "syncType": "Tipo di sincronizzazione",
+      "ntpServer": "Configurazione del server NTP",
+      "hosts": "Host NTP individuati",
+      "specialPoll": "Intervallo di polling speciale (secondi)",
+      "serviceState": "Servizio Ora di Windows",
+      "serviceStartType": "Avvio del servizio",
+      "policyManaged": "Gestito da Criteri di gruppo",
+      "policyManagedValues": "Valori di Criteri di gruppo",
+      "hostProvider": "Provider dell’ora dell’host VM abilitato",
+      "joinType": "Tipo di aggiunta",
+      "role": "Ruolo nel dominio",
+      "domain": "Dominio",
+      "forest": "Foresta",
+      "pdc": "PDC",
+      "windowsId": "Fuso orario Windows attuale",
+      "bias": "Scostamento (minuti)",
+      "autoUpdate": "Fuso orario automatico"
+    },
+    "values": {
+      "NT5DS": "Gerarchia del dominio (NT5DS)",
+      "NTP": "Peer di NTP",
+      "NoSync": "Nessuna sincronizzazione",
+      "AllSync": "Tutte le origini",
+      "ntp_peer": "Peer di NTP",
+      "domain_peer": "Peer del dominio",
+      "local_clock": "Orologio locale",
+      "free_running": "Orologio autonomo",
+      "vm_host": "Host della VM",
+      "unknown": "Sconosciuto",
+      "provider_api": "API del provider Windows",
+      "w32tm_tokens": "Token di stato dell’ora di Windows",
+      "events": "Eventi Time-Service",
+      "unavailable": "Non disponibile",
+      "none": "Non aggiunto",
+      "workplace": "Registrato nell’area di lavoro",
+      "azure_ad": "Aggiunto a Microsoft Entra",
+      "on_prem_ad": "Aggiunto ad Active Directory",
+      "hybrid_azure_ad": "Aggiunta ibrida a Entra",
+      "workgroup": "Gruppo di lavoro",
+      "entra_only": "Solo Entra",
+      "member": "Membro del dominio",
+      "dc": "Controller di dominio",
+      "pdc_emulator": "Emulatore PDC",
+      "forest_root_pdc_emulator": "Emulatore PDC della radice della foresta",
+      "running": "In esecuzione",
+      "stopped": "Arrestato",
+      "start_pending": "Avvio in corso",
+      "stop_pending": "Arresto in corso",
+      "paused": "In pausa",
+      "not_installed": "Non installato",
+      "auto": "Automatico",
+      "delayed_auto": "Automatico (ritardato)",
+      "manual": "Manuale",
+      "trigger_manual": "Manuale (avvio su trigger)",
+      "disabled": "Disabilitato",
+      "on": "Attivato",
+      "off": "Disattivato"
+    },
+    "findings": {
+      "pdc_no_external_source": {
+        "label": "Il PDC radice della foresta non ha un’origine esterna",
+        "hint": "Imposta i server NTP su {device} — è il PDC radice della foresta e tutti i membri del dominio lo seguono."
+      },
+      "source_local_clock": {
+        "label": "Utilizzo dell’orologio locale",
+        "hint": "Si sincronizza con il proprio orologio. Configura un’origine NTP (oppure, se aggiunto a un dominio, controlla il suo controller di dominio)."
+      },
+      "dc_vm_host_sync": {
+        "label": "Il controller di dominio si sincronizza con l’host della VM",
+        "hint": "Disabilita il provider dell’ora dell’host VM su questo controller di dominio."
+      },
+      "ntp_server_unresolvable": {
+        "label": "Il nome del server NTP non è valido o non viene risolto",
+        "hint": "Il server NTP {host} non viene risolto o il nome non è valido — correggi il nome o il DNS."
+      },
+      "ntp_peer_unreachable": {
+        "label": "Il peer NTP non è raggiungibile",
+        "hint": "Nessuna risposta da {source} — controlla il traffico UDP in uscita sulla porta 123."
+      },
+      "domain_source_unavailable": {
+        "label": "Origine dell’ora del dominio non disponibile",
+        "hint": "Impossibile trovare un’origine dell’ora del dominio — verifica la raggiungibilità del controller di dominio."
+      },
+      "member_not_on_hierarchy": {
+        "label": "La gerarchia del dominio non è utilizzata",
+        "hint": "Aggiunto al dominio, ma non utilizza la gerarchia del dominio."
+      },
+      "sync_disabled": {
+        "label": "La sincronizzazione dell’ora è disabilitata",
+        "hint": "Il servizio Ora di Windows è disabilitato."
+      },
+      "sync_stale": {
+        "label": "Nessuna sincronizzazione recente riuscita",
+        "hint": "Nessuna sincronizzazione riuscita dal {lastSuccessfulSyncAt}."
+      },
+      "correction_refused": {
+        "label": "La correzione dell’ora è stata rifiutata",
+        "hint": "Lo scostamento dell’orologio è eccessivo perché Windows lo corregga automaticamente; risincronizza o correggi manualmente."
+      },
+      "timezone_mismatch": {
+        "label": "Il fuso orario è diverso da quello previsto",
+        "hint": "Il fuso orario è {actual}, ma è previsto {expected} (da {site or policy})."
+      },
+      "policy_not_applied": {
+        "label": "Il criterio relativo all’ora non è stato applicato",
+        "hint": "Impossibile applicare il criterio relativo all’ora: {error}."
+      },
+      "policy_conflict_gpo": {
+        "label": "Criteri di gruppo controlla le impostazioni dell’ora",
+        "hint": "W32Time è gestito da Criteri di gruppo; Breeze non ne modifica le impostazioni."
+      }
+    },
+    "management": {
+      "title": "Sincronizzazione dell’ora",
+      "description": "Criteri orari di Windows basati sul dominio e impostazioni del fuso orario",
+      "domainRule": "I gruppi di lavoro, i dispositivi che usano solo Entra e il PDC del dominio radice della foresta usano i server NTP configurati. I membri del dominio, i controller di dominio e gli altri emulatori PDC usano la gerarchia del dominio. I ruoli sconosciuti vengono ignorati.",
+      "gpoWins": "I Criteri di gruppo hanno la precedenza. Breeze non modifica le impostazioni W32Time gestite dai Criteri di gruppo.",
+      "enforceNtp": "Imponi la sincronizzazione dell’ora",
+      "ntpServers": "Server NTP — un nome host o un indirizzo IP per riga, fino a 5",
+      "pollInterval": "Intervallo di interrogazione (minuti, 15–1440)",
+      "expectedTimezone": "Fuso orario previsto",
+      "site": "Usa il fuso orario del sito",
+      "pinned": "Imposta un fuso orario fisso",
+      "pinnedZone": "Fuso orario fisso",
+      "pinOverrides": "Il fuso orario fisso ha la precedenza sul fuso orario del sito.",
+      "autoFix": "Correggi automaticamente il fuso orario",
+      "invalidServers": "Usa al massimo 5 host NTP validi, senza opzioni o porte. Per imporre la sincronizzazione è necessario almeno un host.",
+      "invalidInterval": "Inserisci un numero intero compreso tra 15 e 1440.",
+      "invalidZone": "Scegli un fuso orario con una corrispondenza Windows.",
+      "policySource": "Dal criterio {{name}} — ha la precedenza sul fuso orario del sito",
+      "unnamedPolicy": "Criterio senza nome"
+    },
+    "actions": {
+      "resync": "Sincronizza di nuovo",
+      "setTimezone": "Imposta il fuso orario previsto",
+      "applyPolicy": "Applica ora il criterio orario",
+      "bulkResync": "Sincronizza di nuovo i dispositivi selezionati",
+      "bulkSetTimezone": "Imposta il fuso orario previsto su ciascun dispositivo selezionato",
+      "queued": "Comando orario in coda",
+      "failed": "Impossibile mettere in coda il comando orario",
+      "awaiting": "In coda — in attesa di esecuzione",
+      "offline": "In coda offline — scade dopo 1 ora",
+      "delivered": "Consegnato — in attesa di esecuzione",
+      "noExpected": "Ignorato — nessun fuso orario previsto",
+      "select": "Seleziona dispositivo",
+      "outcomes": "Esiti dei comandi",
+      "checking": "Verifica del fuso orario attualmente previsto"
+    },
+    "enforcement": {
+      "title": "Ultimo risultato del criterio orario",
+      "none": "Nessun risultato di applicazione ancora segnalato",
+      "ntp": "Sincronizzazione dell’ora",
+      "timezone": "Fuso orario",
+      "ok": "Applicato o già conforme",
+      "failed": "Non riuscito",
+      "skipped": "Ignorato",
+      "before": "Prima",
+      "after": "Dopo",
+      "reportedAt": "Segnalato il",
+      "applied": "Applicato",
+      "already_compliant": "Già conforme",
+      "role_unknown": "Ignorato perché il ruolo nel dominio è sconosciuto",
+      "conflict_gpo": "Ignorato perché i Criteri di gruppo hanno la precedenza",
+      "readback_mismatch": "La lettura di verifica non corrispondeva al criterio richiesto",
+      "exec_failed": "Il comando Windows non è riuscito",
+      "invalid_settings": "Le impostazioni non erano valide",
+      "auto_timezone_on": "Il fuso orario automatico di Windows è abilitato",
+      "no_expected_timezone": "Nessun fuso orario previsto è configurato"
+    }
+  },
   "aiActivity": {
     "title": "Attività IA",
     "count": "{{count}} azioni inviate negli ultimi {{days}} giorni",
@@ -1031,6 +1250,7 @@
     "noDeviceGroupsYetCreateOne": "Non sono ancora presenti gruppi di dispositivi. Creane uno per iniziare a organizzare i dispositivi.",
     "createYourFirstGroup": "Crea il tuo primo gruppo",
     "selectAllGroups": "Seleziona tutti i gruppi",
+    "selectGroup": "Seleziona gruppo {{name}}",
     "dynamic": "Dinamico",
     "static": "Statico",
     "device": "dispositivo",
@@ -3589,6 +3809,64 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite di dispositivi raggiunto",
       "STEP_UP_REQUIRED": "Conferma richiesta",
       "ASSIGNMENT_FAILED": "Non riuscito"
+    }
+  },
+  "timeFleet": {
+    "title": "Sincronizzazione dell’ora",
+    "subtitle": "Configurazione oraria di Windows e problemi di sincronizzazione osservati.",
+    "view": "Visualizzazione",
+    "list": "Dispositivi",
+    "byDomain": "Per dominio AD",
+    "health": "Stato",
+    "finding": "Problema",
+    "findings": "Problemi",
+    "role": "Ruolo",
+    "organization": "Organizzazione",
+    "site": "Sede",
+    "all": "Tutti",
+    "refresh": "Aggiorna",
+    "device": "Dispositivo",
+    "source": "Origine dell’ora",
+    "received": "Ultima ricezione",
+    "stale": "Obsoleto",
+    "noData": "Nessun dato orario disponibile",
+    "unknown": "Sconosciuto",
+    "never": "Mai",
+    "none": "Nessuno",
+    "noDomain": "Nessun dominio AD segnalato",
+    "pdcContext": "Il PDC è fissato in alto come riferimento e potrebbe non rientrare nei filtri o nella pagina selezionati.",
+    "pdcMissing": "Il PDC non è registrato nell’inventario accessibile. Potrebbe essere fuori dal tuo ambito di accesso.",
+    "exportCurrent": "Esporta CSV attuale",
+    "exportHistory": "Esporta CSV giornaliero",
+    "from": "Dal (UTC)",
+    "to": "Al (UTC)",
+    "evidence": "Sincronizzazione osservata e segnalata dall’agente Breeze; i giorni senza segnalazioni sono indicati come periodi senza dati. Esporta fino a 400 giorni UTC. I filtri selezionano l’insieme attuale dei dispositivi.",
+    "rangeError": "Scegli un intervallo da 1 a 400 giorni UTC.",
+    "exportError": "L’esportazione delle evidenze non è riuscita. Riprova.",
+    "siteError": "Impossibile caricare le sedi. Aggiorna per riprovare.",
+    "loading": "Caricamento dei dati di sincronizzazione dell’ora…",
+    "loadError": "Impossibile caricare i dati di sincronizzazione dell’ora.",
+    "retry": "Riprova",
+    "empty": "Nessun dispositivo Windows accessibile corrisponde a questi filtri.",
+    "count": "{{count}} dispositivo corrispondente",
+    "count_other": "{{count}} dispositivi corrispondenti",
+    "previous": "Precedente",
+    "next": "Successiva",
+    "page": "Pagina {{page}}",
+    "healthLabels": {
+      "healthy": "Regolare",
+      "warning": "Avviso",
+      "critical": "Critico",
+      "unknown": "Sconosciuto"
+    },
+    "roles": {
+      "workgroup": "Gruppo di lavoro",
+      "entra_only": "Solo Entra",
+      "member": "Membro del dominio",
+      "dc": "Controller di dominio",
+      "pdc_emulator": "Emulatore PDC del dominio",
+      "forest_root_pdc_emulator": "Emulatore PDC della radice della foresta",
+      "unknown": "Sconosciuto"
     }
   }
 }

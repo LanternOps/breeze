@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Database, Save, Key, Link, ScrollText, Info } from 'lucide-react';
-import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
@@ -22,18 +21,22 @@ type LogForwardingData = {
 type AuthMethod = 'apiKey' | 'basic';
 
 type OrgEventLogSettingsProps = {
+  /** The org being edited — the settings page's, never the header switcher's. */
+  orgId: string;
   onDirty?: () => void;
+  /** Fired after log forwarding saved through its own route, so the page can
+   *  refresh the settings blob its section saves re-post wholesale. */
+  onSaved?: () => void;
   locked?: string[];
 };
 
-export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSettingsProps) {
+export default function OrgEventLogSettings({ orgId, onDirty, onSaved, locked }: OrgEventLogSettingsProps) {
   const { t } = useTranslation('settings');
   // Effects use the stable translator so a locale change does not re-run them
   // (#3632); JSX keeps the plain `t` so rendered text still re-translates.
   const stableT = useStableT(t);
   const isLocked = (field: string) => locked?.includes(`eventLogs.${field}`) ?? false;
   const allFieldsLocked = ['enabled', 'elasticsearchUrl', 'elasticsearchApiKey', 'elasticsearchUsername', 'elasticsearchPassword', 'indexPrefix'].every(f => isLocked(f));
-  const { currentOrgId } = useOrgStore();
 
   const [enabled, setEnabled] = useState(false);
   const [elasticsearchUrl, setElasticsearchUrl] = useState('');
@@ -53,12 +56,10 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
   const [error, setError] = useState<string>();
 
   useEffect(() => {
-    if (!currentOrgId) return;
-
     const load = async () => {
       try {
         setLoading(true);
-        const response = await fetchWithAuth(`/agents/org/${currentOrgId}/settings/log-forwarding`);
+        const response = await fetchWithAuth(`/agents/org/${orgId}/settings/log-forwarding`);
         if (!response.ok) {
           if (response.status === 401) {
             void navigateTo('/login', { replace: true });
@@ -89,15 +90,13 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
     };
 
     load();
-  }, [currentOrgId, stableT]);
+  }, [orgId, stableT]);
 
   const markDirty = () => {
     onDirty?.();
   };
 
   const handleSave = async () => {
-    if (!currentOrgId) return;
-
     setSaving(true);
     setError(undefined);
 
@@ -115,7 +114,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
         body.elasticsearchPassword = elasticsearchPassword || (hasSavedPassword ? MASKED_SECRET : '');
       }
 
-      const response = await fetchWithAuth(`/agents/org/${currentOrgId}/settings/log-forwarding`, {
+      const response = await fetchWithAuth(`/agents/org/${orgId}/settings/log-forwarding`, {
         method: 'PATCH',
         body: JSON.stringify(body),
       });
@@ -135,6 +134,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
       }
 
       showToast({ message: t('orgEventLogSettings.toasts.saved'), type: 'success' });
+      onSaved?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('orgEventLogSettings.errors.save'));
     } finally {

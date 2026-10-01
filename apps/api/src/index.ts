@@ -8,7 +8,7 @@ import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { installPerRouteMaxPayload } from './services/wsMaxPayload';
 import { Hono } from 'hono';
-import type { Context, MiddlewareHandler } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { prettyJSON } from 'hono/pretty-json';
@@ -25,6 +25,7 @@ import { configRoutes } from './routes/config';
 import { externalServicesRoutes } from './routes/externalServices';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
+import { timeStatusRoutes } from './routes/timeStatus';
 import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
@@ -176,6 +177,8 @@ import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
+import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
+import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -304,8 +307,9 @@ import {
 import { syncBinaries } from './services/binarySync';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
-import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/schema';
-import { eq, ne, sql } from 'drizzle-orm';
+import { webhookDeliveries } from './db/schema';
+import { resolveFallbackOrgId } from './services/auditFallbackOrg';
+import { ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
   createReadinessEvaluator,
@@ -609,10 +613,6 @@ function sanitizeActionSegment(segment: string): string {
   return segment;
 }
 
-function isLikelyUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
 function buildFallbackAction(method: string, apiPath: string): string {
   const cleaned = apiPath.replace(/^\/api\/v1\//, '/');
   const segments = cleaned
@@ -642,143 +642,6 @@ function fallbackAuditEligible(path: string): boolean {
     return false;
   }
   return path.startsWith('/api/v1/');
-}
-
-async function resolveFallbackOrgId(c: Context, path: string): Promise<string | null> {
-  const auth = c.get('auth') as { orgId?: string | null; accessibleOrgIds?: string[] } | undefined;
-  if (auth?.orgId) {
-    return auth.orgId;
-  }
-
-  if (auth?.accessibleOrgIds && auth.accessibleOrgIds.length === 1) {
-    return auth.accessibleOrgIds[0] ?? null;
-  }
-
-  if (path.startsWith('/api/v1/agents/')) {
-    const segments = path.split('/').filter(Boolean);
-    const agentId = segments[3];
-    if (!agentId || agentId === 'enroll') {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.agentId, agentId))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/devices/')) {
-    const segments = path.split('/').filter(Boolean);
-    const entity = segments[3];
-    if (!entity) {
-      return null;
-    }
-
-    if (entity === 'groups') {
-      const groupId = segments[4];
-      if (!groupId || !isLikelyUuid(groupId)) {
-        return null;
-      }
-
-      try {
-        const [group] = await db
-          .select({ orgId: deviceGroups.orgId })
-          .from(deviceGroups)
-          .where(eq(deviceGroups.id, groupId))
-          .limit(1);
-        return group?.orgId ?? null;
-      } catch (err) {
-        console.error('[audit] Failed to resolve orgId from device group:', err);
-        return null;
-      }
-    }
-
-    if (!isLikelyUuid(entity)) {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, entity))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/security/scan/')) {
-    const segments = path.split('/').filter(Boolean);
-    const deviceId = segments[4];
-    if (!deviceId || !isLikelyUuid(deviceId)) {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, deviceId))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/security/threats/')) {
-    const segments = path.split('/').filter(Boolean);
-    const threatId = segments[4];
-    if (!threatId || !isLikelyUuid(threatId)) {
-      return null;
-    }
-
-    try {
-      const [threat] = await db
-        .select({ orgId: devices.orgId })
-        .from(securityThreats)
-        .innerJoin(devices, eq(securityThreats.deviceId, devices.id))
-        .where(eq(securityThreats.id, threatId))
-        .limit(1);
-      return threat?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  if (path.startsWith('/api/v1/system-tools/devices/')) {
-    const segments = path.split('/').filter(Boolean);
-    const deviceId = segments[4];
-    if (!deviceId || !isLikelyUuid(deviceId)) {
-      return null;
-    }
-
-    try {
-      const [device] = await db
-        .select({ orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, deviceId))
-        .limit(1);
-      return device?.orgId ?? null;
-    } catch (err) {
-      console.error('[audit] Failed to resolve orgId from path:', err);
-      return null;
-    }
-  }
-
-  return null;
 }
 
 // Generic partner status guard — blocks non-active partners.
@@ -849,6 +712,7 @@ api.route('/config', configRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
+api.route('/time-status', timeStatusRoutes);
 api.route('/pam', pamRoutes);
 api.route('/scripts', scriptRoutes);
 api.route('/script-library', scriptLibraryRoutes);
@@ -1964,6 +1828,45 @@ async function bootstrap(): Promise<void> {
     })
     .catch((err) => {
       console.error('[startup] Failed to provision built-in monitors:', err);
+    });
+
+  // Notification-channel secrets in partner/org/site settings are sealed on
+  // write; this seals values stored before that. Detached after serve() like
+  // the built-ins above: readers open both forms, so nothing waits on it.
+  // Idempotent — once every value is sealed it finds nothing to do.
+  void sealUnsealedSettingsSecrets()
+    .then((result) => {
+      const touched = Object.entries(result).filter(([, stats]) => stats.scanned > 0);
+      if (touched.length > 0) {
+        console.log(
+          `[startup] Settings secrets sealed: ${touched
+            .map(([table, s]) => `${table} ${s.sealed}/${s.scanned} row(s) (${s.contended} changed concurrently, ${s.failed} failed)`)
+            .join('; ')}`,
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Sealing stored settings secrets failed:', err);
+      captureException(err, undefined, { area: 'settings_secret_backfill' });
+    });
+
+  // Storage keys that S3 backup destinations used before backups were written
+  // only through storage sessions are recorded once, so each stays listed
+  // until there is evidence it was disabled. Detached after serve() like the
+  // sweep above; idempotent (a destination whose current key is recorded is
+  // skipped) and never logs a key.
+  void baselineCredentialHistory()
+    .then((result) => {
+      if (result.recorded > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Backup storage key history: ${result.recorded} recorded, ${result.failed} failed `
+          + `(${result.scanned} S3 destination(s) scanned)`,
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Recording backup storage key history failed:', err instanceof Error ? err.name : 'unknown');
+      captureException(err, undefined, { area: 'backup_storage_key_history' });
     });
 
   // W05d — convert whatever legacy alerting the W05c release left unconverted,

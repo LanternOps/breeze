@@ -5,6 +5,12 @@ import ScriptTestRunner from './ScriptTestRunner';
 const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// The live session list (GET /devices/:id/sessions/live) needs devices:execute
+// or remote:access; the default grants cover it.
+const perms = vi.hoisted(() => ({ granted: new Set<string>(['scripts:execute', 'devices:read', 'devices:execute']) }));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => perms.granted.has(`${r}:${a}`) }),
+}));
 vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: fetchWithAuthMock };
@@ -921,6 +927,34 @@ describe('ScriptTestRunner — run context (#4888)', () => {
 
     await waitFor(() => expect(postBodies()).toHaveLength(1));
     expect(postBodies()[0]).toMatchObject({ runAs: 'user', targetSessionId: 3 });
+  });
+
+  it('does not ask the device for its live sessions without devices:execute or remote:access', async () => {
+    const liveCalls = () => fetchWithAuthMock.mock.calls.filter(([url]) => String(url).endsWith('/sessions/live'));
+    const renderUserRun = async () => {
+      const view = render(
+        <ScriptTestRunner
+          scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+          onSaveChanges={async () => true} scriptRunAs="system"
+        />
+      );
+      await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+      fireEvent.change(screen.getByTestId('test-run-context'), { target: { value: 'user' } });
+      await waitFor(() => expect(screen.getByTestId('test-run-session-target')).toBeInTheDocument());
+      return view;
+    };
+
+    mockRun(ON_DEMAND_DEVICE);
+    perms.granted = new Set(['scripts:execute', 'devices:read']);
+    const first = await renderUserRun();
+    expect(liveCalls()).toHaveLength(0);
+    first.unmount();
+
+    perms.granted = new Set(['scripts:execute', 'devices:read', 'remote:access']);
+    await renderUserRun();
+    await waitFor(() => expect(liveCalls()).toHaveLength(1));
+    perms.granted = new Set(['scripts:execute', 'devices:read', 'devices:execute']);
   });
 
   it('never offers a session target for an always-on helper', async () => {

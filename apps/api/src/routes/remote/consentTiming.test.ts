@@ -45,10 +45,25 @@ describe('consentDeniedMessage', () => {
     ['user', /declined/],
     ['timeout', /did not respond/],
     ['helper_absent', /could be asked/],
+    ['no_user_session', /no one is signed in/i],
+    ['helper_unreachable', /could not be shown/],
     ['no_user', /could not be approved/],
     ['something-new', /could not be approved/],
   ])('gives the technician a specific reason for %s', (reason, pattern) => {
     expect(consentDeniedMessage(reason)).toMatch(pattern);
+  });
+
+  it('does not blame Breeze Assist when the user could not see the prompt or no prompt is available', () => {
+    expect(consentDeniedMessage('helper_unreachable', 'prompt_not_visible')).toMatch(/could not see the consent prompt/);
+    expect(consentDeniedMessage('helper_unreachable', 'prompt_not_visible')).not.toMatch(/Assist/);
+    expect(consentDeniedMessage('helper_unreachable', 'no_helper')).toMatch(/no way to show/);
+  });
+
+  it('says another request is waiting when the prompt was refused because one is already on screen', () => {
+    expect(consentDeniedMessage('helper_unreachable', 'prompt_in_progress')).toMatch(/already waiting/);
+    // Any other detail keeps the reason's message.
+    expect(consentDeniedMessage('helper_unreachable', 'no_presentation')).toMatch(/could not be shown/);
+    expect(consentDeniedMessage('user', 'prompt_in_progress')).toMatch(/declined/);
   });
 });
 

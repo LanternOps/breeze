@@ -27,74 +27,55 @@ const findPatch = () =>
   fetchMock.mock.calls.find((c) => c[0] === '/orgs/org-1/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
 
 describe('OrgBillingSettings — billing contact', () => {
+  // The Billing tab used to edit `billingContact` inline, and the API wrote
+  // that into the org's PRIMARY contact — a technical contact's email was
+  // overwritten with the billing address. Contact data now has one home, the
+  // org record's Contacts tab: this card shows who invoices go to and links
+  // there, and Save never sends contact fields.
   beforeEach(() => vi.clearAllMocks());
 
-  it('loads and shows the saved billing contact email + name', async () => {
+  it('shows the default recipient read-only and links to the org Contacts tab', async () => {
     fetchMock.mockResolvedValue(orgPayload({ billingContact: { email: 'ap@customer.example', name: 'AP Dept' } }));
     render(<OrgBillingSettings orgId="org-1" />);
-    await waitFor(() =>
-      expect((screen.getByTestId('org-billing-contact-email') as HTMLInputElement).value).toBe('ap@customer.example'));
-    expect((screen.getByTestId('org-billing-contact-name') as HTMLInputElement).value).toBe('AP Dept');
+    const recipient = await screen.findByTestId('org-billing-contact-recipient');
+    expect(recipient).toHaveTextContent('AP Dept');
+    expect(recipient).toHaveTextContent('ap@customer.example');
+    // Read-only: there is no field to type a contact into.
+    expect(screen.queryByTestId('org-billing-contact-email')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-billing-contact-name')).not.toBeInTheDocument();
+    expect(screen.getByTestId('org-billing-contact-manage')).toHaveAttribute('href', '/organizations/org-1#contacts');
   });
 
-  it('sends billingContactEmail/Name in the PATCH body when filled', async () => {
+  it('says so when no contact has the billing role', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ billingContact: null }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    expect(await screen.findByTestId('org-billing-contact-none')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-billing-contact-recipient')).not.toBeInTheDocument();
+    expect(screen.getByTestId('org-billing-contact-manage')).toHaveAttribute('href', '/organizations/org-1#contacts');
+  });
+
+  it('distinguishes a billing contact with no email address from no billing contact', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ billingContact: { name: 'AP Dept', email: null, phone: '555-0100' } }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    const noEmail = await screen.findByTestId('org-billing-contact-no-email');
+    expect(noEmail).toHaveTextContent('AP Dept');
+    expect(screen.queryByTestId('org-billing-contact-none')).not.toBeInTheDocument();
+  });
+
+  it('never sends billing contact fields on Save', async () => {
     fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) =>
-      opts?.method === 'PATCH' ? json({ data: {} }) : orgPayload());
+      opts?.method === 'PATCH' ? json({ data: {} }) : orgPayload({ billingContact: { email: 'ap@customer.example', name: 'AP Dept' } }));
     render(<OrgBillingSettings orgId="org-1" />);
     await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
 
-    fireEvent.change(screen.getByTestId('org-billing-contact-email'), { target: { value: 'billing@customer.example' } });
-    fireEvent.change(screen.getByTestId('org-billing-contact-name'), { target: { value: 'Accounts Payable' } });
     fireEvent.click(screen.getByTestId('org-billing-save'));
 
-    await waitFor(() => {
-      const patch = findPatch();
-      expect(patch).toBeTruthy();
-      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
-        billingContactEmail: 'billing@customer.example', billingContactName: 'Accounts Payable',
-      });
-    });
-  });
-
-  it('blocks save on a client-invalid contact email (guards the round-trip)', async () => {
-    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) =>
-      opts?.method === 'PATCH' ? json({ data: {} }) : orgPayload());
-    render(<OrgBillingSettings orgId="org-1" />);
-    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
-
-    fireEvent.change(screen.getByTestId('org-billing-contact-email'), { target: { value: 'not-an-email' } });
-
-    // Inline error shows and the Save button is disabled…
-    expect(screen.getByTestId('org-billing-contact-email-error')).toBeInTheDocument();
-    expect(screen.getByTestId('org-billing-save')).toBeDisabled();
-    // …and even clicking it issues no PATCH (save() early-returns).
-    fireEvent.click(screen.getByTestId('org-billing-save'));
-    expect(findPatch()).toBeUndefined();
-
-    // Correcting the address clears the error and re-enables save.
-    fireEvent.change(screen.getByTestId('org-billing-contact-email'), { target: { value: 'ap@customer.example' } });
-    expect(screen.queryByTestId('org-billing-contact-email-error')).not.toBeInTheDocument();
-    expect(screen.getByTestId('org-billing-save')).not.toBeDisabled();
-  });
-
-  it('serializes a cleared contact email to null (never "") so the schema does not 400', async () => {
-    // The linchpin of the design: orgBillingSettingsSchema rejects '' via .email();
-    // clearing the field must send null. Mirrors PartnerBillingSettings' address test.
-    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) =>
-      opts?.method === 'PATCH' ? json({ data: {} }) : orgPayload({ billingContact: { email: 'ap@customer.example', name: 'AP' } }));
-    render(<OrgBillingSettings orgId="org-1" />);
-    await waitFor(() =>
-      expect((screen.getByTestId('org-billing-contact-email') as HTMLInputElement).value).toBe('ap@customer.example'));
-
-    // Clear the email to whitespace-only, then save.
-    fireEvent.change(screen.getByTestId('org-billing-contact-email'), { target: { value: '   ' } });
-    fireEvent.click(screen.getByTestId('org-billing-save'));
-
-    await waitFor(() => {
-      const patch = findPatch();
-      expect(patch).toBeTruthy();
-      expect(JSON.parse((patch![1] as RequestInit).body as string).billingContactEmail).toBeNull();
-    });
+    await waitFor(() => expect(findPatch()).toBeTruthy());
+    const body = JSON.parse((findPatch()![1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty('billingContactEmail');
+    expect(body).not.toHaveProperty('billingContactName');
+    // Positive control: the rest of the form is still saved.
+    expect(body).toHaveProperty('taxExempt', false);
   });
 });
 
@@ -350,11 +331,11 @@ describe('OrgBillingSettings billing profile', () => {
     profileApi();
     render(<OrgBillingSettings orgId="org-1" />);
     fireEvent.change(await screen.findByTestId('org-billing-profile'), { target: { value: 'silver' } });
-    fireEvent.change(screen.getByTestId('org-billing-contact-name'), { target: { value: 'Accounts Payable' } });
+    fireEvent.change(screen.getByTestId('org-billing-taxid'), { target: { value: 'VAT-123' } });
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
     fireEvent.click(screen.getByTestId('org-billing-save'));
     await waitFor(() => expect(findPatch()).toBeDefined());
-    expect(JSON.parse(findPatch()![1]!.body as string)).toMatchObject({ billingProfileId: 'silver', billingContactName: 'Accounts Payable' });
+    expect(JSON.parse(findPatch()![1]!.body as string)).toMatchObject({ billingProfileId: 'silver', taxId: 'VAT-123' });
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(1);
     await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
     fireEvent.click(screen.getByTestId('org-billing-save'));

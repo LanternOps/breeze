@@ -118,7 +118,7 @@
     "filesOk": "Dossiers OK",
     "filesFailed": "Échec des fichiers",
     "lowReadinessDevices": "Dispositifs de faible préparation",
-    "devicesScoringBelowThe85PointReadinessThreshold": "Les appareils obtiennent un score inférieur au seuil de préparation de 85 points.",
+    "lowReadinessDevicesDescription": "Appareils dont le score est inférieur au seuil de préparation de {{threshold}} points.",
     "allDevicesMeetTheReadinessThreshold": "Tous les appareils atteignent le seuil de préparation.",
     "score": "Partition",
     "estRto": "RTO estimé",
@@ -535,7 +535,17 @@
     "kindVm": "Restaurer en tant que VM",
     "kindInstantBoot": "Démarrage instantané",
     "kindSelective": "Restauration sélective",
-    "kindFull": "Restauration complète"
+    "kindFull": "Restauration complète",
+    "kindRebuild": "Reconstruction en VHDX",
+    "restoreQueuedOnDevice": "Restauration mise en file d’attente sur {{device}}.",
+    "restoreStartedOnDevice": "Restauration démarrée sur {{device}}.",
+    "restoreQueued": "Restauration mise en file d’attente.",
+    "restoreStarted": "Restauration démarrée.",
+    "viewProgress": "Voir la progression",
+    "cancelRestore": "Annuler la restauration",
+    "cancellingRestore": "Annulation...",
+    "restoreCancelled": "Restauration annulée.",
+    "cancelRestoreFailed": "Impossible d’annuler la restauration."
   },
   "sLAConfigDialog": {
     "name": "Nom",
@@ -594,6 +604,7 @@
     "snapshotDetails": "Détails du instantané",
     "size": "Taille :",
     "files": "Fichiers :",
+    "location": "Emplacement :",
     "holdReason": "Maintenez la raison :",
     "holdSource": "Source de maintien :",
     "enforcement": "Application de la stratégie :",
@@ -614,6 +625,7 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "L’immutabilité imposée par le fournisseur ne peut pas être libérée de Breeze.",
     "fileTree": "Arbre de fichiers",
     "noFileTreeAvailable": "Aucun arbre de fichiers disponible.",
+    "fileIndexUnavailable": "Cet instantané contient des fichiers, mais son index de fichiers n’est pas disponible ; ils ne peuvent donc pas être affichés ici.",
     "path": "Chemin :",
     "useTheRestoreWorkflowToRecoverOrExport": "Utilisez le flux de restauration pour récupérer ou exporter des fichiers à partir de cet instantané.",
     "select": "Sélectionner",
@@ -653,7 +665,6 @@
     "chooseTheSnapshotToRestoreAsAVirtual": "Choisissez l’instantané à restaurer en tant que machine virtuelle.",
     "noSnapshotsAvailable": "Aucune capture d’écran disponible.",
     "cpu": "CPU",
-    "mb": "MB",
     "gb": "GB",
     "selectTargetHost": "Sélectionner l’hôte cible",
     "chooseAWindowsDeviceWithHyperVTo": "Choisissez un appareil Windows avec Hyper-V pour héberger la machine virtuelle.",
@@ -692,6 +703,12 @@
     "hypervNoNicHint": "Aucun commutateur sélectionné — la VM n'aura pas d'adaptateur réseau tant que vous n'en connectez pas un.",
     "startRebuild": "Lancer la reconstruction",
     "rebuildStarted": "Reconstruction lancée. Le VHDX apparaîtra sur l'hôte de reconstruction une fois celle-ci terminée.",
+    "rebuildErrorNotRestorable": "Cet instantané ne peut pas être reconstruit : il n’est pas marqué comme restaurable en bare metal. Choisissez un instantané de machine complète marqué comme restaurable en bare metal, ou utilisez la restauration complète.",
+    "rebuildErrorNotRestorableReasons": "Cet instantané ne peut pas être reconstruit : {{reasons}}.",
+    "rebuildErrorHostUnsupported": "L’hôte de reconstruction doit exécuter le même système d’exploitation que l’instantané. Choisissez un autre hôte.",
+    "rebuildErrorRecoveryInProgress": "Une récupération bare metal est déjà en cours pour cet appareil. Attendez qu’elle se termine ou annulez-la, puis réessayez.",
+    "rebuildErrorSnapshotNotFound": "Cet instantané n’existe plus. Actualisez la page et choisissez un autre instantané.",
+    "rebuildErrorHostNotFound": "L’hôte de reconstruction sélectionné n’existe plus. Choisissez un autre hôte.",
     "enterAVmNameToContinue": "Saisissez un nom de VM pour continuer.",
     "enterAVmNameOnTheVmNameStep": "Saisissez un nom de VM à l’étape « Nom de la VM » pour lancer la restauration."
   },
@@ -1075,5 +1092,18 @@
       "error": "Impossible de charger l'état de la sauvegarde externe",
       "alsoCheck": "Vérifiez aussi les connexions de sauvegarde tierces dans Intégrations."
     }
+  },
+  "restoreResultNotices": {
+    "systemStateRequiresRebuildTitle": "L'état du système est appliqué par une reconstruction bare-metal",
+    "systemStateRequiresRebuildBody": "Cette récupération Windows n'a restauré que des fichiers. Pour appliquer l'état du système de l'instantané, lancez une reconstruction bare-metal de cet instantané (Restaurer en tant que VM, moteur de reconstruction).",
+    "unattestedSnapshot": "Instantané non attesté : les fichiers n'ont pas été vérifiés par rapport à une attestation d'instantané.",
+    "resultCode": "Code de résultat : {{code}}",
+    "restrictedDescriptors_one": "{{count}} élément restauré avec une liste d'accès restrictive",
+    "restrictedDescriptors_other": "{{count}} éléments restaurés avec une liste d'accès restrictive",
+    "restrictedDescriptorsBody": "Leurs autorisations enregistrées désignaient des comptes que cette machine ne reconnaît pas ou n'ont pas pu être lues ; seuls SYSTEM et les Administrateurs peuvent donc y accéder (propriétaire : Administrateurs). Vérifiez et réattribuez les autorisations si nécessaire.",
+    "restrictedDescriptorsShowPaths_one": "Afficher {{count}} chemin",
+    "restrictedDescriptorsShowPaths_other": "Afficher {{count}} chemins",
+    "restrictedDescriptorsUnlisted_one": "{{count}} autre élément n'est pas listé.",
+    "restrictedDescriptorsUnlisted_other": "{{count}} autres éléments ne sont pas listés."
   }
 }

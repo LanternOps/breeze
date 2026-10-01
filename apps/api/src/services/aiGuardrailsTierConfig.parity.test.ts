@@ -69,6 +69,43 @@ describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
       .toMatchObject({ tier: 1, permission: 'devices.read' });
   });
 
+  it.each(['manage_processes', 'manage_scheduled_tasks'])(
+    'shows %s list as live inspection: Tier 2 with devices.execute',
+    (tool) => {
+      const entries = parsed.filter((entry) => entry.tool === tool && entry.actions.includes('list'));
+      expect(entries.map((entry) => entry.claimedTier)).toEqual([2]);
+      expect(RBAC_MAPPINGS[tool]).toHaveProperty('list', 'devices.execute');
+      expect(requiredPermissionsForTool(tool, { action: 'list' })).toEqual([
+        { resource: 'devices', action: 'execute' },
+      ]);
+      expect(RATE_LIMIT_CONFIGS.find((config) => config.toolName === tool))
+        .toMatchObject({ permission: 'devices.execute' });
+    },
+  );
+
+  it('shows system_cleanup list as a live read: Tier 2 with devices.execute; status stays Tier 1 read', () => {
+    const list = parsed.filter((entry) => entry.tool === 'system_cleanup' && entry.actions.includes('list'));
+    expect(list.map((entry) => entry.claimedTier)).toEqual([2]);
+    const status = parsed.filter((entry) => entry.tool === 'system_cleanup' && entry.actions.includes('status'));
+    expect(status.map((entry) => entry.claimedTier)).toEqual([1]);
+    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', status: 'devices.read' });
+  });
+
+  // A fresh disk scan / boot-metrics collection is claimed under its input
+  // flag, `tool (flag)`; the bare tool name is the stored-data read.
+  it.each([
+    ['analyze_disk_usage', 'refresh'],
+    ['analyze_boot_performance', 'triggerCollection'],
+  ])('shows %s (%s) as a live read at Tier 2 and the stored read at Tier 1', (tool, flag) => {
+    const live = parsed.filter((entry) => entry.tool === tool && entry.actions.includes(flag));
+    expect(live.map((entry) => entry.claimedTier)).toEqual([2]);
+    const stored = parsed.filter((entry) => entry.tool === tool && entry.actions.length === 0);
+    expect(stored.map((entry) => entry.claimedTier)).toEqual([1]);
+    expect(RBAC_MAPPINGS[tool]).toEqual({ stored: 'devices.read', [flag]: 'devices.execute' });
+    expect(requiredPermissionsForTool(tool, { [flag]: true })).toEqual([{ resource: 'devices', action: 'execute' }]);
+    expect(requiredPermissionsForTool(tool, {})).toEqual([{ resource: 'devices', action: 'read' }]);
+  });
+
   it('every Tier 1-3 entry is machine-checkable (`tool` or `tool (action/...)`)', () => {
     expect(unparseable).toEqual([]);
   });

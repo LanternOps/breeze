@@ -41,6 +41,7 @@
     "deniedToast": "Aktion abgelehnt",
     "deniedToast_one": "{{count}} Aktion abgelehnt",
     "deniedToast_other": "{{count}} Aktionen abgelehnt",
+    "refusedToast": "Genehmigung verweigert. Die Anfrage wurde abgelehnt.",
     "runContextLabel": "Ausführungskontext:",
     "runContextChosenByAssistant": "vom Assistenten ausgewählt",
     "runContextScriptDefault": "der gespeicherte Standard des Skripts",

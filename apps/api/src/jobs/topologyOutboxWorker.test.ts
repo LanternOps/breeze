@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ execute: vi.fn(), drain: vi.fn(), prune: vi.fn(), flags: vi.fn(), capture: vi.fn(), contexts: [] as number[], nextContext: 0 }));
+const mocks = vi.hoisted(() => ({ execute: vi.fn(), drain: vi.fn(), prune: vi.fn(), flags: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), contexts: [] as number[], nextContext: 0 }));
 vi.mock('../db', async () => {
   const { AsyncLocalStorage } = await import('node:async_hooks');
   const context = new AsyncLocalStorage<number>();
@@ -13,12 +13,13 @@ vi.mock('../services/topology/legacyImport', () => ({ drainTopologyOutbox: mocks
 vi.mock('../services/topology/legacyRetention', () => ({ pruneDeliveredTopologyOutbox: mocks.prune }));
 vi.mock('../services/topology/flags', () => ({ loadTopologyFlags: mocks.flags }));
 vi.mock('../services/sentry', () => ({ captureException: mocks.capture }));
+vi.mock('./topologyBootstrapPass', () => ({ runTopologyBootstrapPass: mocks.bootstrap, TOPOLOGY_BOOTSTRAP_INTERVAL_MS: 15_000 }));
 import { initializeTopologyOutboxWorker, retryableTopologyTransaction, runTopologyRepairTick, shutdownTopologyOutboxWorker } from './topologyOutboxWorker';
 const site = { org_id: '00000000-0000-4000-8000-000000000001', site_id: '00000000-0000-4000-8000-000000000002', oldest: null };
 
 beforeEach(() => {
   vi.clearAllMocks(); mocks.contexts.length = 0; mocks.nextContext = 0;
-  mocks.execute.mockResolvedValue([site]); mocks.flags.mockResolvedValue({ materialization: true }); mocks.drain.mockResolvedValue({ complete: true }); mocks.prune.mockResolvedValue(0);
+  mocks.execute.mockResolvedValue([site]); mocks.flags.mockResolvedValue({ materialization: true }); mocks.drain.mockResolvedValue({ complete: true }); mocks.prune.mockResolvedValue(0); mocks.bootstrap.mockResolvedValue(undefined);
 });
 afterEach(async () => { await shutdownTopologyOutboxWorker(); vi.useRealTimers(); });
 describe('topology database outbox repair worker', () => {
@@ -47,6 +48,18 @@ describe('topology database outbox repair worker', () => {
     await runTopologyRepairTick();
     expect(mocks.drain).toHaveBeenCalledOnce(); expect(mocks.execute).toHaveBeenCalledTimes(3); expect(mocks.capture).toHaveBeenCalledOnce();
     expect(mocks.prune).not.toHaveBeenCalled();
+  });
+  it('runs the first-snapshot bootstrap (#7557) on its slower cadence after repair, even when repair throws', async () => {
+    vi.useFakeTimers();
+    mocks.execute.mockRejectedValueOnce(new Error('candidate query failed'));
+    initializeTopologyOutboxWorker();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.bootstrap).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(mocks.bootstrap).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(mocks.bootstrap).toHaveBeenCalledTimes(2);
+    expect(mocks.drain).toHaveBeenCalled();
   });
   it('coalesces ticks, does not backfill at startup and waits for in-flight shutdown', async () => {
     vi.useFakeTimers();

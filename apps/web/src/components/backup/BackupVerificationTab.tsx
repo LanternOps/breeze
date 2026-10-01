@@ -228,17 +228,19 @@ export default function BackupVerificationTab({
             </div>
             <div>
               {readiness.riskFactors.length > 0 ? (
-                <div className="flex flex-wrap gap-1">
+                // The API's `message` is the human sentence ("No restore test
+                // has run in the last 30 days."); the code is only a fallback
+                // for a row that somehow arrives without one.
+                <ul className="space-y-1">
                   {readiness.riskFactors.map((rf) => (
-                    <span
+                    <li
                       key={rf.code}
-                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${severityColors[rf.severity] || ''}`}
-                      title={rf.message}
+                      className={`rounded-md border px-2 py-1 text-xs font-medium ${severityColors[rf.severity] || ''}`}
                     >
-                      {rf.code.replace(/_/g, ' ')}
-                    </span>
+                      {rf.message?.trim() || rf.code.replace(/_/g, ' ')}
+                    </li>
                   ))}
-                </div>
+                </ul>
               ) : (
                 <span className="text-xs text-success">{t('backupVerificationTab.noRiskFactors')}</span>
               )}

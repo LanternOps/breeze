@@ -24,6 +24,7 @@ agent/internal/authstate/
 agent/internal/backup/
 agent/internal/backup/bmr/
 agent/internal/backup/bmr/fakeserver/
+agent/internal/backup/hosttool/
 agent/internal/backup/hyperv/
 agent/internal/backup/layout/
 agent/internal/backup/mssql/

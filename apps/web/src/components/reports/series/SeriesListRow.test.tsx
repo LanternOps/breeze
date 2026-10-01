@@ -60,10 +60,12 @@ describe('SeriesListRow actions', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
-  it('a paused series shows Paused in the Covers and Last-run cells and offers Resume', async () => {
+  // Pre-release sweep: the row printed Paused twice (Covers and Last-run cells).
+  it('a paused series shows Paused once, in the Covers cell, and offers Resume', async () => {
     renderRow(vi.fn(), PAUSED);
     expect(screen.getByTestId('report-series-paused-covers-s-1')).toHaveTextContent('Paused');
-    expect(screen.getByTestId('report-series-paused-lastrun-s-1')).toHaveTextContent('Paused');
+    expect(screen.queryByTestId('report-series-paused-lastrun-s-1')).toBeNull();
+    expect(screen.getAllByText('Paused')).toHaveLength(1);
     const resume = screen.getByTestId('report-series-pause-s-1');
     expect(resume).toHaveTextContent('Resume');
     fireEvent.click(resume);

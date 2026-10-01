@@ -33,3 +33,14 @@ export function formSecretValue(value: unknown): string {
 export function isMaskedSecret(value: unknown): value is string {
   return typeof value === 'string' && /^\*+$/.test(value.trim());
 }
+
+/**
+ * Whether a list entry read from the API is a saved secret entry. The API
+ * masks each entry of a secret list (e.g. `notifications.webhooks`) as a
+ * keyed marker, `********:<key>`, where the key names the stored entry
+ * without revealing it. Send the entry back unchanged to keep it; leave it
+ * out to remove it.
+ */
+export function isMaskedListEntry(value: unknown): value is string {
+  return typeof value === 'string' && /^\*+(?::[0-9a-f]+)?$/.test(value.trim());
+}

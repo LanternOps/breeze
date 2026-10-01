@@ -402,6 +402,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_snapshot_id_reservations',
   'backup_snapshot_retirements',
   'backup_snapshots',
+  // Storage key history: config_id and verified_by_user_id are SET NULL, so
+  // position is determinism, not correctness.
+  'backup_storage_credential_history',
   // Multipart uploads of write-scoped storage sessions (FKs CASCADE).
   'backup_storage_session_uploads',
   // Brokered storage sessions: org_id denormalised from the executing device;
@@ -523,6 +526,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_reliability_history',
   'device_sessions',
   'device_software_inventory_state',
+  'device_time_daily',
+  'device_time_status',
   'device_vulnerabilities',
   'device_warranty',
   'devices',

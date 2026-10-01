@@ -29,11 +29,18 @@ export async function attachDeviceNames<T extends { deviceId: string }>(
   return rows.map((r) => ({ ...r, deviceName: names.get(r.deviceId) ?? null }));
 }
 
-/** Restore-as-VM and instant boot both persist restoreType 'full'; tell them apart. */
-export function restoreModeFromTargetConfig(config: unknown): 'instant_boot' | 'vm' | null {
+/**
+ * Restore-as-VM, instant boot and the rebuild engine all persist restoreType
+ * 'full'; tell them apart so the UI neither labels them "full restore" nor
+ * offers file-restore actions (Cancel) on them.
+ */
+export function restoreModeFromTargetConfig(config: unknown): 'instant_boot' | 'vm' | 'rebuild' | null {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
   const c = config as Record<string, unknown>;
   if (c.mode === 'instant_boot') return 'instant_boot';
+  // REBUILD_VHDX_RESTORE_MODE in services/vmRestoreRebuildEngine.ts (not
+  // imported: that module drags the whole rebuild dispatch chain in here).
+  if (c.mode === 'rebuild_vhdx') return 'rebuild';
   if (typeof c.hypervisor === 'string' && typeof c.vmName === 'string') return 'vm';
   return null;
 }

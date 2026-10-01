@@ -21,9 +21,12 @@ import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 
 // Selectable models for the catalog's per-revision model map. Mirrors
-// OFFERABLE_AI_MODELS in apps/api/src/services/aiCostTracker.ts — the API
+// OFFERABLE_AI_MODELS in apps/api/src/services/aiOfferableModels.ts — the API
 // rejects any mapped model id not on that list, so keep this in sync with it.
 const OFFERABLE_AI_MODELS = [
+  'claude-opus-5-5',
+  'claude-sonnet-5-5',
+  'claude-fable-5-1',
   'claude-opus-4-8',
   'claude-sonnet-4-6',
   'claude-haiku-4-5',

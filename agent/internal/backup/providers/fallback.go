@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // FallbackProvider wraps multiple BackupProviders. Uploads go to the primary
@@ -49,6 +50,31 @@ func (f *FallbackProvider) UploadContext(ctx context.Context, localPath, remoteP
 		return uploader.UploadContext(ctx, localPath, remotePath)
 	}
 	return f.providers[0].Upload(localPath, remotePath)
+}
+
+// UploadWithDigest implements DigestUploader for the FIRST (primary)
+// provider, where uploads go. When the primary cannot report a digest the
+// call uploads nothing and returns ErrDigestUnavailable.
+func (f *FallbackProvider) UploadWithDigest(ctx context.Context, localPath, remotePath string) (UploadDigest, error) {
+	if len(f.providers) == 0 {
+		return UploadDigest{}, errors.New("fallback provider has no configured providers")
+	}
+	if du, ok := f.providers[0].(DigestUploader); ok {
+		return du.UploadWithDigest(ctx, localPath, remotePath)
+	}
+	return UploadDigest{}, fmt.Errorf("%w: primary provider %T", ErrDigestUnavailable, f.providers[0])
+}
+
+// SweepStaleUploads implements StaleUploadSweeper for the primary provider,
+// where uploads go; a no-op when it does not support it.
+func (f *FallbackProvider) SweepStaleUploads(prefix string, olderThan time.Duration) (int, error) {
+	if len(f.providers) == 0 {
+		return 0, nil
+	}
+	if sw, ok := f.providers[0].(StaleUploadSweeper); ok {
+		return sw.SweepStaleUploads(prefix, olderThan)
+	}
+	return 0, nil
 }
 
 // Download tries each provider in order until one succeeds.

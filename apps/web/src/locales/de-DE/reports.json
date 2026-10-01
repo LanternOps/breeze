@@ -406,6 +406,7 @@
       },
       "loading": "Berichte werden geladen...",
       "never": "Niemals",
+      "notGeneratedYet": "Noch nicht erstellt",
       "success": {
         "generated": "Bericht „{{name}}“ erstellt."
       },
@@ -830,6 +831,7 @@
         "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden",
         "businessEmailOnly": "Geschäftsberichte werden nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
         "partnerOwnedEmailOnly": "Dieser Bericht umfasst alle Organisationen und wird daher nur an die unten stehenden E-Mail-Adressen zugestellt. Organisationskontakte können nicht hinzugefügt werden.",
+        "oneTimeNotEmailed": "Einmalige Berichte werden nicht per E-Mail versendet. Wählen Sie einen wiederkehrenden Zeitplan, um diesen Bericht an Kontakte zu senden.",
         "emailAddresses": "E-Mail-Adressen"
       },
       "previewTable": {
@@ -864,6 +866,9 @@
         "everyDay": "Jeden Tag"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "Einmalig"
+        },
         "daily": {
           "label": "Täglich"
         },
@@ -1361,15 +1366,57 @@
         "seriesTypeUnsupported": "Dieser Berichtstyp kann nicht als ein Bericht pro Organisation gesendet werden.",
         "seriesConfigOrgSpecific": "Entfernen Sie die Standort-, Geräte- und Gruppenfilter: Ein Multi-Organisations-Bericht umfasst ganze Organisationen.",
         "seriesManaged": "Dieser Bericht gehört zu einem Multi-Organisations-Bericht. Bearbeiten Sie den Multi-Organisations-Bericht oder koppeln Sie diese Kopie zuerst ab.",
-        "seriesOwnerIneligible": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Er benötigt Zugriff auf jede Organisation und jeden Standort.",
+        "seriesOwnerIneligible": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligiblePermission": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Seine Rolle gewährt nicht die Berechtigung zum Exportieren von Berichten (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "Dieser Benutzer kann keinen Multi-Organisations-Bericht besitzen: Er benötigt Zugriff auf jede Organisation.",
+        "seriesOwnerIneligibleInactive": "Das Konto dieses Benutzers ist nicht aktiv, daher kann er keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligibleMembership": "Dieser Benutzer ist kein Mitglied Ihres Partners mehr und kann daher keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligibleNotPartner": "Dieser Benutzer gehört nicht zu Ihrem Partner und kann daher keinen Multi-Organisations-Bericht besitzen.",
+        "seriesOwnerIneligibleTenantInactive": "Ihr Partnerkonto ist nicht aktiv, daher kann ein Multi-Organisations-Bericht keinen neuen Besitzer erhalten.",
         "seriesNotFound": "Dieser Multi-Organisations-Bericht existiert nicht mehr.",
         "seriesWriteDenied": "Nur Partnerbenutzer mit Zugriff auf jede Organisation können Multi-Organisations-Berichte ändern.",
         "seriesTargetOrgInaccessible": "Eine der ausgewählten Organisationen steht Ihnen nicht zur Verfügung.",
+        "seriesTargetOrgHidden": "Quick Support und die Warteorganisation für nicht zugewiesene Geräte können nicht von einem Multi-Organisations-Bericht abgedeckt werden.",
         "reportNotSeriesChild": "Dieser Bericht ist nicht mehr Teil eines Multi-Organisations-Berichts.",
         "recipientModeRequiresSeries": "„Nie senden“ gilt nur für eine Kopie eines Multi-Organisations-Berichts.",
         "recipientsNeedExportAndMfa": "Das Senden von Berichten an Empfänger erfordert die Exportberechtigung und die Multi-Faktor-Anmeldung.",
         "seriesAuthorityUnverifiable": "Der Zugriff des Eigentümers konnte gerade nicht bestätigt werden. Versuchen Sie es gleich noch einmal."
       }
+    },
+    "seriesCombine": {
+      "banner": "Einige Organisationen haben nahezu identische Berichte, die zu einem Multi-Organisations-Bericht zusammengeführt werden können. Gefundene Gruppen: {{groups}}",
+      "review": "Prüfen",
+      "title": "Zu einem Multi-Organisations-Bericht zusammenführen",
+      "groupLabel": "Gruppe",
+      "groupSummary": "{{type}} · {{schedule}} · Organisationen: {{orgs}}",
+      "nameLabel": "Name des Multi-Organisations-Berichts",
+      "targetLegend": "Abgedeckte Organisationen",
+      "targetSelected": "Nur diese Organisationen (es wird nichts Neues versendet)",
+      "targetAll": "Alle Organisationen, auch später hinzugefügte",
+      "targetAllWarning": "Organisationen ohne eigene Kopie erhalten diesen Bericht künftig – nur an die interne CC, bis Sie Kundenempfänger hinzufügen.",
+      "adopt": "Wird übernommen und umgewandelt",
+      "archive": "Duplikat, wird archiviert",
+      "deliverableLinked": "Dient als Nachweis für eine Serviceleistung",
+      "lastRun": "Letzter Lauf {{date}}",
+      "neverRun": "Noch nie ausgeführt",
+      "contacts": "Kundenempfänger: {{list}}",
+      "noContacts": "Keine Kundenempfänger",
+      "ccShared": "Interne CC auf jeder Kopie: {{list}}",
+      "ccNone": "Keine interne CC",
+      "ccConflictHeading": "Diese CC-Adressen stehen nur auf einigen dieser Berichte. Legen Sie für jede fest, was geschehen soll:",
+      "ccInclude": "Jede Kopie in CC",
+      "ccDrop": "Nicht mehr in CC",
+      "ccUnresolved": "Legen Sie vor dem Zusammenführen für jede CC-Adresse fest, was geschehen soll.",
+      "ruleNote": "Jeder Kunde behält genau die Empfänger, die er heute hat. Eine Empfängerregel können Sie später im Multi-Organisations-Bericht hinzufügen.",
+      "confirm": "Zusammenführen",
+      "success": "Zusammengeführt zu „{{name}}“",
+      "failed": "Diese Berichte konnten nicht zusammengeführt werden.",
+      "groupChanged": "Diese Berichte haben sich seit dem Öffnen des Dialogs geändert. Die Liste wurde aktualisiert.",
+      "stalled": "Wird derzeit nicht versendet (der Besitzer hat keinen Zugriff mehr). Durch das Zusammenführen wird der Versand fortgesetzt.",
+      "ccHeldBy": "Derzeit in CC bei: {{list}}",
+      "ownerIneligible": "Sie können keinen Bericht für diese Organisationen besitzen: {{list}}",
+      "ccTooMany": "Zu viele interne CC-Adressen (maximal {{max}}).",
+      "otherOrgs": "weitere Organisationen"
     }
   }
 }

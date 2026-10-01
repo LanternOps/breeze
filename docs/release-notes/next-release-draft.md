@@ -8,7 +8,7 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.118.0** (2026-09-27).
+Last release: **v0.119.0** (2026-09-30).
 
 ---
 
@@ -16,67 +16,5 @@ Last release: **v0.118.0** (2026-09-27).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- **HEADLINE — S3 restores now require HTTPS end to end and the v0.118+ agent. No fallback.** Restores, test restores and verification (file, MSSQL, Hyper-V) that read from S3 or S3-compatible storage are served only through a short-lived storage session. The previous path, which sent the storage destination to the device, is gone, and there is no setting to turn it back on. A read is refused, with a message naming the fix, when:
-  - the device's agent is older than v0.118 (the restore, MSSQL, Hyper-V and verification routes answer **409** "Update the Breeze agent on this device, then try again" before anything is queued);
-  - agents reach the API over plain `http://`, or `PUBLIC_API_URL` is unset or does not match the address agents use;
-  - the storage configuration's endpoint is `http://` (typical for a self-hosted MinIO).
-  **Self-hosters on plain-HTTP MinIO or a plain-HTTP API: move to HTTPS before upgrading**, or every S3 restore is refused. Keep MinIO's host and port when you switch; only the scheme may change, or earlier backups cannot be restored. Guide: `/backup/https-restores/`. Local/NAS destinations and backups themselves are not affected. A snapshot whose file list is not yet prepared is held and delivered automatically once it is.
-
-### Remote desktop consent: VNC refused, consent-capable agent required, audit actions renamed
-
-- **VNC is refused on devices that require consent.** When a device's resolved
-  remote access policy has the session prompt set to *Require consent*, creating
-  a VNC tunnel (`POST /tunnels` with `type: 'vnc'`), falling back from the
-  desktop viewer to VNC (`POST /vnc-viewer/downgrade-to-vnc`), and minting a
-  ticket or connect code for an existing VNC tunnel (`POST /tunnels/:id/ws-ticket`,
-  `POST /tunnels/:id/connect-code`, `POST /vnc-exchange/:code`) now return
-  `409 { code: 'CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE' }`. The VNC tunnel
-  WebSocket is refused at connect time too, and an open VNC relay is closed
-  (close code 4003) at its next live re-check once the device's policy
-  changes to *Require consent*. VNC cannot show the consent prompt;
-  technicians use the remote desktop viewer instead. Notify and off modes are
-  unchanged.
-- **Consent-mode desktop starts need a consent-capable agent.** Both WebRTC
-  offer routes (`POST /remote/sessions/:id/offer` and
-  `POST /desktop-ws/:id/viewer/offer`) now refuse a consent-mode start with
-  `409 { code: 'CONSENT_UPGRADE_REQUIRED' }` before anything is sent to the
-  device when its agent does not report consent prompt protocol version 1 —
-  the same check the WebSocket fallback already made. Update agents on devices
-  under a consent policy before upgrading the server. Notify/off starts are not
-  affected.
-- **An unreadable prompt policy now refuses the start.** If the device's remote
-  access prompt settings cannot be read (lookup error, unresolvable device, a
-  remote_access policy whose settings row is missing although the policy carries
-  prompt settings, or an unknown stored value), desktop starts and VNC return
-  `503 { code: 'REMOTE_PROMPT_POLICY_UNAVAILABLE' }` instead of falling back to
-  the notify defaults. Devices with no remote access policy still default to
-  notify. A remote_access policy saved without any prompt settings still uses
-  the defaults. Fix: re-save the device's remote access policy.
-- **Consent audit actions renamed** (a start the device refused is no longer
-  recorded as `session_consent_bypassed`). Update any saved audit filters,
-  SIEM rules or exports that match on these strings:
-
-  | Outcome (agent `consent_denied` reason) | Before | After |
-  |---|---|---|
-  | User declined (`user`) | `session_consent_denied` | `session_consent_denied` (unchanged) |
-  | Prompt not answered, start refused (`timeout`) | `session_consent_denied` | `session_consent_blocked_unanswered` |
-  | Prompt could not be shown/answered, start refused (`helper_absent`, `no_user`, other) | `session_consent_bypassed` | `session_consent_blocked_unavailable` |
-  | Started without an answer under *Proceed* | `session_consent_bypassed` | `session_consent_bypassed` (unchanged) |
-
-  Rows written before the upgrade keep their old action names.
-- The policy editor's help text for *If no one can respond* now lists every
-  case it covers: no one signed in, the consent prompt can't be shown, or the
-  signed-in user doesn't answer within 30 seconds.
-- **AI screen tools and device diagnose honour the consent policy.** On a device
-  whose resolved remote access policy is *Require consent*, the AI tools
-  `take_screenshot`, `analyze_screen` and `computer_control` and
-  `POST /devices/:id/diagnose` are refused before anything is sent to the
-  device: the tools return `{ code: 'CONSENT_REQUIRED_SCREEN_ACCESS_UNAVAILABLE' }`
-  to the AI, the route returns `409` with the same code. These one-shot
-  captures cannot show the consent prompt yet; use the remote desktop viewer,
-  which asks. An unreadable prompt policy refuses with
-  `REMOTE_PROMPT_POLICY_UNAVAILABLE` (`503` on the route). Each refusal is
-  audited as `screen_access_consent_blocked` (details: `surface`, `reason`
-  `prompt_unsupported` or `policy_unavailable`). This includes the on-device
-  Helper chat on consent-mode devices. Notify and off modes are unchanged.
-  Terminal and file transfer are not covered by the consent policy.
+- **Backups to S3 storage use storage sessions only (minimum agent v0.119.0).** Scheduled, SQL Server and Hyper-V backups to S3 or S3-compatible storage are written only through a short-lived, write-scoped storage session; no backup command carries the storage destination or its keys. A device whose agent predates v0.119.0 is refused with `Update the Breeze agent on this device, then try again. Backups now require secure storage access, …` (HTTP 409 on the on-demand routes; scheduled jobs fail with the same message). `http://` storage endpoints, `http://` agent API addresses (or a missing `PUBLIC_API_URL`) and providers other than S3/local are refused for backups, as they already are for restores. **Before upgrading:** update every device that backs up to S3 to agent v0.119.0+, and move storage endpoints and the agent API to HTTPS. Local/NAS destinations are unchanged. New migration `2026-11-12-100000-backup-storage-credential-history.sql` (new table, no data rewrite). At its first start the API records the storage key each S3 destination uses; the Backup policy's Destination section then lists keys used before the upgrade until each is replaced and disabled with the provider (**Check old key**, or an operator confirmation). Docs: [HTTPS for Backups](/backup/https-backups/). The `breeze_backup_write_dispatch_unexpected_legacy_total` metric now counts any backup delivered with its storage key (none are expected).
+- **AI tool `manage_backup_configs` accepts only `s3` and `local` providers,** matching the backup destination API (other provider values were accepted by the tool but cannot be used for backups).

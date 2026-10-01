@@ -38,6 +38,9 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
+  // Old storage key check / operator confirmation: both mutations surface
+  // their outcome through runAction from birth.
+  'src/components/configurationPolicies/featureTabs/StorageKeyRevocationCard.tsx',
   // Per-rule legacy convert (POST /monitor-definitions/convert-from-rule).
   'src/components/monitoring/LegacyRulesTable.tsx',
   // Disk Cleanup v2 W01: scan and cleanup-preview failures must surface.
@@ -331,6 +334,10 @@ const TARGET_GLOBS = [
   // that 403s on the all-organizations access gate must never look identical
   // to one that succeeded.
   'src/components/reports/ReportTemplates.tsx',
+  // Multi-org report series W04 (Combine): the combine POST rewrites and
+  // archives existing reports across orgs; a silent failure would read as
+  // "combined" while every duplicate keeps sending.
+  'src/components/reports/series/CombineDialog.tsx',
   // Multi-org report series (W03): the one client for every series mutation
   // (create/edit/targets/transfer/delete/detach, per-org run, recipient
   // overrides). A silent failure here reads as "this org was excluded" or
@@ -863,7 +870,9 @@ describe('no silent mutations in targeted set', () => {
     // 200 -> 202: devices/AssignParkedDeviceDialog.tsx and
     // devices/UnassignedDevicesPage.tsx (parked-device assignment).
     // Multi-org report series W03 adds reports/series/seriesApi.ts: 202 → 203.
-    expect(absoluteFiles.length).toBe(203);
+    // Multi-org report series W04 adds reports/series/CombineDialog.tsx: 203 → 204.
+    // Backup storage key revocation card (StorageKeyRevocationCard.tsx): 204 → 205.
+    expect(absoluteFiles.length).toBe(205);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

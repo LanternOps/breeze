@@ -925,7 +925,7 @@
         "subtotal": "Sous-total",
         "tax": "Taxe",
         "taxRate": "Taux de taxe",
-        "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
+        "taxRateHelp": "S'applique aux lignes marquées taxables. Ce taux a été fixé à la création du devis ; pour le modifier pour les devis futurs, mettez à jour les paramètres fiscaux de l'organisation.",
         "title": "Totaux en direct",
         "total": "Total"
       },
@@ -1210,7 +1210,7 @@
         "signerEmailLabel": "Son e-mail (facultatif)",
         "consequenceInvoice": "Une facture de {{amount}} sera émise et numérotée maintenant.",
         "consequenceContracts": "Les lignes récurrentes deviennent des contrats en brouillon que vous activez plus tard.",
-        "consequenceEmail": "La facture sera envoyée par e-mail au client.",
+        "consequenceEmail": "La facture sera envoyée par e-mail à {{recipients}}.",
         "consequenceDraft": "Cette proposition n'a jamais été envoyée. La facture sera la première chose que le client en verra.",
         "submit": "Accepter et émettre la facture",
         "success": "Proposition acceptée. Facture {{number}} émise.",
@@ -1223,7 +1223,9 @@
         "evidenceHelp": "PDF, PNG ou JPEG, jusqu'à 10 Mo — par exemple le bon de commande signé ou le document.",
         "evidenceTooLarge": "Ce fichier dépasse 10 Mo. Choisissez un fichier plus petit.",
         "evidenceAttached": "Justificatif joint.",
-        "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition."
+        "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
+        "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur ce devis ; la facture pourrait donc ne pas être envoyée par e-mail. Envoyez-la vous-même au client si nécessaire.",
+        "successNoRecipient": "Devis accepté. Facture {{number}} émise. Elle n'a peut-être pas été envoyée par e-mail : aucun destinataire n'est enregistré sur ce devis."
       },
       "declineOnBehalf": {
         "button": "Refuser pour le client",
@@ -1952,7 +1954,8 @@
       "inProvider": "Dans {{provider}}",
       "syncingToProvider": "Synchronisation…",
       "providerSyncFailed": "Échec de la synchronisation {{provider}}",
-      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}"
+      "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}",
+      "overpayment": "Le montant dépasse le solde dû ({{balance}})."
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -2169,11 +2172,11 @@
       "title": "Adresse de facturation"
     },
     "contact": {
-      "description": "Les devis et factures sont envoyés par e-mail à cette adresse. Sans elle, l'envoi d'une proposition la marque Envoyée, mais aucun e-mail n'est envoyé.",
-      "email": "E-mail du contact",
-      "emailInvalid": "Saisissez une adresse e-mail valide",
-      "emailPlaceholder": "billing@customer.example",
-      "name": "Nom du contact",
+      "description": "Les devis et factures sont envoyés par défaut par e-mail au contact de facturation de l'organisation — le contact au niveau de l'organisation qui a le rôle Facturation. Vous pouvez toujours modifier les destinataires à chaque envoi.",
+      "manage": "Gérer les contacts",
+      "noEmail": "{{name}} a le rôle Facturation mais aucune adresse e-mail : les devis et factures ne peuvent pas être envoyés par e-mail tant qu'une adresse n'est pas ajoutée.",
+      "none": "Aucun contact n'a le rôle Facturation. D'ici là, l'envoi d'une proposition la marque Envoyée, mais aucun e-mail n'est envoyé.",
+      "recipientLabel": "Destinataire par défaut :",
       "title": "Contact de facturation"
     },
     "currency": {
@@ -2287,7 +2290,8 @@
     "loading": "Chargement des paramètres de facturation…",
     "saveButton": "Enregistrer les paramètres de facturation",
     "saveError": "Impossible d’enregistrer les paramètres de facturation.",
-    "saveSuccess": "Paramètres de facturation enregistrés"
+    "saveSuccess": "Paramètres de facturation enregistrés",
+    "readOnlyNotice": "Vous disposez d'un accès en lecture seule aux paramètres de facturation. Demandez à un administrateur de les modifier."
   },
   "shared": {
     "documentWorkspace": {

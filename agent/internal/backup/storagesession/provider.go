@@ -1,14 +1,12 @@
 package storagesession
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -112,6 +110,14 @@ type Options struct {
 	// StorageIdleTimeout aborts a storage transfer that receives no bytes for
 	// this long. Zero means defaultStorageIdleTimeout.
 	StorageIdleTimeout time.Duration
+	// ControlCallsPerMinute paces control-plane calls; 0 means
+	// defaultControlCallsPerMinute, a negative value disables pacing
+	// (tests).
+	ControlCallsPerMinute int
+	// IdentityHint (write provider only) distinguishes destinations in the
+	// provider's BackupIdentity; the helper passes the backup configuration
+	// id. It never carries a secret.
+	IdentityHint string
 }
 
 type resolvedObject struct {
@@ -123,18 +129,10 @@ type resolvedObject struct {
 // Provider is a read-only providers.BackupProvider backed by a storage
 // session. Safe for concurrent use.
 type Provider struct {
-	base    context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	closeMu sync.Once
+	*sessionControl
 
-	desc     *Descriptor
-	creds    Credentials
-	control  *http.Client
 	storage  *http.Client
-	now      func() time.Time
 	maxBatch int
-	canRenew bool
 	// idleTimeout bounds how long a storage transfer may go without
 	// receiving a byte.
 	idleTimeout time.Duration
@@ -146,12 +144,6 @@ type Provider struct {
 	denied       map[string]struct{}
 	inflight     map[string]chan struct{}
 	storageHosts map[string]struct{}
-	lostErr      error
-
-	leaseMu        sync.Mutex
-	leaseExpiresAt time.Time
-	leaseDuration  time.Duration
-	renewNotBefore time.Time
 }
 
 var (
@@ -160,74 +152,27 @@ var (
 	_ providers.DownloadPlanner   = (*Provider)(nil)
 )
 
-// New builds a provider for a validated descriptor (from ParsePayload). ctx
-// bounds every operation; Close releases the background renewer.
+// New builds a read provider for a validated read-scope descriptor (from
+// ParsePayload). ctx bounds every operation; Close releases the background
+// renewer.
 func New(ctx context.Context, d *Descriptor, creds Credentials, opts Options) (*Provider, error) {
-	now := opts.Now
-	if now == nil {
-		now = time.Now
-	}
-	if d == nil {
-		return nil, sessionErr("descriptor is missing")
-	}
-	// Validate a private copy: New never trusts a caller-built descriptor.
-	validated := *d
-	if err := validated.validate(now()); err != nil {
+	ctl, err := newSessionControl(ctx, d, CommandClassRead, creds, opts)
+	if err != nil {
 		return nil, err
 	}
-	d = &validated
-	if !agentIDPattern.MatchString(creds.AgentID) {
-		return nil, sessionErr("agent identity is unavailable")
-	}
-	if strings.TrimSpace(creds.AgentToken) == "" {
-		return nil, sessionErr("agent credential is unavailable")
-	}
-	baseOrigin := canonicalOrigin(d.baseURL)
-	matched := false
-	for _, o := range creds.ControlPlaneOrigins {
-		if origin, ok := originOf(o); ok && origin == baseOrigin {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return nil, sessionErr("baseUrl %s is not a configured control-plane origin", baseOrigin)
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	base, cancel := context.WithCancel(ctx)
 	p := &Provider{
-		base:         base,
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		desc:         d,
-		creds:        creds,
-		control:      controlClient(opts.ControlClient, creds.ClientTLS),
-		storage:      storageClient(opts.StorageClient),
-		now:          now,
-		maxBatch:     d.MaxBatch,
-		canRenew:     hasCapability(d.Capabilities, CapabilityRenew),
-		planIndex:    map[string]int{},
-		cache:        map[string]*resolvedObject{},
-		denied:       map[string]struct{}{},
-		inflight:     map[string]chan struct{}{},
-		storageHosts: map[string]struct{}{},
+		sessionControl: ctl,
+		storage:        storageClient(opts.StorageClient),
+		maxBatch:       ctl.desc.MaxBatch,
+		planIndex:      map[string]int{},
+		cache:          map[string]*resolvedObject{},
+		denied:         map[string]struct{}{},
+		inflight:       map[string]chan struct{}{},
+		storageHosts:   map[string]struct{}{},
 	}
 	p.idleTimeout = opts.StorageIdleTimeout
 	if p.idleTimeout <= 0 {
 		p.idleTimeout = defaultStorageIdleTimeout
-	}
-	p.leaseExpiresAt = d.expiresAt
-	p.leaseDuration = leaseDurationFrom(d.expiresAt, now())
-
-	if p.canRenew {
-		interval := opts.RenewCheckInterval
-		if interval <= 0 {
-			interval = defaultRenewCheckInterval
-		}
-		go p.renewLoop(interval)
 	}
 	return p, nil
 }
@@ -279,17 +224,7 @@ func noFollow(*http.Request, []*http.Request) error { return http.ErrUseLastResp
 
 // Close stops the background renewer and cancels in-flight operations. Every
 // later Download fails.
-func (p *Provider) Close() {
-	p.closeMu.Do(func() {
-		close(p.done)
-		p.cancel()
-		p.mu.Lock()
-		if p.lostErr == nil {
-			p.lostErr = fmt.Errorf("%w: closed", ErrSessionUnavailable)
-		}
-		p.mu.Unlock()
-	})
-}
+func (p *Provider) Close() { p.close() }
 
 // Upload is not available through a read session.
 func (p *Provider) Upload(string, string) error {
@@ -418,19 +353,6 @@ func (p *Provider) DownloadContext(ctx context.Context, remotePath, localPath st
 	}
 }
 
-// merge returns a context done when either ctx or the provider is done.
-func (p *Provider) merge(ctx context.Context) (context.Context, func()) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	merged, cancel := context.WithCancel(ctx)
-	stopAfter := context.AfterFunc(p.base, cancel)
-	return merged, func() {
-		stopAfter()
-		cancel()
-	}
-}
-
 func (p *Provider) usable(obj *resolvedObject) bool {
 	return p.now().Before(obj.expiresAt.Add(-urlRefreshMargin))
 }
@@ -438,12 +360,10 @@ func (p *Provider) usable(obj *resolvedObject) bool {
 // object returns a URL for key, resolving (with look-ahead) when needed.
 func (p *Provider) object(ctx context.Context, key string, force bool) (*resolvedObject, error) {
 	for {
-		p.mu.Lock()
-		if p.lostErr != nil {
-			err := p.lostErr
-			p.mu.Unlock()
+		if err := p.sessionLost(); err != nil {
 			return nil, err
 		}
+		p.mu.Lock()
 		if _, denied := p.denied[key]; denied {
 			p.mu.Unlock()
 			return nil, deniedErr(key)
@@ -541,45 +461,6 @@ func deniedErr(key string) error {
 	return sessionErr("object %q is not authorized for this session", key)
 }
 
-// markLost ends the session; every later operation fails with err.
-func (p *Provider) markLost(err error) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.lostErr == nil {
-		p.lostErr = fmt.Errorf("%w: %v", ErrSessionUnavailable, err)
-	}
-	return p.lostErr
-}
-
-func (p *Provider) sessionLost() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lostErr
-}
-
-func (p *Provider) endpoint(op string) string {
-	u := *p.desc.baseURL
-	u.Path = "/api/v1/agents/" + p.creds.AgentID + "/storage-sessions/" + p.desc.SessionID + "/" + op
-	return u.String()
-}
-
-// controlRequest performs one authenticated control-plane POST.
-func (p *Provider) controlRequest(ctx context.Context, op string, body any) (*http.Response, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("storage session: encode %s request: %w", op, err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(op), bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("storage session: build %s request: %w", op, err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.creds.AgentToken)
-	req.Header.Set(SessionHeader, p.desc.Token)
-	return p.control.Do(req)
-}
-
 type resolveObjectWire struct {
 	Key       string            `json:"key"`
 	Method    string            `json:"method"`
@@ -602,6 +483,7 @@ func (p *Provider) resolve(ctx context.Context, keys []string) (map[string]*reso
 	delay := retryInitialDelay
 	var waited time.Duration
 	transient := 0
+	throttled := 0
 	for {
 		if err := p.checkDeadline(); err != nil {
 			return nil, nil, err
@@ -625,14 +507,16 @@ func (p *Provider) resolve(ctx context.Context, keys []string) (map[string]*reso
 				_ = resp.Body.Close()
 				return objects, denied, perr
 			case status == http.StatusTooManyRequests:
-				wait = httputil.ParseRetryAfter(resp.Header, time.Now())
-				if wait <= 0 {
-					wait = delay
-				}
+				retryAfter := httputil.ParseRetryAfter(resp.Header, time.Now())
 				drain(resp)
 				if waited >= rateLimitMaxTotalWait {
 					return nil, nil, sessionErr("resolve still rate limited after %s", waited.Round(time.Second))
 				}
+				var throttleErr error
+				if wait, throttleErr = p.throttleWait(retryAfter, throttled); throttleErr != nil {
+					return nil, nil, throttleErr
+				}
+				throttled++
 			case isRetryableStatus(status):
 				drain(resp)
 				transient++
@@ -763,101 +647,6 @@ func isRetryableStatus(code int) bool {
 		return true
 	}
 	return false
-}
-
-// --- lease ---
-
-func (p *Provider) checkDeadline() error {
-	if !p.now().Before(p.desc.deadline) {
-		return p.markLost(errors.New("session deadline has passed"))
-	}
-	return nil
-}
-
-// ensureLease renews the lease once less than a third of it remains.
-// Renewal is single-flight. A failed renew is not fatal by itself (the
-// server decides whether the lease still holds); a rejected renew (the
-// session was revoked or ended) ends the session.
-func (p *Provider) ensureLease(ctx context.Context) error {
-	if err := p.sessionLost(); err != nil {
-		return err
-	}
-	if err := p.checkDeadline(); err != nil {
-		return err
-	}
-	if !p.canRenew {
-		return nil
-	}
-	p.leaseMu.Lock()
-	defer p.leaseMu.Unlock()
-	now := p.now()
-	if p.leaseExpiresAt.Sub(now) > p.leaseDuration/3 {
-		return nil
-	}
-	if now.Before(p.renewNotBefore) {
-		return nil
-	}
-	resp, err := p.controlRequest(ctx, "renew", map[string]any{})
-	if err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("storage session: renew cancelled: %w", ctx.Err())
-		}
-		p.renewNotBefore = now.Add(renewFailureBackoff)
-		slog.Warn("storage session: lease renew failed; will retry", "sessionId", p.desc.SessionID, "error", err.Error())
-		return nil
-	}
-	defer drain(resp)
-	switch status := resp.StatusCode; {
-	case status == http.StatusOK:
-		var wire struct {
-			ExpiresAt string `json:"expiresAt"`
-		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&wire); err != nil {
-			p.renewNotBefore = now.Add(renewFailureBackoff)
-			return nil
-		}
-		expiresAt, err := time.Parse(time.RFC3339, wire.ExpiresAt)
-		if err != nil || !expiresAt.After(now) {
-			p.renewNotBefore = now.Add(renewFailureBackoff)
-			return nil
-		}
-		if expiresAt.After(p.desc.deadline) {
-			expiresAt = p.desc.deadline
-		}
-		p.leaseExpiresAt = expiresAt
-		p.leaseDuration = leaseDurationFrom(expiresAt, now)
-		p.renewNotBefore = time.Time{}
-		return nil
-	case status == http.StatusUnauthorized, status == http.StatusForbidden,
-		status == http.StatusNotFound, status == http.StatusGone:
-		return p.markLost(fmt.Errorf("renew rejected with status %d", status))
-	case status >= 300 && status < 400:
-		return p.markLost(fmt.Errorf("control plane answered renew with a redirect (status %d); redirects are not followed", status))
-	default:
-		wait := httputil.ParseRetryAfter(resp.Header, time.Now())
-		if wait <= 0 {
-			wait = renewFailureBackoff
-		}
-		p.renewNotBefore = now.Add(wait)
-		return nil
-	}
-}
-
-func (p *Provider) renewLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-p.done:
-			return
-		case <-p.base.Done():
-			return
-		case <-ticker.C:
-			if err := p.ensureLease(p.base); err != nil && errors.Is(err, ErrSessionUnavailable) {
-				return
-			}
-		}
-	}
 }
 
 // --- storage fetch ---

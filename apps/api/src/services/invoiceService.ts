@@ -1159,13 +1159,12 @@ export async function updateOrgBillingSettings(
   if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(5);
   // #6229: null = inherit the partner default; 0 is a real value (due on receipt).
   if (patch.invoiceTermsDays !== undefined) set.invoiceTermsDays = patch.invoiceTermsDays;
-  // billingContact is a jsonb bag other importers (e.g. QuickBooks) also write.
-  // It is written by the contacts compat service rather than here (#3258), so
-  // the `contacts` row stays in step with the blob. `mergeBillingContact` keeps
-  // the same atomic `COALESCE(...) || ...::jsonb` this code used before: we
-  // never drop keys we don't model here AND never lose a concurrent writer's
-  // key to a read-modify-write race. Only built when a contact field is in the
-  // patch.
+  // billingContactEmail/Name edit the org's BILLING contact — the org-level
+  // contact holding the `billing` role — through the contacts compat service,
+  // which then re-projects `organizations.billing_contact` (the invoice/quote
+  // recipient) from it. They never touch the primary contact or any other
+  // contact; clearing both unassigns the billing role and deletes nothing. Only
+  // built when a contact field is in the patch.
   const contactPatch: ContactBlob = {};
   if (patch.billingContactEmail !== undefined) contactPatch.email = patch.billingContactEmail;
   if (patch.billingContactName !== undefined) contactPatch.name = patch.billingContactName;
@@ -1197,13 +1196,10 @@ export async function updateOrgBillingSettings(
       }
     }
     if (Object.keys(contactPatch).length > 0) {
-      // Existence check, scoped to the contact path ONLY. The merge inserts a
-      // `contacts` row for the org, so an unknown orgId would raise an FK
-      // violation where this endpoint has always returned a clean 404. It does
-      // NOT reintroduce a read-modify-write race: it selects `id`, never
-      // `billing_contact`, and the merge value below is still computed by
-      // Postgres via `||`. A patch with no contact field does no read at all,
-      // exactly as before.
+      // Existence check, scoped to the contact path ONLY. The merge can insert
+      // a `contacts` row for the org, so an unknown orgId would raise an FK
+      // violation where this endpoint has always returned a clean 404. A patch
+      // with no contact field does no read at all, exactly as before.
       const [exists] = await tx
         .select({ id: organizations.id })
         .from(organizations)
@@ -1211,8 +1207,8 @@ export async function updateOrgBillingSettings(
         .limit(1);
       if (!exists) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
 
-      // Merged FIRST so the projection below observes the merged blob —
-      // OrgBillingSettings.tsx renders straight from this response.
+      // Merged FIRST so the projection read below observes the re-projected
+      // blob. The compat call takes the org row lock before touching contacts.
       await mergeBillingContact(tx, orgId, contactPatch, actor.userId ?? null);
     }
 

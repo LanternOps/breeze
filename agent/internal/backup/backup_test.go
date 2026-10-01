@@ -279,8 +279,11 @@ func TestRunBackupContext_ExcludesOwnCheckpointJournal(t *testing.T) {
 		t.Fatalf("expected only real.txt in the snapshot, got %+v", job.Snapshot.Files)
 	}
 	for _, call := range provider.uploadCalls {
-		if strings.Contains(call.localPath, "backup-journal") {
-			t.Errorf("must never upload a file from the checkpoint-journal directory, got upload of %q", call.localPath)
+		// Keyed on the object key: an upload whose SOURCE is a journal file
+		// lands under files/.../backup-journal/. (The local path may be a
+		// staged copy under the staging dir, which is the journal dir here.)
+		if strings.Contains(call.remotePath, "backup-journal") {
+			t.Errorf("must never upload a file from the checkpoint-journal directory, got upload of %q", call.remotePath)
 		}
 	}
 }

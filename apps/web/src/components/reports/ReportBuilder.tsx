@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatNumber } from '@/lib/i18n/format';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -140,6 +141,13 @@ type ReportBuilderProps = {
    */
   defaultOrgId?: string | null;
   /**
+   * Edit mode: the org the edited report belongs to (ReportEditPage passes
+   * `report.orgId`). Contact recipients are that org's contacts, whatever the
+   * header switcher shows (All organizations included). Null for a
+   * partner-owned report, which takes no contact recipients.
+   */
+  reportOrgId?: string | null;
+  /**
    * The caller's own options (rendered outside the builder, e.g. a business
    * report's options panel on the edit page) are invalid: submit is disabled
    * and a submission is ignored, so a value the API would 400 on never leaves.
@@ -254,6 +262,10 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // Record exhaustive and `reportTypeSurvivesBuilder` false.
   backup_status: 'devices'
 };
+
+/** Listed only for a report opened as one-time (see `offersOneTime`). */
+const oneTimeScheduleOption: { value: ReportSchedule; label: string; description: string } =
+  { value: 'one_time', label: 'One-time', description: 'Run only when generated' };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [
   { value: 'daily', label: 'Daily', description: 'Run every day' },
@@ -762,16 +774,18 @@ export const reportTypeSurvivesBuilder = (value: ReportBuilderType): boolean => 
   return builderToLegacyType[normalizeBuilderType(value)] === value;
 };
 
-const normalizeSchedule = (value?: ReportSchedule): ReportSchedule => {
-  if (!value || value === 'one_time') return 'weekly';
-  return value;
-};
+// A loaded schedule is kept as it is, one_time included: saving must never
+// change a report's cadence the user did not touch. Only a missing one
+// defaults (to weekly, the builder's create default).
+const normalizeSchedule = (value?: ReportSchedule): ReportSchedule => value ?? 'weekly';
 
 const formatLabel = (value: string) =>
   value
     .replace(/_/g, ' ')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/^./, char => char.toUpperCase());
+
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
 let filterIdCounter = 0;
 const buildFilterId = (prefix: string = 'filter') => {
@@ -787,6 +801,7 @@ export default function ReportBuilder({
   partnerOwned = false,
   series,
   defaultOrgId,
+  reportOrgId,
   submitBlocked = false,
   onSubmit,
   onPreview,
@@ -811,11 +826,15 @@ export default function ReportBuilder({
   // W03: a series has no single org. Its live preview reads the first org it
   // covers; its create/edit never sends an orgId (submitSeries returns before
   // the org payload is used). The org-required guard applies to org mode only.
+  // Edit (no picker): the report's own org, whatever the switcher shows.
   const targetOrgId =
     covers.mode === 'series'
       ? firstCoveredOrgId(covers, orgTarget.options)
-      : orgPickerApplies ? orgTarget.orgId : currentOrgId;
+      : orgPickerApplies ? orgTarget.orgId : (reportOrgId ?? currentOrgId);
   const orgMissing = orgPickerApplies && covers.mode === 'org' && orgTarget.missing;
+  // No org yet only because the org list has not arrived: the preview waits
+  // rather than POST without an org (400 for a partner with several orgs).
+  const previewOrgPending = !targetOrgId && orgTarget.pending;
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
 
@@ -842,6 +861,11 @@ export default function ReportBuilder({
   const [aggregation, setAggregation] = useState<Aggregation>(defaultValues?.aggregation ?? { type: 'count' });
   const [chartType, setChartType] = useState<ChartType>(defaultValues?.chartType ?? 'table');
   const [schedule, setSchedule] = useState<ReportSchedule>(normalizeSchedule(defaultValues?.schedule));
+  // A one-time report (one being edited, or a one-time template's) keeps a
+  // One-time choice next to the recurring ones; nothing else offers it, and a
+  // multi-org report (recurring-only, submitSeries) never does.
+  const offersOneTime = defaultValues?.schedule === 'one_time' && !seriesMode;
+  const visibleScheduleOptions = offersOneTime ? [oneTimeScheduleOption, ...scheduleOptions] : scheduleOptions;
   const [scheduleTime, setScheduleTime] = useState(defaultValues?.scheduleTime ?? '09:00');
   const [scheduleDay, setScheduleDay] = useState(defaultValues?.scheduleDay ?? 'monday');
   const [scheduleDate, setScheduleDate] = useState(defaultValues?.scheduleDate ?? '1');
@@ -904,11 +928,15 @@ export default function ReportBuilder({
     setTemplateName(defaultValues.templateName ?? '');
   }, [defaultValues]);
 
+  // The report's own org, never the header switcher's: under All
+  // organizations the switcher names none, and under another org it names the
+  // wrong one. `currentOrgId` only for a caller that does not say.
+  const contactsOrgId = reportOrgId ?? currentOrgId;
   useEffect(() => {
-    if (!currentOrgId || !reportId || schedule === 'one_time' || contactRecipientsRefused) return;
+    if (!contactsOrgId || !reportId || schedule === 'one_time' || contactRecipientsRefused) return;
 
     void Promise.all([
-      fetchWithAuth(`/orgs/organizations/${currentOrgId}/contacts`),
+      fetchWithAuth(`/orgs/organizations/${contactsOrgId}/contacts`, { orgIdOverride: contactsOrgId }),
       fetchWithAuth(`/reports/${reportId}/recipients`)
     ]).then(async ([contactsResponse, recipientsResponse]) => {
       if (!contactsResponse.ok || !recipientsResponse.ok) {
@@ -933,7 +961,7 @@ export default function ReportBuilder({
     }).catch(() => {
       setError(stableT('reports.reportBuilder.recipients.loadFailed'));
     });
-  }, [currentOrgId, reportId, schedule, contactRecipientsRefused, stableT]);
+  }, [contactsOrgId, reportId, schedule, contactRecipientsRefused, stableT]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
   // Series mode (spec §3.7): nothing that names one org's sites/devices/groups.
@@ -1005,6 +1033,13 @@ export default function ReportBuilder({
       setLivePreviewSummary(null);
       setLivePreviewLoading(false);
       setLivePreviewError(stableT('reports.orgPicker.previewNeedsOrg'));
+      return;
+    }
+    if (previewOrgPending) {
+      // Show loading and send nothing; this effect re-runs once the org resolves.
+      previewRequestIdRef.current += 1;
+      setLivePreviewLoading(true);
+      setLivePreviewError(undefined);
       return;
     }
 
@@ -1117,7 +1152,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, targetOrgId, orgMissing, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
+  }, [builderType, targetOrgId, orgMissing, previewOrgPending, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, stableT]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1435,6 +1470,9 @@ export default function ReportBuilder({
   const formatCellValue = (value: unknown) => {
     if (value === null || value === undefined || value === '') return '-';
     if (typeof value === 'number') return formatNumber(value);
+    // An ISO timestamp (Last seen, …) reads in the app's date format. Only a
+    // full date-time: a bare date would shift a day in a zone west of UTC.
+    if (typeof value === 'string' && ISO_DATE_TIME.test(value)) return formatDateTime(value);
     return String(value);
   };
 
@@ -1494,8 +1532,9 @@ export default function ReportBuilder({
       setError(t('reports.series.targeting.noneSelected'));
       return;
     }
-    // Recurring-only. The builder's schedule select never offers one_time, so
-    // this only narrows the type; it is never a silent substitution.
+    // Recurring-only. One-time is offered only for a report opened as
+    // one-time; a multi-org report needs a recurring choice, never a silent
+    // substitution.
     if (!payload.schedule || payload.schedule === 'one_time') {
       setError(t('reports.series.schedule.required'));
       return;
@@ -1690,7 +1729,7 @@ export default function ReportBuilder({
     }
 
     return (
-      <div className="overflow-hidden rounded-md border">
+      <div className="overflow-x-auto rounded-md border">
         <table className={cn('w-full text-left text-sm', compact && 'text-xs')}>
           <thead className="bg-muted/40">
             <tr>
@@ -2377,10 +2416,11 @@ export default function ReportBuilder({
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.schedule')}</p>
               <div className="flex flex-wrap gap-2">
-                {scheduleOptions.map(option => (
+                {visibleScheduleOptions.map(option => (
                   <button
                     key={option.value}
                     type="button"
+                    aria-pressed={schedule === option.value}
                     onClick={() => setSchedule(option.value)}
                     className={cn(
                       'rounded-md border px-3 py-2 text-xs font-medium transition',
@@ -2394,6 +2434,7 @@ export default function ReportBuilder({
                 ))}
               </div>
 
+              {schedule !== 'one_time' && (
               <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div className="space-y-2">
                   <label htmlFor="report-builder-run-time" className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
@@ -2444,6 +2485,7 @@ export default function ReportBuilder({
                   </div>
                 )}
               </div>
+              )}
             </div>
 
             <div className="space-y-3">
@@ -2489,6 +2531,12 @@ export default function ReportBuilder({
                         ? t('reports.reportBuilder.recipients.businessEmailOnly')
                         : t('reports.reportBuilder.recipients.partnerOwnedEmailOnly')}
                     </p>
+                  ) : schedule === 'one_time' ? (
+                    // Contacts are not loaded for a one-time report: it is never
+                    // emailed (runs.ts records no delivery; the worker skips it).
+                    <p data-testid="report-one-time-recipients-note" className="text-xs text-muted-foreground">
+                      {t('reports.reportBuilder.recipients.oneTimeNotEmailed')}
+                    </p>
                   ) : (
                   <>
                   <p className="text-xs font-medium text-muted-foreground">
@@ -2506,7 +2554,7 @@ export default function ReportBuilder({
                           checked={selectedContactIds.has(contact.id)}
                           onChange={() => void toggleContact(contact.id)}
                         />
-                        <span>
+                        <span className="min-w-0 break-all">
                           {contact.name || contact.email}
                           {contact.name && (
                             <span className="block text-xs text-muted-foreground">
@@ -2550,7 +2598,7 @@ export default function ReportBuilder({
                     </div>
                   )}
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex flex-col gap-2 sm:flex-row lg:flex-col xl:flex-row">
                   <input
                     type="email"
                     value={emailInput}
@@ -2623,7 +2671,7 @@ export default function ReportBuilder({
           options form doesn't populate, so it renders stale/generic content
           (sweep F1 — the #B1 fix above hid the input sections but not this). */}
       {!businessType && (
-      <div data-testid="report-builder-live-preview" className="space-y-6 lg:sticky lg:top-6 self-start">
+      <div data-testid="report-builder-live-preview" className="min-w-0 space-y-6 lg:sticky lg:top-6 self-start">
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between">
             <div>
@@ -2642,7 +2690,9 @@ export default function ReportBuilder({
 
           <div className="flex flex-wrap gap-2">
             <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">{scheduleLabel}</span>
-            <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">{scheduleDetail}</span>
+            {schedule !== 'one_time' && (
+              <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">{scheduleDetail}</span>
+            )}
             <span className="rounded-md border bg-muted/30 px-2 py-1 text-xs">
               {exportFormats.map(format => format.toUpperCase()).join(', ')}
             </span>

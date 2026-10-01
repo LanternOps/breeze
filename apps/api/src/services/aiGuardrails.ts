@@ -26,12 +26,16 @@ import { resolveActOperation } from './aiAgents/actManifest';
 import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
 import { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
 // amendment WQ4, #6755): the two agent-denial registries now live in one
 // data-only file, enforced here.
 export { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS };
+// Re-exported for the tier-parity contract tests, which read every tier table
+// from this module.
+export { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead };
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -88,6 +92,16 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
   manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template'],
   manage_services: ['list'],
+  // Live device inspection: listing processes / scheduled tasks runs a live
+  // command on the device (devices:execute, like GET /system-tools/...). Tier 2
+  // read-only, like file_operations:list and manage_services:list: no prompt,
+  // but an audit row, and an MCP key needs ai:write.
+  manage_processes: ['list'],
+  manage_scheduled_tasks: ['list'],
+  // Asking the device for its OS-native cleaner catalog is a live command
+  // (POST /devices/:id/filesystem/system-cleanup/list needs devices:execute).
+  // `status` reads the stored run and stays Tier 1 (TIER1_READ_ACTIONS).
+  system_cleanup: ['list'],
   // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
@@ -95,7 +109,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   file_operations: ['list'],
   // #3088 approval-fatigue fix (2026-08-04): read-only execute_command
   // commandTypes are non-mutating device reads and auto-execute with audit,
-  // consistent with their sibling tools (manage_processes list is Tier 1,
+  // consistent with their sibling tools (manage_processes list,
   // manage_services list and file_operations list are Tier 2). This is an
   // explicit conservative allowlist keyed on commandType (the agent-side
   // handler discriminator — see TOOL_ACTION_INPUT_KEYS above); anything not
@@ -175,7 +189,10 @@ export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
   file_operations: ['list'],
+  manage_processes: ['list'],
+  manage_scheduled_tasks: ['list'],
   manage_services: ['list'],
+  system_cleanup: ['list'],
 };
 
 // #3130 companion for whole tools: base-Tier-2 tools whose EVERY operation is
@@ -257,12 +274,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_notification_channels: ['list'],
   manage_patches: ['list', 'compliance', 'device_history'],
   manage_peripheral_policies: ['list', 'get'],
-  // manage_processes:list dispatches a read-only device command (no state
-  // change) — same class as file_operations:list / manage_services:list.
-  manage_processes: ['list'],
+  // manage_processes:list and manage_scheduled_tasks:list are NOT here: they
+  // run a live command on the device, so they sit in TIER2_ACTIONS (+ the
+  // read-only allowlist) with file_operations:list / manage_services:list.
   manage_saved_filters: ['list', 'get'],
-  // manage_scheduled_tasks:list dispatches a read-only device command.
-  manage_scheduled_tasks: ['list'],
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
@@ -272,7 +287,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
   query_backups: ['list_configs', 'list_jobs', 'list_policies'],
   query_custom_fields: ['list_definitions', 'get_device_values'],
-  system_cleanup: ['list', 'status'],
+  // system_cleanup:list is NOT here: it asks the device live (TIER2_ACTIONS).
+  system_cleanup: ['status'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
@@ -829,6 +845,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },
+  get_device_time_status: { resource: 'devices', action: 'read' },
+  list_time_sync_issues: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
   // routes/patches/operations.ts:29 (/scan) and :171 (/:id/rollback) both
@@ -1035,7 +1053,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
-    list: { resource: 'devices', action: 'read' },
+    // Live inspection: list dispatches list_processes to the agent, the same
+    // command GET /system-tools/devices/:id/processes sends, and that router
+    // requires DEVICES_EXECUTE on every method (routes/systemTools/index.ts).
+    list: { resource: 'devices', action: 'execute' },
     kill: { resource: 'devices', action: 'execute' },
   },
   security_scan: {
@@ -1046,13 +1067,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     restore: { resource: 'devices', action: 'execute' },
     vulnerabilities: { resource: 'devices', action: 'read' },
   },
+  // Stored snapshot read. `refresh: true` scans the device live and requires
+  // devices:execute instead (LIVE_READ_INPUT_FLAGS; POST
+  // /devices/:id/filesystem/scan).
   analyze_disk_usage: { resource: 'devices', action: 'read' },
   disk_cleanup: {
     preview: { resource: 'devices', action: 'read' },
     execute: { resource: 'devices', action: 'execute' },
   },
   system_cleanup: {
-    list: { resource: 'devices', action: 'read' },
+    // Live: asks the device for its cleaner catalog, like POST
+    // /devices/:id/filesystem/system-cleanup/list (DEVICES_EXECUTE).
+    list: { resource: 'devices', action: 'execute' },
     run: { resource: 'devices', action: 'execute' },
     status: { resource: 'devices', action: 'read' },
   },
@@ -1069,10 +1095,15 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   query_audit_log: { resource: 'audit', action: 'read' },
   query_change_log: { resource: 'devices', action: 'read' },
   network_discovery: { resource: 'devices', action: 'execute' },
+  // Stored boot history. `triggerCollection: true` collects live from the
+  // device and requires devices:execute instead (LIVE_READ_INPUT_FLAGS; POST
+  // /devices/:id/collect-boot-metrics).
   analyze_boot_performance: { resource: 'devices', action: 'read' },
   manage_startup_items: { resource: 'devices', action: 'execute' },
   manage_scheduled_tasks: {
-    list: { resource: 'devices', action: 'read' },
+    // Live inspection: list dispatches tasks_list to the agent, like GET
+    // /system-tools/devices/:id/tasks (DEVICES_EXECUTE router-wide).
+    list: { resource: 'devices', action: 'execute' },
     run: { resource: 'devices', action: 'execute' },
     disable: { resource: 'devices', action: 'execute' },
     enable: { resource: 'devices', action: 'execute' },
@@ -1975,6 +2006,20 @@ export function checkGuardrails(
     };
   }
 
+  // A stored-data read whose input asks the device for fresh data
+  // (LIVE_READ_INPUT_FLAGS). Tier 2 read-only, like file_operations:list and
+  // manage_services:list: no prompt, but an audit row, and an MCP key needs
+  // ai:write. Without the flag the tool keeps its base tier.
+  if (requestsLiveDeviceRead(toolName, input)) {
+    return {
+      tier: 2,
+      allowed: true,
+      requiresApproval: false,
+      readOnly: true,
+      description: buildApprovalDescription(toolName, action, input)
+    };
+  }
+
   // Use base tier from tool registration. Split by literal tier (rather than
   // `baseTier >= 3` with a conditional spread) so the tier-3 arm's REQUIRED
   // approvalScope is enforced by the compiler — see GuardrailCheck.
@@ -2606,6 +2651,9 @@ export async function checkPermissionRequirements(
 
 type ToolPermissionRequirement = { resource: string; action: string };
 
+/** What a LIVE_READ_INPUT_FLAGS request requires in place of the tool's stored-read mapping. */
+const LIVE_DEVICE_READ_PERMISSION: ToolPermissionRequirement = { resource: 'devices', action: 'execute' };
+
 type ToolPermissionResolution =
   | { ok: true; requirements: ToolPermissionRequirement[] }
   | { ok: false; denial: string };
@@ -2623,7 +2671,11 @@ function resolveToolPermissionRequirements(
   let required: ToolPermissionRequirement;
   const action = input.action as string | undefined;
 
-  if ('resource' in permDef && 'action' in permDef) {
+  if (requestsLiveDeviceRead(toolName, input)) {
+    // Live device read (LIVE_READ_INPUT_FLAGS): execute-level, like the REST
+    // route that sends the same command. The base mapping is the stored read.
+    required = LIVE_DEVICE_READ_PERMISSION;
+  } else if ('resource' in permDef && 'action' in permDef) {
     required = permDef as ToolPermissionRequirement;
   } else if (action && (permDef as Record<string, ToolPermissionRequirement>)[action]) {
     required = (permDef as Record<string, ToolPermissionRequirement>)[action]!;
@@ -3129,20 +3181,25 @@ function buildApprovalDescription(
         parts.push(
           `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
         );
-        // Review finding (fix round 2): `siteId` and `isPrimary` are the only
-        // two add_contact inputs whose effect reaches beyond inserting a row,
-        // and neither was shown. `isPrimary: true` DEMOTES whoever currently
-        // holds the scope's primary slot and REPLACES the legacy projection —
-        // organizations.billing_contact, or sites.contact when a site is
-        // pinned, which is a public partner-API DTO. Without these the
-        // approver cannot tell "file a new contact" (routine, hence
-        // supervised) apart from "overwrite this customer's billing contact".
+        // Review finding (fix round 2): `siteId`, `isPrimary` and an
+        // org-level `billing` role are the add_contact inputs whose effect
+        // reaches beyond inserting a row, and none was shown. `isPrimary: true`
+        // DEMOTES whoever holds the scope's primary slot (and, pinned to a
+        // site, REPLACES sites.contact, a public partner-API DTO). An
+        // org-level `billing` role can make the new contact THE billing
+        // contact — organizations.billing_contact, the invoice/quote recipient.
+        // Without these the approver cannot tell "file a new contact"
+        // (routine, hence supervised) apart from "re-point this customer's
+        // invoices".
         const acSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
         if (acSiteId) parts.push(`on site ${acSiteId.slice(0, 8)}...`);
         if (input.isPrimary === true) {
           parts.push(
-            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : 'current billing contact'})`
+            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : "organization's current primary contact"})`
           );
+        }
+        if (!acSiteId && Array.isArray(input.roles) && input.roles.includes('billing')) {
+          parts.push("with the Billing role (can become the organization's default invoice recipient)");
         }
       } else parts.push(`Organizations: ${action}`);
       break;

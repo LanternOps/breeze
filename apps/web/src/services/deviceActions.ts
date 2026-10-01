@@ -83,21 +83,27 @@ async function getErrorMessage(response: Response, fallback: string): Promise<st
   }
 }
 
+export function requestDeviceCommand(
+  deviceId: string,
+  type: string,
+  payload?: Record<string, unknown>,
+): Promise<Response> {
+  const body = payload ? { type, payload } : { type };
+  return fetchWithAuth(`/devices/${deviceId}/commands`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
 export async function sendDeviceCommand(
   deviceId: string,
   type: string,
-  payload?: Record<string, unknown>
+  payload?: Record<string, unknown>,
 ): Promise<CommandResult> {
-  const body = payload ? { type, payload } : { type };
-  const response = await fetchWithAuth(`/devices/${deviceId}/commands`, {
-    method: 'POST',
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to send device command'));
-  }
-
+  const response = await requestDeviceCommand(deviceId, type, payload);
+  if (!response.ok)
+    throw new Error(
+      await getErrorMessage(response, 'Failed to send device command'),
+    );
   const data = await response.json();
   return data.command ?? data.data ?? data;
 }
@@ -472,19 +478,6 @@ export async function linkDevicesVmHost(
   return data.data ?? data;
 }
 
-export async function restoreDevice(deviceId: string): Promise<{ success: boolean }> {
-  const response = await fetchWithAuth(`/devices/${deviceId}/restore`, {
-    method: 'POST'
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to restore device'));
-  }
-
-  const data = await response.json();
-  return data.data ?? data;
-}
-
 /**
  * Permanently delete a REMOVED device.
  *
@@ -647,6 +640,7 @@ export type BulkLifecycleFailureCode =
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
+  | 'DEVICE_LIMIT_REACHED'
   | 'ERROR';
 
 export interface BulkLifecycleFailure {

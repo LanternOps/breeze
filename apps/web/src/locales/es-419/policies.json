@@ -535,7 +535,28 @@
         "profilesLoadFailed": "No se pudieron cargar los perfiles de respaldo.",
         "profilesLoadFailedHint": "Vuelve a cargar la página para intentarlo de nuevo. Guardar está deshabilitado hasta que se cargue la lista, para no sobrescribir un vínculo de perfil existente.",
         "destinationsLoadFailed": "No se pudieron cargar los destinos de respaldo.",
-        "destinationsLoadRetry": "Intentar de nuevo"
+        "destinationsLoadRetry": "Intentar de nuevo",
+        "storageKeys": {
+          "title": "Reemplace y desactive las claves de almacenamiento usadas antes del {{date}}",
+          "body": "Las copias de seguridad ahora llegan al almacenamiento mediante sesiones de corta duración, por lo que los dispositivos ya no necesitan una clave de almacenamiento. Las claves que los dispositivos recibieron antes del {{date}} siguen funcionando hasta que las desactive con su proveedor de almacenamiento. Reemplace cada clave en su destino, desactive la clave anterior con su proveedor y luego verifíquela aquí.",
+          "deletedDestination": "Destino eliminado",
+          "inUse": "Este destino todavía la usa. Primero reemplace la clave en el destino.",
+          "replacedOn": "Reemplazada el {{date}}",
+          "checkOldKey": "Verificar clave anterior",
+          "checkFailed": "No se pudo verificar la clave anterior.",
+          "cannotCheck": "Esta clave ya no se puede verificar automáticamente. Desactívela con su proveedor de almacenamiento y luego confirme que lo hizo.",
+          "confirmDisabled": "Desactivé esta clave",
+          "confirmPrompt": "Confirme que desactivó esta clave con su proveedor de almacenamiento. Su confirmación queda registrada y es una evidencia más débil que una verificación que muestre que la clave ya no funciona.",
+          "confirmed": "Registrada como desactivada según su confirmación.",
+          "confirmFailed": "No se pudo registrar su confirmación.",
+          "loadFailed": "No se pudieron cargar las claves de almacenamiento que requieren atención.",
+          "outcome": {
+            "revoked": "La clave anterior ya no funciona. Quedó registrada como desactivada.",
+            "stillLive": "La clave anterior todavía funciona. Desactívela con su proveedor de almacenamiento y vuelva a verificar.",
+            "inconclusive": "No se pudo contactar al proveedor de almacenamiento para verificar la clave anterior. Inténtelo más tarde.",
+            "refusedForListing": "La clave anterior fue rechazada para listar, pero es posible que todavía funcione para cargas. Desactívela con su proveedor de almacenamiento y vuelva a verificar, o confirme que la desactivó."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Software requerido",
@@ -596,6 +617,7 @@
         "enforcementLevel": "Nivel de cumplimiento",
         "checkIntervalMinutes": "Intervalo de comprobación (minutos)",
         "untitledRuleSet": "Conjunto de reglas sin título",
+        "duplicateRuleSetName": "Hay más de un conjunto de reglas llamado \"{{name}}\". Asigna a cada conjunto de reglas su propio nombre.",
         "s": "s",
         "script": "script",
         "scriptId": "scriptId",

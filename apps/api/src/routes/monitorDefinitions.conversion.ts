@@ -19,6 +19,7 @@ import {
   previewNetworkCheckConversion, convertNetworkChecks, NetworkCheckConversionError,
 } from '../services/monitors/conversion/networkChecks';
 import { NetworkHistoryError } from '../services/monitors/conversion/networkHistory';
+import { conversionRefusalResponse } from './monitorConversionErrors';
 
 type Env = { Variables: { auth: AuthContext; permissions?: UserPermissions } };
 export const monitorConversionRoutes = new Hono<Env>();
@@ -53,13 +54,8 @@ monitorConversionRoutes.onError((error, c) => {
     return c.json({ error: 'CONVERSION_PREREQUISITE_MISSING', missing: error.missing }, 409);
   }
   if (!(error instanceof ConversionError)) throw error;
-  if (error.code === 'prerequisite_missing') {
-    return c.json({ error: 'CONVERSION_PREREQUISITE_MISSING', missing: Array.isArray(error.details) ? error.details : [] }, 409);
-  }
-  const status = error.code === 'partner_wide_denied' ? 403
-    : ['policy_not_found', 'source_not_found', 'conversion_not_found'].includes(error.code) ? 404
-    : error.code === 'invalid_reason' ? 400 : 409;
-  return c.json({ error: error.code, message: error.message, details: error.details }, status);
+  const mapped = conversionRefusalResponse(error);
+  return c.json(mapped.body, mapped.status);
 });
 
 const networkGovernance: MiddlewareHandler<Env> = async (c, next) => {

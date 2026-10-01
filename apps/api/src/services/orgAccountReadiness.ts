@@ -289,7 +289,10 @@ function queryContactSignals(ids: string[]) {
       primaryEmail: sql<string | null>`max(${contacts.email}) ${primary}`,
       primaryPhone: sql<string | null>`max(${contacts.phone}) ${primary}`,
       primaryMobile: sql<string | null>`max(${contacts.mobile}) ${primary}`,
-      billingRole: sql<boolean>`bool_or(${contacts.roles} @> ARRAY['billing']::text[])`,
+      // ORG-level only, matching what invoices use: organizations.billing_contact
+      // projects the org-level contact holding the role (contacts/compat.ts
+      // projectBillingContact), so a site-level billing contact receives nothing.
+      billingRole: sql<boolean>`bool_or(${contacts.siteId} IS NULL AND ${contacts.roles} @> ARRAY['billing']::text[])`,
     })
     .from(contacts)
     .where(inArray(contacts.orgId, ids))

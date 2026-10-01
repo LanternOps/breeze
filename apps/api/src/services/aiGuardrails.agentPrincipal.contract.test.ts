@@ -206,6 +206,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_device_context',
   'get_device_details',
   'get_device_hardware_health',
+  'get_device_time_status',
   'get_device_vulnerabilities',
   'get_diagnostic_run', // M4 Task 1 (#6000) one topology diagnostic run, Tier 1 read
   'get_dns_security',
@@ -302,6 +303,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_scripts',
   'list_sites', // A-W06 Tier-1 read
   'list_time_entries', // A-W06 Tier-1 read
+  'list_time_sync_issues',
   'lookup_distributor_product',
   'm365_list_group_memberships',
   'm365_lookup_user',

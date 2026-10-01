@@ -53,10 +53,10 @@ Do NOT perform any mutation. Rank findings by severity and lead with the most ur
     name: 'breeze-device-investigate',
     description: 'Deep-dive one device and summarize likely root cause (read-only).',
     arguments: [{ name: 'device', description: 'Device name, hostname, or id', required: true }],
-    referencedTools: ['resolve_device_context', 'query_devices', 'get_device_details', 'get_device_hardware_health', 'analyze_metrics', 'search_agent_logs', 'get_device_vulnerabilities'],
+    referencedTools: ['resolve_device_context', 'query_devices', 'get_device_details', 'get_device_hardware_health', 'get_device_time_status', 'list_time_sync_issues', 'analyze_metrics', 'search_agent_logs', 'get_device_vulnerabilities'],
     render: (a) => `Investigate the device "${a.device ?? '(unspecified)'}" in Breeze RMM. Steps:
 1. Resolve it with resolve_device_context (or query_devices to search by name); ECHO the resolved device + organization back to the user.
-2. Pull get_device_details, get_device_hardware_health, analyze_metrics, and recent logs via search_agent_logs. If the reliability score is in question, call get_device_hardware_health with includeReliability=true and cite its drivers/hardwareOffenders30d — never guess a cause the tool output doesn't support.
+2. Pull get_device_details, get_device_hardware_health, get_device_time_status, analyze_metrics, and recent logs via search_agent_logs. If the reliability score is in question, call get_device_hardware_health with includeReliability=true and cite its drivers/hardwareOffenders30d — never guess a cause the tool output doesn't support. For time findings, call list_time_sync_issues with the resolved deviceId; use its domain context only within the caller's scope.
 3. Check get_device_vulnerabilities.
 4. Summarize the likely root cause and recommended next actions.
 This is a read-only investigation — do not run commands or mutations without explicit user confirmation.`,

@@ -4,6 +4,7 @@
  * helpers `isInMaintenanceWindow` uses, plus the batched org-pinned loader.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 const executed: unknown[] = [];
 let results: unknown[] = [];
@@ -203,6 +204,28 @@ describe('resolveNextMaintenanceWindows (batched loader)', () => {
     const map = await resolveNextMaintenanceWindows([DEV1], ORG, from);
     expect(map.get(DEV1)).toMatchObject({ source: 'config_policy', startsAt: new Date('2026-09-15T02:00:00Z') });
   });
+
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads offsetless start_time/end_time text as UTC on a %s host',
+    async (zone) => {
+      await withHostTimeZone(zone, async () => {
+        resolveMaintenanceConfigForDevice.mockResolvedValue(null);
+        results = [
+          [{ id: DEV1, site_id: null }],
+          [],
+          [{ id: 'w1', start_time: '2026-09-16 01:00:00', end_time: '2026-09-16 03:00:00.500', target_type: 'all', device_ids: null, site_ids: null, group_ids: null }],
+        ];
+        const map = await resolveNextMaintenanceWindows([DEV1], ORG, from);
+        expect(map.get(DEV1)).toEqual({
+          windowId: 'w1@2026-09-16T01:00:00.000Z',
+          source: 'standalone',
+          startsAt: new Date('2026-09-16T01:00:00Z'),
+          endsAt: new Date('2026-09-16T03:00:00.500Z'),
+          rebootIfPending: false,
+        });
+      });
+    },
+  );
 
   it('includes group-targeted standalone windows (not just device/site/all)', async () => {
     resolveMaintenanceConfigForDevice.mockResolvedValue(null);

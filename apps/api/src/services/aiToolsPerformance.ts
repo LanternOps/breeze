@@ -25,6 +25,7 @@ import {
   resolveStartupItem,
 } from './startupItems';
 import { aiExecuteCommand } from './aiDispatch';
+import { requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -871,7 +872,9 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // analyze_boot_performance - Tier 1 (auto-execute)
+  // analyze_boot_performance - Tier 1 stored boot history; `triggerCollection:
+  // true` collects live from the device (Tier 2 read-only, devices:execute —
+  // aiLiveDeviceReads.ts)
   // ============================================
 
   registerTool({
@@ -896,7 +899,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
       const bootsBack = Math.min(Number(input.bootsBack) || 10, 30);
-      const triggerCollection = Boolean(input.triggerCollection);
+      // The same predicate the guardrails classify on (permission + tier).
+      const triggerCollection = requestsLiveDeviceRead('analyze_boot_performance', input);
       const includePaths = input.includePaths === true;
 
       const access = await verifyDeviceAccess(deviceId, auth, false);

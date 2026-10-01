@@ -1,7 +1,8 @@
-import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredentials';
+import { BACKUP_WRITE_GATED_COMMAND_TYPES } from './backupWriteHelperGate';
 import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
 import { hasDbAccessContext, withDbTransaction } from '../db';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
+import { RECOVERY_INTEGRITY_COMMAND_TYPES, deliverRecoveryCommandIntegrity } from './backupRecoveryCommandIntegrity';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import {
   isCommandDeliveryDeferral,
@@ -100,11 +101,19 @@ registerDeliveryRefresher('software_install', async (payload) => {
 for (const type of BROKERED_READ_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBrokeredReadCommand);
 }
-// Backup WRITES queued as commands (on-demand MSSQL / Hyper-V): a helper that
-// reports brokered writes gets a write-scoped storage session; any other
-// delivery resolves the destination reference as before
-// (services/backupStorageWriteDelivery.ts).
-for (const type of BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES) {
+// Every restore-shaped read above also carries the snapshot's integrity
+// expectation, written at delivery (services/backupRestoreIntegrity.ts). The
+// bare-metal recovery commands read no storage destination from their payload
+// (they run against a recovery token) and get only the expectation.
+for (const type of RECOVERY_INTEGRITY_COMMAND_TYPES) {
+  registerDeliveryRefresher(type, deliverRecoveryCommandIntegrity);
+}
+// Backup WRITES queued as commands (on-demand MSSQL / Hyper-V; backup_run is
+// never queued by this server, but a row that exists anyway takes the same
+// path): a backup to S3 storage is delivered only with a write-scoped storage
+// session and otherwise refused; a local destination — a path, not a
+// credential — is resolved as before (services/backupStorageWriteDelivery.ts).
+for (const type of BACKUP_WRITE_GATED_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBackupWriteCommand);
 }
 

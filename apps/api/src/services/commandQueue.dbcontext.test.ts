@@ -482,3 +482,68 @@ it('executeCommand preserves a caller-supplied command ID through committed inse
   expect(result.commandId).toBe(commandId);
   expect(result.status).toBe('completed');
 });
+
+/**
+ * A backup write command's destination is resolved at delivery, on a
+ * connection of the delivery path's own — and a helper that reports brokered
+ * writes is only given a write session when that connection can see the
+ * command's backup job. Dispatching from inside a held context means the job
+ * the caller just inserted is still uncommitted, so delivery cannot see it and
+ * falls back to delivering the storage destination itself. The dispatch entry
+ * points therefore refuse a backup write from inside a context, before any row
+ * or socket send exists.
+ */
+describe('backup write dispatch requires the caller to have committed', () => {
+  const WRITE_PAYLOAD = { jobId: '22222222-2222-4222-8222-222222222222', provider: 'local' };
+
+  it.each(['mssql_backup', 'hyperv_backup'])(
+    'executeCommand refuses %s from inside a held context',
+    async (type) => {
+      ctxState.ambient = { scope: 'organization' };
+      ctxState.depth = 1;
+
+      await expect(executeCommand('device-1', type, WRITE_PAYLOAD, { timeoutMs: 5_000 }))
+        .rejects.toThrow(/after the transaction that created its backup job has committed/);
+      expect(dbState.insertedCommand).toBeNull();
+      expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['mssql_backup', 'hyperv_backup'])(
+    'executeCommandWithSystemPrecheck refuses %s from inside a held context',
+    async (type) => {
+      ctxState.ambient = { scope: 'organization' };
+      ctxState.depth = 1;
+
+      await expect(executeCommandWithSystemPrecheck('device-1', type, WRITE_PAYLOAD, {
+        timeoutMs: 5_000,
+        expectedOrgId: 'org-1',
+      })).rejects.toThrow(/after the transaction that created its backup job has committed/);
+      expect(dbState.insertedCommand).toBeNull();
+      expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('dispatches a backup write from depth 0', async () => {
+    // Positive control: the refusal above must not be a refusal of every
+    // backup write.
+    dbState.commandRows = [{ id: 'cmd-1', status: 'completed', type: 'mssql_backup', result: { status: 'completed', stdout: '{}' } }];
+
+    const result = await executeCommandWithSystemPrecheck('device-1', 'mssql_backup', WRITE_PAYLOAD, {
+      timeoutMs: 5_000,
+      expectedOrgId: 'org-1',
+    });
+
+    expect(result.status).toBe('completed');
+    expect(dbState.insertedCommand).toMatchObject({ type: 'mssql_backup' });
+  });
+
+  it('leaves other command types dispatched from a held context alone', async () => {
+    ctxState.ambient = { scope: 'organization' };
+    ctxState.depth = 1;
+
+    const result = await executeCommand('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+
+    expect(result.status).toBe('completed');
+  });
+});

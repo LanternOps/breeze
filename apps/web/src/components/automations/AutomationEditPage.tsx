@@ -375,6 +375,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         // creation, and the server rejects it on non-partner callers.
         Object.assign(payload, {
           enabled: true,
+          // The API reads orgId from the body only (not ?orgId=), and 400s for a
+          // multi-org partner without it. Partner-wide rows have no org.
+          ...(values.ownerScope !== 'partner' && currentOrgId ? { orgId: currentOrgId } : {}),
           ...(isPartnerScope && values.ownerScope ? { ownerScope: values.ownerScope } : {})
         });
       }

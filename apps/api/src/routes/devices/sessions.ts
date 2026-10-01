@@ -12,7 +12,7 @@ import {
   withAuthDbAccessContext,
 } from '../../middleware/auth';
 import { sendCommandToAgentAwaitResult } from '../../services/agentCommandAwait';
-import { PERMISSIONS } from '../../services/permissions';
+import { hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
 export const sessionsRoutes = new Hono();
@@ -122,17 +122,37 @@ export function parseLiveSessionsStdout(stdout: string | undefined): LiveSession
   return out;
 }
 
+/**
+ * Grants that may ask a device for its live session list. Sending a live
+ * command to read device state needs an execute-level grant; devices:read
+ * alone keeps the stored list (/sessions/active). remote:access is accepted
+ * because the remote desktop session picker on RDS hosts is this route's main
+ * caller, and a remote session already reaches the device live.
+ */
+export const LIVE_SESSION_LIST_GRANTS = [PERMISSIONS.DEVICES_EXECUTE, PERMISSIONS.REMOTE_ACCESS] as const;
+
+export function canListLiveSessions(permissions: UserPermissions | undefined): boolean {
+  return !!permissions
+    && LIVE_SESSION_LIST_GRANTS.some((grant) => hasPermission(permissions, grant.resource, grant.action));
+}
+
 // Live WTS session enumeration straight from the agent (no DB persistence).
 // Used by the RDS session pickers; distinct from /sessions/active, which reads
 // the inventoried device_sessions rows and may be minutes stale.
 sessionsRoutes.get(
   '/:id/sessions/live',
   requireScope('organization', 'partner', 'system'),
+  // Resolves and stores the caller's permissions; the execute-level check
+  // below runs before the device is looked up.
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
+
+    if (!canListLiveSessions(c.get('permissions'))) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
 
     // This route is registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so the auth
     // middleware does NOT open an ambient request transaction for it. Read the

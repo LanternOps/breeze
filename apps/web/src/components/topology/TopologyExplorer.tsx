@@ -146,6 +146,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     onRun: (aiRunId: string | undefined) => { const current = parseTopologyHash(window.location.hash) ?? navigation; navigate({ ...current, aiRunId }); },
     onEvidenceSelect: (target: { kind: 'node' | 'relationship'; id: string }) => select({ kind: target.kind === 'relationship' ? 'edge' : 'node', id: target.id }),
   } : undefined;
+  const aiNotConfigured = settings.capabilities.ai?.reason === 'ai_not_configured';
   const operations = { interfaceHealth: !!settings.capabilities.interfaceHealth?.available, monitoring: !!settings.capabilities.recurringMonitoring?.available, canConfigure: canConfigureMonitoring };
   return <section data-testid="topology-explorer" className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-end gap-3">
@@ -166,7 +167,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
     {graph && <>
-      <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: graph.counts.visibleNodes, edges: graph.counts.visibleRelationships })}</span><span>{t('omitted', { nodes: graph.counts.omittedNodes, edges: graph.counts.omittedRelationships })}</span></div>
+      <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span><span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span></div>
       <p data-testid="topology-health-internet" className="text-sm">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</p>
       <div className="flex flex-wrap items-center gap-2">
         <button data-testid="topology-fit" className="rounded border px-3 py-2 text-sm" onClick={() => fitRef.current?.()}>{t('fit')}</button>
@@ -184,7 +185,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
           hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
         {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
-          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
+          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
       </div>}
       <p className="text-xs text-muted-foreground">{t('legend')}</p>
       {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className="mr-2 rounded border px-3 py-2 text-sm" onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}

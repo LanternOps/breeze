@@ -12,6 +12,7 @@ import { CommandTypes } from './commandQueue';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
+import { markRequestAuditWritten } from './auditRequestTracking';
 
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
@@ -444,6 +445,7 @@ export async function dispatchWake(
     userAgent: options.userAgent,
     result: 'success',
   });
+  markRequestAuditWritten();
 
   const claimed = await claimPendingCommandForDelivery(command.id);
   if (!claimed) {

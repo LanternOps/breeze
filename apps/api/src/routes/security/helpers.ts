@@ -9,6 +9,7 @@ import {
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
+import { siteAllowlistOf, siteScopeCondition } from '../../services/aiToolsSiteScope';
 import { CommandTypes, queueCommand } from '../../services/commandQueue';
 import type { SecurityPostureItem } from '../../services/securityPosture';
 import {
@@ -203,6 +204,11 @@ export async function listStatusRows(auth: AuthContext, orgId?: string): Promise
     conditions.push(eq(devices.orgId, orgId));
   }
 
+  // Site is an app-layer axis that org RLS does not cover. Applied in SQL so
+  // every projection and aggregate built on these rows sees visible devices only.
+  const siteCondition = siteScopeCondition(auth, devices.siteId);
+  if (siteCondition) conditions.push(siteCondition);
+
   const whereClause = and(...conditions);
 
   const rows = await db
@@ -269,6 +275,9 @@ export async function listThreatRows(auth: AuthContext, deviceId?: string, orgId
     }
     conditions.push(eq(devices.orgId, orgId));
   }
+
+  const siteCondition = siteScopeCondition(auth, devices.siteId);
+  if (siteCondition) conditions.push(siteCondition);
 
   const whereClause = and(...conditions);
 
@@ -834,6 +843,7 @@ export async function buildBe9Recommendations(
   const [posture, threats] = await Promise.all([
     listLatestSecurityPosture({
       orgIds: scope.orgIds,
+      siteIds: siteAllowlistOf(auth),
       limit: 2000
     }),
     listThreatRows(auth, undefined, orgId)

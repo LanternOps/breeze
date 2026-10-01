@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { automationActionSchema } from './automationActions';
+import { TIME_SYNC_FINDING_CODES } from '../constants/timeSync';
 
 /**
  * Monitor definitions (#5287 W02).
@@ -31,6 +32,8 @@ export const MONITOR_KINDS = [
   // evidence supplied by the hardware health leaf handler. Not a legal
   // composite child — see `compositeChildSchema` below.
   'hardware_health',
+  // W02 (time sync): root-only, evaluates accepted time-sync snapshot findings.
+  'time_sync',
 ] as const;
 export type MonitorKind = (typeof MONITOR_KINDS)[number];
 export const monitorKindSchema = z.enum(MONITOR_KINDS);
@@ -235,6 +238,12 @@ const leafConditionSchemas = {
         .min(1),
       minHealth: z.enum(['warning', 'critical']),
       includePredictiveFailure: z.boolean().default(true),
+      consecutiveSnapshots: z.number().int().min(1).max(10).default(2),
+    })
+    .strict(),
+  time_sync: z
+    .object({
+      findings: z.array(z.enum(TIME_SYNC_FINDING_CODES)).min(1),
       consecutiveSnapshots: z.number().int().min(1).max(10).default(2),
     })
     .strict(),

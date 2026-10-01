@@ -145,15 +145,14 @@ export async function linkLoginToContact(
     const roles = existing.roles ?? [];
     const missing = unionRoles.filter((role) => !roles.includes(role));
     // The short-circuit is load-bearing, not an optimisation. `updateContact`
-    // runs the primary-contact re-projection chain (lockProjectionScopes ->
-    // reprojectPrimaryContact -> replaceBillingContact, which updates
-    // `organizations` by bare id per the warning in contacts/compat.ts), and on
-    // the Entra path that chain is reachable from the UNAUTHENTICATED
-    // /client-ai/auth/exchange under a system context whenever the matched
-    // contact happens to be the org's primary. Writing only when a role is
-    // genuinely missing makes it at most once per contact and idempotent
-    // thereafter, so a token replayed in a loop cannot drive repeated org-row
-    // writes. An empty `unionRoles` skips it outright.
+    // locks the organization row for any org-level contact and runs the
+    // billing re-projection (compat.projectBillingContact, which updates
+    // `organizations` by bare id) whenever the matched contact is the org's
+    // billing contact, and on the Entra path that chain is reachable from the
+    // UNAUTHENTICATED /client-ai/auth/exchange under a system context. Writing
+    // only when a role is genuinely missing makes it at most once per contact
+    // and idempotent thereafter, so a token replayed in a loop cannot drive
+    // repeated org-row locks or writes. An empty `unionRoles` skips it outright.
     if (missing.length > 0) {
       await updateContact(exec, existing.id, input.orgId, { roles: [...roles, ...missing] }, input.actor);
     }

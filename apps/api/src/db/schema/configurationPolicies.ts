@@ -57,6 +57,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'monitors',
   // #6856. APPENDED, matching the migration's ADD VALUE order.
   'hardware_monitoring',
+  // #7455. APPENDED, matching the migration's ADD VALUE order.
+  'time_sync',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -354,6 +356,52 @@ export const configPolicyHardwareMonitoringSettings = pgTable('config_policy_har
   check('config_policy_hardware_monitoring_poll_interval_chk', sql`${t.pollIntervalMinutes} BETWEEN 5 AND 60`),
   check('config_policy_hardware_monitoring_disk_interval_chk', sql`${t.diskHealthIntervalMinutes} BETWEEN 15 AND 1440`),
 ]);
+
+// Single-item: one row per feature link (inherited W32Time management
+// settings, #7455). Inline-only — no linked-policy variant.
+export const configPolicyTimeSyncSettings = pgTable(
+  'config_policy_time_sync_settings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    featureLinkId: uuid('feature_link_id')
+      .notNull()
+      .unique()
+      .references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+    enforceNtp: boolean('enforce_ntp').notNull().default(false),
+    ntpServers: text('ntp_servers').array().notNull().default([]),
+    pollIntervalMinutes: integer('poll_interval_minutes').notNull().default(60),
+    timezoneExpected: text('timezone_expected')
+      .$type<'site' | 'pinned'>()
+      .notNull()
+      .default('site'),
+    pinnedTimezone: text('pinned_timezone'),
+    timezoneAutoFix: boolean('timezone_auto_fix').notNull().default(false),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    check(
+      'config_policy_time_sync_servers_chk',
+      sql`cardinality(${t.ntpServers}) <= 5`,
+    ),
+    check(
+      'config_policy_time_sync_poll_chk',
+      sql`${t.pollIntervalMinutes} BETWEEN 15 AND 1440`,
+    ),
+    check(
+      'config_policy_time_sync_expected_chk',
+      sql`${t.timezoneExpected} IN ('site', 'pinned')`,
+    ),
+    check(
+      'config_policy_time_sync_pin_chk',
+      sql`${t.timezoneExpected} = 'site' OR ${t.pinnedTimezone} IS NOT NULL`,
+    ),
+    check(
+      'config_policy_time_sync_enforce_chk',
+      sql`NOT ${t.enforceNtp} OR cardinality(${t.ntpServers}) >= 1`,
+    ),
+  ],
+);
 
 // Single-item: one row per feature link (sensitive data scan settings)
 export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitive_data_settings', {

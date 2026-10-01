@@ -86,7 +86,10 @@ function accountHeadline(dashboard: DashboardDto): string {
   }
 
   if (clauses.length === 0) return "We're still gathering data for this account.";
-  return `${clauses.join(', ')}.`;
+  // Clauses are written for mid-sentence use ("backups verified …"); when the
+  // devices clause is skipped the backup one leads, so capitalise the start.
+  const sentence = clauses.join(', ');
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
 }
 
 /**

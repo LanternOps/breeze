@@ -19,9 +19,11 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
+import RestoreResultNotices from './RestoreResultNotices';
+import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
-import { ActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
@@ -63,8 +65,8 @@ type RestoreJob = {
   deviceId: string;
   restoreType: RestoreType | string;
   deviceName?: string | null;
-  // 'vm' / 'instant_boot' restores persist restoreType 'full' (#7213).
-  restoreMode?: 'vm' | 'instant_boot' | null;
+  // 'vm' / 'instant_boot' / 'rebuild' restores persist restoreType 'full' (#7213).
+  restoreMode?: 'vm' | 'instant_boot' | 'rebuild' | null;
   selectedPaths?: string[];
   status: string;
   targetPath?: string | null;
@@ -123,6 +125,18 @@ function formatBytes(bytes?: number | null): string {
   return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[unitIndex]}`;
 }
 
+function isActiveRestoreStatus(status: string | null | undefined): boolean {
+  return ['pending', 'running'].includes(`${status ?? ''}`.toLowerCase());
+}
+
+// Only file restores (full / selective, the jobs this wizard starts) can be
+// cancelled here. VM, instant-boot and rebuild jobs have their own lifecycle:
+// the restore cancel route does not close a rebuild's bare-metal recovery,
+// which would then block the next rebuild of that device.
+function isCancellableFileRestore(job: RestoreJob): boolean {
+  return !job.restoreMode && isActiveRestoreStatus(job.status);
+}
+
 function formatTimestamp(value?: string | null): string {
   return formatDateTime(value, { fallback: '--' });
 }
@@ -178,6 +192,10 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   const [restoreJob, setRestoreJob] = useState<RestoreJob | null>(null);
   const [restoreHistory, setRestoreHistory] = useState<RestoreJob[]>([]);
   const [restoreHistoryLoading, setRestoreHistoryLoading] = useState(false);
+  const [cancellingRestoreId, setCancellingRestoreId] = useState<string | null>(null);
+  // The success banner's "View progress" scrolls here. A plain anchor would
+  // rewrite the URL hash, which carries the backup dashboard's tab state.
+  const latestRestoreRef = useRef<HTMLDivElement>(null);
 
   const nextStep = () => setStep((prev) => Math.min(prev + 1, 4));
   const prevStep = () => setStep((prev) => Math.max(prev - 1, 0));
@@ -298,6 +316,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   const restoreKindLabel = (job: RestoreJob): string => {
     if (job.restoreMode === 'vm') return t('restoreWizard.kindVm');
     if (job.restoreMode === 'instant_boot') return t('restoreWizard.kindInstantBoot');
+    if (job.restoreMode === 'rebuild') return t('restoreWizard.kindRebuild');
     return job.restoreType === 'selective' ? t('restoreWizard.kindSelective') : t('restoreWizard.kindFull');
   };
 
@@ -358,9 +377,19 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
         parseSuccess: (data) => ((data as { data?: RestoreJob })?.data ?? data) as RestoreJob,
       });
       setRestoreJob(created);
-      setRestoreSuccess(
-        `Restore job ${created.id} ${created.status === 'running' ? 'started' : 'queued'} successfully.`
-      );
+      // Name the device, not the job UUID; the Latest restore job panel
+      // below carries the details and the Cancel control.
+      const deviceName = created.deviceName ?? selectedSnapshot?.deviceName ?? null;
+      const started = `${created.status}`.toLowerCase() === 'running';
+      let confirmation: string;
+      if (deviceName) {
+        confirmation = started
+          ? t('restoreWizard.restoreStartedOnDevice', { device: deviceName })
+          : t('restoreWizard.restoreQueuedOnDevice', { device: deviceName });
+      } else {
+        confirmation = started ? t('restoreWizard.restoreStarted') : t('restoreWizard.restoreQueued');
+      }
+      setRestoreSuccess(confirmation);
       await fetchRestoreHistory();
     } catch (err) {
       // 401 is handled by the auth redirect; every other ActionError was
@@ -371,7 +400,32 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     } finally {
       setRestoring(false);
     }
-  }, [alternatePath, destination, fetchRestoreHistory, restoreType, selectedFiles, snapshotId]);
+  }, [alternatePath, destination, fetchRestoreHistory, restoreType, selectedFiles, selectedSnapshot, snapshotId, t]);
+
+  const handleCancelRestore = useCallback(async (restoreId: string) => {
+    setCancellingRestoreId(restoreId);
+    try {
+      // The cancel route answers 200 with a `warning` when the job is marked
+      // cancelled but the stop signal could not reach the agent — a partial
+      // success runAction treats as success, so surface it ourselves instead
+      // of a clean "cancelled" toast.
+      const result = await runAction<{ data?: RestoreJob; warning?: string } | null>({
+        request: () => fetchWithAuth(`/backup/restore/${restoreId}/cancel`, { method: 'POST' }),
+        errorFallback: t('restoreWizard.cancelRestoreFailed'),
+        successMessage: (body) => (body?.warning ? '' : t('restoreWizard.restoreCancelled')),
+      });
+      if (result?.data) setRestoreJob(result.data);
+      setRestoreSuccess(undefined);
+      if (typeof result?.warning === 'string' && result.warning.trim()) {
+        showToast({ message: result.warning, type: 'warning' });
+      }
+      await fetchRestoreHistory();
+    } catch (err) {
+      handleActionError(err, t('restoreWizard.cancelRestoreFailed'));
+    } finally {
+      setCancellingRestoreId(null);
+    }
+  }, [fetchRestoreHistory, t]);
 
   if (loading) {
     return (
@@ -418,8 +472,18 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
         </div>
       )}
       {restoreSuccess && (
-        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
-          {restoreSuccess}
+        <div
+          data-testid="restore-success-banner"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success"
+        >
+          <span>{restoreSuccess}</span>
+          <button
+            type="button"
+            onClick={() => latestRestoreRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })}
+            className="text-xs font-medium underline underline-offset-2 hover:no-underline"
+          >
+            {t('restoreWizard.viewProgress')}
+          </button>
         </div>
       )}
 
@@ -711,7 +775,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
 
       {(latestKnownRestore || restoreHistoryLoading || restoreHistory.length > 0) ? (
         <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-          <div className="rounded-lg border bg-card p-5 shadow-xs">
+          <div ref={latestRestoreRef} data-testid="restore-latest-job" className="scroll-mt-4 rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-foreground">{t('restoreWizard.latestRestoreJob')}</h3>
@@ -719,13 +783,28 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   {t('restoreWizard.statusAndResultDetailsForTheMostRecently')} </p>
               </div>
               {latestKnownRestore?.id ? (
-                <button
-                  type="button"
-                  onClick={() => void fetchRestoreJob(latestKnownRestore.id)}
-                  className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  {t('restoreWizard.refresh')} </button>
+                <div className="flex items-center gap-2">
+                  {isCancellableFileRestore(latestKnownRestore) ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelRestore(latestKnownRestore.id)}
+                      disabled={cancellingRestoreId === latestKnownRestore.id}
+                      className="inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      {cancellingRestoreId === latestKnownRestore.id
+                        ? t('restoreWizard.cancellingRestore')
+                        : t('restoreWizard.cancelRestore')}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void fetchRestoreJob(latestKnownRestore.id)}
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    {t('restoreWizard.refresh')} </button>
+                </div>
               ) : null}
             </div>
 
@@ -774,6 +853,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     </div>
                   </div>
                 ) : null}
+
+                <RestoreResultNotices result={latestKnownRestore.resultDetails} showUnattestedWarning={false} />
 
                 <div className="grid gap-3">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">

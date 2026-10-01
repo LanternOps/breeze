@@ -104,7 +104,8 @@
     "deliverableTemplates": "Modelos de entregáveis",
     "securityScans": "Varreduras de IOC",
     "system": "Sistema",
-    "monitorConversion": "Conversão de monitores"
+    "monitorConversion": "Conversão de monitores",
+    "timeSync": "Sincronização de horário"
   },
   "documentTitles": {
     "dashboard": "Painel",

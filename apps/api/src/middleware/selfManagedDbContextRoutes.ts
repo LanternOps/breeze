@@ -68,10 +68,21 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/policies\/[^/]+\/convert\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/retire\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/conversion\/[^/]+\/revert\/?$/ },
+  // Per-rule "Convert to monitor" (#5289): convertRuleToMonitor runs the same
+  // template-group preview + convert, each in its own serializable
+  // inCallerTransaction. Under the ambient request transaction every call was
+  // refused by assertIsolationNotNested (a 500); its pre-reads take their own
+  // short caller-scoped context instead (ruleConversionService.ts).
+  { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/convert-from-rule\/[^/]+\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
+  // Customer-portal logout. The handler's only database work is the durable
+  // signed-out record, which must commit in its own system transaction before
+  // the response; under the portal request transaction that write would take a
+  // second pooled connection while the first sat idle (the #6671 double-hold).
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/auth\/logout\/?$/ },
   // Customer-portal "Pay quote" — createQuotePayLink → createInvoicePayLink →
   // checkout.sessions.create. Same shape as the invoice pay route; it was missed
   // when the route shipped, so the portal request tx was pinned across Stripe
@@ -292,6 +303,22 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // commits — the same shape as the #6849 patch-job route.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/backup\/jobs\/run-all\/?$/ },
+  // On-demand MSSQL / Hyper-V backups. Each creates a backup_jobs row and
+  // dispatches a backup write whose storage access is resolved at delivery,
+  // on the delivery path's own connection: a helper that reports brokered
+  // writes gets a write session only for a job that connection can see.
+  // Under the ambient request transaction the job was still uncommitted when
+  // the command was pushed, so the helper was sent the storage destination
+  // instead — and the handler then held the transaction across a device wait
+  // of up to 10 minutes. The handlers create the job in a short
+  // withAuthDbAccessContext block and dispatch strictly after it commits.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/mssql\/backup\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/hyperv\/backup\/?$/ },
+  // Checking a replaced storage key (routes/backup/storageCredentials.ts)
+  // calls the storage provider with that key, against a TENANT-CONTROLLED
+  // endpoint. The handler reads and records in short withAuthDbAccessContext
+  // blocks and makes the storage call with no context held.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/storage-credentials\/[^/]+\/check\/?$/ },
   // PSA connection "Test connection" — constructs a real PSA adapter and calls
   // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
   // baseUrl; a blackholed host would otherwise pin a pooled connection

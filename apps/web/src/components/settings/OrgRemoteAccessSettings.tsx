@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
   ChevronDown, ChevronRight, Edit, Globe, Loader2,
   Monitor, Network, Plus, Trash2, X,
 } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
+import { makeOrgFetch } from '../organizations/record/orgRecordFetch';
 import { formatNumber } from '@/lib/i18n/format';
 import { asList } from '@/lib/asList';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
@@ -45,6 +45,10 @@ function fmtBytes(b: number, units: { bytes: string; kilobytes: string; megabyte
 export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Props) {
   const { t } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
+  // Every request names THIS org. The tunnel allowlist routes take their org
+  // from `?orgId=`, which fetchWithAuth otherwise fills from the header
+  // switcher — a different org whenever the switcher is not on this page's.
+  const orgFetch = useMemo(() => makeOrgFetch(orgId), [orgId]);
   const [fetchedSites, setFetchedSites] = useState<Array<{ id: string; name: string }>>([]);
   const sites = propSites ?? fetchedSites;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -64,7 +68,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
   // Fetch sites if not provided via props
   useEffect(() => {
     if (propSites) return;
-    fetchWithAuth(`/orgs/sites?orgId=${orgId}`)
+    orgFetch(`/orgs/sites?orgId=${orgId}`)
       .then(async res => {
         if (res.ok) {
           const data = await res.json();
@@ -72,12 +76,12 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
         }
       })
       .catch(() => {});
-  }, [orgId, propSites]);
+  }, [orgFetch, orgId, propSites]);
 
   const fetchAllowlist = useCallback(async (siteId: string) => {
     setLoadingSites(p => new Set(p).add(siteId));
     try {
-      const res = await fetchWithAuth(`/tunnels/allowlist?siteId=${siteId}`);
+      const res = await orgFetch(`/tunnels/allowlist?siteId=${siteId}`);
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.loadAllowlist'));
       const data = await res.json();
       setAllowlists(p => ({ ...p, [siteId]: data.rules ?? data }));
@@ -87,19 +91,19 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
     } finally {
       setLoadingSites(p => { const n = new Set(p); n.delete(siteId); return n; });
     }
-  }, [t]);
+  }, [orgFetch, t]);
 
   const fetchTunnels = useCallback(async () => {
     setTunnelsLoading(true);
     try {
-      const res = await fetchWithAuth('/tunnels?status=active');
+      const res = await orgFetch('/tunnels?status=active');
       if (!res.ok) throw new Error(stableT('orgRemoteAccessSettings.errors.loadActiveTunnels'));
       const data = await res.json();
       setTunnels(asList(data, 'tunnels'));
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('orgRemoteAccessSettings.errors.loadTunnels'));
     } finally { setTunnelsLoading(false); }
-  }, [stableT]);
+  }, [orgFetch, stableT]);
 
   useEffect(() => { fetchTunnels(); }, [fetchTunnels]);
 
@@ -114,7 +118,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
   const addRule = async (siteId: string) => {
     if (!rulePattern.trim()) return;
     try {
-      const res = await fetchWithAuth('/tunnels/allowlist', {
+      const res = await orgFetch('/tunnels/allowlist', {
         method: 'POST',
         body: JSON.stringify({ direction: 'destination', siteId, pattern: rulePattern.trim(), description: ruleDesc.trim(), source: 'manual' }),
       });
@@ -126,7 +130,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
 
   const updateRule = async (rule: AllowlistRule, patch: Partial<AllowlistRule>) => {
     try {
-      const res = await fetchWithAuth(`/tunnels/allowlist/${rule.id}`, { method: 'PUT', body: JSON.stringify(patch) });
+      const res = await orgFetch(`/tunnels/allowlist/${rule.id}`, { method: 'PUT', body: JSON.stringify(patch) });
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.updateRule'));
       await fetchAllowlist(rule.siteId); setEditId(null);
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.updateRule')); }
@@ -134,7 +138,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
 
   const deleteRule = async (rule: AllowlistRule) => {
     try {
-      const res = await fetchWithAuth(`/tunnels/allowlist/${rule.id}`, { method: 'DELETE' });
+      const res = await orgFetch(`/tunnels/allowlist/${rule.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.deleteRule'));
       await fetchAllowlist(rule.siteId);
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.deleteRule')); }
@@ -142,7 +146,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Pro
 
   const closeTunnel = async (id: string) => {
     try {
-      const res = await fetchWithAuth(`/tunnels/${id}`, { method: 'DELETE' });
+      const res = await orgFetch(`/tunnels/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.closeTunnel'));
       await fetchTunnels();
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.closeTunnel')); }

@@ -240,8 +240,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     }
   }, [busy, dueDateDraft, invoice.id, refresh, t]);
 
+  // Client-side mirror of the server's OVERPAYMENT check (kept server-side too):
+  // compare in whole cents so 0.1 + 0.2 style float noise can't misfire.
+  const payOverBalance = payAmount !== '' && Math.round(Number(payAmount) * 100) > Math.round(Number(invoice.balance) * 100);
+
   const recordPayment = useCallback(async () => {
-    if (busy || !payAmount) return;
+    if (busy || !payAmount || payOverBalance) return;
     setBusy(true);
     try {
       await runAction({
@@ -265,7 +269,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     } finally {
       setBusy(false);
     }
-  }, [busy, payAmount, payMethod, payRef, payDate, invoice.id, refresh, t]);
+  }, [busy, payAmount, payOverBalance, payMethod, payRef, payDate, invoice.id, refresh, t]);
 
   const voidPayment = useCallback(async (paymentId: string) => {
     if (busy) return;
@@ -558,13 +562,22 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </dl>
             {/* Balance-due focal number */}
             <div className="mt-3 flex min-w-0 items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.summary.balanceDue')}</span>
-              <span
-                className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
-                data-testid="invoice-detail-balance"
-              >
-                {formatMoney(invoice.balance, currency)}
-              </span>
+              {invoice.status === 'void' ? (
+                // A void invoice owes nothing — show the state, not a stale balance.
+                <span className="text-2xl font-semibold uppercase tracking-wide text-muted-foreground" data-testid="invoice-detail-void-state">
+                  {invoiceStatusLabel}
+                </span>
+              ) : (
+                <>
+                  <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.summary.balanceDue')}</span>
+                  <span
+                    className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 ? '' : 'text-muted-foreground'}`}
+                    data-testid="invoice-detail-balance"
+                  >
+                    {formatMoney(invoice.balance, currency)}
+                  </span>
+                </>
+              )}
             </div>
             {/* Deposit strip — mirrors the customer portal so the operator sees the
                 same deposit-first framing the customer's Pay button uses. */}
@@ -806,8 +819,13 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
+                {payOverBalance && (
+                  <p role="alert" className="text-xs text-destructive" data-testid="invoice-payment-overpayment">
+                    {t('invoiceDetail.payments.overpayment', { balance: formatMoney(invoice.balance, currency) })}
+                  </p>
+                )}
                 <button
-                  type="button" onClick={() => setPayConfirmOpen(true)} disabled={busy || !payAmount}
+                  type="button" onClick={() => setPayConfirmOpen(true)} disabled={busy || !payAmount || payOverBalance}
                   title={!payAmount ? t('invoiceDetail.payments.amountRequired') : undefined}
                   aria-describedby={!payAmount ? 'invoice-payment-submit-hint' : undefined}
                   data-testid="invoice-payment-submit"

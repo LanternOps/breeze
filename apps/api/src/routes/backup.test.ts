@@ -32,7 +32,7 @@ vi.mock('../services/commandQueue', () => ({
 function chainMock(resolvedValue: unknown = []) {
   const terminal = vi.fn(() => Promise.resolve(resolvedValue));
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'orderBy', 'groupBy', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'orderBy', 'groupBy', 'limit', 'for', 'returning', 'values', 'set']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   // Make the chain itself thenable
@@ -44,7 +44,10 @@ const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const deleteMock = vi.fn(() => chainMock([]));
 
+// Key history recording is covered by configs.test.ts and its integration suite.
+vi.mock('../services/backupStorageCredentialHistory', () => ({ recordCredentialChange: async () => undefined }));
 vi.mock('../db', () => ({
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),

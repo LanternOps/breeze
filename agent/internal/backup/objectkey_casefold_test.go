@@ -176,6 +176,7 @@ func TestCreateSnapshot_ResumedTwinKeyIsClaimedBeforeNewUploads(t *testing.T) {
 	}
 	if err := journal.Record(SnapshotFile{
 		SourcePath: upper.sourcePath, BackupPath: upperKey, Size: upper.size, ModTime: upper.modTime,
+		Checksum: mustDigestFile(t, upper.sourcePath),
 	}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}

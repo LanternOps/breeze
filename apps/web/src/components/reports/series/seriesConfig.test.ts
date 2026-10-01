@@ -88,6 +88,8 @@ describe('configNamesOrgEntities', () => {
     expect(configNamesOrgEntities({ sites: [] , filters: { siteIds: [] } })).toBe(false);
     expect(configNamesOrgEntities({ filterConditions: [{ field: 'site', value: 'HQ' }] })).toBe(true);
     expect(configNamesOrgEntities({ columns: ['site'] })).toBe(false);
+    // Parity with the server (validation.ts ORG_SPECIFIC_CONDITION_FIELDS): a device-name condition is org-specific too.
+    expect(configNamesOrgEntities({ filterConditions: [{ field: 'device', value: 'PC-1' }] })).toBe(true);
   });
 });
 

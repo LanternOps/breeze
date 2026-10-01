@@ -252,12 +252,13 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // apply site scope directly (RMM-QA-221), as do the earlier metrics fixes.
   'routes/huntress.ts:GET /status',
   'routes/updateRings.ts:GET /:id/compliance',
-  // Org-scoped compliance list, identical posture to its sibling routes
-  // (/firewall, /trends) which resolve rows through the same org-scoped
-  // listStatusRows helper. Flagged only because the recovery-key escrow
-  // enrichment references deviceRecoveryKeys.deviceId inline — and that
-  // lookup is constrained (inArray) to the device ids listStatusRows already
-  // resolved, so it discloses no device beyond the caller's accessible orgs.
+  // Compliance list, identical posture to its sibling routes (/firewall,
+  // /password-policy) which resolve rows through the same listStatusRows
+  // helper — org-scoped and narrowed in SQL to the caller's allowed sites.
+  // Flagged only because the recovery-key escrow enrichment references
+  // deviceRecoveryKeys.deviceId inline — and that lookup is constrained
+  // (inArray) to the device ids listStatusRows already resolved, so it
+  // discloses no device beyond the caller's accessible orgs and sites.
   'routes/security/compliance.ts:GET /encryption',
   // ---- Newly VISIBLE to the widened detector (#4019); posture unchanged.
   // Public bare-metal-recovery bootstrap (mounted on `bmrPublicRoutes`, BEFORE
@@ -318,9 +319,9 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
   'routes/orgSummary.ts:GET /organizations/:id/summary',
   'routes/updateRings.ts:GET /:id/compliance',
-  // Org-scoped compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached
-  // via user auth (requireScope) but exempt because the escrow enrichment is
-  // constrained to the org-scoped device set listStatusRows already resolved.
+  // Compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached via user
+  // auth (requireScope) but exempt because the escrow enrichment is constrained
+  // to the org- and site-scoped device set listStatusRows already resolved.
   'routes/security/compliance.ts:GET /encryption',
 ]);
 

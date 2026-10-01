@@ -43,7 +43,7 @@ export function consumeSwitchToast(): string | null {
 // Static pages under src/pages/devices that share the /devices/:id shape but
 // are fleet views, not a device record — they stay in place on an org switch.
 // Kept in sync with the pages directory by the drift guard in orgSwitch.test.ts.
-const DEVICE_STATIC_SIBLINGS: ReadonlySet<string> = new Set(['compare', 'groups', 'posture', 'unassigned']);
+const DEVICE_STATIC_SIBLINGS: ReadonlySet<string> = new Set(['compare', 'groups', 'posture', 'time', 'unassigned']);
 
 export function getOrgSwitchRedirect(pathname: string): string | null {
   // /devices/:id -> /devices (but not /devices or a static sibling page)

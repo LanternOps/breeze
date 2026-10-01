@@ -25,6 +25,9 @@
  *     file.
  *
  * When one does not hold, the storage destination is NEVER sent instead:
+ *   - the device has not reported its helper yet (stored protocol NULL and
+ *     no report on this delivery) → DEFERRED: the next heartbeat carries the
+ *     report and decides; unknown is never treated as an older helper;
  *   - index not yet server-verified → the delivery is DEFERRED
  *     (CommandDeliveryDeferredError): hydration has been requested and the
  *     row is released for the next claim;
@@ -51,7 +54,19 @@ import {
   PROVIDER_CONFIG_REF_FIELD,
   materializeBackupStorageCredentials,
 } from './backupCommandCredentials';
-import { recordBackupReadDispatch, recordStorageSessionMint } from './backupMetrics';
+import { recordBackupReadDispatch, recordRestoreIntegrity, recordStorageSessionMint, type RestoreIntegrityMetricStatus } from './backupMetrics';
+import {
+  INTEGRITY_LOOKUP_FAILED,
+  evaluateRestoreIntegrity,
+  indexFailedOnAttestation,
+  indexMatchesAttestation,
+  integrityMetricLabels,
+  integrityPayload,
+  lookupIntegrityInformational,
+  snapshotIntegrityFailed,
+  type IntegrityAttestationInput,
+  type IntegrityLookup,
+} from './backupRestoreIntegrity';
 import { isSupportedKeyLayout } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
@@ -68,6 +83,7 @@ import {
   CommandDeliveryRefusedError,
   type DeliveryRefreshContext,
 } from './commandDeliveryRefusal';
+import { BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE, effectiveHelperProtocol } from './backupHelperProtocols';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE, MIN_BACKUP_READ_PROTOCOL_VERSION } from './backupReadHelperGate';
 import { getCommandTimeoutMs } from './commandTimeouts';
 import { CommandTypes } from './commandTypes';
@@ -118,12 +134,21 @@ export type StorageSnapshotRow = {
   id: string;
   orgId: string;
   deviceId: string;
+  jobId: string;
   configId: string | null;
   snapshotId: string;
   storageIdentity: string | null;
   /** Object-key layout (services/backupKeyLayout.ts); only a supported one is ever read. */
   keyLayout: string;
   fileIndexStatus: string;
+  /** SHA-256 of the manifest bytes the server-built file index was built from. */
+  fileIndexManifestSha256: string | null;
+  /** Why the index is 'failed', when it is (backupSnapshotFileIndex.ts HydrationFailure prefix). */
+  fileIndexError: string | null;
+  /** backup_snapshots.integrity_status (display projection). */
+  integrityStatus: string;
+  /** The snapshot's attestation row, or null when it has none. */
+  attestation: IntegrityAttestationInput | null;
   metadata: unknown;
 };
 
@@ -185,7 +210,8 @@ export interface BrokeredReadStore {
   loadDevice(deviceId: string): Promise<{
     id: string;
     orgId: string;
-    backupReadProtocolVersion: number;
+    /** NULL until the device's first heartbeat reports its helper. */
+    backupReadProtocolVersion: number | null;
     agentServerUrl: string | null;
   } | null>;
   findSnapshots(args: { orgId: string; externalSnapshotId: string; configId: string | null }): Promise<StorageSnapshotRow[]>;
@@ -197,7 +223,13 @@ export interface BrokeredReadStore {
   loadSession(sessionId: string): Promise<StorageSessionRow | null>;
   loadCommand(commandId: string): Promise<{ status: string; deviceId: string } | null>;
   revokeSession(sessionId: string, reason: string): Promise<void>;
-  filterIndexedKeys(snapshotDbId: string, keys: string[]): Promise<Set<string>>;
+  /**
+   * The subset of `keys` that are rows of the snapshot's file index, counted
+   * only while the snapshot's index is still complete and built from the
+   * manifest bytes with digest `boundManifestSha256` — decided in the same
+   * statement, so an index being rebuilt never answers.
+   */
+  filterIndexedKeys(snapshotDbId: string, keys: string[], boundManifestSha256: string | null): Promise<Set<string>>;
   loadVerifiedOrigins(snapshotDbId: string, originSnapshotIds: string[]): Promise<VerifiedOriginRow[]>;
   /**
    * Decide one call against the session's budget with evaluateStorageSessionBudget
@@ -230,6 +262,8 @@ export interface BrokeredReadDeps {
   /** Resolves a LOCAL destination reference into the command (a path, never a credential). */
   materializeLocalDestination(payload: Record<string, unknown>, ctx: DeliveryRefreshContext): Promise<Record<string, unknown>>;
   recordDispatch(commandType: string, mode: BackupReadDispatchMode, reason: string): void;
+  /** The integrity expectation delivered with one command (breeze_backup_restore_integrity_total). */
+  recordIntegrity(commandType: string, status: RestoreIntegrityMetricStatus, reason: string): void;
   /** One storage-session issuance decision (minted, or why not). */
   recordMint(scope: 'snapshot_read', outcome: 'minted' | 'refused' | 'deferred' | 'legacy', reason: string): void;
   /** Run `fn` inside the delivery path's DB context, or an org-scoped one when none is held. */
@@ -286,6 +320,7 @@ export const defaultBrokeredReadDeps: BrokeredReadDeps = {
   materializeLocalDestination: (payload, ctx) => materializeBackupStorageCredentials(payload, ctx),
   recordDispatch: (commandType, mode, reason) => recordBackupReadDispatch(commandType, mode, reason),
   recordMint: (scope, outcome, reason) => recordStorageSessionMint(scope, outcome, reason),
+  recordIntegrity: (commandType, status, reason) => recordRestoreIntegrity(commandType, status, reason),
   inOrgContext: (orgId, fn) => defaultInOrgContext(orgId, fn),
   lookupDeviceOrg: (deviceId) => defaultLookupDeviceOrg(deviceId),
 };
@@ -360,7 +395,7 @@ export function httpsEndpoint(providerConfig: Record<string, unknown>): boolean 
 // ── Delivery ────────────────────────────────────────────────────────────────
 
 type Decision =
-  | { mode: 'brokered'; payload: Record<string, unknown> }
+  | { mode: 'brokered'; payload: Record<string, unknown>; snapshot: StorageSnapshotRow }
   | { mode: 'unbrokered'; reason: string };
 
 /**
@@ -396,10 +431,28 @@ const REFUSAL_MESSAGES: Record<string, string> = {
     + 'Point the configuration back to where the backup was written.',
   invalid_backup_file: 'This database backup does not record a readable backup file name.',
   deadline_passed: 'This command reached its time limit before it could be delivered. Start it again.',
+  attestation_failed: 'This backup did not match its integrity record and cannot be read from storage.',
+  manifest_differs_from_attestation:
+    'The stored backup does not match its integrity record and cannot be read from storage.',
 };
+
+/**
+ * Reasons that refuse every restore-shaped type, the VM types included (which
+ * are otherwise delivered as queued when they cannot be brokered): the
+ * snapshot's stored objects did not match its attestation, so no file index
+ * of it can authorize a read, and the helper must not read it any other way.
+ */
+const REFUSED_FOR_EVERY_TYPE = new Set(['attestation_failed', 'manifest_differs_from_attestation']);
 
 const DEFERRAL_MESSAGE = "The backup's file list was still being prepared for a secure restore.";
 const SEALING_DEFERRAL_MESSAGE = 'The backup was still being finalized in storage.';
+const DEFERRAL_MESSAGES: Record<string, string> = {
+  index_unavailable: DEFERRAL_MESSAGE,
+  index_attestation_mismatch:
+    "The backup's file list did not match its integrity record and is being rebuilt from storage.",
+  snapshot_sealing: SEALING_DEFERRAL_MESSAGE,
+  helper_unreported: BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE,
+};
 
 function refusalMessage(reason: string): string {
   return REFUSAL_MESSAGES[reason] ?? 'This backup cannot be read securely.';
@@ -413,39 +466,125 @@ function refusalMessage(reason: string): string {
  * otherwise — a storage destination is never delivered for a read.
  */
 export async function deliverBrokeredReadCommand(
-  payload: Record<string, unknown>,
+  queuedPayload: Record<string, unknown>,
   ctx: DeliveryRefreshContext,
   deps: BrokeredReadDeps = defaultBrokeredReadDeps,
 ): Promise<Record<string, unknown>> {
+  // The integrity block is written by the server at delivery, never taken
+  // from what was queued.
+  const { [INTEGRITY_FIELD]: _queuedIntegrity, ...payload } = queuedPayload;
+
   if (REF_TYPES.has(ctx.type) && payload.provider === 'local' && !hasInlineDestination(payload)) {
     // A local destination is a path the device reaches itself. The resolver
     // refuses if the referenced configuration is no longer local.
+    const local = await deps.materializeLocalDestination(payload, ctx);
     deps.recordDispatch(ctx.type, 'local', 'no_credential');
-    return deps.materializeLocalDestination(payload, ctx);
+    return attachIntegrity(local, ctx.type, await lookupSnapshotForIntegrity(payload, ctx, deps), deps);
   }
 
   const decision = await decide(payload, ctx, deps);
   if (decision.mode === 'brokered') {
     deps.recordMint('snapshot_read', 'minted', 'ok');
     deps.recordDispatch(ctx.type, 'brokered', 'ok');
-    return decision.payload;
+    return attachIntegrity(decision.payload, ctx.type, decision.snapshot, deps);
   }
-  if (decision.reason === 'index_unavailable' || decision.reason === 'snapshot_sealing') {
+  const deferral = DEFERRAL_MESSAGES[decision.reason];
+  if (deferral) {
+    // Every type waits, the two VM types included: they are only delivered
+    // as queued once the device has reported a helper that cannot broker.
     deps.recordMint('snapshot_read', 'deferred', decision.reason);
     deps.recordDispatch(ctx.type, 'deferred', decision.reason);
-    throw new CommandDeliveryDeferredError(
-      decision.reason === 'snapshot_sealing' ? SEALING_DEFERRAL_MESSAGE : DEFERRAL_MESSAGE,
-    );
+    throw new CommandDeliveryDeferredError(deferral);
   }
-  if (REF_TYPES.has(ctx.type)) {
+  if (REF_TYPES.has(ctx.type) || REFUSED_FOR_EVERY_TYPE.has(decision.reason)) {
     deps.recordMint('snapshot_read', 'refused', decision.reason);
     deps.recordDispatch(ctx.type, 'refused', decision.reason);
     throw new CommandDeliveryRefusedError(refusalMessage(decision.reason));
   }
-  // VM commands name no destination; they go as queued.
+  // VM commands name no destination; they go as queued — never for a
+  // snapshot that failed its integrity check, whichever way it was reached.
+  const queuedSnapshot = await lookupSnapshotForIntegrity(payload, ctx, deps);
+  if (queuedSnapshot && queuedSnapshot !== INTEGRITY_LOOKUP_FAILED && snapshotIntegrityFailed(queuedSnapshot)) {
+    deps.recordMint('snapshot_read', 'refused', 'attestation_failed');
+    deps.recordDispatch(ctx.type, 'refused', 'attestation_failed');
+    throw new CommandDeliveryRefusedError(refusalMessage('attestation_failed'));
+  }
   deps.recordMint('snapshot_read', 'legacy', decision.reason);
   deps.recordDispatch(ctx.type, 'legacy', decision.reason);
-  return payload;
+  return attachIntegrity(payload, ctx.type, queuedSnapshot, deps);
+}
+
+export const INTEGRITY_FIELD = 'integrity';
+
+/**
+ * Adds the integrity expectation for `snapshot` (services/backupRestoreIntegrity.ts)
+ * to a payload that is about to be delivered, and counts it. Without a
+ * resolvable snapshot the payload goes without a block.
+ */
+function attachIntegrity(
+  payload: Record<string, unknown>,
+  commandType: string,
+  snapshot: StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED,
+  deps: BrokeredReadDeps,
+): Record<string, unknown> {
+  const integrity: IntegrityLookup = snapshot === INTEGRITY_LOOKUP_FAILED || snapshot === null
+    ? snapshot
+    : evaluateRestoreIntegrity(snapshot, snapshot.attestation);
+  const labels = integrityMetricLabels(integrity);
+  deps.recordIntegrity(commandType, labels.status as RestoreIntegrityMetricStatus, labels.reason);
+  const { [INTEGRITY_FIELD]: _stale, ...out } = payload;
+  return integrity && integrity !== INTEGRITY_LOOKUP_FAILED ? { ...out, [INTEGRITY_FIELD]: integrityPayload(integrity) } : out;
+}
+
+/**
+ * The snapshot a command delivered without a storage session reads (a local
+ * destination, or a VM command as queued), resolved the way `mint` resolves
+ * it: by its provider snapshot id, in the referenced organization and
+ * configuration, else in the target device's organization. Null unless
+ * exactly one row matches. The lookup only feeds the integrity block, so a
+ * failure never holds the command back (INTEGRITY_LOOKUP_FAILED).
+ */
+function lookupSnapshotForIntegrity(
+  payload: Record<string, unknown>,
+  ctx: DeliveryRefreshContext,
+  deps: BrokeredReadDeps,
+): Promise<StorageSnapshotRow | null | typeof INTEGRITY_LOOKUP_FAILED> {
+  return lookupIntegrityInformational(
+    {
+      label: `${ctx.type} delivery`,
+      commandId: ctx.commandId,
+      deviceId: ctx.deviceId,
+      snapshotRef: typeof payload.snapshotId === 'string' ? payload.snapshotId : null,
+    },
+    () => findSnapshotForIntegrity(payload, ctx, deps),
+  );
+}
+
+async function findSnapshotForIntegrity(
+  payload: Record<string, unknown>,
+  ctx: DeliveryRefreshContext,
+  deps: BrokeredReadDeps,
+): Promise<StorageSnapshotRow | null> {
+  const externalSnapshotId = typeof payload.snapshotId === 'string' ? payload.snapshotId : '';
+  if (!externalSnapshotId) return null;
+  let orgId: string | null;
+  let configId: string | null = null;
+  const ref = payload[PROVIDER_CONFIG_REF_FIELD];
+  if (ref && typeof ref === 'object' && !Array.isArray(ref)) {
+    const { configId: refConfig, orgId: refOrg } = ref as Record<string, unknown>;
+    if (typeof refConfig !== 'string' || !UUID_PATTERN.test(refConfig) || typeof refOrg !== 'string' || !UUID_PATTERN.test(refOrg)) {
+      return null;
+    }
+    orgId = refOrg;
+    configId = refConfig;
+  } else {
+    orgId = await deps.lookupDeviceOrg(ctx.deviceId);
+  }
+  if (!orgId) return null;
+  const scopedOrg = orgId;
+  const candidates = await deps.inOrgContext(scopedOrg, () =>
+    deps.store.findSnapshots({ orgId: scopedOrg, externalSnapshotId, configId }));
+  return candidates.length === 1 && candidates[0]!.orgId === scopedOrg ? candidates[0]! : null;
 }
 
 function hasInlineDestination(payload: Record<string, unknown>): boolean {
@@ -498,9 +637,19 @@ async function mint(
   const device = await store.loadDevice(ctx.deviceId);
   if (!device || device.orgId !== orgId) return { mode: 'unbrokered', reason: 'device_org_mismatch' };
 
-  const protocol = typeof ctx.reportedBackupReadProtocolVersion === 'number'
-    ? ctx.reportedBackupReadProtocolVersion
-    : device.backupReadProtocolVersion;
+  const externalSnapshotId = typeof payload.snapshotId === 'string' ? payload.snapshotId : '';
+  const candidates = externalSnapshotId
+    ? await store.findSnapshots({ orgId, externalSnapshotId, configId: refConfigId })
+    : [];
+  // Decided before any other outcome, so a snapshot whose stored objects did
+  // not match its attestation is never read, whatever else is true of the
+  // helper or the destination (and never delivered as queued).
+  if (candidates.length === 1 && snapshotIntegrityFailed(candidates[0]!)) {
+    return { mode: 'unbrokered', reason: 'attestation_failed' };
+  }
+
+  const protocol = effectiveHelperProtocol(ctx.reportedBackupReadProtocolVersion, device.backupReadProtocolVersion);
+  if (protocol === null) return { mode: 'unbrokered', reason: 'helper_unreported' };
   if (!(protocol >= MIN_BACKUP_READ_PROTOCOL_VERSION)) return { mode: 'unbrokered', reason: 'helper_unsupported' };
 
   // The helper only accepts a bare https origin equal to a server URL it is
@@ -518,9 +667,7 @@ async function mint(
   if (!baseUrl) return { mode: 'unbrokered', reason: 'server_origin_unavailable' };
   if (!baseUrl.startsWith('https://')) return { mode: 'unbrokered', reason: 'insecure_server_origin' };
 
-  const externalSnapshotId = typeof payload.snapshotId === 'string' ? payload.snapshotId : '';
   if (!externalSnapshotId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
-  const candidates = await store.findSnapshots({ orgId, externalSnapshotId, configId: refConfigId });
   if (candidates.length !== 1) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const snapshot = candidates[0]!;
   if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
@@ -559,18 +706,29 @@ async function mint(
     useFileIndex = false;
     authorizedKeyCount = controlKeys.length;
   } else {
-    if (snapshot.fileIndexStatus !== 'complete') {
+    // Hydration already refused to build an index from the stored manifest
+    // because its bytes are not the attested ones: permanent, not pending.
+    if (snapshot.fileIndexStatus === 'failed' && indexFailedOnAttestation(snapshot.fileIndexError)) {
+      return { mode: 'unbrokered', reason: 'manifest_differs_from_attestation' };
+    }
+    if (!indexMatchesAttestation(snapshot, snapshot.attestation)) {
       // Ask for a server-verified index so the next delivery attempt can be
-      // brokered; this one is deferred. Queue-only, started after the delivery
-      // transaction closes (no DB connection, no Redis round trip while it is
-      // held); a failure to queue is logged and the deferral stands.
+      // brokered; this one is deferred. A complete index that was not built
+      // from the manifest bytes the snapshot's attestation names is never
+      // used: hydration rebuilds it (or refuses to). Queue-only, started
+      // after the delivery transaction closes (no DB connection, no Redis
+      // round trip while it is held); a failure to queue is logged and the
+      // deferral stands.
       await deps.requestIndexHydration(snapshot.id).catch((err: unknown) => {
         console.warn('[backupStorageSessions] could not request file-index hydration', {
           snapshotDbId: snapshot.id,
           error: err instanceof Error ? err.message : String(err),
         });
       });
-      return { mode: 'unbrokered', reason: 'index_unavailable' };
+      return {
+        mode: 'unbrokered',
+        reason: snapshot.fileIndexStatus === 'complete' ? 'index_attestation_mismatch' : 'index_unavailable',
+      };
     }
     controlKeys = controlKeysFor(snapshot.snapshotId);
     useFileIndex = true;
@@ -630,7 +788,7 @@ async function mint(
     maxBatch: STORAGE_SESSION_MAX_BATCH,
     controlRate: storageSessionControlRate(),
   };
-  return { mode: 'brokered', payload: out };
+  return { mode: 'brokered', payload: out, snapshot };
 }
 
 function hasRefProviderMismatch(payload: Record<string, unknown>, provider: string): boolean {
@@ -744,6 +902,27 @@ export async function resolveStorageSessionObjects(
     return { status: 410, error: 'The snapshot or its storage destination changed' };
   }
 
+  // A snapshot that failed its integrity check since the session was minted
+  // ends every session reading it, index-based or not (the verifier leaves
+  // its index 'failed', so the index check below would not see it).
+  if (snapshotIntegrityFailed(snapshot)) {
+    await store.revokeSession(session.id, 'attestation_failed');
+    return { status: 410, error: 'The snapshot did not match its integrity record' };
+  }
+
+  // An index that no longer matches the snapshot's attestation (an
+  // attestation recorded after the index was built names other manifest
+  // bytes, or the attestation did not match) ends the session. An index that
+  // is merely being rebuilt only stops granting file keys (below).
+  if (
+    session.useFileIndex
+    && snapshot.fileIndexStatus === 'complete'
+    && !indexMatchesAttestation(snapshot, snapshot.attestation)
+  ) {
+    await store.revokeSession(session.id, 'index_attestation_mismatch');
+    return { status: 410, error: "The snapshot's file index no longer matches its integrity record" };
+  }
+
   const granted = new Set<string>();
   const control = new Set(session.controlKeys);
   const indexCandidates: string[] = [];
@@ -757,7 +936,7 @@ export async function resolveStorageSessionObjects(
   }
 
   if (indexCandidates.length > 0 && snapshot.fileIndexStatus === 'complete') {
-    const members = await store.filterIndexedKeys(snapshot.id, indexCandidates);
+    const members = await store.filterIndexedKeys(snapshot.id, indexCandidates, snapshot.fileIndexManifestSha256);
     const external = new Map<string, string[]>();
     for (const key of indexCandidates) {
       if (!members.has(key)) continue;

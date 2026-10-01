@@ -165,6 +165,79 @@ describe('registry_operations reads are agent executions, not device reads (§2.
   });
 });
 
+describe('live device inspection requires devices:execute, like every /system-tools route', () => {
+  // routes/systemTools/index.ts gates every method on DEVICES_EXECUTE: each of
+  // these actions dispatches a live command to the agent. Cached inventory
+  // reads stay on devices:read.
+  const LIVE_READS: ReadonlyArray<readonly [string, string]> = [
+    ['manage_processes', 'list'],
+    ['manage_scheduled_tasks', 'list'],
+    ['manage_services', 'list'],
+    ['file_operations', 'list'],
+    ['file_operations', 'read'],
+    ['registry_operations', 'read_key'],
+    ['registry_operations', 'get_value'],
+  ];
+
+  it.each(LIVE_READS)('%s.%s is denied to the seeded viewer roles', (tool, action) => {
+    expect(allows(grantsOf('Org Viewer'), tool, { action })).toBe(false);
+    expect(allows(grantsOf('Partner Viewer'), tool, { action })).toBe(false);
+    expect(allows(parseGrants(['devices:read', 'devices:write']), tool, { action })).toBe(false);
+  });
+
+  it.each(LIVE_READS)('%s.%s is allowed to the seeded technician roles', (tool, action) => {
+    expect(allows(ORG_TECHNICIAN, tool, { action })).toBe(true);
+    expect(allows(grantsOf('Partner Technician'), tool, { action })).toBe(true);
+    expect(allows(parseGrants(['devices:execute']), tool, { action })).toBe(true);
+  });
+
+  it('the viewer roles keep cached device reads', () => {
+    for (const role of ['Org Viewer', 'Partner Viewer']) {
+      expect(allows(grantsOf(role), 'query_devices')).toBe(true);
+      expect(allows(grantsOf(role), 'get_device_details')).toBe(true);
+    }
+  });
+});
+
+describe('live device reads outside /system-tools require devices:execute, like their routes', () => {
+  // Each input below dispatches a live command to the agent, the same command
+  // its REST route sends, and each of those routes requires DEVICES_EXECUTE:
+  //   system_cleanup list          → POST /devices/:id/filesystem/system-cleanup/list
+  //   analyze_disk_usage refresh   → POST /devices/:id/filesystem/scan
+  //   analyze_boot_performance
+  //     triggerCollection          → POST /devices/:id/collect-boot-metrics
+  const LIVE: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['system_cleanup', { action: 'list' }],
+    ['analyze_disk_usage', { refresh: true }],
+    ['analyze_boot_performance', { triggerCollection: true }],
+  ];
+  // The same tools reading stored data: the matching GET routes are devices:read.
+  const STORED: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['system_cleanup', { action: 'status' }],
+    ['analyze_disk_usage', {}],
+    ['analyze_disk_usage', { refresh: false }],
+    ['analyze_boot_performance', {}],
+    ['analyze_boot_performance', { triggerCollection: false }],
+  ];
+
+  it.each(LIVE)('%s %j is denied to the seeded viewer roles', (tool, input) => {
+    expect(allows(grantsOf('Org Viewer'), tool, input)).toBe(false);
+    expect(allows(grantsOf('Partner Viewer'), tool, input)).toBe(false);
+    expect(allows(parseGrants(['devices:read', 'devices:write']), tool, input)).toBe(false);
+  });
+
+  it.each(LIVE)('%s %j is allowed to the seeded technician roles', (tool, input) => {
+    expect(allows(ORG_TECHNICIAN, tool, input)).toBe(true);
+    expect(allows(grantsOf('Partner Technician'), tool, input)).toBe(true);
+    expect(allows(parseGrants(['devices:execute']), tool, input)).toBe(true);
+  });
+
+  it.each(STORED)('%s %j stays readable by the seeded viewer roles', (tool, input) => {
+    expect(allows(grantsOf('Org Viewer'), tool, input)).toBe(true);
+    expect(allows(grantsOf('Partner Viewer'), tool, input)).toBe(true);
+  });
+});
+
 // These four tools require the same permission as the HTTP route they mirror.
 // Each pair below is asserted in BOTH directions: the previous tool grant
 // alone is refused, and the route's grant is allowed.

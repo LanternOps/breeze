@@ -191,7 +191,8 @@
     "backup_continuity": "Yedekleme sürekliliği",
     "script": "Betik denetimi",
     "network_check": "Ağ denetimi",
-    "hardware_health": "Donanım sağlığı"
+    "hardware_health": "Donanım sağlığı",
+    "time_sync": "Saat eşitleme"
   },
   "fields": {
     "operator": "Karşılaştırma",
@@ -553,6 +554,22 @@
         "too_many_responses": "ondan fazla yanıt gerekir",
         "auto_resolve_conditions": "özel çözüm koşulları korunamıyor",
         "target_unconvertible": "yanıt hedefi dönüştürülemiyor",
+        "already_managed": "zaten bir monitör tarafından yönetiliyor",
+        "no_org": "denetim hiçbir kuruluşa ait değil",
+        "asset_missing": "bağlı keşfedilen varlık artık mevcut değil",
+        "condition_invalid": "denetim ayarları geçerli bir monitör koşulu oluşturmuyor",
+        "no_active_rules": "denetimin etkin bir uyarı kuralı yok",
+        "multiple_network_rules": "denetimin birden fazla etkin uyarı kuralı var",
+        "network_predicate_unsupported": "uyarı koşulunun monitörlerde karşılığı yok",
+        "network_threshold_out_of_range": "hata eşiği aralık dışında (en fazla 100 ardışık hata)",
+        "site_binding_unrepresentable": "konuma bağlı denetim hiçbir keşfedilen varlığa bağlı değil",
+        "config_override_unrepresentable": "özel hedef veya zaman aşımı korunamıyor",
+        "built_in": "yerleşik sistem kuralı; kendi başına uyarı vermeye devam eder",
+        "no_rules": "şablonda dönüştürülecek kural yok",
+        "target_or_owner": "bir kuralın hedefi veya sahibi şablonundan farklı",
+        "blocked": "dönüştürme engellendi",
+        "disabled_response_automation": "yanıt otomasyonu devre dışı",
+        "alert_workflow_kept": "uyarı iş akışı olduğu gibi korunuyor",
         "unknown": "dönüştürme reddedildi; kaynağı inceleyin"
       }
     }
@@ -586,6 +603,25 @@
         "minHealthOptions": {
           "warning": "Uyarı",
           "critical": "Kritik"
+        }
+      },
+      "time_sync": {
+        "findings": "Bulgular",
+        "consecutiveSnapshots": "Ardışık anlık görüntüler",
+        "findingOptions": {
+          "pdc_no_external_source": "Orman kökü PDC’sinin dış kaynağı yok",
+          "source_local_clock": "Yerel saat kullanılıyor",
+          "dc_vm_host_sync": "Etki alanı denetleyicisi VM ana bilgisayarıyla eşitleniyor",
+          "ntp_server_unresolvable": "NTP sunucusu adı geçersiz veya çözümlenemiyor",
+          "ntp_peer_unreachable": "NTP eşine ulaşılamıyor",
+          "domain_source_unavailable": "Etki alanı saat kaynağı kullanılamıyor",
+          "member_not_on_hierarchy": "Etki alanı hiyerarşisi kullanılmıyor",
+          "sync_disabled": "Saat eşitleme devre dışı",
+          "sync_stale": "Yakın zamanda başarılı eşitleme yok",
+          "correction_refused": "Saat düzeltmesi reddedildi",
+          "timezone_mismatch": "Saat dilimi beklenenden farklı",
+          "policy_not_applied": "Saat ilkesi uygulanmadı",
+          "policy_conflict_gpo": "Grup İlkesi saat ayarlarını denetliyor"
         }
       }
     }

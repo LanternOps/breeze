@@ -13,6 +13,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 )
 
 // AzureProvider stores backups in Azure Blob Storage.
@@ -182,6 +183,9 @@ func (a *AzureProvider) Delete(remotePath string) error {
 
 	ctx := context.Background()
 	if _, err := client.DeleteBlob(ctx, a.containerName, remotePath, nil); err != nil {
+		if azureIsNotFound(err) {
+			return nil // already gone: the delete's goal holds
+		}
 		return fmt.Errorf("failed to delete azure blob: %w", err)
 	}
 	return nil
@@ -307,4 +311,9 @@ func azureDownloadFileOptions(ctx context.Context) *azblob.DownloadFileOptions {
 			}
 		},
 	}
+}
+
+// azureIsNotFound reports whether err says the blob does not exist.
+func azureIsNotFound(err error) bool {
+	return bloberror.HasCode(err, bloberror.BlobNotFound)
 }

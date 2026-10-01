@@ -34,3 +34,20 @@ export function sqlTimestamp(value: Date | string | null | undefined): Date | nu
   }
   return date;
 }
+
+/**
+ * A drop-in for `new Date(value)` on a raw SQL value (`db.execute(sql...)`, a
+ * `sql` fragment without `.mapWith`). The one difference: offsetless date-time
+ * text, which is how Postgres sends a `timestamp` WITHOUT time zone, is read as
+ * UTC, as Drizzle's column mapper does, instead of in the API host's zone.
+ *
+ * Every other input behaves exactly as `new Date(value)`: Dates pass through,
+ * text with a zone keeps it, a bare date is UTC midnight, and unparseable text
+ * yields an Invalid Date. Use it where a call site already handles those cases
+ * itself; use `sqlTimestamp` where junk should throw.
+ */
+export function dateFromSqlValue(value: Date | string): Date {
+  if (value instanceof Date) return value;
+  const match = TIMESTAMP_SHAPE.exec(value);
+  return new Date(match && !match.groups?.zone ? `${value}+0000` : value);
+}

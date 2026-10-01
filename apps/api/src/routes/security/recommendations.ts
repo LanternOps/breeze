@@ -13,6 +13,7 @@ import {
   buildBe9Recommendations
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
+import { markRequestAuditWritten } from '../../services/auditRequestTracking';
 
 export const recommendationsRoutes = new Hono();
 
@@ -99,6 +100,7 @@ recommendationsRoutes.post(
       details: { recommendationId: id },
       result: 'success'
     });
+    markRequestAuditWritten();
 
     return c.json({ data: { id, status: 'completed' } });
   }
@@ -137,6 +139,7 @@ recommendationsRoutes.post(
       details: { recommendationId: id },
       result: 'success'
     });
+    markRequestAuditWritten();
 
     return c.json({ data: { id, status: 'dismissed' } });
   }

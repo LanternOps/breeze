@@ -51,6 +51,7 @@ import {
 } from './helpers';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
+import { portalSessionRevokedSql, revokePortalSessionDurably } from '../../services/portal/sessionRevocation';
 import { ANONYMOUS_ACTOR_ID, writeAuditEventAsync } from '../../services/auditEvents';
 
 export const authRoutes = new Hono();
@@ -222,6 +223,8 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
         receiveNotifications: portalUsers.receiveNotifications,
         status: portalUsers.status,
         authEpoch: portalUsers.authEpoch,
+        // Signed out at logout (durable record, see sessionRevocation.ts).
+        sessionRevoked: portalSessionRevokedSql(token),
       })
       .from(portalUsers)
       .where(and(eq(portalUsers.id, sessionData.portalUserId), eq(portalUsers.orgId, sessionData.orgId)))
@@ -262,6 +265,30 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       if (redis) {
         await redis.del(PORTAL_REDIS_KEYS.session(token));
         await redis.srem(PORTAL_REDIS_KEYS.userSessions(user.id), token);
+      }
+    }
+    if (ALLOW_IN_MEMORY_PORTAL_STATE) portalSessions.delete(token);
+    if (cookieToken) clearPortalSessionCookies(c);
+    return c.json({ error: 'Invalid or expired session' }, 401);
+  }
+
+  // A token signed out at logout stays refused even if the cache still holds
+  // it (failed delete, lagging replica, Redis restored from an older
+  // snapshot). Checked before the account/org gates, the sliding-expiry write
+  // and any route work. Cache removal here is cleanup only.
+  if (user.sessionRevoked === true) {
+    if (PORTAL_USE_REDIS) {
+      const redis = getRedis();
+      if (redis) {
+        try {
+          await redis
+            .multi()
+            .del(PORTAL_REDIS_KEYS.session(token))
+            .srem(PORTAL_REDIS_KEYS.userSessions(user.id), token)
+            .exec();
+        } catch (error) {
+          console.warn('[portal] Failed to drop a signed-out session from the cache:', error instanceof Error ? error.message : error);
+        }
       }
     }
     if (ALLOW_IN_MEMORY_PORTAL_STATE) portalSessions.delete(token);
@@ -867,6 +894,12 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   });
 });
 
+// Logout ends the presented session, and only that one: other sessions of the
+// same portal user keep working. The durable record is written first and is
+// what refuses the token from now on; deleting the cache entry afterwards is
+// cleanup, so a Redis fault after that point cannot reopen the session.
+// Runs outside the portal request transaction (selfManagedDbContextRoutes.ts):
+// the record commits in its own short system transaction.
 authRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
   const csrfError = validatePortalCookieCsrfRequest(c);
   if (csrfError) {
@@ -875,20 +908,42 @@ authRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
 
   const auth = c.get('portalAuth');
 
+  // The browser drops its credential whatever happens next.
+  clearPortalSessionCookies(c);
+
+  let recorded = true;
+  try {
+    await revokePortalSessionDurably(auth.token, auth.user.id);
+  } catch (error) {
+    recorded = false;
+    console.error('[portal] Logout could not record the session as signed out:', error instanceof Error ? error.message : error);
+  }
+
+  // Cache cleanup runs even when the record failed: it still ends the session
+  // for every reader of this cache, it just is not durable on its own.
   if (ALLOW_IN_MEMORY_PORTAL_STATE) {
     portalSessions.delete(auth.token);
   }
-  clearPortalSessionCookies(c);
 
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
     if (!redis) {
-      console.warn('[portal] Redis unavailable during logout; cannot clear distributed portal session state for user:', auth.user.id);
-      return c.json({ success: true });
+      console.warn('[portal] Redis unavailable during logout; only the durable record ends the session');
+    } else {
+      try {
+        await redis
+          .multi()
+          .del(PORTAL_REDIS_KEYS.session(auth.token))
+          .srem(PORTAL_REDIS_KEYS.userSessions(auth.user.id), auth.token)
+          .exec();
+      } catch (error) {
+        console.warn('[portal] Failed to drop a signed-out session from the cache:', error instanceof Error ? error.message : error);
+      }
     }
-    await redis.del(PORTAL_REDIS_KEYS.session(auth.token));
-    await redis.srem(PORTAL_REDIS_KEYS.userSessions(auth.user.id), auth.token);
   }
 
+  if (!recorded) {
+    return c.json({ error: 'Logout could not be fully completed. Please try again.' }, 500);
+  }
   return c.json({ success: true });
 });

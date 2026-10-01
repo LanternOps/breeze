@@ -59,6 +59,12 @@ describe('assertSeriesConfigOrgAgnostic', () => {
     [{ deviceGroupIds: ['g'] }, 'deviceGroupIds'],
     [{ orgId: '11111111-1111-4111-8111-111111111111' }, 'orgId'],
     [{ orgIds: ['o'] }, 'orgIds'],
+    // W04 Review Focus #3: the builder's legacy filter round-trip and its
+    // per-condition site field also name one org's objects.
+    [{ legacyFilters: { deviceIds: ['d'] } }, 'legacyFilters.deviceIds'],
+    [{ legacyFilters: { siteIds: ['s'] } }, 'legacyFilters.siteIds'],
+    [{ filterConditions: [{ id: 'f1', logic: 'and', field: 'siteId', operator: 'is', value: 's' }] }, 'filterConditions.siteId'],
+    [{ filterConditions: [{ id: 'f1', logic: 'and', field: 'site', operator: 'equals', value: 'HQ' }] }, 'filterConditions.site'],
   ])('refuses %j naming %s', (config, key) => {
     try {
       assertSeriesConfigOrgAgnostic(config);
@@ -78,6 +84,7 @@ describe('assertSeriesConfigOrgAgnostic', () => {
     [{ filters: { siteIds: [] } }],
     [{ sites: [] }],
     [{ filters: { osTypes: ['windows'], severity: ['critical'] }, dateRange: { preset: 'last_30_days' }, columns: ['hostname'] }],
+    [{ legacyFilters: {} , filterConditions: [{ id: 'f1', logic: 'and', field: 'severity', operator: 'is', value: 'critical' }] }],
   ])('admits an org-agnostic config %j', (config) => {
     expect(() => assertSeriesConfigOrgAgnostic(config)).not.toThrow();
   });

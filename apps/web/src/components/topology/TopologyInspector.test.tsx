@@ -101,13 +101,21 @@ describe('Explain this in the inspector (M4 Task 5)', () => {
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
+  it('says AI is not configured, instead of offering an Explain that cannot run, when the server has no model provider', () => {
+    render(<TopologyInspector graph={topologyGraphFixture()} selection={{ kind: 'node', id: NODE }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} aiNotConfigured />);
+    expect(screen.queryByTestId('topology-explain')).toBeNull();
+    expect(screen.getByTestId('topology-explain-not-configured')).toHaveTextContent("AI isn't configured on this server");
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
   it('offers no Explain when AI is unavailable (no explain wiring) or for a schematic element', () => {
     const { unmount } = render(<TopologyInspector graph={topologyGraphFixture()} selection={{ kind: 'node', id: NODE }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
     expect(screen.queryByTestId('topology-explain')).toBeNull();
     unmount();
     const graph = topologyGraphFixture();
     graph.presentation.nodes = [{ id: 'schematic-1', meaning: 'missing_default_route', authority: false } as never];
-    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'schematic-1' }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} explain={explain} />);
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'schematic-1' }} siteId={SITE} view="overview" canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} explain={explain} aiNotConfigured />);
     expect(screen.queryByTestId('topology-explain')).toBeNull();
+    expect(screen.queryByTestId('topology-explain-not-configured')).toBeNull();
   });
 });

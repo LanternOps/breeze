@@ -291,14 +291,14 @@ describe('GET /monitor-definitions', () => {
 });
 
 describe('GET /monitor-definitions/kinds', () => {
-  it('returns twenty monitor kinds with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
+  it('returns twenty-one monitor kinds with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
     const res = await jsonRequest(buildApp(), 'GET', '/kinds');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: Array<{ kind: string; overridableKeys: string[]; defaultSeverity: string; agentDelivered: boolean }>;
     };
-    expect(body.data).toHaveLength(20);
+    expect(body.data).toHaveLength(21);
     expect(body.data).toHaveLength(MONITOR_KINDS.length);
     expect(new Set(body.data.map((d) => d.kind))).toEqual(new Set(MONITOR_KINDS));
     for (const entry of body.data) {
@@ -970,6 +970,28 @@ describe('POST /monitor-definitions/convert-from-rule/:ruleId', () => {
       error: 'System-managed rule — it keeps alerting on its own and needs no conversion',
       code: 'RULE_SYSTEM_MANAGED',
     });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('maps governance_denied (site-restricted caller) to 403', async () => {
+    const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
+    vi.mocked(convertRuleToMonitor).mockResolvedValueOnce({ ok: false, failure: { kind: 'governance_denied' } });
+
+    const res = await jsonRequest(buildApp(), 'POST', '/convert-from-rule/rule-1');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: expect.stringMatching(/Site-restricted/) });
+  });
+
+  it('maps a conversion refusal raised inside the group transaction to its status, not a 500', async () => {
+    const { convertRuleToMonitor } = await import('../services/monitors/ruleConversionService');
+    const { ConversionError } = await import('../services/monitors/conversion/errors');
+    vi.mocked(convertRuleToMonitor).mockRejectedValueOnce(new ConversionError('preview_stale', 'Template group changed'));
+
+    const res = await jsonRequest(buildApp(), 'POST', '/convert-from-rule/rule-1');
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'preview_stale' });
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 

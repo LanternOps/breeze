@@ -66,6 +66,7 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/connections': 'deny',
   'PUT /:id/eventlogs': 'deny',
   'PUT /:id/hardware-health': 'deny',
+  'PUT /:id/time-status': 'deny',
   'POST /:id/logs': 'deny',
   'POST /:id/boot-performance': 'deny',
   'POST /:id/reliability': 'deny',

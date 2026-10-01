@@ -22,6 +22,8 @@ export type HelperPermissionLevel = 'basic' | 'standard' | 'extended';
 const BASIC_TOOLS = [
   'get_device_details',
   'get_device_hardware_health',
+  'get_device_time_status',
+  'list_time_sync_issues',
   'analyze_metrics',
   'analyze_disk_usage',
   'get_cis_device_report',

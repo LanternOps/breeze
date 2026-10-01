@@ -302,12 +302,14 @@
     "username": "Username (basic auth)",
     "password": "Password (basic auth)",
     "notSet": "Not set — orgs configure individually",
-    "savedSecretPlaceholder": "Saved — leave blank to keep",
-    "secretRemovedPlaceholder": "Will be removed when you save",
-    "removeSecret": "Remove",
     "endpointPlaceholder": "https://logs.example.com:9200",
     "indexPlaceholder": "breeze-logs",
     "description": "When enabled, all child organizations will ship event logs to the configured endpoint. Works with any Elasticsearch/OpenSearch-compatible <bulk>_bulk</bulk> store (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service). Leave disabled to let each organization configure individually."
+  },
+  "savedSecret": {
+    "savedPlaceholder": "Saved — leave blank to keep",
+    "removedPlaceholder": "Will be removed when you save",
+    "remove": "Remove"
   },
   "agentVersionPins": {
     "title": "Update version targets",
@@ -1334,7 +1336,8 @@
     "webhooks": {
       "title": "Webhook notifications",
       "placeholder": "https://api.example.com/alerts",
-      "empty": "No webhooks configured."
+      "empty": "No webhooks configured.",
+      "savedEntry": "Saved webhook (URL hidden)"
     },
     "preferences": {
       "title": "Notification preferences",

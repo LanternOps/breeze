@@ -35,10 +35,10 @@ import {
   type AlertSeverity,
   type PagerDutyConfig,
   type PushoverConfig,
-  type PushoverPriority,
   type SmsChannelConfig,
   type WebhookConfig
 } from '../../services/notificationSenders';
+import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../../services/partnerPushoverDefaults';
 import { listChannelsSchema, createChannelSchema, updateChannelSchema } from './schemas';
 import {
   getPagination,
@@ -610,7 +610,7 @@ channelsRoutes.post(
         }
 
         case 'pushover': {
-          const cfg = { ...(channelConfig as PushoverConfig) };
+          let cfg = { ...(channelConfig as PushoverConfig) };
           const tokenBlank = !cfg.token || cfg.token.trim().length === 0;
           const userBlank = !cfg.user || cfg.user.trim().length === 0;
 
@@ -641,23 +641,12 @@ channelsRoutes.post(
                 .from(partners)
                 .where(eq(partners.id, partnerId))
                 .limit(1);
-              return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
+              return partner?.settings ?? null;
             }));
 
-            if (inherited) {
-              if (tokenBlank && typeof inherited.pushoverAppToken === 'string') {
-                cfg.token = inherited.pushoverAppToken;
-              }
-              if (userBlank && typeof inherited.pushoverDefaultUser === 'string') {
-                cfg.user = inherited.pushoverDefaultUser;
-              }
-              if (cfg.sound === undefined && typeof inherited.pushoverDefaultSound === 'string') {
-                cfg.sound = inherited.pushoverDefaultSound;
-              }
-              if (cfg.priority === undefined && typeof inherited.pushoverDefaultPriority === 'number') {
-                cfg.priority = inherited.pushoverDefaultPriority as PushoverPriority;
-              }
-            }
+            // Same inheritance as the dispatcher; opens the sealed partner
+            // token and user key (partnerPushoverDefaults.ts).
+            cfg = applyPartnerPushoverDefaults(cfg, readPartnerPushoverDefaults(inherited));
           }
 
           const pushoverResult = await sendPushoverNotification(cfg, {

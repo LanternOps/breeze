@@ -72,6 +72,8 @@ import {
   buildRemoteSessionPromptPayload,
   buildTechnicianDisplay,
   classifyConsentDenyAction,
+  consentMarkerAuditDetails,
+  consentMarkerIsCoherent,
   isUnsolicitedConsentReason,
   createDesktopStartCommandId,
   generateTurnCredentials,
@@ -198,15 +200,73 @@ describe('isUnsolicitedConsentReason', () => {
   // #6819: only these two reasons may activate a consent-mode start without a
   // user grant, and only under a bound `proceed` fallback. no_user fails closed
   // on the agent and must never be accepted as an activation reason.
-  it('accepts helper_absent and timeout', () => {
+  it('accepts helper_absent, timeout and no_user_session', () => {
     expect(isUnsolicitedConsentReason('helper_absent')).toBe(true);
     expect(isUnsolicitedConsentReason('timeout')).toBe(true);
+    // Version 2 agents report "nobody is signed in to the captured session"
+    // separately from "someone is signed in but could not be asked".
+    expect(isUnsolicitedConsentReason('no_user_session')).toBe(true);
   });
 
-  it('rejects user, no_user, unknown and non-string values', () => {
-    for (const v of ['user', 'no_user', 'policy_proceed', '', undefined, null, 1]) {
+  it('rejects user, no_user, helper_unreachable, unknown and non-string values', () => {
+    // helper_unreachable means a signed-in user could not be prompted: the
+    // agent always blocks it, and the server never activates on it.
+    for (const v of ['user', 'no_user', 'helper_unreachable', 'policy_proceed', '', undefined, null, 1]) {
       expect(isUnsolicitedConsentReason(v)).toBe(false);
     }
+  });
+});
+
+describe('consentMarkerAuditDetails', () => {
+  it('records a version 1 marker as consentProtocol 1 with no outcome fields', () => {
+    expect(consentMarkerAuditDetails({ reason: 'helper_absent' })).toEqual({ consentProtocol: 1 });
+  });
+
+  it('carries the version 2 structured outcome through verbatim', () => {
+    expect(consentMarkerAuditDetails({
+      reason: 'helper_unreachable',
+      consentProtocol: 2,
+      consentOutcome: 'unavailable',
+      consentOccupancy: 'occupied',
+      consentDetail: 'no_presentation',
+    })).toEqual({
+      consentProtocol: 2,
+      consentOutcome: 'unavailable',
+      consentOccupancy: 'occupied',
+      consentDetail: 'no_presentation',
+    });
+  });
+
+  it('ignores non-string values', () => {
+    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentOutcome: 1, consentOccupancy: null })).toEqual({ consentProtocol: 2 });
+  });
+});
+
+describe('consentMarkerIsCoherent', () => {
+  // A version 2 agent says what happened to the prompt; a start may only be
+  // activated on a reason its own outcome backs up.
+  it.each([
+    ['user', 'granted', true],
+    ['user', 'unknown', false],
+    ['user', 'presented_expired', false],
+    ['user', undefined, false],
+    ['timeout', 'presented_expired', true],
+    ['timeout', 'unavailable', false],
+    ['timeout', undefined, false],
+    ['no_user_session', 'unavailable', true],
+    ['no_user_session', 'granted', false],
+  ])('v2 %s with outcome %s → %s', (consentReason, consentOutcome, want) => {
+    expect(consentMarkerIsCoherent({ consentProtocol: 2, consentReason, consentOutcome })).toBe(want);
+  });
+
+  it('leaves version 1 markers alone (they carry no outcome)', () => {
+    for (const consentReason of ['user', 'timeout', 'helper_absent', undefined]) {
+      expect(consentMarkerIsCoherent({ consentReason })).toBe(true);
+    }
+  });
+
+  it('has nothing to check on a start without a consent reason', () => {
+    expect(consentMarkerIsCoherent({ consentProtocol: 2 })).toBe(true);
   });
 });
 
@@ -227,6 +287,8 @@ describe('classifyConsentDenyAction', () => {
     expect(classifyConsentDenyAction('no_user')).toBe('session_consent_blocked_unavailable');
     expect(classifyConsentDenyAction('helper_absent')).toBe('session_consent_blocked_unavailable');
     expect(classifyConsentDenyAction('policy_proceed')).toBe('session_consent_blocked_unavailable');
+    expect(classifyConsentDenyAction('no_user_session')).toBe('session_consent_blocked_unavailable');
+    expect(classifyConsentDenyAction('helper_unreachable')).toBe('session_consent_blocked_unavailable');
   });
 
   it('classifies an unknown/empty reason as blocked-unavailable, never as session_consent_bypassed', () => {
@@ -398,9 +460,12 @@ describe('resolveRemoteSessionPromptConfig', () => {
 describe('requiresConsentCapableAgent', () => {
   it('is true only for a consent-mode prompt on an agent without the consent prompt protocol', () => {
     expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 0 })).toBe(true);
-    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 2 })).toBe(true);
+    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 3 })).toBe(true);
     expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: null })).toBe(true);
     expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 1 })).toBe(false);
+    // Version 2 agents report whether the prompt was shown and answered; they
+    // gate capture on the prompt block exactly like version 1.
+    expect(requiresConsentCapableAgent({ mode: 'consent' }, { consentPromptProtocolVersion: 2 })).toBe(false);
     expect(requiresConsentCapableAgent({ mode: 'notify' }, { consentPromptProtocolVersion: 0 })).toBe(false);
     expect(requiresConsentCapableAgent(undefined, { consentPromptProtocolVersion: 0 })).toBe(false);
   });

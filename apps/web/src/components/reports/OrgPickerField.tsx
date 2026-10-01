@@ -25,6 +25,15 @@ export type ReportTargetOrg = {
   pickerVisible: boolean;
   /** The picker is showing and nothing is chosen — a request would 400; block it. */
   missing: boolean;
+  /**
+   * The org is not known YET: the switcher names none and the org list has
+   * neither arrived nor failed (a fresh page under All organizations — the
+   * list is not persisted). `orgId` is null for now, but a request sent
+   * without one 400s for a partner with several orgs, so a request that can
+   * wait (the live preview) waits. A store without the loaded flag (older
+   * test mocks) reads as loaded.
+   */
+  pending: boolean;
   options: Organization[];
 };
 
@@ -40,7 +49,8 @@ export type ReportTargetOrg = {
  * loaded" — never "required".
  */
 export function useReportTargetOrg(defaultOrgId: string | null = null): ReportTargetOrg {
-  const { currentOrgId, organizations } = useOrgStore();
+  const { currentOrgId, organizations, organizationsLoaded, error } = useOrgStore();
+  const pending = !currentOrgId && organizationsLoaded === false && !error;
   const options = useMemo(
     () =>
       (organizations ?? [])
@@ -61,6 +71,7 @@ export function useReportTargetOrg(defaultOrgId: string | null = null): ReportTa
     setPickedOrgId,
     pickerVisible: false,
     missing: false,
+    pending,
     options,
   });
 
@@ -75,6 +86,7 @@ export function useReportTargetOrg(defaultOrgId: string | null = null): ReportTa
     setPickedOrgId,
     pickerVisible: true,
     missing: picked === null,
+    pending,
     options,
   };
 }

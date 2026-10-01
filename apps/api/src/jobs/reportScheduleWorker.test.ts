@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { pgOffsetlessTimestamp } from '../testUtils/pgOffsetlessTimestamp';
 
 const selectMock = vi.fn();
 const insertMock = vi.fn();
@@ -605,11 +604,10 @@ describe('findDueReports', () => {
         {
           id: ORG_ID,
           schedule: 'daily',
-          // 09:30 Chicago → already ran. Built through the driver simulation
-          // because `reports.last_generated_at` is an offsetless `timestamp`
-          // column: a bare `new Date(...Z)` here would be an unfaithful fixture
-          // that only matches production on a UTC host (#4059).
-          lastGeneratedAt: pgOffsetlessTimestamp(Date.parse('2026-07-01T14:30:00Z')),
+          // 09:30 Chicago → already ran. `reports.last_generated_at` is an
+          // offsetless `timestamp`; Drizzle decodes it as UTC, so this is the
+          // Date the worker receives on any host.
+          lastGeneratedAt: new Date('2026-07-01T14:30:00Z'),
           config: { schedule: { time: '09:00' } },
           orgSettings: { timezone: 'America/Chicago' },
           partnerTimezone: 'UTC',
@@ -634,8 +632,8 @@ describe('findDueReports', () => {
         {
           id: REPORT_ID,
           schedule: 'daily',
-          // 09:05 Chicago Jun 30, via the offsetless-column simulation (see above).
-          lastGeneratedAt: pgOffsetlessTimestamp(Date.parse('2026-06-30T14:05:00Z')),
+          // 09:05 Chicago Jun 30.
+          lastGeneratedAt: new Date('2026-06-30T14:05:00Z'),
           config: { schedule: { time: '09:00' } },
           orgSettings: {},
           partnerTimezone: 'America/Chicago',
@@ -1054,6 +1052,48 @@ describe('processRunScheduledReport', () => {
 
     expect(insertMock).not.toHaveBeenCalled();
     expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  // Series W04 final review F2: Combine archives ordinary (non-series) rows. A
+  // job enqueued before the combine, or retried with backoff, must not send
+  // for the archived duplicate — its contacts now also sit on the adopted row.
+  it('returns early for an ARCHIVED non-series row: no run row, generation or delivery', async () => {
+    /** SQL-faithful load: the mocked table returns the archived row unless the
+     *  load predicate carries `archived_at IS NULL` (what Postgres would do). */
+    const archivedRow = { ...report, seriesId: null, archivedAt: new Date('2026-09-29T07:00:00.000Z') };
+    const excludesArchived = (condition: unknown): boolean => {
+      const seen = new Set<unknown>();
+      const walk = (node: unknown): boolean => {
+        if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+        seen.add(node);
+        const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+        if (Array.isArray(chunks)
+          && chunks.includes('reports.archived_at')
+          && chunks.some((c) => JSON.stringify((c as { value?: unknown })?.value ?? null).includes('is null'))) {
+          return true;
+        }
+        return Object.values(node as Record<string, unknown>).some(walk);
+      };
+      return walk(condition);
+    };
+    const load: Record<string, unknown> = {};
+    load.from = vi.fn(() => load);
+    load.where = vi.fn((condition: unknown) => {
+      load.rows = excludesArchived(condition) ? [] : [archivedRow];
+      return load;
+    });
+    load.limit = vi.fn(async () => load.rows);
+    selectMock.mockReturnValueOnce(load);
+    insertMock.mockReturnValue(insertChain([{ id: RUN_ID }]));
+    generateReportMock.mockResolvedValue({ rows: [{ hostname: 'pc-1' }], rowCount: 1 });
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(load.where).toHaveBeenCalledTimes(1);
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('refuses a system-principal definition before resolving any authority', async () => {

@@ -10,6 +10,7 @@ import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 import { moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 // W01 (spec §4.4): the route now derives `reachability` through the batched
 // loader. The derivation is pinned by services/assetReachability.test.ts; this
@@ -1341,6 +1342,51 @@ describe('discovery routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].alertSettings).toEqual(row.profile.alertSettings);
     });
+
+    it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+      'reads offsetless lastRunAt text as UTC on a %s host',
+      async (zone) => {
+        await withHostTimeZone(zone, async () => {
+          const now = new Date();
+          const row = {
+            profile: {
+              id: 'profile-003',
+              orgId: '00000000-0000-0000-0000-000000000000',
+              siteId: '00000000-0000-0000-0000-000000000001',
+              name: 'Nightly Scan',
+              description: null,
+              enabled: true,
+              subnets: ['10.0.2.0/24'],
+              methods: ['ping'],
+              schedule: { type: 'manual' },
+              deepScan: false,
+              resolveHostnames: true,
+              alertSettings: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+            lastRunAt: '2026-08-25 18:34:15.123',
+          };
+
+          (db.select as any).mockReturnValueOnce({
+            from: () => ({
+              where: () => ({
+                orderBy: () => Promise.resolve([row]),
+              }),
+            }),
+          });
+
+          const res = await app.request('/discovery/profiles', {
+            method: 'GET',
+            headers: { Authorization: 'Bearer token' }
+          });
+
+          expect(res.status).toBe(200);
+          const body = await res.json();
+          expect(body.data[0].lastRunAt).toBe('2026-08-25T18:34:15.123Z');
+        });
+      }
+    );
 
     it('returns alertSettings as null when a profile has none', async () => {
       const now = new Date();

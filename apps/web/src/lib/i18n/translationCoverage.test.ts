@@ -82,7 +82,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 3,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 177,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 178,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -167,7 +168,8 @@ const namespaceDuplicateBaselines = {
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical pt-BR cognate.
-    'topology.json': 1,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 2,
     // +1 (#2262 softwareGroupTable devices-affected rework): cves_one/cves_other
     // ('{{count}} CVE'/'{{count}} CVEs') keep the acronym untranslated, same as
     // the existing CVEs-namespace duplicates above.
@@ -238,7 +240,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 128,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 129,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -316,7 +319,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
-    'topology.json': 0,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 1,
     // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
     'vulnerabilities.json': 17,
   },
@@ -393,7 +397,8 @@ const namespaceDuplicateBaselines = {
     // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-FR.
     // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
     // — "action"/"actions" are identical cognates in fr-FR.
-    'devices.json': 157,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 158,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -492,7 +497,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-FR cognates.
-    'topology.json': 4,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 5,
     // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
     // (fr-FR's old table.cves was "CVE", not a duplicate of English "CVEs", so
     // both new plural forms are net-new duplicates here).
@@ -565,7 +571,8 @@ const namespaceDuplicateBaselines = {
     // +1 (network asset site move, #6766): networkSettings.details.site "Site" is the identical cognate in fr-CA.
     // +2 (#6496, backup UI raw values): cleanupHistory.historyActions_one/_other
     // — "action"/"actions" are identical cognates in fr-CA.
-    'devices.json': 157,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 158,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -666,7 +673,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-CA cognates.
-    'topology.json': 4,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 5,
     // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
     // (fr-CA's old table.cves was "CVE", not a duplicate of English "CVEs", so
     // both new plural forms are net-new duplicates here).
@@ -752,7 +760,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 5,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 166,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 167,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -838,7 +847,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
     // ('Hostname'/'Port') are identical de-DE cognates.
-    'topology.json': 4,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 5,
     // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
     'vulnerabilities.json': 21,
   },
@@ -893,7 +903,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 3,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 146,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 147,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -966,7 +977,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
     'toolSources.json': 1,
-    'topology.json': 0,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 1,
     // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated (cves_other
     // is 'CVE' too, since Italian does not inflect the acronym).
     'vulnerabilities.json': 18,
@@ -1014,7 +1026,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 2,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
-    'devices.json': 90,
+    // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
+    'devices.json': 91,
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1073,7 +1086,8 @@ const namespaceDuplicateBaselines = {
     'tickets.json': 12,
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical tr-TR cognate.
-    'topology.json': 1,
+    // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
+    'topology.json': 2,
     // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated.
     'vulnerabilities.json': 12,
   },

@@ -24,6 +24,10 @@ export * from './googleDwdScopes';
 // alert resolution reasons. Leaf module, no imports.
 export * from './fixMemory';
 
+// Backup recovery-readiness score bands shared by the API summary/alerts and
+// the web readiness views. Leaf module, no imports.
+export * from './backupReadiness';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 
@@ -175,6 +179,7 @@ export * from './ticketAttachments';
 
 // Hardware & RAID monitoring (W01 #6856)
 export * from './hardwareHealth';
+export * from './timeSync';
 
 // Software-install time budgets, mirrored from the Go agent (#3578)
 export * from './softwareInstallTimeouts';

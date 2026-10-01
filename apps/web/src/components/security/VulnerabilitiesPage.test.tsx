@@ -45,6 +45,26 @@ describe('VulnerabilitiesPage filter selects accessible name (#7156)', () => {
   });
 });
 
+describe('VulnerabilitiesPage checkbox accessible names', () => {
+  it('names the select-all and per-row checkboxes', async () => {
+    fetchWithAuth.mockResolvedValue(ok({
+      ...emptyListPayload,
+      data: [{
+        id: 't1', deviceId: 'd1', deviceName: 'HOST-1', name: 'Evil.Exe', category: 'trojan',
+        severity: 'high', status: 'active', detectedAt: '2026-09-01T00:00:00Z', filePath: 'C:\\evil.exe'
+      }]
+    }));
+    render(<VulnerabilitiesPage />);
+    await screen.findAllByText('Evil.Exe');
+    expect(screen.getAllByRole('checkbox', { name: 'Select all threats' }).length).toBeGreaterThan(0);
+    // Table row + mobile card each expose a named row checkbox.
+    expect(screen.getAllByRole('checkbox', { name: 'Select threat Evil.Exe' }).length).toBeGreaterThan(0);
+    for (const cb of screen.getAllByRole('checkbox')) {
+      expect(cb).toHaveAccessibleName();
+    }
+  });
+});
+
 describe('VulnerabilitiesPage', () => {
   it('initializes the severity filter from #severity= in the hash (dashboard deep link)', async () => {
     window.location.hash = '#severity=critical';

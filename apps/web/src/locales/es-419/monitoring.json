@@ -191,7 +191,8 @@
     "backup_continuity": "Continuidad de respaldo",
     "script": "Verificación de script",
     "network_check": "Verificación de red",
-    "hardware_health": "Estado del hardware"
+    "hardware_health": "Estado del hardware",
+    "time_sync": "Sincronización de hora"
   },
   "fields": {
     "operator": "Comparación",
@@ -553,6 +554,22 @@
         "too_many_responses": "se necesitarían más de diez respuestas",
         "auto_resolve_conditions": "no se pueden conservar las condiciones de resolución personalizadas",
         "target_unconvertible": "no se puede convertir el destino de la respuesta",
+        "already_managed": "ya está administrada por un monitor",
+        "no_org": "la verificación no pertenece a ninguna organización",
+        "asset_missing": "el activo detectado vinculado ya no existe",
+        "condition_invalid": "la configuración de la verificación no forma una condición de monitor válida",
+        "no_active_rules": "la verificación no tiene ninguna regla de alerta activa",
+        "multiple_network_rules": "la verificación tiene más de una regla de alerta activa",
+        "network_predicate_unsupported": "la condición de alerta no tiene equivalente en los monitores",
+        "network_threshold_out_of_range": "el umbral de fallos está fuera de rango (como máximo 100 fallos consecutivos)",
+        "site_binding_unrepresentable": "la verificación vinculada a un sitio no está asociada a ningún activo detectado",
+        "config_override_unrepresentable": "no se puede conservar el destino o el tiempo de espera personalizado",
+        "built_in": "regla integrada del sistema; sigue alertando por sí sola",
+        "no_rules": "la plantilla no tiene reglas para convertir",
+        "target_or_owner": "el destino o el propietario de una regla difiere de su plantilla",
+        "blocked": "la conversión está bloqueada",
+        "disabled_response_automation": "la automatización de respuesta está desactivada",
+        "alert_workflow_kept": "el flujo de alertas se mantiene sin cambios",
         "unknown": "conversión rechazada; revise el origen"
       }
     }
@@ -586,6 +603,25 @@
         "minHealthOptions": {
           "warning": "Advertencia",
           "critical": "Crítico"
+        }
+      },
+      "time_sync": {
+        "findings": "Hallazgos",
+        "consecutiveSnapshots": "Instantáneas consecutivas",
+        "findingOptions": {
+          "pdc_no_external_source": "El PDC raíz del bosque no tiene un origen externo",
+          "source_local_clock": "Se está usando el reloj local",
+          "dc_vm_host_sync": "El controlador de dominio se sincroniza con el host de la VM",
+          "ntp_server_unresolvable": "El nombre del servidor NTP no es válido o no se resuelve",
+          "ntp_peer_unreachable": "No se puede acceder al par NTP",
+          "domain_source_unavailable": "El origen de hora del dominio no está disponible",
+          "member_not_on_hierarchy": "No se está usando la jerarquía del dominio",
+          "sync_disabled": "La sincronización horaria está deshabilitada",
+          "sync_stale": "No hay sincronizaciones correctas recientes",
+          "correction_refused": "Se rechazó la corrección de hora",
+          "timezone_mismatch": "La zona horaria difiere de la esperada",
+          "policy_not_applied": "No se aplicó la política de hora",
+          "policy_conflict_gpo": "Una directiva de grupo controla la configuración de hora"
         }
       }
     }

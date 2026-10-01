@@ -15,6 +15,8 @@ type DeviceAnomaliesPanelProps = {
   deviceId: string;
   compact?: boolean;
   focusedAnomalyId?: string;
+  /** Fired after a resolve/dismiss/promote/unsnooze lands, so the parent can refresh tab badge counts. */
+  onChanged?: () => void;
 };
 
 type Filter = 'open' | 'closed' | 'all';
@@ -33,7 +35,7 @@ type LegacyAnomalyRow = {
 };
 
 export default function DeviceAnomaliesPanel({
-  deviceId, compact = false, focusedAnomalyId,
+  deviceId, compact = false, focusedAnomalyId, onChanged,
 }: DeviceAnomaliesPanelProps) {
   const { t } = useTranslation('devices');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
@@ -153,6 +155,7 @@ export default function DeviceAnomaliesPanel({
   }, [showsOpenEpisode, fetchEpisodes]);
 
   function handleChanged(updated: MetricAnomalyEpisodeDto) {
+    onChanged?.();
     setEpisodes((current) => {
       const next = current.map((e) => (e.id === updated.id ? updated : e));
       // A resolve/dismiss/unsnooze can move the episode out of the current

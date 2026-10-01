@@ -13,6 +13,7 @@ import {
   configPolicyMaintenanceSettings,
   configPolicyEventLogSettings,
   configPolicyHardwareMonitoringSettings,
+  configPolicyTimeSyncSettings,
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -49,7 +50,10 @@ import { captureException } from './sentry';
 import { z } from 'zod';
 import {
   backupExcludePatternsSchema,
+  complianceItemName,
   configFeatureInlineSettingsSchema,
+  duplicateComplianceItemNameMessage,
+  duplicateComplianceItemNames,
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   hardwareMonitoringInlineSettingsSchema,
@@ -58,6 +62,7 @@ import {
   monitorsInheritanceSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+  timeSyncInlineSettingsSchema,
   warrantyInlineSettingsSchema,
   warrantyHpCmslCollectionEffective,
   readRecordedWarrantyHpCmslConsent,
@@ -69,6 +74,7 @@ import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from '.
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
+import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
 
 // ============================================
 // Inline settings schemas
@@ -691,6 +697,11 @@ export async function updateConfigPolicy(
     .returning();
 
   if (!updated) return null;
+  // Only an active policy's rules are evaluated; alerts raised by a policy that
+  // is no longer active close through the reconcile.
+  if (data.status !== undefined && data.status !== existing.status) {
+    scheduleComplianceAlertReconcile({ configPolicyId: id }, 'policy-status');
+  }
   return updated;
 }
 
@@ -702,7 +713,7 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
   // Pre-fetch to apply the partner-wide administration gate (see
   // updateConfigPolicy) before the destructive statement.
   const [existing] = await db
-    .select({ orgId: configurationPolicies.orgId })
+    .select({ orgId: configurationPolicies.orgId, partnerId: configurationPolicies.partnerId })
     .from(configurationPolicies)
     .where(and(...conditions))
     .limit(1);
@@ -725,6 +736,11 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
       .delete(configurationPolicies)
       .where(and(...conditions))
       .returning();
+    // Scoped by the owner: the policy row is gone by the time the reconcile runs.
+    const owner = existing.orgId !== null
+      ? { orgId: existing.orgId }
+      : existing.partnerId ? { partnerId: existing.partnerId } : null;
+    if (deleted && owner) scheduleComplianceAlertReconcile(owner, 'policy-delete');
     return deleted ?? null;
   } catch (err) {
     // Lost the race: a child was created after the check above. The FK is the
@@ -804,7 +820,7 @@ async function decomposeInlineSettings(
             }
             return {
               featureLinkId: linkId,
-              name: String(item.name ?? `Compliance Rule ${idx + 1}`),
+              name: complianceItemName(item, idx),
               rules: item.rules ?? {},
               enforcementLevel: (VALID_ENFORCEMENT.includes(item.enforcementLevel as Enforcement) ? item.enforcementLevel : 'monitor') as Enforcement,
               checkIntervalMinutes: typeof item.checkIntervalMinutes === 'number' ? item.checkIntervalMinutes : 60,
@@ -866,6 +882,20 @@ async function decomposeInlineSettings(
       await tx.insert(configPolicyHardwareMonitoringSettings).values({
         featureLinkId: linkId,
         ...parsed,
+      });
+      break;
+    }
+
+    case 'time_sync': {
+      const parsed = timeSyncInlineSettingsSchema.parse(s);
+      await tx.insert(configPolicyTimeSyncSettings).values({
+        featureLinkId: linkId,
+        enforceNtp: parsed.enforceNtp,
+        ntpServers: parsed.ntpServers,
+        pollIntervalMinutes: parsed.pollIntervalMinutes,
+        timezoneExpected: parsed.timezone.expected,
+        pinnedTimezone: parsed.timezone.pinnedTimezone,
+        timezoneAutoFix: parsed.timezone.autoFix,
       });
       break;
     }
@@ -1119,7 +1149,9 @@ async function decomposeInlineSettings(
  * plain ZodError before any row is touched.
  *
  * Mirrors exactly the `case` arms of decomposeInlineSettings that call `.parse`
- * — the others build their rows defensively from `unknown` and cannot throw.
+ * — the others build their rows defensively from `unknown` and cannot throw —
+ * plus one rule decompose cannot enforce by itself: compliance rule set names
+ * are unique within the link (DuplicateComplianceItemNameError).
  */
 function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
   // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
@@ -1130,6 +1162,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       break;
     case 'hardware_monitoring':
       hardwareMonitoringInlineSettingsSchema.parse(settings);
+      break;
+    case 'time_sync':
+      timeSyncInlineSettingsSchema.parse(settings);
       break;
     case 'maintenance':
       maintenanceInlineSettingsSchema.parse(settings);
@@ -1142,6 +1177,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       break;
     case 'monitors':
       monitorsInlineSettingsSchema.parse(settings);
+      break;
+    case 'compliance':
+      assertUniqueComplianceItemNames(settings);
       break;
     default:
       break;
@@ -1175,6 +1213,9 @@ async function deleteNormalizedRows(
       break;
     case 'hardware_monitoring':
       await tx.delete(configPolicyHardwareMonitoringSettings).where(eq(configPolicyHardwareMonitoringSettings.featureLinkId, linkId));
+      break;
+    case 'time_sync':
+      await tx.delete(configPolicyTimeSyncSettings).where(eq(configPolicyTimeSyncSettings.featureLinkId, linkId));
       break;
     case 'sensitive_data':
       await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
@@ -1353,6 +1394,26 @@ async function assembleInlineSettings(
             pollIntervalMinutes: row.pollIntervalMinutes,
             diskHealthIntervalMinutes: row.diskHealthIntervalMinutes,
           }
+        : null;
+    }
+
+    case 'time_sync': {
+      const [row] = await executor
+        .select()
+        .from(configPolicyTimeSyncSettings)
+        .where(eq(configPolicyTimeSyncSettings.featureLinkId, linkId))
+        .limit(1);
+      return row
+        ? timeSyncInlineSettingsSchema.parse({
+            enforceNtp: row.enforceNtp,
+            ntpServers: row.ntpServers,
+            pollIntervalMinutes: row.pollIntervalMinutes,
+            timezone: {
+              expected: row.timezoneExpected,
+              pinnedTimezone: row.pinnedTimezone,
+              autoFix: row.timezoneAutoFix,
+            },
+          })
         : null;
     }
 
@@ -1536,6 +1597,34 @@ export class WarrantyConsentError extends Error {
 }
 
 /**
+ * Two compliance rule sets in one feature link with the same name. A rule set
+ * is identified by (feature link, name) across saves — the evaluator's
+ * automation_policy_compliance row, the due check and the compliance alert all
+ * key on it — so two of them would share one state row and one alert and
+ * overwrite each other's result. The HTTP routes refuse this up front with a
+ * 400 (DUPLICATE_COMPLIANCE_RULE_SET_NAME); this is the backstop for every
+ * other caller.
+ */
+export class DuplicateComplianceItemNameError extends Error {
+  readonly code = 'DUPLICATE_COMPLIANCE_RULE_SET_NAME' as const;
+
+  constructor(readonly names: string[]) {
+    super(duplicateComplianceItemNameMessage(names[0] ?? ''));
+    this.name = 'DuplicateComplianceItemNameError';
+  }
+}
+
+function assertUniqueComplianceItemNames(settings: unknown): void {
+  if (!settings || typeof settings !== 'object') return;
+  const items = (settings as { items?: unknown }).items;
+  if (!Array.isArray(items)) return;
+  const names = duplicateComplianceItemNames(
+    items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object'),
+  );
+  if (names.length > 0) throw new DuplicateComplianceItemNameError(names);
+}
+
+/**
  * The authenticated user on whose behalf a warranty consent may be stamped.
  * Supplied OUT OF BAND by the HTTP routes — never read from the payload, and
  * never available to `manage_policy_feature_link`, which is why an assistant
@@ -1663,12 +1752,14 @@ export async function addFeatureLink(
     inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
   }
 
+  if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
+
   const normalizedAutomation = featureType === 'automation'
     ? await normalizeConfigPolicyAutomationSettings(inlineSettings)
     : null;
   if (normalizedAutomation) inlineSettings = normalizedAutomation.settings;
 
-  return executor.transaction(async (tx) => {
+  const added = await executor.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
         ? normalizePatchInlineSettings(inlineSettings)
@@ -1716,6 +1807,12 @@ export async function addFeatureLink(
 
     return featureType === 'monitors' ? reloadMonitorsInterval(link, tx) : link;
   });
+  // A policy that gains compliance can take precedence over the policy whose
+  // rules a device followed until now; alerts those rules raised close.
+  if (added && featureType === 'compliance') {
+    scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-add');
+  }
+  return added;
 }
 
 /** Internal mutation lookup; caller must first authorize access to the policy. */
@@ -1742,7 +1839,8 @@ export async function updateFeatureLink(
     updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
   }
 
-  return executor.transaction(async (tx) => {
+  let updatedComplianceOf: string | null = null;
+  const result = await executor.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
     if (configPolicyId) {
@@ -1867,8 +1965,15 @@ export async function updateFeatureLink(
     }
 
     if (!updated) return null;
+    if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
     return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
+  // A renamed or removed rule set never gets another compliance event, so its
+  // open alerts close through the reconcile.
+  if (updatedComplianceOf) {
+    scheduleComplianceAlertReconcile({ configPolicyId: updatedComplianceOf }, 'feature-link-update');
+  }
+  return result;
 }
 
 /** A feature link is the permanent owner of converted source history. */
@@ -1892,6 +1997,16 @@ async function featureLinkHasRetiredHistory(linkId: string, executor: DbExecutor
 }
 
 export async function removeFeatureLink(linkId: string, configPolicyId: string) {
+  const removed = await removeFeatureLinkInTransaction(linkId, configPolicyId);
+  // Emptied or deleted, a compliance link's rules stop applying; the alerts
+  // they raised close through the reconcile.
+  if (removed?.featureType === 'compliance') {
+    scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-remove');
+  }
+  return removed;
+}
+
+async function removeFeatureLinkInTransaction(linkId: string, configPolicyId: string) {
   return db.transaction(async (tx) => {
     const predicate = and(eq(configPolicyFeatureLinks.id, linkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
     const [existing] = await tx.select().from(configPolicyFeatureLinks).where(predicate).for('update');
@@ -2027,6 +2142,9 @@ export async function assignPolicy(
     })
     .onConflictDoNothing()
     .returning();
+  // A new assignment can take precedence over the one a device followed until
+  // now; alerts raised by rules the device no longer follows close.
+  if (assignment) scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-add');
   return assignment ?? null;
 }
 
@@ -2307,6 +2425,7 @@ export async function unassignPolicy(assignmentId: string, configPolicyId: strin
       )
     )
     .returning();
+  if (deleted) scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-remove');
   return deleted ?? null;
 }
 
@@ -2968,6 +3087,7 @@ export async function validateFeaturePolicyExists(
   if (
     featureType === 'event_log' ||
     featureType === 'hardware_monitoring' ||
+    featureType === 'time_sync' ||
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||

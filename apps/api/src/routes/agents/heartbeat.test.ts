@@ -178,6 +178,7 @@ vi.mock('./helpers', () => ({
   compareAgentVersions: vi.fn(() => 0),
   buildEventLogConfigUpdate: vi.fn(() => undefined),
   buildHardwareMonitoringConfigUpdate: vi.fn(),
+  buildTimeSyncConfigUpdate: vi.fn(),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
@@ -3133,10 +3134,11 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
   // consent/notification is refused rather than silently started unfenced.
   it.each([
     { name: 'recognized version 1', capabilities: { consentPromptProtocolVersion: 1 }, expected: 1 },
+    { name: 'recognized version 2 (reports whether the prompt was shown and answered)', capabilities: { consentPromptProtocolVersion: 2 }, expected: 2 },
     { name: 'omitted capability object', capabilities: undefined, expected: 0 },
     { name: 'omitted key (pre-consent-gate agent)', capabilities: {}, expected: 0 },
     { name: 'explicit zero downgrade', capabilities: { consentPromptProtocolVersion: 0 }, expected: 0 },
-    { name: 'unknown integer version', capabilities: { consentPromptProtocolVersion: 2 }, expected: 0 },
+    { name: 'unknown integer version', capabilities: { consentPromptProtocolVersion: 3 }, expected: 0 },
     { name: 'fractional version', capabilities: { consentPromptProtocolVersion: 1.5 }, expected: 0 },
     { name: 'string version', capabilities: { consentPromptProtocolVersion: '1' }, expected: 0 },
   ])('persists tolerant non-sticky consent-prompt capability: $name', async ({
@@ -3773,6 +3775,45 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('hardware_monitoring_settings');
+  });
+
+  it('delivers time settings after releasing org scope inside the shared system context', async () => {
+    const { buildTimeSyncConfigUpdate } = await import('./helpers');
+    const payload = {
+      enforce_ntp: false,
+      ntp_servers: [],
+      poll_interval_minutes: 60,
+      timezone: { expected_windows_id: null, auto_fix: false },
+      fingerprint: 'sha256:test',
+    };
+    callOrder.length = 0;
+    vi.mocked(buildTimeSyncConfigUpdate).mockImplementationOnce(async () => {
+      expect(callOrder).toContain('dbContext:released');
+      expect(callOrder.lastIndexOf('systemCtx:enter')).toBeGreaterThan(
+        callOrder.lastIndexOf('systemCtx:exit'),
+      );
+      return payload;
+    });
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate.time_sync_settings).toEqual(payload);
+    expect(buildTimeSyncConfigUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits time settings on resolver failure while preserving the heartbeat', async () => {
+    const { buildTimeSyncConfigUpdate } = await import('./helpers');
+    vi.mocked(buildTimeSyncConfigUpdate).mockRejectedValueOnce(new Error('policy read failed'));
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('time_sync_settings');
   });
 
   it('includes monitoring_settings in configUpdate when the resolver succeeds', async () => {
@@ -5122,6 +5163,14 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       expect(regressed).toHaveBeenCalledWith('integrity', 1);
       const changes = (await auditCalls()).flatMap((c) => (c[1] as unknown as { details: { changes: any[] } }).details.changes);
       expect(changes).toContainEqual({ field: 'backupIntegrityProtocolVersion', before: 2, after: 1 });
+    });
+
+    it('the first report after enrollment (stored NULL) is recorded, and is not a regression', async () => {
+      arrange({ backupReadProtocolVersion: null, backupIntegrityProtocolVersion: null, backupWriteProtocolVersion: null });
+      const resp = await beat({ ...minimalHeartbeatBody });
+      expect(resp.status).toBe(200);
+      expect(await regressionAudits()).toEqual([]);
+      expect(regressed).not.toHaveBeenCalled();
     });
 
     it('a steady report after the drop is not audited again', async () => {

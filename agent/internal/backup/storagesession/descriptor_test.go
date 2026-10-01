@@ -1,6 +1,7 @@
 package storagesession
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -136,5 +137,118 @@ func TestDescriptorStringRedactsToken(t *testing.T) {
 		if strings.Contains(s, testSessionToken) {
 			t.Fatalf("descriptor formatting contains the token: %q", s)
 		}
+	}
+}
+
+const testWriteSnapshotID = "snapshot-20261128T101500Z-0123456789abcdef01234567"
+
+func writeDescriptorJSON(t *testing.T, mutate func(map[string]any)) map[string]any {
+	t.Helper()
+	return descriptorJSON(t, func(d map[string]any) {
+		d["scope"] = ScopeSnapshotWrite
+		d["snapshotId"] = testWriteSnapshotID
+		d["capabilities"] = []string{"resolve_batch", "renew", "put", "multipart", "list", "delete", "resume"}
+		d["partSizeBytes"] = 64 << 20
+		d["conditionalWrites"] = true
+		if mutate != nil {
+			mutate(d)
+		}
+	})
+}
+
+func TestParsePayloadWriteScope(t *testing.T) {
+	withCaps := func(caps ...string) func(map[string]any) {
+		return func(d map[string]any) { d["capabilities"] = caps }
+	}
+	cases := []struct {
+		name    string
+		session map[string]any
+		wantErr string
+	}{
+		{name: "valid write session", session: writeDescriptorJSON(t, nil)},
+		{name: "unknown scope", session: writeDescriptorJSON(t, func(d map[string]any) { d["scope"] = "snapshot_admin" }), wantErr: "scope"},
+		{name: "write without snapshot id", session: writeDescriptorJSON(t, func(d map[string]any) { delete(d, "snapshotId") }), wantErr: "snapshotId"},
+		{name: "write with path in snapshot id", session: writeDescriptorJSON(t, func(d map[string]any) { d["snapshotId"] = "a/b" }), wantErr: "snapshotId"},
+		{name: "write with dot-dot snapshot id", session: writeDescriptorJSON(t, func(d map[string]any) { d["snapshotId"] = ".." }), wantErr: "snapshotId"},
+		{name: "write missing put", session: writeDescriptorJSON(t, withCaps("resolve_batch", "multipart", "list", "delete", "resume")), wantErr: "put"},
+		{name: "write missing multipart", session: writeDescriptorJSON(t, withCaps("resolve_batch", "put", "list", "delete", "resume")), wantErr: "multipart"},
+		{name: "write missing resume", session: writeDescriptorJSON(t, withCaps("resolve_batch", "put", "multipart", "list", "delete")), wantErr: "resume"},
+		{name: "write missing list", session: writeDescriptorJSON(t, withCaps("resolve_batch", "put", "multipart", "delete", "resume")), wantErr: "list"},
+		{name: "write missing delete", session: writeDescriptorJSON(t, withCaps("resolve_batch", "put", "multipart", "list", "resume")), wantErr: "delete"},
+		{name: "part size too small", session: writeDescriptorJSON(t, func(d map[string]any) { d["partSizeBytes"] = 1 << 20 }), wantErr: "partSizeBytes"},
+		{name: "part size missing", session: writeDescriptorJSON(t, func(d map[string]any) { delete(d, "partSizeBytes") }), wantErr: "partSizeBytes"},
+		{name: "part size too large", session: writeDescriptorJSON(t, func(d map[string]any) { d["partSizeBytes"] = int64(6) << 30 }), wantErr: "partSizeBytes"},
+		{name: "read session naming a snapshot id", session: descriptorJSON(t, func(d map[string]any) { d["snapshotId"] = testWriteSnapshotID }), wantErr: "snapshotId"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{"storageSession": tc.session, "provider": "s3"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := ParsePayload(raw, time.Now())
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ParsePayload succeeded, want error containing %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %q, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParsePayload: %v", err)
+			}
+			if d.Scope != ScopeSnapshotWrite || d.SnapshotID != testWriteSnapshotID || !d.ConditionalWrites || d.PartSizeBytes != 64<<20 {
+				t.Fatalf("parsed write descriptor = %+v scope=%q snapshotId=%q", d, d.Scope, d.SnapshotID)
+			}
+		})
+	}
+}
+
+func TestDescriptorValidateFor(t *testing.T) {
+	parse := func(session map[string]any) *Descriptor {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{"storageSession": session})
+		d, err := ParsePayload(raw, time.Now())
+		if err != nil || d == nil {
+			t.Fatalf("ParsePayload: %v", err)
+		}
+		return d
+	}
+	read := parse(descriptorJSON(t, nil))
+	write := parse(writeDescriptorJSON(t, nil))
+	if err := read.ValidateFor(CommandClassRead); err != nil {
+		t.Fatalf("read session for a read command: %v", err)
+	}
+	if err := write.ValidateFor(CommandClassWrite); err != nil {
+		t.Fatalf("write session for a write command: %v", err)
+	}
+	if err := read.ValidateFor(CommandClassWrite); err == nil || !strings.Contains(err.Error(), "write") {
+		t.Fatalf("read session accepted for a write command: %v", err)
+	}
+	if err := write.ValidateFor(CommandClassRead); err == nil || !strings.Contains(err.Error(), "read") {
+		t.Fatalf("write session accepted for a read command: %v", err)
+	}
+	if err := write.ValidateFor("other"); err == nil {
+		t.Fatal("unknown command class accepted")
+	}
+	var nilDesc *Descriptor
+	if err := nilDesc.ValidateFor(CommandClassRead); err == nil {
+		t.Fatal("nil descriptor accepted")
+	}
+}
+
+func TestNewRefusesWriteSession(t *testing.T) {
+	cp := newFakeControlPlane(t, newFakeStorage(t))
+	d := testDescriptor(cp, time.Now())
+	d.Scope = ScopeSnapshotWrite
+	d.SnapshotID = testWriteSnapshotID
+	d.Capabilities = []string{"resolve_batch", "put", "multipart", "list", "delete", "resume"}
+	d.PartSizeBytes = 64 << 20
+	p, err := New(context.Background(), d, testCredentials(cp), Options{ControlClient: cp.srv.Client()})
+	if err == nil {
+		p.Close()
+		t.Fatal("read provider accepted a write session")
 	}
 }

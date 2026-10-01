@@ -12,6 +12,7 @@
  * - Background SDK Processor: iterates Query output, translates to AiStreamEvents
  */
 
+import { resolveModelThinking } from './aiModelThinking';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -44,6 +45,7 @@ import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput
 import { isRecognizedSelfHostSignal } from '../config/env';
 import { resolveWireModel, type ResolvedLlmEndpoint, type UsableLlmConfig } from './llm/llmConfigResolver';
 import { getLlmEgressProxy } from './llm/llmEgressProxy';
+import { PLATFORM_LLM_CREDENTIAL_ENV_KEYS } from './llm/llmAvailability';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 import { markAiBudgetReservationIndeterminate } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
@@ -182,11 +184,9 @@ const SDK_CHILD_ENV_ALLOWLIST = [
   'COMSPEC',
 ] as const;
 
-const SDK_CHILD_ENV_CREDENTIAL_KEYS = new Set<string>([
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-]);
+// The platform credentials — the same set `isPlatformLlmConfigured` counts as
+// "a model provider is configured", so readiness and the subprocess agree.
+const SDK_CHILD_ENV_CREDENTIAL_KEYS = new Set<string>(PLATFORM_LLM_CREDENTIAL_ENV_KEYS);
 
 /**
  * Proxy configuration the parent process may carry. Forwarded as-is for
@@ -1314,7 +1314,9 @@ export class StreamingSessionManager {
             resume: dbSession.sdkSessionId ?? undefined,
             persistSession: true,
             settingSources: [],
-            thinking: { type: 'disabled' },
+            // #7587: per-model thinking/effort (never a hard-coded `disabled`,
+            // which current models reject with a 400). Keyed on the wire id.
+            ...resolveModelThinking(wire.model),
             stderr: (data: string) => {
               if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
                 console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));

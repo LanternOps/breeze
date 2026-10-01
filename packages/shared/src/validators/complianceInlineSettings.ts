@@ -161,10 +161,58 @@ const complianceItemSchema = z
   })
   .passthrough();
 
+/**
+ * The name a rule set is stored under: its own name, or `Compliance Rule <n>`
+ * when it has none (the API's decomposeInlineSettings writes the same default).
+ */
+export function complianceItemName(item: { name?: unknown }, index: number): string {
+  return String(item.name ?? `Compliance Rule ${index + 1}`);
+}
+
+/**
+ * Names that more than one rule set in the same link is stored under, compared
+ * exactly as the database compares them.
+ *
+ * A rule set is identified by (feature link, name), not by its row id: saving
+ * deletes and re-inserts every rule set, so the id changes on every save. The
+ * evaluator's persisted state (automation_policy_compliance.config_item_name),
+ * the due check and the compliance alert all key on that pair, so two rule
+ * sets with one name would share a state row and an alert and overwrite each
+ * other's result.
+ */
+export function duplicateComplianceItemNames(items: ReadonlyArray<{ name?: unknown }> | null | undefined): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  (items ?? []).forEach((item, index) => {
+    const name = complianceItemName(item, index);
+    if (seen.has(name)) duplicates.add(name);
+    seen.add(name);
+  });
+  return [...duplicates];
+}
+
+export function duplicateComplianceItemNameMessage(name: string): string {
+  return `More than one rule set is named "${name}". Each rule set in a policy needs its own name.`;
+}
+
 export const complianceInlineSettingsSchema = z
   .object({
     items: z.array(complianceItemSchema).max(100),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((settings, ctx) => {
+    const seen = new Set<string>();
+    settings.items.forEach((item, index) => {
+      const name = complianceItemName(item, index);
+      if (seen.has(name)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['items', index, 'name'],
+          message: duplicateComplianceItemNameMessage(name),
+        });
+      }
+      seen.add(name);
+    });
+  });
 
 export type ComplianceInlineSettings = z.infer<typeof complianceInlineSettingsSchema>;

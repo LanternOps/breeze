@@ -191,7 +191,8 @@
     "backup_continuity": "Continuità dei backup",
     "script": "Verifica script",
     "network_check": "Verifica di rete",
-    "hardware_health": "Stato hardware"
+    "hardware_health": "Stato hardware",
+    "time_sync": "Sincronizzazione dell’ora"
   },
   "fields": {
     "operator": "Confronto",
@@ -553,6 +554,22 @@
         "too_many_responses": "servirebbero più di dieci risposte",
         "auto_resolve_conditions": "impossibile mantenere le condizioni di risoluzione personalizzate",
         "target_unconvertible": "impossibile convertire la destinazione della risposta",
+        "already_managed": "già gestita da un monitor",
+        "no_org": "la verifica non appartiene a nessuna organizzazione",
+        "asset_missing": "l’asset rilevato collegato non esiste più",
+        "condition_invalid": "le impostazioni della verifica non formano una condizione di monitor valida",
+        "no_active_rules": "la verifica non ha alcuna regola di avviso attiva",
+        "multiple_network_rules": "la verifica ha più di una regola di avviso attiva",
+        "network_predicate_unsupported": "la condizione di avviso non ha un equivalente nei monitor",
+        "network_threshold_out_of_range": "la soglia di errore è fuori intervallo (al massimo 100 errori consecutivi)",
+        "site_binding_unrepresentable": "la verifica legata a una sede non è collegata ad alcun asset rilevato",
+        "config_override_unrepresentable": "la destinazione o il timeout personalizzato non può essere mantenuto",
+        "built_in": "regola di sistema integrata; continua a generare avvisi da sola",
+        "no_rules": "il modello non ha regole da convertire",
+        "target_or_owner": "la destinazione o il proprietario di una regola differisce dal suo modello",
+        "blocked": "la conversione è bloccata",
+        "disabled_response_automation": "l’automazione della risposta è disattivata",
+        "alert_workflow_kept": "il flusso di avvisi resta invariato",
         "unknown": "conversione rifiutata; verifica l’origine"
       }
     }
@@ -586,6 +603,25 @@
         "minHealthOptions": {
           "warning": "Avviso",
           "critical": "Critico"
+        }
+      },
+      "time_sync": {
+        "findings": "Problemi",
+        "consecutiveSnapshots": "Istantanee consecutive",
+        "findingOptions": {
+          "pdc_no_external_source": "Il PDC radice della foresta non ha un’origine esterna",
+          "source_local_clock": "Utilizzo dell’orologio locale",
+          "dc_vm_host_sync": "Il controller di dominio si sincronizza con l’host della VM",
+          "ntp_server_unresolvable": "Il nome del server NTP non è valido o non viene risolto",
+          "ntp_peer_unreachable": "Il peer NTP non è raggiungibile",
+          "domain_source_unavailable": "Origine dell’ora del dominio non disponibile",
+          "member_not_on_hierarchy": "La gerarchia del dominio non è utilizzata",
+          "sync_disabled": "La sincronizzazione dell’ora è disabilitata",
+          "sync_stale": "Nessuna sincronizzazione recente riuscita",
+          "correction_refused": "La correzione dell’ora è stata rifiutata",
+          "timezone_mismatch": "Il fuso orario è diverso da quello previsto",
+          "policy_not_applied": "Il criterio relativo all’ora non è stato applicato",
+          "policy_conflict_gpo": "Criteri di gruppo controlla le impostazioni dell’ora"
         }
       }
     }

@@ -20,6 +20,7 @@ type BackupMetricsRecorder = {
   onUnexpectedLegacyWrite: (commandType: string, reason: string, count?: number) => void;
   onConditionalWriteProbe: (outcome: string, reason: string, count?: number) => void;
   onSnapshotPublishRefused: (reason: string, count?: number) => void;
+  onRestoreIntegrity: (commandType: string, status: string, reason: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -42,6 +43,7 @@ let recorder: BackupMetricsRecorder = {
   onUnexpectedLegacyWrite: noop,
   onConditionalWriteProbe: noop,
   onSnapshotPublishRefused: noop,
+  onRestoreIntegrity: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -63,6 +65,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onUnexpectedLegacyWrite: next?.onUnexpectedLegacyWrite ?? noop,
     onConditionalWriteProbe: next?.onConditionalWriteProbe ?? noop,
     onSnapshotPublishRefused: next?.onSnapshotPublishRefused ?? noop,
+    onRestoreIntegrity: next?.onRestoreIntegrity ?? noop,
   };
 }
 
@@ -183,17 +186,19 @@ export function recordStorageSessionMint(
  * How a backup write command reached the device: `brokered` (through a
  * storage session), `legacy_credential` (carrying the storage destination
  * with its credentials), `local` (a local destination path, no credential)
- * or `refused`. Recorded once per command actually handed to the agent.
+ * or `refused`. Recorded once per command actually handed to the agent —
+ * except `deferred`, recorded each time a queued command is held back
+ * because the device has not reported its backup helper yet.
  */
-export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused';
+export type BackupWriteDispatchMode = 'brokered' | 'legacy_credential' | 'local' | 'refused' | 'deferred';
 
 /**
- * Reasons a backup is still delivered WITH its storage credential that are
- * expected until every helper reports brokered writes. Any other reason (a
- * failed session issue, a server-origin or job problem, a missing reference)
- * is also counted by `onUnexpectedLegacyWrite`, so it can be alerted on.
+ * Backups to S3 storage are delivered only through write sessions, so no
+ * write is expected to carry its storage credential any more: every
+ * `legacy_credential` count is also counted by `onUnexpectedLegacyWrite`, so
+ * it can be alerted on.
  */
-const EXPECTED_LEGACY_WRITE_REASONS = new Set(['helper_unsupported', 'provider_not_s3']);
+const EXPECTED_LEGACY_WRITE_REASONS = new Set<string>();
 
 export function recordBackupWriteDispatch(
   commandType: string,
@@ -266,4 +271,23 @@ export type BackupWriteJanitorAction = 'abort_upload' | 'settle_delete' | 'sweep
 
 export function recordBackupWriteJanitor(action: BackupWriteJanitorAction, outcome: 'ok' | 'failed', count = 1): void {
   recorder.onWriteJanitor(action, outcome, count);
+}
+
+/**
+ * The integrity expectation delivered with one restore-shaped command or
+ * recovery bootstrap (services/backupRestoreIntegrity.ts): `attested` (reason
+ * = trust: `server_verified` | `producer_only`), `unattested` (reason =
+ * `unattested_legacy` | `unattested` | `pending` | `attestation_failed`), or
+ * `absent` (no block; the snapshot could not be resolved). `override` and
+ * `refused` are reserved for when restores are gated on it.
+ */
+export type RestoreIntegrityMetricStatus = 'attested' | 'unattested' | 'absent' | 'override' | 'refused';
+
+export function recordRestoreIntegrity(
+  commandType: string,
+  status: RestoreIntegrityMetricStatus,
+  reason: string,
+  count = 1,
+): void {
+  recorder.onRestoreIntegrity(commandType, status, reason, count);
 }

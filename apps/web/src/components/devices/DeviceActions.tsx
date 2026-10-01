@@ -223,6 +223,10 @@ export default function DeviceActions({
   const { can } = usePermissions();
   // UX gate; POST /devices/:id/commands requires devices.execute.
   const canWake = can("devices", "execute");
+  // UX gate; every /system-tools route (including the process, service, file
+  // and registry listings) runs a live command on the device and requires
+  // devices.execute, so read-only roles are not offered Remote Tools.
+  const canUseRemoteTools = can("devices", "execute");
   const canMoveOrg = useCanMoveDeviceOrg();
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
@@ -364,23 +368,25 @@ export default function DeviceActions({
                 remoteAccessPolicy={device.remoteAccessPolicy}
                 helperLifecycleMode={device.helperLifecycleMode}
               />
-              <button
-                type="button"
-                onClick={() => handleAction("remote-tools")}
-                disabled={
-                  !online || device.remoteAccessPolicy?.remoteTools === false
-                }
-                title={
-                  offlineTitle ??
-                  (device.remoteAccessPolicy?.remoteTools === false
-                    ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
-                    : undefined)
-                }
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Wrench className="h-4 w-4" />
-                {t("deviceActions.remoteTools")}{" "}
-              </button>
+              {canUseRemoteTools && (
+                <button
+                  type="button"
+                  onClick={() => handleAction("remote-tools")}
+                  disabled={
+                    !online || device.remoteAccessPolicy?.remoteTools === false
+                  }
+                  title={
+                    offlineTitle ??
+                    (device.remoteAccessPolicy?.remoteTools === false
+                      ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
+                      : undefined)
+                  }
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Wrench className="h-4 w-4" />
+                  {t("deviceActions.remoteTools")}{" "}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleAction("refresh")}
@@ -548,25 +554,27 @@ export default function DeviceActions({
           remoteAccessPolicy={device.remoteAccessPolicy}
           helperLifecycleMode={device.helperLifecycleMode}
         />
-        <button
-          type="button"
-          onClick={() => handleAction("remote-tools")}
-          disabled={
-            !online ||
-            loading ||
-            device.remoteAccessPolicy?.remoteTools === false
-          }
-          title={
-            offlineTitle ??
-            (device.remoteAccessPolicy?.remoteTools === false
-              ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
-              : undefined)
-          }
-          className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <Wrench className="h-4 w-4" />
-          {t("deviceActions.remoteTools")}{" "}
-        </button>
+        {canUseRemoteTools && (
+          <button
+            type="button"
+            onClick={() => handleAction("remote-tools")}
+            disabled={
+              !online ||
+              loading ||
+              device.remoteAccessPolicy?.remoteTools === false
+            }
+            title={
+              offlineTitle ??
+              (device.remoteAccessPolicy?.remoteTools === false
+                ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
+                : undefined)
+            }
+            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Wrench className="h-4 w-4" />
+            {t("deviceActions.remoteTools")}{" "}
+          </button>
+        )}
         <div className="relative">
           <button
             type="button"

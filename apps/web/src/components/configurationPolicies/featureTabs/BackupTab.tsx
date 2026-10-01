@@ -14,6 +14,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import StorageKeyRevocationCard from "./StorageKeyRevocationCard";
 import BackupDestinationSection, {
   emptyConfigForm,
   capabilitySummary,
@@ -1929,6 +1930,7 @@ export default function BackupTab({
             </div>
           ) : (
             <>
+              <StorageKeyRevocationCard orgId={orgId ?? null} />
               <BackupDestinationSection
                 configs={configs}
                 configsLoading={configsLoading}

@@ -13,7 +13,9 @@
  *     through the session. This also catches an upload whose creation
  *     succeeded in storage but was never recorded.
  *  3. A sealing reservation whose sealed_until has passed, with no recorded
- *     upload still open, is published.
+ *     upload still open, is published, and its snapshot is handed straight
+ *     to attestation verification (jobs/backupSnapshotAttestationWorker.ts)
+ *     rather than waiting for that worker's next sweep.
  *  4. A reserved id whose job has ended, whose issued URLs have all expired
  *     (plus the transfer margin), and with no recorded upload or delete still
  *     in flight, is abandoned
@@ -22,6 +24,9 @@
  *     older than the orphan window).
  *  5. A delete marker left behind by a call that never finished is cleared
  *     once the (time-bounded) storage delete can no longer be running.
+ *  6. The sealed connection settings of storage keys replaced more than 30
+ *     days ago are erased (services/backupStorageCredentialHistory.ts): after
+ *     that the old key can only be confirmed as disabled, not checked.
  * Publication (rule 3) and abandonment (rule 4) also wait for any in-flight
  * delete.
  *
@@ -53,6 +58,9 @@ import { attachWorkerObservability } from './workerObservability';
 const QUEUE_NAME = 'backup-write-session-janitor';
 const JOB_NAME = 'backup-write-session-janitor';
 const REPEAT_JOB_ID = 'backup-write-session-janitor-repeat';
+// A literal, so the schedule registry contract can read it statically; kept
+// equal to RESERVATION_CLEANUP_EVERY_MS (services/backupSnapshotIdReservations.ts),
+// which attestation verification uses to predict publication (unit-tested).
 const RUN_EVERY_MS = 5 * 60 * 1000;
 const BATCH = 200;
 const OPEN_UPLOAD_STATES = ['creating', 'open', 'completing'];
@@ -62,7 +70,21 @@ export type JanitorStorage = {
   listMultipart(cfg: Record<string, unknown>, prefix: string): Promise<Array<{ key: string; uploadId: string }>>;
 };
 
-export type JanitorDeps = { now(): Date; storage: JanitorStorage };
+export type JanitorDeps = {
+  now(): Date;
+  storage: JanitorStorage;
+  /**
+   * Receives the backup_snapshots ids whose reservations this run published
+   * (rule 3), after the publication has committed. Absent = nobody is told.
+   */
+  onPublished?(snapshotDbIds: string[]): Promise<unknown>;
+  /**
+   * Rule 6: erases the sealed connection settings of storage keys replaced
+   * more than 30 days ago (services/backupStorageCredentialHistory.ts).
+   * Absent = skipped. Returns how many were erased.
+   */
+  eraseExpiredSealedSettings?(now: Date): Promise<number>;
+};
 
 const defaultDeps: JanitorDeps = {
   now: () => new Date(),
@@ -70,9 +92,25 @@ const defaultDeps: JanitorDeps = {
     abortMultipart: (cfg, key, uploadId) => abortMultipartUpload(cfg, key, uploadId),
     listMultipart: (cfg, prefix) => listMultipartUploads(cfg, prefix),
   },
+  onPublished: async (snapshotDbIds) => {
+    const { enqueueVerificationForPublishedSnapshots } = await import('./backupSnapshotAttestationWorker');
+    return enqueueVerificationForPublishedSnapshots(snapshotDbIds);
+  },
+  eraseExpiredSealedSettings: async (now) => {
+    const { eraseExpiredSealedSettings } = await import('../services/backupStorageCredentialHistory');
+    return eraseExpiredSealedSettings(now);
+  },
 };
 
-export type JanitorSummary = { abortedUploads: number; settledDeletes: number; sweptPrefixes: number; published: number; abandoned: number; failures: number };
+export type JanitorSummary = {
+  abortedUploads: number;
+  settledDeletes: number;
+  sweptPrefixes: number;
+  published: number;
+  abandoned: number;
+  erasedSealedSettings: number;
+  failures: number;
+};
 
 /**
  * The destination a session or reservation was issued for, by configuration
@@ -182,7 +220,7 @@ async function abandonEndedReservations(deps: JanitorDeps, summary: JanitorSumma
   if (n > 0) recordBackupWriteJanitor('abandon', 'ok', n);
 }
 
-/** Rule 3. */
+/** Rule 3; the published snapshots are then handed to deps.onPublished. */
 async function publishSealed(deps: JanitorDeps, summary: JanitorSummary): Promise<void> {
   const now = deps.now();
   const rows = await withSystemDbAccessContext(() =>
@@ -200,12 +238,26 @@ async function publishSealed(deps: JanitorDeps, summary: JanitorSummary): Promis
                SELECT 1 FROM backup_storage_sessions s
                 WHERE s.reservation_snapshot_id = r.snapshot_id
                   AND s.deleting_since IS NOT NULL)
-      RETURNING r.snapshot_id
+      RETURNING r.snapshot_id, r.published_snapshot_db_id
     `),
   );
-  const n = (rows as unknown as unknown[]).length;
+  const published = rows as unknown as Array<{ snapshot_id: string; published_snapshot_db_id: string | null }>;
+  const n = published.length;
   summary.published += n;
   if (n > 0) recordBackupWriteJanitor('publish', 'ok', n);
+
+  const snapshotDbIds = published.flatMap((r) => (r.published_snapshot_db_id ? [r.published_snapshot_db_id] : []));
+  if (snapshotDbIds.length === 0 || !deps.onPublished) return;
+  try {
+    await deps.onPublished(snapshotDbIds);
+  } catch (err) {
+    // The publication stands; a verification that could not be queued now is
+    // retried by the attestation worker's sweep when due.
+    console.warn('[BackupWriteSessionJanitor] could not hand published snapshots to attestation verification', {
+      count: snapshotDbIds.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -288,12 +340,22 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
 }
 
 export async function runBackupWriteSessionJanitor(deps: JanitorDeps = defaultDeps): Promise<JanitorSummary> {
-  const summary: JanitorSummary = { abortedUploads: 0, settledDeletes: 0, sweptPrefixes: 0, published: 0, abandoned: 0, failures: 0 };
+  const summary: JanitorSummary = {
+    abortedUploads: 0, settledDeletes: 0, sweptPrefixes: 0, published: 0, abandoned: 0, erasedSealedSettings: 0, failures: 0,
+  };
   await abortRecordedUploads(deps, summary);
   await settleStuckDeletes(deps, summary);
   await abandonEndedReservations(deps, summary);
   await publishSealed(deps, summary);
   await sweepFinishedPrefixes(deps, summary);
+  if (deps.eraseExpiredSealedSettings) {
+    try {
+      summary.erasedSealedSettings = await deps.eraseExpiredSealedSettings(deps.now());
+    } catch (err) {
+      summary.failures += 1;
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
   return summary;
 }
 
@@ -330,6 +392,8 @@ export async function initializeBackupWriteSessionJanitor(): Promise<void> {
   });
   console.log('[BackupWriteSessionJanitor] Worker initialized');
 }
+
+export const __testOnly = { defaultDeps, RUN_EVERY_MS };
 
 export async function shutdownBackupWriteSessionJanitor(): Promise<void> {
   await worker?.close();

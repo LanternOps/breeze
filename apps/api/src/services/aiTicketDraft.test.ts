@@ -52,6 +52,21 @@ describe('draftTicketFromTranscript', () => {
     expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
   });
 
+  it('sends adaptive thinking + effort medium for a current model, nothing for an unknown id (#7587)', async () => {
+    createMock.mockResolvedValueOnce(reply({ subject: 's', problemSummary: 'p', resolutionSummary: 'r', wasFixed: true, suggestedTimeMinutes: 5 }));
+    await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-sonnet-5-5', partnerId: 'partner-1' });
+    expect(createMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'medium' },
+    }));
+
+    createMock.mockResolvedValueOnce(reply({ subject: 's', problemSummary: 'p', resolutionSummary: 'r', wasFixed: true, suggestedTimeMinutes: 5 }));
+    await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x', partnerId: 'partner-1' });
+    const lastArgs = createMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(lastArgs).not.toHaveProperty('thinking');
+    expect(lastArgs).not.toHaveProperty('output_config');
+  });
+
   it('returns a structured draft and maps wasFixed', async () => {
     createMock.mockResolvedValueOnce(reply({ subject: 'Outlook would not open', problemSummary: 'Outlook would not start.', resolutionSummary: 'Rebuilt the mail profile.', wasFixed: true, suggestedTimeMinutes: 15 }));
     const r = await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x', partnerId: 'partner-1' });

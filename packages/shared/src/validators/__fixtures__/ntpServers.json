@@ -1,0 +1,29 @@
+{
+  "valid": [
+    "a",
+    "123",
+    "time.cloudflare.com",
+    "pool.ntp.org",
+    "10.0.0.1",
+    "2001:db8::1",
+    "dc01",
+    "a.b",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example"
+  ],
+  "invalid": [
+    "",
+    "a,0x9",
+    "a b",
+    "a;b",
+    "-flag",
+    "a:123",
+    "\"a\"",
+    "a/b",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "..",
+    "a..b",
+    "bad_underscore",
+    "host-",
+    "[2001:db8::1]"
+  ]
+}

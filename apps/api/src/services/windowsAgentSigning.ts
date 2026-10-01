@@ -2,6 +2,7 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getBinarySource, getGithubAgentUrl } from './binarySource';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
+import { binaryS3Key } from './binaryStores';
 
 /**
  * Whether the public Windows agent binary Quick Support serves is actually
@@ -119,7 +120,7 @@ async function fetchGithubHeaderBytes(): Promise<Buffer | null> {
 
 async function fetchS3HeaderBytes(): Promise<Buffer | null> {
   try {
-    const url = await getPresignedUrl(`agent/${SUPPORT_AGENT_FILENAME}`);
+    const url = await getPresignedUrl(binaryS3Key('agent', SUPPORT_AGENT_FILENAME));
     const res = await fetch(url, { headers: { Range: `bytes=0-${HEADER_BYTES - 1}` } });
     if (!isPartialContentResponse(res) || !res.body) {
       console.error(`[windows-agent-signing] S3 header fetch returned non-partial status ${res.status}`);

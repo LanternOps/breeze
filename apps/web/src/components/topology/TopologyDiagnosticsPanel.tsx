@@ -20,6 +20,8 @@ export default function TopologyDiagnosticsPanel({ siteId, subject, graphRevisio
   const [runs, setRuns] = useState<TopologyDiagnosticRun[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
   const heading = useRef<HTMLHeadingElement>(null), active = useRef(true);
   const base = `/topology/sites/${siteId}`;
+  // Known diagnostic codes read as sentences; an unknown code still degrades to readable words.
+  const reasonText = (code: string) => t(/* i18n-dynamic */ `diagnosticReasons.${code}`, { defaultValue: code.replaceAll('_', ' ') });
   useEffect(() => { active.current = true; heading.current?.focus(); return () => { active.current = false; }; }, []);
   useEffect(() => {
     const controller = new AbortController(); setCollectors(null); setOrigin(''); setError(undefined);
@@ -93,13 +95,13 @@ export default function TopologyDiagnosticsPanel({ siteId, subject, graphRevisio
         onChange={(event) => setProbesPerHop(Math.min(TOPOLOGY_TRACE_LIMITS.maxProbesPerHop, Math.max(1, Math.trunc(Number(event.target.value)) || 1)))} /></label>
     </div>}
     {collectors?.items.length === 0 && <p>{t('noAgent')}</p>}
-    {error && <p role="alert" className="text-destructive">{error}</p>}
+    {error && <p role="alert" className="text-destructive">{/^[a-z][a-z0-9_]*$/.test(error) ? reasonText(error) : error}</p>}
     <button data-testid={tracing ? 'topology-trace-start' : 'topology-diagnostic-start'} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy || !selected?.eligible || runs.some((run) => !terminal(run))} onClick={() => void start()}>{runs.length ? t('retryNewRun') : t('runDiagnostic')}</button>
     {runs.map((run) => <div key={run.id} data-testid={`topology-run-${run.id}`} className="space-y-2 border-t pt-3">
       <p role="status">{run.cancelRequestedAt && !terminal(run) ? t('stopRequested') : run.state} · {run.plan.family} · {run.assessment}</p>
       <p className="break-words text-sm">{t('origin')}: {run.plan.origin.agentId} · {run.plan.origin.contextKey} · {t('deadline')}: {new Date(run.deadline).toLocaleString()}</p>
       <p className="text-sm">{t('acceptedPlan')}: {run.plan.steps.map((step) => step.method.toUpperCase()).join(' → ')}</p>
-      {run.reasons.map((reason) => <p key={reason}>{reason === 'target_not_configured' ? t('targetNotConfigured') : reason.replaceAll('_', ' ')}</p>)}
+      {run.reasons.map((reason) => <p key={reason}>{reason === 'target_not_configured' ? t('targetNotConfigured') : reasonText(reason)}</p>)}
       <ul className="space-y-2">{run.steps.map((step) => <li key={step.id} className="break-words text-sm"><span data-testid="topology-actual-method">{step.attribution.actualMethod?.toUpperCase() ?? t('notMeasured')}</span>: {step.reason === 'icmp_no_response' || step.attribution.requestedMethod === 'icmp' && step.state === 'timeout' ? t('noIcmpResponse') : step.state} · {step.attribution.family ?? t('unknown')} · {step.attribution.resolvedIp ?? t('unknown')} · {step.attribution.contextKey ?? t('unknown')} · {step.attribution.quality}</li>)}</ul>
       {run.plan.recipeId === 'trace_route' && <TraceResultPanel run={run} />}
       {!terminal(run) && <button data-testid="topology-diagnostic-stop" className="rounded border px-3 py-2" disabled={!!run.cancelRequestedAt} onClick={() => void stop(run)}>{t('stop')}</button>}

@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, closeMock } = vi.hoisted(() => ({
+const { addMock, closeMock, getJobMock } = vi.hoisted(() => ({
   addMock: vi.fn(),
   closeMock: vi.fn(),
+  getJobMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
   Queue: class {
     add = addMock;
     close = closeMock;
+    getJob = getJobMock;
   }
 }));
 
@@ -25,11 +27,15 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../db/schema', () => ({ backupConfigs: { id: 'id', approvalGeneration: 'approvalGeneration' } }));
 
+import type { z } from 'zod';
 import {
   closeBackupQueue,
   enqueueBackupDispatch,
+  enqueueBackupDispatchCapabilityWait,
   enqueueBackupResults,
+  removeQueuedBackupDispatch,
 } from './backupEnqueue';
+import { backupProcessResultSchema } from './queueSchemas';
 
 describe('backup enqueue helpers', () => {
   beforeEach(async () => {
@@ -121,5 +127,165 @@ describe('backup enqueue helpers', () => {
     expect(payload.result.snapshot?.baseSnapshotId).toBe('snap-0');
     expect(payload.result.snapshot?.formatVersion).toBe(2);
     expect(payload.result.snapshot?.backupIdentity).toBe('s3::e::b');
+  });
+});
+
+describe('waiting for a device to report its backup helper protocols', () => {
+  const DATA = {
+    type: 'dispatch-backup' as const, jobId: 'job-123', configId: 'cfg-1', orgId: 'org-1', deviceId: 'dev-1', configGeneration: 7,
+  };
+  const SINCE = '2026-09-29T10:00:00.000Z';
+
+  beforeEach(async () => {
+    addMock.mockReset();
+    getJobMock.mockReset();
+    dbSelectMock.mockReset();
+    addMock.mockResolvedValue({ id: 'queue-job-1' });
+    await closeBackupQueue();
+  });
+
+  it('re-queues the same dispatch, delayed, under a fresh id per check, without re-reading the config generation', async () => {
+    await enqueueBackupDispatchCapabilityWait(DATA, { attempt: 3, since: SINCE }, 15_000);
+
+    expect(dbSelectMock).not.toHaveBeenCalled();
+    expect(addMock).toHaveBeenCalledWith(
+      'dispatch-backup',
+      expect.objectContaining({
+        jobId: 'job-123', configGeneration: 7, capabilityWaitAttempt: 3, capabilityWaitSince: SINCE,
+      }),
+      expect.objectContaining({ jobId: 'backup-dispatch-job-123-capability-wait-3', delay: 15_000, attempts: 1 }),
+    );
+  });
+
+  it('cancelling a waiting backup removes whichever check is queued', async () => {
+    const remove = vi.fn();
+    getJobMock.mockImplementation(async (id: string) =>
+      id === 'backup-dispatch-job-123-capability-wait-4' ? { getState: async () => 'delayed', remove } : undefined);
+
+    await expect(removeQueuedBackupDispatch('job-123')).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('still removes a dispatch that never waited', async () => {
+    const remove = vi.fn();
+    getJobMock.mockImplementation(async (id: string) =>
+      id === 'backup-dispatch-job-123' ? { getState: async () => 'waiting', remove } : undefined);
+
+    await expect(removeQueuedBackupDispatch('job-123')).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #7466: the backup helper's Hyper-V export always sends a `warning` key, set to
+// the warning list joined with newlines — so a clean run reports `warning: ""`.
+// The ingress schema (routes/backup/resultSchemas.ts) accepts that, but the
+// strict queue schema declares `warning` as a non-empty optional string, so the
+// enqueue threw and every clean worker-dispatched Hyper-V backup ended `failed`
+// with no snapshot. A blank optional string means "not reported" and must be
+// treated as absent at the queue handoff, where helpers already in the field
+// are covered without an agent release.
+describe('enqueueBackupResults blank optional strings (#7466)', () => {
+  beforeEach(async () => {
+    addMock.mockReset();
+    addMock.mockResolvedValue({ id: 'queue-job-1' });
+    await closeBackupQueue();
+  });
+
+  // Shaped exactly like agentWs.ts builds it from a clean Hyper-V export.
+  const cleanHypervResult = (warning: string) => ({
+    status: 'completed',
+    snapshotId: 'hyperv-accounting-vm-20260929',
+    filesBackedUp: 3,
+    bytesBackedUp: 4096,
+    warning,
+    backupType: 'application' as const,
+    metadata: {
+      backupKind: 'hyperv_export',
+      vmName: 'Accounting VM',
+      consistencyType: 'application',
+      warnings: [],
+    },
+    snapshot: {
+      id: 'hyperv-accounting-vm-20260929',
+      timestamp: '2026-09-29T12:00:00Z',
+      size: 4096,
+      files: [{
+        sourcePath: 'Accounting VM/Virtual Hard Disks/disk.vhdx',
+        backupPath: 'snapshots/hyperv-accounting-vm-20260929/files/Accounting VM/Virtual Hard Disks/disk.vhdx',
+        size: 4096,
+        modTime: '2026-09-29T11:59:00Z',
+      }],
+    },
+  });
+
+  const enqueuedResult = (): Record<string, unknown> =>
+    (addMock.mock.calls[0]![1] as { result: Record<string, unknown> }).result;
+
+  it('enqueues a clean Hyper-V result whose helper reported warning: ""', async () => {
+    await expect(
+      enqueueBackupResults('job-1', 'org-1', 'dev-1', cleanHypervResult('')),
+    ).resolves.toBe('queue-job-1');
+
+    const result = enqueuedResult();
+    expect(result).not.toHaveProperty('warning');
+    expect(result.status).toBe('completed');
+    expect(result.snapshotId).toBe('hyperv-accounting-vm-20260929');
+    expect((result.snapshot as { id: string }).id).toBe('hyperv-accounting-vm-20260929');
+  });
+
+  it('treats a whitespace-only warning as absent', async () => {
+    await enqueueBackupResults('job-1', 'org-1', 'dev-1', cleanHypervResult(' \n\t'));
+
+    expect(enqueuedResult()).not.toHaveProperty('warning');
+  });
+
+  it('keeps a real warning verbatim', async () => {
+    const warning = 'free-space preflight skipped: access denied\nVM was running; exported a checkpoint';
+    await enqueueBackupResults('job-1', 'org-1', 'dev-1', cleanHypervResult(warning));
+
+    expect(enqueuedResult().warning).toBe(warning);
+  });
+
+  it('does not mutate the caller\'s result object', async () => {
+    const input = cleanHypervResult('');
+    await enqueueBackupResults('job-1', 'org-1', 'dev-1', input);
+
+    expect(input).toHaveProperty('warning', '');
+  });
+
+  // The server-derived outer status is required, not optional: a blank one is
+  // a server bug and must still be refused loudly, not normalised away.
+  it('still rejects a blank required status', async () => {
+    await expect(
+      enqueueBackupResults('job-1', 'org-1', 'dev-1', { ...cleanHypervResult(''), status: '' }),
+    ).rejects.toThrow();
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  // Completeness: EVERY optional non-empty-string field on the strict queue
+  // schema gets the same treatment, discovered from the schema itself, so a
+  // field added later with `z.string().min(1).optional()` cannot reintroduce
+  // this failure for a helper that reports it blank.
+  it('treats a blank value as absent for every optional non-empty-string field of the queue schema', async () => {
+    const shape = backupProcessResultSchema.shape as Record<string, z.ZodType>;
+    const optionalNonEmptyStringKeys = Object.keys(shape).filter((key) => {
+      const field = shape[key]!;
+      return field.safeParse(undefined).success
+        && field.safeParse('x').success
+        && !field.safeParse('').success;
+    });
+    // Sanity-check the probe so this cannot pass as an empty loop.
+    expect(optionalNonEmptyStringKeys).toEqual(expect.arrayContaining(['warning', 'error', 'agentStatus', 'snapshotId']));
+
+    for (const key of optionalNonEmptyStringKeys) {
+      for (const blank of ['', '   ']) {
+        addMock.mockClear();
+        await expect(
+          enqueueBackupResults('job-1', 'org-1', 'dev-1', { status: 'completed', [key]: blank }),
+          `${key}: ${JSON.stringify(blank)} must be treated as absent, not rejected`,
+        ).resolves.toBe('queue-job-1');
+        expect(enqueuedResult(), key).not.toHaveProperty(key);
+      }
+    }
   });
 });

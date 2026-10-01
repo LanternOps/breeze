@@ -477,6 +477,44 @@ describe('snapshot routes', () => {
     ]);
   });
 
+  it('exposes the sizing fields of the stored hardware profile so Restore-as-VM cards can show CPU / memory / disk', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({
+        hardwareProfile: {
+          cpuModel: 'Xeon',
+          cpuCores: 8,
+          totalMemoryMB: 16384,
+          disks: [
+            { name: 'disk0', sizeBytes: 256 * 1024 ** 3, model: 'NVMe', partitions: [{ name: 'C:' }] },
+            { name: 'disk1', sizeBytes: 1024 ** 4 },
+          ],
+          networkAdapters: [{ name: 'eth0', macAddress: '00:11:22:33:44:55' }],
+          biosVersion: '1.2.3',
+          isUefi: true,
+          motherboard: 'Board',
+        },
+      }),
+      makeSnapshot({ id: 'snapshot-2', snapshotId: 'snap-2', hardwareProfile: null }),
+      makeSnapshot({ id: 'snapshot-3', snapshotId: 'snap-3', hardwareProfile: { cpuCores: 'eight', disks: 'none' } }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Only the sizing fields ride on the list — no NICs/MACs, BIOS or board strings.
+    expect(body.data[0].hardwareProfile).toEqual({
+      cpuCores: 8,
+      totalMemoryMB: 16384,
+      disks: [{ sizeBytes: 256 * 1024 ** 3 }, { sizeBytes: 1024 ** 4 }],
+    });
+    expect(body.data[1].hardwareProfile).toBeNull();
+    expect(body.data[2].hardwareProfile).toEqual({ cpuCores: null, totalMemoryMB: null, disks: [] });
+  });
+
   it('returns a null bare-metal verdict (never assessed) as null + empty reasons, not false', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({ bareMetalRestorable: null, bareMetalReasons: null }),

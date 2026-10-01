@@ -535,7 +535,28 @@
         "profilesLoadFailed": "Impossibile caricare i profili di backup.",
         "profilesLoadFailedHint": "Ricarica la pagina per riprovare. Il salvataggio è disabilitato finché l'elenco non viene caricato, così un collegamento a un profilo esistente non viene sovrascritto.",
         "destinationsLoadFailed": "Impossibile caricare le destinazioni di backup.",
-        "destinationsLoadRetry": "Riprova"
+        "destinationsLoadRetry": "Riprova",
+        "storageKeys": {
+          "title": "Sostituisci e disattiva le chiavi di archiviazione usate prima del {{date}}",
+          "body": "I backup ora raggiungono l’archiviazione tramite sessioni di breve durata, quindi i dispositivi non hanno più bisogno di una chiave di archiviazione. Le chiavi ricevute dai dispositivi prima del {{date}} continuano a funzionare finché non le disattivi presso il tuo provider di archiviazione. Sostituisci ogni chiave nella sua destinazione, disattiva la vecchia chiave presso il provider, quindi verificala qui.",
+          "deletedDestination": "Destinazione eliminata",
+          "inUse": "Ancora usata da questa destinazione. Sostituisci prima la chiave nella destinazione.",
+          "replacedOn": "Sostituita il {{date}}",
+          "checkOldKey": "Verifica la vecchia chiave",
+          "checkFailed": "Impossibile verificare la vecchia chiave.",
+          "cannotCheck": "Questa chiave non può più essere verificata automaticamente. Disattivala presso il tuo provider di archiviazione, poi conferma di averlo fatto.",
+          "confirmDisabled": "Ho disattivato questa chiave",
+          "confirmPrompt": "Conferma di aver disattivato questa chiave presso il tuo provider di archiviazione. La conferma viene registrata ed è una prova più debole di una verifica che dimostri che la chiave non funziona più.",
+          "confirmed": "Registrata come disattivata in base alla tua conferma.",
+          "confirmFailed": "Impossibile registrare la tua conferma.",
+          "loadFailed": "Impossibile caricare le chiavi di archiviazione che richiedono attenzione.",
+          "outcome": {
+            "revoked": "La chiave precedente non funziona più. È registrata come disattivata.",
+            "stillLive": "La chiave precedente funziona ancora. Disattivala presso il tuo provider di archiviazione, poi verifica di nuovo.",
+            "inconclusive": "Impossibile contattare il provider di archiviazione per verificare la chiave precedente. Riprova più tardi.",
+            "refusedForListing": "La chiave precedente è stata rifiutata per l’elenco, ma potrebbe funzionare ancora per i caricamenti. Disattivala presso il tuo provider di archiviazione, poi verifica di nuovo, oppure conferma di averla disattivata."
+          }
+        }
       },
       "complianceTab": {
         "requiredSoftware": "Software obbligatorio",
@@ -596,6 +617,7 @@
         "enforcementLevel": "Livello di applicazione",
         "checkIntervalMinutes": "Intervallo di controllo (minuti)",
         "untitledRuleSet": "Set di regole senza titolo",
+        "duplicateRuleSetName": "Più di un set di regole si chiama \"{{name}}\". Assegna a ogni set di regole un nome diverso.",
         "s": "s",
         "script": "script",
         "scriptId": "scriptId",

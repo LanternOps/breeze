@@ -168,7 +168,9 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { InvalidSessionModelError } from '../services/aiOfferableModels';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { LlmNotConfiguredError } from '../services/llm/llmAvailability';
 
 const ORG_ID = 'org-111';
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
@@ -243,6 +245,35 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    });
+
+    it('returns 400 invalid_model when the requested model is not allowed (#7587)', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(new InvalidSessionModelError('claude-made-up-9'));
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test', model: 'claude-made-up-9' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Model "claude-made-up-9" is not available for AI sessions.',
+        code: 'invalid_model',
+      });
+    });
+
+    it('returns ai_not_configured as 503 when no model provider is configured', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(new LlmNotConfiguredError());
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
     });
 
     it('returns 500 on unexpected creation error', async () => {
@@ -426,6 +457,20 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
+    it('returns ai_not_configured as 503 before touching the SDK manager', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'ai_not_configured', status: 503 });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 

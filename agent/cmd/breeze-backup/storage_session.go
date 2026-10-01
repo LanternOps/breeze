@@ -36,6 +36,16 @@ var brokeredReadCommands = map[string]bool{
 	"vm_instant_boot":        true,
 }
 
+// brokeredWriteCommands are the backups whose storage writes may be brokered
+// through a write-scoped storage session. When one of them carries a
+// storageSession, the session is the ONLY storage destination: no agent.yaml
+// manager, no vault, no providerConfig.
+var brokeredWriteCommands = map[string]bool{
+	"backup_run":    true,
+	"mssql_backup":  true,
+	"hyperv_backup": true,
+}
+
 // printProtocolInfo writes the protocol versions this helper implements as a
 // single JSON object (breeze-backup --protocol-info). The main agent reads it
 // from the installed binary and reports it in its heartbeat.
@@ -106,6 +116,9 @@ func executeBrokeredRead(req backupipc.BackupCommandRequest, mgr *backup.BackupM
 	if descriptor == nil {
 		return backupipc.BackupCommandResult{}, false
 	}
+	if err := descriptor.ValidateFor(storagesession.CommandClassRead); err != nil {
+		return fail(err.Error()), true
+	}
 	ctx, cleanup := commandCanceller.track(req.CommandID)
 	defer cleanup()
 
@@ -149,6 +162,83 @@ func executeBrokeredRead(req backupipc.BackupCommandRequest, mgr *backup.BackupM
 		return execInstantBoot(ctx, req.Payload, brokered), true
 	}
 	return fail(fmt.Sprintf("storage session: command %s is not a brokered read", req.CommandType)), true
+}
+
+// executeBrokeredWrite runs a backup whose payload carries a storageSession.
+// handled is false when the payload has no session, in which case the caller
+// keeps its legacy routing. With a session every problem fails the command:
+// the session must be write-scoped, and nothing else (agent.yaml storage, a
+// vault, a payload providerConfig) is ever read or written instead — the
+// vault auto-sync after a backup does not run.
+func executeBrokeredWrite(req backupipc.BackupCommandRequest, conn *ipc.Conn, commandCanceller *activeCommandCanceller) (result backupipc.BackupCommandResult, handled bool) {
+	descriptor, err := storagesession.ParsePayload(req.Payload, time.Now())
+	if err != nil {
+		return fail(err.Error()), true
+	}
+	if descriptor == nil {
+		return backupipc.BackupCommandResult{}, false
+	}
+	if err := descriptor.ValidateFor(storagesession.CommandClassWrite); err != nil {
+		return fail(err.Error()), true
+	}
+	var ids struct {
+		ConfigID string `json:"configId"`
+	}
+	_ = json.Unmarshal(req.Payload, &ids)
+
+	ctx, cleanup := commandCanceller.track(req.CommandID)
+	defer cleanup()
+	creds, err := loadStorageSessionCredentials()
+	if err != nil {
+		return fail(err.Error()), true
+	}
+	opts := storageSessionOptions
+	opts.IdentityHint = ids.ConfigID
+	provider, err := storagesession.NewWriteProvider(ctx, descriptor, creds, opts)
+	if err != nil {
+		return fail(err.Error()), true
+	}
+	defer provider.Close()
+
+	switch req.CommandType {
+	case "backup_run":
+		if err := applyCommandStorageEncryption(provider, req.Payload); err != nil {
+			return fail(err.Error()), true
+		}
+		runMgr, err := brokeredBackupRunManager(req.Payload, provider)
+		if err != nil {
+			return fail(err.Error()), true
+		}
+		// No vault sync: it reads the snapshot back through the agent.yaml
+		// storage, which a brokered backup never uses.
+		return runBackupRunCommand(ctx, req, runMgr, nil, conn), true
+	case "mssql_backup", "hyperv_backup":
+		// An earlier writer of this snapshot (a redelivered job) is waited
+		// out once, before the export; the uploads themselves do not wait.
+		if err := provider.AwaitWriteAccess(ctx); err != nil {
+			return fail(fmt.Sprintf("storage session: the snapshot cannot be written yet: %v", err)), true
+		}
+		brokered := backup.NewBackupManager(backup.BackupConfig{
+			Provider:   provider,
+			AgentID:    helperAgentID,
+			StagingDir: helperStagingDir,
+		})
+		if req.CommandType == "mssql_backup" {
+			return execMSSQLBackup(req.Payload, brokered), true
+		}
+		return execHypervBackup(req.Payload, brokered), true
+	}
+	return fail(fmt.Sprintf("storage session: command %s is not a brokered write", req.CommandType)), true
+}
+
+// backupSnapshotID is the snapshot id a backup writing through provider
+// uses: the one the control plane issued to a brokered writer, otherwise a
+// freshly minted one.
+func backupSnapshotID(provider providers.BackupProvider, mint func() string) string {
+	if issuer, ok := provider.(providers.SnapshotIDIssuer); ok {
+		return issuer.SnapshotID()
+	}
+	return mint()
 }
 
 func isBrokeredProvider(provider providers.BackupProvider) bool {

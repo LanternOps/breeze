@@ -188,6 +188,27 @@ export async function presignUploadPart(
 /** Server-side encryption as storage reported it for a new object or upload (null: not reported). */
 export type ConfirmedSse = { algorithm: string | null; kmsKeyId: string | null };
 
+function confirmedSseOf(out: { ServerSideEncryption?: unknown; SSEKMSKeyId?: unknown }): ConfirmedSse {
+  return {
+    algorithm: typeof out.ServerSideEncryption === 'string' && out.ServerSideEncryption ? out.ServerSideEncryption : null,
+    kmsKeyId: typeof out.SSEKMSKeyId === 'string' && out.SSEKMSKeyId ? out.SSEKMSKeyId : null,
+  };
+}
+
+/**
+ * Creates a multipart upload with the planned encryption and reports the
+ * encryption STORAGE confirmed for it.
+ *
+ * Some stores (MinIO) encrypt an upload created with SSE but say nothing about
+ * it in the CreateMultipartUpload answer; they do report it on every
+ * UploadPart. When encryption was requested and the create answer is silent,
+ * the upload's encryption is read from a zero-byte probe part of the same
+ * upload, before any device data is sent to it. The probe takes the last part
+ * number: a completion never lists it unless the device's own part of that
+ * number has replaced it, and an abort discards it. A silent probe stays
+ * unconfirmed, and a create that reported encryption (the same or another) is
+ * never probed. If the probe fails, the upload is aborted and the error thrown.
+ */
 export async function createMultipartUpload(
   cfg: StorageProviderConfig,
   key: string,
@@ -196,13 +217,27 @@ export async function createMultipartUpload(
   const { bucket, client: s3 } = client(cfg);
   const out = await s3.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ...sseInput(sse) }), bounded());
   if (!out.UploadId) throw new Error('storage did not return a multipart upload id');
-  return {
-    uploadId: out.UploadId,
-    encryption: {
-      algorithm: typeof out.ServerSideEncryption === 'string' && out.ServerSideEncryption ? out.ServerSideEncryption : null,
-      kmsKeyId: typeof out.SSEKMSKeyId === 'string' && out.SSEKMSKeyId ? out.SSEKMSKeyId : null,
-    },
-  };
+  const uploadId = out.UploadId;
+  let encryption = confirmedSseOf(out);
+  if (sse.mode !== 'disabled' && !encryption.algorithm) {
+    try {
+      // Sent like a device part: no SDK body checksum.
+      const { client: probeClient } = presignClient(cfg);
+      const part = await probeClient.send(new UploadPartCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: MAX_PARTS,
+        ContentLength: 0,
+        Body: new Uint8Array(0),
+      }), bounded());
+      encryption = confirmedSseOf(part);
+    } catch (err) {
+      await abortMultipartUpload(cfg, key, uploadId).catch(() => undefined);
+      throw err;
+    }
+  }
+  return { uploadId, encryption };
 }
 
 export async function completeMultipartUpload(

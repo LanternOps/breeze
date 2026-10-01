@@ -102,6 +102,8 @@ describe('Explain this (M4 Task 5)', () => {
 
   it.each([
     ['AI disabled', { create: jsonResponse({ error: 'x', code: 'topology_ai_disabled' }, 403) }, 'turned off'],
+    ['no model provider on the server (create)', { create: jsonResponse({ error: 'x', code: 'ai_not_configured' }, 503) }, "AI isn't configured on this server"],
+    ['no model provider on the server (send)', { send: jsonResponse({ error: 'x', code: 'ai_not_configured' }, 503) }, "AI isn't configured on this server"],
     ['provider/limits unavailable', { send: jsonResponse({ error: 'x', code: 'topology_ai_limits_unavailable' }, 503) }, 'unavailable right now'],
     ['budget limit', { send: jsonResponse({ error: 'x', code: 'topology_ai_budget_exhausted' }, 429) }, 'limit was reached'],
     ['site moved (scope changed)', { send: jsonResponse({ error: 'x', code: 'investigation_scope_changed' }, 409) }, 'changed. Start a new explanation'],

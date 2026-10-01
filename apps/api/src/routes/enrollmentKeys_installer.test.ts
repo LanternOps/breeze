@@ -245,7 +245,8 @@ describe('enrollment key routes — installer download', () => {
         method: 'GET', headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
       expect(issueBootstrapTokenForKey).not.toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
       expect(createAuditLogAsync).not.toHaveBeenCalled();
@@ -272,7 +273,7 @@ describe('enrollment key routes — installer download', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns 403 for cross-org access', async () => {
+    it('returns the not-found 404 for cross-org access', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey({ orgId: 'other-org' })]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
@@ -280,7 +281,8 @@ describe('enrollment key routes — installer download', () => {
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
     });
 
     it('returns 410 for expired key', async () => {
@@ -931,7 +933,8 @@ describe('enrollment key routes — installer download', () => {
         { method: 'GET', headers: { Authorization: 'Bearer token' } },
       );
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'Enrollment key not found' });
       // The guard carries the site ceiling, so the DB-side delete matches
       // nothing; nothing is audited.
       expect(createAuditLogAsync).not.toHaveBeenCalled();

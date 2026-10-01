@@ -1314,6 +1314,13 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(tx.deviceUpdateValues).toHaveLength(1);
     expect(tx.deviceUpdateValues[0]).toMatchObject({ status: 'pending' });
     expect(tx.deviceUpdateValues[0]).not.toHaveProperty('lastSeenAt');
+    // The new install has not reported its backup helper yet: backups to it
+    // wait for that report instead of trusting what the previous install said.
+    expect(tx.deviceUpdateValues[0]).toMatchObject({
+      backupReadProtocolVersion: null,
+      backupIntegrityProtocolVersion: null,
+      backupWriteProtocolVersion: null,
+    });
     expect(disconnectAgentCredentialGenerationMock).toHaveBeenCalledWith(
       'agent-id-before-reenroll',
       [validHash],

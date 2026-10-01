@@ -397,7 +397,7 @@
         "fetchReports": "Failed to fetch reports",
         "generateReport": "Failed to generate report",
         "generic": "An error occurred",
-        "noCompletedRun": "No completed narrative to open yet"
+        "noCompletedRun": "No completed run to open yet"
       },
       "formats": {
         "csv": "CSV",
@@ -406,6 +406,7 @@
       },
       "loading": "Loading reports...",
       "never": "Never",
+      "notGeneratedYet": "Not generated yet",
       "success": {
         "generated": "Report \"{{name}}\" generated."
       },
@@ -835,6 +836,7 @@
         "loadFailed": "Could not load the report recipients",
         "businessEmailOnly": "Business reports are delivered only to the email addresses below. Organization contacts can't be added.",
         "partnerOwnedEmailOnly": "This report covers all organizations, so it is delivered only to the email addresses below. Organization contacts can't be added.",
+        "oneTimeNotEmailed": "One-time reports aren't emailed. Choose a recurring schedule to send this report to contacts.",
         "emailAddresses": "Email addresses"
       },
       "previewTable": {
@@ -869,6 +871,9 @@
         "everyDay": "Every day"
       },
       "scheduleOptions": {
+        "one_time": {
+          "label": "One-time"
+        },
         "daily": {
           "label": "Daily"
         },
@@ -1361,15 +1366,57 @@
         "seriesTypeUnsupported": "This report type can't be sent as one report per organization.",
         "seriesConfigOrgSpecific": "Remove the site, device and group filters: a multi-org report covers whole organizations.",
         "seriesManaged": "This report belongs to a multi-org report. Edit the multi-org report, or detach this copy first.",
-        "seriesOwnerIneligible": "That user can't own a multi-org report: they need access to every organization and every site.",
+        "seriesOwnerIneligible": "That user can't own a multi-org report.",
+        "seriesOwnerIneligiblePermission": "That user can't own a multi-org report: their role doesn't grant the Reports export permission (reports:export).",
+        "seriesOwnerIneligibleOrgAccess": "That user can't own a multi-org report: they need access to every organization.",
+        "seriesOwnerIneligibleInactive": "That user's account isn't active, so they can't own a multi-org report.",
+        "seriesOwnerIneligibleMembership": "That user is no longer a member of your partner, so they can't own a multi-org report.",
+        "seriesOwnerIneligibleNotPartner": "That user doesn't belong to your partner, so they can't own a multi-org report.",
+        "seriesOwnerIneligibleTenantInactive": "Your partner account isn't active, so a multi-org report can't get a new owner.",
         "seriesNotFound": "This multi-org report no longer exists.",
         "seriesWriteDenied": "Only partner users with access to every organization can change multi-org reports.",
         "seriesTargetOrgInaccessible": "One of the chosen organizations isn't available to you.",
+        "seriesTargetOrgHidden": "Quick Support and the unassigned-devices holding organization can't be covered by a multi-org report.",
         "reportNotSeriesChild": "This report is no longer part of a multi-org report.",
         "recipientModeRequiresSeries": "\"Never send\" only applies to a copy of a multi-org report.",
         "recipientsNeedExportAndMfa": "Sending reports to recipients needs the export permission and multi-factor sign-in.",
         "seriesAuthorityUnverifiable": "Couldn't confirm the owner's access right now. Try again in a moment."
       }
+    },
+    "seriesCombine": {
+      "banner": "Some organizations have near-identical reports that could be combined into one multi-org report. Groups found: {{groups}}",
+      "review": "Review",
+      "title": "Combine into one multi-org report",
+      "groupLabel": "Group",
+      "groupSummary": "{{type}} · {{schedule}} · organizations: {{orgs}}",
+      "nameLabel": "Multi-org report name",
+      "targetLegend": "Organizations covered",
+      "targetSelected": "Only these organizations (nothing new is sent)",
+      "targetAll": "All organizations, including ones added later",
+      "targetAllWarning": "Organizations without a copy today start receiving this report, with only the internal CC until you add customer recipients.",
+      "adopt": "Kept and converted",
+      "archive": "Duplicate, will be archived",
+      "deliverableLinked": "Used as service deliverable evidence",
+      "lastRun": "Last run {{date}}",
+      "neverRun": "Never run",
+      "contacts": "Customer recipients: {{list}}",
+      "noContacts": "No customer recipients",
+      "ccShared": "Internal CC on every copy: {{list}}",
+      "ccNone": "No internal CC",
+      "ccConflictHeading": "These CC addresses are only on some of these reports. Choose what happens to each:",
+      "ccInclude": "CC every copy",
+      "ccDrop": "Stop CC-ing",
+      "ccUnresolved": "Choose what happens to every CC address before combining.",
+      "ruleNote": "Every customer keeps exactly the recipients they have today. You can add a recipient rule later on the multi-org report.",
+      "confirm": "Combine",
+      "success": "Combined into “{{name}}”",
+      "failed": "Could not combine these reports.",
+      "groupChanged": "These reports changed since you opened this dialog. The list has been refreshed.",
+      "stalled": "Not sending today (its owner lost access). Combining resumes it.",
+      "ccHeldBy": "Currently CC'd on: {{list}}",
+      "ownerIneligible": "You can't own a report for these organizations: {{list}}",
+      "ccTooMany": "Too many internal CC addresses (max {{max}}).",
+      "otherOrgs": "other organizations"
     }
   }
 }

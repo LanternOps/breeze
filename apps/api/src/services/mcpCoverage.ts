@@ -77,6 +77,16 @@ export type McpExemptReason =
    */
   | 'human_only_legal_evidence'
   /**
+   * Evidence that a replaced backup storage key no longer works
+   * (backup/storageCredentials.ts): checking the old key against the storage
+   * provider, and a user's confirmation that they disabled it. Each records
+   * whether a key that devices may have received is still usable, which the
+   * operator acts on and which is reported as closure evidence. Deliberately
+   * not agent-reachable: an agent that could record a confirmation could mark
+   * a still-working key as disabled. The routes are MFA- and governance-gated.
+   */
+  | 'human_only_revocation_evidence'
+  /**
    * Rolling back an agent to a prior release. A standing spec exclusion
    * (docs/superpowers/specs/ai-mcp/2026-09-23-ai-full-control-design.md,
    * W05 gap triage): reverting fleet software is an operator decision, not
@@ -184,6 +194,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/enrollment.ts': { exempt: 'agent_transport' },
   'agents/eventlogs.ts': { exempt: 'agent_transport' },
   'agents/hardwareHealth.ts': { exempt: 'agent_transport' },
+  'agents/timeStatus.ts': { exempt: 'agent_transport' },
   'agents/heartbeat.ts': { exempt: 'agent_transport' },
   'agents/inventory.ts': { exempt: 'agent_transport' },
   'agents/logs.ts': { exempt: 'agent_transport' },
@@ -266,6 +277,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/providerCustomers.ts': { exempt: 'vendor_console_admin', note: 'maps a discovered Cove customer onto a Breeze org' },
   'backup/providerDevices.ts': { exempt: 'vendor_console_admin', note: 'lists provider device rows and links one to a Breeze device' },
   'backup/providers.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the Cove console credential' },
+  'backup/storageCredentials.ts': { exempt: 'human_only_revocation_evidence', note: 'lists storage keys used before brokered backup writes, checks a replaced key, records a user confirmation' },
   'backup/reconcile.ts': { gap: '#6794' },
   'backup/resilienceAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'backup/restore.ts': { tools: ['restore_snapshot'] },
@@ -346,6 +358,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/groups.ts': { tools: ['manage_groups'] },
   'devices/hardware.ts': { tools: ['get_ip_history', 'get_device_details'] },
   'devices/hardwareHealth.ts': { tools: ['get_device_hardware_health'] },
+  'devices/timeStatus.ts': { tools: ['get_device_time_status'] },
   'devices/health.ts': { gap: '#6783' },
   'devices/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'devices/homebrewBootstrap.ts': { gap: '#6782' },
@@ -515,6 +528,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // Multi-org report series (W02): generate_report lists and runs series
   // children like any org report; a series-management tool is a follow-up.
   'reports/series.ts': { tools: ['generate_report'] },
+  'reports/seriesCombine.ts': { exempt: 'human_only_migration', note: 'Multi-org report series W04 Combine: an opt-in, one-shot consolidation of existing per-org reports that a human reviews in a dialog (candidate groups, CC resolution) before confirming; spec §3.8 gives it no AI tool and D4 forbids automatic consolidation.' },
   'roles.ts': { gap: '#6789' },
   'scriptAi.ts': { exempt: 'ai_transport' },
   'scriptBundle.ts': { gap: '#6806' },
@@ -579,6 +593,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'timeEntries/suggestions.ts': { gap: '#6776' },
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
+  'timeStatus.ts': { tools: ['list_time_sync_issues'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
   // M4-D5 (#6000): run reads and the ONE approval-gated start are the M4 tools.
   // NOT covered, deliberately (no implicit parity): collector selection and

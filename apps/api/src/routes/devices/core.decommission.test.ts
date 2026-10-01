@@ -132,8 +132,26 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
   TEARDOWN_FAILED: -1,
 }));
 
+// Restore admits against the partner device limit (services/partnerDeviceCapacity.ts,
+// covered on its own and against real Postgres). Here only the ROUTE's wiring:
+// admitted by default; a case flips it to refused.
+vi.mock('../../services/partnerDeviceCapacity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/partnerDeviceCapacity')>();
+  return {
+    ...actual,
+    deviceTakesLicensedSlot: vi.fn(async () => true),
+    admitPartnerDeviceCapacity: vi.fn(async () => ({
+      allowed: true,
+      partnerId: 'partner-1',
+      maxDevices: null,
+      activeCount: null,
+    })),
+  };
+});
+
 import { coreRoutes } from './core';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { admitPartnerDeviceCapacity } from '../../services/partnerDeviceCapacity';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 import { disconnectAgent } from '../agentWs';
 import { disconnectAgentCredentialGeneration } from '../agentWs';
@@ -687,15 +705,27 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
    * those land in relative to the drizzle writes.
    */
   function rigLifecycleExecute(
-    lockRow: Record<string, unknown> | null,
+    device: Record<string, unknown> | null,
     onExecute?: (kind: string) => void,
   ) {
+    // The service reads raw rows (snake_case), not the drizzle fixture shape.
+    const row = device && {
+      id: device.id,
+      status: device.status,
+      org_id: device.orgId,
+      site_id: device.siteId,
+      is_ephemeral: false,
+      link_group_id: null,
+    };
     return vi.fn(async (q: unknown) => {
       const text = JSON.stringify(q);
       if (text.includes('pg_settings')) return [{ prior_ms: '0' }];
       if (text.includes('FOR UPDATE')) {
         onExecute?.('lock-devices-row');
-        return lockRow ? [lockRow] : [];
+        return row ? [row] : [];
+      }
+      if (text.includes('partner_id')) {
+        return row ? [{ ...row, partner_id: 'partner-1' }] : [];
       }
       return [];
     });
@@ -820,6 +850,87 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
     expect(body.success).toBe(true);
     expect(body.uninstallAlreadyDispatched).toBe(false);
     expect(releaseDeviceRemoveReason).toHaveBeenCalledWith(tx, DEVICE_ID, 'device_restored');
+  });
+
+  it('refuses at the partner device limit with the same body enrollment returns (403)', async () => {
+    rigRestore(DECOMMISSIONED_DEVICE);
+    vi.mocked(admitPartnerDeviceCapacity).mockResolvedValueOnce({
+      allowed: false,
+      partnerId: 'partner-1',
+      maxDevices: 5,
+      activeCount: 5,
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: 'Device limit reached',
+      code: 'DEVICE_LIMIT_REACHED',
+      currentDevices: 5,
+      maxDevices: 5,
+    });
+    expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'device.restore' }),
+    );
+  });
+
+  // The partner row is invisible to a tenant-scoped caller under RLS, and the
+  // count spans every org of the partner — admission only works from a system
+  // context, entered AFTER the tenant-scoped authorization above it.
+  it('restores in a system-scoped transaction outside the request context, pinned to the authorized org', async () => {
+    rigRestore(DECOMMISSIONED_DEVICE);
+    vi.mocked(releaseDeviceRemoveReason).mockResolvedValueOnce({
+      cancelled: 0,
+      retainedOtherOwner: 0,
+      alreadyDispatched: 0,
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(runOutsideDbContext).toHaveBeenCalled();
+    expect(withSystemDbAccessContext).toHaveBeenCalledWith(expect.any(Function), 'devices.restore');
+    expect(admitPartnerDeviceCapacity).toHaveBeenCalledWith(expect.anything(), {
+      orgId: 'org-123',
+      expectedPartnerId: 'partner-1',
+      excludeDeviceId: DEVICE_ID,
+    });
+  });
+
+  it('answers a bounded lock wait with a retryable 409, not a 500', async () => {
+    const { tx } = rigRestore(DECOMMISSIONED_DEVICE);
+    tx.execute.mockImplementation(async (q: unknown) => {
+      const text = JSON.stringify(q);
+      if (text.includes('pg_settings')) return [{ prior_ms: '0' }];
+      if (text.includes('partner_id')) {
+        return [{
+          id: DEVICE_ID, status: 'decommissioned', org_id: 'org-123', site_id: 'site-1',
+          is_ephemeral: false, link_group_id: null, partner_id: 'partner-1',
+        }];
+      }
+      if (text.includes('FOR UPDATE')) {
+        throw Object.assign(new Error('Failed query'), { cause: { code: '55P03' } });
+      }
+      return [];
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/busy/i);
+    expect(releaseDeviceRemoveReason).not.toHaveBeenCalled();
   });
 
   it('does not call releaseDeviceRemoveReason when the device is not decommissioned (400)', async () => {

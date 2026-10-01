@@ -29,7 +29,7 @@ import { monitorDefinitions, partners } from '../../db/schema';
 import { compileMonitorInTx } from './monitorCompiler';
 import { getMonitorKindSpec } from './kinds';
 import type { MonitorKind } from '@breeze/shared';
-import type { HardwareHealthCondition } from '../alertConditions/types';
+import type { HardwareHealthCondition, TimeSyncCondition } from '../alertConditions/types';
 
 /**
  * Bump this whenever a new entry is added to `BUILT_IN_MONITOR_DEFAULTS` (and
@@ -37,7 +37,7 @@ import type { HardwareHealthCondition } from '../alertConditions/types';
  * lazily — the next `ensureBuiltInMonitorsForPartner` call (route, boot
  * backfill) inserts only the defaults newer than their stored marker.
  */
-export const BUILT_IN_MONITORS_VERSION = 3;
+export const BUILT_IN_MONITORS_VERSION = 5;
 
 export interface ThresholdDefaultCondition {
   operator: 'gt' | 'gte' | 'lt' | 'lte';
@@ -46,6 +46,7 @@ export interface ThresholdDefaultCondition {
 }
 
 export type HardwareHealthDefaultCondition = Omit<HardwareHealthCondition, 'type'>;
+export type TimeSyncDefaultCondition = Omit<TimeSyncCondition, 'type'>;
 
 export interface BuiltInMonitorDefault {
   key:
@@ -56,11 +57,15 @@ export interface BuiltInMonitorDefault {
     | 'raid_array_degraded'
     | 'physical_disk_failed'
     | 'cache_battery_problem'
-    | 'hardware_collector_failing';
+    | 'hardware_collector_failing'
+    | 'time_source_problem'
+    | 'time_sync_stale'
+    | 'timezone_mismatch'
+    | 'time_policy_not_applied';
   name: string;
   description: string;
   kind: MonitorKind;
-  condition: ThresholdDefaultCondition | HardwareHealthDefaultCondition;
+  condition: ThresholdDefaultCondition | HardwareHealthDefaultCondition | TimeSyncDefaultCondition;
   severity: 'critical' | 'high' | 'medium' | 'low';
   cooldownMinutes: number;
   /** The `BUILT_IN_MONITORS_VERSION` that introduced this default. */
@@ -173,6 +178,65 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     severity: 'low',
     cooldownMinutes: 1440,
     sinceVersion: 3,
+  },
+  {
+    key: 'time_source_problem',
+    name: 'Time source problem',
+    description:
+      'Alerts after two accepted snapshots reporting a time source problem.',
+    kind: 'time_sync',
+    condition: {
+      findings: [
+        'pdc_no_external_source',
+        'source_local_clock',
+        'dc_vm_host_sync',
+        'ntp_server_unresolvable',
+        'ntp_peer_unreachable',
+        'domain_source_unavailable',
+        'member_not_on_hierarchy',
+        'correction_refused',
+      ],
+      consecutiveSnapshots: 2,
+    },
+    severity: 'high',
+    cooldownMinutes: 60,
+    sinceVersion: 4,
+  },
+  {
+    key: 'time_sync_stale',
+    name: 'Time sync stale or disabled',
+    description:
+      'Alerts after two accepted snapshots reporting stale or disabled synchronization.',
+    kind: 'time_sync',
+    condition: {
+      findings: ['sync_stale', 'sync_disabled'],
+      consecutiveSnapshots: 2,
+    },
+    severity: 'medium',
+    cooldownMinutes: 60,
+    sinceVersion: 4,
+  },
+  {
+    key: 'timezone_mismatch',
+    name: 'Timezone mismatch',
+    description:
+      'Alerts after two accepted snapshots reporting a timezone mismatch.',
+    kind: 'time_sync',
+    condition: { findings: ['timezone_mismatch'], consecutiveSnapshots: 2 },
+    severity: 'low',
+    cooldownMinutes: 1440,
+    sinceVersion: 4,
+  },
+  {
+    key: 'time_policy_not_applied',
+    name: 'Time policy not applied',
+    description:
+      'Alerts after two snapshots reporting failed time-policy enforcement.',
+    kind: 'time_sync',
+    condition: { findings: ['policy_not_applied'], consecutiveSnapshots: 2 },
+    severity: 'low',
+    cooldownMinutes: 60,
+    sinceVersion: 5,
   },
 ];
 

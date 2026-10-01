@@ -24,11 +24,23 @@
  * Callers own the initial authorization and the transaction. Purge callers
  * also pass the request-time site ceiling so an implicit group dissolve is
  * checked again under member locks; this service never accepts an AuthContext.
+ *
+ * Restore also admits the device against its partner's licensed device limit
+ * (partnerDeviceCapacity.ts, the admission enrollment and provisioning use),
+ * so it needs a SYSTEM-scoped transaction: the partner row and the
+ * partner-wide count are invisible under tenant RLS. Its callers therefore
+ * pass where their tenant-scoped read found the device, and restore refuses
+ * if the locked row is no longer there.
  */
 import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deleteDeviceCascade } from './deviceDeletion';
+import {
+  admitPartnerDeviceCapacity,
+  deviceTakesLicensedSlot,
+  PartnerDeviceCapacityError,
+} from './partnerDeviceCapacity';
 import { dissolveLinkGroupIfBelowMinimum, LinkGroupSiteAccessError } from './deviceLinkGroups';
 import {
   releaseDeviceRemoveReason,
@@ -42,21 +54,31 @@ export type DeviceLifecycleCode =
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
-  | 'BACKUP_PROTECTED';
+  | 'BACKUP_PROTECTED'
+  | 'DEVICE_LIMIT_REACHED';
 
 export class DeviceLifecycleError extends Error {
   constructor(
     public readonly code: DeviceLifecycleCode,
     message: string,
+    /** Extra response fields. DEVICE_LIMIT_REACHED carries the partner's count
+     *  and limit, the same fields the enrollment refusal returns. */
+    public readonly details?: { currentDevices: number; maxDevices: number },
   ) {
     super(message);
     this.name = 'DeviceLifecycleError';
   }
 
   get status(): 403 | 404 | 409 {
-    if (this.code === 'SITE_ACCESS_DENIED') return 403;
+    if (this.code === 'SITE_ACCESS_DENIED' || this.code === 'DEVICE_LIMIT_REACHED') return 403;
     return this.code === 'NOT_FOUND' ? 404 : 409;
   }
+}
+
+/** Where the caller's own tenant-scoped read found the device it authorized. */
+export interface RestoreAuthorization {
+  orgId: string;
+  siteId: string | null;
 }
 
 export interface RestoreResult {
@@ -101,7 +123,9 @@ export const DEVICE_LIFECYCLE_LOCK_TIMEOUT_MS = 3000;
 interface LockedRow {
   id: string;
   status: string;
+  org_id: string;
   site_id: string | null;
+  is_ephemeral: boolean;
   link_group_id: string | null;
 }
 
@@ -120,7 +144,7 @@ async function lockDevice(tx: Tx, deviceId: string): Promise<LockedRow> {
     : null;
 
   const rows = (await tx.execute(
-    sql`SELECT id, status, site_id, link_group_id FROM devices WHERE id = ${deviceId} FOR UPDATE`,
+    sql`SELECT id, status, org_id, site_id, is_ephemeral, link_group_id FROM devices WHERE id = ${deviceId} FOR UPDATE`,
   )) as unknown as LockedRow[];
 
   // Restored only on the success path, deliberately — see deviceDeletion.ts:
@@ -139,8 +163,23 @@ async function lockDevice(tx: Tx, deviceId: string): Promise<LockedRow> {
 }
 
 /**
- * Restore a removed device: cancel its pending agent uninstall and flip the
- * status back to `offline`.
+ * Restore a removed device: admit it against the partner device limit, cancel
+ * its pending agent uninstall and flip the status back to `offline`.
+ *
+ * Must run in a SYSTEM-scoped transaction (see the file header), after the
+ * caller authorized the device; `authorized` is where that read found it.
+ *
+ * Admission comes BEFORE the devices row lock. Enrollment takes the partner
+ * lock first and then renames a decommissioned row with the same hostname, so
+ * locking the device first here would be the opposite order: AB-BA, 40P01.
+ * Admitting first also serializes two restores racing for the last slot on
+ * the partner row, exactly as enrollment and provisioning are serialized.
+ * Parked-device assignment (holdingAreaLock.ts) takes the device before the
+ * partner, the other way round, but the two never meet on one device:
+ * assignment refuses a decommissioned device before it admits, and restore
+ * does not admit a parked device (it takes no licensed slot).
+ * Cost: while waiting up to 3s for a contended devices row, restore holds the
+ * partner row, so that partner's admissions wait with it.
  *
  * Release-then-flip inside the caller's transaction — the safety property is
  * the TRANSACTION (no session can observe "status flipped, uninstall still
@@ -149,8 +188,24 @@ async function lockDevice(tx: Tx, deviceId: string): Promise<LockedRow> {
  * secondary defense if a future refactor ever splits them apart. See the long
  * note this replaced in routes/devices/core.ts.
  */
-export async function restoreRemovedDevice(tx: Tx, deviceId: string): Promise<RestoreResult> {
-  await lockDevice(tx, deviceId);
+export async function restoreRemovedDevice(
+  tx: Tx,
+  deviceId: string,
+  authorized: RestoreAuthorization,
+): Promise<RestoreResult> {
+  const target = await admitRestore(tx, deviceId, authorized);
+
+  const locked = await lockDevice(tx, deviceId);
+  // The admission and the caller's authorization both describe the row as
+  // read before this lock. A device moved to another org or site, or whose
+  // licensed standing changed, in between is not the device they approved.
+  if (
+    locked.org_id !== authorized.orgId ||
+    locked.site_id !== authorized.siteId ||
+    locked.is_ephemeral !== target.is_ephemeral
+  ) {
+    throw new DeviceLifecycleError('STATE_CHANGED', 'Device changed before it could be restored; try again');
+  }
 
   const release = await releaseDeviceRemoveReason(tx, deviceId, 'device_restored');
 
@@ -165,6 +220,67 @@ export async function restoreRemovedDevice(tx: Tx, deviceId: string): Promise<Re
     .returning();
 
   return { device, uninstallAlreadyDispatched: release.alreadyDispatched > 0 };
+}
+
+interface RestoreTarget {
+  org_id: string;
+  status: string;
+  is_ephemeral: boolean;
+  partner_id: string;
+}
+
+/**
+ * Unlocked pre-read, then partner-device-limit admission for a device that
+ * takes a licensed slot once active. Ephemeral and parked devices never take
+ * a slot and are not admitted.
+ */
+async function admitRestore(
+  tx: Tx,
+  deviceId: string,
+  authorized: RestoreAuthorization,
+): Promise<RestoreTarget> {
+  const rows = (await tx.execute(sql`
+    SELECT d.org_id, d.status, d.is_ephemeral, o.partner_id
+      FROM devices d
+      JOIN organizations o ON o.id = d.org_id
+     WHERE d.id = ${deviceId}
+  `)) as unknown as RestoreTarget[];
+  const target = Array.isArray(rows) ? rows[0] : undefined;
+  if (!target) throw new DeviceLifecycleError('NOT_FOUND', 'Device not found');
+  if (target.org_id !== authorized.orgId) {
+    throw new DeviceLifecycleError('STATE_CHANGED', 'Device changed before it could be restored; try again');
+  }
+  // An already-active device is answered here, not by admission.
+  if (target.status !== 'decommissioned') {
+    throw new DeviceLifecycleError('NOT_REMOVED', 'Device is not removed');
+  }
+
+  if (!(await deviceTakesLicensedSlot(tx, deviceId))) return target;
+
+  let admission;
+  try {
+    // The device is left out of the count so the answer is "may THIS device
+    // be active". A concurrent restore of the same device that commits while
+    // this one waits on the partner lock then surfaces as NOT_REMOVED under
+    // the device lock, not as a misleading "limit reached".
+    admission = await admitPartnerDeviceCapacity(tx, {
+      orgId: authorized.orgId,
+      expectedPartnerId: target.partner_id,
+      excludeDeviceId: deviceId,
+    });
+  } catch (err) {
+    if (err instanceof PartnerDeviceCapacityError) {
+      throw new DeviceLifecycleError('STATE_CHANGED', 'Device admission state changed; retry');
+    }
+    throw err;
+  }
+  if (!admission.allowed) {
+    throw new DeviceLifecycleError('DEVICE_LIMIT_REACHED', 'Device limit reached', {
+      currentDevices: admission.activeCount,
+      maxDevices: admission.maxDevices,
+    });
+  }
+  return target;
 }
 
 /**

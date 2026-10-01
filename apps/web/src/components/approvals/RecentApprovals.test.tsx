@@ -152,6 +152,40 @@ describe('RecentApprovals (#6022)', () => {
     expect(screen.getByTestId('approvals-recent-reason-pam').textContent).toContain('change freeze');
   });
 
+  it('labels an approve the server refused as refused, not denied, and shows why', async () => {
+    // The approver approved; the server refused it and stored the row as
+    // denied with `refusalReason`. "Denied" would read as the approver's own
+    // decision.
+    const unverified = 'Target identity could not be verified on the device; re-request elevation.';
+    fetchWithAuth.mockResolvedValue(
+      jsonOk([
+        {
+          ...failedRow,
+          id: 'pam-refused',
+          refusalReason: unverified,
+          intentOutcome: { status: 'denied', errorCode: null, reason: unverified, executedAt: null },
+        },
+        {
+          ...failedRow,
+          id: 'pam-denied',
+          refusalReason: null,
+          intentOutcome: { status: 'denied', errorCode: null, reason: 'Not during change freeze', executedAt: null },
+        },
+      ]),
+    );
+    render(<RecentApprovals />);
+    fireEvent.click(screen.getByTestId('approvals-recent-toggle'));
+
+    await waitFor(() => expect(screen.getByTestId('approvals-recent-row-pam-refused')).toBeTruthy());
+    expect(screen.getByTestId('approvals-recent-status-pam-refused').textContent).toBe('recent.status.refused');
+    expect(
+      screen.getByTestId('approvals-recent-row-pam-refused').querySelector('[data-outcome]')?.getAttribute('data-outcome'),
+    ).toBe('failure');
+    expect(screen.getByTestId('approvals-recent-reason-pam-refused').textContent).toBe(unverified);
+    // An approver's own denial keeps its label.
+    expect(screen.getByTestId('approvals-recent-status-pam-denied').textContent).toBe('recent.status.denied');
+  });
+
   it('never paints an UNKNOWN outcome green — "we don\'t know" is not "it worked"', async () => {
     // A missing projection or a status the client does not recognise must not
     // fall into the success branch; that is #6022 pointing the other way.

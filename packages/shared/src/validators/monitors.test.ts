@@ -33,6 +33,7 @@ describe('monitor definition validators (#5289)', () => {
       'network_check',
       'composite',
       'hardware_health',
+      'time_sync',
     ]);
   });
 

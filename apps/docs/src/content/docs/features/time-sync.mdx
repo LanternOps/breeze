@@ -1,0 +1,191 @@
+---
+title: Time synchronization
+description: Inspect Windows time sources, synchronization health, timezone expectations, and recent time events.
+---
+
+The **Time** section in a device's Info tab shows the latest Windows time report. It appears after Operating System.
+
+This visibility release accepts reports but requires an agent update that includes time sync before data appears. Until then, Windows devices show "No time data yet — this needs an agent update that includes time sync". Other operating systems show "Not supported on this OS yet".
+
+## What Breeze checks
+
+A report includes the Windows Time service state and startup mode, synchronization type, configured NTP peers, whether Group Policy manages those settings, and whether a VM host time provider is enabled. It also includes the reported source, collection method, last successful synchronization, last error, stratum and poll interval.
+
+Domain information identifies workgroup, Entra-only, member, domain-controller and PDC roles. Timezone information includes the current Windows timezone, bias, automatic timezone state and the expected timezone with its source. Unknown values remain Unknown; they are not guessed from translated command output.
+
+Recent Time-Service events are display evidence. Breeze evaluates event IDs and structured values, not the translated message. A failure stays active for up to 24 hours unless a later successful synchronization clears it. A later recurrence becomes active again. These ages, and the `sync_stale` age, are measured on the device's own clock against the time the snapshot was collected, not on server time, so a device whose clock is far behind or ahead still shows its failures. If the device's clock is stepped back after an event (for example, when a clock that was ahead is corrected), events stamped more than 5 minutes after the collection time come from the old clock, so Breeze drops them instead of keeping the finding active into the future.
+
+## Freshness and health
+
+Reports are expected every 30 minutes once a supporting agent is installed. A report received more than **90 minutes** ago is marked Stale. Its stored observations remain visible so you can inspect what was last reported; stale does not mean a new failure has been observed.
+
+Critical findings take precedence over warnings. Information findings, including a timezone mismatch, do not make time synchronization unhealthy. If synchronization status is unavailable and there are no findings, health is Unknown.
+
+## Findings and fixes
+
+| Finding | Meaning and suggested fix |
+| --- | --- |
+| `pdc_no_external_source` | A forest-root PDC is following the domain hierarchy or reports that it has no external source. Configure external NTP servers on that PDC; the domain follows it. |
+| `source_local_clock` | Windows is using its local or free-running clock. Configure an NTP source, or check the domain controller if this is a domain member. |
+| `dc_vm_host_sync` | A domain controller has a VM host time provider enabled or is using the host as its source. Disable VM host time synchronization on that DC. |
+| `ntp_server_unresolvable` | Windows reported a name-resolution failure or an NTP peer name has invalid syntax. Correct the configured peer or DNS. W32Time flag suffixes such as `,0x9` are recognized and are not treated as part of the name. |
+| `ntp_peer_unreachable` | A time peer did not respond. Check peer reachability and outbound UDP port 123. |
+| `domain_source_unavailable` | Windows cannot locate a domain time source. Check domain-controller reachability. |
+| `member_not_on_hierarchy` | A domain member or non-root DC is not using NT5DS or AllSync and the setting is not controlled by Group Policy. Restore domain-hierarchy synchronization. |
+| `sync_disabled` | Synchronization type is NoSync or the Windows Time service is disabled. Enable Windows Time and select a suitable source. |
+| `sync_stale` | The last successful synchronization exceeds the greater of three poll intervals or 24 hours, or Windows reports stale synchronization. Check the source and synchronize again. If no interval is reported, the fallback poll interval is seven days. |
+| `correction_refused` | Windows refused a time correction. Correct the large clock difference manually or resynchronize using the appropriate Windows administration tools. |
+| `timezone_mismatch` | The device's Windows timezone differs from its expected timezone and automatic timezone is not on. Review the site timezone and the device timezone. This is information, not a synchronization-health warning. |
+
+A disabled service suppresses the separate stale-sync finding. Group Policy management suppresses the domain-hierarchy recommendation; this page does not change Group Policy or device configuration.
+
+## Expected timezone and the UTC default
+
+By default, the expected timezone is derived from the device's site; a time policy can pin a different zone (see [Manage Windows time settings](#manage-windows-time-settings)). Site values **UTC** and **Etc/UTC** are treated as an unset default, so they do not produce a timezone mismatch—even when the device uses Pacific Standard Time. The section explains "No expected timezone (site uses the UTC default)". This prevents an untouched site default from flagging an entire fleet.
+
+Comparison uses Windows timezone IDs. For example, America/New_York and America/Detroit both map to Eastern Standard Time. Site changes are reflected the next time the device view is read. If there is no site or the site's IANA timezone has no Windows mapping, Breeze explains why no expected timezone is available. It does not invent a mapping. In particular, Antarctica/Troll has no CLDR Windows mapping.
+
+Review the displayed source and site name before correcting the device. Automatic timezone being on suppresses a mismatch finding. Viewing this section does not change the device; time policies and time actions are described in [Manage Windows time settings](#manage-windows-time-settings).
+
+## Alerts
+
+Three visibility monitors are provisioned for each partner, plus the management monitor described in [Alert on enforcement failures](#alert-on-enforcement-failures). They are **not attached by default**.
+Attach a monitor to a configuration policy to enable its evaluation for that policy's devices.
+
+| Monitor | Built-in key | Default severity | Findings |
+| --- | --- | --- | --- |
+| Time source problem | `time_source_problem` | High | Missing external PDC source, local clock, DC host-time synchronization, unresolvable or unreachable peers, unavailable domain source, member bypassing hierarchy, refused correction |
+| Time sync stale or disabled | `time_sync_stale` | Medium | Stale synchronization or synchronization disabled |
+| Timezone mismatch | `timezone_mismatch` | Low | Reported timezone differs from the expected timezone while automatic timezone is not on |
+
+Each default requires two consecutive accepted snapshots. Alert sweeps do not count as
+new observations. A rejected duplicate does not advance the counters. You can override
+the required count from 1 to 10 in the monitor attachment.
+
+Each finding is an independent subject. A device can have more than one time alert;
+acknowledging one does not acknowledge the others. Recovery requires the same number
+of accepted snapshots without that finding. Missing data, incomplete streaks and stale
+observations produce unknown evidence; unknown does not resolve an existing alert.
+Observations older than 90 minutes are stale. Use the existing offline monitor for
+unreachable devices. Timezone mismatch is informational for device health but remains
+alertable through its monitor.
+
+## Evidence exports
+
+Open **Time Sync**, next to **Fleet Posture**, for the Windows fleet report. Filter by
+health, finding, role, organization or site. The AD-domain view pins an accessible PDC
+first. A missing-PDC warning means no PDC is present in your accessible inventory; it
+may be unenrolled or outside your access. A pinned PDC is context and can be outside
+the selected filters or page.
+
+**Export current CSV** includes all matching devices, not just the visible page.
+Current expected timezone is recalculated from the site's current setting.
+**Export daily CSV** accepts an inclusive range of at most 400 UTC dates within the
+retained window, ending no later than today. Filters select the current device population;
+the export then lists every requested day for each selected device. Days without a
+row have `evidence_state=gap`, an empty health value and `snapshot_count=0`.
+
+Both exports begin with:
+
+> Observed synchronization reported by the Breeze agent; days without a report are listed as gaps.
+
+Daily summaries retain the worst observed health, union of finding codes, maximum
+successful-sync timestamp, observation count and the source/timezone from the latest
+accepted observation that day. An unknown observation keeps a day from being labeled
+entirely healthy. Site timezone edits do not rewrite past daily evidence.
+
+This is observational evidence, **not an attestation** that the clock was correct all
+day. Breeze does not measure an offset in this feature, and an agent's report is not
+independently verified. Exports are live reads; fleet membership may change during a
+large download. Historical rows follow a device when it moves organizations and are
+deleted with the device. Downloaded CSVs are the durable artifact. Retention removes
+rows older than 400 days; the cutoff date itself remains eligible until the next day.
+
+## Manage Windows time settings
+
+Open **Configuration Policies → Time sync**. A policy can belong to one
+organization or be shared across all organizations in a partner. Assignment
+inheritance chooses the effective policy for each device. Use the policy tab's
+Save button to save changes; an inherited tab can be overridden or reverted.
+
+Time synchronization enforcement and automatic timezone correction start off.
+Collection and findings continue independently of enforcement.
+
+### Domain-aware NTP enforcement
+
+Enable **Enforce time synchronization**, enter up to five NTP hosts, and choose
+an integer poll interval from 15 to 1440 minutes. Enter one host per line,
+without ports, command flags or W32Time peer flags. Breeze adds the necessary
+peer flags on the device.
+
+Workgroup devices, Entra-only devices and the forest-root PDC use the policy's
+NTP servers. Domain members, domain controllers and other PDC emulators use
+the domain hierarchy. A device with an unknown domain role is skipped.
+
+**Group Policy takes precedence.** Breeze does not change W32Time settings
+managed by Group Policy. A reported conflict is informational; correct the
+owning Group Policy if a different policy should apply.
+
+### Expected timezone
+
+The default is **Follow site timezone**. A site still using the UTC default
+has no expected timezone, so it does not generate a timezone mismatch.
+There is no organization or partner timezone fallback.
+
+Use **Pin a timezone** for a device that should use a different zone, such as
+a server intentionally running in UTC. The pinned timezone overrides the site timezone. The device's Time section
+names the policy providing that pin.
+
+**Automatically correct the timezone** is an explicit opt-in. It uses the
+expected zone, and skips correction when Windows automatic timezone is on.
+An unknown or unmapped expected zone is never guessed.
+
+### Run a time action
+
+In a Windows device's **Info → Time** section:
+
+- **Resync** starts W32Time if necessary and requests resynchronization.
+- **Set timezone to expected** uses the current server-resolved expected zone.
+  Devices with no expected zone are shown as skipped.
+- **Apply time policy now** asks the agent to reconcile immediately, bypassing
+  its normal rate limit. The agent still checks domain role and Group Policy.
+
+The fleet **Reporting → Time Sync** page can resync selected devices or set each
+selected device to its own expected timezone. The outcome list keeps a
+separate result for every selected device, including skipped and failed ones.
+Offline commands expire after one hour. A delivered command has up to
+60 seconds to execute.
+
+**Queued is not applied.** Queue acceptance means the API accepted the command,
+not that Windows changed. The latest enforcement result shows the observed
+outcome, its time, the reason, and before/after values. Each new result is
+recorded in the device audit trail. Wait for an updated observation to confirm
+the requested state.
+
+Management requires the agent update that includes time-sync reconciliation
+and handlers. The management API and policy editor can ship before that agent
+update; older agents do not apply these settings or execute the new actions.
+
+### Removing enforcement
+
+Disabling enforcement or removing the policy stops future reconciliation once
+the updated settings reach the device. It does not restore the previous Windows
+configuration. Settings delivery can use a cache for up to 120 seconds; the
+agent applies changes on its next reconciliation. A temporary resolver failure
+leaves the agent's previous settings in place until a successful delivery.
+
+Normal reconciliation is limited to one apply per hour for an unchanged
+settings fingerprint; failures back off up to 24 hours. A changed fingerprint
+resets that limit. The immediate policy action bypasses the timer, not the
+Group Policy or domain-role guards.
+
+### Alert on enforcement failures
+
+The built-in **Time policy not applied** monitor reports the
+`policy_not_applied` finding after two accepted snapshots. Its default severity
+is low. Like other built-in monitors it is provisioned without an assignment;
+attach it to a configuration policy to enable alert evaluation. GPO conflicts
+remain separately visible as `policy_conflict_gpo`.
+
+Evidence remains observed synchronization reported by the agent. These controls
+do not measure clock offset against Breeze and do not set the clock directly.

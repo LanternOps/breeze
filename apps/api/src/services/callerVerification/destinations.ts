@@ -27,6 +27,7 @@ import type { DestinationSource, DestinationRow, CallerVerificationActor } from 
 import type { EffectiveCallerVerificationPolicy } from './policy';
 import { reachableContact } from './access';
 import { CallerVerificationValidationError as Invalid } from './errors';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 export type DestinationKind = 'email' | 'mobile';
 
@@ -116,5 +117,6 @@ export async function attestDestination(actor: CallerVerificationActor, orgId: s
   if (!updated) throw new Invalid('destination_changed', 'Destination was superseded');
   await db.execute(sql`INSERT INTO audit_logs(org_id,actor_type,actor_id,action,resource_type,resource_id,result)
     VALUES(${orgId}::uuid,'user',${actor.userId}::uuid,'caller_verification.destination_attested','caller_verification',${row.id}::uuid,'success')`);
+  markRequestAuditWritten();
   return updated;
 }

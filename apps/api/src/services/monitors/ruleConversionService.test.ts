@@ -32,9 +32,18 @@ vi.mock('../configurationPolicy', () => ({
   createConfigPolicy: vi.fn(),
 }));
 
-const { previewGroup, convertGroup } = vi.hoisted(() => ({ previewGroup: vi.fn(), convertGroup: vi.fn() }));
+const { previewGroup, convertGroup, callerContext } = vi.hoisted(() => ({
+  previewGroup: vi.fn(), convertGroup: vi.fn(),
+  // How deep inside the caller-scoped read context the service is right now.
+  callerContext: { depth: 0, entered: 0 },
+}));
 vi.mock('./conversion/convert', () => ({
   previewTemplateGroup: previewGroup, convertTemplateGroup: convertGroup,
+  withCallerContext: async (_auth: unknown, fn: () => Promise<unknown>) => {
+    callerContext.entered += 1;
+    callerContext.depth += 1;
+    try { return await fn(); } finally { callerContext.depth -= 1; }
+  },
 }));
 
 import { convertRuleToMonitor } from './ruleConversionService';
@@ -227,6 +236,43 @@ describe('template group conversion adapter', () => {
     previewGroup.mockResolvedValue({ previewHash: 'group-hash', blockedBy: 'unconvertible' });
     expect(await convertRuleToMonitor('rule-1', auth())).toEqual({ ok: false, failure: { kind: 'not_convertible' } });
     expect(convertGroup).not.toHaveBeenCalled();
+  });
+
+  it('refuses a site-restricted caller before any group transaction (the group writer requires full governance)', async () => {
+    resultsQueue.push([ruleRow()], [templateRow()]);
+    expect(await convertRuleToMonitor('rule-1', auth({ allowedSiteIds: ['site-1'] } as Partial<AuthContext>)))
+      .toEqual({ ok: false, failure: { kind: 'governance_denied' } });
+    expect(previewGroup).not.toHaveBeenCalled();
+  });
+
+  it('treats a group whose conversion would change behavior as not convertible, never attempting the convert', async () => {
+    resultsQueue.push([ruleRow()], [templateRow()]);
+    previewGroup.mockResolvedValue({ previewHash: 'group-hash', equivalence: { deltas: [{ deviceId: 'd1' }] } });
+    expect(await convertRuleToMonitor('rule-1', auth())).toEqual({ ok: false, failure: { kind: 'not_convertible' } });
+    expect(convertGroup).not.toHaveBeenCalled();
+  });
+
+  it('reads the rule and template inside ONE caller-scoped context, and opens the group transactions only after it closed (self-managed route)', async () => {
+    callerContext.entered = 0;
+    const depthAtSelect: number[] = [];
+    const recordingSelect = (() => {
+      depthAtSelect.push(callerContext.depth);
+      return { from: () => ({ where: () => ({ limit: () => Promise.resolve(resultsQueue.shift() ?? []) }) }) };
+    }) as never;
+    dbMock.select.mockImplementationOnce(recordingSelect).mockImplementationOnce(recordingSelect);
+    const depthAtGroup: number[] = [];
+    previewGroup.mockImplementation(async () => { depthAtGroup.push(callerContext.depth); return { previewHash: 'group-hash' }; });
+    convertGroup.mockImplementation(async () => {
+      depthAtGroup.push(callerContext.depth);
+      return { conversionId: 'ledger-1', convertedRuleIds: ['rule-1'], outputs: [{ sourceRuleId: 'rule-1', role: 'primary', monitorId: 'monitor-1', policyId: 'policy-1' }] };
+    });
+    resultsQueue.push([ruleRow()], [templateRow()]);
+
+    expect(await convertRuleToMonitor('rule-1', auth())).toMatchObject({ ok: true });
+    expect(callerContext.entered).toBe(1);
+    expect(depthAtSelect).toEqual([1, 1]);
+    // Never nested: each opens its own serializable transaction.
+    expect(depthAtGroup).toEqual([0, 0]);
   });
 
   it('uses the supplied caller transaction for all lookups and group operations', async () => {

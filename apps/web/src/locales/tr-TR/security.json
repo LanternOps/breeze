@@ -776,6 +776,7 @@
     "remove": "Kaldır",
     "removed": "Kaldırıldı",
     "searchThreats": "Arama tehditleri...",
+    "selectAllThreats": "Tüm tehditleri seç",
     "selectThreat": "Tehdidi seçin {{name}}",
     "selectedCount": "{{count}} seçildi",
     "severity": "Önem",
@@ -931,7 +932,9 @@
     "errors": {
       "windowsHello": "Windows Hello doğrulama başarısız oldu",
       "actionFailed": "{{decision}} isteği yerine getirilemedi",
-      "network": "Ağ hatası"
+      "network": "Ağ hatası",
+      "notApproved": "Sunucu bu yükseltmenin onaylandığını doğrulamadı. Güncel durumunu görmek için bu iletişim kutusunu kapatın.",
+      "notApprovedReason": "Yükseltme onaylanmadı: {{reason}}"
     },
     "toasts": {
       "approved": "Yükseklik onaylandı",

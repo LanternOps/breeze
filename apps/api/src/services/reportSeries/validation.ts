@@ -41,6 +41,9 @@ export function assertSeriesTypeSupported(type: string): void {
 const ORG_SPECIFIC_KEYS = ['sites', 'siteIds', 'deviceIds', 'groupIds', 'deviceGroupIds', 'orgId', 'orgIds'] as const;
 /** `config.filters` keys that name org-specific objects (builder filters). */
 const ORG_SPECIFIC_FILTER_KEYS = ['siteIds', 'deviceIds', 'groupIds', 'deviceGroupIds'] as const;
+/** Builder `filterConditions[].field` values that name org-specific objects
+ *  (`site` is the builder's field id; the others cover stored/legacy shapes). */
+const ORG_SPECIFIC_CONDITION_FIELDS: ReadonlySet<string> = new Set(['site', 'siteId', 'device', 'deviceId', 'group', 'groupId']);
 
 function orgSpecific(key: string): ReportSeriesError {
   return new ReportSeriesError('series_config_org_specific', 400, { key });
@@ -59,10 +62,21 @@ export function assertSeriesConfigOrgAgnostic(config: unknown): void {
   for (const key of ORG_SPECIFIC_KEYS) {
     if (selectsSomething(record[key])) throw orgSpecific(key);
   }
-  const filters = record.filters;
-  if (filters && typeof filters === 'object' && !Array.isArray(filters)) {
-    for (const key of ORG_SPECIFIC_FILTER_KEYS) {
-      if (selectsSomething((filters as Record<string, unknown>)[key])) throw orgSpecific(`filters.${key}`);
+  // `filters` (legacy schema) and `legacyFilters` (the builder's round-trip of
+  // them) both carry org-specific selectors.
+  for (const nestedKey of ['filters', 'legacyFilters'] as const) {
+    const nested = record[nestedKey];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      for (const key of ORG_SPECIFIC_FILTER_KEYS) {
+        if (selectsSomething((nested as Record<string, unknown>)[key])) throw orgSpecific(`${nestedKey}.${key}`);
+      }
+    }
+  }
+  // A builder condition on a site/device/group field names one org's object.
+  if (Array.isArray(record.filterConditions)) {
+    for (const condition of record.filterConditions) {
+      const field = condition && typeof condition === 'object' ? (condition as Record<string, unknown>).field : undefined;
+      if (typeof field === 'string' && ORG_SPECIFIC_CONDITION_FIELDS.has(field)) throw orgSpecific(`filterConditions.${field}`);
     }
   }
 }

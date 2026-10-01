@@ -16,6 +16,7 @@ import {
   getPostureDevices,
   isManagementPostureCategory,
 } from './managementPostureReport';
+import { withHostTimeZone } from '../testUtils/hostTimeZone';
 
 const executeMock = vi.mocked(db.execute);
 
@@ -184,6 +185,29 @@ describe('getPostureCoverage', () => {
 });
 
 describe('getPostureDevices', () => {
+  it.each(['America/Denver', 'Asia/Tokyo'] as const)(
+    'reads last_seen_at text as UTC on a %s host',
+    async (zone) => {
+      // offsetless `timestamp` text from a raw query; read as UTC
+      executeMock
+        .mockResolvedValueOnce([{ total: '1' }] as never)
+        .mockResolvedValueOnce([
+          {
+            id: 'dev-1', org_id: 'org-1', site_id: 'site-1', hostname: 'PC-01',
+            display_name: null, status: 'online', os_type: 'windows',
+            last_seen_at: '2026-08-01 00:30:00.125',
+            collected_at: null, detection_status: 'active', detection_version: null,
+          },
+        ] as never);
+      await withHostTimeZone(zone, async () => {
+        const result = await getPostureDevices({
+          category: 'rmm', stalenessDays: 7, scope: undefined, product: 'breeze', limit: 50, offset: 0,
+        });
+        expect(result.devices[0]!.lastSeenAt).toBe('2026-08-01T00:30:00.125Z');
+      });
+    },
+  );
+
   it('returns total + mapped device rows and filters on the product bind param', async () => {
     executeMock
       .mockResolvedValueOnce([{ total: '2' }] as never)

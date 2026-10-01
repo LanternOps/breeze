@@ -80,13 +80,16 @@ const agentRelayMock = {
 // the write-session integration suites; here the helper never reports it
 // unless a test says otherwise.
 const writeDeliveryMock = vi.hoisted(() => ({
-  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => ({
-    mode: input.provider === 'local' ? 'local' : 'legacy',
-    reason: input.provider === 'local' ? 'no_credential' : 'helper_unsupported',
-    payload: input.payload,
-  })),
+  broker: vi.fn(async (input: { provider: string; payload: Record<string, unknown> }) => (input.provider === 'local'
+    ? { mode: 'local', reason: 'no_credential', payload: input.payload }
+    : { mode: 'refused', reason: 'insecure_endpoint', message: 'Backups to S3 storage require the storage endpoint to use HTTPS.' })),
 }));
-vi.mock('../services/backupStorageWriteDelivery', () => ({ brokerWorkerBackupPayload: writeDeliveryMock.broker }));
+vi.mock('../services/backupStorageWriteDelivery', () => ({
+  brokerWorkerBackupPayload: writeDeliveryMock.broker,
+  backupWriteRefusalMessage: (reason: string) => (reason === 'mint_failed'
+    ? 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.'
+    : reason),
+}));
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
@@ -112,6 +115,8 @@ const S3_CONFIG_ROW = {
   encryption: false,
 };
 let CONFIG_ROW: Record<string, unknown> = LOCAL_CONFIG_ROW;
+/** Write protocol the device's helper reported (0 = an older helper). */
+let writeProtocol: number | null = 0;
 
 /** Discovered Hyper-V VMs for this run — one dispatch target each. */
 let vmRows: Array<{ vmName: string }> = [];
@@ -175,7 +180,8 @@ function wireDb() {
         statusCallsSinceFirstInsert >= cancelAfterInsertOnCheck;
       return selectResult([{ status: cancelled ? 'cancelled' : 'pending' }]);
     }
-    if (keys.length === 1 && keys[0] === 'agentId') return selectResult([{ agentId: 'agent-1' }]);
+    // device -> agent lookup + the helper protocols it reported (an older helper)
+    if (keys[0] === 'agentId') return selectResult([{ agentId: 'agent-1', backupWriteProtocolVersion: writeProtocol, backupIntegrityProtocolVersion: 0 }]);
     if (keys.includes('featureLinkId')) {
       return selectResult([{ featureLinkId: 'link-1', backupMode: 'hyperv', modeTargets: {} }]);
     }
@@ -220,6 +226,7 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }];
     currentDeviceOrgId = 'org-1';
     CONFIG_ROW = LOCAL_CONFIG_ROW;
+    writeProtocol = 0;
     wireDb();
     agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
     agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
@@ -440,17 +447,27 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
       ]);
     });
 
-    it('counts a sent target carrying the storage destination as a legacy credential write', async () => {
+    it('never sends an S3 target the storage destination: an older helper is refused before anything is built', async () => {
       CONFIG_ROW = S3_CONFIG_ROW;
       vmRows = [{ vmName: 'vm-a' }];
-      expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
-      const sent = agentRelayMock.dispatchCommandToAgent.mock.calls[0]![1] as unknown as { payload: Record<string, unknown> };
-      expect(sent.payload.providerConfig).toBeDefined();
-      expect(writeDispatch.mock.calls).toEqual([['hyperv_backup', 'legacy_credential', 'helper_unsupported', 1]]);
+      expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(writeDeliveryMock.broker).not.toHaveBeenCalled();
+      expect(writeDispatch).not.toHaveBeenCalled();
+    });
+
+    it('counts a target for which no write session could be issued as refused, and sends nothing', async () => {
+      CONFIG_ROW = S3_CONFIG_ROW;
+      writeProtocol = 1;
+      vmRows = [{ vmName: 'vm-a' }];
+      expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(writeDispatch.mock.calls).toEqual([['hyperv_backup', 'refused', 'insecure_endpoint', 1]]);
     });
 
     it('sends a brokered target with its write session and no storage destination, counted as brokered', async () => {
       CONFIG_ROW = S3_CONFIG_ROW;
+      writeProtocol = 1;
       vmRows = [{ vmName: 'vm-a' }];
       writeDeliveryMock.broker.mockImplementationOnce(async (input) => {
         const { providerConfig: _p, ...rest } = input.payload;

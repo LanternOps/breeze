@@ -117,6 +117,28 @@ export function lastOccurrenceKey(
   return keyOf(y, m, d, hh, mm);
 }
 
+/** Weekday names in DAY_INDEX order (sunday = 0), so DAY_NAMES[i] round-trips. */
+const DAY_NAMES = Object.keys(DAY_INDEX);
+
+/**
+ * The canonical form of a cadence's schedule detail: only the keys that
+ * cadence reads, spelled the one way, with EXACTLY the defaults and clamps
+ * `lastOccurrenceKey` applies (09:00; monday; day 1; day-of-month clamped to
+ * 1..31). Used by the multi-org Combine key (series W04) so two reports group
+ * iff they fire at the same moments — `reportSchedule.test.ts` proves the
+ * normalization never changes `lastOccurrenceKey`.
+ */
+export function normalizeScheduleConfig(cadence: ScheduleCadence, cfg: ScheduleConfig): ScheduleConfig {
+  const { hh, mm } = parseTime(cfg.time);
+  const time = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  if (cadence === 'daily') return { time };
+  if (cadence === 'weekly') {
+    const index = DAY_INDEX[(cfg.day ?? 'monday').toLowerCase()] ?? 1;
+    return { time, day: DAY_NAMES[index] };
+  }
+  return { time, date: String(Math.max(1, Math.min(31, Number(cfg.date) || 1))) };
+}
+
 /** Due when the report has never run, or last ran before the latest occurrence. */
 export function isDue(
   lastGeneratedAt: Date | null,

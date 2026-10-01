@@ -1,10 +1,11 @@
 import { sql } from 'drizzle-orm';
-import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { drainTopologyOutbox } from '../services/topology/legacyImport';
 import { pruneDeliveredTopologyOutbox } from '../services/topology/legacyRetention';
 import { loadTopologyFlags } from '../services/topology/flags';
 import { captureException } from '../services/sentry';
+import { retryableTopologyTransaction } from '../services/topology/transactionRetry';
+import { runTopologyBootstrapPass, TOPOLOGY_BOOTSTRAP_INTERVAL_MS } from './topologyBootstrapPass';
 
 export const TOPOLOGY_REPAIR_INTERVAL_MS = 2000;
 const SITE_BATCH = 25;
@@ -12,11 +13,9 @@ const EVENT_BATCH = 200;
 let timer: ReturnType<typeof setInterval> | null = null;
 let activeDrain: Promise<void> | null = null;
 let lastAlertAt = 0;
+let lastBootstrapAt = 0;
 
-export function retryableTopologyTransaction(error: unknown): boolean {
-  const code = pgErrorCode(error);
-  return code === '40P01' || code === '40001' || code === '55P03';
-}
+export { retryableTopologyTransaction };
 
 /** Retry the WHOLE transaction after inventory FK/capture lock conflicts.
  * Never catch/retry a PostgreSQL-aborted transaction inside its old context. */
@@ -73,14 +72,26 @@ export async function runTopologyRepairTick(): Promise<void> {
   }
 }
 
+/** Repair first, then (on its slower cadence) the first-snapshot bootstrap.
+ * Both run inside the same coalesced `activeDrain`, so one process never has
+ * two topology writers in flight, and a failure in one never skips the other. */
+async function runTick(): Promise<void> {
+  await runTopologyRepairTick().catch(error => { captureException(error); });
+  if (Date.now() - lastBootstrapAt < TOPOLOGY_BOOTSTRAP_INTERVAL_MS) return;
+  lastBootstrapAt = Date.now();
+  await runTopologyBootstrapPass().catch(error => { captureException(error); });
+}
+
 function tick(): void {
   if (activeDrain) return;
-  activeDrain = runTopologyRepairTick().catch(error => { captureException(error); }).finally(() => { activeDrain = null; });
+  activeDrain = runTick().finally(() => { activeDrain = null; });
 }
 
 /** DB-backed periodic repair has no Redis enqueue dependency. Like the OAuth
  * revocation retry worker, it recovers on the next tick after infrastructure
- * loss. Only explicitly staged sites are selected; startup never backfills. */
+ * loss. Repair only selects staged sites; sites with materialization enabled
+ * and no checkpoint are staged by the bounded bootstrap pass (#7557), never by
+ * a startup backfill. */
 export function initializeTopologyOutboxWorker(): void {
   if (timer) return;
   timer = setInterval(tick, TOPOLOGY_REPAIR_INTERVAL_MS);
@@ -90,4 +101,5 @@ export function initializeTopologyOutboxWorker(): void {
 export async function shutdownTopologyOutboxWorker(): Promise<void> {
   if (timer) { clearInterval(timer); timer = null; }
   await activeDrain;
+  lastBootstrapAt = 0;
 }

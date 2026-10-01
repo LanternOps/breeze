@@ -452,6 +452,11 @@ export const bmrCompleteSchema = z.object({
     // errorCount on the ordinary backup-result path (resultSchemas.ts). Optional
     // and omitted (not zero) by an agent that doesn't report it.
     failedFiles: z.number().int().nonnegative().optional(),
+    // Stable, machine-readable outcome reason from the recovery helper:
+    // `system_state_requires_rebuild` when a Windows recovery restored files
+    // only (system state is applied by a bare-metal rebuild), or an integrity
+    // check code. Omitted by helpers that predate it.
+    code: z.string().max(64).optional(),
   }),
 });
 

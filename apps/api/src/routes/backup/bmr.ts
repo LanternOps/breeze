@@ -47,6 +47,11 @@ import {
 } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
 import {
+  lookupIntegrityInformational,
+  recoveryBootstrapIntegrity,
+  resolveRestoreIntegrity,
+} from '../../services/backupRestoreIntegrity';
+import {
   getRecoveryMediaArtifact,
   getRecoveryMediaDownloadTarget,
   getRecoveryMediaSignatureDownloadTarget,
@@ -1373,6 +1378,14 @@ bmrPublicRoutes.post(
         .where(eq(bareMetalRecoveries.recoveryTokenId, row.id))
         .limit(1);
 
+      // The snapshot's integrity expectation (informational in this release).
+      const integrity = recoveryBootstrapIntegrity(
+        await lookupIntegrityInformational(
+          { label: 'recovery bootstrap', snapshotRef: snapshot.id },
+          () => resolveRestoreIntegrity(snapshot.id),
+        ),
+      );
+
       const authenticatedPayload = buildAuthenticatedBootstrapPayload({
         tokenId: row.id,
         deviceId: row.deviceId,
@@ -1438,6 +1451,7 @@ bmrPublicRoutes.post(
           : null,
         grantedCapabilities: negotiation.granted,
         fileIndex: negotiation.fileIndex,
+        integrity,
       });
 
       return c.json(authenticatedPayload);
@@ -1922,6 +1936,9 @@ bmrPublicRoutes.post(
                 // recovery. Optional and left null (not 0) when an older agent
                 // build doesn't report it.
                 failedFiles: result.failedFiles ?? null,
+                // Outcome code (e.g. system_state_requires_rebuild); null for
+                // a helper that does not report one.
+                code: result.code ?? null,
               },
             },
             recoveryTokenId: row.id,

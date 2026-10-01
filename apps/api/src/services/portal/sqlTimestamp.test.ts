@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { sqlTimestamp } from './sqlTimestamp';
+import { dateFromSqlValue, sqlTimestamp } from './sqlTimestamp';
+import { withHostTimeZone } from '../../testUtils/hostTimeZone';
 
 describe('sqlTimestamp', () => {
   it('passes Date instances through', () => {
@@ -30,5 +31,34 @@ describe('sqlTimestamp', () => {
 
   it('throws on garbage instead of returning an Invalid Date', () => {
     expect(() => sqlTimestamp('not a timestamp')).toThrow(TypeError);
+  });
+});
+
+describe('dateFromSqlValue', () => {
+  const HOSTS = ['UTC', 'America/Denver', 'Asia/Tokyo'] as const;
+
+  it.each(HOSTS)('reads offsetless date-time text as UTC on a %s host', (zone) => {
+    withHostTimeZone(zone, () => {
+      expect(dateFromSqlValue('2026-08-25 18:34:15.123').toISOString()).toBe('2026-08-25T18:34:15.123Z');
+      expect(dateFromSqlValue('2026-08-25 18:34:15').toISOString()).toBe('2026-08-25T18:34:15.000Z');
+      expect(dateFromSqlValue('2026-08-25T18:34:15.123456').toISOString()).toBe('2026-08-25T18:34:15.123Z');
+    });
+  });
+
+  it.each(HOSTS)('matches new Date(value) for every other input on a %s host', (zone) => {
+    withHostTimeZone(zone, () => {
+      for (const value of [
+        '2026-08-25 18:34:15+00',
+        '2026-08-25 12:34:15.5-06',
+        '2026-08-25 23:49:15+05:30',
+        '2026-08-25T18:34:15.123Z',
+        '2026-08-25',
+      ]) {
+        expect(dateFromSqlValue(value).getTime(), value).toBe(new Date(value).getTime());
+      }
+      const date = new Date('2026-08-25T18:34:15.123Z');
+      expect(dateFromSqlValue(date)).toBe(date);
+      expect(Number.isNaN(dateFromSqlValue('not a timestamp').getTime())).toBe(true);
+    });
   });
 });

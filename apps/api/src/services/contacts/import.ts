@@ -55,6 +55,7 @@ import { contacts, contactExternalLinks } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
 import { isPgUniqueViolation, pgErrorCode, pgErrorNode, retryOnTransientLockError } from '../../utils/pgErrors';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
+import { BILLING_ROLE, lockOrganizationForProjection, projectBillingContact } from './compat';
 import {
   ContactValidationError,
   normalizeContactEmail,
@@ -853,7 +854,13 @@ async function createImportedContact(
   siteId: string | null,
   actor: ContactImportActor,
 ): Promise<RowWriteOutcome> {
+  // An org-level row carrying the billing role can become the org's billing
+  // contact — the invoice recipient in organizations.billing_contact — so it is
+  // created under the org lock and re-projected, exactly like crud.createContact.
+  // Rows are always created non-primary, so nothing else here can move it.
+  const feedsBillingProjection = siteId === null && (r.roles ?? []).includes(BILLING_ROLE);
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    if (feedsBillingProjection) await lockOrganizationForProjection(db, orgId);
     const [created] = await db.insert(contacts).values({
       orgId,
       siteId,
@@ -872,6 +879,7 @@ async function createImportedContact(
       await recordDestinationChangeWithExecutor(db, { orgId, contactId, kind, value: r[kind], source: 'import', userId: null });
     }
     const createdLink = await attachLink(r, orgId, contactId, actor);
+    if (feedsBillingProjection) await projectBillingContact(db, orgId);
     return {
       contactId,
       name: r.name,

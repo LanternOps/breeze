@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractUacDetails, executableName, getApprovalCopy } from './approvalCopy';
+import { approveOutcomeToast, extractUacDetails, executableName, getApprovalCopy } from './approvalCopy';
 
 describe('extractUacDetails', () => {
   it('reads the elevation schema camelCase fields', () => {
@@ -138,5 +138,30 @@ describe('getApprovalCopy — raw call-signature labels', () => {
       actionArguments: {},
     });
     expect(copy.headline).toBe('Restart service "Spooler" on KIT');
+  });
+});
+
+describe('approveOutcomeToast', () => {
+  const unverified = 'Target identity could not be verified on the device; re-request elevation.';
+
+  it('confirms an approve the server stored as approved', () => {
+    expect(approveOutcomeToast({ status: 'approved', refusalReason: null }, 'Elevate setup.exe')).toEqual({
+      kind: 'success',
+      text: 'Approved · Elevate setup.exe',
+    });
+  });
+
+  it('reports an approve the server refused as not approved, with the reason', () => {
+    expect(approveOutcomeToast({ status: 'denied', refusalReason: unverified }, 'Elevate setup.exe')).toEqual({
+      kind: 'error',
+      text: `Not approved · ${unverified}`,
+    });
+  });
+
+  it('never says approved for a row that is not approved, even without a reason', () => {
+    expect(approveOutcomeToast({ status: 'denied' }, 'Elevate setup.exe')).toEqual({
+      kind: 'error',
+      text: 'Not approved · Elevate setup.exe',
+    });
   });
 });

@@ -191,7 +191,8 @@
     "backup_continuity": "Backup continuity",
     "script": "Script check",
     "network_check": "Network check",
-    "hardware_health": "Hardware health"
+    "hardware_health": "Hardware health",
+    "time_sync": "Time synchronization"
   },
   "fields": {
     "operator": "Comparison",
@@ -553,6 +554,22 @@
         "too_many_responses": "more than ten responses would be required",
         "auto_resolve_conditions": "custom resolution conditions cannot be preserved",
         "target_unconvertible": "the response target cannot be converted",
+        "already_managed": "already managed by a monitor",
+        "no_org": "check does not belong to an organization",
+        "asset_missing": "the linked discovered asset no longer exists",
+        "condition_invalid": "check settings do not form a valid monitor condition",
+        "no_active_rules": "check has no active alert rule",
+        "multiple_network_rules": "check has more than one active alert rule",
+        "network_predicate_unsupported": "alert condition has no monitor equivalent",
+        "network_threshold_out_of_range": "failure threshold is out of range (at most 100 consecutive failures)",
+        "site_binding_unrepresentable": "site-bound check is not linked to a discovered asset",
+        "config_override_unrepresentable": "custom target or timeout override cannot be preserved",
+        "built_in": "built-in system rule; it keeps alerting on its own",
+        "no_rules": "template has no rules to convert",
+        "target_or_owner": "a rule's target or owner differs from its template",
+        "blocked": "conversion is blocked",
+        "disabled_response_automation": "response automation is disabled",
+        "alert_workflow_kept": "alert workflow kept as is",
         "unknown": "conversion was refused; review the source"
       }
     }
@@ -586,6 +603,25 @@
         "minHealthOptions": {
           "warning": "Warning",
           "critical": "Critical"
+        }
+      },
+      "time_sync": {
+        "findings": "Findings",
+        "consecutiveSnapshots": "Consecutive snapshots",
+        "findingOptions": {
+          "pdc_no_external_source": "Forest root PDC has no external source",
+          "source_local_clock": "Using the local clock",
+          "dc_vm_host_sync": "DC is syncing with the VM host",
+          "ntp_server_unresolvable": "NTP server name is invalid or unresolved",
+          "ntp_peer_unreachable": "NTP peer is unreachable",
+          "domain_source_unavailable": "Domain time source unavailable",
+          "member_not_on_hierarchy": "Not using the domain hierarchy",
+          "sync_disabled": "Time synchronization is disabled",
+          "sync_stale": "No recent successful synchronization",
+          "correction_refused": "Time correction was refused",
+          "timezone_mismatch": "Timezone differs from expected",
+          "policy_not_applied": "Time policy was not applied",
+          "policy_conflict_gpo": "Group Policy controls time settings"
         }
       }
     }

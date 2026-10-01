@@ -4,6 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceFilesystemTab from './DeviceFilesystemTab';
 import { fetchWithAuth } from '../../stores/auth';
 
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   registerOrgIdProvider: vi.fn(),

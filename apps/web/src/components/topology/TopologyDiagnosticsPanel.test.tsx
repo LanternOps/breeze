@@ -36,3 +36,23 @@ it('cancel remains Stop requested until terminal acknowledgement', async () => {
   await waitFor(() => expect(screen.getByTestId('topology-diagnostic-stop')).toBeDisabled());
   expect(screen.getByText(/Stop requested ·/)).toBeVisible();
 });
+it('maps known diagnostic reason codes to sentences instead of showing raw codes', async () => {
+  vi.mocked(fetchWithAuth).mockReset().mockImplementation(async (url) => {
+    if (String(url).includes('/collectors')) return new Response(JSON.stringify({ items: [{ origin: plan.origin, eligible: true, reasons: [], families: ['ipv4'], rank: 0 }], nextCursor: null }));
+    return new Response(JSON.stringify({ ...run, state: 'completed', finishedAt: plan.acceptedAt, reasons: ['subject_not_observed', 'some_future_code'] }));
+  });
+  render(<TopologyDiagnosticsPanel siteId={ids.site} subject={plan.subject} graphRevision="1" onClose={() => {}} />);
+  await waitFor(() => expect(screen.getByTestId('topology-diagnostic-start')).toBeEnabled());
+  fireEvent.click(screen.getByTestId('topology-diagnostic-start'));
+  const panel = await screen.findByTestId(`topology-run-${run.id}`);
+  expect(panel).toHaveTextContent(/hasn't been observed/i);
+  expect(panel).not.toHaveTextContent('subject_not_observed');
+  expect(panel).toHaveTextContent('some future code');
+});
+it('shows a sentence, not the raw code, when the collectors request is rejected with a reason code', async () => {
+  vi.mocked(fetchWithAuth).mockReset().mockResolvedValue(new Response(JSON.stringify({ error: 'subject_not_observed' }), { status: 409 }));
+  render(<TopologyDiagnosticsPanel siteId={ids.site} subject={plan.subject} graphRevision="1" onClose={() => {}} />);
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/hasn't been observed/i);
+  expect(alert).not.toHaveTextContent('subject_not_observed');
+});

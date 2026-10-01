@@ -200,7 +200,9 @@ async function purgeOne(
         // survivor outside the serialized site ceiling); catching inside the
         // callback would commit that partial delete while reporting SKIPPED.
         if (err instanceof DeviceLifecycleError) {
-          return { code: err.code, linkGroupId: null, linkGroupDissolved: false };
+          // DEVICE_LIMIT_REACHED is a restore-only refusal; purge never admits.
+          const code = err.code === 'DEVICE_LIMIT_REACHED' ? 'ERROR' : err.code;
+          return { code, linkGroupId: null, linkGroupDissolved: false };
         }
         throw err;
       }

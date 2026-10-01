@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isKnownWindowsZone } from '@breeze/shared';
 import { DEVICES_SORT_KEYS } from './cursor';
 import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -277,13 +278,57 @@ export const processSamplesQuerySchema = z.object({
   message: 'Provide either ?at=<ts> or both ?from and ?to'
 });
 
-export const createCommandSchema = z.object({
-  // 'wake' is the user-facing wake action. Internally it dispatches via the
-  // wakeOnLan service and writes a deviceCommands row of type 'wake_on_lan'
-  // addressed to a relay agent. See apps/api/src/services/wakeOnLan.ts.
-  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake', 'refresh_inventory']),
-  payload: z.any().optional()
-});
+const timeTimezonePayloadSchema = z
+  .object({
+    windowsId: z
+      .string()
+      .refine(isKnownWindowsZone, 'Unknown Windows timezone'),
+  })
+  .strict();
+const emptyTimePayloadSchema = z.object({}).strict();
+export const createCommandSchema = z
+  .object({
+    // 'wake' is the user-facing wake action. Internally it dispatches via the
+    // wakeOnLan service and writes a deviceCommands row of type 'wake_on_lan'
+    // addressed to a relay agent. See apps/api/src/services/wakeOnLan.ts.
+    type: z.enum([
+      'script',
+      'reboot',
+      'reboot_safe_mode',
+      'shutdown',
+      'update',
+      'collect_evidence',
+      'execute_containment',
+      'wake',
+      'refresh_inventory',
+      'time_resync',
+      'time_set_timezone',
+      'time_apply_policy',
+    ]),
+    payload: z.any().optional(),
+  })
+  .superRefine((value, ctx) => {
+    // Time management commands (#7452 W03a, index §F.4) carry a fixed payload
+    // contract; every other type keeps its existing free-form payload.
+    const schema =
+      value.type === 'time_set_timezone'
+        ? timeTimezonePayloadSchema
+        : value.type === 'time_resync' || value.type === 'time_apply_policy'
+          ? emptyTimePayloadSchema
+          : null;
+    if (!schema) return;
+    const parsed = schema.safeParse(
+      value.payload === undefined ? {} : value.payload,
+    );
+    if (!parsed.success)
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['payload', ...issue.path],
+          message: issue.message,
+        });
+      }
+  });
 
 /**
  * Per-request cap on bulk command operations. 500 keeps the worst-case

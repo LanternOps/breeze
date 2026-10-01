@@ -231,6 +231,10 @@ describe('runScriptReview — happy path', () => {
     expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
     const [createArgs, createOpts] = shared.messagesCreateMock.mock.calls[0]! as [Record<string, unknown>, Record<string, unknown>];
     expect(createArgs).toMatchObject({ model: 'claude-sonnet-4-6', max_tokens: 2_000 });
+    // #7587: Sonnet 4.6 does not think by default on the Messages API, so the
+    // one-shot keeps sending no thinking params (5.x gets a capped effort).
+    expect(createArgs).not.toHaveProperty('thinking');
+    expect(createArgs).not.toHaveProperty('output_config');
     expect(createArgs).not.toHaveProperty('tools');
     expect(createArgs.messages).toHaveLength(1);
     const userText = (createArgs.messages as Array<{ role: string; content: string }>)[0]!.content;

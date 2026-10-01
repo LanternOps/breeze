@@ -3,6 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, gte, lte, ilike, inArray, not, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import { auditLogs as auditLogsTable, users, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -442,7 +443,7 @@ async function queryLatestPerOrg(
     log: {
       id: r.id,
       orgId: r.org_id,
-      timestamp: r.timestamp instanceof Date ? r.timestamp : new Date(r.timestamp),
+      timestamp: r.timestamp instanceof Date ? r.timestamp : dateFromSqlValue(r.timestamp),
       actorType: r.actor_type,
       actorId: r.actor_id,
       actorEmail: r.actor_email,

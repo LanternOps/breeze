@@ -9,28 +9,57 @@ import { getMonitorKindSpec } from './kinds';
 import { buildCompiledTemplate } from './monitorCompiler';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 
-describe('version 3 hardware defaults', () => {
-  const keys = ['raid_array_degraded', 'physical_disk_failed', 'cache_battery_problem', 'hardware_collector_failing'];
+describe('version 5 time and historical hardware defaults', () => {
+  const keys = [
+    'raid_array_degraded',
+    'physical_disk_failed',
+    'cache_battery_problem',
+    'hardware_collector_failing',
+  ];
 
-  it('has eight valid defaults, four introduced at version 3', () => {
-    expect(BUILT_IN_MONITORS_VERSION).toBe(3);
-    expect(BUILT_IN_MONITOR_DEFAULTS).toHaveLength(8);
-    expect(defaultsToProvision(2).map((d) => d.key)).toEqual(keys);
+  const timeKeys = [
+    'time_source_problem',
+    'time_sync_stale',
+    'timezone_mismatch',
+    'time_policy_not_applied',
+  ];
+
+  it('has twelve valid defaults with preserved version gates', () => {
+    expect(BUILT_IN_MONITORS_VERSION).toBe(5);
+    expect(BUILT_IN_MONITOR_DEFAULTS).toHaveLength(12);
+    expect(defaultsToProvision(2).map((d) => d.key)).toEqual([
+      ...keys,
+      ...timeKeys,
+    ]);
     for (const d of BUILT_IN_MONITOR_DEFAULTS) {
-      expect(getMonitorKindSpec(d.kind).conditionSchema.safeParse(d.condition).success).toBe(true);
+      expect(
+        getMonitorKindSpec(d.kind).conditionSchema.safeParse(d.condition)
+          .success,
+      ).toBe(true);
     }
   });
 
   it('preserves historical version gates', () => {
-    expect(defaultsToProvision(null)).toHaveLength(8);
-    expect(defaultsToProvision(1).map((d) => d.key)).toEqual(['patch_compliance_low', ...keys]);
-    expect(defaultsToProvision(3)).toEqual([]);
-    expect(BUILT_IN_MONITOR_DEFAULTS.filter((d) => d.sinceVersion === 1).map((d) => d.key)).toEqual([
-      'cpu_high',
-      'memory_high',
-      'disk_full',
+    expect(defaultsToProvision(null)).toHaveLength(12);
+    expect(defaultsToProvision(1).map((d) => d.key)).toEqual([
+      'patch_compliance_low',
+      ...keys,
+      ...timeKeys,
     ]);
-    expect(BUILT_IN_MONITOR_DEFAULTS.find((d) => d.key === 'patch_compliance_low')?.condition).toEqual({
+    expect(defaultsToProvision(3).map((d) => d.key)).toEqual(timeKeys);
+    expect(defaultsToProvision(4).map((d) => d.key)).toEqual([
+      'time_policy_not_applied',
+    ]);
+    expect(defaultsToProvision(5)).toEqual([]);
+    expect(
+      BUILT_IN_MONITOR_DEFAULTS.filter((d) => d.sinceVersion === 1).map(
+        (d) => d.key,
+      ),
+    ).toEqual(['cpu_high', 'memory_high', 'disk_full']);
+    expect(
+      BUILT_IN_MONITOR_DEFAULTS.find((d) => d.key === 'patch_compliance_low')
+        ?.condition,
+    ).toEqual({
       operator: 'lt',
       value: 80,
     });
@@ -38,12 +67,26 @@ describe('version 3 hardware defaults', () => {
 
   it('matches the four approved settings exactly', () => {
     expect(
-      defaultsToProvision(2).map((d) => [d.key, d.name, d.condition, d.severity, d.cooldownMinutes, d.sinceVersion]),
+      defaultsToProvision(2)
+        .filter((d) => d.sinceVersion === 3)
+        .map((d) => [
+          d.key,
+          d.name,
+          d.condition,
+          d.severity,
+          d.cooldownMinutes,
+          d.sinceVersion,
+        ]),
     ).toEqual([
       [
         'raid_array_degraded',
         'RAID array degraded or failed',
-        { componentTypes: ['virtual_disk', 'controller'], minHealth: 'critical', includePredictiveFailure: false, consecutiveSnapshots: 2 },
+        {
+          componentTypes: ['virtual_disk', 'controller'],
+          minHealth: 'critical',
+          includePredictiveFailure: false,
+          consecutiveSnapshots: 2,
+        },
         'critical',
         60,
         3,
@@ -51,7 +94,12 @@ describe('version 3 hardware defaults', () => {
       [
         'physical_disk_failed',
         'Physical disk failed or predicted to fail',
-        { componentTypes: ['physical_disk'], minHealth: 'critical', includePredictiveFailure: true, consecutiveSnapshots: 2 },
+        {
+          componentTypes: ['physical_disk'],
+          minHealth: 'critical',
+          includePredictiveFailure: true,
+          consecutiveSnapshots: 2,
+        },
         'high',
         60,
         3,
@@ -59,7 +107,12 @@ describe('version 3 hardware defaults', () => {
       [
         'cache_battery_problem',
         'Controller cache battery problem',
-        { componentTypes: ['cache_battery'], minHealth: 'warning', includePredictiveFailure: false, consecutiveSnapshots: 3 },
+        {
+          componentTypes: ['cache_battery'],
+          minHealth: 'warning',
+          includePredictiveFailure: false,
+          consecutiveSnapshots: 3,
+        },
         'medium',
         240,
         3,
@@ -67,7 +120,12 @@ describe('version 3 hardware defaults', () => {
       [
         'hardware_collector_failing',
         'Hardware monitoring tool failing',
-        { componentTypes: ['collector'], minHealth: 'warning', includePredictiveFailure: false, consecutiveSnapshots: 3 },
+        {
+          componentTypes: ['collector'],
+          minHealth: 'warning',
+          includePredictiveFailure: false,
+          consecutiveSnapshots: 3,
+        },
         'low',
         1440,
         3,

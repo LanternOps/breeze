@@ -6,6 +6,7 @@ import {
   listLatestSecurityPosture,
   getSecurityPostureTrend
 } from '../../services/securityPosture';
+import { siteAllowlistOf } from '../../services/aiToolsSiteScope';
 import { dashboardQuerySchema, providerCatalog, postureComponentModel } from './schemas';
 import {
   resolveScopedOrgIds,
@@ -35,17 +36,20 @@ dashboardRoutes.get(
     if (scope.error) {
       return c.json({ error: scope.error.message }, scope.error.status);
     }
+    const siteIds = siteAllowlistOf(auth);
 
     const [statusRows, threats, posture, recommendationsResult, trendPoints] = await Promise.all([
       listStatusRows(auth, query.orgId),
       listThreatRows(auth, undefined, query.orgId),
       listLatestSecurityPosture({
         orgIds: scope.orgIds,
+        siteIds,
         limit: 2000
       }),
       buildBe9Recommendations(auth, query.orgId),
       getSecurityPostureTrend({
         orgIds: scope.orgIds,
+        siteIds,
         days: 30
       })
     ]);
@@ -178,6 +182,7 @@ dashboardRoutes.get(
 
     const posture = await listLatestSecurityPosture({
       orgIds: scope.orgIds,
+      siteIds: siteAllowlistOf(auth),
       limit: 2000
     });
     const total = posture.length;

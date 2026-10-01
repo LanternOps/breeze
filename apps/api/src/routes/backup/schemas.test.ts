@@ -68,6 +68,32 @@ describe('bmrCompleteSchema — completion report caps (D14)', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('accepts an optional result code and keeps it', () => {
+    const parsed = bmrCompleteSchema.safeParse({
+      token: 'recovery-token-1',
+      result: { ...baseResult, code: 'system_state_requires_rebuild' },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.result.code).toBe('system_state_requires_rebuild');
+  });
+
+  it('rejects a result code over 64 characters', () => {
+    const parsed = bmrCompleteSchema.safeParse({
+      token: 'recovery-token-1',
+      result: { ...baseResult, code: 'x'.repeat(65) },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('leaves code undefined when the helper does not report one', () => {
+    const parsed = bmrCompleteSchema.safeParse({
+      token: 'recovery-token-1',
+      result: { ...baseResult },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.result.code).toBeUndefined();
+  });
+
   it('leaves failedFiles undefined when the agent omits it (legacy agent)', () => {
     const parsed = bmrCompleteSchema.safeParse({
       token: 'recovery-token-1',

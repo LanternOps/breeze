@@ -15,6 +15,7 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+vi.mock('./time/DeviceTimeSection', () => ({ default: () => null }));
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 
@@ -260,6 +261,16 @@ describe('DeviceInfoTab — logs silent (#7067)', () => {
     load({ lastLogAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString() });
     render(<DeviceInfoTab deviceId={deviceId} />);
     expect(await screen.findByTestId('logs-silent')).toBeInTheDocument();
+  });
+
+  it('formats the logs-silent date without seconds, like the stuck-update notice', async () => {
+    const d = new Date(Date.now() - 7 * 60 * 60_000);
+    d.setSeconds(37, 0);
+    load({ lastLogAt: d.toISOString() });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('logs-silent');
+    expect(notice.textContent).not.toMatch(/\d:\d\d:37/);
+    expect(notice.textContent).toMatch(/\d:\d\d/);
   });
 
   it('shows the never-shipped variant when the device has no last_log_at but has been enrolled long enough', async () => {

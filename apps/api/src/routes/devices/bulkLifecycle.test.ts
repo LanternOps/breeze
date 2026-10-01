@@ -98,7 +98,7 @@ import {
   getDevicesWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
 } from './helpers';
-import { runOutsideDbContext, withDbAccessContext } from '../../db';
+import { runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueueDeviceBulkPurge, getDeviceBulkPurgeQueue } from '../../jobs/deviceBulkPurge';
 
@@ -262,8 +262,83 @@ describe('POST /devices/bulk/restore', () => {
 
     await post(app, '/devices/bulk/restore', { deviceIds: [DEV_1, DEV_2] });
 
-    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(runOutsideDbContext).toHaveBeenCalled();
     expect(withDbAccessContext).toHaveBeenCalledTimes(2);
+  });
+
+  // Admission against the partner device limit needs the partner row and a
+  // partner-wide count, neither visible under the caller's tenant RLS. Each
+  // item is authorized in its tenant transaction first, then restored in its
+  // own system-scoped transaction pinned to where that read found the device.
+  it('restores each device in a system-scoped transaction pinned to the authorized org and site', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
+      accessibleDevice(id as string, id === DEV_2 ? { siteId: 'site-2' } : {}),
+    );
+    vi.mocked(restoreRemovedDevice).mockImplementation(async (_tx, id) => ({
+      device: accessibleDevice(id) as never,
+      uninstallAlreadyDispatched: false,
+    }));
+
+    const res = await post(app, '/devices/bulk/restore', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(200);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(withSystemDbAccessContext).toHaveBeenCalledWith(expect.any(Function), 'devices.bulkRestore');
+    expect(restoreRemovedDevice).toHaveBeenCalledWith(expect.anything(), DEV_1, { orgId: ORG_A, siteId: 'site-1' });
+    expect(restoreRemovedDevice).toHaveBeenCalledWith(expect.anything(), DEV_2, { orgId: ORG_A, siteId: 'site-2' });
+  });
+
+  // One pooled connection at a time: the system-scoped restore opens only
+  // after the item's tenant-scoped authorization transaction has finished,
+  // never nested inside it (#1105).
+  it('opens the system-scoped restore only after the tenant-scoped check has closed', async () => {
+    let tenantOpen = false;
+    const tenantOpenAtRestore: boolean[] = [];
+    vi.mocked(withDbAccessContext).mockImplementation((async (
+      _ctx: unknown,
+      fn: () => Promise<unknown>,
+    ) => {
+      tenantOpen = true;
+      try {
+        return await fn();
+      } finally {
+        tenantOpen = false;
+      }
+    }) as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
+      accessibleDevice(id as string),
+    );
+    vi.mocked(restoreRemovedDevice).mockImplementation(async (_tx, id) => {
+      tenantOpenAtRestore.push(tenantOpen);
+      return { device: accessibleDevice(id) as never, uninstallAlreadyDispatched: false };
+    });
+
+    const res = await post(app, '/devices/bulk/restore', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(200);
+    expect(tenantOpenAtRestore).toEqual([false, false]);
+  });
+
+  it('reports a device refused at the partner device limit and still restores the rest', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
+      accessibleDevice(id as string),
+    );
+    vi.mocked(restoreRemovedDevice).mockImplementation(async (_tx, id) => {
+      if (id === DEV_2) throw new DeviceLifecycleError('DEVICE_LIMIT_REACHED', 'Device limit reached');
+      return { device: accessibleDevice(id) as never, uninstallAlreadyDispatched: false };
+    });
+
+    const res = await post(app, '/devices/bulk/restore', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      succeeded: Array<{ deviceId: string }>;
+      failed: Array<{ deviceId: string; code: string; message: string }>;
+    };
+    expect(body.succeeded).toEqual([{ deviceId: DEV_1, uninstallAlreadyDispatched: false }]);
+    expect(body.failed).toEqual([
+      { deviceId: DEV_2, code: 'DEVICE_LIMIT_REACHED', message: 'Device limit reached' },
+    ]);
   });
 
   it('keeps an unexpected per-device error from aborting the batch', async () => {

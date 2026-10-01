@@ -45,6 +45,15 @@ function project(columns: Record<string, unknown>): Array<Record<string, unknown
   return [out];
 }
 
+// Logout's durable signed-out record commits in its own system transaction;
+// this suite exercises the route around it, so the write itself is stubbed
+// (auth.logout.test.ts and portalLogoutRevocation.integration.test.ts cover it).
+const revokePortalSessionDurably = vi.hoisted(() => vi.fn(async (_token: string, _userId: string) => undefined));
+vi.mock('../../services/portal/sessionRevocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portal/sessionRevocation')>()),
+  revokePortalSessionDurably,
+}));
+
 vi.mock('../../db', () => ({
   db: {
     select: (columns: Record<string, unknown>) => ({
@@ -284,5 +293,7 @@ describe('portal logout session scope', () => {
     expect(portalSessions.has(TOKEN)).toBe(false);
     expect(portalSessions.has('other-current-session')).toBe(true);
     expect(portalUserRow.current?.authEpoch).toBe(1);
+    expect(revokePortalSessionDurably).toHaveBeenCalledTimes(1);
+    expect(revokePortalSessionDurably).toHaveBeenCalledWith(TOKEN, USER_ID);
   });
 });

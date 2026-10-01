@@ -1,6 +1,7 @@
 import type { InheritableNotificationSettings } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import SavedSecretInput from './SavedSecretInput';
 
 type Props = {
   data: InheritableNotificationSettings;
@@ -103,16 +104,13 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
         <p className="text-sm font-medium">{t('partnerNotifications.slackIntegration')}</p>
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerNotifications.slackWebhook')}</label>
-            <input
-              type="url"
-              value={data.slackWebhookUrl ?? ''}
-              onChange={e => set({ slackWebhookUrl: e.target.value || undefined })}
-              placeholder={t('partnerNotifications.notSet')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
+          <SavedSecretInput
+            value={data.slackWebhookUrl}
+            onChange={slackWebhookUrl => set({ slackWebhookUrl })}
+            label={t('partnerNotifications.slackWebhook')}
+            testId="partner-notifications-slack-webhook"
+            notSetPlaceholder={t('partnerNotifications.notSet')}
+          />
           <div className="space-y-2">
             <label className="text-sm font-medium">{t('partnerNotifications.slackChannel')}</label>
             <input
@@ -135,30 +133,22 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
           </p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerNotifications.applicationToken')}</label>
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={data.pushoverAppToken ?? ''}
-              maxLength={30}
-              onChange={e => set({ pushoverAppToken: e.target.value || undefined })}
-              placeholder={t('partnerNotifications.notSet')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerNotifications.defaultUserKey')}</label>
-            <input
-              type="text"
-              autoComplete="off"
-              value={data.pushoverDefaultUser ?? ''}
-              maxLength={30}
-              onChange={e => set({ pushoverDefaultUser: e.target.value || undefined })}
-              placeholder={t('partnerNotifications.notSet')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
+          <SavedSecretInput
+            value={data.pushoverAppToken}
+            onChange={pushoverAppToken => set({ pushoverAppToken })}
+            label={t('partnerNotifications.applicationToken')}
+            testId="partner-notifications-pushover-token"
+            notSetPlaceholder={t('partnerNotifications.notSet')}
+            maxLength={30}
+          />
+          <SavedSecretInput
+            value={data.pushoverDefaultUser}
+            onChange={pushoverDefaultUser => set({ pushoverDefaultUser })}
+            label={t('partnerNotifications.defaultUserKey')}
+            testId="partner-notifications-pushover-user"
+            notSetPlaceholder={t('partnerNotifications.notSet')}
+            maxLength={30}
+          />
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">

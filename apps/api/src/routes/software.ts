@@ -24,6 +24,7 @@ import {
 } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
+import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import {
   getOrganizationSoftwareDownloadPolicy,
@@ -1707,7 +1708,7 @@ softwareRoutes.get(
         entry.groups.push({ status: row.status, count: Number(row.count) });
       }
       if (row.lastCompletedAt) {
-        const t = new Date(row.lastCompletedAt as string | Date).getTime();
+        const t = dateFromSqlValue(row.lastCompletedAt as string | Date).getTime();
         if (Number.isFinite(t) && t > entry.lastCompletedAt) entry.lastCompletedAt = t;
       }
     }

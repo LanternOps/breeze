@@ -62,6 +62,7 @@ import {
 } from './monitoringAuthority';
 import { TopologyOperationError } from './operationErrors';
 import { scopedWrite } from './writes';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 /**
  * M3-D2/D3 standing SNMP interface-telemetry arms.
@@ -238,6 +239,7 @@ export async function armTopologyTelemetry(
       result: 'success',
       details: { siteId: ctx.scope.siteId, authorityKey, interfaces: interfaces.length, intervalSeconds: request.intervalSeconds, replaced: previous?.id ?? null, effectDigest },
     });
+    markRequestAuditWritten();
     return topologyTelemetryArmView(arm!);
   });
 }
@@ -261,6 +263,7 @@ export async function revokeTopologyTelemetryArm(ctx: TopologyRequestContext, ar
       action: 'topology.telemetry_arm.revoked', resourceType: 'topology_telemetry_arm', resourceId: arm.id, result: 'success',
       details: { siteId: ctx.scope.siteId, authorityKey: arm.authorityKey },
     });
+    markRequestAuditWritten();
     return topologyTelemetryArmView(updated!);
   });
 }

@@ -13,6 +13,7 @@ import { auditLogs, networkMonitors, topologyMonitorBindings, topologyMonitoring
 import { requireTopologySiteAccess, type TopologyRequestContext } from './access';
 import { loadPolicyTargetPins } from './monitoringArming';
 import { TopologyOperationError } from './operationErrors';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 
 /**
  * Monitor reuse (M3-D5). ONE validator decides whether an existing network
@@ -132,6 +133,7 @@ export async function bindTopologyMonitor(
       action: 'topology.monitor_binding.created', resourceType: 'topology_monitor_binding', resourceId: binding!.id, result: 'success',
       details: { siteId: ctx.scope.siteId, policyId, monitorId: monitor.id, contextKey: input.contextKey, family: input.family },
     });
+    markRequestAuditWritten();
     return { bindingId: binding!.id, metricRole: verdict.metricRole };
   });
 }

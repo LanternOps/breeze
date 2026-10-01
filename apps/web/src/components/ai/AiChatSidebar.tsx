@@ -155,8 +155,8 @@ export default function AiChatSidebar() {
         // meant for page content on wide layouts, and its (off-viewport) Close
         // control drops out of the focus/hit-test order (#1419).
         inert={!isOpen}
-        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card shadow-2xl transition-transform duration-300 ${
-          isOpen ? "translate-x-0" : "translate-x-full pointer-events-none"
+        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card transition-transform duration-300 ${
+          isOpen ? "translate-x-0 shadow-2xl" : "translate-x-full pointer-events-none"
         }`}
       >
         {/* Header — one flat surface with the panel (no stacked card-on-card

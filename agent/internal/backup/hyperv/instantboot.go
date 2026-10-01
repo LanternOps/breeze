@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -303,21 +304,21 @@ func isBootCritical(sourcePath string) bool {
 	return false
 }
 
-// configureBootLoader runs bcdboot to set up the Windows boot loader on
-// the mounted volume.
+// configureBootLoader runs the host's bcdboot (bcdbootCommand) to set up the
+// Windows boot loader on the mounted volume.
 func configureBootLoader(driveLetter string) error {
-	winDir := driveLetter + `:\Windows`
+	exe, args, err := bcdbootCommand(driveLetter)
+	if err != nil {
+		return fmt.Errorf("bcdboot: %w", err)
+	}
+	winDir := args[0]
 	if _, err := os.Stat(winDir); err != nil {
 		return fmt.Errorf("Windows directory not found on %s: %w", driveLetter, err)
 	}
 
 	// bcdboot populates the EFI System Partition boot files.
-	cmd := fmt.Sprintf(
-		`bcdboot %s:\Windows /s %s: /f UEFI`,
-		driveLetter, driveLetter,
-	)
-	if _, err := runPS(cmd); err != nil {
-		return fmt.Errorf("bcdboot: %w", err)
+	if out, err := exec.Command(exe, args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("bcdboot (%s): %w: %s", exe, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -113,6 +113,7 @@ export function DeviceFilterBar({
 
         {showSavedFilters && (
           <select
+            aria-label={t('filters.saved.title')}
             value={selectedFilterId}
             onChange={(e) => handleSavedFilterSelect(e.target.value)}
             disabled={savedFiltersLoading}

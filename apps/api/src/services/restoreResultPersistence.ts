@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { restoreJobs } from '../db/schema';
 import { redactSecretsFromOutput } from './secretRedaction';
+import { boundQuarantinedPaths } from './agentCommandResultValidation';
 
 export type RestoreCommandResultLike = {
   status: 'completed' | 'failed' | 'timeout';
@@ -102,10 +103,21 @@ export function buildRestoreResultMetadata(
     // W06d: bare_metal_rebuild's optional Hyper-V VM outcome (Windows host)
     'vmCreated',
     'vmError',
+    // Windows entries restored with a restrictive access list
+    'securityDescriptorQuarantined',
+    'securityDescriptorQuarantinedPaths',
+    // bmr_recover outcome code
+    'code',
   ]) {
     if (restoreData[key] !== undefined) {
       metadata[key] = restoreData[key];
     }
+  }
+
+  if (metadata.securityDescriptorQuarantinedPaths !== undefined) {
+    const bounded = boundQuarantinedPaths(metadata.securityDescriptorQuarantinedPaths);
+    if (bounded === undefined) delete metadata.securityDescriptorQuarantinedPaths;
+    else metadata.securityDescriptorQuarantinedPaths = bounded;
   }
 
   if (result.error && metadata.error === undefined) {

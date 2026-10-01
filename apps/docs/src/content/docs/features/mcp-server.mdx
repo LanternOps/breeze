@@ -261,16 +261,16 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | Tool | Tier | Description |
 |---|---|---|
 | `file_operations` | 2/3 | List directory contents (Tier 2, auto-execute + audit). Read, write, delete, mkdir, rename (Tier 3 — reading file contents requires approval because the agent reads as root/LocalSystem). |
-| `analyze_disk_usage` | 1 | Filesystem analysis with cleanup candidate detection, for any fixed volume on the device (`path`). Can trigger fresh scans on online devices. |
+| `analyze_disk_usage` | 1/2 | Filesystem analysis with cleanup candidate detection, for any fixed volume on the device (`path`), from the latest stored scan (Tier 1). `refresh: true` runs a fresh scan on an online device (Tier 2: needs `ai:write` and the `devices:execute` permission). |
 | `disk_cleanup` | 1/3 | Preview cleanup candidates for a volume (Tier 1). Execute cleanup by deleting selected paths from a previewed run (Tier 3). |
-| `system_cleanup` | 1/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 1). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
+| `system_cleanup` | 1/2/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 2: `list` asks the device live, so it needs `ai:write` and `devices:execute`). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
 
 <Aside type="caution">
   **By default, Tier 3 actions cannot be executed over MCP.** This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
 
   `(Actions "run" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
 
-  A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow.
+  A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow. A key with only `ai:read` gets the stored results; a fresh scan (`analyze_disk_usage` with `refresh: true`) and `system_cleanup` list ask the device live and need `ai:write`.
 
   **One operator-controlled exception:** principals named in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`api_key:<id>` or `oauth_client_user:<client_id>/<user id>`) are exempt from this deny for core-registry Tier 3 tools, so the tools are listed and callable for them without the approval step. Everything else still applies to them: `ai:execute`, `ai:execute_admin` in production, the production allowlist, RBAC, rate limits, the Tier 3 execution ledger and the audit log. Tier 4, tenant (BYO MCP) and onboarding bootstrap tools stay approval-only for everyone. Every call that skipped approval this way is marked in its audit row (`approvalBypass: "unattended_principal"` plus the matched `approvalBypassPrincipal`), and the API logs the configured principals at startup. See [Environment variables](/deploy/environment/).
 </Aside>
@@ -406,7 +406,7 @@ The tools visible and callable through MCP are determined by the scopes on your 
 
 | Scope | Access level | Tools exposed |
 |---|---|---|
-| `ai:read` | Read-only fleet data | All Tier 1 tools (query devices, analyze metrics, list alerts, etc.) and all resources. Required for SSE connection. |
+| `ai:read` | Read-only fleet data | All Tier 1 tools (query devices, analyze metrics, list alerts, etc.) and all resources. Required for SSE connection. Reads that send a live command to a device (listing its processes, services, scheduled tasks or files, a fresh disk scan) are Tier 2 and need `ai:write`. |
 | `ai:write` | Low-risk mutations | All Tier 1 + Tier 2 tools (acknowledge alerts, set device context, apply configuration policies, etc.) |
 | `ai:execute` | Destructive operations | All Tier 1 + 2 + 3 tools (execute commands, run scripts, security scans, etc.) |
 | `ai:execute_admin` | Production-hardened execute | Same as `ai:execute`, but required when the `MCP_REQUIRE_EXECUTE_ADMIN` flag is enabled in production. |

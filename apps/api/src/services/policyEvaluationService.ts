@@ -99,6 +99,35 @@ export type DeferredRemediationEnqueues = Array<{ runId: string; deviceId: strin
 /** What an evaluation hands back under `deferEnqueue`; run it after commit. */
 export type RemediationAfterCommit = { afterCommit?: () => Promise<void> };
 
+/**
+ * A policy.* event whose publish waits for the caller's transaction to commit
+ * (`evaluatePolicy` and `scanAndEvaluateConfigPolicyCompliance` under
+ * `deferEnqueue`). publishEvent delivers the policy-alert-bridge on its own
+ * connection, and the bridge acts on the persisted automation_policy_compliance
+ * row. Published inside the evaluation's transaction, it could not see that
+ * row: the first failing configuration-policy check logged "no persisted
+ * compliance row … not alerting", and every later check (config or automation
+ * policy) was judged on the previous evaluation's status, so a compliant →
+ * failing transition raised nothing.
+ */
+export type DeferredPolicyEvent = {
+  type: 'policy.evaluated' | 'policy.violation' | 'policy.compliant' | 'policy.remediation.triggered';
+  orgId: string;
+  payload: Record<string, unknown>;
+  source: string;
+};
+
+/** Publishes in order. Never rejects: one failed publish is logged and the rest still go out. */
+async function publishPolicyEventsInOrder(events: DeferredPolicyEvent[]): Promise<void> {
+  for (const event of events) {
+    try {
+      await publishEvent(event.type, event.orgId, event.payload, event.source);
+    } catch (error) {
+      console.error(`[PolicyEvaluation] Failed to publish ${event.type} (${event.source}):`, error);
+    }
+  }
+}
+
 /** Enqueue now, or record the run for the caller's `afterCommit` (#7347). */
 async function enqueueRemediationRun(
   runId: string,
@@ -1248,13 +1277,28 @@ const TARGET_DEVICE_COLUMNS = {
   osVersion: devices.osVersion,
 };
 
-async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> {
-  const targets = normalizeTargetConfig(policy.targets);
-  const scopeCondition = await policyDeviceScopeCondition(policy);
+type ResolveTargetDevicesOptions = {
+  /** Only these devices are considered (a membership check rather than a fan-out). */
+  deviceIds?: string[];
+  /**
+   * Audit groups refused for agent-reported filter fields. Off for a read that
+   * only asks whether a device is still targeted, so it does not audit the
+   * same refusal on every run.
+   */
+  auditRefusedGroups?: boolean;
+};
 
-  if (!scopeCondition) {
+async function resolveTargetDevices(policy: PolicyRow, options: ResolveTargetDevicesOptions = {}): Promise<TargetDevice[]> {
+  const targets = normalizeTargetConfig(policy.targets);
+  const ownerScope = await policyDeviceScopeCondition(policy);
+
+  if (!ownerScope) {
     return [];
   }
+  if (options.deviceIds && options.deviceIds.length === 0) {
+    return [];
+  }
+  const scopeCondition = options.deviceIds ? and(ownerScope, inArray(devices.id, options.deviceIds))! : ownerScope;
 
   if (targets.deviceIds && targets.deviceIds.length > 0) {
     return db
@@ -1290,7 +1334,7 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
     // resolved — same gate as the deployment-target resolver, update-ring
     // expansion, patch scheduling and automation scheduling.
     const { allowedGroupIds, refusedGroups } = await resolveExecutionSafeGroupIds(targets.groupIds);
-    if (refusedGroups.length > 0) {
+    if (refusedGroups.length > 0 && options.auditRefusedGroups !== false) {
       auditRefusedExecutionGroups(policy.orgId, 'policy_evaluation.execution_target_refused_agent_reported_fields', refusedGroups);
     }
     if (allowedGroupIds.length === 0) {
@@ -1324,6 +1368,17 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
     .select(TARGET_DEVICE_COLUMNS)
     .from(devices)
     .where(scopeCondition);
+}
+
+/**
+ * Which of `deviceIds` the automation policy targets now, by the same rules
+ * evaluatePolicy uses to pick the devices it evaluates. The compliance-alert
+ * reconcile uses it: a device the policy no longer targets is never evaluated
+ * again, so nothing else would close the alert it raised there.
+ */
+export async function automationPolicyTargetedDeviceIds(policy: PolicyRow, deviceIds: string[]): Promise<Set<string>> {
+  const targeted = await resolveTargetDevices(policy, { deviceIds, auditRefusedGroups: false });
+  return new Set(targeted.map((device) => device.id));
 }
 
 async function triggerRemediationAutomation(
@@ -1413,15 +1468,20 @@ async function triggerRemediationAutomation(
   return run.id;
 }
 
-async function publishPolicyEvents(
+/**
+ * The policy.* events for one device's evaluation, in publish order. Under
+ * `deferEnqueue` they wait for the caller's commit (`DeferredPolicyEvent`).
+ */
+function policyEventsFor(
   policy: PolicyRow,
   device: TargetDevice,
   status: EvaluationStatus,
   previousStatus: string | null,
   remediationRunId: string | null,
-  source: string
-): Promise<void> {
-  const basePayload = {
+  source: string,
+  checkedAt: Date,
+): DeferredPolicyEvent[] {
+  const payload = {
     policyId: policy.id,
     policyName: policy.name,
     deviceId: device.id,
@@ -1430,31 +1490,18 @@ async function publishPolicyEvents(
     previousStatus,
     enforcement: policy.enforcement,
     remediationRunId,
-    evaluatedAt: new Date().toISOString(),
+    evaluatedAt: checkedAt.toISOString(),
   };
+  // Events are per-device, so they carry the DEVICE's org — identical to
+  // policy.orgId for org-owned policies, and the only correct org for
+  // partner-wide ones (policy.orgId is NULL there, #2129). Downstream
+  // consumers (policyAlertBridge) create org-scoped rows from this.
+  const event = (type: DeferredPolicyEvent['type']): DeferredPolicyEvent => ({ type, orgId: device.orgId, payload, source });
 
-  const publishSafely = async (eventType: 'policy.evaluated' | 'policy.violation' | 'policy.compliant' | 'policy.remediation.triggered') => {
-    try {
-      // Events are per-device, so they carry the DEVICE's org — identical to
-      // policy.orgId for org-owned policies, and the only correct org for
-      // partner-wide ones (policy.orgId is NULL there, #2129). Downstream
-      // consumers (policyAlertBridge) create org-scoped rows from this.
-      await publishEvent(eventType, device.orgId, basePayload, source);
-    } catch (error) {
-      console.error(`[PolicyEvaluation] Failed to publish ${eventType}:`, error);
-    }
-  };
-
-  await publishSafely('policy.evaluated');
-
-  if (status === 'non_compliant') {
-    await publishSafely('policy.violation');
-    if (remediationRunId) {
-      await publishSafely('policy.remediation.triggered');
-    }
-  } else {
-    await publishSafely('policy.compliant');
-  }
+  if (status !== 'non_compliant') return [event('policy.evaluated'), event('policy.compliant')];
+  return remediationRunId
+    ? [event('policy.evaluated'), event('policy.violation'), event('policy.remediation.triggered')]
+    : [event('policy.evaluated'), event('policy.violation')];
 }
 
 export async function evaluatePolicy(
@@ -1463,6 +1510,7 @@ export async function evaluatePolicy(
 ): Promise<PolicyEvaluationResponse & RemediationAfterCommit> {
   const source = options.source ?? 'policy-evaluation-service';
   const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
+  const deferredEvents: DeferredPolicyEvent[] | undefined = options.deferEnqueue ? [] : undefined;
   const requestRemediation = options.requestRemediation ?? true;
   const wantsRemediation = requestRemediation && policy.enforcement === 'enforce';
 
@@ -1647,14 +1695,12 @@ export async function evaluatePolicy(
       remediationRunId,
     });
 
-    await publishPolicyEvents(
-      policy,
-      device,
-      status,
-      existing?.status ?? null,
-      remediationRunId,
-      source
-    );
+    const events = policyEventsFor(policy, device, status, existing?.status ?? null, remediationRunId, source, checkedAt);
+    if (deferredEvents) {
+      deferredEvents.push(...events);
+    } else {
+      await publishPolicyEventsInOrder(events);
+    }
   }
 
   await db
@@ -1675,7 +1721,7 @@ export async function evaluatePolicy(
       non_compliant: evaluationResults.filter((result) => result.status === 'non_compliant').length,
     },
     evaluatedAt: new Date().toISOString(),
-    ...(deferred ? { afterCommit: remediationAfterCommit(deferred) } : {}),
+    ...afterCommitOf(deferred, deferredEvents),
   };
 }
 
@@ -1696,6 +1742,8 @@ type EvaluateConfigPolicyComplianceOptions = {
   ruleIds?: string[];
   /** #7347 — collects remediation runs for the caller's `afterCommit` (see `EvaluatePolicyOptions.deferEnqueue`). */
   deferred?: DeferredRemediationEnqueues;
+  /** Collects the policy.* events for the caller's `afterCommit` instead of publishing them (see `DeferredPolicyEvent`). */
+  deferredEvents?: DeferredPolicyEvent[];
 };
 
 export function __isComplianceCheckDue(
@@ -1948,28 +1996,30 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
       remediationTriggered,
     });
 
-    // Publish events for config policy compliance
-    try {
-      const eventPayload = {
-        configPolicyComplianceRuleId: complianceRule.id,
-        configPolicyComplianceRuleName: complianceRule.name,
-        configPolicyId: complianceRule.featureLinkId,
-        deviceId: device.id,
-        hostname: device.hostname,
-        status,
-        enforcementLevel: complianceRule.enforcementLevel,
-        evaluatedAt: new Date().toISOString(),
-      };
-
-      await publishEvent('policy.evaluated', deviceOrgId, eventPayload, 'config-policy-compliance');
-
-      if (status === 'non_compliant') {
-        await publishEvent('policy.violation', deviceOrgId, eventPayload, 'config-policy-compliance');
-      } else {
-        await publishEvent('policy.compliant', deviceOrgId, eventPayload, 'config-policy-compliance');
-      }
-    } catch (error) {
-      console.error('[ConfigPolicyCompliance] Failed to publish event:', error);
+    const eventPayload = {
+      configPolicyComplianceRuleId: complianceRule.id,
+      configPolicyComplianceRuleName: complianceRule.name,
+      configPolicyId: complianceRule.featureLinkId,
+      deviceId: device.id,
+      hostname: device.hostname,
+      status,
+      enforcementLevel: complianceRule.enforcementLevel,
+      evaluatedAt: checkedAt.toISOString(),
+    };
+    const source = 'config-policy-compliance';
+    const events: DeferredPolicyEvent[] = [
+      { type: 'policy.evaluated', orgId: deviceOrgId, payload: eventPayload, source },
+      {
+        type: status === 'non_compliant' ? 'policy.violation' : 'policy.compliant',
+        orgId: deviceOrgId,
+        payload: eventPayload,
+        source,
+      },
+    ];
+    if (options.deferredEvents) {
+      options.deferredEvents.push(...events);
+    } else {
+      await publishPolicyEventsInOrder(events);
     }
   }
 
@@ -2173,6 +2223,13 @@ async function resolveDevicesForAssignmentTarget(
 /**
  * Background worker function: scans all due config-policy compliance checks
  * and evaluates them for their target devices.
+ *
+ * `deferEnqueue` is for a caller that holds the transaction open after this
+ * returns (policyEvaluationWorker). It defers everything that another
+ * connection reads: the remediation enqueues (#7347, see
+ * `EvaluatePolicyOptions.deferEnqueue`) and the policy.* events
+ * (`DeferredPolicyEvent`). The result's `afterCommit` sends them, and the
+ * caller runs it once the transaction has committed.
  */
 export async function scanAndEvaluateConfigPolicyCompliance(
   options: { deferEnqueue?: boolean } = {}
@@ -2181,8 +2238,8 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   devicesEvaluated: number;
   results: ConfigPolicyEvaluationResult[];
 } & RemediationAfterCommit> {
-  // #7347 — see `EvaluatePolicyOptions.deferEnqueue`.
   const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
+  const deferredEvents: DeferredPolicyEvent[] | undefined = options.deferEnqueue ? [] : undefined;
   const dueChecks = await scanDueComplianceChecks();
   if (dueChecks.length === 0) {
     return { rulesScanned: 0, devicesEvaluated: 0, results: [] };
@@ -2242,7 +2299,7 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   for (const deviceId of allDeviceIds) {
     try {
       const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
-      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds, deferred });
+      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds, deferred, deferredEvents });
       allResults.push(...deviceResults);
     } catch (error) {
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
@@ -2253,7 +2310,44 @@ export async function scanAndEvaluateConfigPolicyCompliance(
     rulesScanned: dueChecks.length,
     devicesEvaluated: allDeviceIds.length,
     results: allResults,
-    ...(deferred ? { afterCommit: remediationAfterCommit(deferred) } : {}),
+    ...afterCommitOf(deferred, deferredEvents),
+  };
+}
+
+/** `{ afterCommit }` for an evaluation run under `deferEnqueue`, or `{}`. */
+function afterCommitOf(
+  deferred: DeferredRemediationEnqueues | undefined,
+  deferredEvents: DeferredPolicyEvent[] | undefined,
+): RemediationAfterCommit {
+  const afterCommit = deferred && deferredEvents ? policyEvaluationAfterCommit(deferred, deferredEvents) : undefined;
+  return afterCommit ? { afterCommit } : {};
+}
+
+/**
+ * An evaluation's continuation: remediation enqueues first, then the policy.*
+ * events in evaluation order. Like `remediationAfterCommit` it never rejects,
+ * so a failure cannot fail the job and make a retry re-evaluate work that has
+ * already committed.
+ */
+function policyEvaluationAfterCommit(
+  deferred: DeferredRemediationEnqueues,
+  deferredEvents: DeferredPolicyEvent[],
+): (() => Promise<void>) | undefined {
+  const enqueueRemediation = remediationAfterCommit(deferred);
+  if (!enqueueRemediation && deferredEvents.length === 0) return undefined;
+  return async () => {
+    if (enqueueRemediation) {
+      // remediationAfterCommit guards each run, but not its module load. A
+      // throw there must not cost the events their only chance to publish:
+      // the scan has committed, so no retry would re-evaluate these checks.
+      try {
+        await enqueueRemediation();
+      } catch (error) {
+        console.error('[PolicyEvaluation] Remediation enqueue failed after commit:', error);
+        captureException(error);
+      }
+    }
+    await publishPolicyEventsInOrder(deferredEvents);
   };
 }
 
@@ -2263,5 +2357,6 @@ export async function scanAndEvaluateConfigPolicyCompliance(
 export const __triggerRemediationAutomation = triggerRemediationAutomation;
 export const __triggerConfigPolicyRemediation = triggerConfigPolicyRemediation;
 export const __remediationAfterCommit = remediationAfterCommit;
+export const __policyEvaluationAfterCommit = policyEvaluationAfterCommit;
 export const __resolveTargetDevices = resolveTargetDevices;
 export const __resolveDevicesForAssignmentTarget = resolveDevicesForAssignmentTarget;

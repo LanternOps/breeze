@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ flags: vi.fn(), config: vi.fn(), select: vi.fn(), readiness: vi.fn(), directFlags: vi.fn(), directReadiness: vi.fn(), combined: vi.fn() }));
+const mocks = vi.hoisted(() => ({ flags: vi.fn(), config: vi.fn(), select: vi.fn(), readiness: vi.fn(), directFlags: vi.fn(), directReadiness: vi.fn(), combined: vi.fn(), checkpoint: vi.fn() }));
 vi.mock('../../db', () => ({ db: { select: mocks.select } }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.directFlags }));
 vi.mock('./siteConfiguration', () => ({ loadTopologyConfiguration: mocks.config }));
@@ -13,7 +13,7 @@ vi.mock('./aiToolGate', async (original) => ({
 }));
 // The full settings contract is covered by the settings integration suite; this unit pins the capability.
 vi.mock('@breeze/shared', async (original) => ({ ...await original<object>(), topologySiteSettingsSchema: { parse: (value: unknown) => value } }));
-vi.mock('./legacyImportState', () => ({ readLegacyImportCheckpoint: () => ({ status: 'complete' }) }));
+vi.mock('./legacyImportState', async (original) => ({ ...await original<object>(), readLegacyImportCheckpoint: (settings: unknown) => mocks.checkpoint(settings) }));
 vi.mock('../../middleware/auth', () => ({ hasSatisfiedMfa: () => true }));
 import { readTopologySiteSettings } from './siteSettings';
 import type { TopologyRequestContext } from './access';
@@ -25,6 +25,7 @@ const flags = { materialization: true, ui: true, physical: true, interfaceHealth
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.checkpoint.mockReturnValue({ status: 'complete' });
   mocks.config.mockResolvedValue({ settingsRevision: '1', resolved: {}, binding: null, layers: { defaultsVersion: 1, resolverVersion: 1, site: null } });
   mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ effectiveSettings: {} }] }) }) });
   mocks.readiness.mockResolvedValue({ provider: true, orgPolicy: true });
@@ -40,6 +41,32 @@ describe('site settings topology preconditions (review R1)', () => {
     expect(mocks.combined).toHaveBeenCalledTimes(1);
     expect(mocks.directFlags).not.toHaveBeenCalled();
     expect(mocks.directReadiness).not.toHaveBeenCalled();
+  });
+});
+
+describe('site settings first-snapshot readiness (#7557)', () => {
+  const effective = (settings: Record<string, unknown>) =>
+    mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ effectiveSettings: settings }] }) }) });
+  const failure = { legacyImportBootstrap: { status: 'failed', attempts: 1, failedAt: '2026-09-30T00:00:00Z', retryAfter: 1 } };
+
+  it('reports topology_preparing while no import has been staged and none has failed', async () => {
+    mocks.flags.mockResolvedValue(flags); mocks.checkpoint.mockReturnValue(null); effective({});
+    expect((await readTopologySiteSettings(ctx)).capabilities.ui).toEqual({ available: false, reason: 'topology_preparing' });
+  });
+
+  it('surfaces a recorded bootstrap failure instead of claiming progress', async () => {
+    mocks.flags.mockResolvedValue(flags); mocks.checkpoint.mockReturnValue(null); effective(failure);
+    expect((await readTopologySiteSettings(ctx)).capabilities.ui).toEqual({ available: false, reason: 'topology_import_failed' });
+  });
+
+  it('keeps preparing once a retry staged the import, even if an old failure marker remains', async () => {
+    mocks.flags.mockResolvedValue(flags); mocks.checkpoint.mockReturnValue({ status: 'staged' }); effective(failure);
+    expect((await readTopologySiteSettings(ctx)).capabilities.ui).toEqual({ available: false, reason: 'topology_preparing' });
+  });
+
+  it('is available once the checkpoint completes regardless of an old failure marker', async () => {
+    mocks.flags.mockResolvedValue(flags); mocks.checkpoint.mockReturnValue({ status: 'complete' }); effective(failure);
+    expect((await readTopologySiteSettings(ctx)).capabilities.ui).toEqual({ available: true, reason: null });
   });
 });
 
@@ -95,6 +122,11 @@ describe('site settings AI capability (M4-D4)', () => {
     expect((await readTopologySiteSettings(ctx)).capabilities.ai).toEqual({ available: false, reason: 'ai_unavailable' });
     mocks.readiness.mockResolvedValue({ provider: false, orgPolicy: true });
     expect((await readTopologySiteSettings(ctx)).capabilities.ai).toEqual({ available: false, reason: 'ai_unavailable' });
+  });
+  it('reports ai_not_configured when the server has no model provider, so the UI can say so', async () => {
+    mocks.flags.mockResolvedValue({ ...flags, ai: true });
+    mocks.readiness.mockResolvedValue({ provider: false, providerNotConfigured: true, orgPolicy: true });
+    expect((await readTopologySiteSettings(ctx)).capabilities.ai).toEqual({ available: false, reason: 'ai_not_configured' });
   });
   it('reports ai_disabled when the flag is off, whatever the policy says', async () => {
     mocks.flags.mockResolvedValue({ ...flags, ai: false });

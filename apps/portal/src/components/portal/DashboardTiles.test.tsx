@@ -167,6 +167,35 @@ describe('DashboardTiles', () => {
     ).toBeTruthy();
   });
 
+  it('starts the headline with a capital when only the backup clause is stated', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-09-03T12:00:00.000Z'));
+    render(
+      <DashboardTiles
+        dashboard={{
+          ...dashboard,
+          // Every device's protection is unknown, so the devices clause is skipped.
+          devicesProtected: {
+            ...dashboard.devicesProtected,
+            protected: 0,
+            unprotected: 0,
+            unknown: 2,
+            total: 2,
+          },
+          backup: {
+            ...dashboard.backup,
+            status: 'ok',
+            completedAt: '2026-09-02T11:00:00.000Z',
+            verificationType: 'automated',
+            configured: 2,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Backups verified yesterday.')).toBeTruthy();
+  });
+
   it('admits it is still gathering data rather than inventing a headline', () => {
     render(
       <DashboardTiles

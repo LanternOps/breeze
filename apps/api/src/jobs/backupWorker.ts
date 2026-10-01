@@ -47,7 +47,9 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { recordBackupWriteDispatch } from '../services/backupMetrics';
-import { brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
+import { backupWriteRefusalMessage, brokerWorkerBackupPayload } from '../services/backupStorageWriteDelivery';
+import { BACKUP_HELPER_UNREPORTED_MESSAGE, backupHelperProtocolsUnreported } from '../services/backupHelperProtocols';
+import { backupWriteHelperRefusal } from '../services/backupWriteHelperGate';
 import { captureException } from '../services/sentry';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -777,7 +779,13 @@ export async function resolveBackupTargets(
 
 type BackupDispatchPrecheck =
   | { status: 'done'; result: { dispatched: boolean } }
-  | { status: 'ok'; config: typeof backupConfigs.$inferSelect; agentId: string };
+  | {
+    status: 'ok';
+    config: typeof backupConfigs.$inferSelect;
+    agentId: string;
+    /** The device has not reported its backup helper protocols yet. */
+    helperProtocolsUnreported: boolean;
+  };
 
 /**
  * Phase 1: cancellation guard, config load and the agent lookup, inside ONE
@@ -789,6 +797,14 @@ async function loadBackupDispatchPrecheck(
   data: DispatchBackupJobData
 ): Promise<BackupDispatchPrecheck> {
   if (await isBackupJobCancelled(data.jobId)) {
+    return { status: 'done', result: { dispatched: false } };
+  }
+
+  // A later check of a dispatch that waited for the device's helper report
+  // (see holdForHelperReport) proceeds only while its job is still exactly as
+  // it left it: a job the reaper failed, or anything else settled meanwhile,
+  // is never dispatched late.
+  if (data.capabilityWaitAttempt !== undefined && !(await isBackupJobStillPending(data.jobId))) {
     return { status: 'done', result: { dispatched: false } };
   }
 
@@ -826,9 +842,14 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
-  // Find the agent for this device
+  // Find the agent for this device, and whether it has reported its backup
+  // helper yet.
   const [device] = await db
-    .select({ agentId: devices.agentId })
+    .select({
+      agentId: devices.agentId,
+      backupWriteProtocolVersion: devices.backupWriteProtocolVersion,
+      backupIntegrityProtocolVersion: devices.backupIntegrityProtocolVersion,
+    })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
     .limit(1);
@@ -839,7 +860,93 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
-  return { status: 'ok', config, agentId };
+  // A backup to S3 storage is written only through a write-scoped storage
+  // session. A device whose helper has REPORTED that it cannot use one is
+  // refused before anything is built; one that has not reported yet is held
+  // below until it does. Every target this worker builds (backup_run,
+  // mssql_backup, hyperv_backup) writes to this same destination.
+  const writeRefusal = backupWriteHelperRefusal(
+    'backup_run',
+    { provider: config.provider },
+    device!.backupWriteProtocolVersion,
+  );
+  if (writeRefusal) {
+    await markJobFailed(data.jobId, writeRefusal);
+    return { status: 'done', result: { dispatched: false } };
+  }
+
+  return { status: 'ok', config, agentId, helperProtocolsUnreported: backupHelperProtocolsUnreported(device!) };
+}
+
+/**
+ * How often, and for how long, a backup for a device that has not reported
+ * its backup helper yet is checked again. The agent sends its first heartbeat
+ * within one heartbeat interval (60 s by default) of starting, so ten minutes
+ * leaves room for several missed beats. Both bounds apply: the wall clock
+ * (delayed jobs can run late) and the number of checks.
+ */
+export const BACKUP_CAPABILITY_WAIT_POLL_MS = 15_000;
+export const BACKUP_CAPABILITY_WAIT_MAX_MS = 10 * 60 * 1000;
+// The attempt ceiling (backupEnqueue.BACKUP_CAPABILITY_WAIT_MAX_ATTEMPTS) lives
+// with the queue ids a cancellation has to look up.
+
+/**
+ * The device has not reported its backup helper yet (a new or re-enrolled
+ * install before its first heartbeat). Nothing is built or sent — how the
+ * destination travels and which incremental base is pinned both depend on
+ * that report — and the job stays `pending`. The same dispatch is queued
+ * again shortly; once the window is exhausted the job fails with a reason the
+ * operator can act on. Should the re-queue itself be lost, the stale reaper
+ * still fails the pending job (BACKUP_PENDING_TIMEOUT_MS).
+ */
+async function holdForHelperReport(
+  data: DispatchBackupJobData,
+  onExhausted: { message: string; log: string } = {
+    message: BACKUP_HELPER_UNREPORTED_MESSAGE,
+    log: 'did not report its backup helper in time',
+  },
+): Promise<{ dispatched: boolean }> {
+  const now = Date.now();
+  const since = data.capabilityWaitSince ?? new Date(now).toISOString();
+  const attempt = (data.capabilityWaitAttempt ?? 0) + 1;
+  const sinceMs = Date.parse(since);
+  const exhausted = attempt > backupEnqueue.BACKUP_CAPABILITY_WAIT_MAX_ATTEMPTS
+    || !Number.isFinite(sinceMs)
+    || now - sinceMs >= BACKUP_CAPABILITY_WAIT_MAX_MS;
+  if (exhausted) {
+    console.warn(`[BackupWorker] Device ${data.deviceId} ${onExhausted.log}; failing job ${data.jobId}`);
+    await runWithSystemDbAccess(() => markJobFailed(data.jobId, onExhausted.message));
+    return { dispatched: false };
+  }
+  try {
+    await backupEnqueue.enqueueBackupDispatchCapabilityWait(data, { attempt, since }, BACKUP_CAPABILITY_WAIT_POLL_MS);
+  } catch (err) {
+    // Rethrown so the worker's `failed` listener reports it; the job row is
+    // settled now rather than left for the pending reaper.
+    await runWithSystemDbAccess(() => markJobFailed(
+      data.jobId,
+      'The backup was not started: it could not be queued again while waiting for the device to report its backup features. Run the backup again.',
+    ));
+    throw err;
+  }
+  if (attempt === 1) {
+    console.log(`[BackupWorker] Job ${data.jobId} waits for device ${data.deviceId} to report its backup helper`);
+  }
+  return { dispatched: false };
+}
+
+/**
+ * Issuing a write session failed for a transient reason (database or Redis)
+ * while building the dispatch. Thrown out of Phase 3 so its whole system
+ * transaction — child job rows, dispatch pins, sessions already issued for
+ * earlier targets — rolls back; the dispatch is then tried again later, like
+ * a device that has not reported its helper yet.
+ */
+class TransientWriteSessionError extends Error {
+  constructor() {
+    super('A write session could not be issued for a backup target');
+    this.name = 'TransientWriteSessionError';
+  }
 }
 
 interface PreparedBackupTarget {
@@ -847,7 +954,7 @@ interface PreparedBackupTarget {
   command: AgentCommand;
   commandType: string;
   /** How the storage destination travels with this target (write-dispatch telemetry). */
-  writeDelivery?: { mode: 'brokered' | 'legacy' | 'local'; reason: string };
+  writeDelivery: { mode: 'brokered' | 'local'; reason: string };
 }
 
 type BackupDispatchPrepare =
@@ -856,6 +963,8 @@ type BackupDispatchPrepare =
       status: 'ok';
       prepared: PreparedBackupTarget[];
       preFailedTargets: string[];
+      /** Why the parent's own target was not prepared, when it was not. */
+      parentFailureDetail: string | null;
       backupMode: string;
       targetCount: number;
     };
@@ -1066,7 +1175,11 @@ async function stampDispatchPinAndIdentity(params: {
       .from(devices)
       .where(eq(devices.id, params.deviceId))
       .limit(1);
-    const requireAttestedBase = (deviceRow?.integrityVersion ?? 0) >= 1;
+    // Not reported yet (NULL) is not "older helper": the dispatch waits for
+    // the report, and should this read still see NULL (a re-enrollment in
+    // between), only an attested base is pinned — safe for either helper.
+    const requireAttestedBase = deviceRow !== undefined
+      && (deviceRow.integrityVersion === null || deviceRow.integrityVersion >= 1);
     const baseStatusIsLocal = storageIdentity.startsWith('local::');
 
     const eligible = and(
@@ -1370,6 +1483,7 @@ async function prepareBackupDispatchTargets(
 
   const prepared: PreparedBackupTarget[] = [];
   const preFailedTargets: string[] = [];
+  let parentFailureDetail: string | null = null;
   // #4137: every child row this loop has already committed. A cancellation
   // detected at ANY later point must settle all of them — before this, a
   // cancel landing at the top of iteration `i` cancelled nothing and left
@@ -1434,11 +1548,14 @@ async function prepareBackupDispatchTargets(
       providerConfig: destination.providerConfig,
     });
 
-    const legacyPayload: Record<string, unknown> = {
+    // The storage destination itself goes into a payload only when it is a
+    // local path. For S3 it is used here, in memory, for identity stamping
+    // and for issuing the write session — never sent.
+    const targetPayload: Record<string, unknown> = {
       jobId: commandJobId,
       configId: data.configId,
       provider: destination.provider,
-      providerConfig: destination.providerConfig,
+      ...(destination.provider === 'local' ? { providerConfig: destination.providerConfig } : {}),
       storageEncryption: destination.storageEncryption,
       ...target.payload,
       // Payload fields stay file/system_image-only (spec §3.1) even though
@@ -1457,9 +1574,10 @@ async function prepareBackupDispatchTargets(
           }
         : {}),
     };
-    // A helper that reports brokered writes gets a write-scoped storage
-    // session (server-issued snapshot id, base manifest from the dispatch pin
-    // only) instead of the destination; any other target is sent as before.
+    // A backup to S3 storage carries a write-scoped storage session
+    // (server-issued snapshot id, base manifest from the dispatch pin only);
+    // a target for which none can be issued is refused, never sent the
+    // destination instead.
     const delivery = await brokerWorkerBackupPayload({
       orgId: data.orgId,
       jobId: commandJobId,
@@ -1468,9 +1586,30 @@ async function prepareBackupDispatchTargets(
       commandType: target.commandType,
       provider: destination.provider,
       providerConfig: destination.providerConfig,
-      payload: legacyPayload,
+      payload: targetPayload,
       baseSnapshotId: target.commandType === 'backup_run' ? dispatchPin.baseSnapshotId : null,
     });
+    if (delivery.mode === 'retry') throw new TransientWriteSessionError();
+    if (delivery.mode === 'held' || delivery.mode === 'refused') {
+      // Nothing is sent for this target, and its row is failed rather than
+      // left in flight: either the device's helper report was withdrawn (a
+      // re-enrollment) after the Phase 1 check, or a write session could not
+      // be issued — the storage destination is never sent instead.
+      const detail = delivery.mode === 'held' ? BACKUP_HELPER_UNREPORTED_MESSAGE : delivery.message;
+      if (commandJobId === data.jobId) {
+        parentFailureDetail = detail;
+      } else {
+        await db
+          .update(backupJobs)
+          .set({ status: 'failed', completedAt: new Date(), updatedAt: new Date(), errorLog: detail })
+          .where(eq(backupJobs.id, commandJobId));
+      }
+      recordBackupWriteDispatch(target.commandType, 'refused', delivery.reason);
+      preFailedTargets.push(delivery.mode === 'held'
+        ? `${target.commandType} (device has not reported its backup helper)`
+        : `${target.commandType} (${delivery.reason})`);
+      continue;
+    }
 
     const command: AgentCommand = {
       id: commandJobId,
@@ -1496,7 +1635,7 @@ async function prepareBackupDispatchTargets(
     });
   }
 
-  return { status: 'ok', prepared, preFailedTargets, backupMode, targetCount: targets.length };
+  return { status: 'ok', prepared, preFailedTargets, parentFailureDetail, backupMode, targetCount: targets.length };
 }
 
 /**
@@ -1607,12 +1746,29 @@ async function processDispatchBackup(
     return { dispatched: false };
   }
 
+  // Unknown is not "older helper": wait for the device's first report
+  // instead of building a payload for a helper it may not have. Redis I/O,
+  // so also with no DB context open.
+  if (precheck.helperProtocolsUnreported) {
+    return holdForHelperReport(data);
+  }
+
   // Phase 3 — resolve targets, build every command payload and record its
   // dispatch expectation: another short system DB context, then it CLOSES
   // before any target is actually sent.
-  const prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  let prepare: BackupDispatchPrepare;
+  try {
+    prepare = await runWithSystemDbAccess(() => prepareBackupDispatchTargets(data, config));
+  } catch (err) {
+    if (!(err instanceof TransientWriteSessionError)) throw err;
+    // Nothing was committed and nothing was sent: try the dispatch again.
+    return holdForHelperReport(data, {
+      message: backupWriteRefusalMessage('mint_failed'),
+      log: 'could not be issued a write session in time',
+    });
+  }
   if (prepare.status === 'done') return prepare.result;
-  const { prepared, preFailedTargets, backupMode, targetCount } = prepare;
+  const { prepared, preFailedTargets, backupMode, targetCount, parentFailureDetail: preparedParentFailure } = prepare;
 
   // Phase 4 — the actual WS/relay sends, NO DB context open. Each
   // dispatchCommandToAgent call may poll for a relay ack for up to
@@ -1629,7 +1785,7 @@ async function processDispatchBackup(
   const sendState = new Map<string, TargetSendState>(
     prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
   );
-  let parentFailureDetail: string | null = null;
+  let parentFailureDetail: string | null = preparedParentFailure;
   let dispatchRefusal: string | null = null;
 
   try {
@@ -1683,16 +1839,13 @@ async function processDispatchBackup(
       if (outcome.status === 'sent') {
         sendState.set(target.commandJobId, 'sent');
         sentCount++;
-        // A brokered target carried a write session; otherwise the command
-        // carried its storage destination inline (a local one is a path,
-        // not a credential).
-        if (target.writeDelivery?.mode === 'brokered') {
-          recordBackupWriteDispatch(target.commandType, 'brokered', 'ok');
-        } else if (target.command.payload?.provider === 'local') {
-          recordBackupWriteDispatch(target.commandType, 'local', 'no_credential');
-        } else {
-          recordBackupWriteDispatch(target.commandType, 'legacy_credential', target.writeDelivery?.reason ?? 'inline_provider_config');
-        }
+        // A target carries either a write session or a local path (not a
+        // credential); nothing else is ever prepared.
+        recordBackupWriteDispatch(
+          target.commandType,
+          target.writeDelivery.mode,
+          target.writeDelivery.mode === 'brokered' ? 'ok' : 'no_credential',
+        );
         continue;
       }
 
@@ -1733,6 +1886,7 @@ async function processDispatchBackup(
         await markJobFailed(
           data.jobId,
           dispatchRefusal
+            ?? preparedParentFailure
             ?? (lastNonOfflineOutcomeStatus
               ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
               : 'Failed to send command to agent'),
@@ -1866,6 +2020,16 @@ async function markBackupJobCancelled(jobId: string, error: string): Promise<voi
       eq(backupJobs.id, jobId),
       inArray(backupJobs.status, ['pending', 'running'])
     ));
+}
+
+async function isBackupJobStillPending(jobId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ status: backupJobs.status })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, jobId))
+    .limit(1);
+
+  return row?.status === 'pending';
 }
 
 async function isBackupJobCancelled(jobId: string): Promise<boolean> {

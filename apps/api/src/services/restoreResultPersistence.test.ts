@@ -97,6 +97,43 @@ describe('restore result persistence', () => {
     });
   });
 
+  it('keeps the restricted-descriptor details and the recovery result code', () => {
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      {
+        status: 'completed',
+        filesRestored: 10,
+        securityDescriptorQuarantined: 2,
+        securityDescriptorQuarantinedPaths: ['C:\\Data\\a.txt', 'C:\\Data\\b.txt'],
+        code: 'system_state_requires_rebuild',
+      },
+    );
+    expect(metadata).toMatchObject({
+      securityDescriptorQuarantined: 2,
+      securityDescriptorQuarantinedPaths: ['C:\\Data\\a.txt', 'C:\\Data\\b.txt'],
+      code: 'system_state_requires_rebuild',
+    });
+  });
+
+  it('bounds an unvalidated restricted-descriptor path list before persisting it', () => {
+    const paths = Array.from({ length: 1_000 }, (_, i) => `/data/file_${i}`);
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      { status: 'completed', securityDescriptorQuarantined: 1_000, securityDescriptorQuarantinedPaths: paths },
+    );
+    expect(metadata.securityDescriptorQuarantined).toBe(1_000);
+    expect((metadata.securityDescriptorQuarantinedPaths as string[]).length).toBeLessThanOrEqual(100);
+  });
+
+  it('omits the new fields for a result that does not carry them', () => {
+    const metadata = buildRestoreResultMetadata('backup_restore', { status: 'completed' }, { status: 'completed' });
+    expect(metadata).not.toHaveProperty('securityDescriptorQuarantined');
+    expect(metadata).not.toHaveProperty('securityDescriptorQuarantinedPaths');
+    expect(metadata).not.toHaveProperty('code');
+  });
+
   it('keeps the bare_metal_rebuild Hyper-V VM outcome (vmCreated/vmError) and redacts vmError (W06d)', () => {
     const pem =
       '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';

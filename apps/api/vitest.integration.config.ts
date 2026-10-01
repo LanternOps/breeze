@@ -28,6 +28,7 @@ export default defineConfig({
       'src/services/contractRenewal.integration.test.ts',
       // Hardware & RAID monitoring real-DB migration/RLS proof (W01 #6856).
       'src/services/hardwareHealth/**/*.integration.test.ts',
+      'src/services/timeSync/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): real-DB migration/enum
       // proof and BMC discovery-worker/topology-publish suites. Import
       // `__tests__/integration/setup` (real postgres pool + autoMigrate).

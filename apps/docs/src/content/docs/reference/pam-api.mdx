@@ -144,9 +144,17 @@ Only a `pending` request can be decided. The transition is an atomic compare-and
 
 `enforcementStatus` reflects the device-side actuation of the approval (see [Device actuation](#device-actuation)) — e.g. `pending_dispatch` once approved, progressing to `active` as the agent applies it.
 
+An approve for a specific executable is refused when the request carries no file hash, because the device could not confirm the target's identity. The request is then denied and the response reports the refusal with its reason:
+
+```json
+{ "success": true, "id": "…", "status": "denied", "enforcementStatus": "refused", "reason": "Target identity could not be verified on the device; re-request elevation." }
+```
+
+A refused approve is recorded and reported as refused. Its audit entry keeps the `pam.elevation_request.approve` action with result `denied` and the refusal reason. It publishes `elevation.denied`, not `elevation.approved`, and the event payload carries `enforcementStatus: "refused"` and the `reason`. Policy auto-approvals refused at ingest publish `elevation.denied` in the same way. The same refusal on the approvals inbox (`POST /mobile/approvals/:id/approve`) returns `enforcementStatus: "refused"` and the `reason` alongside the decided approval. The approval itself is stored as not approved: `approval.status` is `denied` and `approval.refusalReason` carries the reason. Every read of that approval afterwards, including the inbox's Recent list, reports it the same way. The approver's approve stays on the record: the approval's `decidedAt` is when they approved, and the elevation request keeps them as its approver. A non-null `refusalReason` is what tells an approve the server refused apart from an approver's own denial, which has `refusalReason: null`.
+
 | Status | Meaning |
 |---|---|
-| `200` | `{ "success": true, "id": "…", "status": "approved" \| "denied", "enforcementStatus": "…" }` |
+| `200` | `{ "success": true, "id": "…", "status": "approved" \| "denied", "enforcementStatus": "…" }`, plus `reason` when `enforcementStatus` is `refused` |
 | `400` | Invalid id or body |
 | `401` | Invalid `proof`, or `reauthPassword`/`reauthMfaCode` missing or incorrect for a critical approve (`code: "reauth_required"`) |
 | `403` | Site access denied, MFA not satisfied, or an under-assured approve rejected by partner step-up policy |

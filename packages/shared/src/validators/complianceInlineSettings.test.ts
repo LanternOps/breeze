@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { complianceInlineSettingsSchema, COMPLIANCE_RULE_TYPES } from './index';
+import {
+  complianceInlineSettingsSchema,
+  complianceItemName,
+  COMPLIANCE_RULE_TYPES,
+  duplicateComplianceItemNames,
+} from './index';
 
 // Field names here are the ones policyEvaluationService.ts reads (evaluateRule
 // and its per-type evaluators) and the web ComplianceTab writes. #6669: the AI
@@ -102,5 +107,43 @@ describe('complianceInlineSettingsSchema', () => {
   it('rejects an unknown enforcementLevel and an item with no rules', () => {
     expect(complianceInlineSettingsSchema.safeParse({ items: [{ name: 'x', enforcementLevel: 'block', rules: [{ type: 'disk_space_minimum', minGb: 5 }] }] }).success).toBe(false);
     expect(complianceInlineSettingsSchema.safeParse({ items: [{ name: 'x', rules: [] }] }).success).toBe(false);
+  });
+});
+
+// A rule set is identified by (feature link, name): the evaluator's persisted
+// state (automation_policy_compliance.config_item_name), the due check and the
+// alert rule all key on it (#7518). Two rule sets with the same name in one
+// link would share one state row and one alert, each overwriting the other.
+describe('compliance rule set names', () => {
+  const rules = [{ type: 'disk_space_minimum', minGb: 5 }];
+
+  it('names an unnamed rule set the way the save path stores it', () => {
+    expect(complianceItemName({ name: 'Baseline' }, 0)).toBe('Baseline');
+    expect(complianceItemName({}, 2)).toBe('Compliance Rule 3');
+    expect(complianceItemName({ name: undefined }, 0)).toBe('Compliance Rule 1');
+  });
+
+  it('finds names used by more than one rule set, including a stored default name', () => {
+    expect(duplicateComplianceItemNames([{ name: 'A' }, { name: 'B' }])).toEqual([]);
+    expect(duplicateComplianceItemNames([{ name: 'A' }, { name: 'B' }, { name: 'A' }, { name: 'A' }])).toEqual(['A']);
+    // The second item has no name, so it is stored as "Compliance Rule 2".
+    expect(duplicateComplianceItemNames([{ name: 'Compliance Rule 2' }, {}])).toEqual(['Compliance Rule 2']);
+    // Names are compared exactly, as the database compares them.
+    expect(duplicateComplianceItemNames([{ name: 'Disk' }, { name: 'disk' }])).toEqual([]);
+    expect(duplicateComplianceItemNames(undefined)).toEqual([]);
+  });
+
+  it('rejects two rule sets with the same name and points at the second', () => {
+    const r = complianceInlineSettingsSchema.safeParse({
+      items: [{ name: 'Baseline', rules }, { name: 'Other', rules }, { name: 'Baseline', rules }],
+    });
+    expect(r.success).toBe(false);
+    const issue = r.error?.issues.find((i) => i.path.join('.') === 'items.2.name');
+    expect(issue?.message).toContain('"Baseline"');
+  });
+
+  it('accepts distinct names', () => {
+    const r = complianceInlineSettingsSchema.safeParse({ items: [{ name: 'A', rules }, { name: 'B', rules }, { rules }] });
+    expect(r.success, JSON.stringify(r.error?.issues)).toBe(true);
   });
 });

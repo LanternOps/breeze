@@ -64,13 +64,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_devices', description: 'Search and filter devices', category: 'Devices & Hardware' },
       { name: 'get_device_details', description: 'Get comprehensive device info', category: 'Devices & Hardware' },
       { name: 'get_device_hardware_health', description: 'Get RAID, disk and hardware collector health', category: 'Devices & Hardware' },
+      { name: 'get_device_time_status', description: 'Get Windows time sync health and expected timezone', category: 'Devices & Hardware' },
+      { name: 'list_time_sync_issues', description: 'List observed time synchronization findings', category: 'Devices & Hardware' },
       { name: 'analyze_metrics', description: 'Time-series metrics analysis', category: 'Devices & Hardware' },
       { name: 'get_active_users', description: 'Active user sessions', category: 'Devices & Hardware' },
       { name: 'get_user_experience_metrics', description: 'Login performance and session trends', category: 'Devices & Hardware' },
       { name: 'get_fleet_health', description: 'Fleet health overview and aggregates', category: 'Devices & Hardware' },
       { name: 'get_fleet_findings', description: 'Deduplicated fleet hygiene findings', category: 'Devices & Hardware' },
       { name: 'analyze_fleet_metrics', description: 'Fleet-wide metric aggregation from rollups', category: 'Devices & Hardware' },
-      { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
+      { name: 'analyze_boot_performance', description: 'Boot performance analysis from stored boot history', category: 'Devices & Hardware' },
       { name: 'get_device_context', description: 'Brain device context lookup', category: 'Devices & Hardware' },
       // Network & DNS
       { name: 'list_network_assets', description: 'List network assets', category: 'Network & DNS' },
@@ -112,9 +114,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
-      { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
+      { name: 'analyze_disk_usage', description: 'Filesystem analysis from the latest stored scan', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
-      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
@@ -122,9 +123,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'search_logs', description: 'Event log search', category: 'Logs & Audit' },
       { name: 'get_log_trends', description: 'Log trend analysis', category: 'Logs & Audit' },
       { name: 'search_agent_logs', description: 'Agent diagnostic log search', category: 'Logs & Audit' },
-      // Services & Processes
-      { name: 'manage_processes (list)', description: 'List running processes with CPU/memory', category: 'Services & Processes' },
-      { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Scripts & Automation
       { name: 'search_script_library', description: 'Search scripts and templates', category: 'Scripts & Automation' },
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
@@ -231,8 +229,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Devices & Hardware
       { name: 'set_device_context', description: 'Set brain device context', category: 'Devices & Hardware' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Devices & Hardware' },
-      // Services & Processes
+      // Live device reads — each runs a command on the device (devices.execute)
+      { name: 'analyze_boot_performance (triggerCollection)', description: 'Collect fresh boot metrics from the device', category: 'Devices & Hardware' },
+      // Services & Processes — live listings run a command on the device
       { name: 'manage_services (list)', description: 'List services on device', category: 'Services & Processes' },
+      { name: 'manage_processes (list)', description: 'List running processes with CPU/memory', category: 'Services & Processes' },
+      { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Network & DNS
       { name: 'acknowledge_network_device', description: 'Acknowledge network device', category: 'Network & DNS' },
       { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
@@ -241,6 +243,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
       // Files, Disk & Registry
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
+      { name: 'analyze_disk_usage (refresh)', description: 'Run a fresh filesystem scan on the device', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry values on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'detect_log_correlations', description: 'Log correlation detection', category: 'Logs & Audit' },
@@ -376,9 +380,9 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'resolve_device_context', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   // Services & Processes
   { toolName: 'manage_services', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
-  { toolName: 'manage_processes', tier: 1, permission: 'devices.read', category: 'Services & Processes' },
+  { toolName: 'manage_processes', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   { toolName: 'manage_startup_items', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
-  { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.read', category: 'Services & Processes' },
+  { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   // Security & Compliance
   { toolName: 'security_scan', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   // Files, Disk & Registry
@@ -482,15 +486,18 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   query_devices: 'devices.read',
   get_device_details: 'devices.read',
   get_device_hardware_health: 'devices.read',
+  get_device_time_status: 'devices.read',
+  list_time_sync_issues: 'devices.read',
   analyze_metrics: 'devices.read',
   get_active_users: 'devices.read',
   get_user_experience_metrics: 'devices.read',
   get_fleet_health: 'devices.read',
   get_fleet_findings: 'devices.read',
   analyze_fleet_metrics: 'devices.read',
-  analyze_boot_performance: 'devices.read',
-  analyze_disk_usage: 'devices.read',
-  manage_processes: { list: 'devices.read', kill: 'devices.execute' },
+  // Stored data needs read; the live-read input flag needs execute.
+  analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
+  analyze_disk_usage: { stored: 'devices.read', refresh: 'devices.execute' },
+  manage_processes: { list: 'devices.execute', kill: 'devices.execute' },
   // Network
   get_network_changes: 'devices.read',
   get_ip_history: 'devices.read',
@@ -522,13 +529,13 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Services & startup
   manage_services: 'devices.execute',
   manage_startup_items: 'devices.execute',
-  manage_scheduled_tasks: { list: 'devices.read', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
+  manage_scheduled_tasks: { list: 'devices.execute', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
-  system_cleanup: { list: 'devices.read', run: 'devices.execute', status: 'devices.read' },
+  system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

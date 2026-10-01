@@ -83,6 +83,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('backupVerificationJobs', ['backupVerificationWorker']),
   consumers('eventLogRetention'),
   consumers('hardwareHealthRetention'),
+  consumers('timeSyncRetention'),
   consumers('logCorrelationWorker'),
   consumers('agentLogRetention'),
   // One Worker, no flag gate; attaches under 'helperScreenshotRetention',

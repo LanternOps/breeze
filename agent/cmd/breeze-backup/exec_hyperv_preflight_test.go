@@ -191,6 +191,33 @@ func TestExecHypervBackup_SucceedsAndRemovesStagingWhenSpaceSuffices(t *testing.
 	assertNoHypervStagingLeft(t, stagingBase)
 }
 
+// #7466: a clean export has no warnings, and the result must say so by leaving
+// `warning` out. It used to send `"warning": ""` (the empty list joined), which
+// servers that treat the field as a non-empty optional string refused, failing
+// a backup that had succeeded.
+func TestExecHypervBackup_CleanRunOmitsWarning(t *testing.T) {
+	mgr, _, _ := newStagedManager(t)
+	stubHypervSeams(t,
+		func(string) (int64, error) { return 1 * gib, nil },
+		constFree(100*gib),
+		nil,
+		fakeExport(false),
+	)
+
+	result := execHypervBackup(hypervBackupPayload(t), mgr)
+
+	if !result.Success {
+		t.Fatalf("expected success, got: %s", result.Stderr)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &out); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if w, present := out["warning"]; present {
+		t.Fatalf("clean run must omit warning, got %q", w)
+	}
+}
+
 func TestExecHypervBackup_RemovesPartialExportOnFailure(t *testing.T) {
 	mgr, _, stagingBase := newStagedManager(t)
 	stubHypervSeams(t,
@@ -240,6 +267,15 @@ func TestExecHypervBackup_PreflightInputFailureFailsOpenWithWarning(t *testing.T
 			if !strings.Contains(result.Stdout, "free-space preflight skipped") {
 				t.Fatalf("expected a skipped-preflight warning in the result, got: %s", result.Stdout)
 			}
+			// The top-level `warning` (what the server persists), not only
+			// metadata.warnings, must carry it.
+			var out map[string]any
+			if err := json.Unmarshal([]byte(result.Stdout), &out); err != nil {
+				t.Fatalf("decode result: %v", err)
+			}
+			if w, _ := out["warning"].(string); !strings.Contains(w, "free-space preflight skipped") {
+				t.Fatalf("expected the skipped-preflight note in the top-level warning, got %q", w)
+			}
 		})
 	}
 }
@@ -268,7 +304,7 @@ func uploadHypervTestSnapshot(t *testing.T, provider providers.BackupProvider, s
 		}},
 		Size: size,
 	}
-	if err := uploadHypervSnapshotManifest(provider, manifest); err != nil {
+	if _, err := uploadHypervSnapshotManifest(provider, "", manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
 }
@@ -544,7 +580,7 @@ func TestExecHypervRestore_ManifestWithoutSizeUsesFileSizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Size = 0
-	if err := uploadHypervSnapshotManifest(mgr.GetProvider(), *m); err != nil {
+	if _, err := uploadHypervSnapshotManifest(mgr.GetProvider(), "", *m); err != nil {
 		t.Fatal(err)
 	}
 	rec := stubHypervSeams(t,
