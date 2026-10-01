@@ -7506,7 +7506,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
 
     expect(resp.status).toBe(401);
-    expect(await resp.json()).toMatchObject({ code: 're_enrollment_required' });
+    expect(await resp.json()).toMatchObject({ code: 'RE_ENROLLMENT_REQUIRED' });
     expect(claimPendingCommandsForDeviceMock).not.toHaveBeenCalled();
     expect(setSpy).not.toHaveBeenCalled();
   });

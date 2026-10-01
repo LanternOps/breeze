@@ -29,7 +29,7 @@ The full review tracker is at `docs/security-reports/security_review_tracker_202
 - **Webhook HMAC** — automation webhooks now support `x-breeze-signature` + `x-breeze-timestamp`. Legacy header-secret auth still works this release; flips to HMAC-only in the next release.
 - **OAuth DCR cleanup** excludes clients with active grants/auth codes/refresh tokens — safe for active MCP integrations.
 - **FORCE RLS** on tenant-scoped tables — RLS now applies even to the table owner.
-- **Agent token hash** auth tightened with a graceful re-enrollment signal (`code: 're_enrollment_required'`) for devices that predate the hash migration.
+- **Agent token hash** auth tightened with a graceful re-enrollment signal (`code: 'RE_ENROLLMENT_REQUIRED'`) for devices that predate the hash migration.
 - **Trusted proxy CIDRs** — `TRUSTED_PROXY_CIDRS` is now strictly validated; missing config defaults to loopback in production with a warning instead of trusting all upstreams.
 - **Reports permission** — new `reports:export` permission, granted automatically to any role that already had `reports:read` or `reports:write`.
 
