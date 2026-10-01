@@ -12,7 +12,9 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
 // consentTestHelper is a fake helper on the far end of an IPC connection.
@@ -487,5 +489,99 @@ func TestHandleDesktopStreamStartRechecksConsentAfterCapture(t *testing.T) {
 	}
 	if prompt := takeDesktopPromptIfOwnedBy(streamSessionID, "desk-start-recheck"); prompt != nil {
 		t.Fatal("a refused stream must not have put up its notice or indicator")
+	}
+}
+
+// Ending a session while its consent prompt is still up withdraws the prompt:
+// the helper is told to take it down, the one-prompt-per-helper slot is freed
+// (so the technician's next start can prompt), and the start is refused.
+// Every stop path does this: stop_desktop, desktop_stream_stop (with and
+// without a finalization id) and a terminal lease answer.
+func TestEndingASessionWithdrawsItsPendingConsentPrompt(t *testing.T) {
+	stops := []struct {
+		name string
+		stop func(h *Heartbeat)
+	}{
+		{"stop_desktop", func(h *Heartbeat) {
+			handleStopDesktop(h, Command{ID: "stop-1", Type: "stop_desktop", Payload: map[string]any{"sessionId": fenceSessionID}})
+		}},
+		{"desktop_stream_stop", func(h *Heartbeat) {
+			handleDesktopStreamStop(h, Command{ID: "fin-1", Type: tools.CmdDesktopStreamStop, Payload: map[string]any{"sessionId": fenceSessionID, "finalizationId": "fin-1"}})
+		}},
+		{"desktop_stream_stop without a finalization id", func(h *Heartbeat) {
+			handleDesktopStreamStop(h, Command{ID: "fin-2", Type: tools.CmdDesktopStreamStop, Payload: map[string]any{"sessionId": fenceSessionID}})
+		}},
+		{"terminal lease answer", func(h *Heartbeat) {
+			h.applyDesktopFenceAnswer(websocket.RevocationLeaseMessage{SessionID: fenceSessionID, Revoked: true})
+		}},
+	}
+	for _, tt := range stops {
+		t.Run(tt.name, func(t *testing.T) {
+			withConsentSeams(t, occupancyOccupied, true)
+			consentPresentBudget = 5 * time.Second
+			c := newConsentTestHelper(t, "helper-withdraw", []string{ipc.ScopeConsentUI}, ipc.ConsentProtocolVersion)
+			h := &Heartbeat{
+				sessionBroker: newTestBrokerWithSessions(t, c.session),
+				desktopMgr:    desktop.NewSessionManager(),
+				wsDesktopMgr:  desktop.NewWsSessionManager(),
+			}
+
+			acked := make(chan ipc.ConsentRequest, 1)
+			cancelled := make(chan string, 1)
+			go func() {
+				env, req := c.recvRequest(t)
+				if env == nil {
+					return
+				}
+				c.ack(t, env.ID, req.Nonce)
+				acked <- req
+				_ = c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if next, err := c.conn.Recv(); err == nil && next.Type == ipc.TypeConsentCancel {
+					var cc ipc.ConsentCancel
+					_ = json.Unmarshal(next.Payload, &cc)
+					cancelled <- cc.Nonce
+				}
+			}()
+
+			verdict := make(chan consentVerdict, 1)
+			go func() { verdict <- h.runConsentGate(fenceSessionID, consentModePrompt("proceed", 30_000), "") }()
+
+			req := <-acked
+			tt.stop(h)
+
+			select {
+			case v := <-verdict:
+				if v.proceed || v.detail != "session_ended" {
+					t.Fatalf("verdict = %+v, want a refusal with detail session_ended", v)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("ending the session must stop waiting for the prompt's answer")
+			}
+			select {
+			case nonce := <-cancelled:
+				if nonce != req.Nonce {
+					t.Fatalf("cancelled nonce %q, want %q", nonce, req.Nonce)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the helper must be told to take the prompt down")
+			}
+			if _, busy := consentInFlight.Load(c.session.SessionID); busy {
+				t.Fatal("the helper's prompt slot must be free for the next start")
+			}
+
+			// The technician's next start prompts again instead of being
+			// refused as "another request is already waiting".
+			next := make(chan consentAttempt, 1)
+			go func() { next <- h.solicitConsent("sess-after-stop", consentModePrompt("block", 1000), "") }()
+			env, nextReq := c.recvRequest(t)
+			if env == nil || nextReq.Nonce == req.Nonce {
+				t.Fatalf("the next start must send a fresh prompt, got %+v", nextReq)
+			}
+			c.ack(t, env.ID, nextReq.Nonce)
+			c.result(t, env.ID, ipc.ConsentResult{Nonce: nextReq.Nonce, Outcome: ipc.ConsentOutcomeGranted})
+			if att := <-next; att.outcome != ipc.ConsentOutcomeGranted {
+				t.Fatalf("next prompt = %+v, want granted", att)
+			}
+		})
 	}
 }

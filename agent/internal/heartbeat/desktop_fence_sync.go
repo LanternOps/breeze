@@ -130,6 +130,11 @@ func (h *Heartbeat) applyDesktopFenceAnswer(msg websocket.RevocationLeaseMessage
 			Nonce:    msg.SyncNonce,
 		})
 	}
+	// A session the control plane says is over must not keep a consent
+	// prompt up for a start that can no longer run.
+	if !msg.Unavailable && h.desktopStartFence.isTerminal(msg.SessionID) {
+		withdrawConsentPrompt(msg.SessionID)
+	}
 }
 
 // parseWireGeneration decodes a generation field from a lease answer. A

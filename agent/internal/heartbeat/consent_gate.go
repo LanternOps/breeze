@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -92,6 +93,27 @@ var consentPresentBudget = time.Duration(consentPresentBudgetMs) * time.Millisec
 // can exercise the Windows and macOS rules anywhere).
 var consentHostOS = runtime.GOOS
 
+// consentDetailSessionEnded is the detail for a prompt withdrawn because its
+// session ended while the prompt was up.
+const consentDetailSessionEnded = "session_ended"
+
+// consentPromptToken lets a stop withdraw the prompt a start is waiting on.
+type consentPromptToken struct{ cancel context.CancelFunc }
+
+// consentPromptsBySession maps a desktop session ID to the consent prompt its
+// start is waiting on.
+var consentPromptsBySession sync.Map
+
+// withdrawConsentPrompt ends the wait for sessionID's pending consent prompt,
+// if any: the start is refused, the helper is told to take the prompt down,
+// and the helper's prompt slot is freed for the next start. Called by every
+// path that ends a session.
+func withdrawConsentPrompt(sessionID string) {
+	if v, ok := consentPromptsBySession.Load(sessionID); ok {
+		v.(*consentPromptToken).cancel()
+	}
+}
+
 // consentInFlight holds the helper sessions (by SessionID) currently showing a
 // consent prompt. A second start that would prompt the same helper is refused
 // rather than stacked: two prompts on one desktop invite an answer to the
@@ -180,6 +202,14 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 	}
 	defer consentInFlight.Delete(session.SessionID)
 
+	// Ending the session (any stop, or a terminal lease answer) withdraws the
+	// prompt: withdrawConsentPrompt cancels ctx.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	token := &consentPromptToken{cancel: cancel}
+	consentPromptsBySession.Store(sessionID, token)
+	defer consentPromptsBySession.CompareAndDelete(sessionID, token)
+
 	// Record which helper the prompt is routed to. On the success path the
 	// broker's send/reply is otherwise silent, so this is the only line that
 	// attributes a ConsentRequest to a specific Windows session — the invariant
@@ -208,9 +238,9 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 
 	var att consentAttempt
 	if session.ConsentProtocolVersion >= ipc.ConsentProtocolVersion {
-		att = solicitConsentV2(session, "consent-"+sessionID, req, answerWait)
+		att = solicitConsentV2(ctx, session, "consent-"+sessionID, req, answerWait)
 	} else {
-		att = solicitConsentLegacy(session, "consent-"+sessionID, req, answerWait)
+		att = solicitConsentLegacy(ctx, session, "consent-"+sessionID, req, answerWait)
 	}
 	att.helper = session
 	return att
@@ -220,7 +250,7 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 // for the presentation acknowledgement, then up to answerWait for the terminal
 // result, both correlated by nonce. A prompt abandoned without a terminal
 // result is cancelled on the helper so it does not linger on screen.
-func solicitConsentV2(session *sessionbroker.Session, id string, req ipc.ConsentRequest, answerWait time.Duration) consentAttempt {
+func solicitConsentV2(ctx context.Context, session *sessionbroker.Session, id string, req ipc.ConsentRequest, answerWait time.Duration) consentAttempt {
 	stream, err := session.OpenCommandStream(id, ipc.TypeConsentRequest, req)
 	if err != nil {
 		log.Warn("consent request to helper failed", "id", id, "error", err.Error())
@@ -284,6 +314,11 @@ func solicitConsentV2(session *sessionbroker.Session, id string, req ipc.Consent
 				return consentAttempt{outcome: consentOutcomeUnknown, detail: "helper_disconnected"}
 			}
 			return consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: "helper_disconnected"}
+		case <-ctx.Done():
+			// The session ended while its prompt was up: stop waiting; the
+			// deferred consent_cancel takes the prompt down.
+			log.Info("consent prompt withdrawn: the session ended", "id", id)
+			return consentAttempt{outcome: consentOutcomeUnknown, detail: consentDetailSessionEnded}
 		case <-timer.C:
 			if presented {
 				log.Warn("consent prompt was shown but no answer arrived", "id", id)
@@ -355,8 +390,27 @@ func classifyConsentEnvelope(env *ipc.Envelope, nonce string, presented bool) (a
 // to a click and says nothing when its countdown runs out (or when it could
 // not show the prompt at all). Its clicks are honored; anything else is an
 // unknown outcome, which blocks — silence is not proof the prompt was seen.
-func solicitConsentLegacy(session *sessionbroker.Session, id string, req ipc.ConsentRequest, answerWait time.Duration) consentAttempt {
-	resp, err := session.SendCommand(id, ipc.TypeConsentRequest, req, answerWait)
+func solicitConsentLegacy(ctx context.Context, session *sessionbroker.Session, id string, req ipc.ConsentRequest, answerWait time.Duration) consentAttempt {
+	type reply struct {
+		resp *ipc.Envelope
+		err  error
+	}
+	replies := make(chan reply, 1)
+	go func() {
+		resp, err := session.SendCommand(id, ipc.TypeConsentRequest, req, answerWait)
+		replies <- reply{resp, err}
+	}()
+	var resp *ipc.Envelope
+	var err error
+	select {
+	case r := <-replies:
+		resp, err = r.resp, r.err
+	case <-ctx.Done():
+		// A v1 Assist cannot take its prompt down, but the session is over
+		// and its answer no longer matters.
+		log.Info("legacy consent prompt abandoned: the session ended", "id", id)
+		return consentAttempt{outcome: consentOutcomeUnknown, detail: consentDetailSessionEnded}
+	}
 	if err != nil {
 		log.Warn("legacy consent helper gave no answer", "id", id, "error", err.Error())
 		return consentAttempt{outcome: consentOutcomeUnknown, detail: "legacy_no_answer"}

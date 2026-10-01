@@ -283,6 +283,10 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			// to release this via handleConsentSessionEnd, so clear it here.
 			h.releaseDesktopLeases(sessionID)
 			h.takeDesktopTarget(sessionID)
+			if consent.detail == consentDetailSessionEnded {
+				// A stop withdrew the prompt: report it as the stop it was.
+				return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
+			}
 			return consentDeniedResult(sessionID, consent, time.Since(start).Milliseconds())
 		}
 		// Bind the capture to the desktop of the user who answered: an
@@ -563,6 +567,7 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
 	}
 	h.desktopStartFence.noteStop(sessionID, stopInput)
+	withdrawConsentPrompt(sessionID)
 
 	// Drop any on-demand helper leases first: the lease is what keeps the
 	// helper alive, and it must be released even if the stop below fails.
@@ -712,6 +717,10 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		if !consent.proceed {
 			log.Info("remote stream session denied by consent gate",
 				"sessionId", sessionID, "reason", consent.reason, "outcome", consent.outcome)
+			if consent.detail == consentDetailSessionEnded {
+				// A stop withdrew the prompt: report it as the stop it was.
+				return tools.NewErrorResult(streamStartOvertakenError(desktopFenceReasonTerminal), time.Since(start).Milliseconds())
+			}
 			return consentDeniedResult(sessionID, consent, time.Since(start).Milliseconds())
 		}
 	}
@@ -824,6 +833,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// but intentionally returns no ID-bound outcome and therefore can never
 		// satisfy the API's durable-proof parser.
 		h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
+		withdrawConsentPrompt(sessionID)
 		if h.stopWsDesktopStream(sessionID) {
 			h.endWsStreamUX(sessionID)
 		}
@@ -840,6 +850,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
+	withdrawConsentPrompt(sessionID)
 	outcome := "already_absent"
 	if h.stopWsDesktopStream(sessionID) {
 		outcome = "stopped"
