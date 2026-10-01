@@ -178,7 +178,7 @@ import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
-import { reportableCutoverError, runRegistryCutoverSweep } from './services/aiModels/registryCutover';
+import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
@@ -1872,7 +1872,7 @@ async function bootstrap(): Promise<void> {
   // /health is never blocked. A singleton lease makes concurrent replicas (and
   // the split worker, which runs the same sweep) no-ops, and resolveModel cuts
   // a partner over on demand if its first AI request beats the sweep.
-  void runRegistryCutoverSweep()
+  void runRegistryCutoverSweepWithRetry()
     .then((result) => {
       console.log(
         `[startup] AI model registry cutover sweep: ${result.outcome}, ${result.processed} partner(s) cut over, ${result.failed.length} failed`,

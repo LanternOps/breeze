@@ -66,7 +66,7 @@ const mocks = vi.hoisted(() => {
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
     registerInvocationLedgerShadow: vi.fn(),
-    runRegistryCutoverSweep: vi.fn(async () => ({ outcome: 'complete', processed: 0, failed: [] as string[] })),
+    runRegistryCutoverSweepWithRetry: vi.fn(async () => ({ outcome: 'complete', processed: 0, failed: [] as string[] })),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
     partnerTrustMode: vi.fn(() => 'off'),
@@ -167,7 +167,7 @@ vi.mock('./extensions/stateStore', () => ({ createExtensionStateStore: mocks.cre
 vi.mock('./jobs/aiAgentEnqueuer', () => ({ registerAiAgentEnqueuer: mocks.registerAiAgentEnqueuer }));
 vi.mock('./services/aiModels/invocationLedger', () => ({ registerInvocationLedgerShadow: mocks.registerInvocationLedgerShadow }));
 vi.mock('./services/aiModels/registryCutover', () => ({
-  runRegistryCutoverSweep: mocks.runRegistryCutoverSweep,
+  runRegistryCutoverSweepWithRetry: mocks.runRegistryCutoverSweepWithRetry,
   reportableCutoverError: (e: unknown) => e,
 }));
 vi.mock('./services/eventSubscribers', () => ({ registerAllEventSubscribers: mocks.registerAllEventSubscribers }));
@@ -344,7 +344,7 @@ beforeEach(() => {
   mocks.shutdownEventDispatchQueue.mockResolvedValue(undefined);
   mocks.getEventBus.mockReturnValue({ close: vi.fn(async () => {}) });
   mocks.drainAuditRetryQueue.mockResolvedValue(undefined);
-  mocks.runRegistryCutoverSweep.mockResolvedValue({ outcome: 'complete', processed: 0, failed: [] });
+  mocks.runRegistryCutoverSweepWithRetry.mockResolvedValue({ outcome: 'complete', processed: 0, failed: [] });
 });
 
 afterEach(async () => {
@@ -419,22 +419,22 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       },
     );
     // A sweep that never settles must not hold boot (or readiness) hostage.
-    mocks.runRegistryCutoverSweep.mockImplementation(() => {
+    mocks.runRegistryCutoverSweepWithRetry.mockImplementation(() => {
       order.push('registryCutoverSweep');
       return new Promise(() => {});
     });
 
     const worker = await importFreshWorker();
     await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
-    await waitFor(() => mocks.runRegistryCutoverSweep.mock.calls.length > 0);
+    await waitFor(() => mocks.runRegistryCutoverSweepWithRetry.mock.calls.length > 0);
 
     expect(order).toEqual(['startRegisteredWorkers', 'registryCutoverSweep']);
-    expect(mocks.runRegistryCutoverSweep).toHaveBeenCalledTimes(1);
+    expect(mocks.runRegistryCutoverSweepWithRetry).toHaveBeenCalledTimes(1);
     expect(exitCalls).toEqual([]);
   });
 
   it('a rejected cutover sweep is reported, never fatal', async () => {
-    mocks.runRegistryCutoverSweep.mockRejectedValue(new Error('sweep exploded'));
+    mocks.runRegistryCutoverSweepWithRetry.mockRejectedValue(new Error('sweep exploded'));
     const worker = await importFreshWorker();
     await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
     await waitFor(() => mocks.captureException.mock.calls.some(([e]) => e instanceof Error && e.message === 'sweep exploded'));

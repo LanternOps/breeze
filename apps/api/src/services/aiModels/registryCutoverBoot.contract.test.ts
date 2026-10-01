@@ -16,18 +16,18 @@ describe('AI model registry cutover boot wiring (#7601 Task 6A)', () => {
   it('index.ts starts the cutover sweep detached, after serve()', () => {
     const text = code('index.ts');
     const serveAt = text.indexOf('server = serve(');
-    const sweepAt = text.search(/void runRegistryCutoverSweep\(\)/);
+    const sweepAt = text.search(/void runRegistryCutoverSweepWithRetry\(\)/);
     expect(serveAt).toBeGreaterThan(-1);
     expect(sweepAt).toBeGreaterThan(serveAt);
-    expect(text).not.toMatch(/await runRegistryCutoverSweep\(/);
+    expect(text).not.toMatch(/await runRegistryCutoverSweep(WithRetry)?\(/);
   });
 
   it('worker.ts starts the cutover sweep detached, after startRegisteredWorkers', () => {
     const text = code('worker.ts');
     const workersAt = text.indexOf("await startRegisteredWorkers('worker'");
-    const sweepAt = text.search(/void runRegistryCutoverSweep\(\)/);
+    const sweepAt = text.search(/void runRegistryCutoverSweepWithRetry\(\)/);
     expect(workersAt).toBeGreaterThan(-1);
     expect(sweepAt).toBeGreaterThan(workersAt);
-    expect(text).not.toMatch(/await runRegistryCutoverSweep\(/);
+    expect(text).not.toMatch(/await runRegistryCutoverSweep(WithRetry)?\(/);
   });
 });

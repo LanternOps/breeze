@@ -140,3 +140,44 @@ export async function runRegistryCutoverSweep(opts: {
     if (!completed) await releaseLease(owner).catch((error) => report(error));
   }
 }
+
+/**
+ * Bounded retry schedule after a non-complete boot sweep (#7693): a failed
+ * first attempt must not leave the sweep idle until the next deploy. Partners
+ * still un-cut-over after the last attempt are cut over on demand by their
+ * first AI request (ensurePartnerCutover in the resolver gate).
+ */
+export const REGISTRY_CUTOVER_RETRY_DELAYS_MS: readonly number[] = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+
+/**
+ * Runs the sweep, then re-runs it after each delay until an attempt completes.
+ * A thrown attempt is reported and retried. `not_coordinator` is retried too:
+ * the replica holding the lease may die before completing, and a later attempt
+ * then takes the expired lease over (or finds the run already complete).
+ * Entrypoints never await it.
+ */
+export async function runRegistryCutoverSweepWithRetry(opts: {
+  retryDelaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+  sweep?: () => Promise<RegistryCutoverSweepResult>;
+} = {}): Promise<RegistryCutoverSweepResult> {
+  const delays = opts.retryDelaysMs ?? REGISTRY_CUTOVER_RETRY_DELAYS_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
+  const sweep = opts.sweep ?? (() => runRegistryCutoverSweep());
+  let last: RegistryCutoverSweepResult = { outcome: 'incomplete', processed: 0, failed: [] };
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      last = await sweep();
+      if (last.outcome === 'complete') return last;
+    } catch (error) {
+      report(error);
+      last = { outcome: 'incomplete', processed: 0, failed: [] };
+    }
+    const delay = delays[attempt];
+    if (delay === undefined) return last;
+    console.warn(
+      `[aiModels] registry cutover sweep ${last.outcome} (${last.failed.length} failed); retrying in ${Math.round(delay / 1000)}s`,
+    );
+    await sleep(delay);
+  }
+}

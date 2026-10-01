@@ -41,6 +41,7 @@ vi.mock('./legacyReconcile', () => ({ reconcilePartnerFromLegacyInTx: m.reconcil
 
 import {
   __resetRegistryCutoverMemoForTests, cutoverPartner, ensurePartnerCutover, isPartnerCutOver, runRegistryCutoverSweep,
+  runRegistryCutoverSweepWithRetry, REGISTRY_CUTOVER_RETRY_DELAYS_MS,
 } from './registryCutover';
 
 beforeEach(() => {
@@ -146,5 +147,48 @@ describe('runRegistryCutoverSweep', () => {
     expect(await runRegistryCutoverSweep({ owner: 'me' })).toMatchObject({ outcome: 'not_coordinator', processed: 1 });
     expect(m.reconcile).toHaveBeenCalledTimes(1);
     expect(m.completedAt).toBeNull();
+  });
+});
+
+describe('runRegistryCutoverSweepWithRetry (#7693: a failed first boot attempt must not wait for the next deploy)', () => {
+  it('retries after an incomplete run and stops at the first complete one', async () => {
+    m.pending = ['a', 'b'];
+    let failB = true;
+    m.reconcile.mockImplementation(async (id: string) => {
+      if (id === 'b' && failB) { failB = false; throw new Error('transient'); }
+      return { producedOfferingIds: [] };
+    });
+    const sleeps: number[] = [];
+    const out = await runRegistryCutoverSweepWithRetry({ retryDelaysMs: [10, 20, 30], sleep: async (ms) => { sleeps.push(ms); } });
+    expect(out.outcome).toBe('complete');
+    expect(sleeps).toEqual([10]);
+    expect(m.rows.has('b')).toBe(true);
+    expect(m.completedAt).not.toBeNull();
+  });
+
+  it('retries after a sweep that throws, and after not_coordinator (another replica may have died holding the lease)', async () => {
+    m.pending = ['a'];
+    m.lease = { owner: 'other', expired: false };
+    const sleeps: number[] = [];
+    const out = await runRegistryCutoverSweepWithRetry({
+      retryDelaysMs: [5, 6],
+      sleep: async (ms) => { sleeps.push(ms); m.lease = { owner: null, expired: true } as never; },
+    });
+    expect(sleeps).toEqual([5]);
+    expect(out.outcome).toBe('complete');
+  });
+
+  it('gives up after the bounded delays and returns the last result (on-demand cutover still covers stragglers)', async () => {
+    m.pending = ['a'];
+    m.reconcile.mockImplementation(async () => { throw new Error('down'); });
+    const sleeps: number[] = [];
+    const out = await runRegistryCutoverSweepWithRetry({ retryDelaysMs: [1, 2], sleep: async (ms) => { sleeps.push(ms); } });
+    expect(sleeps).toEqual([1, 2]);
+    expect(out).toMatchObject({ outcome: 'incomplete', failed: ['a'] });
+  });
+
+  it('defaults to a bounded schedule reaching at least an hour', () => {
+    expect(REGISTRY_CUTOVER_RETRY_DELAYS_MS.length).toBeGreaterThanOrEqual(3);
+    expect(REGISTRY_CUTOVER_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(60 * 60_000);
   });
 });
