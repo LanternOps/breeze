@@ -442,7 +442,7 @@ func runSupportSession() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := enrollWithConfig(cfg, supportCfgFile, resp.EnrollmentKey, resp.EnrollmentSecret); err != nil {
+	if err := enrollSupportSession(cfg, supportCfgFile, resp.EnrollmentKey, resp.EnrollmentSecret); err != nil {
 		_ = os.RemoveAll(workDir)
 		supportFail("Could not start the support session. Ask your technician for a new code.", err)
 		return
@@ -490,6 +490,34 @@ func runSupportSession() {
 	shutdownAgent(comps)
 	comps.hb.RunSupportCleanup()
 	fmt.Println("Support session ended. Nothing was left installed.")
+}
+
+// enrollWithConfigFn is enrollWithConfig, swappable so a test can stand in for
+// the enroll round-trip.
+var enrollWithConfigFn = enrollWithConfig
+
+// enrollSupportSession enrolls the ephemeral device into supportCfgFile, then
+// binds that file as the process's active config (#7629).
+//
+// The bind is what keeps the session's own later writes in its workspace.
+// The heartbeat persists config mid-session: a token rotation stages and
+// promotes credentials in the active config's secrets.yaml, an mTLS renewal
+// calls SaveTo(cfg, config.ActiveConfigFile()), and pinning a manifest key or
+// applying a config update rewrites agent.yaml. Every one of those resolves
+// an unbound active config to the machine-wide config dir. For a standard
+// user that write is refused, so the rotation breaks the session. For an
+// elevated administrator on a machine that also has the installed agent, it
+// overwrites that agent's identity and credentials. Unbound is also refused
+// now, because the workspace prepareSupportWorkDir registered confines every
+// config write to itself; the bind is what makes the writes succeed there.
+func enrollSupportSession(cfg *config.Config, supportCfgFile, enrollmentKey, secret string) error {
+	if err := enrollWithConfigFn(cfg, supportCfgFile, enrollmentKey, secret); err != nil {
+		return err
+	}
+	if err := config.BindConfigFile(supportCfgFile); err != nil {
+		return fmt.Errorf("use the support session config %s: %w", supportCfgFile, err)
+	}
+	return nil
 }
 
 // parseSupportHardExpiry parses the server's RFC3339 hard expiry. An absent or

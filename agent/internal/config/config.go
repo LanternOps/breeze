@@ -433,6 +433,12 @@ func Load(cfgFile string) (*Config, error) {
 // ApplyManifestKeyDelegation) can hold the lock across BOTH halves instead of
 // dropping it between the read and the write.
 func loadLocked(cfgFile string) (*Config, error) {
+	// Checked before viper is touched: a refused load must not rebind the
+	// process to a config outside its user workspace, since every later
+	// persist follows the bound file (#7629).
+	if err := checkConfigTarget(cfgFile); err != nil {
+		return nil, err
+	}
 	cfg := Default()
 
 	if cfgFile != "" {
@@ -581,6 +587,9 @@ func SetAllAndPersist(kv map[string]any) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
 	path := viper.ConfigFileUsed()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 
 	if path != "" {
 		if err := migrateInlineSecretsToSecretFile(path); err != nil {
@@ -622,6 +631,9 @@ func SetAndPersist(key string, value any) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
 	path := viper.ConfigFileUsed()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 
 	// SECURITY: move any legacy inline secrets out of the on-disk agent.yaml into
 	// root-only secrets.yaml BEFORE re-serializing viper, and clear them from
@@ -673,6 +685,9 @@ func SetSecretAndPersist(key string, value any) error {
 // persistMu.
 func setSecretAndPersistLocked(key string, value any) error {
 	path := secretsFilePath()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -827,6 +842,11 @@ func PrepareSaveDir(cfgFile string) error {
 }
 
 func prepareSaveDir(cfgPath string) error {
+	// Also the first step of every SaveTo / SaveEnrollment, so this one check
+	// keeps both inside a registered user workspace (#7629).
+	if err := checkConfigTarget(cfgPath); err != nil {
+		return err
+	}
 	dir := filepath.Dir(cfgPath)
 	if dir == "." {
 		return nil

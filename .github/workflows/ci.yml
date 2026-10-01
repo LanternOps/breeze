@@ -1985,6 +1985,11 @@ jobs:
       # junction, file or foreign-owned directory, and check the machine-wide
       # config policy is unchanged. The foreign-owner test plants its owner
       # with SeRestorePrivilege, so it too needs this elevated runner.
+      # Four more TestUserWorkspace* tests are the #7629 regression: once the
+      # support session binds its workspace agent.yaml, token rotation, mTLS
+      # renewal and every other config persist land in the workspace (also as
+      # a standard user), an installed agent's config at the default path is
+      # untouched, and an unbound or outside-path persist is refused.
       - name: Run Windows config owner/DACL tests (must not skip)
         working-directory: agent
         env:
@@ -1998,7 +2003,7 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
-          if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 19) { throw "expected exactly 19 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at

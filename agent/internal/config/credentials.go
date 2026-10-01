@@ -71,6 +71,9 @@ func mutateSecretsAndPersist(mutate func(map[string]any)) error {
 	defer persistMu.Unlock()
 
 	path := secretsFilePath()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -108,7 +111,11 @@ func mutateSecretsAndPersist(mutate func(map[string]any)) error {
 // write-then-verify: a Save that returned nil but produced an unreadable or
 // truncated file must not be treated as durable.
 func ReadPersistedCredentials() (*PersistedCredentials, error) {
-	return readPersistedCredentialsFrom(secretsFilePath())
+	path := secretsFilePath()
+	if err := checkConfigTarget(path); err != nil {
+		return nil, err
+	}
+	return readPersistedCredentialsFrom(path)
 }
 
 // readPersistedCredentialsAt reads the credential state from the secrets file

@@ -98,9 +98,16 @@ func TestUserWorkspaceSavePermissionsUnix(t *testing.T) {
 		t.Errorf("workspace mode after SaveEnrollment = %o, want 700", got)
 	}
 
+	// The permission policy is per path: a dir outside the workspace still
+	// gets the installed-agent policy. Asserted on the permission layer
+	// directly, because with a workspace registered PrepareSaveDir refuses an
+	// outside path outright (#7629, TestUserWorkspaceRefusesConfigWritesOutsideIt).
 	outside := filepath.Join(t.TempDir(), "Breeze")
-	if err := PrepareSaveDir(filepath.Join(outside, "agent.yaml")); err != nil {
-		t.Fatalf("PrepareSaveDir outside: %v", err)
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := enforceConfigDirPermissions(outside); err != nil {
+		t.Fatalf("enforceConfigDirPermissions outside: %v", err)
 	}
 	if got := modeOf(t, outside); got != 0o755 {
 		t.Errorf("non-workspace config dir mode = %o, want the installed-agent 755", got)

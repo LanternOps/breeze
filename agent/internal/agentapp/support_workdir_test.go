@@ -17,6 +17,9 @@ import (
 // 0755. Asserted through PrepareSaveDir, the call enrollment makes next.
 func TestPrepareSupportWorkDirRegistersAPrivateWorkspace(t *testing.T) {
 	dir, err := prepareSupportWorkDir()
+	// The registration confines every later config write in this process to
+	// the workspace (#7629); undo it so it cannot leak into other tests.
+	t.Cleanup(config.ResetUserWorkspaceForTest)
 	if err != nil {
 		t.Fatalf("prepareSupportWorkDir: %v", err)
 	}

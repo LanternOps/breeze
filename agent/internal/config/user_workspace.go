@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -102,4 +104,76 @@ func pathWithin(root, path string, foldCase bool) bool {
 		prefix += string(filepath.Separator)
 	}
 	return strings.HasPrefix(path, prefix)
+}
+
+// ErrConfigOutsideUserWorkspace is returned by every config load and persist
+// that would bind, read or write an agent config outside the registered user
+// workspace.
+var ErrConfigOutsideUserWorkspace = errors.New("refusing to use an agent config outside this process's user workspace")
+
+// checkConfigTarget enforces the workspace's second rule: a process that
+// registered a user workspace loads and persists agent config only inside it
+// (#7629). path is the agent.yaml or secrets.yaml about to be bound, read or
+// written; "" means no config file is bound, which every persist path would
+// otherwise resolve to the machine-wide default in ConfigDir.
+//
+// That fallback is the failure this guards. The Quick Support client enrolls
+// into its workspace and then binds the workspace agent.yaml (BindConfigFile).
+// If any mid-session persist (token rotation, mTLS renewal, manifest-key
+// pinning, a SetAndPersist) ever ran unbound, it would land in the installed
+// agent's ProgramData config: refused for a standard user, so the rotation
+// breaks the session, and for an elevated administrator an overwrite of the
+// installed agent's identity and credentials. Failing closed here turns
+// both into an error the caller already handles.
+//
+// With no workspace registered (the installed agent, and every other command)
+// it allows everything, so their behaviour is unchanged.
+func checkConfigTarget(path string) error {
+	userWorkspace.mu.RLock()
+	root := userWorkspace.root
+	userWorkspace.mu.RUnlock()
+	if root == "" {
+		return nil
+	}
+	if path == "" {
+		return fmt.Errorf("%w: no config file is bound, so this would use the machine-wide config in %s (workspace %s)",
+			ErrConfigOutsideUserWorkspace, configDir(), root)
+	}
+	if !inUserWorkspace(path) {
+		return fmt.Errorf("%w: %s is not inside %s", ErrConfigOutsideUserWorkspace, path, root)
+	}
+	return nil
+}
+
+// BindConfigFile makes cfgFile this process's active config file: what
+// ActiveConfigFile returns, and the file every later persist reads and writes
+// (SaveTo(cfg, ActiveConfigFile()), SetAndPersist, SetAllAndPersist, the
+// credential stage/promote/clear writes to its sibling secrets.yaml,
+// manifest-key pinning, Reload). The file is read in, so viper's state matches
+// what is on disk before the first SetAndPersist re-serializes it.
+//
+// cfgFile must already exist, and inside a registered user workspace it must
+// lie within it. On failure nothing is bound.
+//
+// Load binds as a side effect; this exists for a caller that has just written
+// its config somewhere other than the default path and must make sure the
+// rest of the process follows it there. The Quick Support client calls it
+// right after enrolling into its workspace (#7629).
+func BindConfigFile(cfgFile string) error {
+	abs, err := filepath.Abs(cfgFile)
+	if err != nil {
+		return fmt.Errorf("resolve config path %s: %w", cfgFile, err)
+	}
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	if err := checkConfigTarget(abs); err != nil {
+		return err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("bind config file: %w", err)
+	}
+	if _, err := loadLocked(abs); err != nil {
+		return fmt.Errorf("bind config file %s: %w", abs, err)
+	}
+	return nil
 }
