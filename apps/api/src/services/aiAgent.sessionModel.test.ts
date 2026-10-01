@@ -13,6 +13,10 @@ const selectMock = vi.fn();
 const insertMock = vi.fn();
 const resolveLlmConfigForOrgMock = vi.fn();
 const getEffectiveAiBudgetMock = vi.fn();
+const isOfferablePlatformModelMock = vi.fn();
+vi.mock('./aiModels/platformModels', () => ({
+  isOfferablePlatformModel: (...args: unknown[]) => isOfferablePlatformModelMock(...args),
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -127,6 +131,23 @@ describe('createSession validates the requested model (#7587)', () => {
     vi.clearAllMocks();
     insertedValues = undefined;
     getEffectiveAiBudgetMock.mockResolvedValue({ maxTurnsPerSession: 50 });
+    isOfferablePlatformModelMock.mockImplementation(async (model: string) =>
+      ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-fable-5'].includes(model));
+  });
+
+  it('platform key: accepts a model the registry offers that W00 never listed (W01 #7599)', async () => {
+    isOfferablePlatformModelMock.mockImplementation(async (model: string) => model === 'vendor-new-model');
+    resolveLlmConfigForOrgMock.mockResolvedValue(PLATFORM);
+    armInsert();
+    await expect(createSession(orgAuth(), { model: 'vendor-new-model' })).resolves.toMatchObject({ id: 'sess-1' });
+    expect(isOfferablePlatformModelMock).toHaveBeenCalledWith('vendor-new-model');
+  });
+
+  it('platform key: rejects a W00 id the operator stopped offering (W01 #7599)', async () => {
+    isOfferablePlatformModelMock.mockResolvedValue(false);
+    resolveLlmConfigForOrgMock.mockResolvedValue(PLATFORM);
+    await expect(createSession(orgAuth(), { model: 'claude-opus-4-8' })).rejects.toBeInstanceOf(InvalidSessionModelError);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

@@ -10,7 +10,7 @@ export interface LlmProviderModelMapEntry {
   cacheReadCentsPerM: number;
   cacheWriteCentsPerM: number;
 }
-/** Keyed by OFFERABLE_AI_MODELS logical ids. Only mapped models are selectable. */
+/** Keyed by ai_platform_models.model_id (any non-retired registry model; W01 #7599). Only mapped models are selectable. */
 export type LlmProviderModelMap = Record<string, LlmProviderModelMapEntry>;
 
 export const llmProviderCatalog = pgTable('llm_provider_catalog', {

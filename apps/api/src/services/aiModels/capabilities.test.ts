@@ -145,6 +145,6 @@ describe('optionSupportErrors', () => {
     ['updates on a budget model', BUDGET_ONLY, { thinkingDisplay: ['updates'] }, 'Thinking display "updates" needs adaptive thinking.'],
     ['display on a model that does not think', NO_THINKING, { thinkingDisplay: ['omitted'] }, 'Thinking display applies only to models that think.'],
   ] as const)('rejects %s', (_label, raw, over, message) => {
-    expect(optionSupportErrors(deriveCapabilities(raw), support(over as Partial<OptionSupport>))).toEqual([message]);
+    expect(optionSupportErrors(deriveCapabilities(raw), support(over as unknown as Partial<OptionSupport>))).toEqual([message]);
   });
 });

@@ -168,8 +168,8 @@ describe('ai_platform_models seed (W01 #7599)', () => {
       await db.execute(sql.raw(readFileSync(SEED_SQL_PATH, 'utf8')));
       const [row] = await db.select().from(aiPlatformModels).where(sql`model_id = 'claude-opus-4-8'`);
       expect(toPlatformModel(row!).rates?.inputCentsPerM).toBe(999);
-      const [{ n }] = (await db.execute(sql`SELECT count(*)::int AS n FROM ai_platform_models WHERE model_id IN ${SEEDED_IDS}`)) as unknown as Array<{ n: number }>;
-      expect(n).toBe(SEEDED_IDS.length);
+      const [counted] = (await db.execute(sql`SELECT count(*)::int AS n FROM ai_platform_models WHERE model_id IN ${SEEDED_IDS}`)) as unknown as Array<{ n: number }>;
+      expect(counted?.n).toBe(SEEDED_IDS.length);
       throw new Rollback();
     })).rejects.toBeInstanceOf(Rollback);
   });

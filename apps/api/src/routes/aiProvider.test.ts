@@ -47,6 +47,11 @@ vi.mock('../services/sentry', () => ({
   captureException: captureExceptionMock,
 }));
 
+const { listOfferableModelIdsMock } = vi.hoisted(() => ({ listOfferableModelIdsMock: vi.fn() }));
+vi.mock('../services/aiModels/platformModels', () => ({
+  listOfferableModelIds: (...args: unknown[]) => listOfferableModelIdsMock(...args),
+}));
+
 vi.mock('../services/aiCostTracker', () => ({
   OFFERABLE_AI_MODELS: Object.freeze(['claude-sonnet-4-6', 'claude-haiku-4-5']),
 }));
@@ -114,6 +119,7 @@ describe('AI provider routes', () => {
   beforeEach(() => {
     captureExceptionMock.mockClear();
     vi.mocked(writeRouteAudit).mockClear();
+    listOfferableModelIdsMock.mockResolvedValue(['claude-sonnet-4-6', 'claude-haiku-4-5']);
     vi.mocked(getPartnerLlmStatus).mockClear();
     vi.mocked(savePartnerLlmKey).mockClear();
     vi.mocked(updatePartnerLlmConfig).mockClear();
@@ -417,12 +423,13 @@ describe('AI provider routes', () => {
     expect(getListedProviders).not.toHaveBeenCalled();
   });
 
-  it('GET / returns supportedModels from the cost-tracker registry for the model select', async () => {
+  it('GET / returns supportedModels from the platform model registry for the model select', async () => {
+    listOfferableModelIdsMock.mockResolvedValue(['claude-sonnet-4-6', 'claude-haiku-4-5', 'vendor-new-model']);
     const response = await aiProviderRoutes.request('/', { method: 'GET' });
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.supportedModels).toEqual(['claude-sonnet-4-6', 'claude-haiku-4-5']);
+    expect(body.supportedModels).toEqual(['claude-sonnet-4-6', 'claude-haiku-4-5', 'vendor-new-model']);
   });
 
   it('POST /key maps PartnerLlmError to its typed HTTP status', async () => {

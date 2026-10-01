@@ -28,7 +28,8 @@ import {
   resolveWireModel,
   type UsableLlmConfig,
 } from './llm/llmConfigResolver';
-import { InvalidSessionModelError, OFFERABLE_AI_MODELS } from './aiOfferableModels';
+import { InvalidSessionModelError } from './aiOfferableModels';
+import { isOfferablePlatformModel } from './aiModels/platformModels';
 import { LlmNotConfiguredError, llmUnusableCode } from './llm/llmAvailability';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
@@ -37,20 +38,15 @@ export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 export { InvalidSessionModelError } from './aiOfferableModels';
 
 /**
- * #7587 — the client-supplied session `model` used to be stored unchecked, so
- * any chat user could run a session on any model id against the platform key.
- *
- * - A catalog endpoint: the existing fail-closed `resolveWireModel` gate (the
- *   pinned revision must map AND have verified the model).
- * - Platform key or a partner's own Anthropic key: `OFFERABLE_AI_MODELS`, the
- *   same list a partner default pin is validated against. The configured
- *   default itself is always allowed, so a client echoing a self-host
- *   `ANTHROPIC_MODEL` id is not refused.
- *
- * `Object.hasOwn`-safe: `includes` on an array never resolves inherited keys,
- * and `resolveWireModel` guards its own lookup.
+ * #7587: the client-supplied session `model` is validated server-side.
+ * - Catalog endpoint: the fail-closed `resolveWireModel` gate (the pinned
+ *   revision must map AND have verified the model).
+ * - Platform key or a partner's own Anthropic key: the platform model
+ *   registry (W01 #7599). The model must be `platform_offered` and
+ *   `available`. The configured default itself is always allowed, so a
+ *   client echoing a self-host `ANTHROPIC_MODEL` id is not refused.
  */
-function assertSessionModelAllowed(resolved: UsableLlmConfig, model: string): void {
+async function assertSessionModelAllowed(resolved: UsableLlmConfig, model: string): Promise<void> {
   if (resolved.source === 'partner' && resolved.endpoint.kind === 'catalog') {
     try {
       resolveWireModel(resolved, model);
@@ -60,7 +56,7 @@ function assertSessionModelAllowed(resolved: UsableLlmConfig, model: string): vo
       throw err;
     }
   }
-  if (model === resolved.model || OFFERABLE_AI_MODELS.includes(model)) return;
+  if (model === resolved.model || (await isOfferablePlatformModel(model))) return;
   throw new InvalidSessionModelError(model);
 }
 
@@ -248,7 +244,7 @@ export async function createSession(
   const unusable = llmUnusableCode(resolved);
   if (unusable === 'ai_not_configured') throw new LlmNotConfiguredError();
   if (resolved.source === 'unavailable') throw new LlmUnavailableError();
-  if (options.model !== undefined) assertSessionModelAllowed(resolved, options.model);
+  if (options.model !== undefined) await assertSessionModelAllowed(resolved, options.model);
 
   // #6473 — without this, every new session fell back to the `ai_sessions`
   // schema column default (50) regardless of the configured org/partner
