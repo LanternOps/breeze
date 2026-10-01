@@ -142,6 +142,11 @@ describe('InvoiceDetailView worked-vs-billed note (#6467)', () => {
 });
 
 describe('InvoiceDetailView — payment unavailable', () => {
+  it('shows no Pay button when the partner has no online payment set up (#7509)', () => {
+    render(<InvoiceDetailView detail={{ ...detail([line()]), onlinePaymentAvailable: false }} />);
+    expect(screen.queryByTestId('invoice-pay-button')).toBeNull();
+  });
+
   it('tells the customer what to do next when online payment is switched off (409)', async () => {
     const { portalApi } = await import('@/lib/api');
     vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ data: null, error: 'Online payment is not available', statusCode: 409 } as never);

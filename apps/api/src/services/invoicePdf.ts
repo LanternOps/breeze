@@ -19,7 +19,7 @@ import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
-import { stripeConnectAccounts } from '../db/schema/stripePayments';
+import { isPartnerOnlinePaymentAvailable } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
@@ -827,7 +827,18 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
   // link should exist for a document that hasn't been issued). Mint-or-reproduce
   // is idempotent, so re-renders keep the same url; a mint failure only drops
   // the line, never the render.
+  // #7509: and only when the partner can actually take online payment — the
+  // line is a "Pay online" call to action, so without it the printed link is a
+  // dead end. A lookup failure drops the line (fail closed), never the render.
+  let payOnline = false;
   if (loaded.invoice.status !== 'draft') {
+    try {
+      payOnline = await isPartnerOnlinePaymentAvailable(loaded.invoice.partnerId);
+    } catch (err) {
+      console.error(`[invoicePdf] online-payment availability lookup failed for invoice ${invoiceId} — rendering without the pay-online line`, err);
+    }
+  }
+  if (payOnline) {
     try {
       const link = await getOrMintInvoiceLink({
         id: loaded.invoice.id, dueDate: loaded.invoice.dueDate,
@@ -1039,9 +1050,7 @@ async function deliverInvoiceEmail(
   let payEnabled = false;
   if (publicLinked && ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0) {
     try {
-      const [stripeRow] = await db.select({ id: stripeConnectAccounts.id })
-        .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, invoice.partnerId)).limit(1);
-      payEnabled = stripeRow != null;
+      payEnabled = await isPartnerOnlinePaymentAvailable(invoice.partnerId);
     } catch { /* label-only — never fail the send over it */ }
   }
   // This IS the "Request balance payment" action for deposit invoices: the money

@@ -31,6 +31,9 @@ vi.mock('../services/invoiceLinkToken', () => ({
   buildPublicInvoiceUrl: (t: string) => `https://portal.example.test/portal/invoice/${t}`,
 }));
 
+const { onlinePayMock } = vi.hoisted(() => ({ onlinePayMock: vi.fn() }));
+vi.mock('../services/partnerStripe', () => ({ isPartnerOnlinePaymentAvailable: onlinePayMock }));
+
 const { markViewedMock } = vi.hoisted(() => ({ markViewedMock: vi.fn() }));
 vi.mock('../services/invoiceService', async (importActual) => {
   const actual = await importActual<typeof import('../services/invoiceService')>();
@@ -113,6 +116,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   dbResults.length = 0;
   resolveMock.mockResolvedValue(null);
+  onlinePayMock.mockResolvedValue(true);
   settleMock.mockResolvedValue({ settled: true, invoiceId: INV_ID });
   mintMock.mockResolvedValue({ token: TOKEN, expiresAt: new Date(), origin: 'reproduced' });
 });
@@ -122,6 +126,15 @@ describe('GET /invoices/public/:token', () => {
     const res = await app().request(`/invoices/public/${TOKEN}`);
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'This link is invalid or has expired' });
+  });
+
+  it('is NOT payable when the partner has no online payment set up (#7509)', async () => {
+    onlinePayMock.mockResolvedValue(false);
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push(PARTNER_ROW, BRAND_ROW, [{ name: 'RMM seat', quantity: '5' }]);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.payable).toBe(false);
+    expect(data.chargeNow).toMatchObject({ amount: '100.00' }); // amounts still shown
   });
 
   it('returns the customer view with chargeNow + payable and stamps viewed', async () => {
