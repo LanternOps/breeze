@@ -75,8 +75,8 @@ import { captureException } from '../../services/sentry';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
-import { CloudflareMtlsService } from '../../services/cloudflareMtls';
-import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
+import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
+import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
@@ -2973,6 +2973,16 @@ export async function getOrgMtlsSettings(orgId: string): Promise<{ certLifetimeD
   return { certLifetimeDays, expiredCertPolicy };
 }
 
+/**
+ * Issues a Cloudflare mTLS client certificate for a device and records it as
+ * the device's active certificate — enrollment, admin provisioning and
+ * quarantine approve. Returns null, leaving the device on bearer-only auth,
+ * when mTLS isn't configured, issuance fails, or the certificate can't be
+ * recorded.
+ *
+ * Runs in the CALLER's DB context: enrollment's open system transaction, or
+ * the admin's request context for provisioning and approve.
+ */
 export async function issueMtlsCertForDevice(deviceId: string, orgId: string): Promise<{
   certificate: string;
   privateKey: string;
@@ -2996,27 +3006,28 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
     return null;
   }
 
+  let parsedCert;
   try {
-    // Wave 5 Task 6 fix round 3 (code review): `cert.serialNumber` is
-    // Cloudflare's raw `serial_number` API field — format not guaranteed to
-    // match the canonical uppercase-hex-no-separators form the certificate
-    // binding decision (services/agentCertificateBinding.ts) compares
-    // against. Normalize with the same shared helper used everywhere else a
-    // serial crosses a trust boundary, so this (initial enrollment/
-    // provisioning/quarantine-reissue) path stores rows canonical too.
-    await db
-      .update(devices)
-      .set({
-        mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
-        mtlsCertExpiresAt: new Date(cert.expiresOn),
-        mtlsCertIssuedAt: new Date(cert.issuedOn),
-        mtlsCertCfId: cert.id,
-      })
-      .where(eq(devices.id, deviceId));
-  } catch (dbErr) {
-    console.error('[agents] mTLS cert issued but DB update failed — orphaned cert on Cloudflare:', {
-      deviceId, cfCertId: cert.id, error: dbErr,
-    });
+    parsedCert = parseIssuedLeafCertificate(cert.certificate);
+  } catch (err) {
+    // No history row is possible without the parsed serial and fingerprint,
+    // so this orphan can only be revoked inline (best effort), once the
+    // caller's transaction has settled — never while it is held open.
+    console.error(
+      '[agents] mTLS issued certificate could not be parsed, revoking it:',
+      err instanceof Error ? err.name : 'unknown',
+    );
+    console.error('[agents] ORPHAN_PROVIDER_CERT (cert-parse-failure, no durable row possible):', deviceId);
+    revokeInlineAfterContextExit(cert, cfService);
+    return null;
+  }
+
+  // #7431 / #7432: record the certificate as the device's ACTIVE history row,
+  // superseding the previous one, together with the legacy columns. One that
+  // can't be recorded is revoked instead; never hand it to the agent.
+  const recorded = await recordIssuedCertificateForDevice({ orgId, deviceId, cert, parsedCert, cfService });
+  if (!recorded) {
+    return null;
   }
 
   return {
