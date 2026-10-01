@@ -1,6 +1,6 @@
 /**
  * AI model registry W01 (#7599): per-model thinking/effort options for the
- * eight call sites that used W00's aiModelThinking.ts. Synchronous, because
+ * eight call sites that used W00's interim resolver. Synchronous, because
  * those call sites build `query()` / `messages.create()` options inline. It
  * reads the in-process registry snapshot (platformModelSnapshot.ts).
  *

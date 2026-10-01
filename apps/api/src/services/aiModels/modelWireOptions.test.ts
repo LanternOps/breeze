@@ -11,7 +11,7 @@ const ADAPTIVE_CAPS = {
   effort: { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: true } },
 };
 
-// Every row of W00's aiModelThinking.test.ts (#7587), unchanged.
+// Every row of W00's interim-resolver test table (#7587), unchanged.
 const W00_AGENT_ADAPTIVE = [
   'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5',
   'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-6-20260101',
