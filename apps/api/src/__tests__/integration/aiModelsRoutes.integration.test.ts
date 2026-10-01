@@ -15,7 +15,10 @@
  *    caller's org list AND by RLS, and books a refusal-fallback leg under the
  *    model that served it;
  *  - the partner snapshot sees org-level assignment rows (defaultFor,
- *    orgOverrideCount).
+ *    orgOverrideCount);
+ *  - a connection W03 soft-disconnected (disconnectCompat) and its offerings
+ *    are never listed, re-enabled, edited, newly permitted, verified or
+ *    refreshed, and usage by model labels the calls it served.
  *
  * The global beforeEach (./setup) truncates the tenant tables, so every test
  * seeds its own world.
@@ -38,6 +41,7 @@ import {
 import { setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { setResidencyRequired } from '../../services/aiModels/residency';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
+import { disconnectCompat } from '../../services/aiModels/compatRemap';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { queryAiUsageBreakdown } from '../../services/aiModels/usageQueries';
 import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
@@ -581,49 +585,50 @@ describe.skipIf(!RUN)('partner snapshot sees org-level rows (#7602 W04)', () => 
   });
 });
 
+// Route harness: the real /ai/models routes behind real auth, against real Postgres.
+function buildApp(): Hono {
+  const app = new Hono();
+  app.route('/api/v1/ai/models', aiModelsRoutes);
+  return app;
+}
+
+/** A partner admin (orgAccess 'all', wildcard role) with an MFA-satisfied token. */
+async function partnerAdmin(partnerId: string) {
+  const user = await createUser({ partnerId, orgId: null, email: `w04-${randomUUID()}@example.com` });
+  const role = await createRole({ scope: 'partner', partnerId });
+  await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+  await assignUserToPartner(user.id, partnerId, role.id, 'all');
+  return client(await createAccessToken({
+    sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId, scope: 'partner',
+    mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+  }));
+}
+
+/**
+ * A platform admin's system-scope token, as login issues it: no partnerId,
+ * no orgId (permissions come from users.is_platform_admin). The route must
+ * take the org's partner from the org row — auth carries none.
+ */
+async function systemAdmin(homePartnerId: string) {
+  const user = await createUser({ partnerId: homePartnerId, orgId: null, email: `w04-sys-${randomUUID()}@example.com` });
+  await fixtureSql`UPDATE users SET is_platform_admin = true WHERE id = ${user.id}`;
+  const role = await createRole({ scope: 'system' });
+  return client(await createAccessToken({
+    sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: null, scope: 'system',
+    mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+  }));
+}
+
+function client(token: string) {
+  const app = buildApp();
+  return (method: string, path: string, body?: unknown): Promise<Response> => Promise.resolve(app.request(path, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }));
+}
+
 describe.skipIf(!RUN)('/ai/models routes refuse another partner’s ids (#7602 W04)', () => {
-  function buildApp(): Hono {
-    const app = new Hono();
-    app.route('/api/v1/ai/models', aiModelsRoutes);
-    return app;
-  }
-
-  /** A partner admin (orgAccess 'all', wildcard role) with an MFA-satisfied token. */
-  async function partnerAdmin(partnerId: string) {
-    const user = await createUser({ partnerId, orgId: null, email: `w04-${randomUUID()}@example.com` });
-    const role = await createRole({ scope: 'partner', partnerId });
-    await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
-    await assignUserToPartner(user.id, partnerId, role.id, 'all');
-    return client(await createAccessToken({
-      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId, scope: 'partner',
-      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
-    }));
-  }
-
-  /**
-   * A platform admin's system-scope token, as login issues it: no partnerId,
-   * no orgId (permissions come from users.is_platform_admin). The route must
-   * take the org's partner from the org row — auth carries none.
-   */
-  async function systemAdmin(homePartnerId: string) {
-    const user = await createUser({ partnerId: homePartnerId, orgId: null, email: `w04-sys-${randomUUID()}@example.com` });
-    await fixtureSql`UPDATE users SET is_platform_admin = true WHERE id = ${user.id}`;
-    const role = await createRole({ scope: 'system' });
-    return client(await createAccessToken({
-      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: null, scope: 'system',
-      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
-    }));
-  }
-
-  function client(token: string) {
-    const app = buildApp();
-    return (method: string, path: string, body?: unknown): Promise<Response> => Promise.resolve(app.request(path, {
-      method,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }));
-  }
-
   it('PATCH /connections/:id with partner B’s connection id → 404, nothing written', async () => {
     const w = await seedWorld();
     await seedByokConnection(w.pA);
@@ -715,5 +720,115 @@ describe.skipIf(!RUN)('/ai/models routes refuse another partner’s ids (#7602 W
     });
     expect(res.status).toBe(200);
     expect(await assignmentCount({ orgId: w.orgA })).toBe(1);
+  });
+});
+
+describe.skipIf(!RUN)('a W03 soft-disconnected connection (#7602 W04 × #7601)', () => {
+  const DAY = '2026-09-15';
+
+  /**
+   * Partner A with a live BYOK connection and one enabled, priced (linked
+   * platform rate) offering on it, then disconnected by W03's own
+   * disconnectCompat: the row stays (status 'disconnected', keyless) and the
+   * offering stays, disabled.
+   */
+  async function seedDisconnected() {
+    const w = await seedWorld();
+    const modelId = `w04-disc-${randomUUID()}`;
+    const pm = await seedPricedPlatformModel(modelId);
+    const conn = await seedByokConnection(w.pA);
+    const offConn = await seedOffering({ partnerId: w.pA, connectionId: conn, platformModelId: pm, modelId, source: 'discovered', enabled: true });
+    expect(await inSystem(() => disconnectCompat(w.pA))).toBe(true);
+    const [c] = await fixtureSql`SELECT status, api_key_encrypted FROM partner_ai_connections WHERE id = ${conn}`;
+    expect(c).toEqual({ status: 'disconnected', api_key_encrypted: null });
+    const [o] = await fixtureSql`SELECT enabled, connection_id FROM partner_ai_models WHERE id = ${offConn}`;
+    expect(o).toEqual({ enabled: false, connection_id: conn });
+    return { ...w, conn, offConn, modelId };
+  }
+
+  it('the snapshot lists neither the connection nor its offerings (platform offerings still listed)', async () => {
+    const w = await seedDisconnected();
+    const snap = await asPartner(w.pA, [w.orgA], () => buildPartnerModelsSnapshot(w.pA));
+    expect(snap.connections.map((c) => c.id)).not.toContain(w.conn);
+    expect(snap.offerings.filter((o) => o.id === w.offConn || o.connectionId === w.conn)).toEqual([]);
+    expect(snap.offerings.map((o) => o.id)).toEqual(expect.arrayContaining([w.offA, w.offA2]));
+  });
+
+  it('enabling one of its offerings → 409 not_eligible connection_unavailable, and it stays disabled', async () => {
+    const w = await seedDisconnected();
+    const req = await partnerAdmin(w.pA);
+    const res = await req('POST', `/api/v1/ai/models/offerings/${w.offConn}/enabled`, { enabled: true });
+    expect({ status: res.status, body: await res.json() }).toMatchObject({
+      status: 409, body: { code: 'not_eligible', details: { reason: 'connection_unavailable' } },
+    });
+    const [row] = await fixtureSql`SELECT enabled FROM partner_ai_models WHERE id = ${w.offConn}`;
+    expect(row).toEqual({ enabled: false });
+  });
+
+  it('a detail PATCH of one of its offerings → 409 connection_unavailable, row unchanged', async () => {
+    const w = await seedDisconnected();
+    const before = await rawUpdatedAt('partner_ai_models', w.offConn);
+    const req = await partnerAdmin(w.pA);
+    const res = await req('PATCH', `/api/v1/ai/models/offerings/${w.offConn}`, {
+      expectedUpdatedAt: await versionToken('partner_ai_models', w.offConn), displayName: 'Renamed',
+    });
+    expect({ status: res.status, body: await res.json() }).toEqual({
+      status: 409,
+      body: { error: "This model's connection is disconnected.", code: 'not_eligible', details: { reason: 'connection_unavailable' } },
+    });
+    const [row] = await fixtureSql`SELECT display_name FROM partner_ai_models WHERE id = ${w.offConn}`;
+    expect(row).toEqual({ display_name: null });
+    expect(await rawUpdatedAt('partner_ai_models', w.offConn)).toBe(before);
+  });
+
+  it('newly adding one of its offerings to a permitted set → 422, nothing written', async () => {
+    const w = await seedDisconnected();
+    const req = await partnerAdmin(w.pA);
+    const res = await req('PUT', '/api/v1/ai/models/assignments', {
+      assignments: [partnerRow('extension_content', w.offA, [w.offA, w.offConn])],
+    });
+    expect({ status: res.status, body: await res.json() }).toMatchObject({
+      status: 422, body: { code: 'not_eligible', details: { offeringId: w.offConn, field: 'permittedOfferingIds' } },
+    });
+    expect(await fixtureSql`SELECT 1 FROM ai_model_assignments WHERE partner_id = ${w.pA} AND surface = 'extension_content'`).toHaveLength(0);
+  });
+
+  it('PATCH /connections/:id and /refresh on the disconnected id → 404, nothing written', async () => {
+    const w = await seedDisconnected();
+    const [before] = await fixtureSql`SELECT name, inference_geo, config_version, updated_at::text AS u FROM partner_ai_connections WHERE id = ${w.conn}`;
+    const req = await partnerAdmin(w.pA);
+    expect((await req('PATCH', `/api/v1/ai/models/connections/${w.conn}`, { name: 'Renamed', inferenceGeo: 'eu' })).status).toBe(404);
+    expect((await req('POST', `/api/v1/ai/models/connections/${w.conn}/refresh`)).status).toBe(404);
+    // The service is closed too (getConnection still returns the provenance row).
+    const err = await caught(asPartner(w.pA, [w.orgA], () =>
+      updateConnectionSettings({ partnerId: w.pA, connectionId: w.conn, patch: { name: 'Renamed' } })));
+    expect([err.status, err.code]).toEqual([404, 'not_found']);
+    const [after] = await fixtureSql`SELECT name, inference_geo, config_version, updated_at::text AS u FROM partner_ai_connections WHERE id = ${w.conn}`;
+    expect(after).toEqual(before);
+  });
+
+  it('POST /offerings/:id/verify on one of its offerings → 409 connection_unavailable', async () => {
+    const w = await seedDisconnected();
+    const req = await partnerAdmin(w.pA);
+    const res = await req('POST', `/api/v1/ai/models/offerings/${w.offConn}/verify`);
+    expect({ status: res.status, body: await res.json() }).toEqual({
+      status: 409, body: { error: "This model's connection is disconnected.", code: 'connection_unavailable' },
+    });
+  });
+
+  it('usage by model flags the calls its connection served (platform rows are not flagged)', async () => {
+    const w = await seedDisconnected();
+    // A turn that settled on the offering after the disconnect (W03 keeps it as provenance).
+    await fixtureSql`
+      INSERT INTO ai_invocations (org_id, surface, funding_source, connection_id, offering_id, requested_model, served_model, ledger_mode, rate_snapshot, cost_cents, stop_reason, created_at)
+      VALUES (${w.orgA}, 'chat', 'partner_key', ${w.conn}, ${w.offConn}, ${w.modelId}, ${w.modelId}, 'authoritative', '{}'::jsonb, 4, 'end_turn', ${`${DAY}T12:00:00Z`}::timestamptz),
+             (${w.orgA}, 'chat', 'platform', NULL, ${w.offA}, 'm-platform', 'm-platform', 'authoritative', '{}'::jsonb, 2, 'end_turn', ${`${DAY}T12:00:00Z`}::timestamptz)`;
+    const r = await asPartner(w.pA, [w.orgA], () => queryAiUsageBreakdown({
+      groupBy: 'model', from: DAY, to: DAY, orgId: null, accessibleOrgIds: [w.orgA],
+    }));
+    const byKey = Object.fromEntries(r.rows.map((x) => [x.key, x]));
+    expect(byKey[`partner_key:${w.conn}:${w.modelId}`]).toMatchObject({ invocations: 1, costCents: 4, connectionDisconnected: true });
+    expect(byKey['platform:platform:m-platform']).toMatchObject({ invocations: 1, connectionDisconnected: false });
+    expect(r.totals).not.toHaveProperty('connectionDisconnected');
   });
 });
