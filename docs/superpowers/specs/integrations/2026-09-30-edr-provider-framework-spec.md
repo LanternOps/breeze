@@ -574,7 +574,7 @@ Huntress receiver:
    did not fetch itself. This also removes per-vendor ingest parsers from the public surface.
 4. Rate-limited per connection; body size capped.
 
-For Bitdefender, W04 registers the push endpoint through `setPushEventSettings` when the MSP opts
+For Bitdefender, W03 registers the push endpoint through `setPushEventSettings` when the MSP opts
 in; polling remains the source of truth either way. Long-lived stream transports (CrowdStrike Event
 Streams, a Defender Event Hub) are **not** forced through `verifyWebhook`; if added later they are an
 optional transport feeding the same hint mechanism.
@@ -780,16 +780,17 @@ subscribe to them.
 
 ## 7. Proposed waves
 
-Each wave is independently mergeable; W01–W03 is the minimum for Sophos to be useful.
+Each wave is independently mergeable; W01–W03 is the minimum for the first adapter (Bitdefender GravityZone,
+re-sequenced 2026-10-01 — see §9) to be useful.
 
 | Wave | Content | Depends on | Blast radius |
 |---|---|---|---|
-| **W01 — Framework core + Sophos read path** | Migration (5 tables, RLS, all §5 registrations), `edrProviders/{types,registry,normalize,persist}`, extracted tenant-mapping + device-matching modules (backup tests keep passing), sync job, `/edr` connection/tenant/endpoint/detection routes, Sophos adapter read side (`testConnection`, `listTenants` with per-tenant host, `listEndpoints`, `listDetections`), recorded-fixture client tests, `edrProviderRls.integration.test.ts` | — | High (tenancy, migration, credentials) — full rigor, advisor-reviewed plan |
+| **W01 — Framework core + Bitdefender read path** | Migration (5 tables, RLS, all §5 registrations), `edrProviders/{types,registry,normalize,persist}`, extracted tenant-mapping + device-matching modules (backup tests keep passing), sync job, `/edr` connection/tenant/endpoint/detection routes, GravityZone adapter read side (`testConnection`, `listTenants` (MSP companies), `listEndpoints`, `listDetections`), recorded-fixture client tests, `edrProviderRls.integration.test.ts` | — | High (tenancy, migration, credentials) — full rigor, advisor-reviewed plan |
 | **W02 — Surfacing** | Generic incidents-feed leg + ternary refactor + `edr_detection` promotion, EDR page tab, `DeviceEdrPanel` generic section (read), Integrations cards + mapping UI, portal/readiness/report consumers, events + alerts | W01 | Medium |
-| **W03 — Actions + AI** | `edr_actions` dispatch, MFA/permission gates, Sophos isolate/unisolate/scan, generic AI tools + guardrail tiers keyed by action, webhook route (`verifyWebhook` framework; Sophos has none — delivered empty) | W01 | High (remote actions, AI guardrails) |
-| **W04 — Bitdefender GravityZone adapter** | JSON-RPC client, companies → tenants, endpoints, incidents/quarantine → detections, isolate/restore, push-event opt-in, installer links | W01 (+W03 for actions) | Medium — adapter only if the interface held |
-| **W05 — Emsisoft adapter** | Per D9: cloud EMC workspaces → tenants, devices (hostname+domain matching), incidents → detections, scan / quarantine / verdict actions, installer token; no isolation | W01 (+W03 for actions) | Low–medium |
-| **W06 — Installer registry + #6960 hook** | Resolver dispatch map with throwing default, CHECK extension, Sophos/GravityZone `getInstaller` | W01, adapter waves | Medium (ships to customer machines via deploy) |
+| **W03 — Actions + AI** | `edr_actions` dispatch, MFA/permission gates, GravityZone isolate/restore/scan (isolation needs the incidents/EDR licence), generic AI tools + guardrail tiers keyed by action, webhook route (`verifyWebhook` framework + GravityZone push-event opt-in as a sync hint) | W01 | High (remote actions, AI guardrails) |
+| **W04 — Emsisoft adapter** | Per D9: cloud EMC workspaces → tenants, devices (hostname+domain matching), incidents → detections, scan / quarantine / verdict actions, installer token; no isolation | W01 (+W03 for actions) | Low–medium |
+| **W05 — Sophos Central adapter** | OAuth2 client, whoami → partner/organization/tenant, tenants with per-tenant host, endpoints, Common alerts → detections, isolate/unisolate/scan | W01 (+W03 for actions) | Medium — adapter only if the interface held |
+| **W06 — Installer registry + #6960 hook** | Resolver dispatch map with throwing default, CHECK extension, GravityZone (then Emsisoft/Sophos) `getInstaller` | W01, adapter waves | Medium (ships to customer machines via deploy) |
 | **W07 — Agent detection signatures** | `mgmtdetect` + `providerFromName` + `security_provider` enum values | none | Agent-shipped — needs an agent release; lab check on Windows VM |
 
 Later (separate feature, D2): S1 and Huntress port. Later: Defender for Endpoint (#4620) when
@@ -809,9 +810,10 @@ un-parked; ESET / ThreatDown / WithSecure as demand appears (§3 recommendation)
 ## 9. Open decisions
 
 > **Resolved — Todd, 2026-10-01: framework-first; every recommendation below accepted (D1–D14).**
+> **Re-sequenced (Todd, 2026-10-01): adapter order is Bitdefender → Emsisoft → Sophos.** D1 stands with Bitdefender as the lockstep first adapter.
 > D1 = B (framework built in lockstep with the Sophos adapter, superseding the 2026-08-16
 > Sophos-first sequencing). D2 = leave S1/Huntress on their current tables; port later as a separate
-> feature. D9 = Emsisoft cloud EMC only, pending the requester's confirmation on #7436 (W05 does not
+> feature. D9 = Emsisoft cloud EMC only, pending the requester's confirmation on #7436 (the Emsisoft wave, now W04, does not
 > start until it lands). §3.3 roadmap accepted: Defender (#4620, un-parked — starts after two framework
 > adapters ship), CrowdStrike (#7653) and ThreatDown (#7654) filed as roadmap issues; ESET/WithSecure stay unfiled.
 > The text below is kept as the decision record.
@@ -958,9 +960,9 @@ normal transaction) and a new vendor's odd value should map into an existing buc
 - **Device matching regression:** the extracted module keeps every existing
   `backupProviders/deviceMatching.test.ts` case green unchanged, plus serial/FQDN cases.
 - **Rollout:** each adapter behind the registry only (no feature flag needed — a vendor with no
-  connection does nothing), but W01 ships the Sophos adapter registered only after a live
-  sandbox run against a Sophos Central Partner trial; record the run in the PR.
-- **Lab:** W03 isolation must be proven against a real Sophos-managed VM (nested brzlab VM, never a
+  connection does nothing), but W01 ships the GravityZone adapter registered only after a live
+  sandbox run against a GravityZone partner (MSP) trial; record the run in the PR.
+- **Lab:** W03 isolation must be proven against a real GravityZone-managed VM with the incidents/EDR licence (nested brzlab VM, never a
   host with an installed Breeze agent), including unisolate; W07 needs the Windows lab VM.
 
 ## 11. Advisor quorum
