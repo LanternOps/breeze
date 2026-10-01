@@ -218,53 +218,128 @@
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
   },
-  "partnerAiProvider": {
-    "title": "Provedor de IA",
-    "subtitle": "Execute a IA do Breeze com sua própria chave de API da Anthropic em vez da chave da plataforma.",
-    "platformKey": "Chave da plataforma",
-    "platformKeyDescription": "Os recursos de IA usam a chave Anthropic do Breeze e são cobrados como créditos de IA do Breeze.",
-    "yourKey": "Sua chave •••• {{last4}}",
-    "verifiedAt": "Verificada em {{date}}",
-    "notVerifiedYet": "Ainda não verificada",
-    "defaultModelValue": "Modelo padrão: {{model}}",
-    "platformDefault": "Padrão da plataforma",
-    "keyErrorTitle": "Sua chave Anthropic não está funcionando",
-    "reconnectHint": "Os recursos de IA ficam indisponíveis para suas organizações até você salvar uma chave válida abaixo.",
-    "connectKeyTitle": "Conectar sua chave Anthropic",
-    "replaceKeyTitle": "Substituir sua chave Anthropic",
-    "keyLabel": "Chave de API da Anthropic",
-    "writeOnlyHint": "A chave é verificada ao salvar e nunca é exibida novamente.",
-    "saveKey": "Salvar chave",
-    "keySaved": "Chave Anthropic salva e verificada.",
-    "keySaveFailed": "Não foi possível salvar a chave Anthropic.",
-    "defaultModelLabel": "Modelo padrão",
-    "defaultModelHint": "Usado em novas sessões de IA em todas as suas organizações.",
-    "modelUpdated": "Modelo padrão atualizado.",
-    "modelUpdateFailed": "Não foi possível atualizar o modelo padrão.",
-    "disconnectTitle": "Voltar para a chave da plataforma",
-    "disconnectDescription": "Remove sua chave Anthropic. O uso de IA volta a ser cobrado como créditos de IA do Breeze.",
-    "disconnect": "Desconectar",
-    "disconnectConfirm": "Desconectar sua chave Anthropic? Os recursos de IA voltarão a usar a chave da plataforma e os créditos de IA do Breeze.",
-    "disconnected": "Chave Anthropic removida. Os recursos de IA agora usam a chave da plataforma.",
-    "disconnectFailed": "Não foi possível desconectar a chave Anthropic.",
-    "permissionDenied": "Gerenciar o provedor de IA exige permissões de faturamento e acesso a todas as organizações.",
-    "loadFailed": "Não foi possível carregar a configuração do provedor de IA.",
-    "workspaceDisclosure": "O enriquecimento de conteúdo do Workspace usa o provedor de IA configurado e aparece no seu uso de IA.",
-    "endpointCardTitle": "Endpoint",
-    "endpointCardSubtitle": "Escolha para onde seu tráfego de IA é enviado. O Breeze avalia cada opção antes que ela apareça aqui.",
-    "directOptionLabel": "Anthropic (direto)",
-    "verifiedModelsLabel": "Modelos verificados: {{models}}",
-    "noVerifiedModels": "Ainda não há modelos verificados",
-    "viewDataNote": "Ver nota sobre tratamento de dados",
-    "hideDataNote": "Ocultar nota sobre tratamento de dados",
-    "confirmDialogTitle": "Mudar para {{name}}?",
-    "confirmDialogMessageWithNote": "Antes de seu tráfego de IA passar por {{name}}, revise como seus dados são tratados:",
-    "confirmDialogMessageNoNote": "Mudar seu tráfego de IA para {{name}}?",
-    "consentCheckboxLabel": "Entendo que meu tráfego de IA e conteúdo serão processados por {{name}}",
-    "endpointUpdated": "Endpoint de IA atualizado.",
-    "endpointUpdateFailed": "Não foi possível atualizar o endpoint de IA.",
-    "endpointDelistedBanner": "Este endpoint foi removido pelo Breeze — a IA está pausada até você escolher outro",
-    "endpointModelUnverifiedBanner": "O modelo {{model}} não está verificado neste endpoint. Escolha um modelo ou endpoint diferente para retomar a IA."
+  "aiModels": {
+    "title": "Provedores e modelos de IA",
+    "subtitle": "Conecte provedores, escolha quais modelos estão disponíveis e defina o modelo padrão de cada recurso de IA.",
+    "forbidden": "Você não tem permissão para gerenciar provedores e modelos de IA.",
+    "loadFailed": "Não foi possível carregar os provedores e modelos de IA.",
+    "workspaceNote": "O enriquecimento de conteúdo do Workspace usa o provedor de IA configurado e aparece no seu uso de IA.",
+    "connections": {
+      "title": "Conexões",
+      "subtitle": "Para onde suas solicitações de IA são enviadas e quem paga por elas.",
+      "add": "Adicionar conexão",
+      "edit": "Editar",
+      "created": "Conexão adicionada",
+      "saved": "Conexão salva",
+      "saveFailed": "Não foi possível salvar a conexão.",
+      "keyFailed": "Não foi possível substituir a chave de API.",
+      "endpointFailed": "Não foi possível alterar o endpoint.",
+      "disconnected": "Conexão removida",
+      "disconnectFailed": "Não foi possível remover a conexão.",
+      "columns": {
+        "name": "Nome",
+        "status": "Status",
+        "key": "Chave",
+        "geo": "Região de inferência",
+        "funding": "Cobrado de"
+      },
+      "kind": {
+        "platform": "Plataforma Breeze",
+        "anthropic_byok": "Anthropic (sua chave)",
+        "catalog": "Endpoint do catálogo",
+        "openai_compatible": "Compatível com OpenAI"
+      },
+      "status": {
+        "active": "Ativa",
+        "error": "Erro",
+        "platform": "Incluída"
+      },
+      "funding": {
+        "platform": "Créditos do Breeze",
+        "partner_key": "Sua chave de API"
+      },
+      "geoSource": {
+        "connection": "configuração própria",
+        "platform": "configuração da plataforma",
+        "provider_default": "padrão do provedor"
+      },
+      "geoProviderDefault": "Padrão do provedor",
+      "supportedGeos": "Suporta: {{geos}}"
+    },
+    "drawer": {
+      "titleCreate": "Adicionar conexão",
+      "titleEdit": "Editar {{name}}",
+      "errorTitle": "A chave desta conexão parou de funcionar",
+      "reconnectHint": "Substitua a chave abaixo para reconectar.",
+      "name": "Nome",
+      "geo": "Região de inferência",
+      "geoProviderDefault": "Padrão do provedor",
+      "geoHint": "Onde o provedor processa as solicitações. Deixe no padrão do provedor, a menos que precise de uma região específica.",
+      "keyLabel": "Chave de API da Anthropic",
+      "replaceKey": "Substituir chave de API",
+      "writeOnlyHint": "Somente gravação: a chave nunca é exibida novamente depois de salva.",
+      "endpoint": "Endpoint",
+      "endpointDirect": "Anthropic (direto)",
+      "endpointDelisted": "O endpoint usado por esta conexão não está mais listado. Volte para Anthropic (direto) para recuperá-la.",
+      "verifiedModels": "Modelos verificados: {{models}}",
+      "noVerifiedModels": "Nenhum modelo verificado listado.",
+      "consent": "Entendo que {{name}} processa minhas solicitações conforme a nota de dados acima.",
+      "oneCredentialChange": "Salve primeiro a nova chave e depois altere o endpoint (cada um é verificado separadamente).",
+      "disconnect": "Desconectar",
+      "disconnectTitle": "Desconectar esta conexão?",
+      "disconnectMessage": "Os recursos de IA deixam de usar esta chave. Você pode reconectar com uma nova chave a qualquer momento."
+    },
+    "residency": {
+      "label": "Exigir residência de dados",
+      "savedOn": "A residência de dados agora é exigida",
+      "savedOff": "A residência de dados não é mais exigida",
+      "saveFailed": "Não foi possível atualizar a configuração de residência.",
+      "previewFailed": "Não foi possível verificar o que a residência afetaria.",
+      "confirmTitle": "Exigir residência de dados?",
+      "confirmBody": "Estes recursos deixarão de funcionar até que um modelo capaz de manter os dados na região exigida seja definido como padrão.",
+      "confirmSubmit": "Exigir residência",
+      "orgOverride": "{{org}}: {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Construtor de scripts",
+      "script_reviewer": "Revisor de scripts",
+      "office_chat": "Chat do suplemento do Office",
+      "office_ticket": "Assistente de tickets do Office",
+      "ai_agents": "Agentes de IA",
+      "catalog_enrichment": "Enriquecimento do catálogo",
+      "extension_content": "Conteúdo de extensões",
+      "patch_test": "Teste de patches"
+    },
+    "blockers": {
+      "model_unavailable": "Este modelo não está mais disponível.",
+      "unpriced": "Não há preço definido para este modelo.",
+      "plan_required": "Seu plano não inclui este modelo.",
+      "connection_unavailable": "A conexão dele não está funcionando.",
+      "residency_unavailable": "Não consegue manter os dados na região exigida."
+    },
+    "errors": {
+      "not_found": "Esse item não existe mais. Recarregue e tente novamente.",
+      "unpriced": "Este modelo ainda não tem preço, portanto não pode ser ativado.",
+      "not_eligible": "Este modelo não pode ser usado dessa forma no momento.",
+      "offering_in_use": "Um recurso ainda usa este modelo como padrão. Escolha outro padrão primeiro.",
+      "stale_write": "Outra pessoa alterou isto enquanto você editava. Recarregue e tente novamente.",
+      "conflict": "Isto entra em conflito com uma configuração existente.",
+      "invalid": "Essa alteração não é válida.",
+      "tools_unsupported": "Este modelo não pode chamar ferramentas, de que este recurso precisa.",
+      "widens_partner": "Uma organização só pode restringir o que o parceiro permite.",
+      "write_failed": "Não foi possível salvar a alteração. Tente novamente.",
+      "registry_unavailable": "A configuração de IA está sendo atualizada. Tente novamente em instantes.",
+      "approvals_decide_required": "Alterar o modelo do revisor de scripts exige a permissão approvals:decide."
+    },
+    "org": {
+      "source": {
+        "org": "Substituição da organização",
+        "partner": "Padrão do parceiro",
+        "none": "Sem padrão"
+      }
+    }
   },
   "partnerDefaults": {
     "notSet": "Não definido — as organizações configuram individualmente",
@@ -591,8 +666,8 @@
         "description": "Limites de gastos com IA"
       },
       "aiProvider": {
-        "label": "Provedor de IA",
-        "description": "Use sua própria chave Anthropic"
+        "label": "Provedores e modelos de IA",
+        "description": "Conexões, modelos e padrões para cada recurso de IA"
       },
       "aiFeatures": {
         "label": "Recursos de IA",

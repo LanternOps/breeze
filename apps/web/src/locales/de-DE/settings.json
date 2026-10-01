@@ -218,53 +218,128 @@
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
   },
-  "partnerAiProvider": {
-    "title": "KI-Anbieter",
-    "subtitle": "Breeze-KI mit Ihrem eigenen Anthropic-API-Schlüssel statt mit dem Plattform-Schlüssel ausführen.",
-    "platformKey": "Plattform-Schlüssel",
-    "platformKeyDescription": "KI-Funktionen nutzen den Anthropic-Schlüssel von Breeze und werden als Breeze-KI-Guthaben abgerechnet.",
-    "yourKey": "Ihr Schlüssel •••• {{last4}}",
-    "verifiedAt": "Verifiziert am {{date}}",
-    "notVerifiedYet": "Noch nicht verifiziert",
-    "defaultModelValue": "Standardmodell: {{model}}",
-    "platformDefault": "Plattform-Standard",
-    "keyErrorTitle": "Ihr Anthropic-Schlüssel funktioniert nicht",
-    "reconnectHint": "KI-Funktionen sind für Ihre Organisationen nicht verfügbar, bis Sie unten einen funktionierenden Schlüssel speichern.",
-    "connectKeyTitle": "Ihren Anthropic-Schlüssel verbinden",
-    "replaceKeyTitle": "Ihren Anthropic-Schlüssel ersetzen",
-    "keyLabel": "Anthropic-API-Schlüssel",
-    "writeOnlyHint": "Der Schlüssel wird beim Speichern verifiziert und danach nie wieder angezeigt.",
-    "saveKey": "Schlüssel speichern",
-    "keySaved": "Anthropic-Schlüssel gespeichert und verifiziert.",
-    "keySaveFailed": "Der Anthropic-Schlüssel konnte nicht gespeichert werden.",
-    "defaultModelLabel": "Standardmodell",
-    "defaultModelHint": "Wird für neue KI-Sitzungen in allen Ihren Organisationen verwendet.",
-    "modelUpdated": "Standardmodell aktualisiert.",
-    "modelUpdateFailed": "Das Standardmodell konnte nicht aktualisiert werden.",
-    "disconnectTitle": "Zurück zum Plattform-Schlüssel wechseln",
-    "disconnectDescription": "Entfernt Ihren Anthropic-Schlüssel. Die KI-Nutzung wird wieder als Breeze-KI-Guthaben abgerechnet.",
-    "disconnect": "Trennen",
-    "disconnectConfirm": "Ihren Anthropic-Schlüssel trennen? KI-Funktionen wechseln zurück zum Plattform-Schlüssel und zu Breeze-KI-Guthaben.",
-    "disconnected": "Anthropic-Schlüssel entfernt. KI-Funktionen nutzen jetzt den Plattform-Schlüssel.",
-    "disconnectFailed": "Der Anthropic-Schlüssel konnte nicht getrennt werden.",
-    "permissionDenied": "Zum Verwalten des KI-Anbieters sind Abrechnungsberechtigungen und Zugriff auf alle Organisationen erforderlich.",
-    "loadFailed": "Die Konfiguration des KI-Anbieters konnte nicht geladen werden.",
-    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
-    "endpointCardTitle": "Endpunkt",
-    "endpointCardSubtitle": "Wählen Sie, wohin Ihr KI-Datenverkehr gesendet wird. Breeze prüft jede Option, bevor sie hier erscheint.",
-    "directOptionLabel": "Anthropic (direkt)",
-    "verifiedModelsLabel": "Verifizierte Modelle: {{models}}",
-    "noVerifiedModels": "Noch keine verifizierten Modelle",
-    "viewDataNote": "Datenschutzhinweis anzeigen",
-    "hideDataNote": "Datenschutzhinweis ausblenden",
-    "confirmDialogTitle": "Zu {{name}} wechseln?",
-    "confirmDialogMessageWithNote": "Bevor Ihr KI-Datenverkehr über {{name}} läuft, prüfen Sie, wie Ihre Daten verarbeitet werden:",
-    "confirmDialogMessageNoNote": "Ihren KI-Datenverkehr zu {{name}} wechseln?",
-    "consentCheckboxLabel": "Ich verstehe, dass mein KI-Datenverkehr und meine Inhalte von {{name}} verarbeitet werden",
-    "endpointUpdated": "KI-Endpunkt aktualisiert.",
-    "endpointUpdateFailed": "Der KI-Endpunkt konnte nicht aktualisiert werden.",
-    "endpointDelistedBanner": "Dieser Endpunkt wurde von Breeze aus der Liste entfernt — die KI ist pausiert, bis Sie einen anderen auswählen",
-    "endpointModelUnverifiedBanner": "Das Modell {{model}} ist für diesen Endpunkt nicht verifiziert. Wählen Sie ein anderes Modell oder einen anderen Endpunkt, um die KI fortzusetzen."
+  "aiModels": {
+    "title": "KI-Anbieter und Modelle",
+    "subtitle": "Verbinden Sie Anbieter, legen Sie fest, welche Modelle verfügbar sind, und wählen Sie das Standardmodell für jede KI-Funktion.",
+    "forbidden": "Sie haben keine Berechtigung, KI-Anbieter und Modelle zu verwalten.",
+    "loadFailed": "KI-Anbieter und Modelle konnten nicht geladen werden.",
+    "workspaceNote": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "connections": {
+      "title": "Verbindungen",
+      "subtitle": "Wohin Ihre KI-Anfragen gesendet werden und wer sie bezahlt.",
+      "add": "Verbindung hinzufügen",
+      "edit": "Bearbeiten",
+      "created": "Verbindung hinzugefügt",
+      "saved": "Verbindung gespeichert",
+      "saveFailed": "Die Verbindung konnte nicht gespeichert werden.",
+      "keyFailed": "Der API-Schlüssel konnte nicht ersetzt werden.",
+      "endpointFailed": "Der Endpunkt konnte nicht geändert werden.",
+      "disconnected": "Verbindung entfernt",
+      "disconnectFailed": "Die Verbindung konnte nicht entfernt werden.",
+      "columns": {
+        "name": "Name",
+        "status": "Status",
+        "key": "Schlüssel",
+        "geo": "Inferenzregion",
+        "funding": "Abrechnung über"
+      },
+      "kind": {
+        "platform": "Breeze-Plattform",
+        "anthropic_byok": "Anthropic (Ihr Schlüssel)",
+        "catalog": "Katalog-Endpunkt",
+        "openai_compatible": "OpenAI-kompatibel"
+      },
+      "status": {
+        "active": "Aktiv",
+        "error": "Fehler",
+        "platform": "Inklusive"
+      },
+      "funding": {
+        "platform": "Breeze-Guthaben",
+        "partner_key": "Ihr API-Schlüssel"
+      },
+      "geoSource": {
+        "connection": "eigene Einstellung",
+        "platform": "Plattformeinstellung",
+        "provider_default": "Anbieter-Standard"
+      },
+      "geoProviderDefault": "Anbieter-Standard",
+      "supportedGeos": "Unterstützt: {{geos}}"
+    },
+    "drawer": {
+      "titleCreate": "Verbindung hinzufügen",
+      "titleEdit": "{{name}} bearbeiten",
+      "errorTitle": "Der Schlüssel dieser Verbindung funktioniert nicht mehr",
+      "reconnectHint": "Ersetzen Sie den Schlüssel unten, um die Verbindung wiederherzustellen.",
+      "name": "Name",
+      "geo": "Inferenzregion",
+      "geoProviderDefault": "Anbieter-Standard",
+      "geoHint": "Wo der Anbieter Anfragen verarbeitet. Belassen Sie den Anbieter-Standard, sofern Sie keine bestimmte Region benötigen.",
+      "keyLabel": "Anthropic-API-Schlüssel",
+      "replaceKey": "API-Schlüssel ersetzen",
+      "writeOnlyHint": "Nur Schreibzugriff: Der Schlüssel wird nach dem Speichern nie wieder angezeigt.",
+      "endpoint": "Endpunkt",
+      "endpointDirect": "Anthropic (direkt)",
+      "endpointDelisted": "Der von dieser Verbindung verwendete Endpunkt ist nicht mehr gelistet. Wechseln Sie zur Wiederherstellung zurück zu Anthropic (direkt).",
+      "verifiedModels": "Verifizierte Modelle: {{models}}",
+      "noVerifiedModels": "Keine verifizierten Modelle aufgeführt.",
+      "consent": "Ich verstehe, dass {{name}} meine Anfragen gemäß dem obigen Datenhinweis verarbeitet.",
+      "oneCredentialChange": "Speichern Sie zuerst den neuen Schlüssel und ändern Sie dann den Endpunkt (beides wird getrennt geprüft).",
+      "disconnect": "Trennen",
+      "disconnectTitle": "Diese Verbindung trennen?",
+      "disconnectMessage": "KI-Funktionen verwenden diesen Schlüssel nicht mehr. Sie können jederzeit mit einem neuen Schlüssel erneut verbinden."
+    },
+    "residency": {
+      "label": "Datenresidenz erforderlich",
+      "savedOn": "Datenresidenz ist jetzt erforderlich",
+      "savedOff": "Datenresidenz ist nicht mehr erforderlich",
+      "saveFailed": "Die Einstellung zur Datenresidenz konnte nicht aktualisiert werden.",
+      "previewFailed": "Die Auswirkungen der Datenresidenz konnten nicht geprüft werden.",
+      "confirmTitle": "Datenresidenz erforderlich machen?",
+      "confirmBody": "Diese Funktionen funktionieren nicht mehr, bis ein Modell, das Daten in der erforderlichen Region halten kann, als Standard festgelegt wird.",
+      "confirmSubmit": "Residenz erforderlich machen",
+      "orgOverride": "{{org}}: {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Skript-Generator",
+      "script_reviewer": "Skript-Prüfer",
+      "office_chat": "Office-Add-in-Chat",
+      "office_ticket": "Office-Ticket-Assistent",
+      "ai_agents": "KI-Agenten",
+      "catalog_enrichment": "Katalog-Anreicherung",
+      "extension_content": "Erweiterungsinhalte",
+      "patch_test": "Patch-Tests"
+    },
+    "blockers": {
+      "model_unavailable": "Dieses Modell ist nicht mehr verfügbar.",
+      "unpriced": "Für dieses Modell ist kein Preis festgelegt.",
+      "plan_required": "Ihr Tarif enthält dieses Modell nicht.",
+      "connection_unavailable": "Die zugehörige Verbindung funktioniert nicht.",
+      "residency_unavailable": "Es kann Daten nicht in der erforderlichen Region halten."
+    },
+    "errors": {
+      "not_found": "Dieses Element existiert nicht mehr. Laden Sie neu und versuchen Sie es erneut.",
+      "unpriced": "Dieses Modell hat noch keinen Preis und kann nicht aktiviert werden.",
+      "not_eligible": "Dieses Modell kann derzeit nicht so verwendet werden.",
+      "offering_in_use": "Eine Funktion verwendet dieses Modell noch als Standard. Wählen Sie zuerst einen anderen Standard.",
+      "stale_write": "Jemand hat dies geändert, während Sie es bearbeitet haben. Laden Sie neu und versuchen Sie es erneut.",
+      "conflict": "Dies steht im Konflikt mit einer bestehenden Einstellung.",
+      "invalid": "Diese Änderung ist ungültig.",
+      "tools_unsupported": "Dieses Modell kann keine Tools aufrufen, die diese Funktion benötigt.",
+      "widens_partner": "Eine Organisation kann nur einschränken, was der Partner erlaubt.",
+      "write_failed": "Die Änderung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "registry_unavailable": "Die KI-Konfiguration wird gerade aktualisiert. Versuchen Sie es gleich noch einmal.",
+      "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich."
+    },
+    "org": {
+      "source": {
+        "org": "Überschreibung der Organisation",
+        "partner": "Partner-Standard",
+        "none": "Kein Standard"
+      }
+    }
   },
   "partnerDefaults": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -591,8 +666,8 @@
         "description": "KI-Ausgabenlimits"
       },
       "aiProvider": {
-        "label": "KI-Anbieter",
-        "description": "Eigenen Anthropic-Schlüssel verwenden"
+        "label": "KI-Anbieter und Modelle",
+        "description": "Verbindungen, Modelle und Standards für jede KI-Funktion"
       },
       "aiFeatures": {
         "label": "KI-Funktionen",

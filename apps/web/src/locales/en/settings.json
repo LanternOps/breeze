@@ -218,53 +218,128 @@
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
   },
-  "partnerAiProvider": {
-    "title": "AI Provider",
-    "subtitle": "Run Breeze AI on your own Anthropic API key instead of the platform key.",
-    "platformKey": "Platform key",
-    "platformKeyDescription": "AI features run on Breeze's Anthropic key and are billed as Breeze AI credits.",
-    "yourKey": "Your key •••• {{last4}}",
-    "verifiedAt": "Verified {{date}}",
-    "notVerifiedYet": "Not verified yet",
-    "defaultModelValue": "Default model: {{model}}",
-    "platformDefault": "Platform default",
-    "keyErrorTitle": "Your Anthropic key is not working",
-    "reconnectHint": "AI features are unavailable for your organizations until you save a working key below.",
-    "connectKeyTitle": "Connect your Anthropic key",
-    "replaceKeyTitle": "Replace your Anthropic key",
-    "keyLabel": "Anthropic API key",
-    "writeOnlyHint": "The key is verified when you save it and is never shown again.",
-    "saveKey": "Save key",
-    "keySaved": "Anthropic key saved and verified.",
-    "keySaveFailed": "Could not save the Anthropic key.",
-    "defaultModelLabel": "Default model",
-    "defaultModelHint": "Used for new AI sessions across all your organizations.",
-    "modelUpdated": "Default model updated.",
-    "modelUpdateFailed": "Could not update the default model.",
-    "disconnectTitle": "Switch back to the platform key",
-    "disconnectDescription": "Removes your Anthropic key. AI usage is billed as Breeze AI credits again.",
-    "disconnect": "Disconnect",
-    "disconnectConfirm": "Disconnect your Anthropic key? AI features will switch back to the platform key and Breeze AI credits.",
-    "disconnected": "Anthropic key removed. AI features now use the platform key.",
-    "disconnectFailed": "Could not disconnect the Anthropic key.",
-    "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
-    "loadFailed": "Could not load the AI provider configuration.",
-    "workspaceDisclosure": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
-    "endpointCardTitle": "Endpoint",
-    "endpointCardSubtitle": "Choose where your AI traffic is sent. Breeze vets every option before it appears here.",
-    "directOptionLabel": "Anthropic (direct)",
-    "verifiedModelsLabel": "Verified models: {{models}}",
-    "noVerifiedModels": "No verified models yet",
-    "viewDataNote": "View data-handling note",
-    "hideDataNote": "Hide data-handling note",
-    "confirmDialogTitle": "Switch to {{name}}?",
-    "confirmDialogMessageWithNote": "Before your AI traffic routes through {{name}}, review how it handles your data:",
-    "confirmDialogMessageNoNote": "Switch your AI traffic to {{name}}?",
-    "consentCheckboxLabel": "I understand my AI traffic and content will be processed by {{name}}",
-    "endpointUpdated": "AI endpoint updated.",
-    "endpointUpdateFailed": "Could not update the AI endpoint.",
-    "endpointDelistedBanner": "This endpoint was delisted by Breeze — AI is paused until you choose another",
-    "endpointModelUnverifiedBanner": "The model {{model}} isn't verified on this endpoint. Choose a different model or endpoint to resume AI."
+  "aiModels": {
+    "title": "AI Providers & Models",
+    "subtitle": "Connect providers, choose which models are available, and set the default model for each AI feature.",
+    "forbidden": "You don't have permission to manage AI providers and models.",
+    "loadFailed": "Couldn't load AI providers and models.",
+    "workspaceNote": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "connections": {
+      "title": "Connections",
+      "subtitle": "Where your AI requests are sent and who pays for them.",
+      "add": "Add connection",
+      "edit": "Edit",
+      "created": "Connection added",
+      "saved": "Connection saved",
+      "saveFailed": "Couldn't save the connection.",
+      "keyFailed": "Couldn't replace the API key.",
+      "endpointFailed": "Couldn't change the endpoint.",
+      "disconnected": "Connection removed",
+      "disconnectFailed": "Couldn't remove the connection.",
+      "columns": {
+        "name": "Name",
+        "status": "Status",
+        "key": "Key",
+        "geo": "Inference region",
+        "funding": "Billed to"
+      },
+      "kind": {
+        "platform": "Breeze platform",
+        "anthropic_byok": "Anthropic (your key)",
+        "catalog": "Catalog endpoint",
+        "openai_compatible": "OpenAI-compatible"
+      },
+      "status": {
+        "active": "Active",
+        "error": "Error",
+        "platform": "Included"
+      },
+      "funding": {
+        "platform": "Breeze credits",
+        "partner_key": "Your API key"
+      },
+      "geoSource": {
+        "connection": "own setting",
+        "platform": "platform setting",
+        "provider_default": "provider default"
+      },
+      "geoProviderDefault": "Provider default",
+      "supportedGeos": "Supports: {{geos}}"
+    },
+    "drawer": {
+      "titleCreate": "Add connection",
+      "titleEdit": "Edit {{name}}",
+      "errorTitle": "This connection's key stopped working",
+      "reconnectHint": "Replace the key below to reconnect.",
+      "name": "Name",
+      "geo": "Inference region",
+      "geoProviderDefault": "Provider default",
+      "geoHint": "Where the provider processes requests. Leave on provider default unless you need a specific region.",
+      "keyLabel": "Anthropic API key",
+      "replaceKey": "Replace API key",
+      "writeOnlyHint": "Write-only: the key is never shown again after saving.",
+      "endpoint": "Endpoint",
+      "endpointDirect": "Anthropic (direct)",
+      "endpointDelisted": "The endpoint this connection uses is no longer listed. Switch back to Anthropic (direct) to recover.",
+      "verifiedModels": "Verified models: {{models}}",
+      "noVerifiedModels": "No verified models listed.",
+      "consent": "I understand that {{name}} handles my requests under the data note above.",
+      "oneCredentialChange": "Save the new key first, then change the endpoint (each is verified separately).",
+      "disconnect": "Disconnect",
+      "disconnectTitle": "Disconnect this connection?",
+      "disconnectMessage": "AI features stop using this key. You can reconnect with a new key at any time."
+    },
+    "residency": {
+      "label": "Require data residency",
+      "savedOn": "Data residency is now required",
+      "savedOff": "Data residency is no longer required",
+      "saveFailed": "Couldn't update the residency setting.",
+      "previewFailed": "Couldn't check what residency would affect.",
+      "confirmTitle": "Require data residency?",
+      "confirmBody": "These features will stop working until a model that can keep data in the required region is set as their default.",
+      "confirmSubmit": "Require residency",
+      "orgOverride": "{{org}}: {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Script builder",
+      "script_reviewer": "Script reviewer",
+      "office_chat": "Office add-in chat",
+      "office_ticket": "Office ticket assistant",
+      "ai_agents": "AI agents",
+      "catalog_enrichment": "Catalog enrichment",
+      "extension_content": "Extension content",
+      "patch_test": "Patch testing"
+    },
+    "blockers": {
+      "model_unavailable": "This model is no longer available.",
+      "unpriced": "No price is set for this model.",
+      "plan_required": "Your plan doesn't include this model.",
+      "connection_unavailable": "Its connection isn't working.",
+      "residency_unavailable": "It can't keep data in the required region."
+    },
+    "errors": {
+      "not_found": "That item no longer exists. Reload and try again.",
+      "unpriced": "This model has no price yet, so it cannot be enabled.",
+      "not_eligible": "This model cannot be used that way right now.",
+      "offering_in_use": "A feature still uses this model as its default. Choose another default first.",
+      "stale_write": "Someone else changed this while you were editing. Reload and try again.",
+      "conflict": "This conflicts with an existing setting.",
+      "invalid": "That change is not valid.",
+      "tools_unsupported": "This model can't call tools, which this feature needs.",
+      "widens_partner": "An organization can only narrow what its partner allows.",
+      "write_failed": "Couldn't save that change. Try again.",
+      "registry_unavailable": "AI configuration is being upgraded. Try again in a moment.",
+      "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission."
+    },
+    "org": {
+      "source": {
+        "org": "Organization override",
+        "partner": "Partner default",
+        "none": "No default"
+      }
+    }
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
@@ -591,8 +666,8 @@
         "description": "AI spending limits"
       },
       "aiProvider": {
-        "label": "AI Provider",
-        "description": "Bring your own Anthropic key"
+        "label": "AI Providers & Models",
+        "description": "Connections, models and defaults for every AI feature"
       },
       "aiFeatures": {
         "label": "AI Features",

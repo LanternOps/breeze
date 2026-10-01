@@ -34,7 +34,7 @@ import type { PinnableVersions } from './AgentVersionPinSelectors';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerAiApprovalsTab from './PartnerAiApprovalsTab';
-import PartnerAiProviderTab from './PartnerAiProviderTab';
+import PartnerAiModelsTab from './aiModels/PartnerAiModelsTab';
 import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
@@ -160,6 +160,7 @@ for (const t of ALL_TABS) {
   HASH_TO_TAB[t.hash] = t.key;
   HASH_TO_TAB[t.key] = t.key;
 }
+HASH_TO_TAB['ai-models'] = 'aiProvider'; // AI Providers & Models (W04 #7602) — canonical stays #ai-provider
 
 /**
  * Map a top-level URL hash to a partner settings tab. The Ticketing tab is
@@ -746,11 +747,11 @@ export default function PartnerSettingsPage() {
             </section>
           )}
 
-          {/* AI Provider: self-contained BYOK card with its own load/save (the
-              top-level "Save Settings" button does not apply here). */}
+          {/* AI Providers & Models: self-contained cards, each with its own load/save
+              (the top-level "Save Settings" button does not apply here). */}
           {activeTab === 'aiProvider' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiProviderTab />
+              <PartnerAiModelsTab />
             </section>
           )}
 

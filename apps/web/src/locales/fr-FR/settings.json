@@ -218,53 +218,128 @@
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
   },
-  "partnerAiProvider": {
-    "title": "Fournisseur d'IA",
-    "subtitle": "Exécutez l'IA de Breeze avec votre propre clé d'API Anthropic au lieu de la clé de la plateforme.",
-    "platformKey": "Clé de la plateforme",
-    "platformKeyDescription": "Les fonctionnalités d'IA utilisent la clé Anthropic de Breeze et sont facturées en crédits d'IA Breeze.",
-    "yourKey": "Votre clé •••• {{last4}}",
-    "verifiedAt": "Vérifiée le {{date}}",
-    "notVerifiedYet": "Pas encore vérifiée",
-    "defaultModelValue": "Modèle par défaut : {{model}}",
-    "platformDefault": "Valeur par défaut de la plateforme",
-    "keyErrorTitle": "Votre clé Anthropic ne fonctionne pas",
-    "reconnectHint": "Les fonctionnalités d'IA sont indisponibles pour vos organisations tant que vous n'avez pas enregistré une clé valide ci-dessous.",
-    "connectKeyTitle": "Connecter votre clé Anthropic",
-    "replaceKeyTitle": "Remplacer votre clé Anthropic",
-    "keyLabel": "Clé d'API Anthropic",
-    "writeOnlyHint": "La clé est vérifiée à l'enregistrement et n'est plus jamais affichée.",
-    "saveKey": "Enregistrer la clé",
-    "keySaved": "Clé Anthropic enregistrée et vérifiée.",
-    "keySaveFailed": "Impossible d'enregistrer la clé Anthropic.",
-    "defaultModelLabel": "Modèle par défaut",
-    "defaultModelHint": "Utilisé pour les nouvelles sessions d'IA dans toutes vos organisations.",
-    "modelUpdated": "Modèle par défaut mis à jour.",
-    "modelUpdateFailed": "Impossible de mettre à jour le modèle par défaut.",
-    "disconnectTitle": "Revenir à la clé de la plateforme",
-    "disconnectDescription": "Supprime votre clé Anthropic. L'utilisation de l'IA est de nouveau facturée en crédits d'IA Breeze.",
-    "disconnect": "Déconnecter",
-    "disconnectConfirm": "Déconnecter votre clé Anthropic ? Les fonctionnalités d'IA reviendront à la clé de la plateforme et aux crédits d'IA Breeze.",
-    "disconnected": "Clé Anthropic supprimée. Les fonctionnalités d'IA utilisent désormais la clé de la plateforme.",
-    "disconnectFailed": "Impossible de déconnecter la clé Anthropic.",
-    "permissionDenied": "La gestion du fournisseur d'IA nécessite des autorisations de facturation et l'accès à toutes les organisations.",
-    "loadFailed": "Impossible de charger la configuration du fournisseur d'IA.",
-    "workspaceDisclosure": "L'enrichissement de contenu Workspace utilise votre fournisseur d'IA configuré et apparaît dans votre utilisation de l'IA.",
-    "endpointCardTitle": "Point de terminaison",
-    "endpointCardSubtitle": "Choisissez où votre trafic d'IA est envoyé. Breeze vérifie chaque option avant qu'elle apparaisse ici.",
-    "directOptionLabel": "Anthropic (direct)",
-    "verifiedModelsLabel": "Modèles vérifiés : {{models}}",
-    "noVerifiedModels": "Aucun modèle vérifié pour le moment",
-    "viewDataNote": "Afficher la note sur le traitement des données",
-    "hideDataNote": "Masquer la note sur le traitement des données",
-    "confirmDialogTitle": "Passer à {{name}} ?",
-    "confirmDialogMessageWithNote": "Avant que votre trafic d'IA passe par {{name}}, vérifiez comment vos données sont traitées :",
-    "confirmDialogMessageNoNote": "Faire passer votre trafic d'IA à {{name}} ?",
-    "consentCheckboxLabel": "Je comprends que mon trafic d'IA et mon contenu seront traités par {{name}}",
-    "endpointUpdated": "Point de terminaison IA mis à jour.",
-    "endpointUpdateFailed": "Impossible de mettre à jour le point de terminaison IA.",
-    "endpointDelistedBanner": "Ce point de terminaison a été retiré par Breeze — l'IA est suspendue jusqu'à ce que vous en choisissiez un autre",
-    "endpointModelUnverifiedBanner": "Le modèle {{model}} n'est pas vérifié sur ce point de terminaison. Choisissez un autre modèle ou point de terminaison pour reprendre l'IA."
+  "aiModels": {
+    "title": "Fournisseurs et modèles d'IA",
+    "subtitle": "Connectez des fournisseurs, choisissez les modèles disponibles et définissez le modèle par défaut de chaque fonctionnalité d'IA.",
+    "forbidden": "Vous n'avez pas l'autorisation de gérer les fournisseurs et modèles d'IA.",
+    "loadFailed": "Impossible de charger les fournisseurs et modèles d'IA.",
+    "workspaceNote": "L'enrichissement de contenu Workspace utilise votre fournisseur d'IA configuré et apparaît dans votre utilisation de l'IA.",
+    "connections": {
+      "title": "Connexions",
+      "subtitle": "Où vos requêtes d'IA sont envoyées et qui les paie.",
+      "add": "Ajouter une connexion",
+      "edit": "Modifier",
+      "created": "Connexion ajoutée",
+      "saved": "Connexion enregistrée",
+      "saveFailed": "Impossible d'enregistrer la connexion.",
+      "keyFailed": "Impossible de remplacer la clé API.",
+      "endpointFailed": "Impossible de modifier le point de terminaison.",
+      "disconnected": "Connexion supprimée",
+      "disconnectFailed": "Impossible de supprimer la connexion.",
+      "columns": {
+        "name": "Nom",
+        "status": "Statut",
+        "key": "Clé",
+        "geo": "Région d'inférence",
+        "funding": "Facturé à"
+      },
+      "kind": {
+        "platform": "Plateforme Breeze",
+        "anthropic_byok": "Anthropic (votre clé)",
+        "catalog": "Point de terminaison du catalogue",
+        "openai_compatible": "Compatible OpenAI"
+      },
+      "status": {
+        "active": "Active",
+        "error": "Erreur",
+        "platform": "Incluse"
+      },
+      "funding": {
+        "platform": "Crédits Breeze",
+        "partner_key": "Votre clé API"
+      },
+      "geoSource": {
+        "connection": "réglage propre",
+        "platform": "réglage de la plateforme",
+        "provider_default": "valeur par défaut du fournisseur"
+      },
+      "geoProviderDefault": "Valeur par défaut du fournisseur",
+      "supportedGeos": "Prend en charge : {{geos}}"
+    },
+    "drawer": {
+      "titleCreate": "Ajouter une connexion",
+      "titleEdit": "Modifier {{name}}",
+      "errorTitle": "La clé de cette connexion ne fonctionne plus",
+      "reconnectHint": "Remplacez la clé ci-dessous pour vous reconnecter.",
+      "name": "Nom",
+      "geo": "Région d'inférence",
+      "geoProviderDefault": "Valeur par défaut du fournisseur",
+      "geoHint": "Où le fournisseur traite les requêtes. Laissez la valeur par défaut du fournisseur, sauf si vous avez besoin d'une région précise.",
+      "keyLabel": "Clé API Anthropic",
+      "replaceKey": "Remplacer la clé API",
+      "writeOnlyHint": "Écriture seule : la clé n'est plus jamais affichée après l'enregistrement.",
+      "endpoint": "Point de terminaison",
+      "endpointDirect": "Anthropic (direct)",
+      "endpointDelisted": "Le point de terminaison utilisé par cette connexion n'est plus répertorié. Revenez à Anthropic (direct) pour rétablir le service.",
+      "verifiedModels": "Modèles vérifiés : {{models}}",
+      "noVerifiedModels": "Aucun modèle vérifié répertorié.",
+      "consent": "Je comprends que {{name}} traite mes requêtes selon la note sur les données ci-dessus.",
+      "oneCredentialChange": "Enregistrez d'abord la nouvelle clé, puis modifiez le point de terminaison (chacun est vérifié séparément).",
+      "disconnect": "Déconnecter",
+      "disconnectTitle": "Déconnecter cette connexion ?",
+      "disconnectMessage": "Les fonctionnalités d'IA cessent d'utiliser cette clé. Vous pouvez vous reconnecter avec une nouvelle clé à tout moment."
+    },
+    "residency": {
+      "label": "Exiger la résidence des données",
+      "savedOn": "La résidence des données est désormais exigée",
+      "savedOff": "La résidence des données n'est plus exigée",
+      "saveFailed": "Impossible de mettre à jour le réglage de résidence.",
+      "previewFailed": "Impossible de vérifier ce que la résidence affecterait.",
+      "confirmTitle": "Exiger la résidence des données ?",
+      "confirmBody": "Ces fonctionnalités cesseront de fonctionner tant qu'un modèle capable de garder les données dans la région requise n'est pas défini comme modèle par défaut.",
+      "confirmSubmit": "Exiger la résidence",
+      "orgOverride": "{{org}} : {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Générateur de scripts",
+      "script_reviewer": "Réviseur de scripts",
+      "office_chat": "Chat du complément Office",
+      "office_ticket": "Assistant de tickets Office",
+      "ai_agents": "Agents d'IA",
+      "catalog_enrichment": "Enrichissement du catalogue",
+      "extension_content": "Contenu des extensions",
+      "patch_test": "Tests de correctifs"
+    },
+    "blockers": {
+      "model_unavailable": "Ce modèle n'est plus disponible.",
+      "unpriced": "Aucun prix n'est défini pour ce modèle.",
+      "plan_required": "Votre forfait n'inclut pas ce modèle.",
+      "connection_unavailable": "Sa connexion ne fonctionne pas.",
+      "residency_unavailable": "Il ne peut pas garder les données dans la région requise."
+    },
+    "errors": {
+      "not_found": "Cet élément n'existe plus. Rechargez la page et réessayez.",
+      "unpriced": "Ce modèle n'a pas encore de prix et ne peut donc pas être activé.",
+      "not_eligible": "Ce modèle ne peut pas être utilisé ainsi pour le moment.",
+      "offering_in_use": "Une fonctionnalité utilise encore ce modèle par défaut. Choisissez d'abord un autre modèle par défaut.",
+      "stale_write": "Quelqu'un d'autre a modifié ceci pendant votre modification. Rechargez la page et réessayez.",
+      "conflict": "Cela entre en conflit avec un réglage existant.",
+      "invalid": "Cette modification n'est pas valide.",
+      "tools_unsupported": "Ce modèle ne peut pas appeler d'outils, dont cette fonctionnalité a besoin.",
+      "widens_partner": "Une organisation ne peut que restreindre ce que son partenaire autorise.",
+      "write_failed": "Impossible d'enregistrer cette modification. Réessayez.",
+      "registry_unavailable": "La configuration de l'IA est en cours de mise à niveau. Réessayez dans un instant.",
+      "approvals_decide_required": "Modifier le modèle du réviseur de scripts nécessite l'autorisation approvals:decide."
+    },
+    "org": {
+      "source": {
+        "org": "Remplacement de l'organisation",
+        "partner": "Valeur par défaut du partenaire",
+        "none": "Aucune valeur par défaut"
+      }
+    }
   },
   "partnerDefaults": {
     "notSet": "Non défini — les organisations se configurent individuellement",
@@ -591,8 +666,8 @@
         "description": "Limites de dépenses en IA"
       },
       "aiProvider": {
-        "label": "Fournisseur d'IA",
-        "description": "Utilisez votre propre clé Anthropic"
+        "label": "Fournisseurs et modèles d'IA",
+        "description": "Connexions, modèles et valeurs par défaut pour chaque fonctionnalité d'IA"
       },
       "aiFeatures": {
         "label": "Fonctionnalités IA",

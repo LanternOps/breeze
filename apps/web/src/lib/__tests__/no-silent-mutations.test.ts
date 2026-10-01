@@ -73,7 +73,9 @@ const TARGET_GLOBS = [
   // gone when it is still being stamped.
   'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
-  'src/components/settings/PartnerAiProviderTab.tsx',
+  'src/components/settings/aiModels/PartnerAiModelsTab.tsx',
+  'src/components/settings/aiModels/ConnectionDrawer.tsx',
+  'src/components/settings/aiModels/ResidencySwitch.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
   // Tool catalog W01 PR C (#5216): the Tool Sources surface authors the
   // credentials and risk tiers that decide what the assistant may call on a
@@ -874,7 +876,9 @@ describe('no silent mutations in targeted set', () => {
     // Multi-org report series W04 adds reports/series/CombineDialog.tsx: 203 → 204.
     // Backup storage key revocation card (StorageKeyRevocationCard.tsx): 204 → 205.
     // AI model registry W01 #7599 adds admin/AiModels.tsx: 205 → 206.
-    expect(absoluteFiles.length).toBe(206);
+    // AI model registry W04 #7602 Task 11 replaces PartnerAiProviderTab.tsx with
+    // aiModels/{PartnerAiModelsTab,ConnectionDrawer,ResidencySwitch}.tsx: 206 → 208.
+    expect(absoluteFiles.length).toBe(208);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
