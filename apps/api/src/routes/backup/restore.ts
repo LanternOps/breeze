@@ -18,7 +18,7 @@ import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
-import { cancelBareMetalRecovery } from '../../services/bareMetalRecoveryService';
+import { BareMetalRecoveryError, cancelBareMetalRecovery } from '../../services/bareMetalRecoveryService';
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 
 export const restoreRoutes = new Hono();
@@ -474,13 +474,16 @@ restoreRoutes.post(
       if (current.status === 'running') {
         return c.json({ error: 'A rebuild that is already running cannot be cancelled' }, 409);
       }
-      try {
-        rebuildDispatchRemoved = await removeQueuedRestoreDispatch(current.commandId);
-      } catch (err) {
-        console.warn(`[BackupRestore] Failed to remove queued rebuild dispatch for restore ${current.id}:`, err);
-      }
-      if (!rebuildDispatchRemoved) {
-        return c.json({ error: 'The rebuild command was already delivered and cannot be cancelled' }, 409);
+      if (current.commandId) {
+        try {
+          rebuildDispatchRemoved = await removeQueuedRestoreDispatch(current.commandId);
+        } catch (err) {
+          console.error(`[BackupRestore] Failed to remove queued rebuild dispatch for restore ${current.id}:`, err);
+          return c.json({ error: 'Could not remove the queued rebuild command; try again' }, 503);
+        }
+        if (!rebuildDispatchRemoved) {
+          return c.json({ error: 'The rebuild command was already delivered and cannot be cancelled' }, 409);
+        }
       }
     }
 
@@ -512,6 +515,7 @@ restoreRoutes.post(
       return c.json({ error: 'Restore job is not cancelable' }, 409);
     }
 
+    let recoveryCloseFailed = false;
     if (rebuildRecoveryId) {
       // Free the device's recovery slot so the next rebuild isn't refused.
       try {
@@ -522,7 +526,11 @@ restoreRoutes.post(
           reason,
         });
       } catch (err) {
-        console.warn(`[BackupRestore] Failed to close bare-metal recovery ${rebuildRecoveryId} for restore ${row.id}:`, err);
+        // invalid_state = recovery already terminal, which is the goal state.
+        if (!(err instanceof BareMetalRecoveryError && err.code === 'invalid_state')) {
+          recoveryCloseFailed = true;
+          console.error(`[BackupRestore] Failed to close bare-metal recovery ${rebuildRecoveryId} for restore ${row.id}:`, err);
+        }
       }
     }
 
@@ -559,10 +567,14 @@ restoreRoutes.post(
         deviceId: row.deviceId,
         dispatchRemoved,
         stopQueued,
+        ...(rebuildRecoveryId ? { recoveryClosed: !recoveryCloseFailed } : {}),
       },
     });
 
     const data = toRestoreResponse(row);
+    if (recoveryCloseFailed) {
+      return c.json({ data, warning: 'Rebuild cancelled but its bare-metal recovery could not be closed; the device may refuse a new rebuild until it is cancelled from Recoveries.' });
+    }
     if (current.status === 'running' && !stopQueued) {
       return c.json({ data, warning: 'Restore marked as cancelled but the stop signal could not be delivered to the agent. The restore may still be running on the device.' });
     }

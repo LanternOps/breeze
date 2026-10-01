@@ -116,6 +116,9 @@ vi.mock('../../services/commandQueue', () => ({
 
 vi.mock('../../services/bareMetalRecoveryService', () => ({
   cancelBareMetalRecovery: (...args: unknown[]) => cancelBareMetalRecoveryMock(...(args as [])),
+  BareMetalRecoveryError: class BareMetalRecoveryError extends Error {
+    constructor(public code: string, public status = 409) { super(code); }
+  },
 }));
 
 vi.mock('../../services/backupMetrics', () => ({
@@ -1050,6 +1053,29 @@ describe('restore routes', () => {
         expect.objectContaining({ recoveryId: 'recovery-1', orgId: 'org-1' }),
       );
       expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('warns when the bare-metal recovery could not be closed', async () => {
+      selectMock.mockReturnValueOnce(chainMock([rebuildJob('pending')]));
+      updateMock.mockReturnValueOnce(chainMock([{ ...rebuildJob('cancelled') }]));
+      deleteMock.mockReturnValueOnce(chainMock([{ id: 'command-r1' }]));
+      cancelBareMetalRecoveryMock.mockRejectedValue(new Error('db down'));
+
+      const res = await app.request('/restore/restore-r1/cancel', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).warning).toMatch(/recovery could not be closed/);
+    });
+
+    it('cancels a pending rebuild that has no command', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ ...rebuildJob('pending'), commandId: null }]));
+      updateMock.mockReturnValueOnce(chainMock([{ ...rebuildJob('cancelled') }]));
+      cancelBareMetalRecoveryMock.mockResolvedValue({});
+
+      const res = await app.request('/restore/restore-r1/cancel', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(cancelBareMetalRecoveryMock).toHaveBeenCalled();
     });
 
     it('refuses to cancel a rebuild that is already running', async () => {
