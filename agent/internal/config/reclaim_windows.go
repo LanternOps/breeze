@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -24,7 +27,84 @@ var reclaimConfigFiles = map[string]string{
 var (
 	secureConfigRootFn    = secureMainAgentConfigDir
 	createConfigRootDirFn = createMainAgentDirectory
+	adminGroupMemberFn    = adminGroupMember
 )
+
+// reclaimOwnerSDDL makes applyWindowsDACL also set the owner to SYSTEM (with
+// its SeRestorePrivilege retry and Administrators fallback).
+const reclaimOwnerSDDL = `O:SYG:SY`
+
+// trustedConfigOwner reports whether sid may own the agent's config: SYSTEM,
+// Administrators, TrustedInstaller, or an account in the local Administrators
+// group. The last covers an elevated enroll under the "object creator" owner
+// policy, where the file's owner is the admin's own account; such installs
+// must not be treated as planted. A membership lookup that fails counts as
+// not trusted (fail closed).
+func trustedConfigOwner(sid string) bool {
+	if trustedProgramDataPrincipal(sid) {
+		return true
+	}
+	member, err := adminGroupMemberFn(sid)
+	if err != nil {
+		log.Warn("Could not check whether a config folder owner is an administrator; treating it as untrusted", "owner", sid, "error", err.Error())
+		return false
+	}
+	return member
+}
+
+var procNetUserGetLocalGroups = windows.NewLazySystemDLL("netapi32.dll").NewProc("NetUserGetLocalGroups")
+
+const (
+	lgIncludeIndirect  = 0x1
+	maxPreferredLength = 0xFFFFFFFF
+)
+
+// adminGroupMember reports whether the account sid names is a member of the
+// local Administrators group, directly or through a group (a domain group
+// nested in it). Only user accounts are looked up.
+func adminGroupMember(sidString string) (bool, error) {
+	sid, err := windows.StringToSid(sidString)
+	if err != nil {
+		return false, fmt.Errorf("parse owner SID %s: %w", sidString, err)
+	}
+	account, domain, use, err := sid.LookupAccount("")
+	if err != nil {
+		return false, fmt.Errorf("look up owner %s: %w", sidString, err)
+	}
+	if use != windows.SidTypeUser {
+		return false, nil
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return false, err
+	}
+	adminsName, _, _, err := admins.LookupAccount("")
+	if err != nil {
+		return false, fmt.Errorf("look up the Administrators group name: %w", err)
+	}
+	user16, err := windows.UTF16PtrFromString(domain + `\` + account)
+	if err != nil {
+		return false, err
+	}
+	var buf *byte
+	var read, total uint32
+	r, _, _ := procNetUserGetLocalGroups.Call(0, uintptr(unsafe.Pointer(user16)), 0, lgIncludeIndirect,
+		uintptr(unsafe.Pointer(&buf)), maxPreferredLength, uintptr(unsafe.Pointer(&read)), uintptr(unsafe.Pointer(&total)))
+	if buf != nil {
+		defer func() { _ = windows.NetApiBufferFree(buf) }()
+	}
+	if r != 0 {
+		return false, fmt.Errorf("list local groups of %s\\%s: %w", domain, account, syscall.Errno(r))
+	}
+	// LOCALGROUP_USERS_INFO_0 is a single LPWSTR.
+	names := unsafe.Slice((**uint16)(unsafe.Pointer(buf)), read)
+	for _, n := range names {
+		if strings.EqualFold(windows.UTF16PtrToString(n), adminsName) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // The data dir is inside the config dir on Windows.
 func reclaimSeparateDataDir() error { return nil }
@@ -79,8 +159,8 @@ func reclaimConfigDir(root string, forEnroll bool) error {
 		if !sec.Exists || sec.Reparse || checkProgramDataObject(p, sec) == nil {
 			continue
 		}
-		log.Warn("Re-securing an agent config file whose permissions let other accounts write it", "path", p)
-		if err := applyWindowsDACL(p, sddl); err != nil {
+		log.Warn("Re-securing an agent config file (SYSTEM owner, the agent's DACL)", "path", p, "owner", sec.OwnerSID)
+		if err := applyWindowsDACL(p, reclaimOwnerSDDL+sddl); err != nil {
 			return fmt.Errorf("%w: re-secure %s: %v", ErrConfigDirUntrusted, p, err)
 		}
 	}
@@ -94,7 +174,7 @@ func reclaimConfigDir(root string, forEnroll bool) error {
 // an owner like that is evidence even after the folder's own owner and DACL
 // were repaired (by the MSI, or an earlier run).
 func controlledByAnotherAccount(root string, rootSec programDataPathSecurity) (string, error) {
-	if !trustedProgramDataPrincipal(rootSec.OwnerSID) {
+	if !trustedConfigOwner(rootSec.OwnerSID) {
 		return "folder owner " + rootSec.OwnerSID, nil
 	}
 	entries, err := os.ReadDir(root)
@@ -118,7 +198,7 @@ func controlledByAnotherAccount(root string, rootSec programDataPathSecurity) (s
 		if sec.NameSurrogate {
 			return e.Name() + " is a link", nil
 		}
-		if !trustedProgramDataPrincipal(sec.OwnerSID) {
+		if !trustedConfigOwner(sec.OwnerSID) {
 			return e.Name() + " owner " + sec.OwnerSID, nil
 		}
 	}
@@ -189,7 +269,7 @@ func carryConfigFile(src, dst, sddl string) (bool, string, error) {
 	if sec.Reparse {
 		return false, "it is a link or reparse point", nil
 	}
-	if !trustedProgramDataPrincipal(sec.OwnerSID) {
+	if !trustedConfigOwner(sec.OwnerSID) {
 		return false, "owned by " + sec.OwnerSID, nil
 	}
 

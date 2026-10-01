@@ -91,6 +91,10 @@ func requireElevatedRunner(t *testing.T) {
 // subtree, all owned by that user.
 func plantFolderAsStandardUser(t *testing.T, root string) {
 	t.Helper()
+	// The filtered token keeps the runner's own user SID, which is a member
+	// of Administrators; the planting account here stands for a standard
+	// user, so its SID must not count as one.
+	stubAdminGroupMember(t, func(string) (bool, error) { return false, nil })
 	reclaimAsStandardUser(t, func() {
 		if err := os.Mkdir(root, 0o755); err != nil {
 			t.Fatalf("mkdir as a standard user: %v", err)
@@ -415,4 +419,73 @@ func TestReclaimConfigDirLeavesAHeldFolderHandleBehind(t *testing.T) {
 		t.Errorf("the other account's folder handle reaches %s, not the set-aside folder", p)
 	}
 	assertTrustedObject(t, root)
+}
+
+func stubAdminGroupMember(t *testing.T, fn func(sid string) (bool, error)) {
+	t.Helper()
+	orig := adminGroupMemberFn
+	t.Cleanup(func() { adminGroupMemberFn = orig })
+	adminGroupMemberFn = fn
+}
+
+// TestReclaimConfigDirAdoptsAnAdministratorsConfig: an agent.yaml owned by an
+// account that is a member of the local Administrators group (as an
+// elevated enroll writes it under the "object creator" owner policy) is
+// carried over, not dropped, so such installs stay enrolled. If the
+// membership lookup fails, it is not adopted (fail closed).
+func TestReclaimConfigDirAdoptsAnAdministratorsConfig(t *testing.T) {
+	requireElevatedRunner(t)
+	for name, tc := range map[string]struct {
+		member  func(string) (bool, error)
+		carried bool
+	}{
+		"owner is an Administrators member": {func(string) (bool, error) { return true, nil }, true},
+		"membership lookup fails":           {func(string) (bool, error) { return false, errors.New("lookup failed") }, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "Breeze")
+			plantFolderAsStandardUser(t, root)
+			ownerSID := currentReclaimUserSID(t)
+			var asked []string
+			stubAdminGroupMember(t, func(sid string) (bool, error) {
+				asked = append(asked, sid)
+				if sid != ownerSID {
+					return false, nil
+				}
+				return tc.member(sid)
+			})
+			if err := reclaimConfigDir(root, false); err != nil {
+				t.Fatalf("reclaimConfigDir: %v", err)
+			}
+			if got := exists(filepath.Join(root, "agent.yaml")); got != tc.carried {
+				t.Errorf("agent.yaml carried = %v, want %v (membership asked for %v)", got, tc.carried, asked)
+			}
+			if tc.carried {
+				assertTrustedObject(t, filepath.Join(root, "agent.yaml"))
+			}
+		})
+	}
+}
+
+// TestAdminGroupMemberResolvesRealAccounts: the real lookup reports the
+// elevated runner's own account as a member of Administrators and a SID
+// that names no account as an error (which callers treat as not trusted).
+func TestAdminGroupMemberResolvesRealAccounts(t *testing.T) {
+	requireElevatedRunner(t)
+	member, err := adminGroupMember(currentReclaimUserSID(t))
+	if err != nil || !member {
+		t.Errorf("runner account: member=%v err=%v, want a member", member, err)
+	}
+	if member, err := adminGroupMember("S-1-5-21-1-2-3-424242"); err == nil && member {
+		t.Error("a SID naming no account was reported as an Administrators member")
+	}
+}
+
+func currentReclaimUserSID(t *testing.T) string {
+	t.Helper()
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.User.Sid.String()
 }

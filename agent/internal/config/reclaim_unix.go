@@ -85,9 +85,13 @@ func reclaimSeparateDataDir() error {
 	return reclaimUnixDir(data, false, false)
 }
 
-// Only world write marks an entry as writable by another account: group
-// write is part of the agent's own layout (the macOS installer makes the
-// config dir 0770, the IPC socket is 0660).
+// Only world write marks a root-owned entry as writable by another account,
+// not group write. Group write is part of the agent's own layout: the macOS
+// installer makes the config dir 0770 so the user-context helpers can reach
+// it, and the IPC socket is 0660. Treating group write as untrusted would set
+// those aside on every start and break the helpers. The group of a folder
+// root owns is chosen by the installer, not by another account, and the take
+// back of a folder another account owned clears group write as well.
 const reclaimOtherWrite = 0o002
 
 func reclaimUnixDir(root string, configDir, forEnroll bool) error {
