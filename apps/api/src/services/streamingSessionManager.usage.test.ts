@@ -400,3 +400,117 @@ describe('fallback accumulation from assistant messages', () => {
     expect(recordUsageMock).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * #7667 — the SDK's `total_cost_usd` is a RUNNING total: within one streaming
+ * query it accumulates turn over turn, and a resumed query's first result also
+ * carries every earlier query's cost from the transcript (verified live against
+ * SDK 0.3.286, see the PR). Each billed turn must be charged its own cost only.
+ */
+describe('per-turn cost from the SDK running total (#7667)', () => {
+  async function runClientSession(
+    sessionId: string,
+    messages: unknown[],
+    sdkSessionId: string | null = null,
+  ) {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((r) => (releaseGate = r));
+    mockSdkQuery(messages, gate);
+    const session = await manager.getOrCreate(
+      sessionId,
+      { ...DB_SESSION, sdkSessionId },
+      PARTNER_AUTH,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    const recordExtraUsage = vi.fn(
+      (_u: { inputTokens: number; outputTokens: number; costCents: number }) => Promise.resolve(),
+    );
+    session.recordExtraUsage = recordExtraUsage;
+    releaseGate();
+    await session.processorPromise;
+    const doneCosts = session.eventBus
+      .getReplayEvents()
+      .filter((e: any) => e.type === 'done')
+      .map((e: any) => e.usage?.costCents);
+    const recordedUsd = (recordUsageMock.mock.calls as unknown as any[][]).map(
+      (c) => c[2].total_cost_usd as number,
+    );
+    const extraCents = recordExtraUsage.mock.calls.map((c) => c[0].costCents);
+    return { recordedUsd, doneCosts, extraCents };
+  }
+
+  const usage = { input_tokens: 100, output_tokens: 10 };
+
+  it('bills each turn of one query its own delta, not the running total', async () => {
+    const { recordedUsd, doneCosts, extraCents } = await runClientSession('sess-cumulative', [
+      resultMsg({ total_cost_usd: 0.01, usage }),
+      resultMsg({ total_cost_usd: 0.025, usage }),
+      resultMsg({ total_cost_usd: 0.045, usage }),
+    ]);
+
+    expect(recordedUsd).toHaveLength(3);
+    expect(recordedUsd[0]).toBeCloseTo(0.01, 10);
+    expect(recordedUsd[1]).toBeCloseTo(0.015, 10);
+    expect(recordedUsd[2]).toBeCloseTo(0.02, 10);
+    // The per-user Office ledger and the client-facing `done` cost get the same per-turn value.
+    expect(extraCents).toEqual([1, 1.5, 2]);
+    expect(doneCosts).toEqual([1, 1.5, 2]);
+  });
+
+  it('bills the first result after a resume from its own tokens, not the carried-over total', async () => {
+    const { recordedUsd, doneCosts, extraCents } = await runClientSession(
+      'sess-resumed',
+      [
+        // Carries every earlier query's cost from the transcript.
+        resultMsg({ total_cost_usd: 0.5, usage }),
+        resultMsg({ total_cost_usd: 0.53, usage }),
+      ],
+      'sdk-prior-session',
+    );
+
+    // First result: priced from this turn's own result.usage (calculateCostCents mock → 42 cents).
+    expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-4-5-20250929', 100, 10, 0, 0);
+    expect(recordedUsd[0]).toBeCloseTo(0.42, 10);
+    // Second result: the delta from the first result's running total.
+    expect(recordedUsd[1]).toBeCloseTo(0.03, 10);
+    expect(extraCents).toEqual([42, 3]);
+    expect(doneCosts).toEqual([42, 3]);
+  });
+
+  it('bills the full first-result total of a brand-new (non-resumed) query', async () => {
+    const { recordedUsd } = await runClientSession('sess-fresh', [
+      resultMsg({ total_cost_usd: 0.02, usage }),
+    ]);
+    expect(recordedUsd[0]).toBeCloseTo(0.02, 10);
+    expect(calculateCostCentsMock).not.toHaveBeenCalled();
+  });
+
+  it('never bills a negative delta when the running total goes down', async () => {
+    const { recordedUsd, doneCosts, extraCents } = await runClientSession('sess-decreasing', [
+      resultMsg({ total_cost_usd: 0.05, usage }),
+      resultMsg({ total_cost_usd: 0.04, usage }),
+      resultMsg({ total_cost_usd: 0.06, usage }),
+    ]);
+
+    expect(recordedUsd[0]).toBeCloseTo(0.05, 10);
+    expect(recordedUsd[1]).toBe(0);
+    // Measured from the highest total seen, so the dip is never billed twice.
+    expect(recordedUsd[2]).toBeCloseTo(0.01, 10);
+    expect(extraCents).toEqual([5, 0, 1]);
+    expect(doneCosts).toEqual([5, 0, 1]);
+  });
+
+  it('bills deltas across error-subtype results on the same query', async () => {
+    const { recordedUsd } = await runClientSession('sess-interrupted', [
+      resultMsg({ total_cost_usd: 0.01, usage }),
+      { ...resultMsg({ total_cost_usd: 0.018, usage }), subtype: 'error_during_execution', errors: ['interrupted'] },
+      resultMsg({ total_cost_usd: 0.03, usage }),
+    ]);
+    expect(recordedUsd[0]).toBeCloseTo(0.01, 10);
+    expect(recordedUsd[1]).toBeCloseTo(0.008, 10);
+    expect(recordedUsd[2]).toBeCloseTo(0.012, 10);
+  });
+});

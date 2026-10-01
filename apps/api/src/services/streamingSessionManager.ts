@@ -34,6 +34,7 @@ import {
   sumInputTokens,
   type CatalogPricingSnapshot,
 } from './aiCostTracker';
+import { sdkTurnCostFromRunningTotal } from './sdkTurnCost';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -528,6 +529,17 @@ export interface ActiveSession {
    */
   revokeEgressGrant?: () => void;
   sdkSessionId: string | null;
+  /**
+   * True when this session's live `query()` was started with `resume`, so its
+   * first result's `total_cost_usd` also carries earlier queries' cost (#7667).
+   * Optional so fixtures that build ActiveSession literals compile unchanged.
+   */
+  readonly resumedQuery?: boolean;
+  /**
+   * Highest SDK running `total_cost_usd` seen on this session's live query;
+   * undefined until its first result. Each turn is billed against it (#7667).
+   */
+  sdkCostBaselineUsd?: number;
   query: Query;
   abortController: AbortController;
   inputController: StreamInputController;
@@ -1093,6 +1105,9 @@ export class StreamingSessionManager {
       budgetReservationId: options?.budgetReservationId,
       revokeEgressGrant: undefined,
       sdkSessionId: dbSession.sdkSessionId,
+      // Mirrors the `resume:` option passed to query() below.
+      resumedQuery: !!dbSession.sdkSessionId,
+      sdkCostBaselineUsd: undefined,
       query: null as unknown as Query, // set below
       abortController,
       inputController,
@@ -1876,14 +1891,35 @@ export class StreamingSessionManager {
             const turnToolExecutionCount = session.pendingTurnToolExecutionCount;
             session.pendingTurnToolExecutionCount = 0;
 
+            const turnUsage = {
+              input_tokens: effectiveUsage.inputTokens,
+              output_tokens: effectiveUsage.outputTokens,
+              cache_read_input_tokens: effectiveUsage.cacheReadInputTokens,
+              cache_creation_input_tokens: effectiveUsage.cacheCreationInputTokens,
+            };
+            // #7667: `total_cost_usd` is the SDK's running total for the whole
+            // query (and, after a resume, the transcript before it). Convert it
+            // to THIS turn's cost once, here, so the org ledger, the credit
+            // deduction, the per-user hook and the `done` event all agree.
+            // Catalog sessions ignore the SDK total (priced from the revision
+            // snapshot below), so their value passes through untouched.
+            let turnTotalCostUsd = resultMsg.total_cost_usd ?? 0;
+            if (!session.catalogPricing) {
+              const turnCost = sdkTurnCostFromRunningTotal({
+                reportedTotalUsd: resultMsg.total_cost_usd,
+                baselineUsd: session.sdkCostBaselineUsd,
+                resumedQuery: session.resumedQuery === true,
+                model: session.model,
+                usage: turnUsage,
+              });
+              turnTotalCostUsd = turnCost.turnCostUsd;
+              session.sdkCostBaselineUsd = turnCost.baselineUsd;
+            }
+
             const usageData = {
-              total_cost_usd: resultMsg.total_cost_usd ?? 0,
-              usage: {
-                input_tokens: effectiveUsage.inputTokens,
-                output_tokens: effectiveUsage.outputTokens,
-                cache_read_input_tokens: effectiveUsage.cacheReadInputTokens,
-                cache_creation_input_tokens: effectiveUsage.cacheCreationInputTokens,
-              },
+              // This turn's cost only (see above), despite the SDK field name.
+              total_cost_usd: turnTotalCostUsd,
+              usage: turnUsage,
               num_turns: resultMsg.num_turns ?? 0,
               // Model id for token-based cost fallback when the SDK reports $0.
               model: session.model,
