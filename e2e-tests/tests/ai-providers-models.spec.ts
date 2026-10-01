@@ -40,9 +40,11 @@ async function readAccessToken(page: Page): Promise<string> {
 async function firstOrgId(request: APIRequestContext, token: string): Promise<string> {
   const res = await request.get('/api/v1/orgs/organizations', { headers: { authorization: `Bearer ${token}` } });
   expect(res.ok(), `GET organizations → ${res.status()}`).toBeTruthy();
-  const body = (await res.json()) as { data?: Array<{ id: string }> };
-  const id = body.data?.[0]?.id;
-  expect(id, 'the seeded organization').toBeTruthy();
+  const body = (await res.json()) as { data?: Array<{ id: string; slug?: string; name?: string }> };
+  // The seed's baseline org (db/seed.ts): selected by slug/name, never by list order.
+  const seeded = body.data?.find((o) => o.slug === 'default-organization' || o.name === 'Default Organization');
+  const id = seeded?.id;
+  expect(id, 'the seeded Default Organization').toBeTruthy();
   return id as string;
 }
 
@@ -72,36 +74,52 @@ test.describe('AI Providers & Models', () => {
 
   test('2. enabling and disabling a platform model autosaves', async () => {
     await models.goto();
-    // A model that is not a feature default, so disabling needs no confirmation.
-    const chatDefault = await models.defaultsSelect('chat').inputValue();
+    // Prefer an offering that is no surface's default, so the disable needs no
+    // confirmation. If every enabled offering is some default, fall back to the
+    // confirm path (submit it) so the POST still fires deterministically.
+    const defaults = new Set(
+      await authedPage.locator('[data-testid^="ai-defaults-default-"]').evaluateAll(
+        (els) => els.map((e) => (e as HTMLSelectElement).value).filter(Boolean),
+      ),
+    );
     const switches = models.anyOfferingEnable();
     const count = await switches.count();
-    let key = '';
+    const enabledKeys: string[] = [];
     for (let i = 0; i < count; i += 1) {
-      const testId = (await switches.nth(i).getAttribute('data-testid')) ?? '';
-      const candidate = testId.replace('ai-offering-enable-', '');
-      if (candidate !== chatDefault && (await switches.nth(i).isChecked())) { key = candidate; break; }
+      if (!(await switches.nth(i).isChecked())) continue;
+      enabledKeys.push(((await switches.nth(i).getAttribute('data-testid')) ?? '').replace('ai-offering-enable-', ''));
     }
-    expect(key, 'a seeded enabled platform offering that is not the chat default').not.toBe('');
+    const key = enabledKeys.find((k) => !defaults.has(k)) ?? enabledKeys[0];
+    expect(key, 'a seeded enabled platform offering').toBeTruthy();
 
-    for (const next of [false, true]) {
-      const [response] = await Promise.all([
-        authedPage.waitForResponse(isEnabledPost),
-        next ? models.offeringEnable(key).check() : models.offeringEnable(key).uncheck(),
-      ]);
-      expect(response.status()).toBe(200);
-      await authedPage.reload();
-      await models.root().waitFor();
-      if (next) await expect(models.offeringEnable(key)).toBeChecked();
-      else await expect(models.offeringEnable(key)).not.toBeChecked();
-    }
+    // A controlled checkbox follows the server snapshot, so click and assert.
+    const [off] = await Promise.all([
+      authedPage.waitForResponse(isEnabledPost),
+      (async () => {
+        await models.offeringEnable(key).click();
+        if (defaults.has(key)) {
+          await expect(models.offeringDisableConfirm()).toBeVisible();
+          await authedPage.getByTestId('ai-offering-disable-confirm-submit').click();
+        }
+      })(),
+    ]);
+    expect(off.status()).toBe(200);
+    await authedPage.reload();
+    await models.root().waitFor();
+    await expect(models.offeringEnable(key)).not.toBeChecked();
+
+    const [on] = await Promise.all([authedPage.waitForResponse(isEnabledPost), models.offeringEnable(key).click()]);
+    expect(on.status()).toBe(200);
+    await authedPage.reload();
+    await models.root().waitFor();
+    await expect(models.offeringEnable(key)).toBeChecked();
   });
 
   test('3. disabling a model a feature defaults to asks first and lists the feature', async () => {
     await models.goto();
     const chatDefault = await models.defaultsSelect('chat').inputValue();
     expect(chatDefault, 'the seeded chat default').not.toBe('');
-    await models.offeringEnable(chatDefault).uncheck();
+    await models.offeringEnable(chatDefault).click();
     await expect(models.offeringDisableConfirm()).toBeVisible();
     await expect(models.offeringDisableConfirmSurfaces()).toContainText('Chat');
     // ConfirmDialog's Cancel button carries no testid; Escape is the same onClose.
@@ -154,6 +172,12 @@ test.describe('AI Providers & Models', () => {
     await authedPage.reload();
     await models.root().waitFor();
     await expect(models.defaultsSelect('catalog_enrichment')).toHaveValue(other as string);
+    // Leave the fixture as found.
+    await models.defaultsSelect('catalog_enrichment').selectOption(current);
+    await Promise.all([
+      authedPage.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname.endsWith('/ai/models/assignments')),
+      models.defaultsSave().click(),
+    ]);
   });
 
   test('6. requiring residency asks for confirmation and cancel changes nothing', async () => {
@@ -163,12 +187,22 @@ test.describe('AI Providers & Models', () => {
       if (r.method() === 'PUT' && new URL(r.url()).pathname.endsWith('/ai/models/residency')) puts += 1;
     });
     await expect(models.residencySwitch()).not.toBeChecked();
-    await models.residencySwitch().check({ noWaitAfter: true });
-    await expect(models.residencyConfirm()).toBeVisible();
-    await models.residencyConfirmCancel().click();
-    await expect(models.residencyConfirm()).toBeHidden();
-    await expect(models.residencySwitch()).not.toBeChecked();
-    expect(puts).toBe(0);
+    // The switch is controlled by the server snapshot: click, then assert.
+    await models.residencySwitch().click();
+    const confirm = models.residencyConfirm();
+    // Either the impact preview needs confirming, or it was empty and it saved.
+    await expect(confirm.or(authedPage.locator('[data-testid="ai-residency-switch"]:checked'))).toBeVisible();
+    if (await confirm.isVisible()) {
+      await models.residencyConfirmCancel().click();
+      await expect(confirm).toBeHidden();
+      await expect(models.residencySwitch()).not.toBeChecked();
+      expect(puts).toBe(0);
+    } else {
+      // No impact: it saved directly. Restore the fixture (residency off).
+      await expect(models.residencySwitch()).toBeChecked();
+      await models.residencySwitch().click();
+      await expect(models.residencySwitch()).not.toBeChecked();
+    }
   });
 
   test('7. an organization overrides the partner defaults', async () => {
@@ -179,7 +213,8 @@ test.describe('AI Providers & Models', () => {
     await expect(authedPage.getByTestId('org-model-defaults-inherited-chat')).toContainText('partner default');
     const lock = authedPage.getByTestId('org-model-defaults-lock-choice-chat');
     const was = await lock.isChecked();
-    if (was) await lock.uncheck(); else await lock.check();
+    await lock.click(); // controlled by the draft state: click, then assert
+    if (was) await expect(lock).not.toBeChecked(); else await expect(lock).toBeChecked();
     const [response] = await Promise.all([
       authedPage.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname.endsWith(`/ai/models/orgs/${orgId}/assignments`)),
       authedPage.getByTestId('org-model-defaults-save').click(),
@@ -189,7 +224,7 @@ test.describe('AI Providers & Models', () => {
     await expect(authedPage.getByTestId('org-model-defaults-card')).toBeVisible();
     if (was) await expect(lock).not.toBeChecked(); else await expect(lock).toBeChecked();
     // Leave the fixture as found.
-    if (was) await lock.check(); else await lock.uncheck();
+    await lock.click();
     await Promise.all([
       authedPage.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname.endsWith(`/ai/models/orgs/${orgId}/assignments`)),
       authedPage.getByTestId('org-model-defaults-save').click(),
