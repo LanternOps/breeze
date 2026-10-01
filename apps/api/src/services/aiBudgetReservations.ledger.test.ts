@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
@@ -90,8 +90,12 @@ function invocation(over: Partial<NewInvocation> = {}): NewInvocation {
   };
 }
 
+afterEach(() => { vi.unstubAllEnvs(); });
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('BILLING_SERVICE_URL', 'https://billing.example.test');
+  vi.stubEnv('BILLING_SERVICE_API_KEY', 'test-billing-key');
   dbMock.execute.mockReset();
   hoisted.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
   hoisted.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
@@ -200,6 +204,13 @@ describe('settleAiBudgetReservation with ledger rows', () => {
     const settle = q(4);
     expect(settle.sql).toMatch(/pending_settlement = NULL/);
     expect(settle.sql).toMatch(/credits_debit_due_at/);
+  });
+
+  it('no billing service configured (self-hosted): platform spend is never marked due, so enabling billing later cannot debit a backlog', async () => {
+    vi.stubEnv('BILLING_SERVICE_URL', '');
+    primeSettle();
+    const out = await settleAiBudgetReservation({ orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [invocation()] });
+    expect(out).toMatchObject({ kind: 'settled', creditsDebitDue: false, billingSource: 'platform' });
   });
 
   it('partner_key spend is never due for a platform debit', async () => {

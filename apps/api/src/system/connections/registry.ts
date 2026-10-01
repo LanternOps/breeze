@@ -189,6 +189,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'ANTHROPIC_AUTH_TOKEN' },
       { name: 'ANTHROPIC_BASE_URL', secret: false },
       { name: 'ANTHROPIC_MODEL', secret: false },
+      { name: 'AI_PLATFORM_INFERENCE_GEO', secret: false },
     ],
   }),
   defineEntry({

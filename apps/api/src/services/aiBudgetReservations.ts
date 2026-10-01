@@ -13,6 +13,12 @@ import { platformRateSnapshot } from './aiModels/pricing';
 import { safeErrorMessage } from './aiModels/safeDbError';
 import { parseTurnBinding, stableJson, type TurnBinding } from './aiModels/turnBinding';
 
+
+/** Local copy of aiCostTracker.isBillingServiceConfigured (importing it would create a module cycle). */
+function billingServiceConfigured(): boolean {
+  return Boolean(process.env.BILLING_SERVICE_URL && process.env.BILLING_SERVICE_API_KEY);
+}
+
 export type { AiBillingSource } from './aiCostTracker';
 
 export type AiBudgetReservationStatus =
@@ -1029,9 +1035,12 @@ export async function settleAiBudgetReservation(
 
     // Only a LEDGER settlement of platform spend owes a keyed debit; the legacy
     // recorders deduct for themselves, so their settlements never set this.
+    // With no billing service configured (self-hosted) nothing is owed: marking
+    // the row due would leave a backlog that a later billing enablement debits.
     const creditsDebitDue = input.invocations !== undefined
       && reservation.billing_source === 'platform'
-      && Number(cost) > 0;
+      && Number(cost) > 0
+      && billingServiceConfigured();
     const settled = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
       UPDATE ai_budget_reservations
       SET status = 'settled', actual_cost_cents = ${cost}::numeric,
