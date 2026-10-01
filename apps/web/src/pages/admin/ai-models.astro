@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AiModels from '../../components/admin/AiModels';
+---
+
+<DashboardLayout titleKey="titles.adminAiModels">
+  <AiModels client:load />
+</DashboardLayout>

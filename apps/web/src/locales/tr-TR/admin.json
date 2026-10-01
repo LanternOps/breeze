@@ -617,6 +617,85 @@
           "integrations": "Entegrasyonlar"
         }
       }
+    },
+    "aiModels": {
+      "title": "Yapay zeka modelleri",
+      "subtitle": "Platformun Anthropic keşfinden bildiği modeller. Yeni modeller fiyatsız gelir ve siz fiyatlandırıp sunana kadar kimseye sunulmaz.",
+      "refresh": "Modelleri yenile",
+      "requiresPlatformAdmin": "Yapay zeka modellerini yönetmek için platform yöneticisi erişimi gerekir.",
+      "empty": "Henüz model yok. Platform anahtarıyla modelleri keşfetmek için yenileyin.",
+      "newBadge": "Yeni",
+      "notSeen": "Keşif tarafından henüz görülmedi",
+      "unpriced": "Fiyatsız",
+      "yes": "Evet",
+      "no": "Hayır",
+      "edit": "Düzenle",
+      "columns": {
+        "model": "Model",
+        "status": "Durum",
+        "thinking": "Düşünme",
+        "price": "MTok başına giriş / çıkış",
+        "offered": "Sunuluyor",
+        "default": "Platform varsayılanı",
+        "actions": "İşlemler"
+      },
+      "lifecycle": {
+        "available": "Kullanılabilir",
+        "missing": "Eksik",
+        "retired": "Emekli"
+      },
+      "thinkingMode": {
+        "adaptive": "Uyarlanabilir",
+        "budget": "Bütçe",
+        "none": "Yok",
+        "unknown": "Doğrulanmadı"
+      },
+      "thinkingDisplay": {
+        "omitted": "Atlandı",
+        "summarized": "Özetlendi",
+        "updates": "İlerleme güncellemeleri"
+      },
+      "promptProfile": {
+        "claude-frontier": "Öncü",
+        "claude-standard": "Standart",
+        "claude-small": "Küçük",
+        "generic": "Genel"
+      },
+      "drawer": {
+        "title": "{{name}} düzenle",
+        "prices": "Fiyatlar (milyon token başına ABD senti)",
+        "fastPrices": "Hızlı mod fiyatları (isteğe bağlı)",
+        "fastPricesHint": "Dört hızlı fiyatın tümü ayarlanana kadar hızlı mod seçilemez.",
+        "inputCentsPerM": "Giriş",
+        "outputCentsPerM": "Çıkış",
+        "cacheReadCentsPerM": "Önbellek okuma",
+        "cacheWriteCentsPerM": "Önbellek yazma",
+        "effort": "Efor düzeyleri",
+        "thinkingDisplay": "Düşünme gösterimi",
+        "fast": "Hızlı mod destekleniyor",
+        "inferenceGeo": "Çıkarım bölgeleri",
+        "inferenceGeoHint": "Anthropic API'sine karşı doğrulanmış, virgülle ayrılmış değerler, örneğin us, global.",
+        "minPlan": "Asgari plan",
+        "allPlans": "Tüm planlar",
+        "promptProfile": "İstem profili",
+        "offered": "Platform anahtarında sunuluyor",
+        "offeredHint": "Dört fiyatın tümü gerekir.",
+        "isDefault": "Platform varsayılanı",
+        "defaultHint": "Yaklaşan özellik başına model çözümleyici için kaydedilir. O yayımlanana kadar dağıtım varsayılanı ANTHROPIC_MODEL veya yerleşik varsayılandan gelir.",
+        "defaultLocked": "Bu platform varsayılanıdır. Değiştirmek için başka bir modeli varsayılan yapın.",
+        "save": "Kaydet",
+        "cancel": "İptal"
+      },
+      "notice": {
+        "saved": "Model kaydedildi.",
+        "refreshQueued": "Model yenileme kuyruğa alındı."
+      },
+      "errors": {
+        "load": "Yapay zeka modelleri yüklenemedi.",
+        "save": "Model kaydedilemedi.",
+        "refresh": "Model yenileme kuyruğa alınamadı.",
+        "invalidRates": "Dört fiyatı da negatif olmayan sayılar olarak girin veya dördünü de boş bırakın."
+      }
     }
   },
   "audit": {

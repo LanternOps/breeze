@@ -105,7 +105,8 @@
     "securityScans": "Varreduras de IOC",
     "system": "Sistema",
     "monitorConversion": "Conversão de monitores",
-    "timeSync": "Sincronização de horário"
+    "timeSync": "Sincronização de horário",
+    "aiModels": "Modelos de IA"
   },
   "documentTitles": {
     "dashboard": "Painel",

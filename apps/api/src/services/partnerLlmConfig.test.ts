@@ -52,8 +52,14 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
-vi.mock('./aiModel', () => ({
+vi.mock('./aiModel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiModel')>()),
   resolveDefaultModel: () => 'claude-sonnet-4-6',
+}));
+
+const { isOfferablePlatformModelMock } = vi.hoisted(() => ({ isOfferablePlatformModelMock: vi.fn() }));
+vi.mock('./aiModels/platformModels', () => ({
+  isOfferablePlatformModel: (...args: unknown[]) => isOfferablePlatformModelMock(...args),
 }));
 
 vi.mock('./sentry', () => ({
@@ -413,6 +419,25 @@ describe('savePartnerLlmKey', () => {
 });
 
 describe('updatePartnerLlmConfig', () => {
+  beforeEach(() => {
+    isOfferablePlatformModelMock.mockImplementation(async (model: string) =>
+      ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-fable-5'].includes(model));
+  });
+
+  it('accepts a default the registry offers that W00 never listed (W01 #7599)', async () => {
+    isOfferablePlatformModelMock.mockResolvedValue(true);
+    dbState.updateResults.push([{ configVersion: 3 }]);
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'vendor-new-model' }))
+      .resolves.toEqual({ defaultModel: 'vendor-new-model', configVersion: 3 });
+  });
+
+  it('rejects a W00 id the operator stopped offering, without writing (W01 #7599)', async () => {
+    isOfferablePlatformModelMock.mockResolvedValue(false);
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }))
+      .rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
   it('rejects an unknown default model without writing', async () => {
     await expect(
       updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-made-up-model' }),

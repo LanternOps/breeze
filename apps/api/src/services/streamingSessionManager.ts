@@ -12,7 +12,7 @@
  * - Background SDK Processor: iterates Query output, translates to AiStreamEvents
  */
 
-import { resolveModelThinking } from './aiModelThinking';
+import { agentSdkWireOptions } from './aiModels/modelWireOptions';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -1314,9 +1314,10 @@ export class StreamingSessionManager {
             resume: dbSession.sdkSessionId ?? undefined,
             persistSession: true,
             settingSources: [],
-            // #7587: per-model thinking/effort (never a hard-coded `disabled`,
-            // which current models reject with a 400). Keyed on the wire id.
-            ...resolveModelThinking(wire.model),
+            // #7587, #7599: per-model thinking/effort from agentSdkWireOptions (never a
+            // hard-coded `disabled`, which current models reject with a 400).
+            // Keyed on the wire id.
+            ...agentSdkWireOptions(wire.model),
             stderr: (data: string) => {
               if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
                 console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));

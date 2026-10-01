@@ -4,7 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partnerLlmConfigs } from '../db/schema';
 import { resolveDefaultModel } from './aiModel';
-import { OFFERABLE_AI_MODELS } from './aiCostTracker';
+import { isOfferablePlatformModel } from './aiModels/platformModels';
 import {
   columnAad,
   encryptedColumnRegistry,
@@ -348,7 +348,7 @@ export async function updatePartnerLlmConfig(input: {
   partnerId: string;
   defaultModel: string | null;
 }): Promise<{ defaultModel: string | null; configVersion: number }> {
-  if (input.defaultModel !== null && !OFFERABLE_AI_MODELS.includes(input.defaultModel)) {
+  if (input.defaultModel !== null && !(await isOfferablePlatformModel(input.defaultModel))) {
     throw new PartnerLlmError('Unsupported Anthropic model.', 400);
   }
 

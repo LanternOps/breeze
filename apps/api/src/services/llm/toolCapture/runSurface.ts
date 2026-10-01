@@ -27,7 +27,7 @@
  * normally; only a rejection with NO observed `result` (a real SDK/harness
  * failure before any result — bad key, transport crash, etc.) propagates.
  */
-import { resolveModelThinking } from '../../aiModelThinking';
+import { agentSdkWireOptions } from '../../aiModels/modelWireOptions';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { composeStaticSystemPrompt } from '../../aiToolIndex';
 import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
@@ -202,8 +202,8 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         resume: opts.resume,
         persistSession: true,
         settingSources: [],
-        // #7587: same per-model thinking/effort as production chat.
-        ...resolveModelThinking(opts.model),
+        // #7587, #7599: same per-model thinking/effort as production chat (agentSdkWireOptions).
+        ...agentSdkWireOptions(opts.model),
         abortController: abort,
         stderr: (data: string) => observer.onStderr(data),
       },

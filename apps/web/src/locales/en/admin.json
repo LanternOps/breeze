@@ -617,6 +617,85 @@
           "integrations": "Integrations"
         }
       }
+    },
+    "aiModels": {
+      "title": "AI models",
+      "subtitle": "Models the platform knows from Anthropic discovery. New models arrive unpriced and are offered to no one until you price and offer them.",
+      "refresh": "Refresh models",
+      "requiresPlatformAdmin": "Platform administrator access is required to manage AI models.",
+      "empty": "No models yet. Refresh to discover models with the platform key.",
+      "newBadge": "New",
+      "notSeen": "Not yet seen by discovery",
+      "unpriced": "Unpriced",
+      "yes": "Yes",
+      "no": "No",
+      "edit": "Edit",
+      "columns": {
+        "model": "Model",
+        "status": "Status",
+        "thinking": "Thinking",
+        "price": "Input / output per MTok",
+        "offered": "Offered",
+        "default": "Platform default",
+        "actions": "Actions"
+      },
+      "lifecycle": {
+        "available": "Available",
+        "missing": "Missing",
+        "retired": "Retired"
+      },
+      "thinkingMode": {
+        "adaptive": "Adaptive",
+        "budget": "Budget",
+        "none": "None",
+        "unknown": "Unverified"
+      },
+      "thinkingDisplay": {
+        "omitted": "Omitted",
+        "summarized": "Summarized",
+        "updates": "Progress updates"
+      },
+      "promptProfile": {
+        "claude-frontier": "Frontier",
+        "claude-standard": "Standard",
+        "claude-small": "Small",
+        "generic": "Generic"
+      },
+      "drawer": {
+        "title": "Edit {{name}}",
+        "prices": "Prices (US cents per million tokens)",
+        "fastPrices": "Fast mode prices (optional)",
+        "fastPricesHint": "Fast mode can't be selected until all four fast prices are set.",
+        "inputCentsPerM": "Input",
+        "outputCentsPerM": "Output",
+        "cacheReadCentsPerM": "Cache read",
+        "cacheWriteCentsPerM": "Cache write",
+        "effort": "Effort levels",
+        "thinkingDisplay": "Thinking display",
+        "fast": "Fast mode supported",
+        "inferenceGeo": "Inference geographies",
+        "inferenceGeoHint": "Comma-separated values confirmed against the Anthropic API, for example us, global.",
+        "minPlan": "Minimum plan",
+        "allPlans": "All plans",
+        "promptProfile": "Prompt profile",
+        "offered": "Offered on the platform key",
+        "offeredHint": "Requires all four prices.",
+        "isDefault": "Platform default",
+        "defaultHint": "Recorded for the upcoming per-feature model resolver. Until it ships, the deployment default comes from ANTHROPIC_MODEL or the built-in default.",
+        "defaultLocked": "This is the platform default. Make another model the default to change it.",
+        "save": "Save",
+        "cancel": "Cancel"
+      },
+      "notice": {
+        "saved": "Model saved.",
+        "refreshQueued": "Model refresh queued."
+      },
+      "errors": {
+        "load": "Couldn't load AI models.",
+        "save": "Couldn't save the model.",
+        "refresh": "Couldn't queue a model refresh.",
+        "invalidRates": "Enter all four prices as non-negative numbers, or leave all four blank."
+      }
     }
   },
   "audit": {

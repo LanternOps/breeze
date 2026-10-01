@@ -101,6 +101,8 @@ const EXPECTED_WORKER_NAMES = [
   'sendingDomainsWorker',
   // AI Suggested Fixes W1 — fix-outcome sweeper.
   'fixOutcomeWorker',
+  // AI model registry W01 (#7599).
+  'aiModelDiscoveryWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {

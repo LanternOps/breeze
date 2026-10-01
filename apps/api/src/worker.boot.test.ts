@@ -150,6 +150,9 @@ vi.mock('./db', () => ({
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
   closeDb: mocks.closeDb,
 }));
+// AI model registry W01 (#7599): the boot path starts the platform model
+// snapshot refresher; it reads the database, which this suite mocks out.
+vi.mock('./services/aiModels/platformModels', () => ({ startPlatformModelSnapshotRefresher: vi.fn(() => () => undefined) }));
 vi.mock('./services/redis', () => ({
   getRedis: mocks.getRedis,
   closeRedis: mocks.closeRedis,

@@ -150,6 +150,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // the default configuration.
   consumers('m365SyncWorker'),
   consumers('pax8SyncWorker'),
+  consumers('aiModelDiscoveryWorker'),
   consumers('tdSynnexSftpSyncWorker'),
   consumers('logForwardingWorker'),
   consumers('patchJobWorker', ['patchJobWorker', 'patchJobDeviceWorker']),

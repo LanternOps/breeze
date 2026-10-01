@@ -23,6 +23,14 @@ import { getEffectiveAiBudget } from './effectiveSettings';
 import { rateLimiter } from './rate-limit';
 import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
+import { clearPlatformModelSnapshot, setPlatformModelSnapshot } from './aiModels/platformModelSnapshot';
+import {
+  PARITY_TOKEN_VECTORS,
+  SEEDED_PLATFORM_MODELS,
+  W00_MODEL_PRICING,
+  seededPlatformModel,
+  w00CalculateCostCents,
+} from './aiModels/__fixtures__/seededPlatformModels';
 
 // ============================================
 // Mocks
@@ -2096,5 +2104,89 @@ describe('updateBudget', () => {
 
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(capture.updateSet?.approvalMode).toBe('action_plan');
+  });
+});
+
+describe('token pricing reads the platform model registry (W01 #7599)', () => {
+  afterEach(() => clearPlatformModelSnapshot());
+
+  describe.each([
+    ['cold snapshot (bootstrap MODEL_PRICING)', () => clearPlatformModelSnapshot()],
+    ['registry = seed', () => setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS)],
+  ] as const)('%s', (_label, arrange) => {
+    it('prices every W00 id exactly as W00 did, for every parity vector', () => {
+      arrange();
+      for (const model of Object.keys(W00_MODEL_PRICING)) {
+        for (const [input, output, cacheRead, cacheWrite] of PARITY_TOKEN_VECTORS) {
+          expect(calculateCostCents(model, input, output, cacheRead, cacheWrite), `${model} ${input}/${output}/${cacheRead}/${cacheWrite}`)
+            .toBe(w00CalculateCostCents(model, input, output, cacheRead, cacheWrite));
+        }
+      }
+    });
+
+    it('isPricedModel matches W00 for every W00 id and an unknown id', () => {
+      arrange();
+      for (const model of Object.keys(W00_MODEL_PRICING)) expect(isPricedModel(model), model).toBe(true);
+      expect(isPricedModel('some-unreleased-model')).toBe(false);
+    });
+  });
+
+  it('an operator price edit is what the fallback charges', () => {
+    setPlatformModelSnapshot([{ ...seededPlatformModel('claude-opus-4-8'),
+      rates: { inputCentsPerM: 450, outputCentsPerM: 2250, cacheReadCentsPerM: 45, cacheWriteCentsPerM: 560 } }]);
+    expect(calculateCostCents('claude-opus-4-8', 1_000_000, 1_000_000, 1_000_000, 1_000_000)).toBe(450 + 2250 + 45 + 560);
+  });
+
+  it('a newly discovered model the operator priced is priced (no release needed)', () => {
+    setPlatformModelSnapshot([{ ...seededPlatformModel('claude-sonnet-5-5'), modelId: 'vendor-new-model', isPlatformDefault: false }]);
+    expect(isPricedModel('vendor-new-model')).toBe(true);
+    expect(calculateCostCents('vendor-new-model', 1_000_000, 0)).toBe(200);
+  });
+
+  it('a registry row with no price is unpriced: isPricedModel false, DEFAULT_PRICING charged with the warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot([{ ...seededPlatformModel('claude-haiku-4-5'), rates: null, platformOffered: false }]);
+    expect(isPricedModel('claude-haiku-4-5')).toBe(false);
+    expect(calculateCostCents('claude-haiku-4-5', 1_000_000, 1_000_000)).toBe(3000);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('a loaded snapshot without a row for a W00 id still prices it from bootstrap MODEL_PRICING', () => {
+    setPlatformModelSnapshot([]);
+    expect(isPricedModel('claude-sonnet-4-6')).toBe(true);
+    expect(calculateCostCents('claude-sonnet-4-6', 1_000_000, 1_000_000)).toBe(1800);
+  });
+
+  // W00 coerced a runtime null cache count (the SDK usage object types them
+  // `number | null`; destructuring defaults only replace undefined) to 0.
+  // computeInvocationCents throws on non-finite input, so calculateCostCents
+  // clamps at its boundary: a usage record is never lost to a RangeError.
+  it('reports a non-null invalid token count to Sentry, but not a null one (W00 coerced null)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS);
+    vi.mocked(captureMessage).mockClear();
+    calculateCostCents('claude-sonnet-5-5', 1_000_000, 0, null as unknown as number, undefined);
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
+    calculateCostCents('claude-sonnet-5-5', Number.NaN, 0);
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'ai_usage_invalid_token_count' }),
+    );
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['negative', -5],
+  ])('a %s token count prices as 0 instead of throwing', (_label, bad) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS);
+    const value = bad as unknown as number;
+    expect(calculateCostCents('claude-sonnet-5-5', 1_000_000, 0, value, value)).toBe(200);
+    expect(calculateCostCents('claude-sonnet-5-5', value, 1_000_000)).toBe(1000);
+    warn.mockRestore();
   });
 });

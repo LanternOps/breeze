@@ -617,6 +617,85 @@
           "integrations": "Intégrations"
         }
       }
+    },
+    "aiModels": {
+      "title": "Modèles d'IA",
+      "subtitle": "Modèles connus de la plateforme via la découverte Anthropic. Les nouveaux modèles arrivent sans tarif et ne sont proposés à personne tant que vous ne les avez pas tarifés et proposés.",
+      "refresh": "Actualiser les modèles",
+      "requiresPlatformAdmin": "L'accès administrateur de la plateforme est requis pour gérer les modèles d'IA.",
+      "empty": "Aucun modèle pour l'instant. Actualisez pour découvrir des modèles avec la clé de la plateforme.",
+      "newBadge": "Nouveau",
+      "notSeen": "Pas encore vu par la découverte",
+      "unpriced": "Sans tarif",
+      "yes": "Oui",
+      "no": "Non",
+      "edit": "Modifier",
+      "columns": {
+        "model": "Modèle",
+        "status": "Statut",
+        "thinking": "Réflexion",
+        "price": "Entrée / sortie par MTok",
+        "offered": "Proposé",
+        "default": "Défaut de la plateforme",
+        "actions": "Actions"
+      },
+      "lifecycle": {
+        "available": "Disponible",
+        "missing": "Manquant",
+        "retired": "Retiré"
+      },
+      "thinkingMode": {
+        "adaptive": "Adaptatif",
+        "budget": "Budget",
+        "none": "Aucun",
+        "unknown": "Non vérifié"
+      },
+      "thinkingDisplay": {
+        "omitted": "Omis",
+        "summarized": "Résumé",
+        "updates": "Mises à jour de progression"
+      },
+      "promptProfile": {
+        "claude-frontier": "Frontière",
+        "claude-standard": "Standard",
+        "claude-small": "Petit",
+        "generic": "Générique"
+      },
+      "drawer": {
+        "title": "Modifier {{name}}",
+        "prices": "Tarifs (centimes de dollar par million de jetons)",
+        "fastPrices": "Tarifs du mode rapide (facultatif)",
+        "fastPricesHint": "Le mode rapide ne peut pas être sélectionné tant que les quatre tarifs rapides ne sont pas définis.",
+        "inputCentsPerM": "Entrée",
+        "outputCentsPerM": "Sortie",
+        "cacheReadCentsPerM": "Lecture du cache",
+        "cacheWriteCentsPerM": "Écriture du cache",
+        "effort": "Niveaux d'effort",
+        "thinkingDisplay": "Affichage de la réflexion",
+        "fast": "Mode rapide pris en charge",
+        "inferenceGeo": "Zones géographiques d'inférence",
+        "inferenceGeoHint": "Valeurs séparées par des virgules confirmées auprès de l'API Anthropic, par exemple us, global.",
+        "minPlan": "Forfait minimum",
+        "allPlans": "Tous les forfaits",
+        "promptProfile": "Profil de prompt",
+        "offered": "Proposé sur la clé de la plateforme",
+        "offeredHint": "Nécessite les quatre tarifs.",
+        "isDefault": "Défaut de la plateforme",
+        "defaultHint": "Enregistré pour le futur résolveur de modèle par fonctionnalité. D'ici là, le défaut du déploiement provient de ANTHROPIC_MODEL ou du défaut intégré.",
+        "defaultLocked": "Ceci est le défaut de la plateforme. Définissez un autre modèle comme défaut pour le changer.",
+        "save": "Enregistrer",
+        "cancel": "Annuler"
+      },
+      "notice": {
+        "saved": "Modèle enregistré.",
+        "refreshQueued": "Actualisation des modèles mise en file d'attente."
+      },
+      "errors": {
+        "load": "Impossible de charger les modèles d'IA.",
+        "save": "Impossible d'enregistrer le modèle.",
+        "refresh": "Impossible de mettre en file d'attente l'actualisation des modèles.",
+        "invalidRates": "Saisissez les quatre tarifs sous forme de nombres non négatifs, ou laissez les quatre vides."
+      }
     }
   },
   "audit": {

@@ -283,6 +283,7 @@ import {
 } from './jobs/agentCommandRelayWorker';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
+import { startPlatformModelSnapshotRefresher } from './services/aiModels/platformModels';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -1770,6 +1771,11 @@ async function bootstrap(): Promise<void> {
   // warm completes still gets its own bounded fetch via fetchRegularMsi's
   // existing cache-miss fallback.
   startRegularMsiCacheWarmer();
+  // AI model registry W01 (#7599): keep the in-process ai_platform_models
+  // snapshot warm for the synchronous hot paths (Agent SDK thinking options,
+  // token-price fallback). Not awaited; until the first load lands, those
+  // paths use the W00 bootstrap rules.
+  startPlatformModelSnapshotRefresher();
 
   // Boot-time self-test for every deployment that signs its own update
   // manifests: round-trip a synthetic manifest through sign + validate. If this

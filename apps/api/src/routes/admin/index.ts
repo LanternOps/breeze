@@ -6,6 +6,7 @@ import { tenantExportRoutes } from './tenantExport';
 import { desktopFinalizationRoutes } from './desktopFinalization';
 import { exchangeRateAdminRoutes } from './exchangeRates';
 import { llmProviderCatalogAdminRoutes } from './llmProviderCatalog';
+import { aiModelsAdminRoutes } from './aiModels';
 import { aiKillStateAdminRoutes } from './aiKillState';
 import { aiToolUsageAdminRoutes } from './aiToolUsage';
 import { trustAdminRoutes } from './trust';
@@ -33,6 +34,10 @@ adminRoutes.route('/desktop-finalizations', desktopFinalizationRoutes);
 // as tenant-erasure above and third_party_package_catalog).
 adminRoutes.route('/exchange-rates', exchangeRateAdminRoutes);
 adminRoutes.route('/llm-provider-catalog', llmProviderCatalogAdminRoutes);
+// AI model registry W01 (#7599): platform model catalog: prices, option
+// support, plan gate, prompt profile, platform offer/default. Global rows, so
+// platform-admin (gate above) + MFA on mutations, like the provider catalog.
+adminRoutes.route('/ai-models', aiModelsAdminRoutes);
 // Wave 6 PR 2 (#3828): the AI kill switch's authorized surface. Global row —
 // a flip stops unattended AI for every partner, hence platform-admin + MFA.
 // UI: apps/web AiKillSwitch.tsx at /admin/ai-kill-switch (#4208). Runbook

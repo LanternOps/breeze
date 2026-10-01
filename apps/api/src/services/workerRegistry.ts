@@ -1672,6 +1672,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeFixOutcomeWorker, shutdown: m.shutdownFixOutcomeWorker };
     },
   },
+  // AI model registry W01 (#7599): platform model discovery (ai-model-discovery queue).
+  {
+    name: 'aiModelDiscoveryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiModelDiscoveryWorker');
+      return { init: m.initializeAiModelDiscoveryWorker, shutdown: m.shutdownAiModelDiscoveryWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

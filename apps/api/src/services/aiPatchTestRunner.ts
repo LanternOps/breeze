@@ -1,7 +1,9 @@
-import { resolveMessagesApiThinking } from './aiModelThinking';
+import { messagesApiWireOptions } from './aiModels/modelWireOptions';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveDefaultModel } from './aiAgent';
+
+const PATCH_ANALYSIS_MAX_TOKENS = 512;
 
 const execFileAsync = promisify(execFile);
 
@@ -113,10 +115,11 @@ async function analyzeWithClaude(input: {
   const model = resolveDefaultModel();
   const resp = await client.messages.create({
     model,
-    max_tokens: 512,
-    // #7587: without an explicit effort, Sonnet 5.5 thinks at the API default
-    // and this 512-token JSON reply was truncated at max_tokens.
-    ...resolveMessagesApiThinking(model),
+    max_tokens: PATCH_ANALYSIS_MAX_TOKENS,
+    // #7587, #7599 (messagesApiWireOptions): without an explicit effort, Sonnet
+    // 5.5 thinks at the API default and this 512-token JSON reply was
+    // truncated at max_tokens.
+    ...messagesApiWireOptions(model, PATCH_ANALYSIS_MAX_TOKENS),
     system: [
       {
         type: 'text' as const,

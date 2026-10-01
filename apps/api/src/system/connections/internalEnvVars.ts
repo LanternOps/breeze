@@ -211,6 +211,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',
   HELPER_SCREENSHOT_RATE_WINDOW_SECONDS: 'rate limit knob',
+  // HOME
+  HOME: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // HTTPS_*
   HTTPS_PROXY: 'egress proxy passthrough',
   // HTTP_*
@@ -339,6 +341,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: 'rate limit knob',
   PARTNER_MEETING_URL: 'partner onboarding copy link',
   PARTNER_TRUST_MODE: 'hosted partner trust mode',
+  // PATH
+  PATH: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // PATCH_*
   PATCH_REPORT_STORAGE_PATH: 'filesystem path',
   PATCH_TOMBSTONE_PRUNE_AFTER_HOURS: 'data retention window',

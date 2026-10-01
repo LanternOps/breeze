@@ -72,7 +72,8 @@ vi.mock('./llmEgressRecorder', () => ({
   recordLlmEgressEvent: recordLlmEgressEventMock,
 }));
 
-vi.mock('../aiModel', () => ({
+vi.mock('../aiModel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiModel')>()),
   resolveDefaultModel: () => 'claude-sonnet-4-6',
 }));
 
