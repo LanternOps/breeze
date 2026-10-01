@@ -479,6 +479,39 @@
         "standard": "Padrão",
         "fast": "Rápido"
       }
+    },
+    "usage": {
+      "title": "Uso de IA por modelo",
+      "subtitleAll": "Gastos e recusas em todas as organizações, a partir do registro de chamadas de modelos.",
+      "subtitleOrg": "Gastos e recusas da organização selecionada, a partir do registro de chamadas de modelos.",
+      "from": "De",
+      "to": "Até",
+      "groupByLabel": "Agrupar o uso por",
+      "groupBy": {
+        "model": "Modelo",
+        "surface": "Recurso",
+        "user": "Técnico",
+        "org": "Organização"
+      },
+      "calls": "Chamadas",
+      "cost": "Custo",
+      "inputTokens": "Tokens de entrada",
+      "outputTokens": "Tokens de saída",
+      "refusals": "Recusas",
+      "fallbacks": "Alternativas",
+      "total": "Total geral",
+      "system": "Sistema / agentes",
+      "loading": "Carregando o uso…",
+      "empty": "Nenhuma chamada de modelo neste período.",
+      "error": "Não foi possível carregar o detalhamento de uso.",
+      "footnote": "A taxa de recusa é calculada por chamada de modelo. As contagens começam quando o registro de modelos entrou em operação; o uso anterior está nos totais acima."
+    },
+    "link": {
+      "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
+      "setPerFeature": "Definido por recurso",
+      "noDefault": "nenhum padrão definido",
+      "partner": "Padrões do parceiro",
+      "org": "Substituição desta organização"
     }
   },
   "partnerDefaults": {
@@ -6112,7 +6145,6 @@
       "allowedClasses": "O que um script sem supervisão pode tocar",
       "perHour": "Máximo de execuções sem supervisão por hora",
       "reviewerModel": "Modelo revisor",
-      "reviewerModelHint": "Deixe em branco para usar o padrão da plataforma.",
       "protectedResources": "Nunca tocar nestes",
       "protectedServices": "Serviços",
       "protectedPaths": "Caminhos",

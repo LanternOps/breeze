@@ -479,6 +479,39 @@
         "standard": "Standard",
         "fast": "Veloce"
       }
+    },
+    "usage": {
+      "title": "Utilizzo IA per modello",
+      "subtitleAll": "Spesa e rifiuti per tutte le organizzazioni, dal registro delle chiamate ai modelli.",
+      "subtitleOrg": "Spesa e rifiuti per l'organizzazione selezionata, dal registro delle chiamate ai modelli.",
+      "from": "Dal",
+      "to": "Al",
+      "groupByLabel": "Raggruppa l'utilizzo per",
+      "groupBy": {
+        "model": "Modello",
+        "surface": "Funzionalità",
+        "user": "Tecnico",
+        "org": "Organizzazione"
+      },
+      "calls": "Chiamate",
+      "cost": "Costo",
+      "inputTokens": "Token in ingresso",
+      "outputTokens": "Token in uscita",
+      "refusals": "Rifiuti",
+      "fallbacks": "Alternative",
+      "total": "Totale",
+      "system": "Sistema / agenti",
+      "loading": "Caricamento dell'utilizzo…",
+      "empty": "Nessuna chiamata ai modelli in questo periodo.",
+      "error": "Impossibile caricare il dettaglio dell'utilizzo.",
+      "footnote": "Il tasso di rifiuto è calcolato per chiamata al modello. I conteggi iniziano dall'attivazione del registro dei modelli; l'utilizzo precedente è incluso nei totali sopra."
+    },
+    "link": {
+      "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
+      "setPerFeature": "Impostato per funzionalità",
+      "noDefault": "nessun predefinito impostato",
+      "partner": "Predefiniti del partner",
+      "org": "Override di questa organizzazione"
     }
   },
   "partnerDefaults": {
@@ -6112,7 +6145,6 @@
       "allowedClasses": "Cosa può toccare uno script non presidiato",
       "perHour": "Numero massimo di esecuzioni non presidiate all'ora",
       "reviewerModel": "Modello di revisione",
-      "reviewerModelHint": "Lascia vuoto per usare il valore predefinito della piattaforma.",
       "protectedResources": "Non toccare mai questi elementi",
       "protectedServices": "Servizi",
       "protectedPaths": "Percorsi",

@@ -56,6 +56,8 @@ const orgUpdateSchema = z
     unattendedAllowedClasses: z.array(z.enum(TOUCH_CLASSES)).max(TOUCH_CLASSES.length).optional(),
     maxUnattendedPerHour: z.number().int().min(0).max(100).optional(),
     protectedResources: protectedResourcesSchema.optional(),
+    /** Legacy, accepted and IGNORED for one wave (stripped before the write): the reviewer's model is now the
+     * script_reviewer assignment under /ai/models, gated by approvals:decide. W08 drops the key. */
     reviewerModel: z.string().trim().min(1).max(200).nullable().optional(),
     stepUpGrant: z.string().min(1).max(200).optional(),
   })
@@ -149,7 +151,7 @@ function effectiveGrantValues(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? base.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? base.maxUnattendedPerHour,
     protectedResourcesEmptied: protectedResourcesEmpty(body.protectedResources ?? base.protectedResources),
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : base.reviewerModel,
+    reviewerModel: null,
     proposingEnabled: body.proposingEnabled ?? base.proposingEnabled,
   };
 }
@@ -158,7 +160,7 @@ function effectiveGrantValues(
  * True when `body`, applied on top of `existing`, WIDENS the org grant while
  * it is (or remains) enabled: raises the tier/classes/rate above the row's
  * own prior value, empties a previously non-empty protectedResources,
- * changes reviewerModel, or turns proposingEnabled on. `existing` values —
+ * or turns proposingEnabled on. `existing` values —
  * never the partner ceiling — are the comparison baseline: the ceiling check
  * above already stops anything above the ceiling; this is about what the
  * operator who last saved THIS row actually saw and approved.
@@ -175,10 +177,9 @@ function computeWidening(
   const protectedResourcesEmptied = body.protectedResources !== undefined
     && !protectedResourcesEmpty(existing.protectedResources)
     && protectedResourcesEmpty(body.protectedResources);
-  const reviewerModelChanged = body.reviewerModel !== undefined && body.reviewerModel !== existing.reviewerModel;
   const proposingWidened = body.proposingEnabled === true && existing.proposingEnabled !== true;
 
-  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !reviewerModelChanged && !proposingWidened) {
+  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !proposingWidened) {
     return null;
   }
   return {
@@ -186,7 +187,7 @@ function computeWidening(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? existing.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? existing.maxUnattendedPerHour,
     protectedResourcesEmptied,
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : existing.reviewerModel,
+    reviewerModel: null,
     proposingEnabled: body.proposingEnabled ?? existing.proposingEnabled,
   };
 }
@@ -309,7 +310,7 @@ aiScriptPolicyRoutes.put(
       }
     }
 
-    const { stepUpGrant: _grant, ...columns } = body;
+    const { stepUpGrant: _grant, reviewerModel: _ignoredReviewerModel, ...columns } = body;
     const now = new Date();
     const enableStamp = body.unattendedEnabled === true
       ? { unattendedEnabledBy: auth.user.id, unattendedEnabledAt: now }

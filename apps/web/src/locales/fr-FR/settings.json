@@ -479,6 +479,39 @@
         "standard": "Standard",
         "fast": "Rapide"
       }
+    },
+    "usage": {
+      "title": "Utilisation de l'IA par modèle",
+      "subtitleAll": "Dépenses et refus pour toutes les organisations, d'après le journal des appels de modèles.",
+      "subtitleOrg": "Dépenses et refus pour l'organisation sélectionnée, d'après le journal des appels de modèles.",
+      "from": "Du",
+      "to": "Au",
+      "groupByLabel": "Regrouper l'utilisation par",
+      "groupBy": {
+        "model": "Modèle",
+        "surface": "Fonctionnalité",
+        "user": "Technicien",
+        "org": "Organisation"
+      },
+      "calls": "Appels",
+      "cost": "Coût",
+      "inputTokens": "Jetons d'entrée",
+      "outputTokens": "Jetons de sortie",
+      "refusals": "Refus",
+      "fallbacks": "Replis",
+      "total": "Total général",
+      "system": "Système / agents",
+      "loading": "Chargement de l'utilisation…",
+      "empty": "Aucun appel de modèle sur cette période.",
+      "error": "Impossible de charger la répartition de l'utilisation.",
+      "footnote": "Le taux de refus est calculé par appel de modèle. Les compteurs démarrent à la mise en service du registre de modèles ; l'utilisation antérieure figure dans les totaux ci-dessus."
+    },
+    "link": {
+      "summary": "Modèle : {{model}} — défini sous Fournisseurs et modèles d'IA → Valeurs par défaut par fonctionnalité",
+      "setPerFeature": "Défini par fonctionnalité",
+      "noDefault": "aucune valeur par défaut",
+      "partner": "Valeurs par défaut du partenaire",
+      "org": "Remplacement de cette organisation"
     }
   },
   "partnerDefaults": {
@@ -6112,7 +6145,6 @@
       "allowedClasses": "Ce qu'un script non supervisé peut toucher",
       "perHour": "Nombre maximal d'exécutions non supervisées par heure",
       "reviewerModel": "Modèle de vérification",
-      "reviewerModelHint": "Laissez vide pour utiliser la valeur par défaut de la plateforme.",
       "protectedResources": "Ne jamais toucher à ceci",
       "protectedServices": "Services",
       "protectedPaths": "Chemins",

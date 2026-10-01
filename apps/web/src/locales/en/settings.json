@@ -479,6 +479,39 @@
         "standard": "Standard",
         "fast": "Fast"
       }
+    },
+    "usage": {
+      "title": "AI usage by model",
+      "subtitleAll": "Spend and refusals across all organizations, from the model call ledger.",
+      "subtitleOrg": "Spend and refusals for the selected organization, from the model call ledger.",
+      "from": "From",
+      "to": "To",
+      "groupByLabel": "Group usage by",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Feature",
+        "user": "Technician",
+        "org": "Organization"
+      },
+      "calls": "Calls",
+      "cost": "Cost",
+      "inputTokens": "Input tokens",
+      "outputTokens": "Output tokens",
+      "refusals": "Refusals",
+      "fallbacks": "Fallbacks",
+      "total": "Total",
+      "system": "System / agents",
+      "loading": "Loading usage…",
+      "empty": "No model calls in this period.",
+      "error": "Couldn't load the usage breakdown.",
+      "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above."
+    },
+    "link": {
+      "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
+      "setPerFeature": "Set per feature",
+      "noDefault": "no default set",
+      "partner": "Partner defaults",
+      "org": "This organization's override"
     }
   },
   "partnerDefaults": {
@@ -6107,7 +6140,6 @@
       "allowedClasses": "What an unattended script may touch",
       "perHour": "Maximum unattended runs per hour",
       "reviewerModel": "Reviewer model",
-      "reviewerModelHint": "Leave empty to use the platform default.",
       "protectedResources": "Never touch these",
       "protectedServices": "Services",
       "protectedPaths": "Paths",

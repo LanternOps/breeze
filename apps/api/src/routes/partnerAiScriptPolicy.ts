@@ -52,6 +52,8 @@ const partnerUpdateSchema = z
     unattendedAllowedClasses: z.array(z.enum(TOUCH_CLASSES)).max(TOUCH_CLASSES.length).optional(),
     maxUnattendedPerHour: z.number().int().min(0).max(100).optional(),
     protectedResources: protectedResourcesSchema.optional(),
+    /** Legacy, accepted and IGNORED for one wave (stripped before the write): the reviewer's model is now the
+     * script_reviewer assignment under /ai/models, gated by approvals:decide. W08 drops the key. */
     reviewerModel: z.string().trim().min(1).max(200).nullable().optional(),
     stepUpGrant: z.string().min(1).max(200).optional(),
   })
@@ -91,7 +93,7 @@ function effectiveCeilingValues(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? base.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? base.maxUnattendedPerHour,
     protectedResourcesEmptied: protectedResourcesEmpty(body.protectedResources ?? base.protectedResources),
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : base.reviewerModel,
+    reviewerModel: null,
     proposingEnabled: body.proposingEnabled ?? base.proposingEnabled,
   };
 }
@@ -100,7 +102,7 @@ function effectiveCeilingValues(
  * True when `body`, applied on top of `existing`, WIDENS the partner ceiling
  * while it is (or remains) allowed: raises the tier/classes/rate above the
  * ceiling's own prior value, empties a previously non-empty
- * protectedResources, changes reviewerModel, or turns proposingEnabled on.
+ * protectedResources, or turns proposingEnabled on.
  * Mirrors `routes/ai/scriptPolicy.ts`'s org-scope widening check exactly.
  */
 function computeWidening(
@@ -115,10 +117,9 @@ function computeWidening(
   const protectedResourcesEmptied = body.protectedResources !== undefined
     && !protectedResourcesEmpty(existing.protectedResources)
     && protectedResourcesEmpty(body.protectedResources);
-  const reviewerModelChanged = body.reviewerModel !== undefined && body.reviewerModel !== existing.reviewerModel;
   const proposingWidened = body.proposingEnabled === true && existing.proposingEnabled !== true;
 
-  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !reviewerModelChanged && !proposingWidened) {
+  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !proposingWidened) {
     return null;
   }
   return {
@@ -126,7 +127,7 @@ function computeWidening(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? existing.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? existing.maxUnattendedPerHour,
     protectedResourcesEmptied,
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : existing.reviewerModel,
+    reviewerModel: null,
     proposingEnabled: body.proposingEnabled ?? existing.proposingEnabled,
   };
 }
@@ -199,7 +200,7 @@ partnerAiScriptPolicyRoutes.put(
     }
     if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 400);
     const body = c.req.valid('json');
-    const { stepUpGrant, ...columns } = body;
+    const { stepUpGrant, reviewerModel: _ignoredReviewerModel, ...columns } = body;
 
     const [existing] = await db
       .select()

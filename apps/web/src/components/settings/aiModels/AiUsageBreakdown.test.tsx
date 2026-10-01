@@ -1,0 +1,94 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { jsonRes } from './testFixtures';
+
+const fetchWithAuth = vi.fn();
+vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+
+import AiUsageBreakdown from './AiUsageBreakdown';
+
+const A = 'platform:platform:claude-sonnet-x';
+const ORG = '22222222-2222-4222-8222-222222222222';
+
+const totals = { invocations: 80, costCents: 1234, inputTokens: 1, outputTokens: 2, refusals: 2, refusalRate: 0.025, fallbacks: 1 };
+const emptyBreakdown = (groupBy: string) => ({
+  groupBy, from: '2026-10-01', to: '2026-10-17', orgId: null, rows: [],
+  totals: { invocations: 0, costCents: 0, inputTokens: 0, outputTokens: 0, refusals: 0, refusalRate: 0, fallbacks: 0 },
+});
+
+beforeEach(() => {
+  fetchWithAuth.mockReset();
+  window.location.hash = '';
+});
+
+describe('AiUsageBreakdown', () => {
+  it('loads month-to-date by model and renders rows with refusal rate, footer totals and footnote', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({
+      groupBy: 'model', from: '2026-10-01', to: '2026-10-17', orgId: null,
+      rows: [{ key: A, label: 'Model A', invocations: 80, costCents: 1234, inputTokens: 1, outputTokens: 2, refusals: 2, refusalRate: 0.025, fallbacks: 1 }],
+      totals,
+    }));
+    render(<AiUsageBreakdown orgId={null} />);
+    expect((await screen.findByTestId(`ai-usage-breakdown-refusals-${A}`)).textContent).toMatch(/2 \(2\.5%\)/);
+    expect(fetchWithAuth.mock.calls[0][0]).toMatch(/^\/ai\/models\/usage\?groupBy=model/);
+    expect(fetchWithAuth.mock.calls[0][0]).not.toMatch(/from=/);
+    expect(screen.getByTestId(`ai-usage-breakdown-row-${A}`).textContent).toMatch(/Model A.*\$12\.34/);
+    expect(screen.getByTestId('ai-usage-breakdown-totals').textContent).toMatch(/\$12\.34/);
+    expect(screen.getByTestId('ai-usage-breakdown').textContent).toMatch(/Refusal rate is per model call/);
+    expect((screen.getByTestId('ai-usage-range-from') as HTMLInputElement).value).toBe('2026-10-01');
+  });
+
+  it('switches grouping, passes the org filter, and writes the hash', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('surface')));
+    render(<AiUsageBreakdown orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('ai-usage-groupby-surface'));
+    await waitFor(() => expect(fetchWithAuth.mock.calls.at(-1)![0]).toMatch(new RegExp(`groupBy=surface.*orgId=${ORG}`)));
+    expect(window.location.hash).toBe('#usage-by-surface');
+  });
+
+  it('reads the grouping from the hash on mount', async () => {
+    window.location.hash = '#usage-by-org';
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('org')));
+    render(<AiUsageBreakdown orgId={null} />);
+    await waitFor(() => expect(fetchWithAuth.mock.calls[0][0]).toMatch(/groupBy=org/));
+    expect(screen.getByTestId('ai-usage-groupby-org').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('follows hashchange', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('model')));
+    render(<AiUsageBreakdown orgId={null} />);
+    await screen.findByTestId('ai-usage-breakdown-empty');
+    window.location.hash = '#usage-by-user';
+    await waitFor(() => expect(fetchWithAuth.mock.calls.at(-1)![0]).toMatch(/groupBy=user/));
+  });
+
+  it('sends a range only once both dates are chosen', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('model')));
+    render(<AiUsageBreakdown orgId={null} />);
+    await screen.findByTestId('ai-usage-breakdown-empty');
+    fireEvent.change(screen.getByTestId('ai-usage-range-from'), { target: { value: '2026-09-01' } });
+    await waitFor(() => expect(fetchWithAuth.mock.calls.at(-1)![0]).toMatch(/from=2026-09-01&to=2026-10-17/));
+  });
+
+  it('labels surfaces and the system user with localized names', async () => {
+    window.location.hash = '#usage-by-user';
+    fetchWithAuth.mockResolvedValue(jsonRes({
+      ...emptyBreakdown('user'),
+      rows: [{ key: 'system', label: 'system', invocations: 1, costCents: 0, inputTokens: 0, outputTokens: 0, refusals: 0, refusalRate: 0, fallbacks: 0 }],
+    }));
+    render(<AiUsageBreakdown orgId={null} />);
+    expect((await screen.findByTestId('ai-usage-breakdown-row-system')).textContent).toMatch(/System \/ agents/);
+  });
+
+  it('shows the empty state', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes(emptyBreakdown('model')));
+    render(<AiUsageBreakdown orgId={null} />);
+    await screen.findByTestId('ai-usage-breakdown-empty');
+  });
+
+  it('shows the error state on a failed load', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x' }, 500));
+    render(<AiUsageBreakdown orgId={null} />);
+    await screen.findByTestId('ai-usage-breakdown-error');
+  });
+});

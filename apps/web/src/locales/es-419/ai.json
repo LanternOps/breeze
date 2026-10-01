@@ -257,7 +257,6 @@
     },
     "autoApplyHint": "La aplicación automática está desactivada de forma predeterminada y solo es posible cuando se permite aquí.",
     "allowedModels": "Modelos permitidos",
-    "allModelsHint": "Ninguna selección = todos los modelos disponibles.",
     "whoCanUse": "¿Quién puede utilizar el asistente?",
     "userAccessOptions": {
       "all": "Todos los usuarios del inquilino asignado",

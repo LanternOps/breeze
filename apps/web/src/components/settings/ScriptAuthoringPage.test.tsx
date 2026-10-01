@@ -337,4 +337,34 @@ describe('ScriptAuthoringPage', () => {
     await waitFor(() => expect(getByTestId('script-authoring-partner-card')).toBeInTheDocument());
     expect(queryByTestId('script-partner-save')).toBeNull();
   });
+
+  it('replaces both reviewer model fields with the script_reviewer pointer', async () => {
+    mockRoutes({ partner: partnerGetBody(true) });
+    const { getByTestId, queryByTestId, findAllByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-authoring-org-card')).toBeInTheDocument());
+    expect(queryByTestId('script-reviewer-model')).toBeNull();
+    expect(document.querySelectorAll('input[type="text"]:not([data-testid])').length).toBe(0);
+    // One pointer in the org card, one in the partner card.
+    expect((await findAllByTestId('model-defaults-link-script_reviewer')).length).toBe(2);
+  });
+
+  it('org and partner saves no longer send reviewerModel', async () => {
+    mockRoutes({ partner: partnerGetBody(true) });
+    const { getByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-authoring-org-card')).toBeInTheDocument());
+
+    fireEvent.click(getByTestId('script-authoring-save'));
+    await waitFor(() => expect(fetchWithAuth.mock.calls.some(
+      ([url, init]) => url === '/ai/script-policy' && (init as RequestInit | undefined)?.method === 'PUT')).toBe(true));
+    fireEvent.click(getByTestId('script-partner-save'));
+    await waitFor(() => expect(fetchWithAuth.mock.calls.some(
+      ([url, init]) => url === '/partner/ai/script-policy' && (init as RequestInit | undefined)?.method === 'PUT')).toBe(true));
+
+    for (const target of ['/ai/script-policy', '/partner/ai/script-policy']) {
+      const put = fetchWithAuth.mock.calls.find(([url, init]) => url === target && (init as RequestInit | undefined)?.method === 'PUT');
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body).toHaveProperty('maxUnattendedPerHour');
+      expect(body).not.toHaveProperty('reviewerModel');
+    }
+  });
 });

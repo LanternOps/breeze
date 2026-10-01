@@ -357,6 +357,16 @@ describe('PUT /', () => {
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 
+  it('strips reviewerModel (accept-and-ignore) and no longer treats it as a widening', async () => {
+    selectQueue = [[partnerPolicyRow({ unattendedAllowed: true, reviewerModel: 'old-model' })]];
+    const res = await putReq({ reviewerModel: 'anything' });
+    expect(res.status).toBe(200);
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.values).not.toHaveProperty('reviewerModel');
+    expect(writes[0]!.set).not.toHaveProperty('reviewerModel');
+  });
+
   it('400s when the body carries unattendedEnabled (strict schema refuses the org grant on a partner row)', async () => {
     const res = await putReq({ unattendedEnabled: true });
     expect(res.status).toBe(400);

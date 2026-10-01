@@ -479,6 +479,39 @@
         "standard": "Standard",
         "fast": "Schnell"
       }
+    },
+    "usage": {
+      "title": "KI-Nutzung nach Modell",
+      "subtitleAll": "Kosten und Ablehnungen über alle Organisationen, aus dem Modellaufruf-Protokoll.",
+      "subtitleOrg": "Kosten und Ablehnungen für die ausgewählte Organisation, aus dem Modellaufruf-Protokoll.",
+      "from": "Von",
+      "to": "Bis",
+      "groupByLabel": "Nutzung gruppieren nach",
+      "groupBy": {
+        "model": "Modell",
+        "surface": "Funktion",
+        "user": "Techniker",
+        "org": "Organisation"
+      },
+      "calls": "Aufrufe",
+      "cost": "Kosten",
+      "inputTokens": "Eingabe-Tokens",
+      "outputTokens": "Ausgabe-Tokens",
+      "refusals": "Ablehnungen",
+      "fallbacks": "Ausweichaufrufe",
+      "total": "Gesamt",
+      "system": "System / Agenten",
+      "loading": "Nutzung wird geladen…",
+      "empty": "Keine Modellaufrufe in diesem Zeitraum.",
+      "error": "Die Nutzungsaufschlüsselung konnte nicht geladen werden.",
+      "footnote": "Die Ablehnungsquote bezieht sich auf einen Modellaufruf. Die Zählung beginnt mit dem Start der Modellregistrierung; frühere Nutzung ist in den Summen oben enthalten."
+    },
+    "link": {
+      "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
+      "setPerFeature": "Pro Funktion festgelegt",
+      "noDefault": "kein Standard festgelegt",
+      "partner": "Partnerstandards",
+      "org": "Überschreibung dieser Organisation"
     }
   },
   "partnerDefaults": {
@@ -6112,7 +6145,6 @@
       "allowedClasses": "Worauf ein unbeaufsichtigtes Skript zugreifen darf",
       "perHour": "Maximale unbeaufsichtigte Ausführungen pro Stunde",
       "reviewerModel": "Prüfmodell",
-      "reviewerModelHint": "Leer lassen, um die Plattformvorgabe zu verwenden.",
       "protectedResources": "Diese niemals anfassen",
       "protectedServices": "Dienste",
       "protectedPaths": "Pfade",

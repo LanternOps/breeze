@@ -490,6 +490,16 @@ describe('PUT /script-policy', () => {
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 
+  it('strips reviewerModel (accept-and-ignore) and no longer treats it as a widening', async () => {
+    selectQueue = [[policyRow({ unattendedEnabled: true, reviewerModel: 'old-model' })]];
+    const res = await putReq({ reviewerModel: 'anything' });
+    expect(res.status).toBe(200);
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.values).not.toHaveProperty('reviewerModel');
+    expect(writes[0]!.set).not.toHaveProperty('reviewerModel');
+  });
+
   it('does not require a step-up grant to disable an enabled lane even if other fields also change', async () => {
     currentPerms = makePerms([PERMISSIONS.AI_AGENTS_WRITE]);
     resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });

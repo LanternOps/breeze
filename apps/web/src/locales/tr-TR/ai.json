@@ -257,7 +257,6 @@
     },
     "autoApplyHint": "Otomatik uygulama varsayılan olarak kapalıdır ve yalnızca burada izin verildiğinde mümkündür.",
     "allowedModels": "İzin verilen modeller",
-    "allModelsHint": "Seçim yok = mevcut tüm modeller.",
     "whoCanUse": "Asistanı kimler kullanabilir?",
     "userAccessOptions": {
       "all": "Eşlenen kiracıdaki tüm kullanıcılar",

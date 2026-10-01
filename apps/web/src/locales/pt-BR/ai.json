@@ -257,7 +257,6 @@
     },
     "autoApplyHint": "A aplicação automática fica desativada por padrão e só é possível quando permitida aqui.",
     "allowedModels": "Modelos permitidos",
-    "allModelsHint": "Sem seleção = todos os modelos disponíveis.",
     "whoCanUse": "Quem pode usar o assistente",
     "userAccessOptions": {
       "all": "Todos os usuários do locatário mapeado",

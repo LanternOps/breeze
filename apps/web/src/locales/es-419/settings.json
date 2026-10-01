@@ -479,6 +479,39 @@
         "standard": "Estándar",
         "fast": "Rápido"
       }
+    },
+    "usage": {
+      "title": "Uso de IA por modelo",
+      "subtitleAll": "Gasto y rechazos en todas las organizaciones, según el registro de llamadas a modelos.",
+      "subtitleOrg": "Gasto y rechazos de la organización seleccionada, según el registro de llamadas a modelos.",
+      "from": "Desde",
+      "to": "Hasta",
+      "groupByLabel": "Agrupar el uso por",
+      "groupBy": {
+        "model": "Modelo",
+        "surface": "Función",
+        "user": "Técnico",
+        "org": "Organización"
+      },
+      "calls": "Llamadas",
+      "cost": "Costo",
+      "inputTokens": "Tokens de entrada",
+      "outputTokens": "Tokens de salida",
+      "refusals": "Rechazos",
+      "fallbacks": "Alternativas",
+      "total": "Total general",
+      "system": "Sistema / agentes",
+      "loading": "Cargando el uso…",
+      "empty": "No hay llamadas a modelos en este período.",
+      "error": "No se pudo cargar el desglose de uso.",
+      "footnote": "La tasa de rechazo se calcula por llamada al modelo. Los conteos comienzan cuando el registro de modelos entró en funcionamiento; el uso anterior está en los totales de arriba."
+    },
+    "link": {
+      "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
+      "setPerFeature": "Se define por función",
+      "noDefault": "sin valor predeterminado",
+      "partner": "Valores predeterminados del socio",
+      "org": "Anulación de esta organización"
     }
   },
   "partnerDefaults": {
@@ -6112,7 +6145,6 @@
       "allowedClasses": "Qué puede tocar un script sin supervisión",
       "perHour": "Máximo de ejecuciones sin supervisión por hora",
       "reviewerModel": "Modelo revisor",
-      "reviewerModelHint": "Déjelo vacío para usar el valor predeterminado de la plataforma.",
       "protectedResources": "Nunca tocar esto",
       "protectedServices": "Servicios",
       "protectedPaths": "Rutas",

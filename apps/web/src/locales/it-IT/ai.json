@@ -257,7 +257,6 @@
     },
     "autoApplyHint": "Auto-apply è disattivato per impostazione predefinita ed è possibile solo se consentito qui.",
     "allowedModels": "Modelli consentiti",
-    "allModelsHint": "Nessuna selezione = tutti i modelli disponibili.",
     "whoCanUse": "Chi può usare l'assistente",
     "userAccessOptions": {
       "all": "Tutti gli utenti nel tenant mappato",

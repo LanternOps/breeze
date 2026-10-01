@@ -479,6 +479,39 @@
         "standard": "Standart",
         "fast": "Hızlı"
       }
+    },
+    "usage": {
+      "title": "Modele göre yapay zeka kullanımı",
+      "subtitleAll": "Tüm kuruluşlar için harcama ve ret sayıları, model çağrı kaydından alınmıştır.",
+      "subtitleOrg": "Seçili kuruluş için harcama ve ret sayıları, model çağrı kaydından alınmıştır.",
+      "from": "Başlangıç",
+      "to": "Bitiş",
+      "groupByLabel": "Kullanımı şuna göre grupla",
+      "groupBy": {
+        "model": "Yapay zeka modeli",
+        "surface": "Özellik",
+        "user": "Teknisyen",
+        "org": "Kuruluş"
+      },
+      "calls": "Çağrı",
+      "cost": "Maliyet",
+      "inputTokens": "Girdi jetonu",
+      "outputTokens": "Çıktı jetonu",
+      "refusals": "Ret",
+      "fallbacks": "Yedek",
+      "total": "Toplam",
+      "system": "Sistem / aracılar",
+      "loading": "Kullanım yükleniyor…",
+      "empty": "Bu dönemde model çağrısı yok.",
+      "error": "Kullanım dökümü yüklenemedi.",
+      "footnote": "Ret oranı model çağrısı başınadır. Sayımlar model kaydı devreye girdiğinde başlar; önceki kullanım yukarıdaki toplamlardadır."
+    },
+    "link": {
+      "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
+      "setPerFeature": "Özellik başına ayarlanır",
+      "noDefault": "varsayılan ayarlanmamış",
+      "partner": "İş ortağı varsayılanları",
+      "org": "Bu kuruluşun geçersiz kılması"
     }
   },
   "partnerDefaults": {
@@ -6112,7 +6145,6 @@
       "allowedClasses": "Gözetimsiz bir betiğin dokunabileceği şeyler",
       "perHour": "Saatte izin verilen maksimum gözetimsiz çalıştırma",
       "reviewerModel": "İnceleme modeli",
-      "reviewerModelHint": "Platform varsayılanını kullanmak için boş bırakın.",
       "protectedResources": "Bunlara asla dokunma",
       "protectedServices": "Hizmetler",
       "protectedPaths": "Yollar",
