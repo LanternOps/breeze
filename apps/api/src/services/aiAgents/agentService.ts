@@ -25,6 +25,8 @@ import {
   syncManagedAutomation,
 } from './managedAutomation';
 import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
+import type { AgentModelBinding } from './agentModelBinding';
+import { AgentModelNotAllowedError } from './agentModelErrors';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
 import { ensureDefaultPatchSchedule } from './scheduleService';
 
@@ -268,11 +270,39 @@ function scalarPolicyColumns(input: ScalarPolicyInput): Partial<typeof aiAgents.
     }
     out.mode = input.mode;
   }
-  if (input.model !== undefined) out.model = input.model;
   if (input.toolAllowlist !== undefined) out.toolAllowlist = input.toolAllowlist;
   if (input.instructions !== undefined) out.instructions = input.instructions;
   if (input.cooldownSeconds !== undefined) out.cooldownSeconds = input.cooldownSeconds;
   return out;
+}
+
+/**
+ * AI model registry W03 (Step 7A): `model` is never written on its own — it
+ * goes with the offering it was bound to (agentModelBinding.ts), so the run
+ * path can never see a model string the registry did not admit.
+ * Loaded lazily: the binding's module graph (registry resolver adapters, the
+ * schema barrel) is only needed when a policy model is actually written.
+ */
+async function bindPolicyModel(owner: AgentOwner, model: string | null): Promise<AgentModelBinding> {
+  const { bindAgentModel } = await import('./agentModelBinding');
+  return bindAgentModel(owner, model);
+}
+
+/**
+ * A PATCH carrying `model` re-binds only when it changes the model, or names
+ * one that has no binding yet. Re-saving an already-bound model is a no-op,
+ * so an unrelated edit never fails on a permitted set that narrowed since
+ * (the run path re-checks the binding on every run anyway).
+ */
+function modelNeedsBinding(
+  existing: Pick<AiAgentRow, 'model' | 'offeringId'>,
+  model: string | null,
+): boolean {
+  return model !== (existing.model ?? null) || (model !== null && existing.offeringId === null);
+}
+
+function bindingColumns(binding: AgentModelBinding): Partial<typeof aiAgents.$inferInsert> {
+  return { model: binding.model, offeringId: binding.offeringId, offeringPartnerId: binding.offeringPartnerId };
 }
 
 function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents.$inferInsert> {
@@ -673,6 +703,11 @@ export async function createAgent(
     recipients: input.recipients,
   });
 
+  // AI model registry W03 (Step 7A): bind the policy model to a registry
+  // offering — or refuse with 400 invalid_model / not_permitted — before
+  // anything is written.
+  const modelBinding = await bindPolicyModel(owner, input.model ?? null);
+
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
   // option here: the whole request runs inside one withDbAccessContext
@@ -701,6 +736,7 @@ export async function createAgent(
       kind: input.kind,
       name: input.name,
       ...createPolicyColumns(input),
+      ...bindingColumns(modelBinding),
       createdBy: auth.user.id,
       lastUpdatedBy: auth.user.id,
       updatedAt: new Date(),
@@ -729,11 +765,43 @@ export async function updateAgent(
   // checks move inside the callback so they read the LOCKED row, not a
   // separate unlocked `getAgent` — `withAgentRowLocked` itself only reports
   // "not found" for a predicate miss; everything else is this callback's job.
+  //
+  // AI model registry W03 (Step 7A): a changed policy model is bound to its
+  // registry offering BEFORE the row lock. The binding reads the registry on
+  // its own pooled connection and may run the partner's one-time registry
+  // cutover, which rebinds `ai_agents` rows — under this row's FOR UPDATE that
+  // would wait on our own lock. The locked row is then checked to still be
+  // the one that was bound.
+  let modelBinding: { owner: AgentOwner; binding: AgentModelBinding } | null = null;
+  if (input.model !== undefined) {
+    const current = await getAgent(auth, id);
+    if (current && !current.disabledAt && modelNeedsBinding(current, input.model)) {
+      assertAgentWriteAllowed(auth, current);
+      const owner: AgentOwner = { orgId: current.orgId, partnerId: current.partnerId };
+      modelBinding = { owner, binding: await bindPolicyModel(owner, input.model) };
+    }
+  }
+
   return withAgentRowLocked(auth, id, async (existing) => {
     if (existing.disabledAt) {
       throw new AgentAccessDeniedError('Agent not found');
     }
     assertAgentWriteAllowed(auth, existing);
+
+    let modelColumns: Partial<typeof aiAgents.$inferInsert> = {};
+    if (input.model !== undefined && modelNeedsBinding(existing, input.model)) {
+      if (!modelBinding
+        || modelBinding.binding.model !== input.model
+        || modelBinding.owner.orgId !== existing.orgId
+        || modelBinding.owner.partnerId !== existing.partnerId) {
+        // The row changed between the binding and the lock (a concurrent
+        // policy write or an org merge). Nothing is written; retry.
+        throw new AgentModelNotAllowedError(
+          'The agent changed while its AI model was being saved. Try again.', 'registry_unavailable',
+        );
+      }
+      modelColumns = bindingColumns(modelBinding.binding);
+    }
 
     // Fleet Designer (W01): `kind` is immutable on PATCH, so this is the
     // only place a mode-vs-kind mismatch can be caught for an update — the
@@ -804,6 +872,7 @@ export async function updateAgent(
       .set({
         ...(input.name === undefined ? {} : { name: input.name }),
         ...updatePolicyColumns(existing, input),
+        ...modelColumns,
         lastUpdatedBy: auth.user.id,
         updatedAt: new Date(),
       })

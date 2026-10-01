@@ -41,6 +41,34 @@ export function toSurfaceUse(r: ResolveModelResult): SurfaceUse {
 }
 
 /**
+ * W02's projected registry answer (`projectSurfaceUse`) plus the one rule it
+ * does not model: spec §9.1's bounded fallback for an AI agent's POLICY
+ * offering (W03 Task 12, quorum #11). The run requests the policy offering
+ * with origin `policy`; when that offering is ineligible or outside the
+ * permitted set, the resolver serves the `ai_agents` default instead — but
+ * only on the SAME connection (hence the same funding). Computed from the
+ * snapshot alone, never from the resolver.
+ */
+export function projectW03SurfaceUse(store: RegistrySnapshot, q: ParityQuery): SurfaceUse {
+  const projected = projectSurfaceUse(store, q);
+  if (q.kind !== 'agent' || projected.outcome === 'ok') return projected;
+  const policyOfferingId = store.agents.find((a) => a.orgId === q.orgId && a.kind === q.agentKind)?.offeringId
+    ?? store.agents.find((a) => a.orgId === null && a.kind === q.agentKind)?.offeringId
+    ?? null;
+  const stored = policyOfferingId ? store.offerings.find((o) => o.id === policyOfferingId) : undefined;
+  if (!stored) return projected; // a missing offering cannot prove its route: never guess
+  // The default's own resolution: the same query with no policy binding.
+  const unbound: RegistrySnapshot = {
+    ...store,
+    agents: store.agents.map((a) => (a.kind === q.agentKind ? { ...a, offeringId: null } : a)),
+  };
+  const fallback = projectSurfaceUse(unbound, q);
+  if (fallback.outcome !== 'ok') return projected;
+  const fallbackConnection = fallback.destination === 'platform' ? null : fallback.destination.connectionId;
+  return fallbackConnection === stored.connectionId ? fallback : projected;
+}
+
+/**
  * W02's runParity with the frozen goldens as the legacy side. Fails on any
  * UNEXPECTED divergence, AND (review finding 13) on a DECLARED divergence whose
  * registry answer is not exactly W02's projected registry answer for that query.
@@ -79,7 +107,7 @@ export async function assertSurfaceParity(opts: {
       } else if (row.divergence !== null) {
         // Declared divergence: the registry answer must be the EXACT projected tuple
         // (destination, funding, logical model, wire model), not merely `ok`.
-        const projected = projectSurfaceUse(store, row.query);
+        const projected = projectW03SurfaceUse(store, row.query);
         if (projected.outcome !== 'ok' || !sameUse(row.registry, projected)) {
           failures.push(`${at} [${row.divergence}]: registry ${JSON.stringify(row.registry)} vs projected ${JSON.stringify(projected)}`);
         }

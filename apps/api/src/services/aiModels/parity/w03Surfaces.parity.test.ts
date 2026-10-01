@@ -164,6 +164,31 @@ describe('W03 parity: script_reviewer', () => {
   });
 });
 
+describe('W03 parity: ai_agents (policy offering, permitted set re-checked at run)', () => {
+  // The run's request is exactly what admission sends (runService step 3d):
+  // the merged policy's bound offering — the org row's binding, else the
+  // partner baseline's (mergeAgentPolicies) — with origin 'policy', so the
+  // resolver re-checks it against the org's ai_agents permitted set. Matches
+  // legacy except the declared catalog wire-translation fix.
+  surfaceParity('agent queries', async () => {
+    await assertSurfaceParity({
+      select: (q) => q.kind === 'agent',
+      bind,
+      registrySide: async (fixture, q) => {
+        if (q.kind !== 'agent') throw new Error(`ai_agents side got a ${q.kind} query`);
+        const store = storeFor(fixture);
+        const orgRow = store.agents.find((a) => a.kind === q.agentKind && a.orgId === q.orgId);
+        const partnerRow = store.agents.find((a) => a.kind === q.agentKind && a.orgId === null);
+        const offeringId = orgRow?.offeringId ?? partnerRow?.offeringId ?? null;
+        return toSurfaceUse(await resolveModel({
+          partnerId: fixture.snapshot.partnerId, orgId: q.orgId, surface: 'ai_agents',
+          ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
+        }));
+      },
+    });
+  });
+});
+
 describe('W03 parity harness discriminates (mutations that MUST fail)', () => {
   const chatSide = viaAssignment('chat', true);
 
