@@ -14,7 +14,9 @@ const m = vi.hoisted(() => ({
   isPlatformLlmConfigured: vi.fn(() => true),
   findOfferingIdForModel: vi.fn(),
   getEffectiveAssignment: vi.fn(),
+  captureException: vi.fn(),
 }));
+vi.mock('../sentry', () => ({ captureException: m.captureException }));
 
 vi.mock('../../db', () => ({
   db: {},
@@ -158,6 +160,29 @@ describe('loadOfferingCandidate', () => {
     const c = (await loadOfferingCandidate('off-1', 'p1'))!;
     expect(c.facts.connection.keyUsable).toBe(false);
     expect(c.connection).toBeNull();
+  });
+
+  it('a key LOOKUP failure (DB) is not a dead key: it throws (scrubbed) and is reported, never "reconnect it" (review S6)', async () => {
+    m.getOffering.mockResolvedValue({ ...BASE_OFFERING, connectionId: 'conn-1', source: 'discovered', modelId: 'claude-sonnet-5-5' });
+    m.getConnection.mockResolvedValue(BYOK_CONN);
+    m.getConnectionKeyMaterial.mockRejectedValue(Object.assign(new Error('Failed query: select … params: conn-secret'), { params: ['conn-secret'] }));
+    const thrown = await loadOfferingCandidate('off-1', 'p1').catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String((thrown as Error).message)).toMatch(/key lookup failed/);
+    expect(String((thrown as Error).message)).not.toContain('conn-secret');
+    expect(m.captureException).toHaveBeenCalledTimes(1);
+    expect(String((m.captureException.mock.calls[0]![0] as Error).message)).not.toContain('conn-secret');
+    expect(m.decryptConnectionKey).not.toHaveBeenCalled();
+  });
+
+  it('a SecretKeyMaterialError on decrypt stays a key error (keyUsable=false), reported', async () => {
+    const { SecretKeyMaterialError } = await import('../secretCrypto');
+    m.getOffering.mockResolvedValue({ ...BASE_OFFERING, connectionId: 'conn-1', source: 'discovered', modelId: 'claude-sonnet-5-5' });
+    m.getConnection.mockResolvedValue(BYOK_CONN);
+    m.decryptConnectionKey.mockImplementation(() => { throw new SecretKeyMaterialError('Unknown encrypted secret key ID'); });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.facts.connection.keyUsable).toBe(false);
+    expect(m.captureException).toHaveBeenCalled();
   });
 
   it('catalog: resolved LIVE from the current listed revision; unmapped → catalog.usable false', async () => {

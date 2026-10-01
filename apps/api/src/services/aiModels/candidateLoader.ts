@@ -49,6 +49,7 @@ import {
 } from './platformModels';
 import type { RateSnapshot } from './pricing';
 import { toPromptProfile, type PromptProfile } from './promptProfiles';
+import { safeErrorMessage } from './safeDbError';
 
 export interface ResolvedConnection {
   id: string | null;
@@ -230,14 +231,29 @@ async function connectionCandidate(offering: Offering, conn: PartnerAiConnection
     offering.priceCacheWriteCentsPerM,
   );
 
+  // PartnerAiConnection carries no key material (W02); fetch it separately.
+  // A LOOKUP failure is infrastructure (DB), not a dead key: answering it as
+  // key_error would tell the partner to reconnect a working connection
+  // (review S6). It throws, like every other read in this loader, scrubbed.
+  let material: Awaited<ReturnType<typeof getConnectionKeyMaterial>>;
+  try {
+    material = await systemRead(() => getConnectionKeyMaterial(conn.id));
+  } catch (error) {
+    const scrubbed = new Error(`AI connection key lookup failed: ${safeErrorMessage(error)}`);
+    captureException(scrubbed, undefined, { service: 'candidateLoader', partner_id: conn.partnerId });
+    throw scrubbed;
+  }
   let apiKey: string | null = null;
   try {
-    // PartnerAiConnection carries no key material (W02); fetch it separately.
-    const material = await systemRead(() => getConnectionKeyMaterial(conn.id));
     apiKey = material ? decryptConnectionKey(material) : null;
   } catch (error) {
+    // Undecryptable key material IS a key error: keyUsable false.
     if (error instanceof SecretKeyMaterialError) {
-      captureException(error, undefined, { service: 'candidateLoader', connectionId: conn.id });
+      captureException(error, undefined, { service: 'candidateLoader', partner_id: conn.partnerId });
+    } else {
+      console.warn('[candidateLoader] connection key could not be decrypted; treated as unusable', {
+        connectionId: conn.id, error: safeErrorMessage(error),
+      });
     }
     apiKey = null;
   }
