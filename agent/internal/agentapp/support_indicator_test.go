@@ -17,6 +17,10 @@ type fakeIndicatorUI struct {
 	starts  []int64
 	hides   int
 	console []string
+	// showFails makes the pill fail to appear (window creation failed).
+	showFails bool
+	// panicOnce makes the next active() read panic.
+	panicOnce bool
 }
 
 func (f *fakeIndicatorUI) setActive(v bool) { f.mu.Lock(); f.active = v; f.mu.Unlock() }
@@ -34,13 +38,25 @@ func (f *fakeIndicatorUI) snapshot() (shows []string, hides int, console []strin
 
 func newTestIndicator(f *fakeIndicatorUI) *supportIndicator {
 	return &supportIndicator{
-		active: func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.active },
-		viewer: func() string { f.mu.Lock(); defer f.mu.Unlock(); return f.viewer },
-		show: func(label string, startedAtMs int64) {
+		active: func() bool {
 			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.panicOnce {
+				f.panicOnce = false
+				panic("boom")
+			}
+			return f.active
+		},
+		viewer: func() string { f.mu.Lock(); defer f.mu.Unlock(); return f.viewer },
+		show: func(label string, startedAtMs int64) bool {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.showFails {
+				return false
+			}
 			f.shows = append(f.shows, label)
 			f.starts = append(f.starts, startedAtMs)
-			f.mu.Unlock()
+			return true
 		},
 		hide: func() { f.mu.Lock(); f.hides++; f.mu.Unlock() },
 		say:  func(s string) { f.mu.Lock(); f.console = append(f.console, s); f.mu.Unlock() },
@@ -196,4 +212,46 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+// A pill that fails to appear is not treated as shown: it is retried on the
+// next reconcile, while the console announcement is made once regardless.
+func TestSupportIndicatorRetriesAPillThatFailedToShow(t *testing.T) {
+	f := &fakeIndicatorUI{active: true, viewer: "Billy", showFails: true}
+	ind := newTestIndicator(f)
+	ind.reconcile()
+	shows, _, console := f.snapshot()
+	if len(shows) != 0 {
+		t.Fatalf("the pill failed: shows=%v", shows)
+	}
+	if len(console) != 1 || !strings.Contains(console[0], "Billy is viewing your screen") {
+		t.Fatalf("the console must still tell the user: %q", console)
+	}
+
+	f.mu.Lock()
+	f.showFails = false
+	f.mu.Unlock()
+	ind.reconcile()
+	shows, _, console = f.snapshot()
+	if len(shows) != 1 {
+		t.Fatalf("the failed pill must be retried, shows=%v", shows)
+	}
+	if len(console) != 1 {
+		t.Fatalf("a retry must not re-announce: %q", console)
+	}
+}
+
+// A panic in one reconcile must not kill the worker: later changes are still
+// followed.
+func TestSupportIndicatorSurvivesAPanickingReconcile(t *testing.T) {
+	f := &fakeIndicatorUI{panicOnce: true}
+	ind := newTestIndicator(f)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ind.run(ctx, time.Hour)
+
+	ind.poke() // may or may not be the one that panics; the initial reconcile is
+	f.setActive(true)
+	ind.poke()
+	waitFor(t, "shown after a panic", func() bool { s, _, _ := f.snapshot(); return len(s) == 1 })
 }

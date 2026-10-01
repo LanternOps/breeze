@@ -711,7 +711,6 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	// party positioned to ask the end user and to refuse before capture
 	// starts). Only "consent" mode blocks; "notify" is informational.
 	prompt := parseDesktopPrompt(cmd.Payload)
-	h.noteSupportViewer(prompt)
 	var consent consentVerdict
 	consentGated := prompt != nil && prompt.Mode == "consent"
 	if consentGated {
@@ -736,6 +735,10 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
 
+	// Name the viewer for the Quick Support indicator only once this start has
+	// passed consent and the fence, so a denied or stale start never relabels
+	// the indicator of a stream that is already running.
+	h.noteSupportViewer(prompt)
 	startSession := h.wsDesktopStart
 	if startSession == nil {
 		startSession = h.wsDesktopMgr.StartSession

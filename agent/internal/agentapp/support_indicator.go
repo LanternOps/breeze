@@ -14,8 +14,10 @@ import (
 const supportIndicatorSessionID = "quick-support"
 
 // supportIndicatorPoll is the safety net behind the pokes: the indicator is
-// re-checked this often even if no change was signalled, so a stop path that
-// does not poke (none is known) still hides it within a second.
+// re-checked this often even without a poke. It is load-bearing for one path:
+// a WebRTC stop through SessionManager.StopSession fires no hook, so it is
+// only seen here (WebRTC does not yet run in Quick Support). It also retries
+// a pill that failed to appear.
 const supportIndicatorPoll = time.Second
 
 // supportIndicator is the Quick Support "a technician is viewing your screen"
@@ -31,15 +33,17 @@ const supportIndicatorPoll = time.Second
 type supportIndicator struct {
 	active func() bool
 	viewer func() string
-	show   func(label string, startedAtMs int64)
+	show   func(label string, startedAtMs int64) bool // reports whether the pill is up
 	hide   func()
 	say    func(string)
 	now    func() time.Time
 	kick   chan struct{} // capacity 1: a pending "look again"
 
 	// Owned by the goroutine calling reconcile/run.
-	shown     bool
-	label     string
+	announced bool   // the console said viewing started, and not yet that it ended
+	pillUp    bool   // the pill is on screen
+	pillLabel string // what the pill says
+	warned    bool   // a failed pill was logged for this viewing
 	startedMs int64
 }
 
@@ -47,8 +51,8 @@ func newSupportIndicator(hb *heartbeat.Heartbeat) *supportIndicator {
 	return &supportIndicator{
 		active: hb.SupportDesktopActive,
 		viewer: hb.SupportViewer,
-		show: func(label string, startedAtMs int64) {
-			userhelper.ShowSessionBanner(supportIndicatorSessionID, label, startedAtMs)
+		show: func(label string, startedAtMs int64) bool {
+			return userhelper.ShowSessionBanner(supportIndicatorSessionID, label, startedAtMs)
 		},
 		hide: func() { userhelper.HideSessionBanner(supportIndicatorSessionID) },
 		say:  func(s string) { fmt.Println(s) },
@@ -73,52 +77,74 @@ func supportViewerName(viewer string) string {
 	return viewer
 }
 
-// reconcile makes the indicator match the current facts.
+// reconcile makes the indicator match the current facts. The console line
+// is announced once per viewing; the pill is retried until it is up (window
+// creation can fail or time out), so it is never recorded as shown when it
+// is not.
 func (i *supportIndicator) reconcile() {
 	if !i.active() {
-		if i.shown {
+		if i.pillUp {
 			i.hide()
-			i.shown = false
-			i.label = ""
+			i.pillUp = false
+			i.pillLabel = ""
+		}
+		if i.announced {
+			i.announced = false
+			i.warned = false
 			i.say("\nYour technician is no longer viewing your screen.")
 		}
 		return
 	}
-	name := supportViewerName(i.viewer())
-	label := name + " is viewing your screen"
-	if !i.shown {
+	label := supportViewerName(i.viewer()) + " is viewing your screen"
+	if !i.announced {
 		i.startedMs = i.now().UnixMilli()
-		i.show(label, i.startedMs)
-		i.shown = true
-		i.label = label
+		i.announced = true
 		i.say("\n" + label + ".\nTo stop sharing, close this window or press Ctrl+C.")
+	}
+	if i.pillUp && label == i.pillLabel {
 		return
 	}
-	if label != i.label {
-		// Relabel in place, keeping the session clock.
-		i.show(label, i.startedMs)
-		i.label = label
+	// Show, retry a failed show, or relabel in place keeping the clock.
+	if i.show(label, i.startedMs) {
+		i.pillUp = true
+		i.pillLabel = label
+		return
+	}
+	if !i.warned {
+		i.warned = true
+		log.Warn("Quick Support viewing indicator could not be shown; retrying", "label", label)
 	}
 }
 
+// safeReconcile is one reconcile that cannot take the worker down with it:
+// a panic is logged and the next poke or poll tries again.
+func (i *supportIndicator) safeReconcile() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in Quick Support viewing indicator; will retry", "panic", fmt.Sprint(r))
+		}
+	}()
+	i.reconcile()
+}
+
 // run reconciles on every poke and every poll tick until ctx ends, then hides
-// the indicator if it is up.
+// the pill if it is up.
 func (i *supportIndicator) run(ctx context.Context, poll time.Duration) {
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
-	i.reconcile()
+	i.safeReconcile()
 	for {
 		select {
 		case <-ctx.Done():
-			if i.shown {
+			if i.pillUp {
 				i.hide()
-				i.shown = false
+				i.pillUp = false
 			}
 			return
 		case <-i.kick:
-			i.reconcile()
+			i.safeReconcile()
 		case <-ticker.C:
-			i.reconcile()
+			i.safeReconcile()
 		}
 	}
 }
@@ -132,11 +158,6 @@ func startSupportIndicator(hb *heartbeat.Heartbeat) (stop func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("panic in Quick Support viewing indicator", "panic", fmt.Sprint(r))
-			}
-		}()
 		ind.run(ctx, supportIndicatorPoll)
 	}()
 	return func() {
