@@ -19,7 +19,7 @@ tracking_issue: LanternOps/breeze#7598
 | W06 (#7604) BYO OpenAI-compatible | written at `start_wave` | W03 | outline (spec §6, §12) |
 | W07 (#7605) Bedrock / Vertex / Foundry | written at `start_wave` | W03 | outline (spec §4, §12) |
 | W08 (#7606) cleanup | written at `start_wave` | W04, W05 | outline |
-| W09 (#7607) failover + escalation | written at `start_wave` | W03 | outline (spec §5.4, §9.1) |
+| W09 (#7607) failover + escalation | `2026-10-01-ai-model-registry-w09-failover-escalation.md` | W03 **and** W04 merged (it extends W04's assignment writes and Defaults card) | detailed (14 tasks; Codex high review applied: 9 adopted, 0 rejected; migration `2026-11-25-100000-ai-model-registry-failover.sql`) |
 | W10 (#7608) chargeback | `2026-10-01-ai-model-registry-w10-chargeback.md` | W03 merged (implemented on `main`, not stacked; touches no W04 file) | detailed (21 tasks; Codex high review applied: 15 adopted, 2 of them modified, 1 as documentation; migrations `2026-11-26-100000…100400`) |
 | W11 (#7609) quality view + prompt profiles | written at `start_wave` | W03, W04 | outline (spec §5.5, §7) |
 
