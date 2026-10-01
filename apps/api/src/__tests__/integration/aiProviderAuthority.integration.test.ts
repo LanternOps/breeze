@@ -209,6 +209,34 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(await sys(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: null });
   });
 
+  it('a revoked key never survives in partner_llm_configs: rotate and disconnect remove the legacy ciphertext (#7700 finding 4)', async () => {
+    const seedLegacy = async (suffix: string) => {
+      const partner = await createPartner();
+      await createOrganization({ partnerId: partner.id });
+      const user = await createUser({ partnerId: partner.id });
+      const legacyId = randomUUID();
+      const sealed = encryptSecret(`sk-ant-api03-legacy-${suffix}`, { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
+      await fixtureSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, connected_by)
+                       VALUES (${legacyId}, ${partner.id}, ${sealed}, ${suffix}, 'fp', ${user.id})`;
+      return { partnerId: partner.id, userId: user.id, sealed };
+    };
+    const holdsCiphertext = async (sealed: string) =>
+      fixtureSql`SELECT 1 FROM partner_llm_configs WHERE api_key_encrypted = ${sealed}`;
+
+    // Rotation (cuts the partner over first, then rotates in place).
+    const rotated = await seedLegacy('0011');
+    await savePartnerLlmKey({ partnerId: rotated.partnerId, apiKey: 'sk-ant-api03-authority-0012', userId: rotated.userId });
+    expect(await sys(() => getPartnerLlmStatus(rotated.partnerId))).toMatchObject({ configured: true, keyLast4: '0012' });
+    expect(await holdsCiphertext(rotated.sealed)).toHaveLength(0);
+    expect(await fixtureSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${rotated.partnerId}`).toHaveLength(0);
+
+    // Disconnect.
+    const disconnected = await seedLegacy('0013');
+    expect(await deletePartnerLlmConfig(disconnected.partnerId)).toBe(true);
+    expect(await holdsCiphertext(disconnected.sealed)).toHaveLength(0);
+    expect(await fixtureSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${disconnected.partnerId}`).toHaveLength(0);
+  });
+
   it('the legacy resolver reads the connection: a runtime credential failure marks the connection', async () => {
     const s = await seedRegistryPartner('byok');
     const resolved = await resolveLlmConfig(s.partnerId);

@@ -43,6 +43,7 @@ import {
   disconnectCompat,
   remapPartnerOfferings,
   RegistryNotCutOverError,
+  rotateCompatKey,
 } from './compatRemap';
 
 const writes = () => m.statements.filter((s) => /^(WITH .*?\) )?(UPDATE|INSERT|DELETE)/.test(s.text) || /^(UPDATE|INSERT|DELETE)/.test(s.text));
@@ -177,7 +178,9 @@ describe('disconnectCompat', () => {
     const remap = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id = CASE'))!;
     expect(remap.text).not.toContain('surface NOT IN (');
     // Never deleted: a delete cascades to offerings in-flight turns are bound to.
-    expect(deletes()).toEqual([]);
+    // The only delete is the frozen legacy row holding the revoked key (finding 4).
+    expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
+    expect(deletes()[0]!.params).toEqual([P]);
     const soft = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections SET'))!;
     expect(soft.text).toContain("status = 'disconnected'");
     expect(soft.text).toContain('api_key_encrypted = NULL, key_last4 = NULL, key_fingerprint = NULL');
@@ -220,6 +223,20 @@ describe('disconnectCompat', () => {
     await disconnectCompat(P);
     expect(m.ensureLegacyPlatformModel).toHaveBeenCalledWith('env-default',
       { inputCentsPerM: 1, outputCentsPerM: 2, cacheReadCentsPerM: 3, cacheWriteCentsPerM: 4 });
+  });
+});
+
+describe('rotateCompatKey', () => {
+  it('rotates in place and drops the legacy partner_llm_configs copy of the revoked key (#7700 finding 4)', async () => {
+    m.respond = baseRespond((text) => {
+      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: null, config_version: 3, connected_by: null, verified_at: null }];
+      if (text.startsWith('UPDATE partner_ai_connections SET')) return [{ config_version: 4 }];
+      return undefined;
+    });
+    expect(await rotateCompatKey(P, { apiKey: 'sk-new-key-0001', connectedBy: null, verifiedAt: new Date() }))
+      .toEqual({ configVersion: 4, defaultModel: null });
+    expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
+    expect(deletes()[0]!.params).toEqual([P]);
   });
 });
 

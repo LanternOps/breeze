@@ -315,6 +315,18 @@ export async function connectCompat(partnerId: string, input: ConnectCompatInput
 }
 
 /**
+ * #7700 review finding 4: the legacy partner_llm_configs row is frozen at the
+ * cutover and read only to project a partner NOT yet cut over
+ * (legacyReconcile, via cutoverPartner), so for a cut-over partner it is dead
+ * weight — except that it still holds the key ciphertext. A disconnect or a
+ * rotation revokes that key, so the row goes in the same transaction: the
+ * revoked key must not persist anywhere.
+ */
+async function dropLegacyPartnerConfig(partnerId: string): Promise<void> {
+  await db.execute(sql`DELETE FROM partner_llm_configs WHERE partner_id = ${partnerId}::uuid`);
+}
+
+/**
  * Disconnect the compat connection: every reference to its offerings goes back
  * to the same model's platform offering (created/enabled if missing), a pinned
  * default goes back to tracking the deployment default (legacy: no row = env
@@ -339,6 +351,7 @@ export async function disconnectCompat(partnerId: string): Promise<boolean> {
     WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid`);
   await db.execute(sql`UPDATE partner_ai_models SET enabled = false, updated_at = now()
     WHERE partner_id = ${partnerId}::uuid AND connection_id = ${conn.id}::uuid AND enabled`);
+  await dropLegacyPartnerConfig(partnerId);
   if (conn.legacyDefaultModel !== null) {
     await repointPartnerDefault(partnerId, { connectionId: null }, conn.legacyDefaultModel, resolveDefaultModel());
   }
@@ -364,7 +377,7 @@ export async function changeCompatDefaultModel(partnerId: string, modelId: strin
   return { configVersion: Number(updated!.config_version) };
 }
 
-/** Same-kind key rotation: the connection is updated in place, no remap. */
+/** Same-kind key rotation: the connection is updated in place, no remap; the old key's legacy copy is dropped. */
 export async function rotateCompatKey(
   partnerId: string,
   input: { apiKey: string; connectedBy: string | null; verifiedAt: Date },
@@ -383,6 +396,7 @@ export async function rotateCompatKey(
       connected_by = ${input.connectedBy}::uuid,
       config_version = config_version + 1, updated_at = now()
     WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid RETURNING config_version`);
+  await dropLegacyPartnerConfig(partnerId);
   return { configVersion: Number(updated!.config_version), defaultModel: conn.legacyDefaultModel };
 }
 
