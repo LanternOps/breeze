@@ -15,6 +15,7 @@ import {
 } from '@breeze/shared';
 import { and, asc, eq, ne } from 'drizzle-orm';
 import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { aiPlatformModels, type AiPlatformModelRow } from '../../db/schema';
 import { derivePromptProfile } from '../aiModel';
 import { deriveCapabilities, deriveOptionSupport, mergeDiscoveredOptionSupport } from './capabilities';
@@ -187,7 +188,10 @@ export interface DiscoveredModelInput {
 /**
  * Discovery upsert (spec §6). Never touches prices, option rates,
  * platform_offered, is_platform_default, min_plan or prompt_profile on an
- * existing row. A new row lands unpriced and unoffered. Marks the row seen
+ * existing row. It does refresh the display name, token limits and
+ * capabilities, and re-merges option_support (mergeDiscoveredOptionSupport:
+ * the API owns effort and the base displays; operator-set `updates`, `fast`
+ * and geos are kept). A new row lands unpriced and unoffered. Marks the row seen
  * now: lifecycle 'available', missed counter reset.
  */
 export async function upsertDiscoveredPlatformModel(
@@ -251,35 +255,44 @@ export async function updatePlatformModelAdmin(
   patch: PlatformModelAdminPatch,
   now: Date = new Date(),
 ): Promise<{ before: PlatformModel; after: PlatformModel }> {
-  return withSystemDbAccessContext(async () => {
-    const [row] = await db.select().from(aiPlatformModels).where(eq(aiPlatformModels.id, id)).for('update').limit(1);
-    if (!row) throw new PlatformModelError('Platform model not found.', 404);
-    const before = toPlatformModel(row);
-    const next = validatePlatformModelAdminPatch(before, patch);
+  try {
+    return await withSystemDbAccessContext(async () => {
+      const [row] = await db.select().from(aiPlatformModels).where(eq(aiPlatformModels.id, id)).for('update').limit(1);
+      if (!row) throw new PlatformModelError('Platform model not found.', 404);
+      const before = toPlatformModel(row);
+      const next = validatePlatformModelAdminPatch(before, patch);
 
-    if (next.isPlatformDefault && !before.isPlatformDefault) {
-      await db.update(aiPlatformModels)
-        .set({ isPlatformDefault: false, updatedAt: now })
-        .where(and(eq(aiPlatformModels.isPlatformDefault, true), ne(aiPlatformModels.id, id)));
+      if (next.isPlatformDefault && !before.isPlatformDefault) {
+        await db.update(aiPlatformModels)
+          .set({ isPlatformDefault: false, updatedAt: now })
+          .where(and(eq(aiPlatformModels.isPlatformDefault, true), ne(aiPlatformModels.id, id)));
+      }
+
+      const [updated] = await db.update(aiPlatformModels).set({
+        inputCentsPerM: next.rates?.inputCentsPerM ?? null,
+        outputCentsPerM: next.rates?.outputCentsPerM ?? null,
+        cacheReadCentsPerM: next.rates?.cacheReadCentsPerM ?? null,
+        cacheWriteCentsPerM: next.rates?.cacheWriteCentsPerM ?? null,
+        optionRates: next.optionRates,
+        optionSupport: next.optionSupport,
+        minPlan: next.minPlan,
+        promptProfile: next.promptProfile,
+        platformOffered: next.platformOffered,
+        isPlatformDefault: next.isPlatformDefault,
+        updatedAt: now,
+      }).where(eq(aiPlatformModels.id, id)).returning();
+
+      runAfterDbContextExit('aiModels.snapshotRefresh', () => refreshPlatformModelSnapshot());
+      return { before, after: toPlatformModel(updated!) };
+    }, 'aiModels.updateAdmin');
+  } catch (error) {
+    // Two admins promoting different models at once: the loser's swap trips
+    // the one-default index. Report it as a conflict the operator can retry.
+    if (isPgUniqueViolation(error, 'ai_platform_models_one_default_uq')) {
+      throw new PlatformModelError('Another model was made the platform default at the same time. Reload and try again.', 409);
     }
-
-    const [updated] = await db.update(aiPlatformModels).set({
-      inputCentsPerM: next.rates?.inputCentsPerM ?? null,
-      outputCentsPerM: next.rates?.outputCentsPerM ?? null,
-      cacheReadCentsPerM: next.rates?.cacheReadCentsPerM ?? null,
-      cacheWriteCentsPerM: next.rates?.cacheWriteCentsPerM ?? null,
-      optionRates: next.optionRates,
-      optionSupport: next.optionSupport,
-      minPlan: next.minPlan,
-      promptProfile: next.promptProfile,
-      platformOffered: next.platformOffered,
-      isPlatformDefault: next.isPlatformDefault,
-      updatedAt: now,
-    }).where(eq(aiPlatformModels.id, id)).returning();
-
-    runAfterDbContextExit('aiModels.snapshotRefresh', () => refreshPlatformModelSnapshot());
-    return { before, after: toPlatformModel(updated!) };
-  }, 'aiModels.updateAdmin');
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

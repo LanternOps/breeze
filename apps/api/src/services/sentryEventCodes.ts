@@ -187,6 +187,12 @@ export const SENTRY_EVENT_CODES = [
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
   /**
+   * AI model registry W01 (#7599): usage reached calculateCostCents with a
+   * NaN, infinite or negative token count. It was priced as 0, so that spend
+   * went unbilled; the upstream usage parser is wrong.
+   */
+  'ai_usage_invalid_token_count',
+  /**
    * Execution plane W04 (#5715): the sandbox backend's create circuit opened
    * after 5 consecutive failures — no analysis run can start in this region
    * until it closes.

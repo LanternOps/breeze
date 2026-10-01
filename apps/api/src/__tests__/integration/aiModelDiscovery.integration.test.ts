@@ -96,6 +96,26 @@ describe('syncPlatformModels against real Postgres (W01 #7599)', () => {
     }
   });
 
+  // Review gap (PR #7643): the only operator signal before every platform-key
+  // chat would resolve to a dead default.
+  runDb('the platform default going missing is reported in the operator alert', async () => {
+    const t0 = new Date('2026-11-20T06:38:00.000Z');
+    const restore = { lifecycle: 'available' as const, missedSyncCount: 0, lastSeenAt: null, updatedAt: t0 };
+    try {
+      await withSystemDbAccessContext(() => db.update(aiPlatformModels)
+        .set({ lastSeenAt: new Date(t0.getTime() - 49 * HOURS), missedSyncCount: 2 })
+        .where(sql`model_id = 'claude-sonnet-5-5'`));
+      const report = await sync([`${PREFIX}-other`], t0);
+      expect(report).toMatchObject({ status: 'ok' });
+      expect(report.status === 'ok' && report.markedMissing).toContain('claude-sonnet-5-5');
+      expect(sendOpsAlertMock).toHaveBeenLastCalledWith(expect.objectContaining({
+        body: expect.stringContaining('The platform default model claude-sonnet-5-5 is missing'),
+      }));
+    } finally {
+      await withSystemDbAccessContext(() => db.update(aiPlatformModels).set(restore).where(sql`model_id = 'claude-sonnet-5-5'`));
+    }
+  });
+
   runDb('a skipped sync (gateway base URL) changes no row', async () => {
     const before = await withSystemDbAccessContext(() => db.select({ n: sql<number>`count(*)::int` }).from(aiPlatformModels));
     expect(await syncPlatformModels({ env: { ...ENV, ANTHROPIC_BASE_URL: 'http://localhost:8000' }, discover: async () => listed(`${PREFIX}-x`) }))

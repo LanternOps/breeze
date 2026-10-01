@@ -6,7 +6,7 @@
  * hundreds of tests import those without mocking the database.
  *
  * Loaded by refreshPlatformModelSnapshot() (platformModels.ts):
- * - on a 60 s boot timer in the API and worker processes;
+ * - at startup and then every 60 s in the API and worker processes;
  * - after every admin write;
  * - after every discovery sync.
  *

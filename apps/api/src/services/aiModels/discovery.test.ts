@@ -68,6 +68,14 @@ describe('discoverAnthropicModels', () => {
     ]);
   });
 
+  it('logs each skipped id so a real model with an unusual id is not silently invisible', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    listMock.mockReturnValue(pages([{ id: 'bad id with spaces', display_name: 'x' }, { id: 'model-c', display_name: 'C' }]));
+    await discoverAnthropicModels('k');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('bad id with spaces'));
+    warn.mockRestore();
+  });
+
   it('refuses to run without a key', async () => {
     await expect(discoverAnthropicModels(undefined)).rejects.toThrow(/API key/);
     await expect(discoverAnthropicModels('  ')).rejects.toThrow(/API key/);

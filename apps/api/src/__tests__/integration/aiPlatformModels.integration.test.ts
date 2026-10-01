@@ -261,6 +261,21 @@ describe('platform model service (W01 #7599)', () => {
     clearPlatformModelSnapshot();
   });
 
+  // Review gap (PR #7643): the offerable list and the catalog allowlist filter
+  // on lifecycle differently. Missing = not offerable but still mappable;
+  // retired = neither.
+  runDb('a missing model is not offerable but stays catalog-mappable; a retired one is neither', async () => {
+    await expect(withSystemDbAccessContext(async () => {
+      await db.update(aiPlatformModels).set({ lifecycle: 'missing' }).where(sql`model_id = 'claude-opus-4-8'`);
+      expect(await listOfferableModelIds()).not.toContain('claude-opus-4-8');
+      expect(await isOfferablePlatformModel('claude-opus-4-8')).toBe(false);
+      expect(await listCatalogMappableModelIds()).toContain('claude-opus-4-8');
+      await db.update(aiPlatformModels).set({ lifecycle: 'retired' }).where(sql`model_id = 'claude-opus-4-8'`);
+      expect(await listCatalogMappableModelIds()).not.toContain('claude-opus-4-8');
+      throw new Rollback();
+    })).rejects.toBeInstanceOf(Rollback);
+  });
+
   runDb('PlatformModelError is a 404 for an unknown id', async () => {
     await expect(updatePlatformModelAdmin(randomUUID(), { minPlan: null })).rejects.toBeInstanceOf(PlatformModelError);
   });

@@ -134,6 +134,28 @@ describe('/admin/ai-models', () => {
     expect(await res.json()).toEqual({ error: 'Make another model the default first.' });
   });
 
+  // Review gap (PR #7643): every mutation, not just PATCH, is behind the
+  // platform-admin gate and MFA, and none reaches the service when refused.
+  const MUTATIONS = [
+    ['PATCH /:id', `/admin/ai-models/${MODEL_ID}`, 'PATCH', { minPlan: 'pro' }],
+    ['POST /refresh', '/admin/ai-models/refresh', 'POST', undefined],
+  ] as const;
+
+  it.each(MUTATIONS)('%s refuses an admin without MFA', async (_label, path, method, body) => {
+    const res = await send(buildApp(adminNoMfa), path, method, body);
+    expect(res.status).toBe(403);
+    expect((await res.json() as { code: string }).code).toBe('MFA_REQUIRED');
+    expect(serviceMocks.updatePlatformModelAdmin).not.toHaveBeenCalled();
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it.each(MUTATIONS)('%s refuses a non-platform-admin and an unauthenticated caller', async (_label, path, method, body) => {
+    expect((await send(buildApp(partnerUser), path, method, body)).status).toBe(403);
+    expect([401, 403]).toContain((await send(buildApp(null), path, method, body)).status);
+    expect(serviceMocks.updatePlatformModelAdmin).not.toHaveBeenCalled();
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
   it('POST /refresh enqueues a manual sync and audits it', async () => {
     const res = await send(buildApp(admin), '/admin/ai-models/refresh', 'POST');
     expect(res.status).toBe(202);

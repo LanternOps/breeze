@@ -29,7 +29,11 @@ function assertTokens(tokens: TokenComponents): void {
   }
 }
 
-/** Unrounded cents. Summed in W00's order (input, output, cache read, cache write) for bit parity. */
+/**
+ * Unrounded cents, summed in W00's component order (input, output, cache read,
+ * cache write). Cache rates arrive pre-multiplied, so intermediates can differ
+ * from W00 by an ulp; results match W00 once rounded to 2 dp.
+ */
 export function computeInvocationCents(rate: RateSnapshot, tokens: TokenComponents, applied: OfferingOptions): number {
   assertTokens(tokens);
   let rates = rate.standard;

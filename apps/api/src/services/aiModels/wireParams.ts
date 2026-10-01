@@ -8,8 +8,13 @@
  * - `toMessagesApiParams` for raw `messages.create` one-shots.
  *
  * Neither adapter carries `display: 'updates'`, `speed` or `inferenceGeo`
- * yet. The W01 spike (docs/superpowers/specs/ai-mcp/2026-09-30-ai-model-registry-w01-spike-findings.md,
- * D1–D3) decides how they travel, and W03/W05 extend the adapters accordingly.
+ * yet. The W01 spike (docs/superpowers/specs/ai-mcp/2026-09-30-ai-model-registry-w01-spike-findings.md)
+ * found, on Agent SDK 0.3.286:
+ * - D1: the SDK CLI rejects `display: 'updates'`;
+ * - D2: `speed: 'fast'` travels via `settings: { fastMode: true }`;
+ * - D3: `inference_geo` travels only via `CLAUDE_CODE_EXTRA_BODY`, and the
+ *   API accepts `us` / `global` but not `eu`.
+ * W03/W05 extend the adapters accordingly.
  */
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import type { EffortLevel, OfferingOptions, OptionSupport, ThinkingDisplay } from '@breeze/shared';

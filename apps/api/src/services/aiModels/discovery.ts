@@ -29,7 +29,10 @@ export async function discoverAnthropicModels(apiKey: string | undefined): Promi
   const client = new Anthropic({ apiKey: key, authToken: null, baseURL: ANTHROPIC_API_ORIGIN, timeout: 30_000, maxRetries: 2 });
   const models: AnthropicModelInfo[] = [];
   for await (const model of client.models.list({ limit: 100 })) {
-    if (typeof model.id !== 'string' || !MODEL_ID_PATTERN.test(model.id)) continue;
+    if (typeof model.id !== 'string' || !MODEL_ID_PATTERN.test(model.id)) {
+      console.warn(`[aiModels] skipping a listed model with an unexpected id: ${JSON.stringify(String(model.id)).slice(0, 140)}`);
+      continue;
+    }
     models.push({
       id: model.id,
       displayName: typeof model.display_name === 'string' ? model.display_name : '',
@@ -205,18 +208,26 @@ export async function syncPlatformModels(options: SyncPlatformModelsOptions = {}
       console.warn('[aiModels] model discovery alert was not delivered (ops alerting unconfigured or failing); new models are flagged on /admin/ai-models');
     }
     if (operatorNotified && write.toNotify.length > 0) {
-      await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-        db.update(aiPlatformModels)
-          .set({ operatorNotifiedAt: now })
-          .where(inArray(aiPlatformModels.id, write.toNotify.map((row) => row.id))),
-      'aiModels.markNotified'));
+      // The alert already went out. A failed mark must not fail the job:
+      // BullMQ would retry the whole sync and send the same alert again. The
+      // next daily sync re-alerts these ids at worst.
+      try {
+        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+          db.update(aiPlatformModels)
+            .set({ operatorNotifiedAt: now })
+            .where(inArray(aiPlatformModels.id, write.toNotify.map((row) => row.id))),
+        'aiModels.markNotified'));
+      } catch (error) {
+        console.warn('[aiModels] could not mark discovered models as notified; they will be re-alerted on the next sync:', error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      }
     }
   }
 
   try {
     await refreshPlatformModelSnapshot();
   } catch (error) {
-    console.warn('[aiModels] snapshot refresh after sync failed; the boot timer will retry:', error);
+    console.warn('[aiModels] snapshot refresh after sync failed; the periodic refresher will retry:', error);
   }
 
   return {

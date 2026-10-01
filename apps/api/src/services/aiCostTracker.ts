@@ -641,7 +641,13 @@ export function sumInputTokens(usage: SdkInputTokenUsage | null | undefined): nu
 function billableTokenCount(value: number | null | undefined): number {
   if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
   if (value !== null && value !== undefined) {
+    // Not W00 parity: W00 produced a negative or NaN cost here. Pricing it as
+    // 0 under-bills, so surface it rather than only logging.
     console.warn(`[AI] Ignoring invalid token count ${String(value)} when pricing usage`);
+    captureMessage('AI usage priced with an invalid token count; priced as 0', {
+      eventCode: 'ai_usage_invalid_token_count',
+      level: 'warning',
+    });
   }
   return 0;
 }

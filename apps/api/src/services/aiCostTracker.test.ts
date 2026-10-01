@@ -2162,6 +2162,20 @@ describe('token pricing reads the platform model registry (W01 #7599)', () => {
   // `number | null`; destructuring defaults only replace undefined) to 0.
   // computeInvocationCents throws on non-finite input, so calculateCostCents
   // clamps at its boundary: a usage record is never lost to a RangeError.
+  it('reports a non-null invalid token count to Sentry, but not a null one (W00 coerced null)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS);
+    vi.mocked(captureMessage).mockClear();
+    calculateCostCents('claude-sonnet-5-5', 1_000_000, 0, null as unknown as number, undefined);
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
+    calculateCostCents('claude-sonnet-5-5', Number.NaN, 0);
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'ai_usage_invalid_token_count' }),
+    );
+    warn.mockRestore();
+  });
+
   it.each([
     ['null', null],
     ['undefined', undefined],
