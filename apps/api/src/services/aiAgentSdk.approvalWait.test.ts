@@ -25,6 +25,8 @@ import type { ActionIntentSnapshot } from './actionIntents/intentService';
 // Mocks (mirrors aiAgentSdk.test.ts)
 // ============================================
 
+// W03: preflight resolves through the registry; these suites never reach it.
+vi.mock('./aiModels/sessionModel', () => ({ resolveSessionTurn: vi.fn() }));
 vi.mock('../db', () => ({
   assertOutsideHeldDbContext: vi.fn(),
   runOutsideDbContext: vi.fn((fn) => fn()),

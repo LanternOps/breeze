@@ -15,6 +15,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }));
 vi.mock('../llm/guardedLlmFetch', () => ({ buildGuardedLlmFetch: m.guarded }));
 vi.mock('../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: vi.fn() }));
+vi.mock('../sentry', () => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
 vi.mock('./wireParams', () => ({
   toAgentSdkOptions: (w: { thinking?: unknown; effort?: string }) => ({
     ...(w.thinking ? { thinking: w.thinking } : {}), ...(w.effort ? { effort: w.effort } : {}),
@@ -33,6 +34,8 @@ vi.mock('../aiModel', async (importOriginal) => ({
 
 import { LlmUnavailableError } from '../llm/llmConfigResolver';
 import { recordLlmEgressEvent } from '../llm/llmEgressRecorder';
+import { __resetPlatformKeyAlertForTests } from '../llm/platformKeyAlert';
+import { captureMessage } from '../sentry';
 import {
   ANTHROPIC_PUBLIC_BASE_URL,
   SERVER_SIDE_FALLBACK_BETA,
@@ -121,6 +124,24 @@ describe('clientForConnection — credential pinning moved verbatim from llmConf
   it('a blank platform key is LlmUnavailableError, never a keyless client', () => {
     expect(() => clientForConnection({ source: 'platform', apiKey: ' ', model: 'x' }, null)).toThrow(LlmUnavailableError);
     expect(m.ctor).not.toHaveBeenCalled();
+  });
+  it('a blank platform key alerts the deployment config error at most hourly, with the legacy event code (W03 Task 7)', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-01T12:00:00.000Z'));
+      vi.mocked(captureMessage).mockClear();
+      __resetPlatformKeyAlertForTests();
+      expect(() => clientForConnection({ source: 'platform', apiKey: '', model: 'x' }, null))
+        .toThrow('AI is not configured on this deployment.');
+      expect(() => clientForConnection({ source: 'platform', apiKey: undefined, model: 'x' }, null)).toThrow(LlmUnavailableError);
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+      expect(captureMessage).toHaveBeenCalledWith('AI is not configured on this deployment.', { eventCode: 'llm_platform_key_missing' });
+      vi.advanceTimersByTime(60 * 60 * 1000);
+      expect(() => clientForConnection({ source: 'platform', apiKey: ' ', model: 'x' }, null)).toThrow(LlmUnavailableError);
+      expect(captureMessage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

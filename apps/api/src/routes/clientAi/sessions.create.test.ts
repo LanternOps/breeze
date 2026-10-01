@@ -106,12 +106,18 @@ vi.mock('../../services/clientAiToolBridge', () => ({
   failPendingForSession: failPendingMock,
 }));
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
+const { resolveSessionTurnMock } = vi.hoisted(() => ({ resolveSessionTurnMock: vi.fn() }));
+// W03 Task 7: office_chat turns (and the /events reattach) resolve through the registry.
+vi.mock('../../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
+}));
 vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
   resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
 }));
 
 import { clientAiSessionRoutes } from './sessions';
+import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
 import {
   WORD_CLIENT_SYSTEM_PROMPT,
@@ -144,6 +150,7 @@ const AUTHED = { Authorization: 'Bearer tok', 'Content-Type': 'application/json'
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'office_chat' }));
   managerMock.tryTransitionToProcessing.mockReturnValue(true);
   managerMock.get.mockReturnValue(undefined);
   checkClientBudgetMock.mockResolvedValue(null);

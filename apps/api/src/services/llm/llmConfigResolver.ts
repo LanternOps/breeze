@@ -8,22 +8,12 @@ import { resolveDefaultModel } from '../aiModel';
 import { getListedProviderByEntryId, type ListedProvider } from '../llmProviderCatalog';
 import { decryptConnectionKey } from '../aiModels/connectionKeys';
 import { SecretKeyMaterialError } from '../secretCrypto';
-import { captureException, captureMessage } from '../sentry';
+import { captureException } from '../sentry';
 import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from './guardedLlmFetch';
 import { isPlatformLlmConfigured, type LlmUnusableCode } from './llmAvailability';
 import { recordLlmEgressEvent } from './llmEgressRecorder';
 import { LlmUnavailableError } from './llmUnavailableError';
-
-const SENTRY_CAPTURE_THROTTLE_MS = 60 * 60 * 1000;
-const sentryCaptureTimestamps = new Map<string, number>();
-
-function captureAtMostHourly(key: string, capture: () => void): void {
-  const now = Date.now();
-  const lastCapture = sentryCaptureTimestamps.get(key);
-  if (lastCapture !== undefined && now - lastCapture < SENTRY_CAPTURE_THROTTLE_MS) return;
-  sentryCaptureTimestamps.set(key, now);
-  capture();
-}
+import { captureAtMostHourly, PLATFORM_KEY_MISSING_MESSAGE, reportPlatformKeyMissing } from './platformKeyAlert';
 
 /**
  * Where a partner's traffic actually goes (#3922 phase 2).
@@ -546,12 +536,8 @@ export async function getAnthropicClientForPartner(
     throw new LlmUnavailableError();
   }
   if (!resolved.apiKey?.trim()) {
-    const error = new LlmUnavailableError('AI is not configured on this deployment.');
-    captureAtMostHourly('blank-platform-key:platform', () => {
-      captureMessage('AI is not configured on this deployment.', {
-        eventCode: 'llm_platform_key_missing',
-      });
-    });
+    const error = new LlmUnavailableError(PLATFORM_KEY_MISSING_MESSAGE);
+    reportPlatformKeyMissing();
     throw error;
   }
 

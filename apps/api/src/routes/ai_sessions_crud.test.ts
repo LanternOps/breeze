@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { Hono } from 'hono';
 
 const configRef = vi.hoisted(() => ({
@@ -494,31 +495,9 @@ describe('AI routes', () => {
 
     it('refuses partner-key traffic before entering the instance OpenAI-compatible path', async () => {
       configRef.provider = 'openai-compatible';
-      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
-        ok: true,
-        session: {
-          id: SESSION_ID,
-          orgId: ORG_ID,
-          sdkSessionId: null,
-          model: 'claude-opus-4-6',
-          maxTurns: 50,
-          turnCount: 0,
-          systemPrompt: null,
-          title: 'Existing title',
-        } as any,
-        sanitizedContent: 'hello',
-        systemPrompt: 'SYSTEM PROMPT',
-        maxBudgetUsd: undefined,
-        resolved: {
-          source: 'partner',
-          partnerId: 'partner-1',
-          apiKey: 'partner-key',
-          model: 'claude-opus-4-6',
-          configId: 'config-1',
-          configVersion: 3,
-          endpoint: { kind: 'anthropic' as const },
-        },
-      });
+      // W03 Task 7: the refusal moved into runPreFlightChecks (env OpenAI-compatible
+      // chat keeps legacy resolution and refuses a partner config there).
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'ai_unavailable', status: 503 });
 
       const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
         method: 'POST',
@@ -533,6 +512,7 @@ describe('AI routes', () => {
     });
 
     it('passes the bound device id from the DB session into streamingSessionManager.getOrCreate (#3087 route wiring)', async () => {
+      const BYOK_MODEL = makeResolvedModel('anthropic_byok');
       // This is the seam that arms the #3087 fix: getOrCreate uses `deviceId`
       // to decide whether to narrow tool execution to the device's org. If
       // this route ever stops forwarding it, the whole narrowing mechanism in
@@ -553,15 +533,8 @@ describe('AI routes', () => {
         sanitizedContent: 'hello there',
         systemPrompt: 'SYSTEM PROMPT',
         maxBudgetUsd: undefined,
-        resolved: {
-          source: 'partner',
-          partnerId: 'partner-1',
-          apiKey: 'partner-key',
-          model: 'claude-sonnet-4-6',
-          configId: 'config-1',
-          configVersion: 3,
-          endpoint: { kind: 'anthropic' as const },
-        },
+        model: BYOK_MODEL,
+        openaiCompatible: false,
       });
 
       const fakeActiveSession = {
@@ -591,10 +564,10 @@ describe('AI routes', () => {
         expect.anything(),
         'SYSTEM PROMPT',
         undefined,
-        expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 3 }),
+        BYOK_MODEL,
         undefined,
         undefined,
-        expect.objectContaining({ budgetReservationId: expect.any(String), toolSearch: true }),
+        expect.objectContaining({ budgetReservationId: expect.any(String), toolSearch: true, ledgerUserId: expect.any(String) }),
       );
     });
   });

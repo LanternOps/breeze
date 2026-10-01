@@ -82,6 +82,8 @@ import {
 } from '../services/aiTicketDraft';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
+import type { ResolvedModel } from '../services/aiModels/resolveModel';
+import { liveQueryKey, turnBindingFrom } from '../services/aiModels/turnBinding';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
 // Loaded lazily, only for a topology session: its tool/transport graph must not
@@ -131,9 +133,14 @@ import {
 // it feeds (services/llm/llmAvailability.ts); re-exported for existing callers.
 export { isOpenAICompatibleProvider };
 
-/** Provider configuration revision for the topology answer cache key (M4 Task 3). */
-function topologyProviderRevision(resolved: { source: string; model?: string; configId?: string; configVersion?: number }): string {
-  return [resolved.source, resolved.configId ?? '', resolved.configVersion ?? '', resolved.model ?? '', isOpenAICompatibleProvider() ? 'chat-only' : 'sdk'].join(':');
+/**
+ * Topology answer cache key (M4 Task 3): moves whenever the dispatch identity
+ * moves — the live-query key of the resolved model (connection, config
+ * version, catalog revision, wire model, wire params), or the env
+ * OpenAI-compatible chat transport.
+ */
+function topologyProviderRevision(model: ResolvedModel | null): string {
+  return model ? `sdk:${liveQueryKey(turnBindingFrom(model))}` : 'openai-compatible:chat-only';
 }
 
 // Lazy singleton for the openai-compatible path.
@@ -745,6 +752,8 @@ aiRoutes.post(
       const err = preflight.error;
       if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
+      // W03: a stored model that went ineligible is recoverable (choose another), never a silent switch.
+      if (preflight.code) return c.json({ error: err, code: preflight.code, recoverable: true }, preflight.status === 503 ? 503 : 409);
       if (preflight.status === 503) return c.json({ error: err }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
@@ -753,7 +762,7 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, model: resolvedModel, openaiCompatible } = preflight;
 
     // Topology M4 Task 3 (#6000): a topology session runs a bounded
     // investigation on this same transport. The pinned site is re-authorized,
@@ -772,7 +781,7 @@ aiRoutes.post(
     if (dbSession.type === 'topology') {
       topologyTurn = await loadTopologyTurn();
       const { prepareTopologyTurn, cachedTopologyEvents } = topologyTurn;
-      const prepared = await prepareTopologyTurn(auth, dbSession, sanitizedContent, topologyProviderRevision(resolved), inRequestDb);
+      const prepared = await prepareTopologyTurn(auth, dbSession, sanitizedContent, topologyProviderRevision(resolvedModel), inRequestDb);
       if (!prepared.ok) return c.json(prepared.body, prepared.status);
       if (prepared.prepared.kind === 'cached') {
         const explanation = prepared.prepared.explanation;
@@ -796,13 +805,9 @@ aiRoutes.post(
     const abortTopology = async () => { await topology?.runtime.abort(); };
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
-    const useOpenAICompatibleProvider = isOpenAICompatibleProvider();
-    if (useOpenAICompatibleProvider && resolved.source === 'partner') {
-      await abortTopology();
-      return c.json({ error: 'ai_unavailable' }, 503);
-    }
-    if (useOpenAICompatibleProvider) {
-      const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+    // (A partner config on this path is refused in preflight.)
+    if (openaiCompatible) {
+      const billingSource = 'platform' as const;
       // S8: no stable request identity reaches this surface — the client sends
       // no message/draft id — so the key is random per dispatch. The unique
       // (org_id, idempotency_key) index is therefore a structural guarantee
@@ -959,7 +964,13 @@ aiRoutes.post(
       streamingSessionManager.remove(sessionId);
     }
 
-    const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+    // Off the env OpenAI-compatible path preflight always resolves a model.
+    if (!resolvedModel) throw new Error('chat preflight returned no resolved model on the Agent SDK path');
+    const model = resolvedModel;
+    // Spec §9.2: the turn binding (offering, options, rate, connection
+    // identity, wire model) is written onto the reservation in its own
+    // transaction; funding is the resolved offering's, decided before admission.
+    const binding = turnBindingFrom(model);
     // S8: no stable request identity reaches this surface — the client sends
     // no message/draft id — so the key is random per dispatch. The unique
     // (org_id, idempotency_key) index is therefore a structural guarantee
@@ -971,9 +982,10 @@ aiRoutes.post(
     try {
       reservation = await reserveAiBudget({
         orgId: dbSession.orgId,
-        billingSource,
+        billingSource: model.funding,
         sessionId,
         idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+        binding,
       });
     } catch (err) {
       await abortTopology();
@@ -999,7 +1011,6 @@ aiRoutes.post(
           {
             orgId: dbSession.orgId,
             sdkSessionId: dbSession.sdkSessionId,
-            model: dbSession.model,
             maxTurns: dbSession.maxTurns,
             turnCount: dbSession.turnCount,
             systemPrompt: dbSession.systemPrompt,
@@ -1014,16 +1025,16 @@ aiRoutes.post(
           c,
           topology ? topology.systemPrompt : systemPrompt,
           budgetDispatch.maxBudgetUsd,
-          resolved,
+          model,
           // Topology: the SDK is handed ONLY the topology tools; the pre-tool
           // gate re-checks the allowlist, read budget and live scope.
           topology ? topology.allowedMcpTools : undefined,
           topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
           topology
-            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false }
+            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false, ledgerUserId: auth.user.id }
             // A-W04: only a full-registry chat turn may defer tools behind
             // ToolSearch; the host/budget/operator policy decides the rest.
-            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true },
+            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id },
         );
       } catch (err) {
         return { kind: 'failed', error: err };
@@ -1031,7 +1042,7 @@ aiRoutes.post(
 
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1) — same as the OpenAI branch.
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime })) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
 

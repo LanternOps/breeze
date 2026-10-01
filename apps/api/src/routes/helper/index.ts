@@ -38,7 +38,11 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
-import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError, resolveLlmConfig } from '../../services/llm/llmConfigResolver';
+import type { ResolveFailureReason } from '../../services/aiModels/eligibility';
+import type { ResolvedModel } from '../../services/aiModels/resolveModel';
+import { resolveSessionTurn } from '../../services/aiModels/sessionModel';
+import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { captureException } from '../../services/sentry';
 import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
 import {
@@ -123,10 +127,9 @@ async function runHelperPreFlight(
   sessionId: string,
   content: string,
   device: HelperDevice,
-  partnerId: string | null,
 ): Promise<
-  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; permissionLevel: HelperPermissionLevel; clientTools: ClientToolDeclaration[]; resolved: UsableLlmConfig }
-  | { ok: false; error: string; status: number }
+  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; permissionLevel: HelperPermissionLevel; clientTools: ClientToolDeclaration[]; model: ResolvedModel }
+  | { ok: false; error: string; status: number; code?: ResolveFailureReason }
 > {
   // Fetch session
   const [session] = await db
@@ -157,15 +160,19 @@ async function runHelperPreFlight(
     return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 400 };
   }
 
-  let resolved;
+  // W03 Task 7: the helper surface's turn, re-resolved from the session's
+  // stored offering (device-initiated: no Breeze user, no permission gate).
+  // Funding comes from the resolved offering, before any admission check.
+  let model: ResolvedModel;
   try {
-    resolved = await resolveLlmConfig(partnerId);
+    const turn = await resolveSessionTurn({ sessionId, surface: 'helper', userId: null });
+    if (!turn.ok) {
+      return { ok: false, error: turn.message, status: turn.reason === 'registry_unavailable' ? 503 : 409, code: turn.reason };
+    }
+    model = turn;
   } catch (error) {
     captureException(error, undefined, { service: 'helperRoutes', orgId: device.orgId });
     return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
-  }
-  if (resolved.source === 'unavailable') {
-    return { ok: false, error: 'ai_unavailable', status: 503 };
   }
 
   // Rate limit per device
@@ -194,10 +201,7 @@ async function runHelperPreFlight(
 
   // Budget check
   try {
-    const budgetError = await checkBudget(
-      device.orgId,
-      resolved.source === 'partner' ? 'partner_key' : 'platform',
-    );
+    const budgetError = await checkBudget(device.orgId, model.funding);
     if (budgetError) return { ok: false, error: budgetError, status: 402 };
   } catch (err) {
     console.error('[Helper] Budget check failed:', err);
@@ -233,7 +237,7 @@ async function runHelperPreFlight(
     ? clientDeclaredToolMcpNames(clientTools)
     : getHelperAllowedMcpToolNames(permissionLevel);
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, allowedTools, permissionLevel, clientTools, resolved };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, allowedTools, permissionLevel, clientTools, model };
 }
 
 // ============================================
@@ -356,17 +360,16 @@ helperRoutes.post(
       runOutsideDbContext(() => withDbAccessContext(helperDbContext, fn));
 
     // Pre-flight checks
-    const preflight = await inRequestDb(() => runHelperPreFlight(
-      sessionId,
-      content,
-      device,
-      auth.helperDevicePartnerId ?? null,
-    ));
+    const preflight = await inRequestDb(() => runHelperPreFlight(sessionId, content, device));
     if (!preflight.ok) {
+      if (preflight.code) {
+        return c.json({ error: preflight.error, code: preflight.code, recoverable: true }, preflight.status as 409);
+      }
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, allowedTools, permissionLevel, clientTools, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, allowedTools, permissionLevel, clientTools, model } = preflight;
+    const binding = turnBindingFrom(model);
 
     // When the session declared client tools, build the generic client-declared
     // MCP server: each model tool call publishes `client_tool_request` and parks
@@ -413,9 +416,10 @@ helperRoutes.post(
     try {
       reservation = await reserveAiBudget({
         orgId: dbSession.orgId,
-        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        billingSource: model.funding,
         sessionId,
         idempotencyKey: `helper-chat:${sessionId}:${crypto.randomUUID()}`,
+        binding,
       });
     } catch (err) {
       if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
@@ -427,13 +431,9 @@ helperRoutes.post(
       ? reservation.reservedCostCents / 100
       : undefined;
 
-    // Get or create streaming session.
-    //
-    // The `resolveLlmConfig` check earlier in this handler already 503s an
-    // unavailable partner config, but it cannot see this one: `getOrCreate`
-    // resolves the WIRE model inside the manager, so a catalog revision with no
-    // verified mapping for THIS session's model fails closed only here. Same
-    // catch shape as ai.ts — otherwise it reaches `app.onError` as a 500.
+    // Get or create streaming session. The model was resolved (and its wire
+    // id translated) in preflight; a LlmUnavailableError here is a
+    // last-resort guard with the same catch shape as ai.ts, never a 500.
     const dispatch = await inRequestDb(async (): Promise<
       | { kind: 'dispatched'; activeSession: ActiveSession }
       | { kind: 'refused'; response: Response }
@@ -446,7 +446,6 @@ helperRoutes.post(
           {
             orgId: dbSession.orgId,
             sdkSessionId: dbSession.sdkSessionId,
-            model: dbSession.model,
             maxTurns: dbSession.maxTurns,
             turnCount: dbSession.turnCount,
             systemPrompt: dbSession.systemPrompt,
@@ -455,10 +454,11 @@ helperRoutes.post(
           c,
           systemPrompt,
           reservedMaxBudgetUsd,
-          resolved,
+          model,
           allowedTools,
           mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-          { budgetReservationId },
+          // Device-initiated: the ledger attributes no Breeze user.
+          { budgetReservationId, ledgerUserId: null },
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {
@@ -470,7 +470,7 @@ helperRoutes.post(
       // Concurrent message guard. If the turn is blocked only on pending
       // approval waits (PAM-gated helper tools), settle them so the assistant
       // can conclude and answer this message (#3089 — shared helper, see ai.ts).
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId, { turnBinding: binding })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
 

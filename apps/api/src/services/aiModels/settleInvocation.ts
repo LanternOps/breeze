@@ -140,6 +140,17 @@ export interface SettleInvocationInput {
 
 export interface SettledInvocation { costCents: number; invocationIds: string[]; deferred: boolean }
 
+/**
+ * The cents settleInvocation will bill for this usage (same rate selection,
+ * including the platform-rate lookup for unbound models). For consumers that
+ * must quote the turn BEFORE settling it — the Office per-user ledger (#5557
+ * ordering) and the `done` event — so every consumer reads one number.
+ */
+export async function quoteInvocationCents(binding: TurnBinding, usage: BilledUsage[]): Promise<number> {
+  const platformRates = await loadUnboundPlatformRates(binding, usage);
+  return sumCostCents(priceUsage(binding, usage, { platformRates }));
+}
+
 export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsage[]): NewInvocation[] {
   const b = input.binding;
   const multi = priced.length > 1;

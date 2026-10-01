@@ -22,6 +22,7 @@ import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from '../llm/guarde
 import type { LlmClientCallerContext, UsableLlmConfig } from '../llm/llmConfigResolver';
 import { recordLlmEgressEvent } from '../llm/llmEgressRecorder';
 import { LlmUnavailableError } from '../llm/llmUnavailableError';
+import { PLATFORM_KEY_MISSING_MESSAGE, reportPlatformKeyMissing } from '../llm/platformKeyAlert';
 import type { ResolvedModel } from './resolveModel';
 import { toAgentSdkOptions, toMessagesApiParams, type WireParams } from './wireParams';
 
@@ -106,7 +107,11 @@ function catalogEgressRecorder(input: {
 }
 
 export function clientForConnection(config: UsableLlmConfig, caller: LlmClientCallerContext | null): Anthropic {
-  if (!config.apiKey?.trim()) throw new LlmUnavailableError('AI is not configured on this deployment.');
+  if (!config.apiKey?.trim()) {
+    // Same hourly deployment alert the legacy getAnthropicClientForPartner sent.
+    if (config.source === 'platform') reportPlatformKeyMissing();
+    throw new LlmUnavailableError(PLATFORM_KEY_MISSING_MESSAGE);
+  }
   if (config.source === 'partner' && config.endpoint.kind === 'catalog') {
     const ep = config.endpoint;
     return createAnthropicClient({
