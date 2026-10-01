@@ -67,9 +67,12 @@ interface TerminalSession extends RemoteConnectionLease {
   leaseRenewalInterval?: ReturnType<typeof setInterval>;
   lastPongAt: number;
   // Per-session input rate limiting (sliding window)
-  // E2: 200 messages/min OR 1MB total bytes/min, whichever first
+  // E2: abuse ceiling (see TERMINAL_MSG_LIMIT below). Excess input is
+  // dropped, never fatal to the session.
   msgTimestamps: number[];
   msgByteTimestamps: Array<{ ts: number; bytes: number }>;
+  // True while input is being dropped; the technician is warned once per burst.
+  inputThrottled?: boolean;
   // E2: audit summary counters
   bytesIn: number;
   bytesOut: number;
@@ -83,10 +86,29 @@ interface TerminalSession extends RemoteConnectionLease {
   startCommandId?: string;
 }
 
-// E2: per-session input limits
+// E2: per-session input ABUSE CEILING (#7475). This is not a typing throttle:
+// xterm.js emits one `data` message per key event (arrows, Backspace and key
+// repeat included), so a human at a keyboard routinely sends several hundred a
+// minute. The ceiling exists only to stop a scripted/compromised client from
+// flooding the agent PTY. Excess input is DROPPED with a one-per-burst
+// `INPUT_RATE_LIMITED` warning; the session is never closed for it.
+// Window is 60 s sliding. Defaults: 6000 messages (~100/s sustained, above any
+// OS key-repeat rate) and 8 MiB (a multi-megabyte paste fits). Operators can
+// tune via TERMINAL_INPUT_MAX_MESSAGES_PER_MIN / TERMINAL_INPUT_MAX_BYTES_PER_MIN.
+// The agent has no matching limit (agent/internal/websocket/client.go relies on
+// this one), so this is the only ceiling in the path.
 const TERMINAL_MSG_WINDOW_MS = 60_000;
-const TERMINAL_MSG_LIMIT = 200; // messages per minute
-const TERMINAL_BYTES_LIMIT = 1_048_576; // 1MB per minute
+function envPositiveInt(name: string, fallback: number): number {
+  const n = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+const TERMINAL_MSG_LIMIT = envPositiveInt('TERMINAL_INPUT_MAX_MESSAGES_PER_MIN', 6000);
+const TERMINAL_BYTES_LIMIT = envPositiveInt('TERMINAL_INPUT_MAX_BYTES_PER_MIN', 8 * 1_048_576);
+
+export const __TERMINAL_INPUT_LIMITS_FOR_TEST = {
+  maxMessages: TERMINAL_MSG_LIMIT,
+  maxBytes: TERMINAL_BYTES_LIMIT,
+};
 
 const activeTerminalSessions = new Map<string, TerminalSession>();
 
@@ -1050,39 +1072,42 @@ function createTerminalWsHandlers(
 
         switch (message.type) {
           case 'data': {
-            // E2: Per-session input rate limiting (200 msgs/min OR 1MB/min).
-            // On breach: close session with policy-violation code 1008 and
-            // emit a rate-limit audit log.
+            // E2: abuse ceiling. Over the limit => drop this input and warn
+            // once per burst; never close the session (#7475). Only ACCEPTED
+            // input is counted, so the window recovers as soon as the burst
+            // slides out.
             const nowMs = Date.now();
             const cutoff = nowMs - TERMINAL_MSG_WINDOW_MS;
             termSession.msgTimestamps = termSession.msgTimestamps.filter(t => t > cutoff);
             termSession.msgByteTimestamps = termSession.msgByteTimestamps.filter(e => e.ts > cutoff);
 
             const incomingBytes = Buffer.byteLength(message.data, 'utf8');
+            const windowBytes = termSession.msgByteTimestamps.reduce((acc, e) => acc + e.bytes, 0);
+            if (
+              termSession.msgTimestamps.length + 1 > TERMINAL_MSG_LIMIT ||
+              windowBytes + incomingBytes > TERMINAL_BYTES_LIMIT
+            ) {
+              if (!termSession.inputThrottled) {
+                termSession.inputThrottled = true;
+                console.warn(
+                  `Terminal session ${sessionId} input throttled (msgs=${termSession.msgTimestamps.length}, bytes=${windowBytes}); dropping excess input`
+                );
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'error',
+                    code: 'INPUT_RATE_LIMITED',
+                    message: 'Input is arriving too fast; excess input is being dropped'
+                  }));
+                } catch {
+                  // best-effort
+                }
+              }
+              return;
+            }
+            termSession.inputThrottled = false;
             termSession.msgTimestamps.push(nowMs);
             termSession.msgByteTimestamps.push({ ts: nowMs, bytes: incomingBytes });
             termSession.bytesIn += incomingBytes;
-
-            const totalBytes = termSession.msgByteTimestamps.reduce((acc, e) => acc + e.bytes, 0);
-            if (
-              termSession.msgTimestamps.length > TERMINAL_MSG_LIMIT ||
-              totalBytes > TERMINAL_BYTES_LIMIT
-            ) {
-              console.warn(
-                `Terminal session ${sessionId} input rate-limited (msgs=${termSession.msgTimestamps.length}, bytes=${totalBytes})`
-              );
-              try {
-                ws.send(JSON.stringify({
-                  type: 'error',
-                  code: 'INPUT_RATE_LIMITED',
-                  message: 'Input rate limit exceeded'
-                }));
-              } catch {
-                // best-effort
-              }
-              ws.close(1008, 'input_rate_limited');
-              return;
-            }
 
             // Send terminal input to agent
             sendCommandToAgent(termSession.agentId, {

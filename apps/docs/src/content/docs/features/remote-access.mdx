@@ -453,6 +453,15 @@ These defaults are configurable via environment variables on the API server:
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | 10 |
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | 5 |
 
+### Terminal input ceiling
+
+Each terminal session has an abuse ceiling on keyboard/paste input, measured over a sliding 60-second window. It is deliberately far above normal use (every key press, arrow key and key repeat is one message). If a client exceeds it, the excess input is dropped and the terminal shows a one-time warning; the session stays open and input resumes once the burst leaves the window.
+
+| Variable | Default |
+|----------|---------|
+| `TERMINAL_INPUT_MAX_MESSAGES_PER_MIN` | 6000 |
+| `TERMINAL_INPUT_MAX_BYTES_PER_MIN` | 8388608 (8 MiB) |
+
 To free session capacity, close active sessions from the Active Sessions list on the device detail page, or call `DELETE /remote/sessions/stale` — this marks `pending`, `connecting`, and `active` sessions as `disconnected`. Be aware this terminates any currently active sessions, not just stale ones.
 
 ---

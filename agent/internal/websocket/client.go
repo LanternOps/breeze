@@ -552,8 +552,8 @@ func isOrderedCommand(cmdType string) bool {
 // may stall the read pump when the ordered lane is full. The lane only fills
 // when its consumer is wedged (a hung ConPTY write/stop) or 512 commands
 // behind — a healthy terminal session can't get there (PTY writes are
-// sub-millisecond and the API rate-limits terminal input to 200 msgs/min per
-// session). Past the timeout the command is DROPPED with an error log:
+// sub-millisecond and the API caps terminal input at an abuse ceiling per
+// session, dropping the excess). Past the timeout the command is DROPPED with an error log:
 // losing input to an already-broken session is strictly better than the
 // alternative, which is readPump parked forever on a channel send — that
 // freezes every WS-delivered command (desktop, tunnels, scripts), stops ping
