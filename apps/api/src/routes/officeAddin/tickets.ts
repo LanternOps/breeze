@@ -24,6 +24,7 @@ import { anthropicClientFor, type MessageAttempt } from '../../services/aiModels
 import { messagesUsage, messagesUsageAfterDispatchError } from '../../services/aiModels/invocationUsage';
 import { oneShotUnavailableAnswer } from '../../services/aiModels/oneShotUnavailable';
 import { resolveModel } from '../../services/aiModels/resolveModel';
+import { safeErrorMessage } from '../../services/aiModels/safeDbError';
 import { settleInvocation } from '../../services/aiModels/settleInvocation';
 import { turnBindingFrom, type TurnBinding } from '../../services/aiModels/turnBinding';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
@@ -301,7 +302,7 @@ async function settleDraftUsage(input: {
     const { usage, outcome } = input.dispatchFailed
       ? messagesUsageAfterDispatchError(input.binding, input.attempts)
       : messagesUsage(input.binding, input.attempts);
-    await settleInvocation({
+    const settled = await settleInvocation({
       binding: input.binding,
       orgId: input.orgId,
       userId: input.userId,
@@ -312,13 +313,29 @@ async function settleDraftUsage(input: {
       outcome,
       reservationId: input.reservationId,
     });
+    // S1: deferred but not persisted — recorded nowhere (settleInvocation
+    // reported it). Keep the reservation held, never released.
+    if (settled.unrecorded) await markDraftReservationIndeterminate(input.orgId, input.reservationId);
   } catch (err) {
-    console.error('[office-addin] draft usage accounting failed', err);
-    await markAiBudgetReservationIndeterminate({
-      orgId: input.orgId,
-      reservationId: input.reservationId,
-    }).catch((markError) => captureException(markError));
+    // Settlement errors are DB errors: scrubbed before any log or report (S3).
+    const message = safeErrorMessage(err);
+    console.error('[office-addin] draft usage accounting failed', { reservationId: input.reservationId, error: message });
+    captureException(new Error(`office draft usage settlement failed: ${message}`), undefined, {
+      org_id: input.orgId, ai_reservation_id: input.reservationId,
+    });
+    await markDraftReservationIndeterminate(input.orgId, input.reservationId);
   }
+}
+
+/** Never throws; a failure is reported scrubbed. */
+async function markDraftReservationIndeterminate(orgId: string, reservationId: string): Promise<void> {
+  await markAiBudgetReservationIndeterminate({ orgId, reservationId }).catch((markError) => {
+    const message = safeErrorMessage(markError);
+    console.error('[office-addin] draft reservation could not be marked indeterminate', { reservationId, error: message });
+    captureException(new Error(`office draft reservation not retained as indeterminate: ${message}`), undefined, {
+      org_id: orgId, ai_reservation_id: reservationId,
+    });
+  });
 }
 
 /**
@@ -450,7 +467,7 @@ officeAddinTicketRoutes.post(
     } catch (err) {
       // Blanket 503 for the pane's deterministic fallback, but never silent —
       // a model/timeout/parse failure here is otherwise invisible in prod.
-      console.error('[office-addin] draft failed', err);
+      console.error('[office-addin] draft failed', safeErrorMessage(err));
       if (err instanceof DraftTimeoutError) {
         // Outcome unknown NOW, so the reservation goes indeterminate and keeps
         // consuming capacity — it is never released on a timeout. The provider
@@ -459,15 +476,18 @@ officeAddinTicketRoutes.post(
         // fallback (settlement accepts an indeterminate reservation). The
         // callback must not inherit the request's transaction: it runs after
         // that transaction has closed, so accounting opens a fresh context.
-        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-          .catch((markError) => captureException(markError));
+        await markDraftReservationIndeterminate(input.orgId, reservationId);
         void runOutsideDbContext(() => draftPromise.then(
           (lateDraft) => settle(lateDraft.attempts),
           (lateErr) => lateErr instanceof EmailDraftFailedError && lateErr.attempts.length > 0
             ? settle(lateErr.attempts, lateErr.providerOutcomeUnknown)
             : undefined,
         )).catch((meterErr) => {
-          console.error('[office-addin] draft usage accounting failed', meterErr);
+          const message = safeErrorMessage(meterErr);
+          console.error('[office-addin] late draft usage accounting failed', { reservationId, error: message });
+          captureException(new Error(`office draft late usage settlement failed: ${message}`), undefined, {
+            org_id: input.orgId, ai_reservation_id: reservationId,
+          });
         });
       } else if (err instanceof EmailDraftFailedError && err.attempts.length > 0) {
         // Failed attempts still burned tokens — bill them (same best-effort
@@ -479,11 +499,10 @@ officeAddinTicketRoutes.post(
         // the prompt exceeded the reserved budget): the ONLY case where
         // reserved capacity may be handed back.
         await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId })
-          .catch((releaseError) => captureException(releaseError));
+          .catch((releaseError) => captureException(new Error(`office draft reservation release failed: ${safeErrorMessage(releaseError)}`)));
       } else {
         // Provider transport ambiguity — treat as possibly-spent.
-        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-          .catch((markError) => captureException(markError));
+        await markDraftReservationIndeterminate(input.orgId, reservationId);
       }
       return c.json({ error: 'ai_unavailable' }, 503);
     }

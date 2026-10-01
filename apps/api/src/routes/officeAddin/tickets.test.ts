@@ -994,14 +994,28 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.settleInvocation).not.toHaveBeenCalled();
   });
 
-  it('still returns the draft when settlement throws, and keeps the reservation indeterminate', async () => {
-    hoisted.settleInvocation.mockRejectedValue(new Error('meter down'));
+  it('still returns the draft when settlement throws, keeps the reservation indeterminate, and reports it scrubbed (review S3)', async () => {
+    hoisted.settleInvocation.mockRejectedValue(Object.assign(new Error('Failed query: insert … params: sk-ant-secret'), { params: ['sk-ant-secret'] }));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(200);
-    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.any(Error));
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.objectContaining({
+      reservationId: RESERVATION_ID, error: expect.any(String),
+    }));
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain('sk-ant-secret');
     expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
+    const report = hoisted.captureException.mock.calls.find(([e]) => /office draft usage settlement failed/.test(String((e as Error).message)));
+    expect(report).toBeDefined();
+    expect(String((report![0] as Error).message)).not.toContain('sk-ant-secret');
+    expect(report![2]).toEqual(expect.objectContaining({ org_id: ORG_A, ai_reservation_id: RESERVATION_ID }));
     errSpy.mockRestore();
+  });
+
+  it('an UNRECORDED settlement (deferred, not persisted) keeps the reservation indeterminate (review S1)', async () => {
+    hoisted.settleInvocation.mockResolvedValue({ costCents: 1, invocationIds: [], deferred: true, unrecorded: true });
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(200);
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
   });
 
   it('404s when the technician cannot access the org', async () => {
@@ -1064,7 +1078,7 @@ describe('POST /tickets/draft', () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body).toEqual({ error: 'ai_unavailable' });
-    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft failed', expect.any(Error));
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft failed', 'model exploded');
     // A plain Error carries no attempts — nothing to bill; the outcome is unknown.
     expect(hoisted.settleInvocation).not.toHaveBeenCalled();
     expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledTimes(1);
@@ -1106,7 +1120,7 @@ describe('POST /tickets/draft', () => {
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
-    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.any(Error));
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.objectContaining({ error: 'meter down' }));
     errSpy.mockRestore();
   });
 
