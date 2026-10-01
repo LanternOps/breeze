@@ -320,6 +320,8 @@
     "generateNewToken": "Générer un nouveau jeton",
     "generateToken": "Générer un jeton",
     "cliTokenNotGenerated": "Aucun jeton pour l’instant. Choisissez le site, le nombre d’appareils et l’expiration, puis générez un jeton. Chaque jeton est une clé d’inscription active.",
+    "cliCommandNeedsToken": "Générez d’abord un jeton. La commande d’installation s’affichera ici dès qu’un jeton existera ; d’ici là, il n’y a rien à exécuter.",
+    "copyCommand": "Copier la commande",
     "cliTokenSite": "Les appareils inscrits avec ce jeton rejoignent {{site}}.",
     "singleUseValidForOneDevice": "Usage unique — valide pour un seul appareil. Générez un nouveau jeton pour chaque machine supplémentaire.",
     "linux": "Linux",
