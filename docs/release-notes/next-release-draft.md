@@ -39,7 +39,10 @@ Last release: **v0.119.0** (2026-09-30).
   `session_consent_*` audit row, like WebRTC. New viewer error codes on this
   transport: `CONSENT_DENIED`, `AGENT_START_FAILED`, `START_TIMEOUT`,
   `START_REFUSED`, `SESSION_ENDED`. **End** and server-side teardown stop the
-  relay immediately instead of at its next 30-second check.
+  relay immediately instead of at its next 30-second check. The fallback no
+  longer refuses every start under a notify (the default) or consent policy
+  with `CONSENT_UPGRADE_REQUIRED`: it now reads the agent's consent prompt
+  support from the device record, as the WebRTC routes do.
 - **Agent (needs the agent release):** the WebSocket fallback honours the start
   fence and the session lease, refuses an Allow that arrives after the session
   was stopped, shows the notify notice and on-screen indicator, and `stop_desktop`

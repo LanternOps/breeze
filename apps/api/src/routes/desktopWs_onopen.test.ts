@@ -131,6 +131,15 @@ vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
 }));
 
+// The relay reads the device's consent prompt capability itself: the device
+// record it is handed on the upgrade path carries no capability fields.
+const { loadDeviceConsentPromptProtocolVersionMock } = vi.hoisted(() => ({
+  loadDeviceConsentPromptProtocolVersionMock: vi.fn(async (_deviceId: string) => 1),
+}));
+vi.mock('../services/deviceConsentPromptCapability', () => ({
+  loadDeviceConsentPromptProtocolVersion: loadDeviceConsentPromptProtocolVersionMock,
+}));
+
 vi.mock('../services/remoteRevocationLease', () => ({
   AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
@@ -284,13 +293,21 @@ function setupSuccessfulValidation(options: {
    * the normal successful-start path.
    */
   consentPromptProtocolVersion?: number;
+  /**
+   * False reproduces the upgrade path's device record, built from the
+   * authorization context: identity only, no capability fields.
+   */
+  deviceCapabilityFields?: boolean;
 } = {}) {
   const {
     lockedPhase = 'none',
     recheckPhase = 'none',
     recheckGeneration = 1n,
     consentPromptProtocolVersion = 1,
+    deviceCapabilityFields = true,
   } = options;
+  loadDeviceConsentPromptProtocolVersionMock.mockReset();
+  loadDeviceConsentPromptProtocolVersionMock.mockResolvedValue(consentPromptProtocolVersion);
   const userId = nextUserId();
 
   // A test that exits the onOpen flow early (a refused start intent) leaves
@@ -324,7 +341,7 @@ function setupSuccessfulValidation(options: {
     osType: 'windows',
     status: 'online',
     orgId: 'org-test-1',
-    consentPromptProtocolVersion
+    ...(deviceCapabilityFields ? { consentPromptProtocolVersion } : {}),
   };
 
   vi.mocked(db.select)
@@ -792,6 +809,29 @@ describe('desktopWs', () => {
         expect.stringContaining('"REMOTE_PROMPT_POLICY_UNAVAILABLE"'),
       );
       expect(ws.close).toHaveBeenCalledWith(4003, expect.any(String));
+    });
+
+    // The upgrade path hands onOpen a device record without capability
+    // fields. A current agent must still get its notify (the default) or
+    // consent prompt, not a blanket CONSENT_UPGRADE_REQUIRED.
+    it.each([
+      ['notify', { mode: 'notify' as const, technicianName: 'A Technician' }],
+      ['consent', { mode: 'consent' as const, technicianName: 'A Technician', consentUnavailableBehavior: 'block' as const }],
+    ])('starts a prompt-capable agent under a %s policy even when the device record carries no capability fields', async (_mode, prompt) => {
+      setupSuccessfulValidation({ consentPromptProtocolVersion: 2, deviceCapabilityFields: false });
+      const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(prompt);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'upgrade-path-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"CONSENT_UPGRADE_REQUIRED"'));
+      expect(sendCommandToAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_stream_start', payload: expect.objectContaining({ prompt }) }),
+      );
+      expect(loadDeviceConsentPromptProtocolVersionMock).toHaveBeenCalledWith(DEVICE_ID);
     });
 
     it('still starts on a non-consent-prompt-capable agent when the resolved policy is off', async () => {

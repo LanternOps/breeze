@@ -23,7 +23,6 @@ import {
   logSessionAudit,
   buildRemoteSessionPromptPayload,
   createDesktopStartCommandId,
-  isConsentPromptCapable,
 } from './remote/helpers';
 import {
   CONSENT_UPGRADE_REQUIRED_CODE,
@@ -88,6 +87,7 @@ import {
 } from '../services/remoteWsAuthorization';
 import { isViewerFailureDiagnosticRow } from '../services/viewerFailureDiagnostics';
 import { consentDeniedMessage, viewerAnswerTimeoutMs } from './remote/consentTiming';
+import { resolveDesktopStreamPrompt, type DesktopStreamPromptDecision } from '../services/desktopStreamPromptGate';
 import {
   assertRemoteWsUpgradeRuntimeReady,
   getRemoteWsUpgradeConnection,
@@ -975,9 +975,12 @@ function createDesktopWsHandlers(
         // at all, so the agent's consent gate (which every start path relies
         // on — the viewer is untrusted) had nothing to gate on and streamed
         // unconditionally regardless of the device's consent/notify policy.
-        let streamPrompt: Awaited<ReturnType<typeof buildRemoteSessionPromptPayload>>;
+        // The capability is read from the device row by the gate: on the
+        // upgrade path `device` is built from the authorization context and
+        // carries identity only.
+        let streamPromptDecision: DesktopStreamPromptDecision;
         try {
-          streamPrompt = await buildRemoteSessionPromptPayload(device, userId);
+          streamPromptDecision = await resolveDesktopStreamPrompt(device, userId);
         } catch (error) {
           if (!(error instanceof RemoteSessionPromptPolicyError)) throw error;
           // An unreadable prompt policy refuses the start, exactly as the
@@ -1006,7 +1009,7 @@ function createDesktopWsHandlers(
         // (streamPrompt is set; `off` ships no prompt block and needs no
         // gate), refuse the start outright rather than dispatch a prompt the
         // agent will not honor. Unattended devices are unaffected.
-        if (streamPrompt && !isConsentPromptCapable(Number(device.consentPromptProtocolVersion ?? 0))) {
+        if (!streamPromptDecision.ok) {
           ws.send(JSON.stringify({
             type: 'error',
             code: CONSENT_UPGRADE_REQUIRED_CODE,
@@ -1024,6 +1027,7 @@ function createDesktopWsHandlers(
           ws.close(4003, 'Agent update required for consent prompt');
           return;
         }
+        const streamPrompt = streamPromptDecision.prompt;
 
         // Update only a still-open row, under the same row-locked start-intent
         // commit the WebRTC paths use (SEC-038 W02). A prior owner may have made
