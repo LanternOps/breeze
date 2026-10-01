@@ -400,6 +400,7 @@
       "addEntry": "Sağlayıcı ekle",
       "loading": "Katalog yükleniyor…",
       "empty": "Henüz katalog kaydı yok.",
+      "noRevisions": "Henüz revizyon yok.",
       "dismiss": "Kapat",
       "platformAdmin": {
         "title": "Platform yöneticisi erişimi gerekli",

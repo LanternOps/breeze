@@ -400,6 +400,7 @@
       "addEntry": "Add provider",
       "loading": "Loading catalog…",
       "empty": "No catalog entries yet.",
+      "noRevisions": "No revisions yet.",
       "dismiss": "Dismiss",
       "platformAdmin": {
         "title": "Platform-admin access required",

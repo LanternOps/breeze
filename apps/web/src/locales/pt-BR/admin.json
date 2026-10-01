@@ -400,6 +400,7 @@
       "addEntry": "Adicionar provedor",
       "loading": "Carregando catálogo…",
       "empty": "Ainda não há entradas no catálogo.",
+      "noRevisions": "Nenhuma revisão ainda.",
       "dismiss": "Dispensar",
       "platformAdmin": {
         "title": "Acesso de administrador de plataforma necessário",

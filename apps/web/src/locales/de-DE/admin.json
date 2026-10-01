@@ -400,6 +400,7 @@
       "addEntry": "Anbieter hinzufügen",
       "loading": "Katalog wird geladen…",
       "empty": "Noch keine Katalogeinträge.",
+      "noRevisions": "Noch keine Revisionen.",
       "dismiss": "Verwerfen",
       "platformAdmin": {
         "title": "Plattform-Administratorzugriff erforderlich",

@@ -400,6 +400,7 @@
       "addEntry": "Ajouter un fournisseur",
       "loading": "Chargement du catalogue…",
       "empty": "Aucune entrée de catalogue pour le moment.",
+      "noRevisions": "Aucune révision pour l’instant.",
       "dismiss": "Ignorer",
       "platformAdmin": {
         "title": "Accès administrateur plateforme requis",
