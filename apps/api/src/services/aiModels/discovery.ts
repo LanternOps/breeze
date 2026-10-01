@@ -334,6 +334,7 @@ export async function syncConnectionModels(
   if (conn.kind !== 'anthropic_byok' && conn.kind !== 'catalog') {
     return { ...base, status: 'skipped', error: `${conn.kind} discovery arrives in a later wave` };
   }
+  if (conn.status === 'disconnected') return { ...base, status: 'skipped', error: 'connection disconnected' };
 
   // Network call outside any DB context (#1105).
   const keyRef: { key: string | null } = { key: null };

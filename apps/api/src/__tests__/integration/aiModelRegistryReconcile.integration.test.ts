@@ -452,14 +452,16 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-
     expect(conn).toEqual({ status: 'error', last_error: 'auth_rejected' });
   });
 
-  it('DELETE → GET reports the platform and the registry holds no connection', async () => {
+  it('DELETE → GET reports the platform and the registry holds no LIVE connection (soft-disconnected, keyless)', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
     await seedLegacyConfig(partner.id);
     await reconcilePartnerFromLegacy(partner.id);
     expect(await deletePartnerLlmConfig(partner.id)).toBe(true);
     expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ configured: false, status: 'platform' });
-    expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${partner.id}`).toHaveLength(0);
+    // #7700 finding 1: kept as provenance, never deleted — but keyless and not live.
+    expect(await adminSql`SELECT status, api_key_encrypted FROM partner_ai_connections WHERE partner_id = ${partner.id}`)
+      .toEqual([{ status: 'disconnected', api_key_encrypted: null }]);
   });
 
   // W03 Task 6B: the gate cuts the partner over first (its one projection), so

@@ -18,6 +18,7 @@ import {
   savePartnerLlmKey,
   updatePartnerLlmConfig,
 } from '../../services/partnerLlmConfig';
+import { loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
 import { markPartnerLlmError, resolveLlmConfig } from '../../services/llm/llmConfigResolver';
 import { closeRegistryFixtures, fixtureSql, keySpec } from './aiModelRegistryFixtures';
 import { seedPricedPlatformModel, seedRegistryPartner } from './helpers/aiModelRegistrySeed';
@@ -92,10 +93,14 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: true, status: 'active', keyLast4: '0001' });
   });
 
-  it('disconnecting returns references to platform offerings and deletes the connection', async () => {
+  it('disconnecting returns references to platform offerings and soft-disconnects the connection (keyless, offerings disabled)', async () => {
     const s = await seedRegistryPartner('byok');
     expect(await deletePartnerLlmConfig(s.partnerId)).toBe(true);
-    expect(await fixtureSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${s.partnerId}`).toHaveLength(0);
+    // #7700 finding 1: never deleted (in-flight turns and the ledger reference its offerings).
+    expect(await fixtureSql`SELECT status, api_key_encrypted, key_last4, key_fingerprint FROM partner_ai_connections WHERE partner_id = ${s.partnerId}`)
+      .toEqual([{ status: 'disconnected', api_key_encrypted: null, key_last4: null, key_fingerprint: null }]);
+    expect(await offering(s.offeringId)).toMatchObject({ enabled: false, connection_id: s.connectionId });
+    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: false });
     const d = await chatDefault(s.partnerId);
     expect(d.conn).toBeNull();
     expect(d.model).toBe(s.modelId);
@@ -104,6 +109,27 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: false, status: 'platform' });
     expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'platform' });
     expect(reconcileSpy.calls).toEqual([]);
+  });
+
+  it('a disconnected connection is unusable everywhere, and a reconnect creates a NEW connection (#7700 finding 1)', async () => {
+    const s = await seedRegistryPartner('byok');
+    await deletePartnerLlmConfig(s.partnerId);
+    // A second disconnect finds nothing to disconnect.
+    expect(await deletePartnerLlmConfig(s.partnerId)).toBe(false);
+    // The disconnected offering is connection_unavailable even when addressed directly.
+    const cand = await loadOfferingCandidate(s.offeringId, s.partnerId);
+    expect(cand?.connection).toBeNull();
+    expect(cand?.facts.connection).toMatchObject({ status: 'disconnected', keyUsable: false });
+
+    await savePartnerLlmKey({ partnerId: s.partnerId, apiKey: 'sk-ant-api03-authority-0009', userId: s.userId });
+    const conns = await fixtureSql`SELECT id, status, key_last4 FROM partner_ai_connections WHERE partner_id = ${s.partnerId} ORDER BY created_at`;
+    expect(conns).toHaveLength(2);
+    expect(conns[0]).toMatchObject({ id: s.connectionId, status: 'disconnected', key_last4: null });
+    expect(conns[1]).toMatchObject({ status: 'active', key_last4: '0009' });
+    expect(conns[1]!.id).not.toBe(s.connectionId);
+    expect(await chatDefault(s.partnerId)).toMatchObject({ conn: conns[1]!.id, model: s.modelId });
+    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: true, keyLast4: '0009' });
+    expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'partner', configId: conns[1]!.id });
   });
 
   it('a registry-native edit survives later /ai/provider writes (rotate, default model, disconnect)', async () => {

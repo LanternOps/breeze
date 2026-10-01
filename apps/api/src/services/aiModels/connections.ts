@@ -8,7 +8,7 @@
  * registry-native writes (compatRemap.ts, which uses `createConnection`).
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { db } from '../../db';
 import { partnerAiConnections, type PartnerAiConnectionRow } from '../../db/schema';
 import { hmacFingerprint } from '../secretCrypto';
@@ -57,11 +57,14 @@ const PUBLIC_COLUMNS = {
   updatedAt: partnerAiConnections.updatedAt,
 } as const;
 
+/** A disconnected connection is provenance only (#7700 finding 1): never listed, never the compat one. */
+const LIVE = ne(partnerAiConnections.status, 'disconnected');
+
 export async function listConnections(partnerId: string): Promise<PartnerAiConnection[]> {
   return db
     .select(PUBLIC_COLUMNS)
     .from(partnerAiConnections)
-    .where(eq(partnerAiConnections.partnerId, partnerId))
+    .where(and(eq(partnerAiConnections.partnerId, partnerId), LIVE))
     .orderBy(asc(partnerAiConnections.createdAt));
 }
 
@@ -78,6 +81,7 @@ export async function getCompatConnection(partnerId: string): Promise<PartnerAiC
     .where(and(
       eq(partnerAiConnections.partnerId, partnerId),
       inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+      LIVE,
     ))
     .limit(1);
   return row ?? null;

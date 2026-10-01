@@ -159,7 +159,7 @@ describe('connectCompat', () => {
 });
 
 describe('disconnectCompat', () => {
-  it('returns references to platform offerings on every surface, then deletes the connection', async () => {
+  it('returns references to platform offerings on every surface, then SOFT-disconnects the connection (#7700 finding 1)', async () => {
     m.respond = baseRespond((text) => {
       if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: null, config_version: 3, connected_by: null, verified_at: null }];
       if (text.startsWith('WITH') && text.includes('AS model_id')) return [{ id: B, model_id: 'm1' }];
@@ -176,12 +176,18 @@ describe('disconnectCompat', () => {
     expect(insert.text).toContain('ON CONFLICT (partner_id, platform_model_id) WHERE connection_id IS NULL DO UPDATE SET enabled = true');
     const remap = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id = CASE'))!;
     expect(remap.text).not.toContain('surface NOT IN (');
-    const del = deletes();
-    expect(del).toHaveLength(1);
-    expect(del[0]!.text).toMatch(/^DELETE FROM partner_ai_connections WHERE id = /);
-    // the delete comes after every remap
+    // Never deleted: a delete cascades to offerings in-flight turns are bound to.
+    expect(deletes()).toEqual([]);
+    const soft = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections SET'))!;
+    expect(soft.text).toContain("status = 'disconnected'");
+    expect(soft.text).toContain('api_key_encrypted = NULL, key_last4 = NULL, key_fingerprint = NULL');
+    expect(soft.text).toContain('config_version = config_version + 1');
+    expect(soft.params).toContain(CONN);
+    const disable = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_models SET enabled = false'))!;
+    expect(disable.params).toContain(CONN);
+    // after every remap
     const order = m.statements.map((s) => s.text);
-    expect(order.findIndex((t) => t.startsWith('DELETE'))).toBeGreaterThan(order.findIndex((t) => t.startsWith('UPDATE ai_model_assignments')));
+    expect(order.indexOf(soft.text)).toBeGreaterThan(order.findIndex((t) => t.startsWith('UPDATE ai_model_assignments')));
   });
 
   it('is a no-op (false) when there is no compat connection', async () => {

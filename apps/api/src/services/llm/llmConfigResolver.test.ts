@@ -332,8 +332,9 @@ describe('resolveLlmConfig', () => {
       'catalogEntryId',
     );
     const compiled = compileWhere(dbState.selectWheres[0]);
-    expect(compiled.sql).toBe('("partner_ai_connections"."partner_id" = $1 and "partner_ai_connections"."kind" in ($2, $3))');
-    expect(compiled.params).toEqual([PARTNER_ID, 'anthropic_byok', 'catalog']);
+    // A soft-disconnected connection (#7700 finding 1) is never the partner's config.
+    expect(compiled.sql).toBe('("partner_ai_connections"."partner_id" = $1 and "partner_ai_connections"."kind" in ($2, $3) and "partner_ai_connections"."status" <> $4)');
+    expect(compiled.params).toEqual([PARTNER_ID, 'anthropic_byok', 'catalog', 'disconnected']);
   });
 
   it('marks a deterministic decrypt failure by config id and returns unavailable', async () => {

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partnerAiConnections } from '../../db/schema';
 import type { LlmEgressSurface } from '../../db/schema/llmEgressEvents';
@@ -117,6 +117,8 @@ async function readOrganizationPartnerId(orgId: string): Promise<string | null |
 const compatConnectionOf = (partnerId: string) => and(
   eq(partnerAiConnections.partnerId, partnerId),
   inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+  // A disconnected connection is provenance only (#7700 finding 1).
+  ne(partnerAiConnections.status, 'disconnected'),
 );
 
 /**

@@ -38,6 +38,7 @@ import { getPlatformModelById } from '../../services/aiModels/platformModels';
 import { priceInvocation } from '../../services/aiModels/pricing';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { settleInvocation, type SettleInvocationInput } from '../../services/aiModels/settleInvocation';
+import { deletePartnerLlmConfig } from '../../services/partnerLlmConfig';
 import { turnBindingFrom, type TurnBinding } from '../../services/aiModels/turnBinding';
 import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
 import { seedPricedPlatformModel, seedRegistryPartner, type SeededRegistryPartner } from './helpers/aiModelRegistrySeed';
@@ -330,6 +331,34 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     // The pending settlement itself (the sweep's replay, or the deferring caller retrying) goes through.
     expect((await replayPendingAiSettlements()).filter((r) => r.reservationId === id)).toMatchObject([{ kind: 'settled', actualCostCents: 5 }]);
     expect(await reservationState(id)).toMatchObject({ status: 'settled', pending_settlement: null });
+  });
+});
+
+describe.skipIf(!RUN)('disconnect while a BYOK turn is in flight (#7700 review finding 1)', () => {
+  it('the turn still settles (ledger row + rollup) on its soft-disconnected offering, and the key material is gone', async () => {
+    const s = await seedRegistryPartner('byok');
+    const binding = await bindingFor(s);
+    expect(binding.funding).toBe('partner_key');
+    const id = await reserve(s, binding);   // reserved + dispatched
+
+    expect(await deletePartnerLlmConfig(s.partnerId)).toBe(true);
+
+    const out = await settleInvocation(settleInput(s, binding, id));
+    expect(out.deferred).toBe(false);
+    expect(out.invocationIds).toHaveLength(1);
+    const [ledger] = await q<{ offering_id: string; connection_id: string; funding_source: string }>(sql`
+      SELECT offering_id, connection_id, funding_source FROM ai_invocations WHERE id = ${out.invocationIds[0]}::uuid`);
+    expect(ledger).toEqual({ offering_id: s.offeringId, connection_id: s.connectionId, funding_source: 'partner_key' });
+    const [usage] = await q<{ c: string }>(sql`
+      SELECT total_cost_cents AS c FROM ai_cost_usage WHERE org_id = ${s.orgId}::uuid AND period = 'daily'`);
+    expect(Number(usage!.c)).toBeCloseTo(out.costCents, 6);
+
+    // Revocation still removes the secret; the row stays only as provenance.
+    const [conn] = await q<{ status: string; api_key_encrypted: string | null; key_fingerprint: string | null; key_last4: string | null; config_version: number }>(sql`
+      SELECT status, api_key_encrypted, key_fingerprint, key_last4, config_version FROM partner_ai_connections WHERE id = ${s.connectionId}::uuid`);
+    expect(conn).toEqual({ status: 'disconnected', api_key_encrypted: null, key_fingerprint: null, key_last4: null, config_version: 2 });
+    const [off] = await q<{ enabled: boolean }>(sql`SELECT enabled FROM partner_ai_models WHERE id = ${s.offeringId}::uuid`);
+    expect(off!.enabled).toBe(false);
   });
 });
 

@@ -39,9 +39,32 @@ const DROP_MIRROR_MIGRATION = readFileSync(
   join(__dirname, '../../../migrations', '2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql'),
   'utf8',
 );
+// #7700 finding 1 widened status_chk / shape_chk for soft-disconnected rows
+// (2026-11-19-100900). Replaying the W02 file's narrower definitions over a
+// shared database that already holds 'disconnected' rows would fail their
+// validation scan, which a real database never does (each file applies once,
+// in order). So the replay adds the two superseded checks NOT VALID and then
+// replays 100900, which re-adds them validated — the same end state.
+const SOFT_DISCONNECT_MIGRATION = readFileSync(
+  join(__dirname, '../../../migrations', '2026-11-19-100900-ai-connections-soft-disconnect.sql'),
+  'utf8',
+);
+function supersededChecksNotValid(sqlText: string): string {
+  const swaps: Array<[string, string]> = [
+    ["CHECK (status IN ('active', 'error'));", "CHECK (status IN ('active', 'error')) NOT VALID;"],
+    ["OR api_key_encrypted IS NOT NULL)\n);", "OR api_key_encrypted IS NOT NULL)\n) NOT VALID;"],
+  ];
+  let out = sqlText;
+  for (const [from, to] of swaps) {
+    if (!out.includes(from)) throw new Error(`W02 connections migration no longer contains: ${from}`);
+    out = out.replace(from, to);
+  }
+  return out;
+}
 async function replayConnectionsMigration(): Promise<void> {
-  await adminSql.unsafe(CONNECTIONS_MIGRATION);
+  await adminSql.unsafe(supersededChecksNotValid(CONNECTIONS_MIGRATION));
   await adminSql.unsafe(DROP_MIRROR_MIGRATION);
+  await adminSql.unsafe(SOFT_DISCONNECT_MIGRATION);
 }
 
 describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {

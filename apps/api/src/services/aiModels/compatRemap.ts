@@ -250,7 +250,7 @@ async function repointPartnerDefault(partnerId: string, target: Target, oldModel
   await disableUnreferencedOfferings(partnerId, [previous]);
 }
 
-/** The partner's compat (anthropic_byok | catalog) connection, row-locked for this transaction. */
+/** The partner's live compat (anthropic_byok | catalog) connection — never a disconnected one — row-locked for this transaction. */
 export async function lockCompatConnection(partnerId: string): Promise<LockedCompatConnection | null> {
   assertSystemContext();
   const [row] = await rows<{
@@ -258,6 +258,7 @@ export async function lockCompatConnection(partnerId: string): Promise<LockedCom
     config_version: number; connected_by: string | null; verified_at: Date | string | null;
   }>(sql`SELECT id, kind, catalog_entry_id, legacy_default_model, config_version, connected_by, verified_at
       FROM partner_ai_connections WHERE partner_id = ${partnerId}::uuid AND kind IN ('anthropic_byok', 'catalog')
+        AND status <> 'disconnected'
       FOR UPDATE`);
   if (!row) return null;
   return {
@@ -314,11 +315,15 @@ export async function connectCompat(partnerId: string, input: ConnectCompatInput
 }
 
 /**
- * Remove the compat connection: every reference to its offerings goes back to
- * the same model's platform offering (created/enabled if missing), a pinned
+ * Disconnect the compat connection: every reference to its offerings goes back
+ * to the same model's platform offering (created/enabled if missing), a pinned
  * default goes back to tracking the deployment default (legacy: no row = env
- * default), then the connection is deleted — its offerings cascade, stale
- * non-live session pointers SET NULL.
+ * default), then the connection is SOFT-disconnected (#7700 review finding 1):
+ * status 'disconnected', key material NULLed (revocation removes the secret),
+ * config_version bumped, its offerings disabled. Never deleted — a delete
+ * cascades to the offerings, and a turn already reserved and dispatched on one
+ * could then never settle (ai_invocations' provenance guard needs the
+ * offering).
  */
 export async function disconnectCompat(partnerId: string): Promise<boolean> {
   assertSystemContext();
@@ -327,12 +332,13 @@ export async function disconnectCompat(partnerId: string): Promise<boolean> {
   if (!conn) return false;
   const mapping = await ensureSameModelOfferings(partnerId, { connectionId: conn.id }, { connectionId: null });
   await remapPartnerOfferings(partnerId, mapping);
-  // partner_ai_models_refusal_fallback_fk has no ON DELETE: nothing may still
-  // point into the doomed offerings (the remap covered every routed one).
-  await db.execute(sql`UPDATE partner_ai_models SET refusal_fallback_offering_id = NULL, updated_at = now()
-    WHERE partner_id = ${partnerId}::uuid AND refusal_fallback_offering_id IN (
-      SELECT id FROM partner_ai_models WHERE partner_id = ${partnerId}::uuid AND connection_id = ${conn.id}::uuid)`);
-  await db.execute(sql`DELETE FROM partner_ai_connections WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid`);
+  await db.execute(sql`UPDATE partner_ai_connections SET
+      status = 'disconnected', last_error = NULL,
+      api_key_encrypted = NULL, key_last4 = NULL, key_fingerprint = NULL,
+      config_version = config_version + 1, updated_at = now()
+    WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid`);
+  await db.execute(sql`UPDATE partner_ai_models SET enabled = false, updated_at = now()
+    WHERE partner_id = ${partnerId}::uuid AND connection_id = ${conn.id}::uuid AND enabled`);
   if (conn.legacyDefaultModel !== null) {
     await repointPartnerDefault(partnerId, { connectionId: null }, conn.legacyDefaultModel, resolveDefaultModel());
   }

@@ -385,6 +385,9 @@ export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: Leg
     .where(and(
       eq(partnerAiConnections.partnerId, partnerId),
       inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+      // Never a soft-disconnected row (#7700 finding 1): deleting it would
+      // cascade away offerings the ledger may still reference.
+      ne(partnerAiConnections.status, 'disconnected'),
       snapshot.config ? ne(partnerAiConnections.id, snapshot.config.id) : sql`true`,
     ))
     .orderBy(asc(partnerAiConnections.id));

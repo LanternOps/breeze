@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partnerAiConnections } from '../db/schema';
 import { resolveDefaultModel } from './aiModel';
@@ -333,10 +333,12 @@ export async function getPartnerLlmStatus(partnerId: string): Promise<PartnerLlm
     .where(and(
       eq(partnerAiConnections.partnerId, partnerId),
       inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+      ne(partnerAiConnections.status, 'disconnected'),
     ))
     .limit(1);
 
-  if (!row) {
+  // The query excludes disconnected rows; the guard narrows the type.
+  if (!row || row.status === 'disconnected') {
     return {
       configured: false,
       provider: 'anthropic',
