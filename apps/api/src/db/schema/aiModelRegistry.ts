@@ -97,6 +97,9 @@ export const partnerAiModels = pgTable('partner_ai_models', {
   requiredPermission: text('required_permission'),
   refusalFallbackOfferingId: uuid('refusal_fallback_offering_id'),
   lifecycle: text('lifecycle').$type<ModelLifecycle>().notNull().default('available'),
+  /** W03 connection discovery (#7601): NULL until a sync observes the model; never-seen rows are never aged. */
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  missedSyncCount: integer('missed_sync_count').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

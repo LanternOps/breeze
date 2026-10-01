@@ -1,7 +1,9 @@
 // apps/api/src/jobs/aiModelDiscoveryWorker.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, syncMock, capturedProcessor } = vi.hoisted(() => ({
+const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, syncMock, syncConnectionMock, dbState, capturedProcessor } = vi.hoisted(() => ({
+  syncConnectionMock: vi.fn(),
+  dbState: { activeConnectionIds: [] as string[], whereArg: null as unknown },
   addMock: vi.fn(),
   getJobMock: vi.fn(),
   getRepeatableJobsMock: vi.fn(),
@@ -34,12 +36,31 @@ vi.mock('bullmq', () => ({
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../services/aiModels/discovery', () => ({ syncPlatformModels: (...args: unknown[]) => syncMock(...args) }));
+vi.mock('../services/aiModels/discovery', () => ({
+  syncPlatformModels: (...args: unknown[]) => syncMock(...args),
+  syncConnectionModels: (...args: unknown[]) => syncConnectionMock(...args),
+}));
+vi.mock('../db', () => ({
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+  db: {
+    select: () => ({
+      from: () => ({
+        where: async (arg: unknown) => {
+          dbState.whereArg = arg;
+          return dbState.activeConnectionIds.map((id) => ({ id }));
+        },
+      }),
+    }),
+  },
+}));
 
 import {
   AI_MODEL_DISCOVERY_QUEUE,
   SYNC_PLATFORM_JOB,
   __testOnly,
+  aiModelConnectionSyncJobId,
+  enqueueConnectionSync,
   enqueuePlatformModelSync,
   initializeAiModelDiscoveryWorker,
   processAiModelDiscoveryJob,
@@ -52,6 +73,7 @@ beforeEach(() => {
   addMock.mockImplementation(async (_name: string, _data: unknown, opts: { jobId?: string }) => ({ id: opts.jobId ?? 'job-1' }));
   getJobMock.mockResolvedValue(null);
   getRepeatableJobsMock.mockResolvedValue([]);
+  dbState.activeConnectionIds = [];
 });
 
 describe('ai-model-discovery queue', () => {
@@ -60,16 +82,61 @@ describe('ai-model-discovery queue', () => {
     expect(SYNC_PLATFORM_JOB).toBe('sync-platform');
   });
 
-  it('schedules exactly one daily sync-platform repeatable with a stable job id', async () => {
+  it('schedules exactly one daily sync-platform and one daily sync-all-connections repeatable, with stable job ids', async () => {
     getRepeatableJobsMock.mockResolvedValue([{ key: 'old-key' }]);
     await scheduleAiModelDiscoveryJobs();
     expect(removeRepeatableByKeyMock).toHaveBeenCalledWith('old-key');
+    expect(addMock).toHaveBeenCalledTimes(2);
     expect(addMock).toHaveBeenCalledWith(
       'sync-platform',
       { type: 'sync-platform', trigger: 'schedule' },
       expect.objectContaining({ jobId: __testOnly.DAILY_REPEAT_JOB_ID, repeat: { pattern: __testOnly.DAILY_CRON }, attempts: 3 }),
     );
+    expect(addMock).toHaveBeenCalledWith(
+      'sync-all-connections',
+      { type: 'sync-all-connections' },
+      expect.objectContaining({ jobId: __testOnly.DAILY_CONNECTIONS_REPEAT_JOB_ID, repeat: { pattern: __testOnly.DAILY_CONNECTIONS_CRON } }),
+    );
     expect(__testOnly.DAILY_REPEAT_JOB_ID).not.toContain(':');
+    expect(__testOnly.DAILY_CONNECTIONS_REPEAT_JOB_ID).not.toContain(':');
+  });
+
+  it('connection sync job ids are colon-free and per connection', () => {
+    expect(aiModelConnectionSyncJobId('5f0c-1')).toBe('sync-connection-5f0c-1');
+    expect(aiModelConnectionSyncJobId('x')).not.toContain(':');
+  });
+
+  it('enqueueConnectionSync adds sync-connection under the per-connection job id and reuses a waiting one', async () => {
+    await enqueueConnectionSync('c1');
+    expect(addMock).toHaveBeenLastCalledWith(
+      'sync-connection',
+      { type: 'sync-connection', connectionId: 'c1' },
+      expect.objectContaining({ jobId: 'sync-connection-c1', attempts: 3 }),
+    );
+    getJobMock.mockResolvedValue({ id: 'sync-connection-c1', getState: async () => 'waiting' });
+    addMock.mockClear();
+    await enqueueConnectionSync('c1');
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('routes sync-connection to syncConnectionModels and returns its report (a failed listing is recorded, not retried)', async () => {
+    syncConnectionMock.mockResolvedValueOnce({ connectionId: 'c1', status: 'failed', error: 'HTTP 401' });
+    await expect(processAiModelDiscoveryJob({ data: { type: 'sync-connection', connectionId: 'c1' } }))
+      .resolves.toMatchObject({ status: 'failed' });
+    expect(syncConnectionMock).toHaveBeenCalledWith('c1');
+    expect(syncMock).not.toHaveBeenCalled();
+  });
+
+  it('a sync superseded by a concurrent rotation throws so BullMQ retries it with the new key', async () => {
+    syncConnectionMock.mockResolvedValueOnce({ connectionId: 'c1', status: 'skipped', retry: true, error: 'connection changed during sync' });
+    await expect(processAiModelDiscoveryJob({ data: { type: 'sync-connection', connectionId: 'c1' } })).rejects.toThrow(/changed/);
+  });
+
+  it('sync-all-connections fans out one sync-connection job per active BYOK/catalog connection', async () => {
+    dbState.activeConnectionIds = ['a', 'b'];
+    await expect(processAiModelDiscoveryJob({ data: { type: 'sync-all-connections' } })).resolves.toEqual({ enqueued: 2 });
+    expect(addMock.mock.calls.map((c) => c[2].jobId)).toEqual(['sync-connection-a', 'sync-connection-b']);
+    expect(dbState.whereArg).toBeTruthy();
   });
 
   it('a manual refresh enqueues sync-platform under the manual job id and reuses a waiting one', async () => {
@@ -97,6 +164,6 @@ describe('ai-model-discovery queue', () => {
   });
 
   it('rejects an unknown job type', async () => {
-    await expect(processAiModelDiscoveryJob({ data: { type: 'sync-connection' } as never })).rejects.toThrow(/Unknown/);
+    await expect(processAiModelDiscoveryJob({ data: { type: 'sync-everything' } as never })).rejects.toThrow(/Unknown/);
   });
 });

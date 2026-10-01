@@ -96,6 +96,9 @@ vi.mock('./aiModels/compatRemap', () => {
   return { ...remap, RegistryNotCutOverError, CompatConnectionMissingError };
 });
 
+const discovery = vi.hoisted(() => ({ enqueue: vi.fn() }));
+vi.mock('../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: discovery.enqueue }));
+
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./llmProviderCatalog', () => ({ getListedProviderByEntryId: catalogState.getListedProviderByEntryId }));
 
@@ -196,6 +199,7 @@ beforeEach(() => {
     : null));
   for (const name of WRITES) remap[name].mockImplementation(async () => { order.push(name); return { configVersion: 5 }; });
   remap.connectCompat.mockImplementation(async () => { order.push('connectCompat'); return 'new-conn'; });
+  discovery.enqueue.mockResolvedValue(undefined);
   remap.disconnectCompat.mockImplementation(async () => { order.push('disconnectCompat'); return true; });
   remap.rotateCompatKey.mockImplementation(async () => { order.push('rotateCompatKey'); return { configVersion: 8, defaultModel: 'claude-haiku-4-5' }; });
   isOfferablePlatformModelMock.mockImplementation(async (model: string) =>
@@ -550,5 +554,65 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     const error = await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }).catch((e: unknown) => e);
     expect(error).toBe(bug);
     expect((error as Error).stack).toContain('remap: x');
+  });
+});
+
+describe('connection discovery triggers (#7601 Task 16, spec §6: on connect and on key/endpoint rotation)', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const enqueuedAfterWrite = (write: (typeof WRITES)[number]) => {
+    expect(discovery.enqueue.mock.invocationCallOrder[0]!).toBeGreaterThan(remap[write].mock.invocationCallOrder[0]!);
+  };
+
+  it('a first key enqueues discovery for the NEW connection, after the write', async () => {
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith('new-conn'));
+    enqueuedAfterWrite('connectCompat');
+  });
+
+  it('a key rotation enqueues discovery for the rotated connection', async () => {
+    reg.compat = byok();
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith(CONFIG_ID));
+    enqueuedAfterWrite('rotateCompatKey');
+  });
+
+  it('a kind switch (direct → catalog, catalog → direct) enqueues discovery for the replacement connection', async () => {
+    remap.switchCompatKind.mockResolvedValue({ connectionId: 'switched-conn', configVersion: 5 });
+    reg.compat = byok();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith('switched-conn'));
+    discovery.enqueue.mockClear();
+    reg.compat = catalogConn();
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith('switched-conn'));
+  });
+
+  it('a different catalog entry on the same connection enqueues discovery for it', async () => {
+    reg.compat = catalogConn();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith(CONFIG_ID));
+    enqueuedAfterWrite('setCompatCatalogEntry');
+  });
+
+  it('edits that change no key or endpoint, disconnects and refused writes enqueue nothing', async () => {
+    reg.compat = byok();
+    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
+    await deletePartnerLlmConfig(PARTNER_ID);
+    remap.lockCompatConnection.mockResolvedValueOnce({ ...catalogConn(), configVersion: 9, connectedBy: null, verifiedAt: null });
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 409 });
+    await flush();
+    expect(discovery.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('a failed enqueue (Redis down) never fails the committed save', async () => {
+    discovery.enqueue.mockRejectedValue(new Error('redis down'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).resolves.toMatchObject({ configVersion: 1 });
+    await vi.waitFor(() => expect(errors).toHaveBeenCalled());
+    expect(inspect(errors.mock.calls)).not.toContain(API_KEY);
+    errors.mockRestore();
   });
 });

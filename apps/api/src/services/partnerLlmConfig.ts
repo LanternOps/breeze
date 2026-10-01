@@ -26,7 +26,7 @@ import {
 import { lockPartnerRegistryReconcile } from './aiModels/legacyReconcile';
 import { isOfferablePlatformModel } from './aiModels/platformModels';
 import { ensurePartnerCutover } from './aiModels/registryCutover';
-import { carriesQueryValues, formatSafeDbErrorDetail, safeDbErrorDetail } from './aiModels/safeDbError';
+import { carriesQueryValues, formatSafeDbErrorDetail, safeDbErrorDetail, safeErrorMessage } from './aiModels/safeDbError';
 import { LlmEgressViolationError } from './llm/guardedLlmFetch';
 // `isLlmProviderCatalogEnabled` is called from inside function bodies here,
 // never at module-evaluation time.
@@ -111,6 +111,23 @@ async function inRegistryWrite<T>(partnerId: string, write: () => Promise<T>): P
     if (carriesQueryValues(error)) throw toSafeWriteError(error);
     throw error;
   }
+}
+
+/**
+ * Spec §6: a new connection, or a key/endpoint change on one, gets a model
+ * discovery run (`ai-model-discovery` / `sync-connection`). Called only after
+ * the write committed, outside any DB context (the instrumented queue asserts
+ * it, #3127). Never awaited: a Redis outage must not fail (or hang) a save
+ * that already committed; the daily fan-out catches up. Lazy import keeps
+ * BullMQ out of this module's import graph.
+ */
+function scheduleConnectionDiscovery(connectionId: string): void {
+  void runOutsideDbContext(async () => {
+    const { enqueueConnectionSync } = await import('../jobs/aiModelDiscoveryWorker');
+    await enqueueConnectionSync(connectionId);
+  }).catch((error: unknown) => {
+    console.error(`[partnerLlmConfig] model discovery enqueue failed for connection ${connectionId} (non-fatal): ${safeErrorMessage(error)}`);
+  });
 }
 
 /** The partner's compat connection (no key material), read in system scope. */
@@ -280,15 +297,17 @@ export async function savePartnerLlmKey(input: {
     const current = await lockCompatConnection(input.partnerId);
     if (!current) {
       // First key: a new BYOK connection; platform references move onto it.
-      await connectCompat(input.partnerId, {
+      const connectionId = await connectCompat(input.partnerId, {
         kind: 'anthropic_byok', apiKey, catalogEntryId: null, connectedBy: input.userId, defaultModel: null, verifiedAt,
       });
-      return { configVersion: 1, defaultModel: null as string | null };
+      return { configVersion: 1, defaultModel: null as string | null, connectionId };
     }
     // The probe targeted the endpoint read above; a concurrent kind switch makes it stale.
     if ((current.catalogEntryId ?? null) !== (existing?.catalogEntryId ?? null)) throw configChanged();
-    return rotateCompatKey(input.partnerId, { apiKey, connectedBy: input.userId, verifiedAt });
+    const rotated = await rotateCompatKey(input.partnerId, { apiKey, connectedBy: input.userId, verifiedAt });
+    return { ...rotated, connectionId: current.id };
   });
+  scheduleConnectionDiscovery(stored.connectionId);
 
   return {
     last4: apiKey.slice(-4),
@@ -404,13 +423,15 @@ export async function updatePartnerLlmEndpoint(input: {
 
   if (input.catalogEntryId === null) {
     const apiKey = existing.kind === 'catalog' ? await readConnectionKey(existing.id) : null;
-    const updated = await inRegistryWrite(input.partnerId, async () => {
+    const updated = await inRegistryWrite(input.partnerId, async (): Promise<{ configVersion: number; connectionId?: string }> => {
       await assertUnchanged();
       if (apiKey === null) return bumpCompatConfigVersion(input.partnerId);
       return switchCompatKind(input.partnerId, {
         kind: 'anthropic_byok', apiKey, catalogEntryId: null, defaultModel: existing.legacyDefaultModel,
       });
     });
+    // A kind switch is a new connection; a bare version bump changes no key or endpoint.
+    if (updated.connectionId) scheduleConnectionDiscovery(updated.connectionId);
     return { catalogEntryId: null, configVersion: updated.configVersion, slug: null, revision: null };
   }
 
@@ -451,12 +472,14 @@ export async function updatePartnerLlmEndpoint(input: {
   const updated = await inRegistryWrite(input.partnerId, async () => {
     const current = await assertUnchanged();
     if (current.kind === 'catalog') {
-      return setCompatCatalogEntry(input.partnerId, { catalogEntryId: provider.entryId, pinnedModel: model });
+      const edited = await setCompatCatalogEntry(input.partnerId, { catalogEntryId: provider.entryId, pinnedModel: model });
+      return { ...edited, connectionId: current.id };
     }
     return switchCompatKind(input.partnerId, {
       kind: 'catalog', apiKey, catalogEntryId: provider.entryId, defaultModel: model,
     });
   });
+  scheduleConnectionDiscovery(updated.connectionId);
 
   return {
     catalogEntryId: provider.entryId,
