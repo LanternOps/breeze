@@ -418,6 +418,47 @@
       "invalidPrices": "Inserisci tutti e quattro i prezzi come numeri non negativi oppure lasciali tutti vuoti.",
       "saved": "Modello salvato",
       "saveFailed": "Impossibile salvare il modello. Riprova."
+    },
+    "defaults": {
+      "title": "Predefiniti per funzionalità",
+      "subtitle": "Scegli il modello predefinito di ogni funzionalità, quali modelli può usare e le sue opzioni di ragionamento. Le modifiche valgono per tutte le organizzazioni, salvo override.",
+      "needsTools": "richiede strumenti",
+      "reviewerHelp": "Modificarlo richiede il permesso di approvazioni.",
+      "default": "Modello predefinito",
+      "chooseDefault": "Scegli un modello",
+      "permitted": "Modelli consentiti",
+      "permittedAll": "Tutti i modelli abilitati",
+      "permittedList": "Solo questi",
+      "userChoice": "Gli utenti possono scegliere",
+      "effort": "Impegno",
+      "display": "Visualizzazione del ragionamento",
+      "speed": "Velocità",
+      "modelDefault": "Predefinito del modello",
+      "orgOverrides_one": "{{count}} override dell'organizzazione",
+      "orgOverrides_other": "{{count}} override delle organizzazioni",
+      "changedElsewhere": "Modificato altrove; il salvataggio lo sovrascrive",
+      "unsaved": "Modifiche non salvate",
+      "discard": "Annulla modifiche",
+      "saved": "Predefiniti salvati.",
+      "saveFailed": "Impossibile salvare i predefiniti. Riprova.",
+      "needsDefault": "Scegli un modello predefinito per ogni funzionalità modificata.",
+      "needsPermitted": "Seleziona almeno un modello per «Solo questi».",
+      "effortValues": {
+        "low": "Basso",
+        "medium": "Medio",
+        "high": "Alto",
+        "xhigh": "Molto alto",
+        "max": "Massimo"
+      },
+      "displayValues": {
+        "omitted": "Nascosto",
+        "summarized": "Riepilogato",
+        "updates": "Aggiornamenti in tempo reale"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Veloce"
+      }
     }
   },
   "partnerDefaults": {

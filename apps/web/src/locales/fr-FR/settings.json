@@ -418,6 +418,47 @@
       "invalidPrices": "Saisissez les quatre prix sous forme de nombres positifs ou nuls, ou laissez-les tous vides.",
       "saved": "Modèle enregistré",
       "saveFailed": "Impossible d’enregistrer le modèle. Réessayez."
+    },
+    "defaults": {
+      "title": "Valeurs par défaut par fonctionnalité",
+      "subtitle": "Choisissez le modèle par défaut de chaque fonctionnalité, les modèles autorisés et ses options de réflexion. Les modifications s'appliquent à toutes les organisations, sauf si elles les remplacent.",
+      "needsTools": "nécessite des outils",
+      "reviewerHelp": "Modifier ceci nécessite l'autorisation d'approbations.",
+      "default": "Modèle par défaut",
+      "chooseDefault": "Choisir un modèle",
+      "permitted": "Modèles autorisés",
+      "permittedAll": "Tous les modèles activés",
+      "permittedList": "Uniquement ceux-ci",
+      "userChoice": "Les utilisateurs peuvent choisir",
+      "effort": "Effort",
+      "display": "Affichage de la réflexion",
+      "speed": "Vitesse",
+      "modelDefault": "Valeur par défaut du modèle",
+      "orgOverrides_one": "{{count}} remplacement d'organisation",
+      "orgOverrides_other": "{{count}} remplacements d'organisations",
+      "changedElsewhere": "Modifié ailleurs ; l'enregistrement l'écrasera",
+      "unsaved": "Modifications non enregistrées",
+      "discard": "Annuler les modifications",
+      "saved": "Valeurs par défaut enregistrées.",
+      "saveFailed": "Impossible d'enregistrer les valeurs par défaut. Réessayez.",
+      "needsDefault": "Choisissez un modèle par défaut pour chaque fonctionnalité modifiée.",
+      "needsPermitted": "Cochez au moins un modèle pour « Uniquement ceux-ci ».",
+      "effortValues": {
+        "low": "Faible",
+        "medium": "Moyen",
+        "high": "Élevé",
+        "xhigh": "Très élevé",
+        "max": "Maximal"
+      },
+      "displayValues": {
+        "omitted": "Masqué",
+        "summarized": "Résumé",
+        "updates": "Mises à jour en direct"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Rapide"
+      }
     }
   },
   "partnerDefaults": {

@@ -418,6 +418,47 @@
       "invalidPrices": "Introduce los cuatro precios como números no negativos o déjalos todos en blanco.",
       "saved": "Modelo guardado",
       "saveFailed": "No se pudo guardar el modelo. Inténtalo de nuevo."
+    },
+    "defaults": {
+      "title": "Valores predeterminados por función",
+      "subtitle": "Elija el modelo predeterminado de cada función, qué modelos puede usar y sus opciones de razonamiento. Los cambios se aplican a todas las organizaciones salvo que las reemplacen.",
+      "needsTools": "requiere herramientas",
+      "reviewerHelp": "Cambiar esto requiere el permiso de aprobaciones.",
+      "default": "Modelo predeterminado",
+      "chooseDefault": "Elegir un modelo",
+      "permitted": "Modelos permitidos",
+      "permittedAll": "Todos los modelos habilitados",
+      "permittedList": "Solo estos",
+      "userChoice": "Los usuarios pueden elegir",
+      "effort": "Esfuerzo",
+      "display": "Visualización del razonamiento",
+      "speed": "Velocidad",
+      "modelDefault": "Predeterminado del modelo",
+      "orgOverrides_one": "{{count}} anulación de organización",
+      "orgOverrides_other": "{{count}} anulaciones de organizaciones",
+      "changedElsewhere": "Cambiado en otro lugar; al guardar se sobrescribe",
+      "unsaved": "Cambios sin guardar",
+      "discard": "Descartar",
+      "saved": "Valores predeterminados guardados.",
+      "saveFailed": "No se pudieron guardar los valores predeterminados. Inténtelo de nuevo.",
+      "needsDefault": "Elija un modelo predeterminado para cada función modificada.",
+      "needsPermitted": "Marque al menos un modelo en «Solo estos».",
+      "effortValues": {
+        "low": "Bajo",
+        "medium": "Medio",
+        "high": "Alto",
+        "xhigh": "Muy alto",
+        "max": "Máximo"
+      },
+      "displayValues": {
+        "omitted": "Oculto",
+        "summarized": "Resumido",
+        "updates": "Actualizaciones en vivo"
+      },
+      "speedValues": {
+        "standard": "Estándar",
+        "fast": "Rápido"
+      }
     }
   },
   "partnerDefaults": {

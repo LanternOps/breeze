@@ -418,6 +418,47 @@
       "invalidPrices": "Enter all four prices as non-negative numbers, or leave all four blank.",
       "saved": "Model saved",
       "saveFailed": "Couldn’t save the model. Try again."
+    },
+    "defaults": {
+      "title": "Defaults by feature",
+      "subtitle": "Choose the default model for each feature, which models it may use, and its thinking options. Changes apply to every organization unless it overrides them.",
+      "needsTools": "needs tools",
+      "reviewerHelp": "Changing this needs the approvals permission.",
+      "default": "Default model",
+      "chooseDefault": "Choose a model",
+      "permitted": "Allowed models",
+      "permittedAll": "All enabled models",
+      "permittedList": "Only these",
+      "userChoice": "Users may choose",
+      "effort": "Effort",
+      "display": "Thinking display",
+      "speed": "Speed",
+      "modelDefault": "Model default",
+      "orgOverrides_one": "{{count}} organization override",
+      "orgOverrides_other": "{{count}} organization overrides",
+      "changedElsewhere": "Changed elsewhere; saving overwrites it",
+      "unsaved": "Unsaved changes",
+      "discard": "Discard",
+      "saved": "Defaults saved.",
+      "saveFailed": "Couldn't save the defaults. Try again.",
+      "needsDefault": "Choose a default model for every changed feature.",
+      "needsPermitted": "Tick at least one model for \"Only these\".",
+      "effortValues": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra high",
+        "max": "Max"
+      },
+      "displayValues": {
+        "omitted": "Hidden",
+        "summarized": "Summarized",
+        "updates": "Live updates"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Fast"
+      }
     }
   },
   "partnerDefaults": {

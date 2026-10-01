@@ -418,6 +418,47 @@
       "invalidPrices": "Dört fiyatı da negatif olmayan sayılar olarak girin veya dördünü de boş bırakın.",
       "saved": "Model kaydedildi",
       "saveFailed": "Model kaydedilemedi. Tekrar deneyin."
+    },
+    "defaults": {
+      "title": "Özellik başına varsayılanlar",
+      "subtitle": "Her özellik için varsayılan modeli, kullanabileceği modelleri ve düşünme seçeneklerini belirleyin. Değişiklikler, geçersiz kılmayan tüm kuruluşlar için geçerlidir.",
+      "needsTools": "araç gerektirir",
+      "reviewerHelp": "Bunu değiştirmek için onay izni gerekir.",
+      "default": "Varsayılan model",
+      "chooseDefault": "Model seçin",
+      "permitted": "İzin verilen modeller",
+      "permittedAll": "Etkin tüm modeller",
+      "permittedList": "Yalnızca bunlar",
+      "userChoice": "Kullanıcılar seçebilir",
+      "effort": "Çaba",
+      "display": "Düşünme gösterimi",
+      "speed": "Hız",
+      "modelDefault": "Modelin varsayılanı",
+      "orgOverrides_one": "{{count}} kuruluş geçersiz kılması",
+      "orgOverrides_other": "{{count}} kuruluş geçersiz kılması",
+      "changedElsewhere": "Başka yerde değiştirildi; kaydetmek üzerine yazar",
+      "unsaved": "Kaydedilmemiş değişiklikler",
+      "discard": "Vazgeç",
+      "saved": "Varsayılanlar kaydedildi.",
+      "saveFailed": "Varsayılanlar kaydedilemedi. Tekrar deneyin.",
+      "needsDefault": "Değiştirilen her özellik için bir varsayılan model seçin.",
+      "needsPermitted": "“Yalnızca bunlar” için en az bir model işaretleyin.",
+      "effortValues": {
+        "low": "Düşük",
+        "medium": "Orta",
+        "high": "Yüksek",
+        "xhigh": "Çok yüksek",
+        "max": "Maksimum"
+      },
+      "displayValues": {
+        "omitted": "Gizli",
+        "summarized": "Özetlenmiş",
+        "updates": "Canlı güncellemeler"
+      },
+      "speedValues": {
+        "standard": "Standart",
+        "fast": "Hızlı"
+      }
     }
   },
   "partnerDefaults": {

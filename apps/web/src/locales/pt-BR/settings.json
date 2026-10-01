@@ -418,6 +418,47 @@
       "invalidPrices": "Informe os quatro preços como números não negativos ou deixe os quatro em branco.",
       "saved": "Modelo salvo",
       "saveFailed": "Não foi possível salvar o modelo. Tente novamente."
+    },
+    "defaults": {
+      "title": "Padrões por recurso",
+      "subtitle": "Escolha o modelo padrão de cada recurso, quais modelos ele pode usar e suas opções de raciocínio. As alterações valem para todas as organizações, exceto as que as substituírem.",
+      "needsTools": "requer ferramentas",
+      "reviewerHelp": "Alterar isto exige a permissão de aprovações.",
+      "default": "Modelo padrão",
+      "chooseDefault": "Escolher um modelo",
+      "permitted": "Modelos permitidos",
+      "permittedAll": "Todos os modelos ativados",
+      "permittedList": "Somente estes",
+      "userChoice": "Os usuários podem escolher",
+      "effort": "Esforço",
+      "display": "Exibição do raciocínio",
+      "speed": "Velocidade",
+      "modelDefault": "Padrão do modelo",
+      "orgOverrides_one": "{{count}} substituição de organização",
+      "orgOverrides_other": "{{count}} substituições de organizações",
+      "changedElsewhere": "Alterado em outro lugar; salvar substitui",
+      "unsaved": "Alterações não salvas",
+      "discard": "Descartar",
+      "saved": "Padrões salvos.",
+      "saveFailed": "Não foi possível salvar os padrões. Tente novamente.",
+      "needsDefault": "Escolha um modelo padrão para cada recurso alterado.",
+      "needsPermitted": "Marque pelo menos um modelo em “Somente estes”.",
+      "effortValues": {
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "xhigh": "Muito alto",
+        "max": "Máximo"
+      },
+      "displayValues": {
+        "omitted": "Oculto",
+        "summarized": "Resumido",
+        "updates": "Atualizações ao vivo"
+      },
+      "speedValues": {
+        "standard": "Padrão",
+        "fast": "Rápido"
+      }
     }
   },
   "partnerDefaults": {

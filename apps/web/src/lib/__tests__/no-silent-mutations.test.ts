@@ -78,6 +78,7 @@ const TARGET_GLOBS = [
   'src/components/settings/aiModels/ResidencySwitch.tsx',
   'src/components/settings/aiModels/ModelsCard.tsx',
   'src/components/settings/aiModels/OfferingDrawer.tsx',
+  'src/components/settings/aiModels/FeatureDefaultsCard.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
   // Tool catalog W01 PR C (#5216): the Tool Sources surface authors the
   // credentials and risk tiers that decide what the assistant may call on a
@@ -881,7 +882,8 @@ describe('no silent mutations in targeted set', () => {
     // AI model registry W04 #7602 Task 11 replaces PartnerAiProviderTab.tsx with
     // aiModels/{PartnerAiModelsTab,ConnectionDrawer,ResidencySwitch}.tsx: 206 → 208.
     // Task 12 adds aiModels/{ModelsCard,OfferingDrawer}.tsx: 208 → 210.
-    expect(absoluteFiles.length).toBe(210);
+    // Task 13 adds aiModels/FeatureDefaultsCard.tsx: 210 → 211.
+    expect(absoluteFiles.length).toBe(211);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

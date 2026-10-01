@@ -418,6 +418,47 @@
       "invalidPrices": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer.",
       "saved": "Modell gespeichert",
       "saveFailed": "Das Modell konnte nicht gespeichert werden. Versuchen Sie es erneut."
+    },
+    "defaults": {
+      "title": "Standards pro Funktion",
+      "subtitle": "Legen Sie für jede Funktion das Standardmodell, die erlaubten Modelle und die Denkoptionen fest. Änderungen gelten für alle Organisationen, sofern sie nicht überschrieben werden.",
+      "needsTools": "benötigt Tools",
+      "reviewerHelp": "Zum Ändern ist die Genehmigungsberechtigung erforderlich.",
+      "default": "Standardmodell",
+      "chooseDefault": "Modell wählen",
+      "permitted": "Erlaubte Modelle",
+      "permittedAll": "Alle aktivierten Modelle",
+      "permittedList": "Nur diese",
+      "userChoice": "Benutzer dürfen wählen",
+      "effort": "Aufwand",
+      "display": "Denkanzeige",
+      "speed": "Geschwindigkeit",
+      "modelDefault": "Modellstandard",
+      "orgOverrides_one": "{{count}} Organisations-Überschreibung",
+      "orgOverrides_other": "{{count}} Organisations-Überschreibungen",
+      "changedElsewhere": "Anderswo geändert; Speichern überschreibt dies",
+      "unsaved": "Nicht gespeicherte Änderungen",
+      "discard": "Verwerfen",
+      "saved": "Standards gespeichert.",
+      "saveFailed": "Die Standards konnten nicht gespeichert werden. Versuchen Sie es erneut.",
+      "needsDefault": "Wählen Sie für jede geänderte Funktion ein Standardmodell.",
+      "needsPermitted": "Wählen Sie bei „Nur diese“ mindestens ein Modell aus.",
+      "effortValues": {
+        "low": "Niedrig",
+        "medium": "Mittel",
+        "high": "Hoch",
+        "xhigh": "Sehr hoch",
+        "max": "Maximal"
+      },
+      "displayValues": {
+        "omitted": "Ausgeblendet",
+        "summarized": "Zusammengefasst",
+        "updates": "Live-Updates"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Schnell"
+      }
     }
   },
   "partnerDefaults": {
