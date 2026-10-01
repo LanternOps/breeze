@@ -1937,8 +1937,10 @@
       "needsApprovalNoRingTitle": "La directiva de parches de este dispositivo no tiene un anillo de actualización vinculado, así que este parche solo se instala tras una aprobación manual.",
       "unnamedRing": "el anillo de actualización vinculado",
       "ringLine": "Las aprobaciones siguen el anillo de actualización: {{ring}}",
-      "noRingLine": "No hay un anillo de actualización vinculado. Los parches solo se instalan tras una aprobación manual.",
-      "unavailable": "No se pudieron evaluar las aprobaciones del anillo de actualización. Las insignias solo muestran aprobaciones manuales."
+      "noRingLine": "Ningún anillo de actualización se aplica a este dispositivo. Los parches solo se instalan tras una aprobación manual.",
+      "unavailable": "No se pudieron evaluar las aprobaciones del anillo de actualización. Las insignias solo muestran aprobaciones manuales.",
+      "autoApprovedUserScopeTitle": "{{ring}} aprueba este parche, pero es una instalación por usuario que Breeze aún no puede aplicar.",
+      "otherRingApprovalTitle": "Este parche tiene una aprobación manual para otro anillo de actualización, que no se aplica a {{ring}}. Las ejecuciones programadas lo omiten aquí; el botón Instalar sí lo acepta."
     },
     "installPatchRingManagedTitle": "{{name}} lo gestiona el anillo de actualización {{ring}} y se instala en la próxima ejecución programada de parches. Instalarlo ahora requiere una aprobación manual."
   },

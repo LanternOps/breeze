@@ -1937,8 +1937,10 @@
       "needsApprovalNoRingTitle": "Aucun anneau de mise à jour n'est lié à la stratégie de correctifs de cet appareil : ce correctif ne s'installe qu'après une approbation manuelle.",
       "unnamedRing": "l'anneau de mise à jour lié",
       "ringLine": "Les approbations suivent l'anneau de mise à jour : {{ring}}",
-      "noRingLine": "Aucun anneau de mise à jour lié. Les correctifs ne s'installent qu'après une approbation manuelle.",
-      "unavailable": "Impossible d'évaluer les approbations de l'anneau de mise à jour. Les badges n'indiquent que les approbations manuelles."
+      "noRingLine": "Aucun anneau de mise à jour ne s'applique à cet appareil. Les correctifs ne s'installent qu'après une approbation manuelle.",
+      "unavailable": "Impossible d'évaluer les approbations de l'anneau de mise à jour. Les badges n'indiquent que les approbations manuelles.",
+      "autoApprovedUserScopeTitle": "{{ring}} approuve ce correctif, mais il s'agit d'une installation par utilisateur que Breeze ne peut pas encore appliquer.",
+      "otherRingApprovalTitle": "Ce correctif a une approbation manuelle pour un autre anneau de mise à jour, qui ne s'applique pas à {{ring}}. Les exécutions planifiées l'ignorent ici ; le bouton Installer l'accepte quand même."
     },
     "installPatchRingManagedTitle": "{{name}} est géré par l'anneau de mise à jour {{ring}} et s'installe lors de la prochaine exécution planifiée des correctifs. L'installer maintenant nécessite une approbation manuelle."
   },

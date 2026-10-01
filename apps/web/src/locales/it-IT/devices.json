@@ -1937,8 +1937,10 @@
       "needsApprovalNoRingTitle": "Nessun anello di aggiornamento è collegato al criterio patch di questo dispositivo, quindi questa patch si installa solo dopo un'approvazione manuale.",
       "unnamedRing": "l'anello di aggiornamento collegato",
       "ringLine": "Le approvazioni seguono l'anello di aggiornamento: {{ring}}",
-      "noRingLine": "Nessun anello di aggiornamento collegato. Le patch si installano solo dopo un'approvazione manuale.",
-      "unavailable": "Impossibile valutare le approvazioni dell'anello di aggiornamento. I badge mostrano solo le approvazioni manuali."
+      "noRingLine": "Nessun anello di aggiornamento si applica a questo dispositivo. Le patch si installano solo dopo un'approvazione manuale.",
+      "unavailable": "Impossibile valutare le approvazioni dell'anello di aggiornamento. I badge mostrano solo le approvazioni manuali.",
+      "autoApprovedUserScopeTitle": "{{ring}} approva questa patch, ma è un'installazione per utente che Breeze non può ancora applicare.",
+      "otherRingApprovalTitle": "Questa patch ha un'approvazione manuale per un altro anello di aggiornamento, che non si applica a {{ring}}. Le esecuzioni pianificate la saltano qui; il pulsante Installa la accetta comunque."
     },
     "installPatchRingManagedTitle": "{{name}} è gestita dall'anello di aggiornamento {{ring}} e si installa con la prossima esecuzione pianificata delle patch. Installarla ora richiede un'approvazione manuale."
   },

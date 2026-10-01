@@ -1937,8 +1937,10 @@
       "needsApprovalNoRingTitle": "No update ring is linked to this device's patch policy, so this patch installs only after a manual approval.",
       "unnamedRing": "the linked update ring",
       "ringLine": "Approvals follow update ring: {{ring}}",
-      "noRingLine": "No update ring linked. Patches install only after a manual approval.",
-      "unavailable": "Could not evaluate update ring approvals. Badges show manual approvals only."
+      "noRingLine": "No update ring applies to this device. Patches install only after a manual approval.",
+      "unavailable": "Could not evaluate update ring approvals. Badges show manual approvals only.",
+      "autoApprovedUserScopeTitle": "{{ring}} approves this patch, but it is a per-user install that Breeze cannot apply yet.",
+      "otherRingApprovalTitle": "This patch has a manual approval for a different update ring, which does not apply to {{ring}}. Scheduled runs skip it here; the Install button still accepts it."
     },
     "installPatchRingManagedTitle": "{{name}} is handled by update ring {{ring}} and installs with the next scheduled patch run. Installing it now requires a manual approval."
   },

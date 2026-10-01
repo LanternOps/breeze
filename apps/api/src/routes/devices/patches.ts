@@ -410,9 +410,20 @@ patchesRoutes.get(
           withSystemDbAccessContext(() => loadDevicePatchApprovalView(deviceId, device.orgId))
         );
         approvalEvaluation = approvalView.evaluation;
+        // A pending row the evaluator did not classify (status changed between
+        // the two reads, or an org with no partner) keeps the manual-only
+        // badge. Say so in the log rather than leaving it unexplained.
+        const unclassified = devicePatchList.filter(
+          (p) => p.status === 'pending' && !approvalView!.byPatchId.has(p.patchId)
+        ).length;
+        if (unclassified > 0) {
+          console.warn(
+            `[devices/patches] device ${deviceId}: ${unclassified} pending patch(es) got no ring-aware approval state; showing manual approval status for them`
+          );
+        }
       } catch (err) {
         console.error(`[devices/patches] ring-aware approval evaluation failed for device ${deviceId}:`, err);
-        captureException(err);
+        captureException(err, c, { operation: 'devicePatchApprovalView', deviceId, orgId: device.orgId });
         approvalEvaluation = { available: false, ring: null };
       }
     }

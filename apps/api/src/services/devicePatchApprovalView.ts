@@ -67,7 +67,12 @@ export async function loadDevicePatchApprovalView(deviceId: string, orgId: strin
   }
   for (const entry of verdict.ineligible) {
     const state = ineligibleState(entry);
-    if (!state) continue;
+    if (!state) {
+      // Not reachable for an access-checked device's outstanding rows; if it
+      // happens the patch keeps its manual-only badge — log why.
+      console.warn(`[devicePatchApprovalView] device ${deviceId}: patch ${entry.patchId} has no display state for reason '${entry.reason}'`);
+      continue;
+    }
     byPatchId.set(entry.patchId, {
       state,
       reason: entry.reason,

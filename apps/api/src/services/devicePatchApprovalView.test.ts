@@ -69,7 +69,7 @@ function chain(resolveAt: 'where' | 'limit', rows: unknown[]) {
 }
 
 /** The device's effective policy links ring "Workstations Ring" with the given ring auto-approve. */
-function mockRingPolicy(ringAutoApprove: Record<string, unknown>, ringDeferralDays = 0) {
+function mockRingPolicy(ringAutoApprove: Record<string, unknown>, ringDeferralDays = 0, ringPartnerId = PARTNER) {
   vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
   vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue({
     configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
@@ -82,7 +82,7 @@ function mockRingPolicy(ringAutoApprove: Record<string, unknown>, ringDeferralDa
     },
   } as never);
   // ring row (deferral + partner), then the evaluator's three reads.
-  vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: ringDeferralDays, partnerId: PARTNER }]) as never);
+  vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: ringDeferralDays, partnerId: ringPartnerId }]) as never);
 }
 
 function mockEvaluatorReads(pending: unknown[], approvals: unknown[] = []) {
@@ -149,6 +149,16 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
 
     expect(view.evaluation).toEqual({ available: true, ring: null });
     expect(view.byPatchId.get(P4)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
+  });
+
+  it("names no ring and auto-approves nothing when the linked ring belongs to another partner", async () => {
+    mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 }, 0, '99999999-9999-9999-9999-999999999999');
+    mockEvaluatorReads([row({ patchId: P1, severity: 'critical' })]);
+
+    const view = await loadDevicePatchApprovalView(DEV, ORG);
+
+    expect(view.evaluation.ring).toBeNull();
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'needs_approval', reason: 'no_ring_resolved', holdUntil: null });
   });
 
   it('mirrors the scheduled job on superseded patches (it does not exclude them)', async () => {

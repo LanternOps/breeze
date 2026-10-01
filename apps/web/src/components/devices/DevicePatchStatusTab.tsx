@@ -320,7 +320,15 @@ function getEffectiveApprovalBadge(
     case 'approved':
       return { label: t('devicePatchStatusTab.approval.approved'), className: APPROVAL_BADGE_CLASS.approved, title: t('devicePatchStatusTab.approval.approvedTitle') };
     case 'auto_approved':
-      return { label: t('devicePatchStatusTab.approval.autoApproved'), className: APPROVAL_BADGE_CLASS.approved, title: t('devicePatchStatusTab.approval.autoApprovedTitle', { ring }) };
+      return {
+        label: t('devicePatchStatusTab.approval.autoApproved'),
+        className: APPROVAL_BADGE_CLASS.approved,
+        // The evaluator does not look at scope, but the agent cannot install
+        // per-user apps (#2727) — never promise that the run installs one.
+        title: isUserScopedPatch(patch)
+          ? t('devicePatchStatusTab.approval.autoApprovedUserScopeTitle', { ring })
+          : t('devicePatchStatusTab.approval.autoApprovedTitle', { ring }),
+      };
     case 'deferred': {
       if (!effective.holdUntil) {
         return { label: t('devicePatchStatusTab.approval.deferred'), className: APPROVAL_BADGE_CLASS.info, title: t('devicePatchStatusTab.approval.deferredNoDateTitle', { ring }) };
@@ -341,9 +349,14 @@ function getEffectiveApprovalBadge(
       return {
         label: t('devicePatchStatusTab.approval.pending'),
         className: APPROVAL_BADGE_CLASS.pending,
-        title: effective.reason === 'no_ring_resolved'
-          ? t('devicePatchStatusTab.approval.needsApprovalNoRingTitle')
-          : t('devicePatchStatusTab.approval.needsApprovalRingTitle', { ring }),
+        // The Install gate counts a manual approval for ANY ring (tracked
+        // follow-up), the evaluator only this device's ring — so the row's
+        // Install button can be enabled under this badge. Explain why.
+        title: patch.approvalStatus === 'approved'
+          ? t('devicePatchStatusTab.approval.otherRingApprovalTitle', { ring })
+          : effective.reason === 'no_ring_resolved'
+            ? t('devicePatchStatusTab.approval.needsApprovalNoRingTitle')
+            : t('devicePatchStatusTab.approval.needsApprovalRingTitle', { ring }),
       };
   }
 }

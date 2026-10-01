@@ -1937,8 +1937,10 @@
       "needsApprovalNoRingTitle": "Bu cihazın yama ilkesine bağlı bir güncelleme halkası yok; bu yüzden bu yama yalnızca el ile onaydan sonra yüklenir.",
       "unnamedRing": "bağlı güncelleme halkası",
       "ringLine": "Onaylar şu güncelleme halkasını izler: {{ring}}",
-      "noRingLine": "Bağlı güncelleme halkası yok. Yamalar yalnızca el ile onaydan sonra yüklenir.",
-      "unavailable": "Güncelleme halkası onayları değerlendirilemedi. Rozetler yalnızca el ile onayları gösteriyor."
+      "noRingLine": "Bu cihaz için geçerli bir güncelleme halkası yok. Yamalar yalnızca el ile onaydan sonra yüklenir.",
+      "unavailable": "Güncelleme halkası onayları değerlendirilemedi. Rozetler yalnızca el ile onayları gösteriyor.",
+      "autoApprovedUserScopeTitle": "{{ring}} bu yamayı onaylıyor, ancak bu, Breeze'in henüz uygulayamadığı kullanıcı başına bir yükleme.",
+      "otherRingApprovalTitle": "Bu yamanın farklı bir güncelleme halkası için el ile onayı var ve bu onay {{ring}} için geçerli değil. Zamanlanmış çalıştırmalar burada onu atlar; Yükle düğmesi ise yine de kabul eder."
     },
     "installPatchRingManagedTitle": "{{name}}, {{ring}} güncelleme halkası tarafından yönetilir ve bir sonraki zamanlanmış yama çalıştırmasıyla yüklenir. Şimdi yüklemek için el ile onay gerekir."
   },

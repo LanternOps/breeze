@@ -314,6 +314,7 @@ describe('device patch routes', () => {
     const RING_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const AUTO = '11111111-1111-4111-8111-111111111111';
     const HELD = '44444444-4444-4444-8444-444444444444';
+    const INSTALLED = '55555555-5555-4555-8555-555555555555';
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     const pendingRow = (patchId: string, title: string) => ({
       id: `dp-${patchId}`, patchId, status: 'pending', installedAt: null,
@@ -322,17 +323,33 @@ describe('device patch routes', () => {
       category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
     });
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectPatchStatusResult([pendingRow(AUTO, 'Auto'), pendingRow(HELD, 'Held')]) as any)
+      .mockReturnValueOnce(selectPatchStatusResult([
+        pendingRow(AUTO, 'Auto'),
+        pendingRow(HELD, 'Held'),
+        { ...pendingRow(INSTALLED, 'Done'), status: 'installed', installedAt: '2026-02-05T00:00:00.000Z' }
+      ]) as any)
       .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
       // no manual approvals
       .mockReturnValueOnce(selectWhereResult([]) as any);
-    vi.mocked(loadDevicePatchApprovalView).mockResolvedValueOnce({
+    // Record whether the view ran INSIDE the system-context escape. A bare
+    // toHaveBeenCalled() on the db mocks would be vacuous here: the manual
+    // approvals read above already calls both.
+    let inSystemContext = false;
+    let viewRanInSystemContext: boolean | null = null;
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => any) => {
+      inSystemContext = true;
+      try { return await fn(); } finally { inSystemContext = false; }
+    });
+    vi.mocked(loadDevicePatchApprovalView).mockImplementationOnce(async () => {
+      viewRanInSystemContext = inSystemContext;
+      return {
       evaluation: { available: true, ring: { id: RING_ID, name: 'Workstations Ring' } },
       byPatchId: new Map([
         [AUTO, { state: 'auto_approved', reason: 'ring_auto_approve', holdUntil: null }],
         [HELD, { state: 'deferred', reason: 'held_by_deferral', holdUntil: '2026-02-08T00:00:00.000Z' }]
       ])
-    } as any);
+      } as any;
+    });
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
       method: 'GET',
@@ -349,10 +366,12 @@ describe('device patch routes', () => {
     expect(body.data.approvalEvaluation).toEqual({ available: true, ring: { id: RING_ID, name: 'Workstations Ring' } });
     const combined = body.data.patches.find((p: any) => p.id === AUTO);
     expect(combined.effectiveApproval.state).toBe('auto_approved');
+    // Only outstanding patches carry a verdict.
+    expect(body.data.patches.find((p: any) => p.id === INSTALLED).effectiveApproval).toBeNull();
     // Evaluated for THIS device+org, through the existing system-context escape.
     expect(loadDevicePatchApprovalView).toHaveBeenCalledWith(DEVICE_ID, '11111111-1111-1111-1111-111111111111');
+    expect(viewRanInSystemContext).toBe(true);
     expect(runOutsideDbContext).toHaveBeenCalled();
-    expect(withSystemDbAccessContext).toHaveBeenCalled();
   });
 
   it('degrades to approvalEvaluation.available=false (not a 500) when the ring evaluation throws', async () => {
@@ -381,7 +400,7 @@ describe('device patch routes', () => {
     expect(body.data.approvalEvaluation).toEqual({ available: false, ring: null });
     expect(body.data.pending[0].effectiveApproval).toBeNull();
     expect(body.data.pending[0].approvalStatus).toBe('pending');
-    expect(captureException).toHaveBeenCalledWith(boom);
+    expect(captureException).toHaveBeenCalledWith(boom, expect.anything(), expect.objectContaining({ deviceId: DEVICE_ID }));
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
   });
