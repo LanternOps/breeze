@@ -142,8 +142,11 @@ describe('apiContainerEnvKeys parser', () => {
 describe('operator-facing inventory', () => {
   it('is non-trivial and covers both sources (guards a broken scan or docs parse)', () => {
     const reasons = [...operatorFacing.values()];
-    expect(reasons.filter((r) => r.startsWith('System')).length).toBeGreaterThan(100);
-    expect(reasons.filter((r) => r.startsWith('documented')).length).toBeGreaterThan(50);
+    // Measured at #7470: ~265 registry-backed, ~188 documented-internal.
+    expect(reasons.filter((r) => r.startsWith('System')).length).toBeGreaterThan(200);
+    expect(reasons.filter((r) => r.startsWith('documented')).length).toBeGreaterThan(120);
+    expect(operatorFacing.get('AUDIT_CHAIN_VERIFY_MODE')).toBe('documented in deploy/environment.mdx');
+    expect(operatorFacing.get('AUDIT_ANCHOR_SIGNING_KEY')).toBe('System → Connections registry');
   });
 });
 

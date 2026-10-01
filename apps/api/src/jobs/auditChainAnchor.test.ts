@@ -640,6 +640,21 @@ describe('auditChainAnchor worker', () => {
       expect(line).toContain(getAnchorSigningPublicKey()!);
     });
 
+    it('also logs the key at boot, not only at the 04:45 UTC sweep', async () => {
+      process.env.AUDIT_ANCHOR_SIGNING_KEY = Buffer.alloc(32, 7).toString('base64');
+      const { initializeAuditChainAnchorWorker } = await import('./auditChainAnchor');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      let lines: string[];
+      try {
+        await initializeAuditChainAnchorWorker();
+      } finally {
+        lines = logSpy.mock.calls.map((c) => c.map(String).join(' '));
+        logSpy.mockRestore();
+      }
+      expect(lines.some((l) => l.includes('Anchor signing enabled') && l.includes(getAnchorSigningPublicKey()!))).toBe(true);
+      expect(dbExecuteMock).not.toHaveBeenCalled(); // boot log only — no sweep ran
+    });
+
     it('warns (and names the variable) when no key is configured', async () => {
       mockSweep([], [{ verify: [{ reason: 'no_anchor' }] }]);
       const { warn } = await sweepLogs();
