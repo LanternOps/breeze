@@ -492,7 +492,8 @@ const namespaceDuplicateBaselines = {
     // — "Modules" spells identically in French.
     // +1: emailTemplates.variables.total — "Total" is spelled identically in French.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 181,
+    // W04 Task 12 (#7602) fr-FR: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
+    'settings.json': 182,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -670,7 +671,8 @@ const namespaceDuplicateBaselines = {
     // — "Modules" spells identically in Canadian French too.
     // +1: emailTemplates.variables.total — "Total" is spelled identically in Canadian French.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 186,
+    // W04 Task 12 (#7602) fr-CA: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
+    'settings.json': 187,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -846,7 +848,8 @@ const namespaceDuplicateBaselines = {
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 197,
+    // W04 Task 12 (#7602) de-DE: aiModels.models.details "Details" and offering.speed.standard "Standard" are spelled identically (+2).
+    'settings.json': 199,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -981,7 +984,8 @@ const namespaceDuplicateBaselines = {
     // "Email" is the standard loanword in it-IT technical UI (same word is
     // already used for inboundEmail elsewhere in this file).
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 174,
+    // W04 Task 12 (#7602) it-IT: aiModels.offering.prices.input/output ("Input"/"Output") and speed.standard "Standard" are spelled identically (+3).
+    'settings.json': 177,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

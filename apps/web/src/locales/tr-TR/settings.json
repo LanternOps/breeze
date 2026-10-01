@@ -339,6 +339,85 @@
         "partner": "İş ortağı varsayılanı",
         "none": "Varsayılan yok"
       }
+    },
+    "models": {
+      "title": "Modeller",
+      "subtitle": "Teknisyenlerinizin ve özelliklerin hangi modelleri kullanabileceğini seçin. Fiyatlar 1 milyon token içindir.",
+      "empty": "Henüz kullanılabilir model yok.",
+      "otherGroup": "Diğer",
+      "ratePair": "1 milyon token başına {{input}} girdi / {{output}} çıktı",
+      "fastRate": "Hızlı: {{rate}}",
+      "noPrice": "Fiyat yok",
+      "context": "{{tokens}} token bağlam",
+      "unverified": "Yetenekler doğrulanmadı",
+      "lifecycle": {
+        "missing": "Sağlayıcıda bulunamadı",
+        "retired": "Kullanımdan kaldırıldı"
+      },
+      "defaultFor": "{{count}} özellik için varsayılan",
+      "enabledAt": "{{name}} etkinleştirildi: {{rate}}",
+      "enabled": "{{name}} etkinleştirildi",
+      "disabled": "{{name}} devre dışı bırakıldı",
+      "toggleFailed": "Model değiştirilemedi. Tekrar deneyin.",
+      "inUseFriendly": "Bu model hâlâ bir varsayılan. Yine de devre dışı bırakmak için onaylayın.",
+      "enableFirst": "Önce modeli etkinleştirin, ardından ayrıntılarını düzenleyin.",
+      "details": "Ayrıntılar",
+      "enableLabel": "{{name}} modelini etkinleştir",
+      "disableTitle": "{{name}} devre dışı bırakılsın mı?",
+      "disableMessage": "Bu özellikler bu modeli varsayılan olarak kullanıyor. Başka bir model seçene kadar modelsiz kalacaklar:",
+      "disableAnyway": "Yine de devre dışı bırak",
+      "orgOverrides": "Etkilenen kuruluş geçersiz kılmaları: {{count}}"
+    },
+    "offering": {
+      "displayName": "Görünen ad",
+      "displayNameHint": "Sağlayıcının adını kullanmak için boş bırakın. Model kimliği: {{modelId}}",
+      "pricesTitle": "Fiyat",
+      "pricesHint": "1 milyon token başına sent. Dördünü de doldurun veya fiyatsız bırakmak için hepsini boş bırakın (model etkinleştirilemez).",
+      "prices": {
+        "input": "Girdi",
+        "output": "Çıktı",
+        "cacheRead": "Önbellek okuma",
+        "cacheWrite": "Önbellek yazma"
+      },
+      "priceSource": {
+        "platform": "Fiyat Breeze platformundan",
+        "catalog": "Fiyat katalogdan",
+        "linked_platform": "Fiyat bağlı platform modelinden",
+        "offering": "Bu model için belirlenen fiyat",
+        "none": "Fiyat belirlenmedi"
+      },
+      "allowedEffort": "İzin verilen efor düzeyleri",
+      "effort": {
+        "low": "Düşük",
+        "medium": "Orta",
+        "high": "Yüksek",
+        "xhigh": "Çok yüksek",
+        "max": "Maksimum"
+      },
+      "display": {
+        "omitted": "Gizli",
+        "summarized": "Özetlenmiş",
+        "updates": "Canlı güncellemeler"
+      },
+      "providerDefault": "Sağlayıcı varsayılanı",
+      "defaultEffort": "Varsayılan efor",
+      "defaultDisplay": "Varsayılan düşünme gösterimi",
+      "defaultSpeed": "Varsayılan hız",
+      "speed": {
+        "standard": "Standart",
+        "fastWithRate": "Hızlı ({{rate}})"
+      },
+      "allowFast": "Hızlı moda izin ver",
+      "allowFastHint": "Hızlı mod, daha yüksek Hızlı tarifeyle faturalandırılır.",
+      "premium": "Premium model iznini zorunlu kıl",
+      "premiumHint": "Bu modeli yalnızca ai_models:premium iznine sahip roller kullanabilir.",
+      "premiumForced": "Breeze tarafından finanse edilen bir modelde Hızlı moda izin verildiği sürece zorunludur.",
+      "refusalFallback": "Ret durumunda yedek",
+      "refusalNone": "Yok",
+      "refusalHint": "Bu model bir isteği reddettiğinde denenecek, aynı bağlantıdaki başka bir etkin model.",
+      "invalidPrices": "Dört fiyatı da negatif olmayan sayılar olarak girin veya dördünü de boş bırakın.",
+      "saved": "Model kaydedildi",
+      "saveFailed": "Model kaydedilemedi. Tekrar deneyin."
     }
   },
   "partnerDefaults": {

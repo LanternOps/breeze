@@ -339,6 +339,85 @@
         "partner": "Partner default",
         "none": "No default"
       }
+    },
+    "models": {
+      "title": "Models",
+      "subtitle": "Choose which models your technicians and features can use. Prices are per 1M tokens.",
+      "empty": "No models are available yet.",
+      "otherGroup": "Other",
+      "ratePair": "{{input}} in / {{output}} out per 1M tokens",
+      "fastRate": "Fast: {{rate}}",
+      "noPrice": "No price",
+      "context": "{{tokens}} token context",
+      "unverified": "Capabilities unverified",
+      "lifecycle": {
+        "missing": "Missing from provider",
+        "retired": "Retired"
+      },
+      "defaultFor": "Default for {{count}} feature(s)",
+      "enabledAt": "Enabled {{name}} at {{rate}}",
+      "enabled": "Enabled {{name}}",
+      "disabled": "Disabled {{name}}",
+      "toggleFailed": "Couldn’t change that model. Try again.",
+      "inUseFriendly": "This model is still a default. Confirm to disable it anyway.",
+      "enableFirst": "Enable the model first, then edit its details.",
+      "details": "Details",
+      "enableLabel": "Enable {{name}}",
+      "disableTitle": "Disable {{name}}?",
+      "disableMessage": "These features use this model as their default. They will have no model until you choose another:",
+      "disableAnyway": "Disable anyway",
+      "orgOverrides": "Organization overrides affected: {{count}}"
+    },
+    "offering": {
+      "displayName": "Display name",
+      "displayNameHint": "Leave blank to use the provider’s name. Model id: {{modelId}}",
+      "pricesTitle": "Price",
+      "pricesHint": "Cents per 1M tokens. Fill in all four, or leave all blank for no price (the model then cannot be enabled).",
+      "prices": {
+        "input": "Input",
+        "output": "Output",
+        "cacheRead": "Cache read",
+        "cacheWrite": "Cache write"
+      },
+      "priceSource": {
+        "platform": "Price from the Breeze platform",
+        "catalog": "Price from the catalog",
+        "linked_platform": "Price from the linked platform model",
+        "offering": "Price set on this model",
+        "none": "No price set"
+      },
+      "allowedEffort": "Allowed effort levels",
+      "effort": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra high",
+        "max": "Maximum"
+      },
+      "display": {
+        "omitted": "Hidden",
+        "summarized": "Summarized",
+        "updates": "Live updates"
+      },
+      "providerDefault": "Provider default",
+      "defaultEffort": "Default effort",
+      "defaultDisplay": "Default thinking display",
+      "defaultSpeed": "Default speed",
+      "speed": {
+        "standard": "Standard",
+        "fastWithRate": "Fast ({{rate}})"
+      },
+      "allowFast": "Allow Fast mode",
+      "allowFastHint": "Fast mode is billed at the higher Fast rate.",
+      "premium": "Require the premium-model permission",
+      "premiumHint": "Only roles with the ai_models:premium permission can use this model.",
+      "premiumForced": "Required while Fast mode is allowed on a Breeze-funded model.",
+      "refusalFallback": "Refusal fallback",
+      "refusalNone": "None",
+      "refusalHint": "Another enabled model on the same connection to try when this one refuses a request.",
+      "invalidPrices": "Enter all four prices as non-negative numbers, or leave all four blank.",
+      "saved": "Model saved",
+      "saveFailed": "Couldn’t save the model. Try again."
     }
   },
   "partnerDefaults": {

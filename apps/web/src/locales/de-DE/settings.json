@@ -339,6 +339,85 @@
         "partner": "Partner-Standard",
         "none": "Kein Standard"
       }
+    },
+    "models": {
+      "title": "Modelle",
+      "subtitle": "Legen Sie fest, welche Modelle Ihre Techniker und Funktionen nutzen dürfen. Preise gelten pro 1 Mio. Tokens.",
+      "empty": "Noch keine Modelle verfügbar.",
+      "otherGroup": "Weitere",
+      "ratePair": "{{input}} Eingabe / {{output}} Ausgabe pro 1 Mio. Tokens",
+      "fastRate": "Schnell: {{rate}}",
+      "noPrice": "Kein Preis",
+      "context": "Kontext: {{tokens}} Tokens",
+      "unverified": "Fähigkeiten nicht geprüft",
+      "lifecycle": {
+        "missing": "Beim Anbieter nicht mehr gelistet",
+        "retired": "Eingestellt"
+      },
+      "defaultFor": "Standard für {{count}} Funktion(en)",
+      "enabledAt": "{{name}} aktiviert zu {{rate}}",
+      "enabled": "{{name}} aktiviert",
+      "disabled": "{{name}} deaktiviert",
+      "toggleFailed": "Das Modell konnte nicht geändert werden. Versuchen Sie es erneut.",
+      "inUseFriendly": "Dieses Modell ist noch ein Standard. Bestätigen Sie, um es trotzdem zu deaktivieren.",
+      "enableFirst": "Aktivieren Sie zuerst das Modell und bearbeiten Sie dann die Details.",
+      "details": "Details",
+      "enableLabel": "{{name}} aktivieren",
+      "disableTitle": "{{name}} deaktivieren?",
+      "disableMessage": "Diese Funktionen nutzen dieses Modell als Standard. Sie haben kein Modell, bis Sie ein anderes wählen:",
+      "disableAnyway": "Trotzdem deaktivieren",
+      "orgOverrides": "Betroffene Organisations-Überschreibungen: {{count}}"
+    },
+    "offering": {
+      "displayName": "Anzeigename",
+      "displayNameHint": "Leer lassen, um den Namen des Anbieters zu verwenden. Modell-ID: {{modelId}}",
+      "pricesTitle": "Preis",
+      "pricesHint": "Cent pro 1 Mio. Tokens. Füllen Sie alle vier aus oder lassen Sie alle leer für keinen Preis (das Modell lässt sich dann nicht aktivieren).",
+      "prices": {
+        "input": "Eingabe",
+        "output": "Ausgabe",
+        "cacheRead": "Cache-Lesen",
+        "cacheWrite": "Cache-Schreiben"
+      },
+      "priceSource": {
+        "platform": "Preis der Breeze-Plattform",
+        "catalog": "Preis aus dem Katalog",
+        "linked_platform": "Preis des verknüpften Plattformmodells",
+        "offering": "Für dieses Modell festgelegter Preis",
+        "none": "Kein Preis festgelegt"
+      },
+      "allowedEffort": "Zulässige Aufwandsstufen",
+      "effort": {
+        "low": "Niedrig",
+        "medium": "Mittel",
+        "high": "Hoch",
+        "xhigh": "Sehr hoch",
+        "max": "Maximal"
+      },
+      "display": {
+        "omitted": "Ausgeblendet",
+        "summarized": "Zusammengefasst",
+        "updates": "Live-Updates"
+      },
+      "providerDefault": "Anbieterstandard",
+      "defaultEffort": "Standard-Aufwand",
+      "defaultDisplay": "Standardanzeige des Denkens",
+      "defaultSpeed": "Standard-Geschwindigkeit",
+      "speed": {
+        "standard": "Standard",
+        "fastWithRate": "Schnell ({{rate}})"
+      },
+      "allowFast": "Schnellmodus erlauben",
+      "allowFastHint": "Der Schnellmodus wird mit dem höheren Schnelltarif abgerechnet.",
+      "premium": "Berechtigung für Premium-Modelle verlangen",
+      "premiumHint": "Nur Rollen mit der Berechtigung ai_models:premium können dieses Modell nutzen.",
+      "premiumForced": "Erforderlich, solange der Schnellmodus bei einem von Breeze finanzierten Modell erlaubt ist.",
+      "refusalFallback": "Ausweichmodell bei Ablehnung",
+      "refusalNone": "Keines",
+      "refusalHint": "Ein anderes aktiviertes Modell derselben Verbindung, das verwendet wird, wenn dieses eine Anfrage ablehnt.",
+      "invalidPrices": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer.",
+      "saved": "Modell gespeichert",
+      "saveFailed": "Das Modell konnte nicht gespeichert werden. Versuchen Sie es erneut."
     }
   },
   "partnerDefaults": {

@@ -339,6 +339,85 @@
         "partner": "Valeur par défaut du partenaire",
         "none": "Aucune valeur par défaut"
       }
+    },
+    "models": {
+      "title": "Modèles",
+      "subtitle": "Choisissez les modèles que vos techniciens et fonctionnalités peuvent utiliser. Les prix s’entendent par million de jetons.",
+      "empty": "Aucun modèle n’est encore disponible.",
+      "otherGroup": "Autres",
+      "ratePair": "{{input}} en entrée / {{output}} en sortie par million de jetons",
+      "fastRate": "Rapide : {{rate}}",
+      "noPrice": "Aucun prix",
+      "context": "Contexte de {{tokens}} jetons",
+      "unverified": "Capacités non vérifiées",
+      "lifecycle": {
+        "missing": "Absent chez le fournisseur",
+        "retired": "Retiré"
+      },
+      "defaultFor": "Par défaut pour {{count}} fonctionnalité(s)",
+      "enabledAt": "{{name}} activé à {{rate}}",
+      "enabled": "{{name}} activé",
+      "disabled": "{{name}} désactivé",
+      "toggleFailed": "Impossible de modifier ce modèle. Réessayez.",
+      "inUseFriendly": "Ce modèle est encore utilisé par défaut. Confirmez pour le désactiver malgré tout.",
+      "enableFirst": "Activez d’abord le modèle, puis modifiez ses détails.",
+      "details": "Détails",
+      "enableLabel": "Activer {{name}}",
+      "disableTitle": "Désactiver {{name}} ?",
+      "disableMessage": "Ces fonctionnalités utilisent ce modèle par défaut. Elles resteront sans modèle tant que vous n’en aurez pas choisi un autre :",
+      "disableAnyway": "Désactiver quand même",
+      "orgOverrides": "Remplacements d’organisation concernés : {{count}}"
+    },
+    "offering": {
+      "displayName": "Nom affiché",
+      "displayNameHint": "Laissez vide pour utiliser le nom du fournisseur. Identifiant du modèle : {{modelId}}",
+      "pricesTitle": "Prix",
+      "pricesHint": "Centimes par million de jetons. Renseignez les quatre ou laissez-les vides pour aucun prix (le modèle ne pourra alors pas être activé).",
+      "prices": {
+        "input": "Entrée",
+        "output": "Sortie",
+        "cacheRead": "Lecture du cache",
+        "cacheWrite": "Écriture du cache"
+      },
+      "priceSource": {
+        "platform": "Prix fixé par la plateforme Breeze",
+        "catalog": "Prix issu du catalogue",
+        "linked_platform": "Prix du modèle de plateforme associé",
+        "offering": "Prix défini sur ce modèle",
+        "none": "Aucun prix défini"
+      },
+      "allowedEffort": "Niveaux d’effort autorisés",
+      "effort": {
+        "low": "Faible",
+        "medium": "Moyen",
+        "high": "Élevé",
+        "xhigh": "Très élevé",
+        "max": "Maximal"
+      },
+      "display": {
+        "omitted": "Masqué",
+        "summarized": "Résumé",
+        "updates": "Mises à jour en direct"
+      },
+      "providerDefault": "Valeur par défaut du fournisseur",
+      "defaultEffort": "Effort par défaut",
+      "defaultDisplay": "Affichage du raisonnement par défaut",
+      "defaultSpeed": "Vitesse par défaut",
+      "speed": {
+        "standard": "Standard",
+        "fastWithRate": "Rapide ({{rate}})"
+      },
+      "allowFast": "Autoriser le mode Rapide",
+      "allowFastHint": "Le mode Rapide est facturé au tarif Rapide, plus élevé.",
+      "premium": "Exiger l’autorisation de modèle premium",
+      "premiumHint": "Seuls les rôles disposant de l’autorisation ai_models:premium peuvent utiliser ce modèle.",
+      "premiumForced": "Obligatoire tant que le mode Rapide est autorisé sur un modèle financé par Breeze.",
+      "refusalFallback": "Modèle de repli en cas de refus",
+      "refusalNone": "Aucun",
+      "refusalHint": "Un autre modèle activé sur la même connexion, essayé lorsque celui-ci refuse une requête.",
+      "invalidPrices": "Saisissez les quatre prix sous forme de nombres positifs ou nuls, ou laissez-les tous vides.",
+      "saved": "Modèle enregistré",
+      "saveFailed": "Impossible d’enregistrer le modèle. Réessayez."
     }
   },
   "partnerDefaults": {

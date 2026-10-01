@@ -339,6 +339,85 @@
         "partner": "Predeterminado del socio",
         "none": "Sin predeterminado"
       }
+    },
+    "models": {
+      "title": "Modelos",
+      "subtitle": "Elige qué modelos pueden usar tus técnicos y funciones. Los precios son por 1 millón de tokens.",
+      "empty": "Todavía no hay modelos disponibles.",
+      "otherGroup": "Otros",
+      "ratePair": "{{input}} entrada / {{output}} salida por 1 M de tokens",
+      "fastRate": "Rápido: {{rate}}",
+      "noPrice": "Sin precio",
+      "context": "Contexto de {{tokens}} tokens",
+      "unverified": "Capacidades sin verificar",
+      "lifecycle": {
+        "missing": "Ya no aparece en el proveedor",
+        "retired": "Retirado"
+      },
+      "defaultFor": "Predeterminado de {{count}} función(es)",
+      "enabledAt": "{{name}} activado a {{rate}}",
+      "enabled": "{{name}} activado",
+      "disabled": "{{name}} desactivado",
+      "toggleFailed": "No se pudo cambiar ese modelo. Inténtalo de nuevo.",
+      "inUseFriendly": "Este modelo sigue siendo un valor predeterminado. Confirma para desactivarlo de todos modos.",
+      "enableFirst": "Activa el modelo primero y luego edita sus detalles.",
+      "details": "Detalles",
+      "enableLabel": "Activar {{name}}",
+      "disableTitle": "¿Desactivar {{name}}?",
+      "disableMessage": "Estas funciones usan este modelo como predeterminado. Se quedarán sin modelo hasta que elijas otro:",
+      "disableAnyway": "Desactivar de todos modos",
+      "orgOverrides": "Anulaciones de organización afectadas: {{count}}"
+    },
+    "offering": {
+      "displayName": "Nombre para mostrar",
+      "displayNameHint": "Déjalo en blanco para usar el nombre del proveedor. ID del modelo: {{modelId}}",
+      "pricesTitle": "Precio",
+      "pricesHint": "Centavos por 1 M de tokens. Completa los cuatro o déjalos en blanco para no tener precio (el modelo no se podrá activar).",
+      "prices": {
+        "input": "Entrada",
+        "output": "Salida",
+        "cacheRead": "Lectura de caché",
+        "cacheWrite": "Escritura de caché"
+      },
+      "priceSource": {
+        "platform": "Precio de la plataforma Breeze",
+        "catalog": "Precio del catálogo",
+        "linked_platform": "Precio del modelo de plataforma vinculado",
+        "offering": "Precio definido en este modelo",
+        "none": "Sin precio definido"
+      },
+      "allowedEffort": "Niveles de esfuerzo permitidos",
+      "effort": {
+        "low": "Bajo",
+        "medium": "Medio",
+        "high": "Alto",
+        "xhigh": "Muy alto",
+        "max": "Máximo"
+      },
+      "display": {
+        "omitted": "Oculto",
+        "summarized": "Resumido",
+        "updates": "Actualizaciones en vivo"
+      },
+      "providerDefault": "Predeterminado del proveedor",
+      "defaultEffort": "Esfuerzo predeterminado",
+      "defaultDisplay": "Visualización de razonamiento predeterminada",
+      "defaultSpeed": "Velocidad predeterminada",
+      "speed": {
+        "standard": "Estándar",
+        "fastWithRate": "Rápido ({{rate}})"
+      },
+      "allowFast": "Permitir el modo Rápido",
+      "allowFastHint": "El modo Rápido se factura con la tarifa Rápido, más alta.",
+      "premium": "Exigir el permiso de modelo premium",
+      "premiumHint": "Solo los roles con el permiso ai_models:premium pueden usar este modelo.",
+      "premiumForced": "Obligatorio mientras el modo Rápido esté permitido en un modelo financiado por Breeze.",
+      "refusalFallback": "Alternativa ante rechazo",
+      "refusalNone": "Ninguno",
+      "refusalHint": "Otro modelo activado en la misma conexión para probar cuando este rechace una solicitud.",
+      "invalidPrices": "Introduce los cuatro precios como números no negativos o déjalos todos en blanco.",
+      "saved": "Modelo guardado",
+      "saveFailed": "No se pudo guardar el modelo. Inténtalo de nuevo."
     }
   },
   "partnerDefaults": {

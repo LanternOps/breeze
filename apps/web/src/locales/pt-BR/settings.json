@@ -339,6 +339,85 @@
         "partner": "Padrão do parceiro",
         "none": "Sem padrão"
       }
+    },
+    "models": {
+      "title": "Modelos",
+      "subtitle": "Escolha quais modelos seus técnicos e recursos podem usar. Os preços são por 1 milhão de tokens.",
+      "empty": "Nenhum modelo disponível ainda.",
+      "otherGroup": "Outros",
+      "ratePair": "{{input}} entrada / {{output}} saída por 1 mi de tokens",
+      "fastRate": "Rápido: {{rate}}",
+      "noPrice": "Sem preço",
+      "context": "Contexto de {{tokens}} tokens",
+      "unverified": "Recursos não verificados",
+      "lifecycle": {
+        "missing": "Ausente do provedor",
+        "retired": "Descontinuado"
+      },
+      "defaultFor": "Padrão para {{count}} recurso(s)",
+      "enabledAt": "{{name}} ativado a {{rate}}",
+      "enabled": "{{name}} ativado",
+      "disabled": "{{name}} desativado",
+      "toggleFailed": "Não foi possível alterar esse modelo. Tente novamente.",
+      "inUseFriendly": "Este modelo ainda é um padrão. Confirme para desativá-lo mesmo assim.",
+      "enableFirst": "Ative o modelo primeiro e depois edite os detalhes.",
+      "details": "Detalhes",
+      "enableLabel": "Ativar {{name}}",
+      "disableTitle": "Desativar {{name}}?",
+      "disableMessage": "Estes recursos usam este modelo como padrão. Ficarão sem modelo até você escolher outro:",
+      "disableAnyway": "Desativar mesmo assim",
+      "orgOverrides": "Substituições de organização afetadas: {{count}}"
+    },
+    "offering": {
+      "displayName": "Nome de exibição",
+      "displayNameHint": "Deixe em branco para usar o nome do provedor. ID do modelo: {{modelId}}",
+      "pricesTitle": "Preço",
+      "pricesHint": "Centavos por 1 mi de tokens. Preencha os quatro ou deixe todos em branco para nenhum preço (o modelo não poderá ser ativado).",
+      "prices": {
+        "input": "Entrada",
+        "output": "Saída",
+        "cacheRead": "Leitura de cache",
+        "cacheWrite": "Gravação de cache"
+      },
+      "priceSource": {
+        "platform": "Preço da plataforma Breeze",
+        "catalog": "Preço do catálogo",
+        "linked_platform": "Preço do modelo de plataforma vinculado",
+        "offering": "Preço definido neste modelo",
+        "none": "Nenhum preço definido"
+      },
+      "allowedEffort": "Níveis de esforço permitidos",
+      "effort": {
+        "low": "Baixo",
+        "medium": "Médio",
+        "high": "Alto",
+        "xhigh": "Muito alto",
+        "max": "Máximo"
+      },
+      "display": {
+        "omitted": "Oculto",
+        "summarized": "Resumido",
+        "updates": "Atualizações ao vivo"
+      },
+      "providerDefault": "Padrão do provedor",
+      "defaultEffort": "Esforço padrão",
+      "defaultDisplay": "Exibição de raciocínio padrão",
+      "defaultSpeed": "Velocidade padrão",
+      "speed": {
+        "standard": "Padrão",
+        "fastWithRate": "Rápido ({{rate}})"
+      },
+      "allowFast": "Permitir o modo Rápido",
+      "allowFastHint": "O modo Rápido é cobrado pela tarifa Rápido, mais alta.",
+      "premium": "Exigir a permissão de modelo premium",
+      "premiumHint": "Somente funções com a permissão ai_models:premium podem usar este modelo.",
+      "premiumForced": "Obrigatória enquanto o modo Rápido for permitido em um modelo financiado pela Breeze.",
+      "refusalFallback": "Alternativa em caso de recusa",
+      "refusalNone": "Nenhum",
+      "refusalHint": "Outro modelo ativado na mesma conexão para tentar quando este recusar uma solicitação.",
+      "invalidPrices": "Informe os quatro preços como números não negativos ou deixe os quatro em branco.",
+      "saved": "Modelo salvo",
+      "saveFailed": "Não foi possível salvar o modelo. Tente novamente."
     }
   },
   "partnerDefaults": {
