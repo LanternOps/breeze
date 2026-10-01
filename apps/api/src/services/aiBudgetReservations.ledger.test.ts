@@ -31,7 +31,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/lockTimeout', () => ({ tightenLockTimeout: hoisted.tightenLockTimeout }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: hoisted.getEffectiveAiBudget }));
 vi.mock('./sentry', () => ({ captureException: hoisted.captureException, captureMessage: vi.fn() }));
-vi.mock('./aiModels/invocationLedger', () => ({ recordInvocation: hoisted.recordInvocation }));
+vi.mock('./aiModels/invocationLedgerWrite', () => ({ recordInvocation: hoisted.recordInvocation }));
 vi.mock('./aiModels/platformModels', () => ({ getPlatformModelByModelId: hoisted.getPlatformModelByModelId }));
 
 import {
@@ -41,7 +41,7 @@ import {
   settleAiBudgetReservation,
   settleAiBudgetReservationDurably,
 } from './aiBudgetReservations';
-import type { NewInvocation } from './aiModels/invocationLedger';
+import type { NewInvocation } from './aiModels/invocationLedgerWrite';
 import type { SdkUsageSnapshot } from './aiModels/invocationUsage';
 import type { TurnBinding } from './aiModels/turnBinding';
 

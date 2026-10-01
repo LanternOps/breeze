@@ -20,7 +20,7 @@ import {
 import { debitBillingCredits } from '../aiCostTracker';
 import { captureException, captureMessage } from '../sentry';
 import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutcome } from './invocationUsage';
-import type { NewInvocation } from './invocationLedger';
+import type { NewInvocation } from './invocationLedgerWrite';
 import { getPlatformModelByModelId } from './platformModels';
 import { platformRateSnapshot, priceInvocation, type RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';

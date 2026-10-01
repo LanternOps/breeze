@@ -6,7 +6,7 @@ import { captureException } from './sentry';
 import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
-import { recordInvocation, type NewInvocation } from './aiModels/invocationLedger';
+import { recordInvocation, type NewInvocation } from './aiModels/invocationLedgerWrite';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
 import { getPlatformModelByModelId } from './aiModels/platformModels';
 import { platformRateSnapshot } from './aiModels/pricing';
